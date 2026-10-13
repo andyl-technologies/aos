@@ -8,74 +8,14 @@
 use super::*;
 
 impl OwnedCallbackRuntimeState {
-    pub(super) fn prepare_child_device_workspace(
-        &mut self,
-        binding: HotForkChildResourceBinding,
-    ) -> Result<
-        Option<crate::device_digest_workspace::DeviceDigestWorkspace>,
-        HotForkChildRuntimeError,
-    > {
-        // Native early disarm has already closed the inherited parent owner.
-        // This private plan supplies a borrowed fresh-child descriptor; the
-        // plugin owns its separately counted CLOEXEC alias through final join.
-        let workspace = if self
-            .live_vcpu_time
-            .as_ref()
-            .is_some_and(|live| live.fingerprint_enabled())
-        {
-            if self.refused_child_workspace.is_some() {
-                return Err(HotForkChildRuntimeError::Workspace {
-                    source: crate::DeviceDigestWorkspaceError::Ownership {
-                        reason: "the child workspace claim remains refused or uncertain",
-                    },
-                });
-            }
-            let descriptor = duplicate_workspace_descriptor(binding.workspace_fd)
-                .map_err(|source| HotForkChildRuntimeError::Workspace { source })?;
-            let plugin_id = self.plugin_id.ok_or(HotForkChildRuntimeError::Workspace {
-                source: crate::DeviceDigestWorkspaceError::Ownership {
-                    reason: "installing plugin identity is absent",
-                },
-            })?;
-            match crate::device_digest_workspace::DeviceDigestWorkspace::prepare(
-                plugin_id,
-                binding.child_process_generation,
-                crucible_protocol::DeviceDigestWorkspaceBinding {
-                    account_generation: binding.account_generation,
-                    workspace_generation: binding.workspace_generation,
-                    device: binding.workspace_device,
-                    inode: binding.workspace_inode,
-                },
-                descriptor,
-                -1,
-            ) {
-                Ok(workspace) => Some(workspace),
-                Err(failure) => {
-                    let source = failure.source;
-                    self.refused_child_workspace = Some(failure.workspace);
-                    return Err(HotForkChildRuntimeError::Workspace { source });
-                }
-            }
-        } else {
-            None
-        };
-
-        if let Some(owner) = workspace.as_ref() {
-            self.claimed_workspace_fd = owner
-                .descriptor_number()
-                .map_err(|source| HotForkChildRuntimeError::Workspace { source })?;
-        }
-        Ok(workspace)
-    }
-
-    pub(super) fn require_child_startup_source(&mut self) -> Result<(), HotForkChildRuntimeError> {
-        Err(HotForkChildRuntimeError::Workspace {
+    pub(super) fn child_startup_source_unavailable() -> HotForkChildRuntimeError {
+        HotForkChildRuntimeError::Workspace {
             source: crate::DeviceDigestWorkspaceError::StartupSource {
                 source: crate::StartupSourceError::Ownership {
                     reason: "separately issued child startup Source is unavailable",
                 },
             },
-        })
+        }
     }
 
     pub(super) fn disarm_child_device_workspace(
@@ -133,26 +73,6 @@ impl OwnedCallbackRuntimeState {
 
         Ok(disarmed)
     }
-}
-
-/// Duplicates only the native stage's borrowed, separately counted child fd.
-fn duplicate_workspace_descriptor(
-    fd: i32,
-) -> Result<std::os::fd::OwnedFd, crate::DeviceDigestWorkspaceError> {
-    use std::os::fd::FromRawFd;
-
-    // SAFETY: fcntl borrows the staged fd and returns a new owned CLOEXEC alias.
-    let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
-    if duplicated < 0 {
-        return Err(crate::DeviceDigestWorkspaceError::System {
-            operation: "duplicate child descriptor",
-            errno: std::io::Error::last_os_error()
-                .raw_os_error()
-                .unwrap_or(libc::EIO),
-        });
-    }
-    // SAFETY: successful fcntl returned the fresh descriptor exactly once.
-    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicated) })
 }
 
 pub(super) fn child_workspace_matches(

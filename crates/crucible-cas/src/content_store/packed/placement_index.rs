@@ -11,7 +11,10 @@ use std::os::unix::fs::FileExt;
 use super::index_format::{self as wire, Header, Key, Node, PageReference, Value};
 use super::index_io::{self, Bytes, IndexFile, Operation};
 
+mod fresh_root;
 mod presence;
+
+pub(in crate::content_store::packed) use fresh_root::FreshRoot;
 
 pub(super) struct IndexSnapshot {
     bytes: Bytes,
@@ -237,6 +240,30 @@ impl<'s> Reader<'s> {
         buffer: &mut Bytes,
         operation: &mut Operation<'_>,
     ) -> Result<Option<Value>, StoreError> {
+        self.find_into_using_root(key, buffer, None, operation)
+    }
+
+    /// Searches freshly read pages while reusing an identical root's validation.
+    ///
+    /// # Errors
+    /// Preserves ordinary path, page integrity, original and storage refusals.
+    pub(in crate::content_store::packed) fn find_into_reusing_root(
+        &self,
+        key: Key,
+        buffer: &mut Bytes,
+        root: &mut FreshRoot,
+        operation: &mut Operation<'_>,
+    ) -> Result<Option<Value>, StoreError> {
+        self.find_into_using_root(key, buffer, Some(root), operation)
+    }
+
+    fn find_into_using_root(
+        &self,
+        key: Key,
+        buffer: &mut Bytes,
+        mut retained_root: Option<&mut FreshRoot>,
+        operation: &mut Operation<'_>,
+    ) -> Result<Option<Value>, StoreError> {
         operation.check()?;
         if self.arena.is_none() {
             let node = Node::parse(self.snapshot.body(), true)?;
@@ -247,7 +274,11 @@ impl<'s> Reader<'s> {
         let mut upper = None;
         let mut root = true;
         loop {
-            let node = self.load(reference, root, lower, upper, buffer, operation)?;
+            let node = if root && let Some(retained) = retained_root.as_deref_mut() {
+                retained.load(self, reference, buffer, operation)?
+            } else {
+                self.load(reference, root, lower, upper, buffer, operation)?
+            };
             if node.height == 0 {
                 return leaf_find(&node, key);
             }
@@ -301,6 +332,16 @@ impl<'s> Reader<'s> {
         buffer: &'buffer mut Bytes,
         operation: &mut Operation<'_>,
     ) -> Result<Node<'buffer>, StoreError> {
+        self.read_page(reference, buffer, operation)?;
+        self.parse_loaded(reference, root, lower, upper, &buffer.value)
+    }
+
+    fn read_page(
+        &self,
+        reference: PageReference,
+        buffer: &mut Bytes,
+        operation: &mut Operation<'_>,
+    ) -> Result<(), StoreError> {
         reference.validate(self.snapshot.header.committed_bytes)?;
         let file = self.arena.as_ref().ok_or(StoreError::Incompatible)?.file();
         read_into(
@@ -309,12 +350,22 @@ impl<'s> Reader<'s> {
             reference.offset,
             reference.length as usize,
             buffer,
-        )?;
-        let node = Node::parse(&buffer.value, root)?;
+        )
+    }
+
+    fn parse_loaded<'buffer>(
+        &self,
+        reference: PageReference,
+        root: bool,
+        lower: Option<Key>,
+        upper: Option<Key>,
+        bytes: &'buffer [u8],
+    ) -> Result<Node<'buffer>, StoreError> {
+        let node = Node::parse(bytes, root)?;
         node.validate_children_before(reference.offset)?;
         if node.height != reference.height
             || node.records != reference.records
-            || wire::page_digest(&buffer.value)? != reference.digest
+            || wire::page_digest(bytes)? != reference.digest
             || node.count == 0
         {
             return Err(StoreError::Incompatible);

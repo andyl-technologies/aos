@@ -65,7 +65,7 @@ use crucible::{
 use crucible_device::block::{BaseImage, BlockDurabilityConfig, BlockLatency};
 use crucible_device::{FsTree, NinepLatency};
 use crucible_shmem::{
-    FrameDeliveryState, RegionAllocation, RegionConfig, SLOT_NET_ROUTER, mmap_setup_region,
+    FrameDeliveryState, RegionConfig, RegionLayout, SLOT_NET_ROUTER, mmap_setup_region,
 };
 
 use crate::QemuChildProcessContract;
@@ -91,7 +91,7 @@ use crate::{
     QemuPreparedRunDirectory, QemuQmpChannelConfig, QemuQuantumShmemConfig, QemuRootImageFormat,
     QemuShmemHotPathChannel, QemuShutdownPolicy, QemuVmLaunchConfig, QemuVmSnapshot,
     QemuWhiteboxSetupError, QmpError, complete_qemu_host_plugin_setup_with_plugin_setup_plan,
-    spawn_prepared_qemu_child_with_fds_in_directory_guarded,
+    spawn_prepared_qemu_child_with_preexec,
 };
 
 use super::QemuLiveHostIoRuntimeError;
@@ -99,11 +99,14 @@ use super::QemuLiveHostIoRuntimeError;
 mod error;
 pub use error::QemuLiveNodeStepGateError;
 mod exact_snapshot;
+mod paused_launch;
 mod plugin_resources;
+mod source_supervision;
 pub use exact_snapshot::{
     QemuLiveHotForkChildReport, QemuLiveHotForkChildStressReport,
     run_qemu_live_hot_fork_child_gate, run_qemu_live_hot_fork_child_stress_gate,
 };
+pub use paused_launch::PausedLiveNodeLaunch;
 
 /// Content-addressing domain for node-step launch artifacts.
 const GATE_DOMAIN: &str = "crucible.loaded-qemu-live-node-step.v1";
@@ -270,6 +273,11 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub fn qemu_executable(&self) -> &Path {
         &self.qemu_executable
+    }
+
+    /// Borrows the exact plugin spelling passed to this launch's native loader.
+    pub(crate) fn original_plugin_path(&self) -> &Path {
+        &self.plugin
     }
 
     /// Returns the immutable root-image path selected by this launch profile.
@@ -542,12 +550,12 @@ impl QemuLiveNodeStepGateConfig {
         self
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     pub(crate) const fn requires_device_digest_workspace(&self) -> bool {
         matches!(self.fingerprint, QemuLaunchPluginSwitch::On)
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     pub(crate) const fn original_process_generation(&self) -> u64 {
         self.process_generation
     }
@@ -902,11 +910,15 @@ pub struct QemuProductionFreshLaunchAdmission<'a> {
 }
 
 impl<'a> QemuProductionFreshLaunchAdmission<'a> {
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn original_node_basis(
         self,
     ) -> (&'a QemuPreparedRunDirectory, QemuLiveNodeIdentity<'a>) {
         (self.run_directory, self.identity)
+    }
+
+    pub(crate) const fn installed_process_contract(&self) -> &'a QemuChildProcessContract {
+        self.process_contract
     }
 
     /// Seals the prepared storage, process contract, and scheduler-name basis.
@@ -961,9 +973,9 @@ pub fn launch_qemu_production_fresh_node(
             restore: None,
             resume_restored: true,
             exact_binding: None,
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            #[cfg(target_os = "linux")]
             original_native_binding: None,
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            #[cfg(target_os = "linux")]
             original_workspace: None,
         },
     )
@@ -972,14 +984,24 @@ pub fn launch_qemu_production_fresh_node(
 // The original host issuer creates this witness from its live admitted slot.
 // It enters the actual launch body before child or Node exposure, rather than
 // authorizing a caller-supplied process identity after construction.
-#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[cfg(target_os = "linux")]
 pub(crate) fn launch_qemu_original_fresh_node(
     config: &QemuLiveNodeStepGateConfig,
     request: QemuProductionFreshLaunchAdmission<'_>,
     binding: crate::linux_attempt_host::OriginalNativeNodeBinding,
     workspace: Option<crate::spawn::OriginalDeviceDigestWorkspace>,
 ) -> Result<QemuNode, QemuLiveNodeStepGateError> {
-    build_live_node_with_authority(
+    prepare_qemu_original_fresh_node(config, request, binding, workspace)?.prime_and_build()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn prepare_qemu_original_fresh_node<'a>(
+    config: &'a QemuLiveNodeStepGateConfig,
+    request: QemuProductionFreshLaunchAdmission<'a>,
+    binding: crate::linux_attempt_host::OriginalNativeNodeBinding,
+    workspace: Option<crate::spawn::OriginalDeviceDigestWorkspace>,
+) -> Result<PausedLiveNodeLaunch<'a>, QemuLiveNodeStepGateError> {
+    prepare_paused_live_node(
         config,
         LiveNodeAssembly {
             run_directory: request.run_directory,
@@ -1083,6 +1105,8 @@ pub(crate) fn launch_atomic_exact_restore(
     config: &QemuLiveNodeStepGateConfig,
     request: AtomicExactRestoreAdmission<'_>,
     resume_restored: bool,
+    original_native_binding: crate::linux_attempt_host::OriginalNativeNodeBinding,
+    original_workspace: Option<crate::spawn::OriginalDeviceDigestWorkspace>,
 ) -> Result<
     (
         QemuNode,
@@ -1112,10 +1136,10 @@ pub(crate) fn launch_atomic_exact_restore(
             restore: Some(restore),
             resume_restored,
             exact_binding: Some(request.exact_binding),
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-            original_native_binding: None,
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-            original_workspace: None,
+            #[cfg(target_os = "linux")]
+            original_native_binding: Some(original_native_binding),
+            #[cfg(target_os = "linux")]
+            original_workspace,
         },
     )?;
     let target = request.ram_inputs.into_target();
@@ -1207,16 +1231,23 @@ struct LiveNodeAssembly<'a> {
     restore: Option<QemuNodeRestorePlan<'a>>,
     resume_restored: bool,
     exact_binding: Option<crate::spawn::QemuExactDeviceStateBinding>,
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     original_native_binding: Option<crate::linux_attempt_host::OriginalNativeNodeBinding>,
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     original_workspace: Option<crate::spawn::OriginalDeviceDigestWorkspace>,
 }
 
-fn build_live_node_with_authority(
-    config: &QemuLiveNodeStepGateConfig,
-    assembly: LiveNodeAssembly<'_>,
+fn build_live_node_with_authority<'a>(
+    config: &'a QemuLiveNodeStepGateConfig,
+    assembly: LiveNodeAssembly<'a>,
 ) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    prepare_paused_live_node(config, assembly)?.prime_and_build()
+}
+
+fn prepare_paused_live_node<'a>(
+    config: &'a QemuLiveNodeStepGateConfig,
+    assembly: LiveNodeAssembly<'a>,
+) -> Result<PausedLiveNodeLaunch<'a>, QemuLiveNodeStepGateError> {
     let LiveNodeAssembly {
         run_directory,
         process_contract,
@@ -1224,14 +1255,14 @@ fn build_live_node_with_authority(
         restore,
         resume_restored,
         exact_binding,
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        #[cfg(target_os = "linux")]
         original_native_binding,
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        #[cfg(target_os = "linux")]
         original_workspace,
     } = assembly;
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     let has_workspace = original_workspace.is_some();
-    #[cfg(not(all(target_os = "linux", feature = "private-measurement-domain")))]
+    #[cfg(not(target_os = "linux"))]
     let has_workspace = false;
     if config.fingerprint == QemuLaunchPluginSwitch::On && !has_workspace {
         return Err(QemuLiveNodeStepGateError::DeviceDigestWorkspaceUnavailable);
@@ -1241,6 +1272,18 @@ fn build_live_node_with_authority(
         .ram_control_registration
         .as_ref()
         .map(crate::launch_cleanup::LaunchCleanup::new);
+    #[cfg(target_os = "linux")]
+    if let Some(binding) = &original_native_binding {
+        let cleanup =
+            launch_cleanup
+                .as_ref()
+                .ok_or(QemuLiveNodeStepGateError::OriginalNativeAccount {
+                    source: crate::linux_attempt_host::OriginalActorAccountError::Unavailable,
+                })?;
+        binding
+            .retain_launch_cleanup(cleanup)
+            .map_err(|source| QemuLiveNodeStepGateError::OriginalNativeAccount { source })?;
+    }
     let operation_supervisor = match &config.host_operation_supervisor {
         Some(supervisor) => match &config.ram_control_registration {
             Some(registration) => supervisor
@@ -1280,11 +1323,13 @@ fn build_live_node_with_authority(
                 process_contract,
                 registration,
                 config.process_generation,
+                #[cfg(target_os = "linux")]
+                original_native_binding.as_ref(),
             )
         })
         .transpose()
         .map_err(QemuLiveNodeStepGateError::PluginStartup)?;
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     if let Some(workspace) = original_workspace {
         let startup = original_plugin_startup
             .as_mut()
@@ -1369,6 +1414,7 @@ fn build_live_node_with_authority(
     if let Some(startup) = &original_plugin_startup {
         plugin = plugin.with_original_startup(startup)?;
     }
+    plugin = source_supervision::publish(plugin, &operation_supervisor)?;
     if let Some(registration) = &config.ram_control_registration {
         use std::io::Read;
         let mut session = [0; 32];
@@ -1377,30 +1423,7 @@ fn build_live_node_with_authority(
             .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
                 reason: format!("create independent RAM controller session: {source}"),
             })?;
-        let (_, budgets) = operation_supervisor.budgets().map_err(|source| {
-            QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                reason: format!("observe admitted native setup budgets: {source}"),
-            }
-        })?;
-        let outer_cap = operation_supervisor.outer_cap_binding().map_err(|source| {
-            QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                reason: format!("observe admitted native outer deadline: {source}"),
-            }
-        })?;
-        let outer_cap = crate::ram_control::outer_cap_to_wire(outer_cap).map_err(|source| {
-            QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                reason: format!("encode admitted native outer deadline: {source}"),
-            }
-        })?;
         plugin = plugin
-            .with_ram_outer_cap(outer_cap)
-            .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                reason: format!("configure admitted native outer deadline: {source}"),
-            })?
-            .with_ram_initial_budgets(budgets)
-            .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                reason: format!("configure admitted native setup budgets: {source}"),
-            })?
             .with_fault_actor_test_entitlement(config.fault_actor_test_entitlement)
             .with_ram_resources(registration.resources)
             .with_ram_spill_quota(registration.spill_quota_bytes)
@@ -1487,25 +1510,41 @@ fn build_live_node_with_authority(
     }
 
     let region_config = RegionConfig::new(1, config.queue_capacity);
-    let allocation = RegionAllocation::new(region_config)
+    let layout = crucible_shmem::validate_layout_target()
+        .and_then(|()| RegionLayout::for_config(region_config))
         .map_err(|source| QemuLiveNodeStepGateError::RegionLayout { source })?;
-    if let Some(startup) = &original_plugin_startup {
-        startup.check()?;
-    }
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     if let Some(startup) = original_plugin_startup.as_mut() {
         startup.begin_workspace_handover()?;
     }
-    let spawned = spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+    let preexec = match (
+        original_plugin_startup.as_ref(),
+        original_native_binding.as_ref(),
+        config.ram_control_registration.as_ref(),
+    ) {
+        (Some(startup), Some(binding), Some(registration)) => {
+            Some(crate::spawn::preexec_setup::BorrowedPreexecSetup {
+                startup,
+                binding,
+                registration,
+                supervisor: &operation_supervisor,
+                region_config,
+            })
+        }
+        (None, None, None) => None,
+        _ => return Err(QemuLiveNodeStepGateError::DeviceDigestWorkspaceUnavailable),
+    };
+    let spawned = spawn_prepared_qemu_child_with_preexec(
         &command,
         run_directory,
-        allocation.layout().region_size,
+        layout.region_size,
         process_contract,
         config
             .ram_control_registration
             .as_ref()
             .map(|registration| &registration.host_services),
         launch_cleanup.clone(),
+        preexec,
     )
     .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
     let (mut child, mut resources) = spawned.into_parts();
@@ -1554,7 +1593,7 @@ fn build_live_node_with_authority(
     }
 
     let mut admitted_registration = config.ram_control_registration.clone();
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     match child.device_digest_workspace_setup_view() {
         Ok(Some(body)) => resources.retain_device_digest_workspace(body),
         Ok(None) => {}
@@ -1810,6 +1849,7 @@ fn build_live_node_with_authority(
                     topology: &inventory.topology,
                     native_metadata_bytes: inventory.report.native_metadata_bytes,
                     native_scratch_bytes: inventory.report.native_scratch_bytes,
+                    rust_metadata_required_bytes: inventory.report.rust_metadata_required_bytes,
                     owner_resources: inventory.report.owner_resources,
                 })
                 .map_err(|source| QemuLiveNodeStepGateError::RamAdmission {
@@ -1895,178 +1935,32 @@ fn build_live_node_with_authority(
             },
         ));
     }
-    launch_try!(
-        qmp.resume_guest_acknowledged()
-            .map_err(|source| QemuLiveNodeStepGateError::QmpStart { source })
-    );
-    let mut priming = launch_try!(complete_guest_prime(
-        &setup,
-        &operation_supervisor,
-        prepared_priming,
-        block_servicer.as_mut(),
-        ninep_servicer.as_mut(),
-        boot_backpressure_payload,
-    ));
-    // Ready precedes boot release and the final plugin worker registration.
-    // Actual guest priming follows plugin initialization return and worker
-    // readiness. The matched native consumer must use this exported basis.
-    launch_try!(
-        child
-            .complete_original_plugin_startup()
-            .map_err(QemuLiveNodeStepGateError::HostSupervision)
-    );
-
-    if !restoring_checkpoint
-        && let Some(capture) = config.boot_network_backpressure_capture.as_ref()
-        && capture.capture_icount > 1
-    {
-        let initial_network = launch_try!(priming.retained_network.take().ok_or_else(|| {
-            QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                reason: String::from(
-                    "boot backpressure continuation lost its icount-1 transport state",
-                ),
-            }
-        }));
-        priming = launch_try!(continue_boot_network_backpressure_capture(
-            &setup,
-            &operation_supervisor,
-            identity,
-            config.coverage,
-            BootNetworkBackpressureContinuation {
-                block: block_servicer.as_mut(),
-                ninep: ninep_servicer.as_mut(),
-                payload: capture.payload.as_slice(),
-                capture_icount: capture.capture_icount,
-                initial_network,
-                emitted_frames: priming.emitted_frames,
-                observable_events: priming.observable_events,
-            },
-        ));
-    }
-    runtime = launch_try!(finish_guest_prime_runtime(
+    Ok(PausedLiveNodeLaunch {
+        child,
+        setup,
+        qmp,
         runtime,
         block_servicer,
         ninep_servicer,
         accelerator_servicer,
-        config.shmem_block.as_ref().map(|block| block.latency),
-        config.completion_timeout,
-    ));
-    let qmp = if config.whitebox == QemuLaunchPluginSwitch::On {
-        let activation_stream = launch_try!(debug_guest_activation_stream.ok_or_else(|| {
-            QemuLiveNodeStepGateError::prime(
-                "configure debug guest activation stream",
-                QemuNodeChannelError::new(
-                    "configure debug guest activation stream",
-                    "white-box launch omitted its activation stream",
-                ),
-            )
-        }));
-        qmp.with_predeclared_debug_guest_endpoint()
-            .with_debug_guest_activation_stream(activation_stream)
-    } else {
-        qmp
-    };
-
-    let shmem_config = QemuQuantumShmemConfig::new(node_id(identity.node), GATE_SLOT)
-        .with_router(node_id(identity.router), SLOT_NET_ROUTER as u32)
-        .with_coverage(basic_block_coverage_config(config.coverage));
-    let factory_runtime = QemuNodeFactoryRuntime::new(
-        shmem_config,
-        GateSendAuthorizer,
-        gate_shutdown_policy(),
-        gate_async_policy(
-            config.completion_timeout,
-            config.unbounded_advance_completion,
-        ),
-        QemuCrashDetector::new(identity.crash_detector),
-        runtime,
-    );
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    let factory_runtime = match original_native_binding {
-        Some(binding) => factory_runtime.with_original_binding(binding),
-        None => factory_runtime,
-    };
-    let mut node = match restore {
-        Some(restore) if resume_restored => {
-            build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, factory_runtime)
-        }
-        Some(restore) => build_qemu_node_from_restored_checkpoint_paused(
-            child,
-            setup,
-            qmp,
-            restore,
-            factory_runtime,
-        ),
-        None => build_qemu_node_from_completed_setup(child, setup, qmp, factory_runtime),
-    }
-    .map_err(|source| QemuLiveNodeStepGateError::NodeFactory { source })?;
-
-    macro_rules! node_try {
-        ($result:expr) => {
-            match $result {
-                Ok(value) => value,
-                Err(primary) => return Err(reap_failed_live_node(node, primary)),
-            }
-        };
-    }
-
-    if let Some(gdbstub) = &config.gdbstub {
-        node = node.with_gdbstub(gdbstub.clone());
-    }
-    if let Some(console_spool) = console_spool {
-        node = node.with_console_observation(node_id(identity.node), console_spool);
-    }
-    if !restoring_checkpoint {
-        node_try!(
-            node.retain_priming_network_outputs(priming.emitted_frames)
-                .map_err(|source| {
-                    QemuLiveNodeStepGateError::node_op("retain priming network outputs", source)
-                })
-        );
-    }
-    #[cfg(target_os = "linux")]
-    node.install_checkpoint_cancellation(checkpoint_cancellation);
-    if let Some(network) = &priming.retained_network {
-        node_try!(
-            node.restore_network_transport_for_gate(network)
-                .map_err(|source| {
-                    QemuLiveNodeStepGateError::node_op(
-                        "bind retained priming network continuation",
-                        source,
-                    )
-                })
-        );
-    }
-    let ready_boundary = node_try!(node.synchronize_observed_time().map_err(|source| {
-        QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)
-    }));
-    if !restoring_checkpoint {
-        node = node.with_priming_observable_events(priming.observable_events, ready_boundary);
-    }
-    if let Some(registration) = &admitted_registration {
-        node_try!(
-            registration
-                .registrar
-                .register(
-                    registration.target,
-                    registration.initial_policy,
-                    registration.resources,
-                    operation_supervisor.clone(),
-                    ram_controller.take(),
-                )
-                .map_err(|source| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                    reason: format!("register ready RAM owner: {source}"),
-                })
-        );
-        if let Some(cleanup) = &launch_cleanup {
-            node_try!(cleanup.published().map_err(|source| {
-                QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                    reason: format!("publish RAM cleanup responsibility: {source}"),
-                }
-            }));
-        }
-    }
-    Ok(node)
+        prepared_priming,
+        debug_guest_activation_stream,
+        console_spool,
+        ram_controller,
+        admitted_registration,
+        operation_supervisor,
+        #[cfg(target_os = "linux")]
+        original_native_binding,
+        #[cfg(target_os = "linux")]
+        checkpoint_cancellation,
+        config,
+        identity,
+        restore,
+        resume_restored,
+        restoring_checkpoint,
+        boot_backpressure_payload,
+        launch_cleanup,
+    })
 }
 
 #[cfg(target_os = "linux")]

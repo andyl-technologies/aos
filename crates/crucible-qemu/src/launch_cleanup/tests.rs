@@ -1,7 +1,7 @@
 //! Real descriptor, process-reap, and source-worker custody regressions.
 
 use super::*;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -286,6 +286,8 @@ fn failed_setup_reap_does_not_release_while_real_descriptor_borrower_remains() {
         .region_size;
     let (mut resources, setup_peer) = crate::spawn::create_test_spawn_resource_pair(length + 4096)
         .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
+    crate::spawn::prepare_test_preexec_setup(&mut resources, config)
+        .unwrap_or_else(|error| panic!("cleanup fixture setup prequeue failed: {error}"));
     resources.retain_launch_cleanup(cleanup.clone());
     registrar
         .descriptors
@@ -693,4 +695,67 @@ fn detached_blocked_source_keeps_capacity_then_quarantines_without_a_join_proof(
 
     assert_eq!(registrar.retired.load(Ordering::Acquire), 0);
     assert_eq!(registrar.quarantined.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn uncertain_final_cleanup_retains_actual_unhanded_target_workspace_descriptor()
+-> Result<(), Box<dyn std::error::Error>> {
+    for cause in [
+        "unreaped",
+        "import",
+        "join",
+        "registrar",
+        "authority-poison",
+        "workspace-poison",
+        "proven",
+    ] {
+        let (registration, _) = registration(cause == "registrar", None);
+        let cleanup = LaunchCleanup::new(&registration);
+        let (socket, mut peer) = UnixStream::pair()?;
+        peer.set_nonblocking(true)?;
+        // This component body cannot issue Source/Target or native credit. Its
+        // real socket makes the generic unhanded destructor's close observable.
+        *cleanup.inner.target_workspace.lock().unwrap() = Some(
+            crate::spawn::OriginalDeviceDigestWorkspace::descriptor_ownership_mechanism(
+                socket.into(),
+            ),
+        );
+        if cause == "unreaped" {
+            cleanup.child_started();
+        }
+        let import = (cause == "import").then(|| cleanup.descriptor_import().unwrap());
+        let join = (cause == "join").then(|| cleanup.source_join().unwrap());
+        if cause == "authority-poison" {
+            let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _held = cleanup.inner.authority.lock().unwrap();
+                panic!("poison actual cleanup authority mechanism");
+            }));
+            assert!(poisoned.is_err());
+        }
+        if cause == "workspace-poison" {
+            let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _held = cleanup.inner.target_workspace.lock().unwrap();
+                panic!("poison actual workspace keeper mechanism");
+            }));
+            assert!(poisoned.is_err());
+        }
+
+        drop(cleanup);
+        // Dropping tickets without reporting physical closure leaves their
+        // actual outstanding counters set before the final record destructor.
+        drop(import);
+        drop(join);
+
+        let mut byte = [0_u8; 1];
+        let observed = peer.read(&mut byte);
+        if cause == "proven" {
+            assert_eq!(observed?, 0, "proven unique body must physically close");
+        } else {
+            assert!(
+                matches!(observed, Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "uncertain {cause} must retain the same actual body descriptor"
+            );
+        }
+    }
+    Ok(())
 }

@@ -48,6 +48,8 @@ pub use failure_cause::{
 mod inventory;
 mod metadata;
 pub use metadata::AdmittedRamRootMetadata;
+mod restore;
+pub use restore::RamPageVisitor;
 mod retention;
 pub use retention::{FencedRamRetention, RamRetentionAuthority};
 mod object_source;
@@ -304,6 +306,8 @@ impl RamStore {
 
 struct Work<'a> {
     pending: Option<PendingBatch>,
+    canonical_session: Option<crate::content_store::PackedCanonicalSession>,
+    canonical_session_enabled: bool,
     limits: RamStoreLimits,
     visits: u64,
     io_bytes: u64,
@@ -322,6 +326,10 @@ struct PendingPublication {
 // this entire old batch before admitting a replacement array.
 struct PendingBatch {
     objects: Vec<PendingPublication>,
+    sorted_positions: [u16; codec::MAX_PUBLICATION_BATCH_OBJECTS],
+    #[cfg(test)]
+    identity_comparisons: std::cell::Cell<u64>,
+    encoded_bytes: u64,
     _credit: crate::owned_decode::DecodeScratch,
 }
 
@@ -333,9 +341,100 @@ impl std::ops::Deref for PendingBatch {
     }
 }
 
-impl std::ops::DerefMut for PendingBatch {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.objects
+enum PendingLookup<'a> {
+    Occupied(&'a PendingPublication),
+    Vacant(usize),
+}
+
+impl PendingBatch {
+    fn object_at(&self, position: usize) -> Result<Option<&PendingPublication>, RamStoreError> {
+        if position >= self.objects.len() {
+            return Ok(None);
+        }
+        let slot = self
+            .sorted_positions
+            .get(position)
+            .copied()
+            .ok_or(RamStoreError::Invalid("RAM publication index position"))?;
+        self.objects
+            .get(usize::from(slot))
+            .map(Some)
+            .ok_or(RamStoreError::Invalid("RAM publication index slot"))
+    }
+
+    fn compare_id(&self, left: &ContentId, right: &ContentId) -> std::cmp::Ordering {
+        #[cfg(test)]
+        self.identity_comparisons
+            .set(self.identity_comparisons.get() + 1);
+        left.cmp(right)
+    }
+
+    fn lookup(&self, id: ContentId) -> Result<PendingLookup<'_>, RamStoreError> {
+        // Shared/zero pages commonly repeat the first input. Preserve that
+        // constant-time path without moving objects out of publication order.
+        if let Some(first) = self.objects.first() {
+            #[cfg(test)]
+            self.identity_comparisons
+                .set(self.identity_comparisons.get() + 1);
+            if first.id == id {
+                return Ok(PendingLookup::Occupied(first));
+            }
+        }
+        let mut lower = 0;
+        let mut upper = self.objects.len();
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2;
+            let candidate = self
+                .object_at(middle)?
+                .ok_or(RamStoreError::Invalid("RAM publication index entry"))?;
+            if self.compare_id(&candidate.id, &id).is_lt() {
+                lower = middle + 1;
+            } else {
+                upper = middle;
+            }
+        }
+        if let Some(candidate) = self.object_at(lower)?
+            && self.compare_id(&candidate.id, &id).is_eq()
+        {
+            return Ok(PendingLookup::Occupied(candidate));
+        }
+        Ok(PendingLookup::Vacant(lower))
+    }
+
+    fn push_at(
+        &mut self,
+        position: usize,
+        object: PendingPublication,
+    ) -> Result<(), RamStoreError> {
+        let length = self.objects.len();
+        if length >= self.objects.capacity() || length >= self.sorted_positions.len() {
+            return Err(RamStoreError::Limit("RAM publication batch capacity"));
+        }
+        if position > length
+            || (position != 0
+                && self
+                    .object_at(position - 1)?
+                    .is_some_and(|prior| !self.compare_id(&prior.id, &object.id).is_lt()))
+            || self
+                .object_at(position)?
+                .is_some_and(|next| !self.compare_id(&next.id, &object.id).is_gt())
+        {
+            return Err(RamStoreError::Invalid("RAM publication insertion position"));
+        }
+        let slot = u16::try_from(length)
+            .map_err(|_| RamStoreError::Limit("RAM publication index slot"))?;
+        let positions = self
+            .sorted_positions
+            .get_mut(position..=length)
+            .ok_or(RamStoreError::Invalid("RAM publication insertion range"))?;
+        // The checked inclusive range always contains at least one slot.
+        // Shift only compact positions; the actual sources keep their order.
+        positions.copy_within(..positions.len() - 1, 1);
+        positions[0] = slot;
+        // Capacity and all fallible index validation precede either mutation.
+        // This push cannot allocate; the paid original array retains its order.
+        self.objects.push(object);
+        Ok(())
     }
 }
 
@@ -357,6 +456,8 @@ impl<'a> Work<'a> {
         let account = store_boundary::WorkAccount::new(original)?;
         Ok(Self {
             pending: None,
+            canonical_session: None,
+            canonical_session_enabled: false,
             limits,
             visits: 0,
             io_bytes: 0,
@@ -376,6 +477,8 @@ impl<'a> Work<'a> {
     ) -> Self {
         Self {
             pending: None,
+            canonical_session: None,
+            canonical_session_enabled: false,
             limits,
             visits,
             io_bytes,

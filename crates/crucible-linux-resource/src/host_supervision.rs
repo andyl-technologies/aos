@@ -392,6 +392,7 @@ struct OuterAuthority {
     root_wakeup: Arc<Condvar>,
     revision: u64,
     allowance: Option<Duration>,
+    authenticated_service_span: Option<Duration>,
     state: HostOperationState,
     next_owner: u64,
     rosters: BTreeMap<u64, (HostOperationBudgets, Option<Weak<Shared>>)>,
@@ -438,9 +439,29 @@ impl HostOperationSupervisor {
         let changed = Arc::new(Condvar::new());
         // Sampling before the Instant origin cannot extend the native cap.
         let original_monotonic_ns = kernel_monotonic_ns()?;
+        Self::publish(
+            budgets,
+            outer,
+            host_now(),
+            original_monotonic_ns,
+            cap_id,
+            changed,
+            None,
+        )
+    }
+
+    fn publish(
+        budgets: HostOperationBudgets,
+        outer: Option<Duration>,
+        started: Instant,
+        original_monotonic_ns: u64,
+        cap_id: [u8; 32],
+        changed: Arc<Condvar>,
+        authenticated_service_span: Option<Duration>,
+    ) -> Result<Self, HostSupervisionError> {
         let supervisor = Self {
             shared: Arc::new(Shared {
-                started: host_now(),
+                started,
                 #[cfg(feature = "private-measurement-domain")]
                 measurement_clock: None,
                 original_monotonic_ns,
@@ -463,6 +484,7 @@ impl HostOperationSupervisor {
                     root_wakeup: changed,
                     revision: 0,
                     allowance: outer,
+                    authenticated_service_span,
                     state: HostOperationState::Running,
                     next_owner: 0,
                     rosters: BTreeMap::from([(0, (budgets, None))]),
@@ -478,6 +500,50 @@ impl HostOperationSupervisor {
             .get_mut(&0)
             .ok_or(HostSupervisionError::Unavailable)?
             .1 = Some(Arc::downgrade(&supervisor.shared));
+        Ok(supervisor)
+    }
+
+    // Only the real authenticated service birth supplies these coordinates.
+    pub(crate) fn from_service_interval(
+        budgets: HostOperationBudgets,
+        start_us: u64,
+        end_us: u64,
+    ) -> Result<Self, HostSupervisionError> {
+        let sampled = host_now();
+        let now_ns = kernel_monotonic_ns()?;
+        let start_ns = start_us
+            .checked_mul(1000)
+            .ok_or(HostSupervisionError::InvalidBudget)?;
+        let end_ns = end_us
+            .checked_mul(1000)
+            .ok_or(HostSupervisionError::InvalidBudget)?;
+        if start_ns == 0 || start_ns > now_ns || end_ns <= now_ns {
+            return Err(HostSupervisionError::InvalidBudget);
+        }
+        // Instant is sampled first: conversion may shorten, never renew, the
+        // authenticated main interval. The temporary owner is not published.
+        let started = sampled
+            .checked_sub(Duration::from_nanos(now_ns - start_ns))
+            .ok_or(HostSupervisionError::InvalidBudget)?;
+        let span = Duration::from_nanos(end_ns - start_ns);
+        budgets.validate(true)?;
+        let ordinal = NEXT_CAP_ID
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |ordinal| {
+                ordinal.checked_add(1)
+            })
+            .map_err(|_| HostSupervisionError::IdentityExhausted)?;
+        let mut cap_id = [0; 32];
+        cap_id[24..].copy_from_slice(&ordinal.to_be_bytes());
+        let supervisor = Self::publish(
+            budgets,
+            Some(span),
+            started,
+            start_ns,
+            cap_id,
+            Arc::new(Condvar::new()),
+            Some(span),
+        )?;
+        supervisor.verify_original_live()?;
         Ok(supervisor)
     }
 
@@ -905,6 +971,12 @@ impl HostOperationSupervisor {
         if allowance.is_some_and(|duration| {
             duration.is_zero() || host_now().checked_add(duration).is_none()
         }) {
+            return Err(HostSupervisionError::InvalidBudget);
+        }
+        if outer
+            .authenticated_service_span
+            .is_some_and(|span| allowance.is_none_or(|duration| duration > span))
+        {
             return Err(HostSupervisionError::InvalidBudget);
         }
         #[cfg(feature = "private-measurement-domain")]
@@ -1378,7 +1450,6 @@ impl HostOperationGuard {
     /// # Errors
     /// Refuses a non-preparation origin, unavailable original synchronization,
     /// exhausted control capacity, or an invalid original cleanup policy.
-    #[cfg(feature = "private-measurement-domain")]
     pub fn begin_original_cleanup_control(&self) -> Result<Self, HostSupervisionError> {
         let mut state = self.supervisor.lock()?;
         let origin = self
@@ -1409,6 +1480,52 @@ impl HostOperationGuard {
         #[cfg(feature = "private-measurement-domain")]
         self.check_original_preparation()?;
         self.supervisor.operation_status(self.id)
+    }
+
+    /// Verifies live original authority for the expected fixed operation class.
+    ///
+    /// This allocation-free check uses the same decision lock as effect
+    /// boundaries. It validates an existing operation; it issues no resource
+    /// account, replacement deadline or class-changing authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original expiration or cancellation before a class refusal.
+    /// Returns [`HostSupervisionError::InvalidBudget`] for a different class,
+    /// and an ownership error if the existing operation cannot be evaluated.
+    pub fn verify_operation_class(
+        &self,
+        expected: HostOperationClass,
+    ) -> Result<(), HostSupervisionError> {
+        #[cfg(feature = "private-measurement-domain")]
+        self.check_original_preparation()?;
+        let mut state = self.supervisor.lock()?;
+        let decision = self.supervisor.evaluate_decision(&mut state, self.id)?;
+        decision.require_running(self.id)?;
+        if decision.class != expected {
+            return Err(HostSupervisionError::InvalidBudget);
+        }
+        Ok(())
+    }
+
+    // A completed admission phase remains a retained owner, not a renewable
+    // work guard. Running phases still evaluate their original class deadline;
+    // cancellation, expiry and uncertain states remain typed first causes.
+    pub(crate) fn verify_retained_phase(&self) -> Result<(), HostSupervisionError> {
+        #[cfg(feature = "private-measurement-domain")]
+        self.check_original_preparation()?;
+        self.supervisor.verify_original_live()?;
+        let mut state = self.supervisor.lock()?;
+        let decision = self.supervisor.evaluate_decision(&mut state, self.id)?;
+        if state.cap_state != HostOperationState::Running {
+            return Err(HostSupervisionError::Terminal {
+                state: state.cap_state,
+            });
+        }
+        if decision.state == HostOperationState::Completed {
+            return Ok(());
+        }
+        decision.require_running(self.id)
     }
 
     /// Returns a responsive wait slice capped by every current applicable budget.

@@ -47,6 +47,7 @@ fn fixture() -> NativeApis {
     CLOSED_TOKEN.store(0, Ordering::Relaxed);
     CLOSED_GENERATION.store(0, Ordering::Relaxed);
     NativeApis {
+        observation_only: super::tests::observation_only,
         begin,
         finish,
         ..super::tests::apis()

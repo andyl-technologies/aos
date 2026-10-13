@@ -5,7 +5,7 @@
 //! attempt identity, so restart recovery does not materialize daemon history in
 //! memory. Every file is bounded, checksummed, strictly decoded, and published
 //! through an fsynced staging file followed by an atomic link or rename.
-//! Startup accepts only a bounded inventory of exact v15 attempt records; stale
+//! Startup accepts only a bounded inventory of exact v16 attempt records; stale
 //! staging names and every noncurrent record shape fail closed.
 //! Retention administration is a separate mutable capability whose fence binds
 //! one combined operational-root scan to a persistent generation.
@@ -18,6 +18,7 @@
 //!   retention-state-v1
 //!   assignments/<two-hex>/<assignment-id-hex>
 //!   attempts/<two-hex>/<attempt-key-hash>
+//!   receiving/<two-hex>/<operation-and-offer-digest>
 //! ```
 
 use std::collections::BTreeMap;
@@ -37,15 +38,22 @@ use crucible_campaign::{
 
 use crate::owned_advisory_lock::OwnedAdvisoryLock;
 
+mod receiving_transfer;
 mod record_codec;
+pub(crate) use receiving_transfer::{
+    ReceivingTransferCas, ReceivingTransferPhase, ReceivingTransferRecord,
+};
+mod source_transfer;
 mod startup_inventory;
 
 use record_codec::*;
+use source_transfer::preserves_source_transfer;
+pub use source_transfer::{SourceTransferIntent, SourceTransferPhase, SourceTransferState};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v15\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v16\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v15";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v16";
 const RETENTION_STATE_MAGIC: &[u8] = b"crucible.executor.assignment-retention-state.v1\0";
 const RETENTION_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-retention-state.v1";
 const RETENTION_GENERATION_DOMAIN: &str = "crucible.executor.assignment-retention-generation.v1";
@@ -453,6 +461,8 @@ pub enum AttemptRuntimeState {
         checkpoint: ExactCheckpointId,
         /// Resource/retention basis needed for automatic promotion recovery.
         promotion_basis: Option<CheckpointPromotionExecutionBasis>,
+        /// Durable maintenance fence; no ordinary transition may erase it.
+        source_transfer: Option<SourceTransferState>,
     },
     /// One paused raw root has durably reserved its replay-validated replacement.
     CheckpointPromoting {
@@ -760,6 +770,19 @@ impl AttemptRuntimeState {
 
     fn validates_for_key(self, key: AttemptExecutionKey) -> bool {
         let scoped_capture = matches!(key.scope(), AttemptExecutionScope::SavepointCapture { .. });
+        if let Some(transfer) = self.source_transfer()
+            && (!transfer.valid()
+                || key.scope() != AttemptExecutionScope::Semantic
+                || !matches!(
+                    self,
+                    Self::Paused {
+                        promotion_basis: None,
+                        ..
+                    }
+                ))
+        {
+            return false;
+        }
         if scoped_capture
             && (self.origin() != AttemptExecutionOrigin::Initial
                 || matches!(
@@ -1233,7 +1256,7 @@ impl AssignmentLedger for MemoryAssignmentLedger {
         if next.is_some_and(|state| !state.validates_for_key(key)) {
             return Ok(AttemptStateCas::Conflict { current });
         }
-        if current != expected {
+        if current != expected || !preserves_source_transfer(current, next) {
             return Ok(AttemptStateCas::Conflict { current });
         }
         self.retention_generation = AssignmentRetentionGeneration::from_bytes(
@@ -1438,16 +1461,26 @@ impl DirectoryAssignmentLedger {
         let writer_lock = OwnedAdvisoryLock::try_exclusive_bound(lock_file)
             .map_err(|source| anchored_ledger_error(source, "lock-writer"))?;
         let validation = (|| {
+            let mut attempt_records = 0_usize;
             let complete = startup_inventory::visit_attempt_states(
                 &authority,
                 &root,
                 MAX_RUNTIME_ATTEMPT_RECORDS,
-                &mut |_key, _state| {},
+                &mut |_key, _state| {
+                    attempt_records += 1;
+                },
                 boundary,
             )?;
             if !complete {
                 return Err(corrupt("runtime-attempt-inventory-limit"));
             }
+            receiving_transfer::visit_records(
+                &authority,
+                &root,
+                MAX_RUNTIME_ATTEMPT_RECORDS.saturating_sub(attempt_records),
+                &mut |_| {},
+                boundary,
+            )?;
             boundary()?;
             authority
                 .sync()
@@ -1681,7 +1714,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
             return Err(corrupt("attempt-state-does-not-match-execution-scope"));
         }
         let current = self.load_attempt(key)?;
-        if current != expected {
+        if current != expected || !preserves_source_transfer(current, next) {
             return Ok(AttemptStateCas::Conflict { current });
         }
         self.advance_retention_state()?;
@@ -1718,11 +1751,22 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         &self,
         visitor: &mut dyn FnMut(ExactCheckpointId),
     ) -> Result<(), Self::Error> {
+        let mut attempt_records = 0;
         self.visit_attempt_records(&mut |_key, state| {
+            attempt_records += 1;
             for checkpoint in state.retained_checkpoint_roots().into_iter().flatten() {
                 visitor(checkpoint);
             }
-        })
+        })?;
+        self.visit_receiving_records(
+            MAX_RUNTIME_ATTEMPT_RECORDS.saturating_sub(attempt_records),
+            &mut |record| {
+                if let Some(checkpoint) = record.binding().1.checkpoint() {
+                    visitor(checkpoint);
+                }
+            },
+            &mut || Ok(()),
+        )
     }
 }
 
@@ -1754,14 +1798,39 @@ impl AssignmentRetentionFence for DirectoryAssignmentRetentionFence<'_> {
         let mut summary =
             AssignmentRetentionSummary::new(self.ledger.retention_state.digest(), 0, 0, 0, 0);
         let mut visitor_error = None;
+        let mut attempt_records = 0;
         self.ledger
             .visit_attempt_states(&mut |_key, state| {
+                attempt_records += 1;
                 if visitor_error.is_none()
                     && let Err(source) = summary.visit(state, visitor)
                 {
                     visitor_error = Some(source);
                 }
             })
+            .map_err(AssignmentRetentionInventoryError::Backend)?;
+        self.ledger
+            .visit_receiving_records(
+                MAX_RUNTIME_ATTEMPT_RECORDS.saturating_sub(attempt_records),
+                &mut |record| {
+                    if visitor_error.is_none() {
+                        let result = (|| {
+                            let checkpoint = record
+                                .binding()
+                                .1
+                                .checkpoint()
+                                .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
+                            summary.checkpoint_roots = summary
+                                .checkpoint_roots
+                                .checked_add(1)
+                                .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
+                            visitor(AssignmentRetentionRoot::ExactCheckpoint(checkpoint))
+                        })();
+                        visitor_error = result.err();
+                    }
+                },
+                &mut || Ok(()),
+            )
             .map_err(AssignmentRetentionInventoryError::Backend)?;
         if let Some(source) = visitor_error {
             return Err(AssignmentRetentionInventoryError::Visitor(source));

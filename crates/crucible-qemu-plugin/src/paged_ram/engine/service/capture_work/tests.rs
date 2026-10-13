@@ -193,3 +193,79 @@ fn resolver_uncertainty_never_refunds_a_live_request() {
     assert_eq!(operations.counts.dropped.load(Ordering::SeqCst), 0);
     assert_eq!(budget.used_bytes(), extent);
 }
+
+#[test]
+fn pause_request_does_not_acknowledge_a_claimed_request() {
+    let (_, owner, operations) = fixture();
+    let mut work = owner.try_lock().unwrap();
+    work.claim(event(0x7000), &operations).unwrap();
+    // Admission remains responsive while the actual request/body lock is held.
+    owner.request_pause(7).unwrap();
+    assert!(!owner.pause_acknowledged(7));
+    assert!(owner.acknowledge_pause_at_boundary(&work).is_err());
+    work.settled().unwrap();
+    assert!(owner.acknowledge_pause_at_boundary(&work).unwrap());
+    assert!(owner.pause_acknowledged(7));
+    owner.release_pause(7).unwrap();
+}
+
+#[test]
+fn undisposed_pause_retains_an_empty_body_and_same_credit() {
+    let (budget, owner, _) = fixture();
+    let extent = budget.used_bytes();
+    owner.request_pause(8).unwrap();
+    {
+        let work = owner.try_lock().unwrap();
+        assert!(owner.acknowledge_pause_at_boundary(&work).unwrap());
+    }
+    drop(owner);
+    assert_eq!(budget.used_bytes(), extent);
+}
+
+#[test]
+fn matching_disposition_frees_empty_body_before_credit_refund() {
+    let (budget, owner, _) = fixture();
+    owner.request_pause(9).unwrap();
+    {
+        let work = owner.try_lock().unwrap();
+        assert!(owner.acknowledge_pause_at_boundary(&work).unwrap());
+    }
+    assert!(owner.release_pause(8).is_err());
+    assert!(owner.pause_acknowledged(9));
+    owner.release_pause(9).unwrap();
+    drop(owner);
+    assert_eq!(budget.used_bytes(), 0);
+}
+
+#[test]
+fn concurrent_pause_waits_for_the_claimed_operation_boundary() {
+    let (budget, owner, operations) = fixture();
+    let owner = Arc::new(owner);
+    let worker_owner = owner.clone();
+    let (claimed_tx, claimed_rx) = std::sync::mpsc::sync_channel(0);
+    let (finish_tx, finish_rx) = std::sync::mpsc::sync_channel(0);
+    let worker = std::thread::spawn(move || {
+        let mut work = worker_owner.try_lock().unwrap();
+        work.claim(event(0x8000), &operations).unwrap();
+        work.request().unwrap().2[11] = 43;
+        claimed_tx.send(()).unwrap();
+        finish_rx.recv().unwrap();
+        assert!(!worker_owner.pause_acknowledged(10));
+        assert_eq!(work.scratch[11], 43);
+        work.settled().unwrap();
+        assert!(worker_owner.acknowledge_pause_at_boundary(&work).unwrap());
+    });
+    claimed_rx.recv().unwrap();
+
+    owner.request_pause(10).unwrap();
+    assert!(!owner.pause_acknowledged(10));
+    assert!(owner.try_lock().is_err());
+    assert!(owner.release_pause(10).is_err());
+    finish_tx.send(()).unwrap();
+    worker.join().unwrap();
+
+    assert!(owner.pause_acknowledged(10));
+    owner.release_pause(10).unwrap();
+    drop(owner);
+    assert_eq!(budget.used_bytes(), 0);
+}

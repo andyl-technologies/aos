@@ -171,6 +171,10 @@ impl NamespacedStore {
 }
 
 impl ImmutableBlobBackend for NamespacedStore {
+    fn prefers_wide_publication_groups(&self) -> bool {
+        self.child.prefers_wide_publication_groups()
+    }
+
     fn checked_publication_metadata(
         &self,
         kind: ObjectKind,

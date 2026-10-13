@@ -18,6 +18,7 @@ use super::*;
 #[derive(Debug, Default)]
 struct HostCounters {
     begins: AtomicUsize,
+    fork_targets_owned: AtomicUsize,
     checks: AtomicUsize,
     signals: AtomicUsize,
     finishes: AtomicUsize,
@@ -170,6 +171,11 @@ struct FakeHostOwner {
 }
 
 impl QemuAttemptHostResourceOwner for FakeHostOwner {
+    #[cfg(target_os = "linux")]
+    fn fork_target_is_owned(&self) -> bool {
+        self.counters.fork_targets_owned.load(Ordering::Acquire) != 0
+    }
+
     type CancellationSignal = FakeCancellationSignal;
 
     #[cfg(feature = "private-measurement-domain")]
@@ -1046,4 +1052,59 @@ fn process_stage_contract_borrows_same_owner_and_refuses_later_cancellation() {
     ));
     assert!(!called);
     owner.finish().expect("finish cancelled generation owner");
+}
+
+#[test]
+fn genuine_effective_linux_basis_preserves_original_nonresident_obligations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let admitted = AttemptResourceLimits::new(1, 512 << 20, 1 << 30, 50000)?;
+    let effective = super::effective_linux_limits(admitted, (1, 256 << 20, 1 << 30))?;
+    assert_eq!(effective.maximum_resident_bytes(), 256 << 20);
+    assert_eq!(
+        effective.maximum_execution_quanta(),
+        admitted.maximum_execution_quanta()
+    );
+    assert_eq!(effective.maximum_vcpus(), admitted.maximum_vcpus());
+    assert_eq!(
+        effective.maximum_disk_bytes(),
+        admitted.maximum_disk_bytes()
+    );
+
+    for invalid in [
+        (1, 0, 1 << 30),
+        (1, (512 << 20) + 1, 1 << 30),
+        (2, 256 << 20, 1 << 30),
+        (1, 256 << 20, (1 << 30) - 1),
+    ] {
+        assert!(super::effective_linux_limits(admitted, invalid).is_err());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn erased_launcher_observes_the_actual_generic_guard_target_loan() {
+    let resources = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let guard = factory
+        .begin(resources, ExecutionCancellation::default(), None)
+        .expect("actual generic guard fixture");
+    let owner =
+        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("actual generic guard fixture");
+    let mut launcher: Box<dyn ProductionVmNodeLauncher> =
+        Box::new(crate::QemuAttemptProductionVmNodeLauncher::new(owner));
+
+    counters.fork_targets_owned.store(1, Ordering::Release);
+
+    assert!(launcher.fork_target_is_owned());
+    assert!(launcher.lend_fork_target_permit().is_err());
+    assert_eq!(counters.begins.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+
+    counters.fork_targets_owned.store(0, Ordering::Release);
+    assert!(!launcher.fork_target_is_owned());
+    launcher.finish().expect("actual generic guard fixture");
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
 }

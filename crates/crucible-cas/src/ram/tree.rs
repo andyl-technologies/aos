@@ -350,22 +350,7 @@ impl RamStore {
         original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RamVerificationReport, RamStoreError> {
-        self.admit_topology(root.record.topology())?;
-        self.validate_root_catalogs(&root.record, &root.regions)?;
-        let mut report = RamVerificationReport::default();
-        let mut work = Work::new(self.limits, original, boundary)?;
-        for (region, reference) in root
-            .record
-            .topology()
-            .regions()
-            .iter()
-            .filter(|region| root.record.scope().includes(region.class()))
-            .zip(root.regions.iter())
-        {
-            self.verify_region(region, *reference, 0, &mut report, &mut work)?;
-        }
-        report.object_visits = work.visits;
-        Ok(report)
+        self.visit_pages(root, original, boundary, &mut |_, _, _| Ok(()))
     }
 
     /// Checks destination index headroom for a complete immutable RAM image.
@@ -544,44 +529,6 @@ impl RamStore {
                     reference.height,
                     reference.pages,
                     retention,
-                    work,
-                )
-            }
-        }
-    }
-
-    fn verify_region(
-        &self,
-        region: &RegionDescriptor,
-        reference: TreeRef,
-        first: u64,
-        report: &mut RamVerificationReport,
-        work: &mut Work<'_>,
-    ) -> Result<(), RamStoreError> {
-        match self.read_tree(reference, work)? {
-            TreeNode::Padding => Ok(()),
-            TreeNode::Leaf { page, digest } => {
-                let bytes = self.read_page_object(page, digest, work)?;
-                if bytes.len() != valid_length(region, first)? {
-                    return Err(RamStoreError::Invalid("verified page valid length"));
-                }
-                report.pages = report
-                    .pages
-                    .checked_add(1)
-                    .ok_or(RamStoreError::Limit("verified pages"))?;
-                report.logical_bytes = report
-                    .logical_bytes
-                    .checked_add(bytes.len() as u64)
-                    .ok_or(RamStoreError::Limit("verified bytes"))?;
-                Ok(())
-            }
-            TreeNode::Branch { left, right } => {
-                self.verify_region(region, left, first, report, work)?;
-                self.verify_region(
-                    region,
-                    right,
-                    first + (1_u64 << (reference.height - 1)),
-                    report,
                     work,
                 )
             }

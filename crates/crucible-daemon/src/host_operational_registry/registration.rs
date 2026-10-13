@@ -191,6 +191,7 @@ impl HostOperationalRegistry {
             effective_floor_bytes: capabilities.compulsory_resident_bytes,
             limitation_reasons: Vec::new(),
             measurements_available: false,
+            resident_observation: None,
             activity: None,
             private_resident_bytes: 0,
             shared_resident_bytes_observed: 0,

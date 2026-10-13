@@ -122,6 +122,61 @@ pub trait QemuAttemptResourceGuard: QemuAttemptOperationalBoundary {
 /// the same pinned physical reservation; neither capability releases cgroup,
 /// quota, watcher or quarantine ownership. Retirement closes their authority.
 pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
+    /// Retains the actual target purpose in its existing RAM cleanup custody.
+    ///
+    /// # Errors
+    /// Refuses missing target ownership, a foreign contract or keeper admission.
+    #[cfg(target_os = "linux")]
+    fn bind_fork_target_ram_custody(
+        &mut self,
+        _contract: &QemuChildProcessContract,
+        _registration: &crucible_qemu::ram_control::RamControlRegistration,
+        _supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        _guest_ram_bytes: u64,
+        _custody: &crucible_qemu::QemuRamLaunchCustody,
+    ) -> Result<(), QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "retain same-family QEMU target RAM purpose",
+            message: String::from("guard has no authenticated target RAM keeper"),
+        })
+    }
+
+    /// Reports retained same-family target custody before source cleanup.
+    #[cfg(target_os = "linux")]
+    fn fork_target_is_owned(&self) -> bool {
+        false
+    }
+
+    /// Lends the genuine source owner's single same-family target permit.
+    ///
+    /// # Errors
+    /// Refuses non-source, terminal or already loaned physical ownership.
+    #[cfg(target_os = "linux")]
+    fn lend_fork_target_permit(
+        &mut self,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "lend same-family QEMU target permit",
+            message: String::from("guard has no genuine source owner"),
+        })
+    }
+
+    /// Prepares a target generation under this source's existing project quota.
+    ///
+    /// # Errors
+    /// Refuses a foreign target contract, missing source or unavailable storage.
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_run_directory(
+        &mut self,
+        _target_contract: &QemuChildProcessContract,
+        _requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "prepare same-family QEMU target directory",
+            message: String::from("guard has no genuine source storage owner"),
+        })
+    }
+
     /// Checks actual Node, host and Preparation custody before publication.
     ///
     /// # Errors
@@ -182,7 +237,6 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
     ///
     /// # Errors
     /// Refuses replacing a previously retained registry binding.
-    #[cfg(feature = "private-measurement-domain")]
     fn retain_original_native_registry(
         &mut self,
         _registry: crate::HostOperationalRegistry,
@@ -210,13 +264,46 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
     ///
     /// # Errors
     /// Returns the actual fresh admission or launch refusal.
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     fn launch_fresh_node(
         &self,
         config: &crucible_qemu::QemuLiveNodeStepGateConfig,
         admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
     ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
         crucible_qemu::launch_qemu_production_fresh_node(config, admission)
+    }
+
+    /// Lends the actual installed issuer without duplicating the native owner.
+    ///
+    /// # Errors
+    /// Refuses absent, retired, foreign or uncertain installed original custody.
+    fn installed_node_issuer(
+        &self,
+    ) -> Result<crucible_qemu::InstalledNodeLaunchIssuer, crucible_qemu::QemuLiveNodeStepGateError>
+    {
+        Err(
+            crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                source: crucible_qemu::OriginalActorAccountError::Unavailable,
+            },
+        )
+    }
+
+    /// Restores an exact node through the same retained physical issuer.
+    ///
+    /// # Errors
+    /// Refuses owners without installed original custody, or actual restore and
+    /// independent original checks. The consumed request cannot select an issuer.
+    fn launch_exact_node(
+        &self,
+        _request: crucible_qemu::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu::QemuProductionExactRestoreLaunch,
+        crucible_qemu::QemuLiveNodeStepGateError,
+    > {
+        Err(
+            crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                source: crucible_qemu::OriginalActorAccountError::Unavailable,
+            },
+        )
     }
 
     /// Returns the exact child-process containment contract for this attempt.
@@ -249,6 +336,24 @@ pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
 
 /// Factory for one pre-launch attempt resource guard.
 pub(crate) trait QemuAttemptResourceGuardFactory {
+    /// Consumes one source permit through the same actual host factory.
+    ///
+    /// # Errors
+    /// Refuses factories without a genuine same-family target consumer.
+    #[cfg(target_os = "linux")]
+    fn begin_fork_target(
+        &mut self,
+        _permit: crucible_qemu::LinuxQemuForkTargetPermit,
+        _resources: AttemptResourceLimits,
+        _cancellation: ExecutionCancellation,
+    ) -> Result<Self::Guard, QemuAttemptResourceGuardBeginFailure> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "begin same-family QEMU target guard",
+            message: String::from("factory has no genuine target consumer"),
+        }
+        .into())
+    }
+
     /// Guard retained for the complete process lifetime.
     type Guard: QemuAttemptResourceGuard;
 

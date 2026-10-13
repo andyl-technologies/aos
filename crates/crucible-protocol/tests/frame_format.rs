@@ -32,7 +32,7 @@ fn closed_tag_registry_matches_wire_contract() {
             ControlTag::HelloAck,
         ]
     );
-    assert_eq!(TAG_SETUP, 0x01);
+    assert_eq!(TAG_SETUP, 0x14);
     assert_eq!(TAG_SETUP_ACK, 0x02);
     assert_eq!(TAG_QUIT, 0x12);
     assert_eq!(TAG_HELLO, 0xF0);
@@ -65,4 +65,41 @@ fn tag_directions_and_payload_lengths_match_control_lifecycle() {
         assert_eq!(tag.payload_len(), payload_len);
         assert!(FRAME_TAG_SIZE + tag.payload_len() <= MAX_FRAME_SIZE as usize);
     }
+}
+
+#[test]
+fn superseded_setup_tag_is_not_registered() {
+    assert_eq!(ControlTag::from_wire_value(0x01), None);
+}
+
+#[test]
+fn setup_workspace_uses_current_fixed_payload_and_refuses_the_old_flag() {
+    let message = crucible_protocol::HostMsg::Setup {
+        region_len: 4096,
+        process_generation: 7,
+        device_digest_workspace: Some(crucible_protocol::DeviceDigestWorkspaceBinding {
+            account_generation: 11,
+            workspace_generation: 12,
+            device: 0,
+            inode: 13,
+        }),
+    };
+    let mut frame = crucible_protocol::control_encode_host_msg(&message);
+    assert_eq!(frame.len(), 61);
+    assert_eq!(&frame[..5], &[0, 0, 0, 57, 0x14]);
+    assert_eq!(&frame[13..17], &1_u32.to_be_bytes());
+    assert_eq!(&frame[17..21], &2_u32.to_be_bytes());
+    assert_eq!(
+        crucible_protocol::control_decode_host_msg(&frame),
+        Ok(message)
+    );
+
+    frame[17..21].copy_from_slice(&1_u32.to_be_bytes());
+    assert!(matches!(
+        crucible_protocol::control_decode_host_msg(&frame),
+        Err(crucible_protocol::FrameDecodeError::InvalidSetupWorkspace { .. })
+    ));
+    frame[17..21].copy_from_slice(&2_u32.to_be_bytes());
+    frame[4] = 0x01;
+    assert!(crucible_protocol::control_decode_host_msg(&frame).is_err());
 }

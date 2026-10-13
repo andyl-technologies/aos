@@ -6,7 +6,9 @@
 //! ownership. [`codec`] uses bounded explicit-width records with no native ABI.
 //!
 //! ```text
-//! u32 schema = 2 | u8 message tag | fixed-width fields in big-endian order
+//! u32 schema = 4 | u8 message tag | fixed-width fields in big-endian order
+//! Durations: exact nanoseconds bounded by the signed monotonic range.
+//! Configured allowances are positive; observed remaining time may be zero.
 //! Optional: u8 0, or u8 1 followed by the value. Maximum message: 4096 bytes.
 //! ```
 
@@ -22,6 +24,8 @@ pub use crucible_linux_resource::ram_policy::{
 };
 /// Successful native pager activity, independent of RSS measurement availability.
 pub use crucible_protocol::ram_control::RamControlActivity as HostRamActivity;
+/// Partial total guest-residency observation at an admitted historical cut.
+pub use crucible_protocol::ram_control::RamControlResidentObservation as HostRamResidentObservation;
 
 /// Canonical portable topology authenticated during pre-CPU RAM admission.
 pub type HostRamInventoryTopology = crucible_ram::Topology;
@@ -281,6 +285,11 @@ pub struct HostRamStatus {
     pub limitation_reasons: Vec<String>,
     /// Indicates whether the coherent physical byte counters are available.
     pub measurements_available: bool,
+    /// Partial total residency at an identified interval, never current RSS.
+    ///
+    /// Absence is unavailable. Presence cannot release resources or substitute
+    /// for the separately required complete current physical measurements.
+    pub resident_observation: Option<HostRamResidentObservation>,
     /// Optional actual native transition counters; absence means unavailable.
     pub activity: Option<HostRamActivity>,
     /// Measured private resident guest-page bytes.
@@ -543,6 +552,8 @@ pub fn host_operational_request_digest(
     digest.update(b"crucible.host-ram.request.v1\0");
     digest.update(&(principal.len() as u32).to_be_bytes());
     digest.update(principal.as_bytes());
+    // Canonical bytes include the strict body schema, so a format cutover
+    // changes the authenticated request identity without weakening its domain.
     digest.update(&bytes);
     Ok(*digest.finalize().as_bytes())
 }

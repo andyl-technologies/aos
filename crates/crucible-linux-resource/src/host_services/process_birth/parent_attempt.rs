@@ -465,6 +465,11 @@ mod tests {
             .reserve_structure(super::super::super::HostServiceBootstrap::control_bytes().unwrap())
             .unwrap();
         let birth = super::super::VerifiedServiceBirth {
+            start: 1,
+            group: String::new(),
+            delegated_executor: false,
+            memory_max_bytes: 1 << 20,
+            cpu_quota_percent: 100,
             deadline: u64::MAX,
             invocation: [1; 16],
             _cgroup: tempfile::tempfile().unwrap(),

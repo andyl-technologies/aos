@@ -407,7 +407,7 @@ where
         drop(lifecycle);
 
         drop(self.source_world);
-        let parent = self.source_lease.into_exclusive_source().map_err(|lease| {
+        let mut parent = self.source_lease.into_exclusive_source().map_err(|lease| {
             let _retained = Box::leak(lease);
             lifecycle_error("recover exclusive parent template after descendant retirement")
         })?;

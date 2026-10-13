@@ -18,9 +18,17 @@ use crucible_ram::MetadataReservation;
 mod failure;
 pub(crate) use failure::RetainedOperationalFailure;
 mod admission;
+mod checkpoint_owner;
+mod checkpoint_read;
+mod ordinary_capture;
 use admission::{ServiceConfiguration, prepare_service, prepare_service_for_inventory};
+pub(in crate::paged_ram) use checkpoint_owner::RetainedCheckpointService;
+pub(crate) use checkpoint_read::HeldCheckpointRead;
+pub(in crate::paged_ram) use ordinary_capture::OrdinaryPagingCustody;
+
 mod mutation;
 mod observation;
+mod physical_observation;
 mod scheduling;
 mod statistics;
 pub(crate) use statistics::PagingStatistics;
@@ -31,6 +39,8 @@ mod mixed;
 mod placement;
 mod strict_placement;
 use mixed::{ArenaPlacement, validate_arena};
+mod page_versions;
+use page_versions::PageStates;
 mod service;
 pub(crate) use fork::{ChildArenaConfiguration, ChildPagingCustody, PreparedChildArenas};
 use service::{FaultService, operational_read, operational_rearm, root_scratch_read};
@@ -172,15 +182,14 @@ pub(crate) struct PausedPagingOwner {
     permanent_resident_bytes: AtomicU64,
     topology_generation: AtomicU64,
     policy: Mutex<Option<crucible_protocol::ram_control::RamControlPolicy>>,
-    queued_operation: Mutex<Option<scheduling::QueuedPlacement>>,
+    queued_operation: Mutex<scheduling::PlacementQueue>,
     policy_generation: AtomicU64,
     requested_policy_revision: AtomicU64,
-    placement_epoch: Arc<AtomicU64>,
-    placement_receipt:
-        Arc<Mutex<Option<crucible_protocol::ram_control::RamControlPlacementReceipt>>>,
+    placement_epoch: AtomicU64,
+    placement_receipt: Mutex<Option<crucible_protocol::ram_control::RamControlPlacementReceipt>>,
     prepared_placement_receipt:
         Mutex<Option<crucible_protocol::ram_control::RamControlPlacementReceipt>>,
-    locks: Arc<Mutex<Option<Arc<locking::LockedMemory>>>>,
+    locks: Mutex<Option<Arc<locking::LockedMemory>>>,
     retained_lock_transition: Mutex<Option<strict_placement::LockTransition>>,
     write_preparation: Mutex<Option<mutation::WritePreparation>>,
     write_scratch: Mutex<Option<mutation::WriteScratch>>,
@@ -200,6 +209,29 @@ pub(crate) struct PagingAuthoritySnapshot {
 }
 
 impl PausedPagingOwner {
+    /// Derives the initial pager's three layouts for request and artifact emission.
+    ///
+    /// The shared body embeds the queue, retained capture loans and journal.
+    /// Only counters and the active service slot need separate allocations.
+    /// Returns `None` for unrepresentable configured layout composition. This
+    /// request never issues or renews native credit.
+    pub(super) const fn configured_control_layouts() -> Option<[std::alloc::Layout; 3]> {
+        use super::controller::configured_shared_allocation_layout;
+
+        let Some(owner) = configured_shared_allocation_layout::<Self>() else {
+            return None;
+        };
+        let Some(counters) = configured_shared_allocation_layout::<PagingCounters>() else {
+            return None;
+        };
+        let Some(active) =
+            configured_shared_allocation_layout::<Mutex<Option<Arc<FaultService>>>>()
+        else {
+            return None;
+        };
+        Some([owner, counters, active])
+    }
+
     /// Samples actual spill diagnostics without native or guest execution locks.
     pub(crate) fn performance(
         &self,
@@ -306,13 +338,13 @@ impl PausedPagingOwner {
             permanent_resident_bytes: AtomicU64::new(0),
             topology_generation: AtomicU64::new(0),
             policy: Mutex::new(None),
-            queued_operation: Mutex::new(None),
+            queued_operation: Mutex::new(scheduling::PlacementQueue::default()),
             policy_generation: AtomicU64::new(0),
             requested_policy_revision: AtomicU64::new(0),
-            placement_epoch: Arc::new(AtomicU64::new(0)),
-            placement_receipt: Arc::new(Mutex::new(None)),
+            placement_epoch: AtomicU64::new(0),
+            placement_receipt: Mutex::new(None),
             prepared_placement_receipt: Mutex::new(None),
-            locks: Arc::new(Mutex::new(None)),
+            locks: Mutex::new(None),
             retained_lock_transition: Mutex::new(None),
             write_preparation: Mutex::new(None),
             write_scratch: Mutex::new(None),

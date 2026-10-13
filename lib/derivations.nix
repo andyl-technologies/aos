@@ -703,6 +703,7 @@
     postBuild ? "",
     preInstall ? "",
     postInstall ? "",
+    postFinalize ? "",
     passthru ? {},
     update ? null,
     checks ? null,
@@ -859,7 +860,7 @@
     # into every package's closure. Skip if the caller already supplied
     # a fixup — the cargo/go/bazel phase templates bundle their own.
     #
-    # scrubPhase always runs last, regardless of whether the caller
+    # scrubPhase follows fixup, regardless of whether the caller
     # supplied a custom fixup. Inlining it into fixup would skip it
     # whenever cargo/go/bazel templates override the fixup phase.
     defaultFixupPhase =
@@ -899,7 +900,18 @@
         then []
         else [propagatedDependencyMetadataPhase]
       )
-      ++ [(targetPlatformMetadataPhase outputPlatform.system)];
+      ++ [(targetPlatformMetadataPhase outputPlatform.system)]
+      # Artifact identities must observe the output after every transformation.
+      ++ (
+        if postFinalize == ""
+        then []
+        else [
+          {
+            name = "finalize-output";
+            script = postFinalize;
+          }
+        ]
+      );
 
     builder = phasesToScript allPhases shell useStructuredAttrs;
 
@@ -942,6 +954,7 @@
       "postBuild"
       "preInstall"
       "postInstall"
+      "postFinalize"
       "passthru"
       "update"
       "checks"

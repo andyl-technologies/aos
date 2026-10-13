@@ -1,15 +1,28 @@
 //! Retains the installing invocation's original Source and exact third owner.
 //!
-//! The sole production caller follows the actual Setup SCM receive. Native
-//! installation scope and the matched shipped module must authenticate that route;
-//! descriptor metadata, symbol resolution and caller scalars never issue it.
-//! Failed acquisition keeps the same descriptor through process containment.
+//! Installation borrows the same frame/control/roles already consumed by native
+//! preinit. Every supported launch requires the current authenticated carrier.
+//! Native installation scope and the matched shipped module authenticate either
+//! route. Descriptor metadata, symbols and caller scalars never issue authority.
+//! Failed acquisition keeps the same custody through process containment.
 // SPDX-License-Identifier: GPL-2.0-only
 
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, IntoRawFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd};
+#[cfg(test)]
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Duration;
 
+mod control_channel;
+mod control_purpose;
+pub(crate) use control_channel::SetupControlSocket;
+mod descriptor;
+mod native_setup;
+pub(crate) use descriptor::SetupDescriptor;
+pub(crate) use native_setup::{NativeSetupBorrow, selected as native_setup_selected};
+mod runtime_purpose;
+
+#[cfg(test)]
 type Acquire = extern "C" fn(u64, i32) -> i32;
 type Check = extern "C" fn(u64) -> i32;
 type QuerySlice = extern "C" fn(u64, *mut u64) -> i32;
@@ -40,6 +53,7 @@ pub enum StartupSourceError {
 
 #[derive(Clone, Copy)]
 struct NativeStartupApi {
+    #[cfg(test)]
     acquire: Acquire,
     check: Check,
     query_slice: QuerySlice,
@@ -48,11 +62,16 @@ struct NativeStartupApi {
 
 /// Inline custody prepared before native acquisition, with no fallible birth.
 pub(crate) struct InstallerStartupSource {
-    plan: Option<OwnedFd>,
+    control_reservation: control_purpose::ControlReservation,
+    runtime_reservation: runtime_purpose::RuntimeReservation,
+    plan: Option<SetupDescriptor>,
+    native_setup: Option<NativeSetupBorrow>,
     plugin_id: u64,
     api: Option<NativeStartupApi>,
     #[cfg(test)]
     model_api: Option<NativeStartupApi>,
+    #[cfg(test)]
+    model_setup: Option<test_support::ModelSetup>,
     first_status: AtomicI32,
     invalid_slice: AtomicBool,
     acquisition_attempted: bool,
@@ -61,14 +80,21 @@ pub(crate) struct InstallerStartupSource {
 }
 
 impl InstallerStartupSource {
-    // Only runtime's literal receive callsite constructs a production owner.
+    // Isolated Source status fixtures own their model descriptor; production
+    // installation obtains only the current authentic native borrow.
+    #[cfg(test)]
     pub(super) fn retain_received_plan(plugin_id: u64, plan: OwnedFd) -> Self {
         Self {
-            plan: Some(plan),
+            control_reservation: control_purpose::ControlReservation::default(),
+            runtime_reservation: runtime_purpose::RuntimeReservation::default(),
+            plan: Some(plan.into()),
+            native_setup: None,
             plugin_id,
             api: None,
             #[cfg(test)]
             model_api: None,
+            #[cfg(test)]
+            model_setup: None,
             first_status: AtomicI32::new(0),
             invalid_slice: AtomicBool::new(false),
             acquisition_attempted: false,
@@ -82,6 +108,7 @@ impl InstallerStartupSource {
         assert!(!self.acquisition_attempted);
         assert!(self.model_api.is_none());
         self.model_api = Some(model.api);
+        self.model_setup = model.setup;
     }
 
     #[cfg(test)]
@@ -89,6 +116,14 @@ impl InstallerStartupSource {
         self.acquisition_attempted
     }
 
+    #[cfg(test)]
+    pub(crate) fn retained_model_plan_fd_for_test(&self) -> Option<i32> {
+        self.model_setup
+            .as_ref()
+            .map(test_support::ModelSetup::plan_fd)
+    }
+
+    #[cfg(test)]
     pub(super) fn acquire(&mut self) -> Result<(), StartupSourceError> {
         if self.acquisition_attempted {
             return Err(StartupSourceError::Ownership {
@@ -120,6 +155,17 @@ impl InstallerStartupSource {
     pub(crate) fn check(&self) -> Result<(), StartupSourceError> {
         let api = self.live_api()?;
         self.accept_status((api.check)(self.plugin_id))
+    }
+
+    /// Rechecks the same preissued fixed-control purpose before managed births.
+    ///
+    /// # Errors
+    /// Preserves the original Source refusal or a missing/refused native holder.
+    pub(crate) fn require_installer_control_purpose(
+        &self,
+    ) -> Result<(), crate::ram_error::RamError> {
+        self.check_installer_control_purpose()
+            .map_err(crate::ram_error::RamError::InstallerSource)
     }
 
     pub(crate) fn wait_slice(&self) -> Result<Duration, StartupSourceError> {
@@ -205,7 +251,7 @@ impl Drop for InstallerStartupSource {
         // Keep the actual owner to process exit rather than retrying a numeric
         // fd close or inferring retirement from registration completion.
         if let Some(plan) = self.plan.take() {
-            let _retained_until_process_exit = plan.into_raw_fd();
+            plan.retain_until_process_exit();
         }
     }
 }
@@ -229,6 +275,7 @@ fn resolve_api() -> Result<NativeStartupApi, StartupSourceError> {
     }
 
     Ok(NativeStartupApi {
+        #[cfg(test)]
         acquire: resolve!(c"qemu_plugin_crucible_startup_source_acquire_v1", Acquire),
         check: resolve!(c"qemu_plugin_crucible_startup_source_check_v1", Check),
         query_slice: resolve!(
@@ -247,3 +294,6 @@ pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod prebirth_tests;

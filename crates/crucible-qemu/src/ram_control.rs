@@ -21,6 +21,11 @@ use crucible_protocol::ram_control::*;
 mod outer;
 pub use outer::outer_cap_to_wire;
 
+#[cfg(target_os = "linux")]
+mod checkpoint;
+#[cfg(target_os = "linux")]
+pub use checkpoint::CheckpointArmReceipt;
+
 mod admission;
 mod supervision;
 pub use admission::{RamControlInventory, resources_to_wire};
@@ -45,6 +50,8 @@ pub struct RamInventoryAdmission<'a> {
     pub native_metadata_bytes: u64,
     /// Actual native observation scratch floor.
     pub native_scratch_bytes: u64,
+    /// Complete Rust metadata request from the same authenticated inventory.
+    pub rust_metadata_required_bytes: u64,
     /// Observed actors/descriptors and explicitly planned future entitlements.
     pub owner_resources: RamControlOwnerInventory,
 }
@@ -68,6 +75,25 @@ pub trait RamControlRetirementAuthority: Send + Sync {
 /// independently supplied by the executor; an open socket proves transport
 /// authority, never eviction safety or a lower execution peak.
 pub trait RamControlRegistrar: Send + Sync {
+    /// Lends the existing registered client to one retained checkpoint original.
+    ///
+    /// This internal producer capability has no operator get/set equivalent.
+    /// Implementations borrow the same original and sole client; they do not
+    /// enter a new Setup operation or construct a receiver from wire identity.
+    ///
+    /// # Errors
+    /// Refuses absent native support, stale ownership, transport, or the original.
+    #[cfg(target_os = "linux")]
+    fn checkpoint_arm(
+        &self,
+        _loan: crate::CheckpointArmLoan<'_>,
+    ) -> Result<CheckpointArmReceipt, crate::CheckpointOriginalError> {
+        Err(crate::CheckpointOriginalError {
+            source: crate::CheckpointOriginalCause::NativeReceiverUnavailable,
+            original_after: None,
+        })
+    }
+
     /// Controls one fixed diagnostic bank on the exact registered owner.
     ///
     /// # Errors
@@ -616,6 +642,8 @@ impl RamControlClient {
             stream: &mut self.stream,
             deadline,
             guard,
+            #[cfg(target_os = "linux")]
+            checkpoint_original: None,
         };
         write_ram_control(&mut stream, &frame)?;
         let reply = read_ram_control(&mut stream)?.ok_or(RamControlError::AuthorityMismatch)?;
@@ -665,19 +693,18 @@ pub fn target_from_wire(target: RamControlTarget) -> HostRamTarget {
     }
 }
 
-fn milliseconds(duration: Duration) -> Result<u64, RamControlError> {
-    let value = u64::try_from(duration.as_millis()).map_err(|_| RamControlError::InvalidFrame)?;
-    if value == 0 || value > i64::MAX as u64 / 1_000_000 || Duration::from_millis(value) != duration
-    {
+fn nanoseconds(duration: Duration) -> Result<u64, RamControlError> {
+    let value = u64::try_from(duration.as_nanos()).map_err(|_| RamControlError::InvalidFrame)?;
+    if value == 0 || value > RAM_CONTROL_MAX_ALLOWANCE_NS {
         return Err(RamControlError::InvalidFrame);
     }
     Ok(value)
 }
 
-/// Converts a host policy into its exact, whole-millisecond portable form.
+/// Converts a host policy into its exact nanosecond portable form.
 ///
 /// # Errors
-/// Rejects fractional milliseconds, zero/overflowing durations, and invalid
+/// Rejects zero or unrepresentable nanosecond durations, and invalid
 /// scalar policy fields rather than silently rounding operational allowances.
 pub fn policy_to_wire(policy: HostRamPolicy) -> Result<RamControlPolicy, RamControlError> {
     if policy.eviction_preference > 100
@@ -706,28 +733,33 @@ pub fn policy_to_wire(policy: HostRamPolicy) -> Result<RamControlPolicy, RamCont
 /// Normalizes the actual host owner's initial live roster without placement acceptance.
 ///
 /// # Errors
-/// Rejects fractional, zero, or overflowing present durations rather than rounding.
+/// Rejects zero or durations beyond the signed native nanosecond range; no rounding occurs.
 pub fn budgets_to_wire(
     latency: HostOperationBudgets,
 ) -> Result<[RamControlBudget; RAM_CONTROL_BUDGET_COUNT], RamControlError> {
     let mut budgets = [RamControlBudget {
-        poll_ms: 1,
-        progress_ms: None,
-        total_ms: None,
+        poll_ns: 1,
+        progress_ns: None,
+        total_ns: None,
     }; RAM_CONTROL_BUDGET_COUNT];
     for (out, budget) in budgets.iter_mut().zip(latency.classes) {
         *out = RamControlBudget {
-            poll_ms: milliseconds(budget.poll_interval)?,
-            progress_ms: budget.progress_timeout.map(milliseconds).transpose()?,
-            total_ms: budget.total_timeout.map(milliseconds).transpose()?,
+            poll_ns: nanoseconds(budget.poll_interval)?,
+            progress_ns: budget.progress_timeout.map(nanoseconds).transpose()?,
+            total_ns: budget.total_timeout.map(nanoseconds).transpose()?,
         };
     }
     Ok(budgets)
 }
 
-/// Reconstructs host allowances from an already validated portable policy.
-pub fn policy_from_wire(policy: RamControlPolicy) -> HostRamPolicy {
-    HostRamPolicy {
+/// Reconstructs exact host allowances from a portable policy.
+///
+/// # Errors
+/// Refuses zero or unrepresentable nanosecond timing, including values that
+/// bypassed the decoder. Placement acceptance remains separately owned.
+pub fn policy_from_wire(policy: RamControlPolicy) -> Result<HostRamPolicy, RamControlError> {
+    let budgets = budgets_from_wire(policy.budgets)?;
+    Ok(HostRamPolicy {
         mode: match policy.mode {
             RamControlMode::Managed => HostRamMode::Managed,
             RamControlMode::DiskOriented => HostRamMode::DiskOriented,
@@ -738,20 +770,41 @@ pub fn policy_from_wire(policy: RamControlPolicy) -> HostRamPolicy {
         writeback_bytes_per_second: policy.writeback_bytes_per_second,
         maximum_paging_io_in_flight: policy.maximum_paging_io_in_flight,
         prefetch_on_increase: policy.prefetch_on_increase,
-        latency: HostOperationBudgets {
-            classes: policy.budgets.map(|budget| HostOperationBudget {
-                poll_interval: Duration::from_millis(budget.poll_ms),
-                progress_timeout: budget.progress_ms.map(Duration::from_millis),
-                total_timeout: budget.total_ms.map(Duration::from_millis),
-            }),
-        },
+        latency: budgets,
+    })
+}
+
+/// Reconstructs exact host durations from a canonical nanosecond budget roster.
+///
+/// # Errors
+/// Refuses zero or values beyond the signed native monotonic range, including
+/// public values that bypassed the wire decoder. No allowances are rounded.
+pub fn budgets_from_wire(
+    budgets: [RamControlBudget; RAM_CONTROL_BUDGET_COUNT],
+) -> Result<HostOperationBudgets, RamControlError> {
+    let duration = |value: u64| {
+        if value == 0 || value > RAM_CONTROL_MAX_ALLOWANCE_NS {
+            return Err(RamControlError::InvalidFrame);
+        }
+        Ok(Duration::from_nanos(value))
+    };
+    let mut classes = HostOperationBudgets::default().classes;
+    for (class, budget) in classes.iter_mut().zip(budgets) {
+        *class = HostOperationBudget {
+            poll_interval: duration(budget.poll_ns)?,
+            progress_timeout: budget.progress_ns.map(duration).transpose()?,
+            total_timeout: budget.total_ns.map(duration).transpose()?,
+        };
     }
+    Ok(HostOperationBudgets { classes })
 }
 
 struct DeadlineStream<'a> {
     stream: &'a mut UnixStream,
     deadline: Option<TransportDeadline>,
     guard: Option<&'a HostOperationGuard>,
+    #[cfg(target_os = "linux")]
+    checkpoint_original: Option<&'a crate::CheckpointOriginalLoan>,
 }
 
 fn supervision_error(
@@ -762,6 +815,12 @@ fn supervision_error(
 
 impl DeadlineStream<'_> {
     fn remaining(&self) -> std::io::Result<Duration> {
+        #[cfg(target_os = "linux")]
+        if let Some(original) = self.checkpoint_original {
+            original
+                .check()
+                .map_err(|source| std::io::Error::new(std::io::ErrorKind::TimedOut, source))?;
+        }
         if let Some(guard) = self.guard {
             return guard
                 .wait_slice()

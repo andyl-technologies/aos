@@ -12,7 +12,6 @@ pub(super) struct NativeWorldResources {
 }
 
 impl HostOperationalRegistry {
-    #[cfg(feature = "private-measurement-domain")]
     pub(crate) fn retire_original_native_world(
         &self,
         physical: crucible_qemu::OriginalNativePhysicalRetirement<'_>,
@@ -286,7 +285,6 @@ impl HostOperationalRegistry {
 // The caller holds the registry mutation and world/state locks. Allocation
 // identity comes only from the lower physical-retirement witness. Empty node
 // rosters are additional refusal checks, never a substitute for that witness.
-#[cfg(feature = "private-measurement-domain")]
 fn select_original_world<W>(
     worlds: &BTreeMap<NativeWorldIdentity, W>,
     mut matches: impl FnMut(&W) -> Result<bool, crucible_qemu::QemuVmRealizationError>,

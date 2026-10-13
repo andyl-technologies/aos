@@ -101,6 +101,12 @@ pub(crate) mod ram_catalog;
 pub use ram_catalog::{PackagedRamCatalogConfig, PackagedRamCatalogConfigError};
 
 pub(crate) mod guarded;
+pub(crate) use guarded::GuardedReceivingReady;
+pub use guarded::{
+    GuardedCampaignOwnerRetirementError, GuardedSourceTransferOffer,
+    GuardedSourceTransferOperation, GuardedTransferError, ReceivingExecutionPreparation,
+    ReceivingExecutionPreparationError,
+};
 #[cfg(feature = "private-measurement-domain")]
 pub(crate) mod original_campaign;
 #[cfg(feature = "private-measurement-domain")]
@@ -330,6 +336,9 @@ pub struct PackagedQemuExecutorConfig {
     operational_registry_resources: Option<crucible_api::host_operational::HostResourceVector>,
     operational_registry_quota: Option<(u32, u64)>,
     host_operation_budgets: Option<crucible_api::host_operational::HostOperationBudgets>,
+    pub(crate) normal_executor: Option<
+        Arc<crucible_linux_resource::host_services::process_birth::AuthenticatedNativeSlotPurpose>,
+    >,
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticConfig>,
     verify_determinism_findings: bool,
     #[cfg(feature = "private-measurement-domain")]
@@ -339,6 +348,38 @@ pub struct PackagedQemuExecutorConfig {
 }
 
 impl PackagedQemuExecutorConfig {
+    /// Debits this executor beneath the authenticated normal service main.
+    ///
+    /// Publication is once-only and precedes ledger or registry effects. The
+    /// resulting purpose retains the same process counters, family and end;
+    /// configuration values alone grant neither resources nor native readiness.
+    ///
+    /// # Errors
+    /// Refuses absent policy/delegation, exhausted remaining main resources,
+    /// incompatible family, repeated admission or missing operational budgets.
+    pub fn with_process_owner(
+        mut self,
+        owner: &crate::campaign_process::CampaignProcessOwner,
+    ) -> Result<Self, crate::campaign_process::CampaignProcessAdmissionError> {
+        let budgets = self.host_operation_budgets().ok_or_else(|| {
+            crate::campaign_process::CampaignProcessAdmissionError::Policy(
+                "normal executor has no original operation policy".into(),
+            )
+        })?;
+        let bounds = crucible_linux_resource::ram_policy::HostResourceVector {
+            resident_peak_bytes: self.capacity.maximum_resident_bytes(),
+            backing_peak_bytes: self.capacity.maximum_disk_bytes(),
+            metadata_bytes: self.host_operational_capacity.maximum_metadata_bytes(),
+            staging_bytes: self.host_operational_capacity.maximum_staging_bytes(),
+            cpu_slots: u64::from(self.capacity.maximum_vcpus()),
+            task_slots: self.host_operational_capacity.maximum_task_slots(),
+            file_descriptors: self.host_operational_capacity.maximum_file_descriptors(),
+            paging_io_slots: self.host_operational_capacity.maximum_paging_io_slots(),
+        };
+        self.normal_executor = Some(owner.admit_executor(bounds, budgets)?);
+        Ok(self)
+    }
+
     /// Retains the admitted original only for the closed private actor route.
     #[cfg(feature = "private-measurement-domain")]
     pub(crate) fn with_original_preparation(
@@ -460,6 +501,7 @@ impl PackagedQemuExecutorConfig {
             operational_registry_resources: None,
             operational_registry_quota: None,
             host_operation_budgets: None,
+            normal_executor: None,
             guest_selectable_boundary_diagnostics: None,
             verify_determinism_findings: false,
             #[cfg(feature = "private-measurement-domain")]
@@ -1028,12 +1070,18 @@ impl AttachedPackagedQemuExecutor {
             campaign_debug,
         } = service;
         let shutdown = service.shutdown_handle();
+        // This is a handle to the same actual factory saved in guarded_state.
+        // The outer owner retains it through any uncertain thread retirement.
+        let dispatcher_host_for_owner = guarded_state.host.clone();
         let completion = Arc::new((Mutex::new(false), Condvar::new()));
         let thread_completion = Arc::clone(&completion);
         let thread = thread::Builder::new()
             .name(String::from("crucible-packaged-qemu-executor"))
             .spawn(move || {
                 let _completion = PackagedQemuExecutorCompletionGuard(thread_completion);
+                // Drop this existing factory alias before completion publication
+                // on both success and refusal; the outer guarded_state keeps it.
+                let target_dispatcher_host = dispatcher_host_for_owner;
                 let service_result = service.serve();
                 exact_pin_materializer.request_shutdown();
                 let materializer_result = exact_pin_materializer.join();
@@ -1041,11 +1089,22 @@ impl AttachedPackagedQemuExecutor {
                     .as_ref()
                     .map(|owner| owner.orderly_shutdown())
                     .unwrap_or(Ok(()));
-                combine_packaged_qemu_join_results(
+                let report = combine_packaged_qemu_join_results(
                     service_result,
                     materializer_result,
                     hot_fork_result,
-                )
+                )?;
+                // Retire only after all actual worker and Source owners close,
+                // before publishing this whole owner's completion signal.
+                target_dispatcher_host
+                    .as_ref()
+                    .ok_or_else(|| QemuVmRealizationError::ExecutorUnavailable {
+                        operation: "retire packaged Main Target dispatcher",
+                        message: String::from("actual saved Linux host factory is absent"),
+                    })
+                    .and_then(SharedQemuAttemptHostResourceFactory::finish_target_dispatcher)
+                    .map_err(PackagedQemuExecutorJoinError::TargetDispatcher)?;
+                Ok(report)
             })
             .map_err(|source| PackagedQemuExecutorStartError::Spawn { source })?;
         Ok(Self {
@@ -1120,7 +1179,8 @@ impl AttachedPackagedQemuExecutor {
     /// # Errors
     ///
     /// Returns [`PackagedQemuExecutorJoinError`] when the service reports a
-    /// listener/worker failure or its owner thread escapes through a panic.
+    /// listener/worker failure, the actual Main dispatcher cannot retire, or
+    /// its owner thread escapes through a panic.
     pub fn shutdown_and_join(
         mut self,
     ) -> Result<ExecutorLocalServiceReport, PackagedQemuExecutorJoinError> {
@@ -1216,6 +1276,9 @@ pub enum PackagedQemuExecutorJoinError {
     /// Retained source-world shutdown failed after workers stopped.
     #[error(transparent)]
     HotForkSources(Box<PackagedQemuHotForkSourceShutdownError>),
+    /// The same concrete Main dispatcher refused physical retirement.
+    #[error("packaged Main Target dispatcher retirement refused: {0}")]
+    TargetDispatcher(#[source] QemuVmRealizationError),
     /// More than one independently owned executor component failed to stop.
     #[error(transparent)]
     Multiple(Box<PackagedQemuExecutorJoinFailures>),
@@ -1346,6 +1409,12 @@ fn prepare_packaged_qemu_executor_inner(
             .verify_factory_binding(binding)
             .map_err(PackagedQemuExecutorError::OriginalFactoryBinding)?;
     }
+    // Component fixtures retain their explicit isolated recipe. Neither a
+    // private feature nor a native binding pays the production registry debit.
+    #[cfg(not(test))]
+    if config.normal_executor.is_none() {
+        return Err(PackagedQemuExecutorError::MissingNormalProcessOwner);
+    }
     let basis =
         authenticate_packaged_campaigns(&repository, &config.campaigns, config.hot_fork.is_some())?;
     if let Some(hot_fork) = config.hot_fork() {
@@ -1364,6 +1433,68 @@ fn prepare_packaged_qemu_executor_inner(
         &basis,
         &config,
     )?;
+    let host = open_normal_linux_host(
+        &config,
+        #[cfg(feature = "private-measurement-domain")]
+        binding,
+    )?;
+    let mut baked = BTreeMap::new();
+    for (scenario_id, scenario) in scenarios {
+        let baked_lifecycle = config.admitted_lifecycle_config()?.with_run_state_root(
+            config
+                .lifecycle
+                .run_state_root()
+                .join("campaign-baked-genesis")
+                .join(CampaignHash::from_bytes(scenario_id.content_id().digest()).to_hex()),
+        );
+        let mut baked_factory = QemuAttemptProductionVmLifecycleFactory::new(
+            baked_lifecycle,
+            ComposedQemuAttemptResourceGuardFactory::new(host.clone()),
+        );
+        let checkpoint = preparation::run_capture(&preparation, &config, &scenario, |context| {
+            capture_production_baked_genesis(&mut baked_factory, &scenario, context).map_err(
+                |source| PackagedQemuExecutorError::BakedGenesis {
+                    scenario: scenario_id,
+                    source: Box::new(source),
+                },
+            )
+        })?;
+        baked.insert(scenario_id, checkpoint);
+    }
+    let storage = PackagedQemuExecutorStorage::new(repository, checkpoint_backend);
+    let guarded_host = host.clone();
+    let normal = config.normal_executor.clone();
+    let mut executor = compose_packaged_qemu_executor_with_baked_genesis(
+        storage,
+        hot_fork_retention,
+        basis,
+        config,
+        host,
+        baked,
+        preparation,
+    )?;
+    executor.guarded_state.host = Some(guarded_host);
+    if let Some(normal) = normal {
+        if let Err(source) = normal.complete_preparation() {
+            // Worker/host construction already happened. An uncertain original
+            // cut retains the complete executor, not a claim of healthy Drop.
+            std::mem::forget(executor);
+            return Err(PackagedQemuExecutorError::NormalProcessPurpose(source));
+        }
+    }
+    Ok(executor)
+}
+
+/// Opens the same genuine Main-published normal host pipeline.
+fn open_normal_linux_host(
+    config: &PackagedQemuExecutorConfig,
+    #[cfg(feature = "private-measurement-domain")] binding: Option<
+        crucible_qemu::OriginalNativeAccountFactoryBinding,
+    >,
+) -> Result<
+    SharedQemuAttemptHostResourceFactory<LinuxQemuAttemptHostResourceFactory>,
+    PackagedQemuExecutorError,
+> {
     #[cfg(feature = "private-measurement-domain")]
     if let Some(binding) = binding.as_ref() {
         config
@@ -1373,6 +1504,20 @@ fn prepare_packaged_qemu_executor_inner(
             .verify_factory_binding(binding)
             .map_err(PackagedQemuExecutorError::OriginalFactoryBinding)?;
     }
+    let normal_roster = config
+        .normal_executor
+        .as_ref()
+        .map(|normal| {
+            crucible_qemu::OriginalNativeAccountRoster::publish_normal(
+                normal,
+                config
+                    .assignment_resources()
+                    .ok_or(crucible_api::host_operational::HostOperationalError::Unavailable)?,
+                normal.original(),
+            )
+            .map_err(PackagedQemuExecutorError::NormalNativeAccount)
+        })
+        .transpose()?;
     let opened = LinuxQemuAttemptHostResourceFactory::open(config.host.clone());
     #[cfg(feature = "private-measurement-domain")]
     let opened = if binding.is_some() {
@@ -1402,7 +1547,14 @@ fn prepare_packaged_qemu_executor_inner(
     } else {
         opened
     };
-    let concrete_host = opened?;
+    let mut concrete_host = opened?;
+    if let Some((roster, binding)) = normal_roster {
+        let bound = concrete_host.bind_normal_accounts(roster, binding);
+        if let Err(source) = bound {
+            std::mem::forget(concrete_host);
+            return Err(PackagedQemuExecutorError::NormalNativeAccount(source));
+        }
+    }
     #[cfg(feature = "private-measurement-domain")]
     let concrete_host = {
         let mut host = concrete_host;
@@ -1435,43 +1587,7 @@ fn prepare_packaged_qemu_executor_inner(
         }
         host
     };
-    let host = SharedQemuAttemptHostResourceFactory::new(concrete_host);
-    let mut baked = BTreeMap::new();
-    for (scenario_id, scenario) in scenarios {
-        let baked_lifecycle = config.admitted_lifecycle_config()?.with_run_state_root(
-            config
-                .lifecycle
-                .run_state_root()
-                .join("campaign-baked-genesis")
-                .join(CampaignHash::from_bytes(scenario_id.content_id().digest()).to_hex()),
-        );
-        let mut baked_factory = QemuAttemptProductionVmLifecycleFactory::new(
-            baked_lifecycle,
-            ComposedQemuAttemptResourceGuardFactory::new(host.clone()),
-        );
-        let checkpoint = preparation::run_capture(&preparation, &config, &scenario, |context| {
-            capture_production_baked_genesis(&mut baked_factory, &scenario, context).map_err(
-                |source| PackagedQemuExecutorError::BakedGenesis {
-                    scenario: scenario_id,
-                    source: Box::new(source),
-                },
-            )
-        })?;
-        baked.insert(scenario_id, checkpoint);
-    }
-    let storage = PackagedQemuExecutorStorage::new(repository, checkpoint_backend);
-    let guarded_host = host.clone();
-    let mut executor = compose_packaged_qemu_executor_with_baked_genesis(
-        storage,
-        hot_fork_retention,
-        basis,
-        config,
-        host,
-        baked,
-        preparation,
-    )?;
-    executor.guarded_state.host = Some(guarded_host);
-    Ok(executor)
+    Ok(SharedQemuAttemptHostResourceFactory::new(concrete_host))
 }
 
 fn preflight_packaged_scenario_catalog(
@@ -2407,6 +2523,15 @@ fn completion_validation_failure(error: CampaignRepositoryError) -> CompletionVa
 /// Failure to acquire or compose one packaged local QEMU executor.
 #[derive(Debug, thiserror::Error)]
 pub enum PackagedQemuExecutorError {
+    /// Normal production entry lacks its authenticated same-main executor debit.
+    #[error("normal production executor requires its original process owner")]
+    MissingNormalProcessOwner,
+    /// The same normal process purpose retains its concrete first refusal.
+    #[error(transparent)]
+    NormalProcessPurpose(#[from] crucible_linux_resource::host_services::process_birth::ServiceBirthError),
+    /// The actual common native subdivision refused its original account.
+    #[error("normal native account refused: {0}")]
+    NormalNativeAccount(#[source] crucible_qemu::OriginalActorAccountError),
     /// A bound original factory cannot be prepared without its same guard.
     #[cfg(feature = "private-measurement-domain")]
     #[error("original factory preparation custody is absent")]

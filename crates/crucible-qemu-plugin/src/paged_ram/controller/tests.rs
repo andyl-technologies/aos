@@ -1,13 +1,12 @@
 //! Checks live operational allowances without constructing guest mapping authority.
 
 use super::*;
+use std::os::unix::net::UnixStream;
+use std::sync::atomic::AtomicUsize;
 
 mod admission;
 mod observation;
 
-extern "C" fn unused_worker(_: u32, _: u64, _: u64, _: u32) -> c_int {
-    -libc::ENOSYS
-}
 extern "C" fn unused_grant(_: u64, _: u64, _: *mut u64) -> c_int {
     -libc::ENOSYS
 }
@@ -16,7 +15,7 @@ extern "C" fn runtime_not_ready() -> c_int {
     0
 }
 
-fn controller() -> LivePagerController {
+pub(super) fn controller() -> LivePagerController {
     LivePagerController {
         target: RamControlTarget {
             daemon_epoch: [1; 32],
@@ -31,9 +30,9 @@ fn controller() -> LivePagerController {
         state: Arc::new(Mutex::new(State {
             resources: RamControlResources::default(),
             budgets: [RamControlBudget {
-                poll_ms: 10,
-                progress_ms: None,
-                total_ms: Some(30_000),
+                poll_ns: 10_000_000,
+                progress_ns: None,
+                total_ns: Some(30_000_000_000),
             }; RAM_CONTROL_BUDGET_COUNT],
             outer: None,
             outer_expired: false,
@@ -49,17 +48,16 @@ fn controller() -> LivePagerController {
             fork_preparing: false,
             policy_applying: false,
             child_bootstrap: false,
+            checkpoint: super::capture::CheckpointAdmission::default(),
         })),
         canceled: Arc::new(AtomicBool::new(false)),
-        operations: Arc::new(AtomicUsize::new(0)),
-        native_worker: unused_worker,
+        operations: Arc::new(super::capture::work::OperationRegistry::default()),
         native_grant: unused_grant,
         child_runtime_ready: runtime_not_ready,
         spill: Mutex::new(None),
         spill_quota: 0,
-        worker: Mutex::new(None),
-        paused: Mutex::new(None),
-        joining: Mutex::new(None),
+        fingerprint: Mutex::new(fingerprint::FingerprintState::default()),
+        actor: Mutex::new(super::actor::ActorState::default()),
     }
 }
 
@@ -128,7 +126,7 @@ fn exact_applied_retry_returns_portable_observation_without_new_work() {
     assert_eq!(reply.applied_policy_revision, 1);
     assert_eq!(reply.reservation_revision, 0);
     assert_eq!(reply.observation_sequence, 1);
-    assert_eq!(controller.operations.load(Ordering::Acquire), 1);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 1);
     assert_eq!(reply.kernel_probe, None);
     assert_eq!(reply.activity, None);
     assert_eq!(
@@ -211,7 +209,7 @@ fn applied_retry_refuses_changed_tuple_and_revision_relation() {
         },
         RamControlPolicy {
             budgets: [RamControlBudget {
-                poll_ms: 20,
+                poll_ns: 20_000_000,
                 ..policy.budgets[0]
             }; RAM_CONTROL_BUDGET_COUNT],
             ..policy
@@ -289,7 +287,7 @@ fn applied_retry_refuses_changed_tuple_and_revision_relation() {
     assert_eq!(state.policy, Some(policy));
     assert_eq!(state.budgets, policy.budgets);
     assert!(!state.policy_applying);
-    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
 }
 
 #[test]
@@ -338,7 +336,7 @@ fn exact_retry_from_another_controller_lineage_never_dispatches() {
         assert!(!dispatched);
         assert_eq!(sequence, 1);
     }
-    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
 }
 
 #[test]
@@ -374,7 +372,7 @@ fn exact_retry_cannot_bypass_failed_canceled_or_closed_admission() {
                 RamControlDisposition::Unavailable
             }
         );
-        assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+        assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
     }
 }
 
@@ -405,18 +403,18 @@ fn live_budget_reduction_expires_original_start_and_later_extension_cannot_reviv
     let operation = controller.begin(SourceOperationClass::PageIn).unwrap();
     std::thread::sleep(Duration::from_millis(25));
 
-    controller.state.lock().unwrap().budgets[2].total_ms = Some(1);
+    controller.state.lock().unwrap().budgets[2].total_ns = Some(1_000_000);
     assert_eq!(
         operation.wait_slice().unwrap_err().kind(),
         io::ErrorKind::TimedOut
     );
-    controller.state.lock().unwrap().budgets[2].total_ms = Some(30_000);
+    controller.state.lock().unwrap().budgets[2].total_ns = Some(30_000_000_000);
     assert_eq!(
         operation.complete().unwrap_err().kind(),
         io::ErrorKind::TimedOut
     );
     drop(operation);
-    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
 }
 
 #[test]
@@ -444,7 +442,7 @@ fn meaningful_work_progress_is_monotonic_and_cannot_renew_total_authority() {
         .lock()
         .unwrap_or_else(|error| panic!("amend live budget: {error}"))
         .budgets[6]
-        .total_ms = Some(1);
+        .total_ns = Some(1_000_000);
     assert_eq!(
         operation
             .progress(2)
@@ -458,7 +456,7 @@ fn meaningful_work_progress_is_monotonic_and_cannot_renew_total_authority() {
         .lock()
         .unwrap_or_else(|error| panic!("extend live budget: {error}"))
         .budgets[6]
-        .total_ms = Some(30_000);
+        .total_ns = Some(30_000_000_000);
     assert_eq!(
         operation
             .progress(3)
@@ -477,7 +475,7 @@ fn completed_work_renews_progress_without_moving_the_original_start() {
         .lock()
         .unwrap_or_else(|error| panic!("configure progress budget: {error}"))
         .budgets[6]
-        .progress_ms = Some(500);
+        .progress_ns = Some(500_000_000);
     let operation = controller
         .begin(SourceOperationClass::Quiescence)
         .unwrap_or_else(|error| panic!("begin original work: {error}"));
@@ -529,7 +527,7 @@ fn unlimited_class_uses_shared_original_outer_and_expiry_cannot_revive() {
     {
         let mut state = controller.state.lock().unwrap();
         state.outer = Some(cap);
-        state.budgets[2].total_ms = None;
+        state.budgets[2].total_ns = None;
     }
     let page = controller.begin(SourceOperationClass::PageIn).unwrap();
     std::thread::sleep(Duration::from_millis(10));
@@ -609,9 +607,9 @@ fn cap_amendment_preserves_identity_anchor_and_exact_revision() {
 #[test]
 fn cleanup_keeps_finite_allowance_even_when_outer_supplies_other_infrastructure() {
     let mut budgets = [RamControlBudget {
-        poll_ms: 10,
-        progress_ms: None,
-        total_ms: None,
+        poll_ns: 10_000_000,
+        progress_ns: None,
+        total_ns: None,
     }; RAM_CONTROL_BUDGET_COUNT];
     let cap = RamControlOuterCap {
         cap_id: [8; 32],
@@ -621,7 +619,7 @@ fn cleanup_keeps_finite_allowance_even_when_outer_supplies_other_infrastructure(
         state: RamControlOuterState::Running,
     };
     assert!(validate_infrastructure(&budgets, Some(cap)).is_err());
-    budgets[13].total_ms = Some(1000);
+    budgets[13].total_ns = Some(1_000_000_000);
     assert!(validate_infrastructure(&budgets, Some(cap)).is_ok());
     assert!(
         validate_infrastructure(
@@ -692,7 +690,7 @@ fn early_child_accepts_only_recorded_initial_retry_before_native_runtime_ready()
     assert_eq!(state.applied_revision, 1);
     assert_eq!(state.policy, Some(policy));
     assert_eq!(state.resources, resources);
-    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
 }
 
 #[test]
@@ -702,24 +700,24 @@ fn fingerprint_loan_retains_live_slot_until_return_and_callback_unwind() {
     controller
         .with_fingerprint_operation(&mut |operation| {
             calls += 1;
-            assert_eq!(controller.operations.load(Ordering::Acquire), 1);
+            assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 1);
             assert!(operation.wait_slice_for_observation().is_ok());
             assert!(operation.complete_observation().is_ok());
             assert!(operation.complete_observation().is_err());
-            assert_eq!(controller.operations.load(Ordering::Acquire), 1);
+            assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 1);
         })
         .unwrap();
     assert_eq!(calls, 1);
-    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
 
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = controller.with_fingerprint_operation(&mut |_| {
-            assert_eq!(controller.operations.load(Ordering::Acquire), 1);
+            assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 1);
             panic!("callback unwind control");
         });
     }));
     assert!(unwind.is_err());
-    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
 }
 
 #[test]
@@ -738,11 +736,12 @@ fn fingerprint_loan_refuses_before_callback_and_keeps_original_terminal_cause() 
         }
     ));
     assert_eq!(calls, 0);
-    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
 
     controller.canceled.store(false, Ordering::Release);
     controller
         .operations
+        .capacity
         .store(MAX_OPERATIONS, Ordering::Release);
     assert!(matches!(
         controller.with_fingerprint_operation(&mut |_| calls += 1),
@@ -753,12 +752,12 @@ fn fingerprint_loan_refuses_before_callback_and_keeps_original_terminal_cause() 
     ));
     assert_eq!(calls, 0);
     assert_eq!(
-        controller.operations.load(Ordering::Acquire),
+        controller.operations.capacity.load(Ordering::Acquire),
         MAX_OPERATIONS
     );
-    controller.operations.store(0, Ordering::Release);
+    controller.operations.capacity.store(0, Ordering::Release);
 
-    controller.state.lock().unwrap().budgets[5].poll_ms = 0;
+    controller.state.lock().unwrap().budgets[5].poll_ns = 0;
     assert!(matches!(
         controller.with_fingerprint_operation(&mut |_| calls += 1),
         Err(ObservationOperationError::Static {
@@ -767,9 +766,9 @@ fn fingerprint_loan_refuses_before_callback_and_keeps_original_terminal_cause() 
         })
     ));
     assert_eq!(calls, 0);
-    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
 
-    controller.state.lock().unwrap().budgets[5].poll_ms = 10;
+    controller.state.lock().unwrap().budgets[5].poll_ns = 10_000_000;
     controller
         .with_fingerprint_operation(&mut |operation| {
             controller.canceled.store(true, Ordering::Release);
@@ -790,7 +789,7 @@ fn fingerprint_loan_refuses_before_callback_and_keeps_original_terminal_cause() 
             ));
         })
         .unwrap();
-    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
 }
 
 #[test]
@@ -831,7 +830,10 @@ fn restore_page_exchange_forwards_the_live_loan_and_releases_source_custody() {
                     // This is still inside the actual LiveOperation loan. The
                     // page exchange must have returned the connection lock first.
                     assert!(source.endpoint_descriptors().is_ok());
-                    assert_eq!(self.controller.operations.load(Ordering::Acquire), 1);
+                    assert_eq!(
+                        self.controller.operations.capacity.load(Ordering::Acquire),
+                        1
+                    );
                     if self.mode == 2 {
                         exchange(operation);
                     }
@@ -917,7 +919,7 @@ fn restore_page_exchange_forwards_the_live_loan_and_releases_source_custody() {
                 assert_eq!(request.page_index, 0);
                 assert_eq!(request.sequence, 1);
                 assert!(source.endpoint_descriptors().is_err());
-                assert_eq!(controller.operations.load(Ordering::Acquire), 1);
+                assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 1);
                 let proof = tree.proof("ram", 0).unwrap().encode();
                 write_ram_page_response(
                     &mut server,
@@ -982,9 +984,27 @@ fn restore_page_exchange_forwards_the_live_loan_and_releases_source_custody() {
             worker.join().unwrap();
         }
         assert!(source.endpoint_descriptors().is_ok());
-        assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+        assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
         if !canceled {
             assert_eq!(factory.callbacks.load(Ordering::Acquire), 1);
         }
     }
+}
+
+pub(super) mod capture;
+
+#[test]
+fn precise_allowance_arithmetic_preserves_nanoseconds_without_clock_waits() {
+    assert_eq!(
+        remaining_allowance_ns(2, Duration::from_nanos(1)),
+        Some(Duration::from_nanos(1)),
+    );
+    assert_eq!(
+        remaining_allowance_ns(2_000_000, Duration::from_micros(1500)),
+        Some(Duration::from_micros(500)),
+    );
+    for allowance in [0, RAM_CONTROL_MAX_ALLOWANCE_NS + 1, u64::MAX] {
+        assert_eq!(remaining_allowance_ns(allowance, Duration::ZERO), None);
+    }
+    assert_eq!(remaining_allowance_ns(1, Duration::from_nanos(1)), None);
 }

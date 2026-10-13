@@ -30,7 +30,7 @@ crucible-s3-store = { workspace = true }
 crucible-session = { path = "../crucible-session" }
 ed25519-dalek = { workspace = true }
 rand = { workspace = true }
-rustix = { workspace = true, features = ["event", "net", "time", "process"] }
+rustix = { workspace = true, features = ["event", "net", "time", "process", "param"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

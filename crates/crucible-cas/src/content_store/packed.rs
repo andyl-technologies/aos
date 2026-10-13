@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 
 pub(super) mod admitted;
+pub(super) mod canonical_session;
 mod checked;
 mod checked_publication;
 
@@ -615,6 +616,10 @@ fn inject_pack_index_interruption() {
 }
 
 impl ImmutableBlobBackend for PackedBlobBackend {
+    fn prefers_wide_publication_groups(&self) -> bool {
+        true
+    }
+
     fn read_bounded_with_boundary(
         &self,
         request: &mut crate::ram::BoundedReadRequest<'_, '_>,

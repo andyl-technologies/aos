@@ -4,13 +4,15 @@ use super::*;
 use crate::content_store::checked_reader;
 use crate::owned_decode::{DecodeBudget, DecodeScratch};
 
+mod whole;
+
 /// Reports observed object visibility and directory durability for a batch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DirectoryPublicationOutcome {
     /// Number of successful new conditional hard links in this operation.
-    pub published_objects: u8,
+    pub published_objects: u16,
     /// Number of input objects authenticated and covered by a successful sync.
-    pub durable_objects: u8,
+    pub durable_objects: u16,
     /// Indicates unconfirmed visibility or directory durability after publication.
     pub durability_uncertain: bool,
 }
@@ -201,7 +203,7 @@ pub(super) fn publish(
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<PutBatchReceipt, StoreError> {
     checked_reader::check(original, boundary)?;
-    if objects.len() > 64 {
+    if objects.len() > batch::MAX_PUBLICATION_OBJECTS {
         return Err(StoreError::Quota);
     }
     let receipt_credit = batch::admit_receipts(original, objects.len(), backend.name.len())?;
@@ -377,6 +379,9 @@ fn copy_checked(
     check: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     check()?;
+    if source.checked_read_access() == CheckedReadAccess::Whole {
+        return whole::copy(original, id, source, sink, path, check);
+    }
     let mut reader = BlobSource::open_with_boundary(source, original, check)?;
     let source_account = reader.original_account().clone();
     let credit = source_account

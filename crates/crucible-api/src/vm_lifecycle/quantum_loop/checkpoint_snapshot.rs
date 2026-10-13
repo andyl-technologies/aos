@@ -443,7 +443,9 @@ impl ProductionVmLifecycleLoop {
                 capture.overlay_artifact = Some(overlay_artifact);
 
                 let expected_device_bytes = exact_capture.device_bytes();
-                let device_file = exact_capture.device_output_mut();
+                let mut device_file = exact_capture
+                    .device_output_mut()
+                    .map_err(|source| SchedulerError::from(crucible::BackendError::from(source)))?;
                 let device_length = device_file
                     .metadata()
                     .map_err(|error| SchedulerError::BoundaryViolation {
@@ -456,12 +458,12 @@ impl ProductionVmLifecycleLoop {
                     });
                 }
                 let device_content_sha256 = hash_exact_checkpoint_open_file_sha256_with_boundary(
-                    device_file,
+                    &mut device_file,
                     &device_output,
                     boundary,
                 )?;
                 let device_artifact = stage_open_checkpoint_artifact_chunks_with_boundary(
-                    device_file,
+                    &mut device_file,
                     &device_output,
                     &staged_device_chunks,
                     "exact device VMState",

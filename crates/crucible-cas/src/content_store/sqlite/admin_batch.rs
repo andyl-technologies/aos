@@ -232,7 +232,8 @@ impl BlobInventoryFence for CheckedFence<'_> {
             let backend = inner.backend;
             let mut original = || check(backend, account, boundary);
             original()?;
-            if ids.len() > MAX_BATCH_OBJECTS {
+            // Administrative mutation retains its independent 64-ID bound.
+            if ids.len() > 64 {
                 return Err(StoreError::Quota);
             }
             let credit = account

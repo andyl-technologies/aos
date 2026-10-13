@@ -1,12 +1,12 @@
 //! Setup completion for the QEMU plugin control protocol.
 //!
-//! The setup path consumes the `Setup` descriptors, maps the shared-memory
+//! The setup path borrows the native owner's current `Setup` roles, maps shared memory
 //! region for exactly the advertised byte length, validates the region header,
 //! authenticates the current-version sealed plugin plan, and arms the wake
 //! fd for later event-loop registration. The caller then proves plugin callback
 //! ownership, registers the wake fd, and sends `SetupAck(0)` with the returned
 //! completion token. Descriptor validity comes from the fixed SCM_RIGHTS
-//! handoff; mmap lifetime is owned by the returned [`PluginSetupCompletion`]
+//! handoff authenticated by native preinit; mmap lifetime is owned by [`PluginSetupCompletion`]
 //! token.
 
 #[cfg(unix)]
@@ -18,18 +18,19 @@ use thiserror::Error;
 
 #[cfg(unix)]
 use crucible_protocol::{
-    DescriptorHandoverError, ReceivedSetup, SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED,
+    DescriptorHandoverError, SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED,
     SetupCompletionError,
     app_random_branch_plan::AppRandomBranchPlan,
     plugin_send_setup_ack,
     plugin_setup_plan::{PLUGIN_SETUP_PLAN_MAX_BYTES, PluginSetupPlan, PluginSetupPlanError},
-    recv_setup_with_descriptors,
     selectable_catalog_plan::SelectableCatalogPlan,
 };
+#[cfg(all(test, unix))]
+use crucible_protocol::{ReceivedSetup, recv_setup_with_descriptors};
 #[cfg(unix)]
 use crucible_shmem::{
-    HotForkChildMappingInstallError, MappedSetupRegion, RegionLayout, RegionSetupValidationError,
-    SetupRegionBackingIdentity, SetupRegionMapError, ValidatedSetupRegion, mmap_setup_region,
+    MappedSetupRegion, RegionLayout, RegionSetupValidationError, SetupRegionMapError,
+    ValidatedSetupRegion, mmap_setup_region,
 };
 
 #[cfg(unix)]
@@ -51,7 +52,7 @@ pub use failure_ack::{PluginSetupFailureStage, send_callback_registration_failur
 #[cfg(unix)]
 #[derive(Debug)]
 pub struct ArmedWakeFd {
-    fd: OwnedFd,
+    fd: crate::startup_source::SetupDescriptor,
 }
 
 #[cfg(unix)]
@@ -75,7 +76,42 @@ impl ArmedWakeFd {
         set_close_on_exec(fd.as_raw_fd())?;
         set_nonblocking(fd.as_raw_fd())?;
         validate_wake_descriptor(fd.as_raw_fd())?;
-        Ok(Self { fd })
+        Ok(Self { fd: fd.into() })
+    }
+
+    // The native view arrives already configured by its authentic owner. Inspect
+    // its flags and eventfd behavior without mutating descriptor/OFD flags.
+    pub(crate) fn arm_role(
+        fd: crate::startup_source::SetupDescriptor,
+    ) -> Result<Self, WakeFdArmError> {
+        if fd.is_native() {
+            // A malformed provider cannot make the empty-counter check block.
+            // SAFETY: these queries inspect the still-native-owned descriptor.
+            let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+            let descriptor_flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+            if flags < 0
+                || descriptor_flags < 0
+                || flags & libc::O_NONBLOCK == 0
+                || descriptor_flags & libc::FD_CLOEXEC == 0
+            {
+                return Err(WakeFdArmError::Fcntl {
+                    operation: "validate native wake role flags",
+                    errno: if flags < 0 || descriptor_flags < 0 {
+                        last_errno()
+                    } else {
+                        libc::EINVAL
+                    },
+                });
+            }
+            validate_wake_descriptor(fd.as_raw_fd())?;
+            Ok(Self { fd })
+        } else {
+            let owned = fd.into_owned().ok_or(WakeFdArmError::Fcntl {
+                operation: "owned wake role is absent",
+                errno: libc::EBADF,
+            })?;
+            Self::arm(owned)
+        }
     }
 
     /// Returns the raw descriptor number for QEMU registration.
@@ -166,11 +202,12 @@ pub struct PluginSetupCompletion {
     selectable_catalog_plan: Option<SelectableCatalogPlan>,
     registered_wake_fd: Option<RegisteredWakeFd>,
     process_generation: u64,
-    device_digest_purpose_plan: Option<OwnedFd>,
     startup_source: Option<crate::startup_source::InstallerStartupSource>,
-    refused_device_digest_workspace:
-        Option<crate::device_digest_workspace::RefusedInitialDeviceDigestWorkspace>,
-    device_digest_workspace: Option<(crucible_protocol::DeviceDigestWorkspaceBinding, OwnedFd)>,
+    refused_device_digest_workspace: Option<crate::device_digest_workspace::DeviceDigestWorkspace>,
+    device_digest_workspace: Option<(
+        crucible_protocol::DeviceDigestWorkspaceBinding,
+        crate::startup_source::SetupDescriptor,
+    )>,
 }
 
 #[cfg(unix)]
@@ -182,8 +219,80 @@ impl PluginSetupCompletion {
         self.startup_source = Some(source);
     }
 
+    /// Admits the three configured callback runtime allocations before their birth.
+    ///
+    /// # Errors
+    /// Refuses missing original custody or the actual native containing-purpose
+    /// reservation. The same Source retains any failed debit until retirement.
+    pub(crate) fn reserve_runtime_allocations(
+        &mut self,
+        layouts: [std::alloc::Layout; 3],
+    ) -> Result<(), crate::StartupSourceError> {
+        self.startup_source
+            .as_mut()
+            .ok_or(crate::StartupSourceError::Ownership {
+                reason: "initial installer Source is absent",
+            })?
+            .reserve_runtime_allocations(layouts)
+    }
+
+    /// Rechecks the admitted runtime allocations under the same installing original.
+    ///
+    /// # Errors
+    /// Preserves missing Source or the native purpose/original refusal.
+    pub(crate) fn check_runtime_allocations(&self) -> Result<(), crate::StartupSourceError> {
+        self.original_startup()?.check_runtime_allocations()
+    }
+
+    /// Runs one actor registration/birth exchange under the same installing Source.
+    ///
+    /// # Errors
+    /// Preserves missing custody or the actual exchange/original refusal. Native
+    /// outputs must already be retained before the independent postcut can fail.
+    pub(crate) fn with_ram_actor_purposes(
+        &self,
+        exchange: impl FnOnce(u64, *mut std::ffi::c_void, *mut std::ffi::c_void) -> i32,
+    ) -> Result<(), crate::StartupSourceError> {
+        self.original_startup()?.with_ram_actor_purposes(exchange)
+    }
+
+    /// Observes the native owner's terminal shutdown without mutating a borrow.
+    ///
+    /// # Errors
+    /// Refuses missing Source custody or a rejected native journal observation.
+    pub(crate) fn interrupt_runtime_reader(&self) -> Result<bool, crate::StartupSourceError> {
+        self.original_startup()?.interrupt_runtime_reader()
+    }
+
     pub(crate) fn check_original_startup(&self) -> Result<(), crate::StartupSourceError> {
         self.original_startup()?.check()
+    }
+
+    /// Admits the configured seven fixed controls before callback runtime birth.
+    ///
+    /// # Errors
+    /// Refuses absent original custody, unavailable SDK or actual native admission.
+    pub(crate) fn reserve_installer_control_purpose(
+        &mut self,
+    ) -> Result<(), crate::StartupSourceError> {
+        self.startup_source
+            .as_mut()
+            .ok_or(crate::StartupSourceError::Ownership {
+                reason: "initial installer Source is absent",
+            })?
+            .reserve_installer_control_purpose()
+    }
+
+    /// Rechecks the same fixed-control holder before managed controller effects.
+    ///
+    /// # Errors
+    /// Preserves missing Source or the actual native purpose/original refusal.
+    pub(crate) fn require_installer_control_purpose(
+        &self,
+    ) -> Result<(), crate::ram_error::RamError> {
+        self.original_startup()
+            .map_err(crate::ram_error::RamError::InstallerSource)?
+            .require_installer_control_purpose()
     }
 
     pub(crate) fn original_startup_slice(
@@ -249,65 +358,34 @@ impl PluginSetupCompletion {
                 reason: "setup process generation differs from installation",
             });
         }
-        if let Some(original) = self.startup_source.as_ref() {
-            original
-                .check()
-                .map_err(|source| crate::DeviceDigestWorkspaceError::StartupSource { source })?;
-        }
+        let original = self
+            .original_startup()
+            .map_err(|source| crate::DeviceDigestWorkspaceError::StartupSource { source })?;
+        original
+            .check()
+            .map_err(|source| crate::DeviceDigestWorkspaceError::StartupSource { source })?;
+        let plan = original
+            .plan_fd()
+            .map_err(|source| crate::DeviceDigestWorkspaceError::StartupSource { source })?
+            .as_raw_fd();
         let (binding, descriptor) = self.device_digest_workspace.take().ok_or(
             crate::DeviceDigestWorkspaceError::Ownership {
                 reason: "fingerprint-enabled setup lacks its compulsory workspace",
             },
         )?;
-        if let Some(original) = self.startup_source.as_ref() {
-            let result = crate::device_digest_workspace::DeviceDigestWorkspace::prepare(
-                plugin_id,
-                process_generation,
-                binding,
-                descriptor,
-                original
-                    .plan_fd()
-                    .map_err(|source| crate::DeviceDigestWorkspaceError::StartupSource { source })?
-                    .as_raw_fd(),
-            );
-            return match result {
-                Ok(workspace) => Ok(workspace),
-                Err(failure) => {
-                    let source = failure.source;
-                    self.refused_device_digest_workspace = Some(
-                        crate::device_digest_workspace::RefusedInitialDeviceDigestWorkspace::retain_with_source_owner(failure),
-                    );
-                    Err(source)
-                }
-            };
-        }
-        let purpose_plan = self.device_digest_purpose_plan.take().ok_or(
-            crate::DeviceDigestWorkspaceError::Ownership {
-                reason: "the sealed fixed-purpose plan is absent",
-            },
-        )?;
-        let result = crate::device_digest_workspace::DeviceDigestWorkspace::prepare(
+        match crate::device_digest_workspace::DeviceDigestWorkspace::prepare(
             plugin_id,
             process_generation,
             binding,
             descriptor,
-            purpose_plan.as_raw_fd(),
-        );
-        // The initial claim has synchronously authenticated the existing sealed
-        // descriptor. Its independent owner closes only after that claim cut.
-        match result {
-            Ok(workspace) => {
-                drop(purpose_plan);
-                Ok(workspace)
-            }
+            plan,
+        ) {
+            Ok(workspace) => Ok(workspace),
             Err(failure) => {
                 let source = failure.source;
-                self.refused_device_digest_workspace = Some(
-                    crate::device_digest_workspace::RefusedInitialDeviceDigestWorkspace::retain(
-                        failure,
-                        purpose_plan,
-                    ),
-                );
+                // The same Source retains the plan. The workspace owner keeps
+                // its ambiguous claim and mapping through physical containment.
+                self.refused_device_digest_workspace = Some(failure.workspace);
                 Err(source)
             }
         }
@@ -376,64 +454,6 @@ impl PluginSetupCompletion {
     pub const fn registered_wake_fd(&self) -> Option<RegisteredWakeFd> {
         self.registered_wake_fd
     }
-
-    /// Installs and revalidates one exact branch-private child mapping.
-    ///
-    /// The source mapping must already be absent from the fork child. The new
-    /// descriptor must match the authenticated plan identity, must not alias
-    /// the template source object, and must reproduce the setup-time ABI and
-    /// layout contract before any retained callback pointer is used.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PluginSetupChildMappingError`] when exact mapping placement or
-    /// identity authentication fails, the replacement header is invalid, or
-    /// its validated setup contract differs from the template contract.
-    pub(crate) fn install_hot_fork_child_mapping(
-        &mut self,
-        fd: BorrowedFd<'_>,
-        expected: SetupRegionBackingIdentity,
-    ) -> Result<(), PluginSetupChildMappingError> {
-        self.mapped_region
-            .install_hot_fork_child_mapping(fd, expected)
-            .map_err(|source| PluginSetupChildMappingError::Install { source })?;
-
-        let actual_region = PluginShmemOrdering::validate_setup_header(&self.mapped_region)
-            .map_err(|source| PluginSetupChildMappingError::Validate { source })?;
-        let actual_layout = self
-            .mapped_region
-            .layout()
-            .map_err(|source| PluginSetupChildMappingError::Validate { source })?;
-        if actual_region != self.validated_region || actual_layout != self.validated_layout {
-            return Err(PluginSetupChildMappingError::ContractMismatch);
-        }
-
-        let identity = self.mapped_region.backing_identity();
-        self.shared_memory_device = identity.device();
-        self.shared_memory_inode = identity.inode();
-        Ok(())
-    }
-}
-
-/// Failure to bind retained plugin callback state to a fork-child mapping.
-#[cfg(unix)]
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub(crate) enum PluginSetupChildMappingError {
-    /// Exact-address mapping or backing-identity authentication failed.
-    #[error("fork-child setup mapping installation failed")]
-    Install {
-        /// Underlying exact mapping failure.
-        source: HotForkChildMappingInstallError,
-    },
-    /// The replacement shared-memory header or geometry is invalid.
-    #[error("fork-child setup mapping validation failed")]
-    Validate {
-        /// Underlying ABI or layout validation failure.
-        source: RegionSetupValidationError,
-    },
-    /// The replacement validates but differs from the template setup contract.
-    #[error("fork-child setup mapping contract differs from the template")]
-    ContractMismatch,
 }
 
 /// Typed evidence that the ready `SetupAck(0)` was sent.
@@ -461,7 +481,7 @@ impl PluginReadySetupAck {
 /// carry a valid `Setup` frame with the required three or four `SCM_RIGHTS` descriptors, or
 /// [`PluginSetupError::SendFailureAck`] when that setup failure cannot be
 /// acknowledged.
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub fn receive_setup_with_descriptors<S>(stream: &mut S) -> Result<ReceivedSetup, PluginSetupError>
 where
     S: AsRawFd + Write,
@@ -482,7 +502,7 @@ where
 /// Returns [`PluginSetupError`] when descriptor handover, mapping, header
 /// validation, handshake/header cross-checking, wake-fd arming, or failure
 /// acknowledgement fails.
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub fn receive_and_prepare_setup_completion<S>(
     stream: &mut S,
     handshake: PluginControlHandshake,
@@ -509,7 +529,7 @@ where
 ///
 /// Returns [`PluginSetupError`] when mapping, validation, handshake/header slot
 /// consistency, wake-fd arming, or failure-acknowledgement I/O fails.
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub fn prepare_setup_completion<W>(
     writer: &mut W,
     setup: ReceivedSetup,
@@ -519,11 +539,7 @@ where
     W: Write,
 {
     let (input, plan) = separate_received_plan(setup);
-    let mut completion =
-        prepare_setup_completion_borrowing_plan(writer, input, plan.as_fd(), None, handshake)?;
-    completion.device_digest_purpose_plan =
-        completion.device_digest_workspace.as_ref().map(|_| plan);
-    Ok(completion)
+    prepare_setup_completion_borrowing_plan(writer, input, plan.as_fd(), None, handshake)
 }
 
 /// Received setup resources with the independently retained third owner removed.
@@ -531,25 +547,79 @@ where
 pub(crate) struct SetupPreparationInput {
     region_len: u64,
     process_generation: u64,
-    shmem_fd: OwnedFd,
-    wake_fd: OwnedFd,
+    shmem_fd: crate::startup_source::SetupDescriptor,
+    wake_fd: crate::startup_source::SetupDescriptor,
     workspace_binding: Option<crucible_protocol::DeviceDigestWorkspaceBinding>,
-    workspace_fd: Option<OwnedFd>,
+    workspace_fd: Option<crate::startup_source::SetupDescriptor>,
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(crate) fn separate_received_plan(setup: ReceivedSetup) -> (SetupPreparationInput, OwnedFd) {
     (
         SetupPreparationInput {
             region_len: setup.region_len,
             process_generation: setup.process_generation,
-            shmem_fd: setup.descriptors.shmem_fd,
-            wake_fd: setup.descriptors.wake_fd,
+            shmem_fd: setup.descriptors.shmem_fd.into(),
+            wake_fd: setup.descriptors.wake_fd.into(),
             workspace_binding: setup.device_digest_workspace,
-            workspace_fd: setup.descriptors.device_digest_workspace,
+            workspace_fd: setup.descriptors.device_digest_workspace.map(Into::into),
         },
         setup.descriptors.plugin_setup_plan_fd,
     )
+}
+
+impl SetupPreparationInput {
+    pub(crate) fn from_native_setup(
+        setup: &crate::startup_source::NativeSetupBorrow,
+    ) -> Result<Self, crate::StartupSourceError> {
+        let frame = setup.frame();
+        let malformed = || crate::StartupSourceError::Ownership {
+            reason: "selected setup frame fields differ",
+        };
+        if frame[..4] != 57_u32.to_be_bytes() || frame[4] != crucible_protocol::TAG_SETUP {
+            return Err(malformed());
+        }
+        let read_u64 =
+            |offset| u64::from_be_bytes(std::array::from_fn(|index| frame[offset + index]));
+        let region_len = read_u64(5);
+        let process_generation = read_u64(21);
+        let workspace_binding = if setup.has_workspace() {
+            let binding = crucible_protocol::DeviceDigestWorkspaceBinding {
+                account_generation: read_u64(29),
+                workspace_generation: read_u64(37),
+                device: read_u64(45),
+                inode: read_u64(53),
+            };
+            if frame[13..17] != 1_u32.to_be_bytes()
+                || frame[17..21] != 2_u32.to_be_bytes()
+                || binding.account_generation == 0
+                || binding.workspace_generation == 0
+            {
+                return Err(malformed());
+            }
+            Some(binding)
+        } else {
+            if frame[13..21] != [0; 8] || frame[29..61] != [0; 32] {
+                return Err(malformed());
+            }
+            None
+        };
+        if region_len == 0 || process_generation == 0 {
+            return Err(malformed());
+        }
+        Ok(Self {
+            region_len,
+            process_generation,
+            shmem_fd: setup.role(0)?,
+            wake_fd: setup.role(1)?,
+            workspace_binding,
+            workspace_fd: if setup.has_workspace() {
+                Some(setup.role(3)?)
+            } else {
+                None
+            },
+        })
+    }
 }
 
 // This core never acquires Source from a caller-supplied descriptor. Runtime's
@@ -593,7 +663,10 @@ pub(crate) fn prepare_setup_completion_borrowing_plan<W: Write>(
         }
     };
 
-    let decoded_plans = match read_plugin_setup_plan(plugin_setup_plan_fd) {
+    let decoded_plans = match read_plugin_setup_plan(
+        plugin_setup_plan_fd,
+        original.and_then(crate::startup_source::InstallerStartupSource::retained_native_setup),
+    ) {
         Ok(plans) => plans,
         Err(source) => {
             send_setup_failure_ack(writer, PluginSetupFailureStage::ValidatePluginSetupPlan)?;
@@ -635,7 +708,7 @@ pub(crate) fn prepare_setup_completion_borrowing_plan<W: Write>(
 
     validate_setup_handshake_slot(writer, handshake, header_snapshot.node_count)?;
 
-    let wake_fd = match ArmedWakeFd::arm(wake_fd) {
+    let wake_fd = match ArmedWakeFd::arm_role(wake_fd) {
         Ok(wake_fd) => wake_fd,
         Err(source) => {
             send_setup_failure_ack(writer, PluginSetupFailureStage::ArmWakeFd)?;
@@ -654,7 +727,6 @@ pub(crate) fn prepare_setup_completion_borrowing_plan<W: Write>(
         registered_wake_fd: None,
         process_generation,
         refused_device_digest_workspace: None,
-        device_digest_purpose_plan: None,
         startup_source: None,
         device_digest_workspace,
     })
@@ -691,7 +763,18 @@ struct DecodedPluginSetupPlans {
 #[cfg(target_os = "linux")]
 fn read_plugin_setup_plan(
     fd: BorrowedFd<'_>,
+    native_setup: Option<&crate::startup_source::NativeSetupBorrow>,
 ) -> Result<DecodedPluginSetupPlans, PluginSetupPlanDescriptorError> {
+    #[cfg(not(test))]
+    if native_setup.is_none() {
+        return Err(PluginSetupPlanDescriptorError::DecodeComposite {
+            source: PluginSetupPlanError::InvalidPreexecSection {
+                section: "native custody",
+            },
+        });
+    }
+    #[cfg(test)]
+    let _model_native_custody = native_setup;
     let required_seals =
         libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
     let observed_seals = unsafe {
@@ -783,9 +866,9 @@ fn read_plugin_setup_plan(
         }
         read += count;
     }
-    let plan = PluginSetupPlan::decode(&bytes)
-        .map_err(|source| PluginSetupPlanDescriptorError::DecodeComposite { source })?;
-    let (app_random_branch_plan, selectable_catalog_plan) = plan.into_parts();
+    let (app_random_branch_plan, selectable_catalog_plan) =
+        PluginSetupPlan::decode_preexec_parts(&bytes)
+            .map_err(|source| PluginSetupPlanDescriptorError::DecodeComposite { source })?;
     Ok(DecodedPluginSetupPlans {
         app_random_branch_plan,
         selectable_catalog_plan: Some(selectable_catalog_plan),
@@ -795,6 +878,7 @@ fn read_plugin_setup_plan(
 #[cfg(all(unix, not(target_os = "linux")))]
 fn read_plugin_setup_plan(
     _fd: BorrowedFd<'_>,
+    _native_setup: Option<&crate::startup_source::NativeSetupBorrow>,
 ) -> Result<DecodedPluginSetupPlans, PluginSetupPlanDescriptorError> {
     Err(PluginSetupPlanDescriptorError::UnsupportedPlatform)
 }
@@ -1025,9 +1109,88 @@ pub(crate) fn test_plugin_setup_plan_fd() -> OwnedFd {
         crucible_protocol::selectable_catalog_plan::SelectablePlanContinuation::cold(),
     )
     .unwrap_or_else(|error| panic!("test selectable plan must validate: {error}"));
+    // This private fixture assembles structurally matching bytes. Its model
+    // table supplies no native issuer and cannot qualify a shipped launch.
+    let startup = crucible_protocol::plugin_setup_plan::StartupOperation::new(
+        crucible_protocol::plugin_setup_plan::StartupOperationFields {
+            cap_id: [7; 32],
+            operation_id: 2,
+            original_start_ns: 1,
+            absolute_end_ns: 3,
+            poll_ns: 1,
+            process_generation: 1,
+            cancellation_device: 1,
+            cancellation_inode: 2,
+            cancellation_event_id: 3,
+            cancellation_descriptor: 10,
+            original_total_metadata_bytes: 4096,
+        },
+    )
+    .unwrap();
+    let mut purpose = [0; crucible_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES];
+    purpose[..8].copy_from_slice(b"CRUCPUR6");
+    purpose[8..12].copy_from_slice(&6_u32.to_be_bytes());
+    purpose[12..16].copy_from_slice(
+        &(crucible_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES as u32).to_be_bytes(),
+    );
+    purpose[16..24].copy_from_slice(&4096_u64.to_be_bytes());
+    purpose[96..104].copy_from_slice(&1_u64.to_be_bytes());
+    purpose[184..216].copy_from_slice(&[7; 32]);
+    for (offset, value) in [
+        (512, 1_u64),
+        (520, 2),
+        (528, 100_000),
+        (536, 100_000),
+        (544, 64),
+        (552, 3001),
+        (560, 3001),
+    ] {
+        purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    // Syntax-only reservations exercise the codec; they issue no native owner.
+    for (offset, value) in [
+        (24, 2048_u64),
+        (72, 512),
+        (80, 1),
+        (88, 9),
+        (104, 1024),
+        (112, 256),
+        (120, 1),
+        (128, 32),
+        (136, 1),
+        (472, 1024),
+        (480, 2),
+        (528, 100_000),
+    ] {
+        purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    let mut family = [0; 256];
+    family[..8].copy_from_slice(b"CRUCFAM1");
+    family[8..12].copy_from_slice(&1_u32.to_be_bytes());
+    family[12..16].copy_from_slice(&256_u32.to_be_bytes());
+    family[16..48].copy_from_slice(&purpose[184..216]);
+    family[48..56].copy_from_slice(&9_u64.to_be_bytes());
+    family[56..64].copy_from_slice(&9_u64.to_be_bytes());
+    for (index, identity) in [(0, 11), (1, 13)] {
+        let offset = 64 + index * 96;
+        family[offset..offset + 4].copy_from_slice(&(index as u32).to_be_bytes());
+        family[offset + 8..offset + 40].fill(identity);
+        for (relative, value) in [
+            (40, 1024_u64),
+            (56, 1024),
+            (64, 256),
+            (72, 1),
+            (80, 32),
+            (88, 1),
+        ] {
+            family[offset + relative..offset + relative + 8].copy_from_slice(&value.to_be_bytes());
+        }
+    }
+    purpose[744..1000].copy_from_slice(&family);
     let bytes = PluginSetupPlan::new(AppRandomBranchPlan::default(), selectable)
-        .encode()
-        .unwrap_or_else(|error| panic!("test plugin setup plan must encode: {error}"));
+        .with_startup_operation(startup)
+        .encode_preexec(&purpose, None)
+        .unwrap();
     test_sealed_setup_plan_fd(&bytes)
 }
 

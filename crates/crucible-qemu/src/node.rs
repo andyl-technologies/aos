@@ -49,14 +49,23 @@ pub use readonly_backing::QemuReadOnlyBackingError;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 mod parent_park_drain;
 mod paused_observation;
+#[cfg(target_os = "linux")]
+mod receiving_transfer;
 pub(crate) use channels::QemuQmpMachineControlChannel;
 pub use channels::{QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShmemHotPathChannel};
+#[cfg(target_os = "linux")]
+pub use receiving_transfer::QemuStoppedTransferError;
 mod error;
-mod exact_snapshot;
+pub(crate) mod exact_snapshot;
 #[path = "node/host_policy.rs"]
 mod host_policy;
 mod network_output;
 #[cfg(target_os = "linux")]
+pub use exact_snapshot::{
+    CheckpointArmLoan, CheckpointOriginalCause, CheckpointOriginalError, CheckpointOriginalLoan,
+    CheckpointTransportCause, QemuCheckpointDeviceReader,
+};
+
 pub use exact_snapshot::{
     CaptureReadError, QemuCapturedRamPage, QemuExactCheckpointCaptureAdmission,
     QemuExactCheckpointCaptureBoundary, QemuExactCheckpointCaptureOutputs,
@@ -319,6 +328,10 @@ pub struct QemuNodeChild {
     launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
     #[cfg(target_os = "linux")]
     original_plugin_startup: Option<crate::spawn::OriginalPluginStartup>,
+    #[cfg(target_os = "linux")]
+    preexec_setup: Option<crate::spawn::preexec_setup::PreparedPreexecSetup>,
+    #[cfg(target_os = "linux")]
+    checkpoint_original: Option<exact_snapshot::capture_original::CheckpointOriginal>,
 }
 
 impl QemuNodeChild {
@@ -345,6 +358,10 @@ impl QemuNodeChild {
             launch_cleanup: None,
             #[cfg(target_os = "linux")]
             original_plugin_startup: None,
+            #[cfg(target_os = "linux")]
+            preexec_setup: None,
+            #[cfg(target_os = "linux")]
+            checkpoint_original: None,
         }
     }
 
@@ -357,6 +374,14 @@ impl QemuNodeChild {
     pub(crate) fn retain_launch_cleanup(&mut self, cleanup: crate::launch_cleanup::LaunchCleanup) {
         cleanup.child_started();
         self.launch_cleanup = Some(cleanup);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_preexec_setup(
+        &mut self,
+        owner: crate::spawn::preexec_setup::PreparedPreexecSetup,
+    ) {
+        self.preexec_setup = Some(owner);
     }
 
     #[cfg(target_os = "linux")]
@@ -393,6 +418,10 @@ impl QemuNodeChild {
 
     fn mark_reaped(&mut self) {
         self.reaped = true;
+        #[cfg(target_os = "linux")]
+        if let Some(original) = self.checkpoint_original.as_mut() {
+            original.retire_after_reap();
+        }
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         if let Some(startup) = self.original_plugin_startup.as_mut() {
             startup.retire_workspace_after_reap();
@@ -486,6 +515,39 @@ impl QemuNodeChild {
                 Ok(QemuReap::Reaped)
             }
             QemuChildWait::StillRunning => Ok(QemuReap::StillAlive),
+        }
+    }
+
+    /// Performs one actual SIGKILL and nonblocking reap observation.
+    ///
+    /// The stopped-launch caller checks its same Cleanup before and after this
+    /// cut, then uses the supervised change wait between observations. This
+    /// operation supplies no replacement clock or independent wait deadline.
+    ///
+    /// # Errors
+    /// Returns an actual signal or nonblocking wait failure; exit alone never
+    /// substitutes for the successful reap observation.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn kill_and_poll_reap(&mut self) -> Result<bool, QemuShutdownTargetError> {
+        if self.reaped {
+            return Ok(true);
+        }
+        let killed = self.child.kill();
+        match self.child.try_wait() {
+            Ok(Some(_)) => {
+                self.mark_reaped();
+                Ok(true)
+            }
+            Ok(None) => {
+                killed.map_err(|source| {
+                    QemuShutdownTargetError::new("kill stopped QEMU child", source.to_string())
+                })?;
+                Ok(false)
+            }
+            Err(source) => Err(QemuShutdownTargetError::new(
+                "poll stopped QEMU child reap",
+                source.to_string(),
+            )),
         }
     }
 
@@ -586,6 +648,9 @@ impl Drop for QemuNodeChild {
             if let Some(source) = self.ram_source.take() {
                 std::mem::forget(source);
             }
+            if let Some(owner) = self.preexec_setup.take() {
+                std::mem::forget(owner);
+            }
             if let Some(startup) = self.original_plugin_startup.take() {
                 // An uncertain child may still borrow the original operation
                 // and event role; retain its account through containment.
@@ -603,7 +668,7 @@ pub struct QemuNodeChannels {
     plugin_control: Box<dyn QemuPluginIpcControlChannel>,
     shmem_hot_path: Box<dyn QemuShmemHotPathChannel>,
     qmp_machine_control: Box<dyn QemuQmpMachineControlChannel>,
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     original_native_binding: Option<crate::linux_attempt_host::OriginalNativeNodeBinding>,
 }
 
@@ -620,7 +685,7 @@ impl QemuNodeChannels {
             plugin_control,
             shmem_hot_path,
             qmp_machine_control,
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            #[cfg(target_os = "linux")]
             None,
         )
     }
@@ -631,8 +696,7 @@ impl QemuNodeChannels {
         plugin_control: impl QemuPluginIpcControlChannel + 'static,
         shmem_hot_path: impl QemuShmemHotPathChannel + 'static,
         qmp_machine_control: impl QemuQmpMachineControlChannel + 'static,
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-        original_native_binding: Option<
+        #[cfg(target_os = "linux")] original_native_binding: Option<
             crate::linux_attempt_host::OriginalNativeNodeBinding,
         >,
     ) -> Self {
@@ -640,7 +704,7 @@ impl QemuNodeChannels {
             plugin_control: Box::new(plugin_control),
             shmem_hot_path: Box::new(shmem_hot_path),
             qmp_machine_control: Box::new(qmp_machine_control),
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            #[cfg(target_os = "linux")]
             original_native_binding,
         }
     }
@@ -729,7 +793,7 @@ pub struct QemuNode {
     // Release the slot witness only after every channel, runtime, staged owner
     // and reset keeper has finished destruction. Channel closure alone cannot
     // permit the external host to retire or reuse this native generation.
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     original_native_binding: Option<crate::linux_attempt_host::OriginalNativeNodeBinding>,
 }
 
@@ -836,7 +900,7 @@ impl QemuNode {
     ) -> Self {
         #[cfg(target_os = "linux")]
         let launch_cleanup = child.launch_cleanup.clone();
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        #[cfg(target_os = "linux")]
         let (channels, original_native_binding) = {
             let mut channels = channels;
             let binding = channels.original_native_binding.take();
@@ -901,7 +965,7 @@ impl QemuNode {
             fault_fingerprint_invalidated: false,
             #[cfg(target_os = "linux")]
             _launch_cleanup: launch_cleanup,
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            #[cfg(target_os = "linux")]
             original_native_binding,
         }
     }
@@ -3058,3 +3122,7 @@ pub use test_support::native_descriptors::{
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 #[path = "node_tests.rs"]
 pub(crate) mod tests;
+
+#[cfg(all(test, feature = "private-measurement-domain"))]
+#[path = "node/stopped_launch_tests.rs"]
+mod stopped_launch_tests;

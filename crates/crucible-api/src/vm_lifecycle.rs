@@ -1347,9 +1347,15 @@ impl ProductionVmAtomicExactRestore {
     /// materialization, QEMU restore, or the persisted running transition fails.
     pub fn launch(
         self,
+        issuer: impl FnOnce(
+            crucible_qemu::QemuProductionExactRestoreRequest,
+        ) -> Result<
+            crucible_qemu::QemuProductionExactRestoreLaunch,
+            crucible_qemu::QemuLiveNodeStepGateError,
+        >,
     ) -> Result<(QemuNode, QemuPreparedRunDirectory), crucible_qemu::QemuLiveNodeStepGateError>
     {
-        let launched = self.request.launch()?;
+        let launched = issuer(self.request)?;
         if self.paused {
             Ok(launched.into_node_and_run_directory())
         } else {
@@ -2002,6 +2008,40 @@ impl ProductionVmNodeLaunch {
 /// containment authority from their `Drop` path when lifecycle construction,
 /// unwinding, or caller abandonment prevents an explicit [`Self::finish`].
 pub trait ProductionVmNodeLauncher: Send {
+    /// Reports retained physical target custody before source cleanup.
+    #[cfg(target_os = "linux")]
+    fn fork_target_is_owned(&self) -> bool {
+        false
+    }
+
+    /// Lends the genuine source owner's single same-family target permit.
+    ///
+    /// # Errors
+    /// Refuses launchers without actual source ownership or a free target slot.
+    #[cfg(target_os = "linux")]
+    fn lend_fork_target_permit(
+        &mut self,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, LifecycleApiError> {
+        Err(loop_factory_error(
+            "launcher has no genuine source target issuer",
+        ))
+    }
+
+    /// Prepares a target generation beneath the source's retained project quota.
+    ///
+    /// # Errors
+    /// Refuses missing source storage, a foreign target contract or preparation.
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_run_directory(
+        &mut self,
+        _target_contract: &crucible_qemu::QemuChildProcessContract,
+        _requirements: crucible_qemu::QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, LifecycleApiError> {
+        Err(loop_factory_error(
+            "launcher has no genuine source storage owner",
+        ))
+    }
+
     /// Reports exclusion by a retained park owner, without issuing phase authority.
     ///
     /// Complete source-world operations use this negative gate before touching
@@ -2564,6 +2604,90 @@ where
         Box::new(launcher),
         None,
     )
+}
+
+mod receiving_transfer;
+pub use receiving_transfer::ProductionStoppedLifecycleError;
+
+/// Owns a reconstructed World whose live native nodes remain stopped.
+///
+/// This owner deliberately exposes no scheduler, debug, or quantum interface.
+/// It is not a destination Ready or execution-ownership grant. Read-only
+/// verification and physical cleanup expose no executable lifecycle interface.
+///
+/// ```compile_fail
+/// use crucible_api::ProductionVmStoppedLifecycle;
+/// fn expose(world: ProductionVmStoppedLifecycle) {
+///     let executable = world.lifecycle;
+/// }
+/// ```
+pub struct ProductionVmStoppedLifecycle {
+    lifecycle: Option<ProductionVmLifecycleLoop>,
+}
+
+impl ProductionVmStoppedLifecycle {
+    /// Reaps the complete stopped World and joins its retained source workers.
+    ///
+    /// # Errors
+    /// Keeps the entire World in this owner when cleanup is unproven. Dropping
+    /// that owner quarantines its scheduler, roots and native custody together.
+    pub fn shutdown(&mut self) -> Result<(), SchedulerError> {
+        if let Some(lifecycle) = self.lifecycle.as_mut() {
+            lifecycle.abort_stopped_restore()?;
+        }
+        self.lifecycle = None;
+        Ok(())
+    }
+}
+
+impl Drop for ProductionVmStoppedLifecycle {
+    fn drop(&mut self) {
+        if let Some(lifecycle) = self.lifecycle.take() {
+            // Standalone callers must retain the same complete stopped World
+            // as the daemon owner when physical retirement is not proven.
+            std::mem::forget(lifecycle);
+        }
+    }
+}
+
+/// Reconstructs one complete exact World with every live native node stopped.
+///
+/// Logical Running, PoweredOff and PermanentlyFailed dispositions retain their
+/// authenticated meanings. The caller must keep this lifecycle private until
+/// its durable execution-ownership commit; physical reconstruction alone does
+/// not authorize exposure, a scheduler quantum, or source destruction.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError`] for a different scenario, incomplete or
+/// incompatible continuation, failed admission, or unsuccessful native restore.
+pub fn build_production_vm_exact_stopped_lifecycle<L>(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    config: &ProductionVmLifecycleConfig,
+    decoded: DecodedProductionExactCheckpoint,
+    launcher: L,
+) -> Result<ProductionVmStoppedLifecycle, LifecycleApiError>
+where
+    L: ProductionVmNodeLauncher + 'static,
+{
+    if source.scenario_def() != *scenario {
+        return Err(loop_factory_error(
+            "repository checkpoint source does not reconstruct the requested scenario",
+        ));
+    }
+    construction::build_production_vm_lifecycle_loop_with_restore_exposure(
+        scenario,
+        source,
+        config,
+        Some(decoded.into_checkpoint()),
+        Box::new(launcher),
+        None,
+        construction::ExactRestoreExposure::AwaitingOwnershipCommit,
+    )
+    .map(|lifecycle| ProductionVmStoppedLifecycle {
+        lifecycle: Some(lifecycle),
+    })
 }
 
 /// Authenticates the exact scheduler and device boundary used by hot-fork capture.

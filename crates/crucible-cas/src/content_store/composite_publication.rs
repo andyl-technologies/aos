@@ -318,7 +318,7 @@ pub(super) fn publish<'a>(
     original
         .verify_live()
         .map_err(|error| admission_under(original, error))?;
-    if objects.len() > 64 {
+    if objects.len() > super::batch::MAX_PUBLICATION_OBJECTS {
         return Err(StoreError::Quota);
     }
     let writer_count = writers.clone().count();
@@ -332,7 +332,8 @@ pub(super) fn publish<'a>(
     bounds
         .try_reserve_exact(bound_count)
         .map_err(|error| allocation_under(original, error))?;
-    let mut totals = [CheckedPublicationMetadata::default(); 64];
+    let mut totals = super::batch::PrepaidBatchVec::with_capacity(original, objects.len())?;
+    totals.resize(objects.len(), CheckedPublicationMetadata::default());
     for writer in writers.clone() {
         for (index, (id, _)) in objects.iter().enumerate() {
             let bound = writer.checked_publication_metadata(id.kind())?;
@@ -370,7 +371,7 @@ pub(super) fn publish<'a>(
     value
         .try_reserve_exact(objects.len())
         .map_err(|error| allocation_under(original, error))?;
-    for ((id, _), bound) in objects.iter().zip(totals) {
+    for ((id, _), bound) in objects.iter().zip(totals.iter()) {
         let mut placements = Vec::new();
         placements
             .try_reserve_exact(bound.maximum_placements)

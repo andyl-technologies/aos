@@ -641,6 +641,7 @@ fn operational_boundary_regression_failures() -> Vec<String> {
         "pub fn status_snapshot_bounded() -> std::time::Instant { std::time::Instant::now() }",
         "pub struct HostOperationSupervisor { pub clock: std::time::Instant }",
         "pub fn outer_cap_binding() -> std::time::Instant { std::time::Instant::now() }",
+        "pub fn verify_operation_class() -> std::time::Instant { std::time::Instant::now() }",
         "pub struct HostOuterCapBinding { pub clock: std::time::Instant }",
     ] {
         let findings = package_source_confinement_findings(
@@ -654,14 +655,32 @@ fn operational_boundary_regression_failures() -> Vec<String> {
             ));
         }
     }
-    // A reviewed typed refusal is the only added root export. Neither aliases,
-    // sibling exports nor a public raw-clock signature inherit that review.
+    // Exact reviewed operations do not admit aliases, sibling exports or a
+    // public raw-clock signature.
     let supervision = "crucible-linux-resource/src/host_supervision.rs";
     let approved = operational_public_exports(
         "crucible-linux-resource",
         Path::new("crucible-linux-resource"),
         Path::new(supervision),
     );
+    for (source, accepted) in [
+        (
+            "pub fn verify_operation_class(&self, expected: HostOperationClass) -> Result<(), HostSupervisionError> {}",
+            true,
+        ),
+        (
+            "pub fn unchecked_operation_class(&self, expected: HostOperationClass) -> Result<(), HostSupervisionError> {}",
+            false,
+        ),
+    ] {
+        let findings = public_export_findings(Path::new(supervision), source, approved);
+        if findings.is_empty() != accepted {
+            failures.push(format!(
+                "original operation-class export misclassified: {source}: {findings:?}"
+            ));
+        }
+    }
+
     for (source, accepted) in [
         ("pub use quiescence::OriginalQuiescenceStartError;", true),
         ("pub use quiescence::UnreviewedQuiescenceClock;", false),

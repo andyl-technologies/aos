@@ -364,7 +364,59 @@ impl LeafLayout {
     }
 }
 
+/// Retains a fully validated node over one immutable owned byte image.
+///
+/// Reuse requires both that same allocation and byte-for-byte equality with a
+/// fresh read. A matching reference alone never authenticates new bytes.
+pub(super) struct NodeLayout {
+    address: usize,
+    length: usize,
+    height: u8,
+    count: usize,
+    records: u64,
+}
+
+impl NodeLayout {
+    /// Reuses this layout only over a fresh image identical to its owned bytes.
+    pub(super) fn identical_view<'a>(&self, retained: &[u8], fresh: &'a [u8]) -> Option<Node<'a>> {
+        if retained.as_ptr() as usize != self.address
+            || retained.len() != self.length
+            || retained != fresh
+        {
+            return None;
+        }
+        Some(Node {
+            bytes: fresh,
+            height: self.height,
+            count: self.count,
+            records: self.records,
+        })
+    }
+}
+
 impl<'a> Node<'a> {
+    /// Borrows the complete immutable image authenticated by this node.
+    pub(super) fn encoded_bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    /// Binds this validation to an identical caller-owned immutable image.
+    ///
+    /// # Errors
+    /// Refuses any byte difference before the layout can name that allocation.
+    pub(super) fn copied_layout(&self, copy: &[u8]) -> Result<NodeLayout, StoreError> {
+        if self.bytes != copy {
+            return Err(StoreError::Incompatible);
+        }
+        Ok(NodeLayout {
+            address: copy.as_ptr() as usize,
+            length: copy.len(),
+            height: self.height,
+            count: self.count,
+            records: self.records,
+        })
+    }
+
     pub(super) fn leaf_layout(&self) -> Option<LeafLayout> {
         (self.height == 0).then_some(LeafLayout {
             address: self.bytes.as_ptr() as usize,

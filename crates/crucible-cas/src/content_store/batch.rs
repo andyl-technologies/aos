@@ -7,6 +7,15 @@ use std::ops::Deref;
 
 use super::{BlobHandle, ContentId, PlacementReceipt, PutReceipt, StoreError, validate_bytes};
 
+mod bounded;
+pub(crate) use bounded::PrepaidBatchVec;
+
+/// Maximum records in one private checked publication transaction.
+///
+/// Encoded staging remains separately bounded to four MiB. This transaction
+/// width does not change the Packed on-disk node fan-in or campaign node chunks.
+pub(crate) const MAX_PUBLICATION_OBJECTS: usize = 256;
+
 /// Retains fully read bytes with the original account that admitted them.
 pub struct OwnedBlobBytes {
     bytes: Vec<u8>,

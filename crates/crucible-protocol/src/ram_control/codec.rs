@@ -6,6 +6,72 @@ mod fault_actor;
 mod operation_failure;
 mod performance;
 
+// Shared byte sink keeps owned and caller-funded encoding on one path.
+trait ByteSink {
+    fn push(&mut self, byte: u8);
+    fn extend_from_slice(&mut self, bytes: &[u8]);
+    fn len(&self) -> usize;
+    fn finish(&self) -> Result<(), RamControlError>;
+}
+
+impl ByteSink for Vec<u8> {
+    fn push(&mut self, byte: u8) {
+        Vec::push(self, byte);
+    }
+
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        Vec::extend_from_slice(self, bytes);
+    }
+
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+
+    fn finish(&self) -> Result<(), RamControlError> {
+        Ok(())
+    }
+}
+
+struct FixedEncoder<'a> {
+    bytes: &'a mut [u8],
+    length: usize,
+    overflowed: bool,
+}
+
+impl ByteSink for FixedEncoder<'_> {
+    fn push(&mut self, byte: u8) {
+        self.extend_from_slice(&[byte]);
+    }
+
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        if self.overflowed {
+            return;
+        }
+        let Some(end) = self.length.checked_add(bytes.len()) else {
+            self.overflowed = true;
+            return;
+        };
+        let Some(output) = self.bytes.get_mut(self.length..end) else {
+            self.overflowed = true;
+            return;
+        };
+        output.copy_from_slice(bytes);
+        self.length = end;
+    }
+
+    fn len(&self) -> usize {
+        self.length
+    }
+
+    fn finish(&self) -> Result<(), RamControlError> {
+        if self.overflowed {
+            Err(RamControlError::TooLarge)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 struct Decoder<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -51,7 +117,7 @@ impl<'a> Decoder<'a> {
             0 => Ok(None),
             1 => {
                 let value = self.u64()?;
-                if value == 0 || value > i64::MAX as u64 / 1_000_000 {
+                if value == 0 || value > RAM_CONTROL_MAX_ALLOWANCE_NS {
                     return Err(RamControlError::InvalidFrame);
                 }
                 Ok(Some(value))
@@ -61,10 +127,23 @@ impl<'a> Decoder<'a> {
     }
 }
 
-fn duration(out: &mut Vec<u8>, value: Option<u64>) -> Result<(), RamControlError> {
+fn decode_disposition(input: &mut Decoder<'_>) -> Result<RamControlDisposition, RamControlError> {
+    match input.byte()? {
+        0 => Ok(RamControlDisposition::Accepted),
+        1 => Ok(RamControlDisposition::RevisionConflict),
+        2 => Ok(RamControlDisposition::NotCurrent),
+        3 => Ok(RamControlDisposition::Unsupported),
+        4 => Ok(RamControlDisposition::AdmissionRefused),
+        5 => Ok(RamControlDisposition::Unavailable),
+        6 => Ok(RamControlDisposition::Canceled),
+        _ => Err(RamControlError::InvalidFrame),
+    }
+}
+
+fn duration(out: &mut impl ByteSink, value: Option<u64>) -> Result<(), RamControlError> {
     match value {
         None => out.push(0),
-        Some(value) if value > 0 && value <= i64::MAX as u64 / 1_000_000 => {
+        Some(value) if value > 0 && value <= RAM_CONTROL_MAX_ALLOWANCE_NS => {
             out.push(1);
             out.extend_from_slice(&value.to_be_bytes());
         }
@@ -74,7 +153,7 @@ fn duration(out: &mut Vec<u8>, value: Option<u64>) -> Result<(), RamControlError
 }
 
 fn encode_inventory(
-    out: &mut Vec<u8>,
+    out: &mut impl ByteSink,
     report: Option<RamControlInventoryReport>,
     region: Option<RamControlInventoryRegion>,
 ) -> Result<(), RamControlError> {
@@ -91,6 +170,11 @@ fn encode_inventory(
         || report.region_count > 4096
         || report.native_metadata_bytes == 0
         || report.native_scratch_bytes == 0
+        || report.rust_metadata_required_bytes == 0
+        || report
+            .native_metadata_bytes
+            .checked_add(report.rust_metadata_required_bytes)
+            .is_none()
     {
         return Err(RamControlError::InvalidFrame);
     }
@@ -101,6 +185,8 @@ fn encode_inventory(
         report.logical_bytes,
         report.native_metadata_bytes,
         report.native_scratch_bytes,
+        // The inventory marker and four preceding BE64 fields occupy 33 bytes.
+        report.rust_metadata_required_bytes,
         report.owner_resources.existing_tasks,
         report.owner_resources.existing_file_descriptors,
         report.owner_resources.registered_service_tasks,
@@ -146,6 +232,7 @@ fn decode_inventory(
         logical_bytes: input.u64()?,
         native_metadata_bytes: input.u64()?,
         native_scratch_bytes: input.u64()?,
+        rust_metadata_required_bytes: input.u64()?,
         owner_resources: RamControlOwnerInventory {
             existing_tasks: input.u64()?,
             existing_file_descriptors: input.u64()?,
@@ -171,16 +258,16 @@ fn decode_inventory(
 }
 
 fn encode_budgets(
-    out: &mut Vec<u8>,
+    out: &mut impl ByteSink,
     budgets: &[RamControlBudget; RAM_CONTROL_BUDGET_COUNT],
 ) -> Result<(), RamControlError> {
     for budget in budgets {
-        if budget.poll_ms == 0 || budget.poll_ms > i64::MAX as u64 / 1_000_000 {
+        if budget.poll_ns == 0 || budget.poll_ns > RAM_CONTROL_MAX_ALLOWANCE_NS {
             return Err(RamControlError::InvalidFrame);
         }
-        out.extend_from_slice(&budget.poll_ms.to_be_bytes());
-        duration(out, budget.progress_ms)?;
-        duration(out, budget.total_ms)?;
+        out.extend_from_slice(&budget.poll_ns.to_be_bytes());
+        duration(out, budget.progress_ns)?;
+        duration(out, budget.total_ns)?;
     }
     Ok(())
 }
@@ -189,17 +276,17 @@ fn decode_budgets(
     input: &mut Decoder<'_>,
 ) -> Result<[RamControlBudget; RAM_CONTROL_BUDGET_COUNT], RamControlError> {
     let mut budgets = [RamControlBudget {
-        poll_ms: 1,
-        progress_ms: None,
-        total_ms: None,
+        poll_ns: 1,
+        progress_ns: None,
+        total_ns: None,
     }; RAM_CONTROL_BUDGET_COUNT];
     for budget in &mut budgets {
-        budget.poll_ms = input.u64()?;
-        if budget.poll_ms == 0 || budget.poll_ms > i64::MAX as u64 / 1_000_000 {
+        budget.poll_ns = input.u64()?;
+        if budget.poll_ns == 0 || budget.poll_ns > RAM_CONTROL_MAX_ALLOWANCE_NS {
             return Err(RamControlError::InvalidFrame);
         }
-        budget.progress_ms = input.duration()?;
-        budget.total_ms = input.duration()?;
+        budget.progress_ns = input.duration()?;
+        budget.total_ns = input.duration()?;
     }
     Ok(budgets)
 }
@@ -243,7 +330,7 @@ pub fn decode_ram_control_budgets(
     Ok(budgets)
 }
 
-fn encode_policy(out: &mut Vec<u8>, policy: RamControlPolicy) -> Result<(), RamControlError> {
+fn encode_policy(out: &mut impl ByteSink, policy: RamControlPolicy) -> Result<(), RamControlError> {
     if policy.eviction_preference > 100
         || policy.writeback_bytes_per_second == 0
         || policy.maximum_paging_io_in_flight == 0
@@ -289,12 +376,160 @@ fn decode_policy(input: &mut Decoder<'_>) -> Result<RamControlPolicy, RamControl
     })
 }
 
+fn encode_header(frame: &RamControlFrame, tag: u8) -> Result<[u8; 158], RamControlError> {
+    if frame.session == [0; 32]
+        || frame.sequence == 0
+        || frame.target.owner_generation == 0
+        || frame.target.arena_generation == 0
+        || frame.target.daemon_epoch == [0; 32]
+        || frame.target.owner_id == [0; 32]
+        || frame.target.node_id == [0; 32]
+    {
+        return Err(RamControlError::InvalidFrame);
+    }
+    let mut output = [0; 158];
+    output[..4].copy_from_slice(&RAM_CONTROL_VERSION.to_be_bytes());
+    output[4] = tag;
+    output[5..37].copy_from_slice(&frame.session);
+    output[37..45].copy_from_slice(&frame.sequence.to_be_bytes());
+    output[45..77].copy_from_slice(&frame.target.daemon_epoch);
+    output[77..109].copy_from_slice(&frame.target.owner_id);
+    output[109..141].copy_from_slice(&frame.target.node_id);
+    output[141..149].copy_from_slice(&frame.target.owner_generation.to_be_bytes());
+    output[149..157].copy_from_slice(&frame.target.arena_generation.to_be_bytes());
+    output[157] = u8::from(frame.target.retained_template);
+    Ok(output)
+}
+
+/// Encodes checkpoint requests and custody observations in caller-owned storage.
+///
+/// The output excludes the four-byte stream length. Encoding, request digests,
+/// and canonical decoder verification allocate no heap storage. The caller
+/// retains actual admitted scratch and descriptor landing before parsing.
+///
+/// # Errors
+/// Refuses another message family, invalid common fields, a malformed original,
+/// or an accepted receipt without successful actual request custody.
+pub fn encode_ram_checkpoint_control(
+    frame: &RamControlFrame,
+    output: &mut [u8; RAM_CONTROL_CHECKPOINT_MAX_BYTES],
+) -> Result<usize, RamControlError> {
+    match frame.message {
+        RamControlMessage::Request(RamControlRequest::CheckpointArm { original }) => {
+            validate_checkpoint_original(&original)?;
+            output[..158].copy_from_slice(&encode_header(frame, 9)?);
+            output[158..238].copy_from_slice(&original);
+            Ok(238)
+        }
+        RamControlMessage::CheckpointArmReply {
+            request_digest,
+            receipt,
+        } => {
+            receipt.validate()?;
+            output[..158].copy_from_slice(&encode_header(frame, 129)?);
+            output[158..190].copy_from_slice(&request_digest);
+            output[190] = receipt.disposition as u8;
+            output[191..199].copy_from_slice(&receipt.request_generation.to_be_bytes());
+            output[199..203].copy_from_slice(&receipt.first_status.to_be_bytes());
+            output[203..207].copy_from_slice(&receipt.post_status.to_be_bytes());
+            Ok(207)
+        }
+        RamControlMessage::Request(RamControlRequest::CheckpointDisposition { binding }) => {
+            binding.validate()?;
+            output[..158].copy_from_slice(&encode_header(frame, 10)?);
+            encode_checkpoint_binding(output, binding);
+            Ok(206)
+        }
+        RamControlMessage::CheckpointDispositionReply { binding, receipt } => {
+            binding.validate()?;
+            receipt.validate(binding.connection_epoch)?;
+            output[..158].copy_from_slice(&encode_header(frame, 130)?);
+            encode_checkpoint_binding(output, binding);
+            output[206] = receipt.physical_state as u8;
+            output[207..211].copy_from_slice(&receipt.first_status.to_be_bytes());
+            output[211..215].copy_from_slice(&receipt.post_status.to_be_bytes());
+            Ok(215)
+        }
+        _ => Err(RamControlError::InvalidFrame),
+    }
+}
+
+fn encode_checkpoint_binding(
+    output: &mut [u8; RAM_CONTROL_CHECKPOINT_MAX_BYTES],
+    binding: RamControlCheckpointBinding,
+) {
+    output[158..190].copy_from_slice(&binding.arm_request_digest);
+    output[190..198].copy_from_slice(&binding.request_generation.to_be_bytes());
+    output[198..206].copy_from_slice(&binding.connection_epoch.to_be_bytes());
+}
+
+fn decode_checkpoint_binding(
+    input: &mut Decoder<'_>,
+) -> Result<RamControlCheckpointBinding, RamControlError> {
+    Ok(RamControlCheckpointBinding {
+        arm_request_digest: input.take()?,
+        request_generation: input.u64()?,
+        connection_epoch: input.u64()?,
+    })
+}
+
 /// Encodes a canonical message body, excluding the four-byte stream length.
 ///
 /// # Errors
 /// Rejects zero authority/session/sequence fields, invalid policy bounds,
 /// exhausted or non-advancing application revisions, and oversized bodies.
 pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControlError> {
+    if matches!(
+        frame.message,
+        RamControlMessage::Request(RamControlRequest::CheckpointArm { .. })
+            | RamControlMessage::CheckpointArmReply { .. }
+            | RamControlMessage::Request(RamControlRequest::CheckpointDisposition { .. })
+            | RamControlMessage::CheckpointDispositionReply { .. }
+    ) {
+        let mut body = [0; RAM_CONTROL_CHECKPOINT_MAX_BYTES];
+        let length = encode_ram_checkpoint_control(frame, &mut body)?;
+        return Ok(body[..length].to_vec());
+    }
+    let mut output = Vec::with_capacity(1024);
+    encode_message(frame, &mut output)?;
+    Ok(output)
+}
+
+/// Encodes any canonical RAM control body into caller-owned bounded storage.
+///
+/// The output excludes the four-byte stream length. This function shares the
+/// owned encoder's validation and byte order, without allocating a body. On
+/// failure, the output may contain a prefix and must not be transmitted.
+///
+/// # Errors
+/// Returns validation errors or `TooLarge` when the supplied storage is too
+/// small. The format's maximum body extent is [`RAM_CONTROL_MAX_BYTES`].
+pub fn encode_ram_control_into(
+    frame: &RamControlFrame,
+    output: &mut [u8],
+) -> Result<usize, RamControlError> {
+    let mut encoder = FixedEncoder {
+        bytes: output,
+        length: 0,
+        overflowed: false,
+    };
+    encode_message(frame, &mut encoder)?;
+    Ok(encoder.length)
+}
+
+fn encode_message(frame: &RamControlFrame, out: &mut impl ByteSink) -> Result<(), RamControlError> {
+    if matches!(
+        frame.message,
+        RamControlMessage::Request(RamControlRequest::CheckpointArm { .. })
+            | RamControlMessage::CheckpointArmReply { .. }
+            | RamControlMessage::Request(RamControlRequest::CheckpointDisposition { .. })
+            | RamControlMessage::CheckpointDispositionReply { .. }
+    ) {
+        let mut body = [0; RAM_CONTROL_CHECKPOINT_MAX_BYTES];
+        let length = encode_ram_checkpoint_control(frame, &mut body)?;
+        out.extend_from_slice(&body[..length]);
+        return out.finish();
+    }
     if frame.session == [0; 32]
         || frame.sequence == 0
         || frame.target.owner_generation == 0
@@ -315,9 +550,12 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
         RamControlMessage::Request(RamControlRequest::SyncOuterCap { .. }) => 6,
         RamControlMessage::Request(RamControlRequest::TestFaultActor { .. }) => 7,
         RamControlMessage::Request(RamControlRequest::Performance { .. }) => 8,
+        RamControlMessage::Request(RamControlRequest::CheckpointArm { .. }) => 9,
+        RamControlMessage::Request(RamControlRequest::CheckpointDisposition { .. }) => 10,
         RamControlMessage::Reply { .. } => 128,
+        RamControlMessage::CheckpointArmReply { .. } => 129,
+        RamControlMessage::CheckpointDispositionReply { .. } => 130,
     };
-    let mut out = Vec::with_capacity(1024);
     out.extend_from_slice(&RAM_CONTROL_VERSION.to_be_bytes());
     out.push(tag);
     out.extend_from_slice(&frame.session);
@@ -360,7 +598,7 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
             for value in resources.components() {
                 out.extend_from_slice(&value.to_be_bytes());
             }
-            encode_policy(&mut out, policy)?;
+            encode_policy(out, policy)?;
         }
         RamControlMessage::Request(RamControlRequest::Cancel {
             operation_generation,
@@ -424,6 +662,18 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
             {
                 return Err(RamControlError::InvalidFrame);
             }
+            if let Some(observation) = state.resident_observation {
+                observation.validate()?;
+                if observation.topology_generation != frame.target.arena_generation
+                    || observation.covered_bytes != state.logical_ram_bytes
+                    || observation.policy_revision != state.applied_policy_revision
+                    || state.inventory.is_none_or(|inventory| {
+                        inventory.topology_generation != observation.topology_generation
+                    })
+                {
+                    return Err(RamControlError::InvalidFrame);
+                }
+            }
             out.extend_from_slice(&request_digest);
             out.push(state.disposition as u8);
             out.extend_from_slice(&state.limitation_reasons.to_be_bytes());
@@ -444,10 +694,10 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
             ] {
                 out.extend_from_slice(&value.to_be_bytes());
             }
-            operation_failure::encode(&mut out, state.operation_failure)?;
-            fault_actor::encode(&mut out, state.fault_actor)?;
+            operation_failure::encode(out, state.operation_failure)?;
+            fault_actor::encode(out, state.fault_actor)?;
             out.push(state.convergence as u8);
-            encode_inventory(&mut out, state.inventory, state.inventory_region)?;
+            encode_inventory(out, state.inventory, state.inventory_region)?;
             out.push(u8::from(state.activity.is_some()));
             if let Some(activity) = state.activity {
                 for count in [
@@ -463,7 +713,7 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
                     out.extend_from_slice(&count.to_be_bytes());
                 }
             }
-            performance::encode(&mut out, state.performance)?;
+            performance::encode(out, state.performance)?;
             out.push(u8::from(state.kernel_probe.is_some()));
             if let Some(probe) = state.kernel_probe {
                 if probe.features == 0 {
@@ -489,13 +739,31 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
                     out.extend_from_slice(&value.to_be_bytes());
                 }
             }
+            out.push(u8::from(state.resident_observation.is_some()));
+            if let Some(observation) = state.resident_observation {
+                out.extend_from_slice(&observation.availability.to_be_bytes());
+                for value in [
+                    observation.topology_generation,
+                    observation.policy_revision,
+                    observation.policy_generation,
+                    observation.worker_generation,
+                    observation.writer_generation,
+                    observation.covered_bytes,
+                    observation.total_resident_bytes,
+                    observation.effective_target_bytes,
+                    observation.started_ns,
+                    observation.completed_ns,
+                ] {
+                    out.extend_from_slice(&value.to_be_bytes());
+                }
+            }
         }
         _ => {}
     }
     if out.len() > RAM_CONTROL_MAX_BYTES {
         return Err(RamControlError::TooLarge);
     }
-    Ok(out)
+    out.finish()
 }
 
 /// Decodes one complete bounded body and rejects trailing or noncanonical bytes.
@@ -581,18 +849,42 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
                 _ => return Err(RamControlError::InvalidFrame),
             },
         }),
-        128 => {
-            let request_digest = input.take()?;
-            let disposition = match input.byte()? {
-                0 => RamControlDisposition::Accepted,
-                1 => RamControlDisposition::RevisionConflict,
-                2 => RamControlDisposition::NotCurrent,
-                3 => RamControlDisposition::Unsupported,
-                4 => RamControlDisposition::AdmissionRefused,
-                5 => RamControlDisposition::Unavailable,
-                6 => RamControlDisposition::Canceled,
+        9 => RamControlMessage::Request(RamControlRequest::CheckpointArm {
+            original: input.take()?,
+        }),
+        10 => RamControlMessage::Request(RamControlRequest::CheckpointDisposition {
+            binding: decode_checkpoint_binding(&mut input)?,
+        }),
+        130 => {
+            let binding = decode_checkpoint_binding(&mut input)?;
+            let physical_state = match input.byte()? {
+                0 => RamControlCheckpointPhysicalState::Pending,
+                1 => RamControlCheckpointPhysicalState::Retired,
+                2 => RamControlCheckpointPhysicalState::NoRootAbandoned,
+                3 => RamControlCheckpointPhysicalState::Uncertain,
                 _ => return Err(RamControlError::InvalidFrame),
             };
+            RamControlMessage::CheckpointDispositionReply {
+                binding,
+                receipt: RamControlCheckpointDispositionReceipt {
+                    physical_state,
+                    first_status: i32::from_be_bytes(input.take()?),
+                    post_status: i32::from_be_bytes(input.take()?),
+                },
+            }
+        }
+        129 => RamControlMessage::CheckpointArmReply {
+            request_digest: input.take()?,
+            receipt: RamControlCheckpointArmReceipt {
+                disposition: decode_disposition(&mut input)?,
+                request_generation: input.u64()?,
+                first_status: i32::from_be_bytes(input.take()?),
+                post_status: i32::from_be_bytes(input.take()?),
+            },
+        },
+        128 => {
+            let request_digest = input.take()?;
+            let disposition = decode_disposition(&mut input)?;
             let limitation_reasons = input.u32()?;
             let measurements_available = input.boolean()?;
             let mut state = RamControlReply {
@@ -608,6 +900,7 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
                 disposition,
                 limitation_reasons,
                 measurements_available,
+                resident_observation: None,
                 requested_policy_revision: input.u64()?,
                 applied_policy_revision: input.u64()?,
                 reservation_revision: input.u64()?,
@@ -680,6 +973,23 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
                 }),
                 _ => return Err(RamControlError::InvalidFrame),
             };
+            state.resident_observation = match input.byte()? {
+                0 => None,
+                1 => Some(RamControlResidentObservation {
+                    availability: input.u32()?,
+                    topology_generation: input.u64()?,
+                    policy_revision: input.u64()?,
+                    policy_generation: input.u64()?,
+                    worker_generation: input.u64()?,
+                    writer_generation: input.u64()?,
+                    covered_bytes: input.u64()?,
+                    total_resident_bytes: input.u64()?,
+                    effective_target_bytes: input.u64()?,
+                    started_ns: input.u64()?,
+                    completed_ns: input.u64()?,
+                }),
+                _ => return Err(RamControlError::InvalidFrame),
+            };
             RamControlMessage::Reply {
                 request_digest,
                 state,
@@ -698,7 +1008,22 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
     };
     // One encoder owns all cross-field invariants. The decoder never allocates
     // according to a wire length and requires byte-for-byte canonical identity.
-    if encode_ram_control(&frame)?.as_slice() != bytes {
+    let canonical = if matches!(
+        frame.message,
+        RamControlMessage::Request(RamControlRequest::CheckpointArm { .. })
+            | RamControlMessage::CheckpointArmReply { .. }
+            | RamControlMessage::Request(RamControlRequest::CheckpointDisposition { .. })
+            | RamControlMessage::CheckpointDispositionReply { .. }
+    ) {
+        let mut scratch = [0; RAM_CONTROL_CHECKPOINT_MAX_BYTES];
+        let length = encode_ram_checkpoint_control(&frame, &mut scratch)?;
+        scratch[..length] == *bytes
+    } else {
+        let mut scratch = [0; RAM_CONTROL_MAX_BYTES];
+        let length = encode_ram_control_into(&frame, &mut scratch)?;
+        scratch[..length] == *bytes
+    };
+    if !canonical {
         return Err(RamControlError::InvalidFrame);
     }
     Ok(frame)
@@ -712,10 +1037,21 @@ pub fn ram_control_request_digest(frame: &RamControlFrame) -> Result<[u8; 32], R
     if !matches!(frame.message, RamControlMessage::Request(_)) {
         return Err(RamControlError::InvalidFrame);
     }
-    let bytes = encode_ram_control(frame)?;
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"crucible.ram.control.request.v1\0");
-    hasher.update(&bytes);
+    if matches!(
+        frame.message,
+        RamControlMessage::Request(RamControlRequest::CheckpointArm { .. })
+            | RamControlMessage::Request(RamControlRequest::CheckpointDisposition { .. })
+    ) {
+        let mut scratch = [0; RAM_CONTROL_CHECKPOINT_MAX_BYTES];
+        let length = encode_ram_checkpoint_control(frame, &mut scratch)?;
+        hasher.update(&scratch[..length]);
+    } else {
+        let mut scratch = [0; RAM_CONTROL_MAX_BYTES];
+        let length = encode_ram_control_into(frame, &mut scratch)?;
+        hasher.update(&scratch[..length]);
+    }
     Ok(*hasher.finalize().as_bytes())
 }
 
@@ -754,10 +1090,11 @@ pub fn write_ram_control(
     writer: &mut impl Write,
     frame: &RamControlFrame,
 ) -> Result<(), RamControlError> {
-    let body = encode_ram_control(frame)?;
-    let length = u32::try_from(body.len()).map_err(|_| RamControlError::TooLarge)?;
-    writer.write_all(&length.to_be_bytes())?;
-    writer.write_all(&body)?;
+    let mut body = [0; RAM_CONTROL_MAX_BYTES];
+    let length = encode_ram_control_into(frame, &mut body)?;
+    let framing_length = u32::try_from(length).map_err(|_| RamControlError::TooLarge)?;
+    writer.write_all(&framing_length.to_be_bytes())?;
+    writer.write_all(&body[..length])?;
     writer.flush()?;
     Ok(())
 }

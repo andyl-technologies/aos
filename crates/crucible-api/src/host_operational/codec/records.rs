@@ -8,6 +8,7 @@ use super::{Result, SCHEMA, admit_bytes, admitted_vec, invalid};
 use crucible_linux_resource::host_supervision::{
     HOST_OPERATION_CLASS_COUNT, HostEffectiveDeadline, HostOperationState,
 };
+use crucible_protocol::ram_control::RAM_CONTROL_MAX_ALLOWANCE_NS;
 
 pub(super) struct Writer {
     bytes: Vec<u8>,
@@ -73,17 +74,12 @@ impl Writer {
     }
 
     pub(super) fn duration(&mut self, value: Duration, allow_zero: bool) -> Result<()> {
-        if !allow_zero && (value.is_zero() || !value.subsec_nanos().is_multiple_of(1_000_000)) {
-            return Err(invalid("duration must be exact nonzero milliseconds"));
+        let nanoseconds = u64::try_from(value.as_nanos())
+            .map_err(|_| invalid("duration exceeds the signed monotonic range"))?;
+        if (!allow_zero && nanoseconds == 0) || nanoseconds > RAM_CONTROL_MAX_ALLOWANCE_NS {
+            return Err(invalid("duration is outside the allowed nanosecond range"));
         }
-        let mut millis =
-            u64::try_from(value.as_millis()).map_err(|_| invalid("duration overflow"))?;
-        if allow_zero && !value.subsec_nanos().is_multiple_of(1_000_000) {
-            millis = millis
-                .checked_add(1)
-                .ok_or_else(|| invalid("remaining duration overflow"))?;
-        }
-        self.u64(millis);
+        self.u64(nanoseconds);
         Ok(())
     }
 
@@ -294,6 +290,24 @@ impl Writer {
             self.u32(reason.len() as u32);
             self.bytes(reason.as_bytes());
         }
+        self.u8(u8::from(status.resident_observation.is_some()));
+        if let Some(observation) = status.resident_observation {
+            self.u32(observation.availability);
+            for value in [
+                observation.topology_generation,
+                observation.policy_revision,
+                observation.policy_generation,
+                observation.worker_generation,
+                observation.writer_generation,
+                observation.covered_bytes,
+                observation.total_resident_bytes,
+                observation.effective_target_bytes,
+                observation.started_ns,
+                observation.completed_ns,
+            ] {
+                self.u64(value);
+            }
+        }
         self.u8(u8::from(status.measurements_available));
         self.u8(u8::from(status.activity.is_some()));
         if let Some(activity) = status.activity {
@@ -445,11 +459,11 @@ impl<'a> Reader<'a> {
     }
 
     pub(super) fn duration(&mut self, allow_zero: bool) -> Result<Duration> {
-        let millis = self.u64()?;
-        if !allow_zero && millis == 0 {
-            return Err(invalid("zero configured duration"));
+        let nanoseconds = self.u64()?;
+        if (!allow_zero && nanoseconds == 0) || nanoseconds > RAM_CONTROL_MAX_ALLOWANCE_NS {
+            return Err(invalid("duration is outside the allowed nanosecond range"));
         }
-        Ok(Duration::from_millis(millis))
+        Ok(Duration::from_nanos(nanoseconds))
     }
 
     pub(super) fn optional_duration(&mut self, allow_zero: bool) -> Result<Option<Duration>> {
@@ -718,6 +732,23 @@ impl<'a> Reader<'a> {
             owned.push_str(reason);
             limitation_reasons.push(owned);
         }
+        let resident_observation = if self.boolean()? {
+            Some(HostRamResidentObservation {
+                availability: self.u32()?,
+                topology_generation: self.u64()?,
+                policy_revision: self.u64()?,
+                policy_generation: self.u64()?,
+                worker_generation: self.u64()?,
+                writer_generation: self.u64()?,
+                covered_bytes: self.u64()?,
+                total_resident_bytes: self.u64()?,
+                effective_target_bytes: self.u64()?,
+                started_ns: self.u64()?,
+                completed_ns: self.u64()?,
+            })
+        } else {
+            None
+        };
         let measurements_available = self.boolean()?;
         let activity = if self.boolean()? {
             Some(HostRamActivity {
@@ -788,6 +819,7 @@ impl<'a> Reader<'a> {
             effective_floor_bytes,
             limitation_reasons,
             measurements_available,
+            resident_observation,
             activity,
             private_resident_bytes,
             shared_resident_bytes_observed,
@@ -818,6 +850,16 @@ impl<'a> Reader<'a> {
 fn validate_placement(status: &HostRamStatus) -> Result<()> {
     if status.applied_policy_revision > status.policy_revision {
         return Err(invalid("applied placement exceeds accepted revision"));
+    }
+    if let Some(observation) = status.resident_observation {
+        observation
+            .validate()
+            .map_err(|_| invalid("invalid partial residency observation"))?;
+        if observation.topology_generation != status.target.arena_generation
+            || observation.policy_revision != status.applied_policy_revision
+        {
+            return Err(invalid("partial observation owner changed"));
+        }
     }
     let Some(receipt) = status.placement_receipt else {
         return Ok(());

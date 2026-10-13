@@ -248,44 +248,73 @@ impl QemuProductionExactRestoreRequest {
     ///
     /// Returns [`QemuLiveNodeStepGateError`] when byte authentication,
     /// descriptor sealing, launch admission, process setup, or restore fails.
-    pub fn launch(mut self) -> Result<QemuProductionExactRestoreLaunch, QemuLiveNodeStepGateError> {
-        self.run_directory
-            .prepare_vmstate_container_guarded(
-                self.config.qemu_executable(),
-                &self.process_contract,
-            )
-            .map_err(|source| QemuLiveNodeStepGateError::ExactVmstatePreparation { source })?;
-        let cancellation = self
-            .process_contract
-            .try_clone_cancellation_event()
-            .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
-        let ram_inputs = self
-            .run_directory
-            .materialize_production_exact_checkpoint(
-                &self.process_contract,
-                self.target,
-                self.source,
-                std::os::fd::AsFd::as_fd(&cancellation),
-            )
-            .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
-        let identity =
-            QemuLiveNodeIdentity::new(&self.node.name, &self.router, &self.crash_detector);
-        let admission = AtomicExactRestoreAdmission::admit(
-            &mut self.run_directory,
-            &self.process_contract,
-            identity,
-            &self.snapshot,
-            self.snapshot_object,
-            ram_inputs,
-            std::os::fd::AsFd::as_fd(&cancellation),
-        )?;
-        let (node, target) = launch_atomic_exact_restore(&self.config, admission, false)?;
-
-        Ok(QemuProductionExactRestoreLaunch {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn launch_in_issuer(
+        self,
+        issuer: &crate::InstalledNodeLaunchIssuer,
+    ) -> Result<QemuProductionExactRestoreLaunch, QemuLiveNodeStepGateError> {
+        let Self {
+            config,
+            mut run_directory,
+            process_contract,
+            snapshot,
+            snapshot_object,
             node,
-            run_directory: self.run_directory,
+            router,
+            crash_detector,
             target,
-        })
+            source,
+        } = self;
+        issuer.with_issued_node_launch(
+            &config,
+            &process_contract,
+            |binding, workspace, issued_contract| {
+                let envelope = issued_contract.configured_process_envelope().ok_or(
+                    QemuLiveNodeStepGateError::OriginalNativeAccount {
+                        source: crate::OriginalActorAccountError::Unavailable,
+                    },
+                )?;
+                if !envelope.matches_contract(&process_contract) {
+                    return Err(QemuLiveNodeStepGateError::OriginalNativeAccount {
+                        source: crate::OriginalActorAccountError::Unavailable,
+                    });
+                }
+                run_directory
+                    .prepare_vmstate_container_guarded(config.qemu_executable(), &process_contract)
+                    .map_err(
+                        |source| QemuLiveNodeStepGateError::ExactVmstatePreparation { source },
+                    )?;
+                let cancellation = process_contract
+                    .try_clone_cancellation_event()
+                    .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
+                let ram_inputs = run_directory
+                    .materialize_production_exact_checkpoint(
+                        &process_contract,
+                        target,
+                        source,
+                        cancellation.as_fd(),
+                    )
+                    .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
+                let identity = QemuLiveNodeIdentity::new(&node.name, &router, &crash_detector);
+                let admission = AtomicExactRestoreAdmission::admit(
+                    &mut run_directory,
+                    &process_contract,
+                    identity,
+                    &snapshot,
+                    snapshot_object,
+                    ram_inputs,
+                    cancellation.as_fd(),
+                )?;
+                let (node, target) =
+                    launch_atomic_exact_restore(&config, admission, false, binding, workspace)?;
+                Ok(QemuProductionExactRestoreLaunch {
+                    node,
+                    run_directory,
+                    target,
+                })
+            },
+            |launch, refusal, after| refusal.retain_exact_launch(launch, after),
+        )
     }
 }
 

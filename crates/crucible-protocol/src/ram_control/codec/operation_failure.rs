@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn encode(
-    out: &mut Vec<u8>,
+    out: &mut impl super::ByteSink,
     failure: Option<RamControlOperationFailure>,
 ) -> Result<(), RamControlError> {
     out.push(u8::from(failure.is_some()));

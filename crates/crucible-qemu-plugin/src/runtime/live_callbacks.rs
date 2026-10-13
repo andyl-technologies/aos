@@ -194,14 +194,16 @@ impl SelectableVmstopHandoff {
 fn install_ram_management(
     args: &PluginArgs,
     plugin_id: QemuPluginId,
+    setup: &crate::PluginSetupCompletion,
+    userdata: *mut c_void,
 ) -> Result<(), crate::ram_error::RamError> {
     #[cfg(target_os = "linux")]
     {
-        crate::paged_ram::install(args, plugin_id)
+        crate::paged_ram::install(args, plugin_id, setup, userdata)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (args, plugin_id);
+        let _ = (args, plugin_id, setup, userdata);
         Err(crate::ram_error::RamError::Invariant(
             "host RAM management requires Linux",
         ))
@@ -216,7 +218,12 @@ pub(crate) struct LiveVcpuTimeCallbackRegistrar {
     capabilities: LiveVcpuTimeCallbackCapabilities,
     install_ram_observer: fn() -> Result<(), crate::ram_error::RamError>,
     preflight_ram_observer: fn() -> Result<(), crate::ram_error::RamError>,
-    install_ram_management: fn(&PluginArgs, QemuPluginId) -> Result<(), crate::ram_error::RamError>,
+    install_ram_management: fn(
+        &PluginArgs,
+        QemuPluginId,
+        &crate::PluginSetupCompletion,
+        *mut c_void,
+    ) -> Result<(), crate::ram_error::RamError>,
 }
 
 impl LiveVcpuTimeCallbackRegistrar {
@@ -245,7 +252,7 @@ impl LiveVcpuTimeCallbackRegistrar {
     ) -> Self {
         self.install_ram_observer = install;
         self.preflight_ram_observer = install;
-        self.install_ram_management = |_, _| Ok(());
+        self.install_ram_management = |_, _, _, _| Ok(());
         self
     }
 
@@ -392,7 +399,16 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                     source,
                 })
             })?;
-        (self.install_ram_management)(args, self.plugin_id).map_err(|message| {
+        let userdata = std::ptr::from_ref(state.as_ref().get_ref())
+            .cast_mut()
+            .cast();
+        (self.install_ram_management)(
+            args,
+            self.plugin_id,
+            &state.as_ref().get_ref().setup,
+            userdata,
+        )
+        .map_err(|message| {
             live_callback_registration_error(LiveVcpuTimeCallbackError::RamObserverSetup {
                 message,
             })
@@ -1461,40 +1477,6 @@ impl LiveVcpuTimeCallbackState {
 
     pub(super) fn fingerprint_enabled(&self) -> bool {
         self.fingerprint.is_some()
-    }
-
-    /// Replaces the vanished template fingerprint worker in a fork child.
-    ///
-    /// The caller holds callback and worker admission, and the template queue
-    /// was proven empty before `fork(2)`. The inherited `JoinHandle` cannot be
-    /// joined in the child, so it is deliberately abandoned after the fresh
-    /// worker owns the same exact-address slot.
-    pub(super) fn reinitialize_hot_fork_child_workers(
-        &mut self,
-        worker_quiescence: Arc<LiveWorkerQuiescence>,
-        workspace: Option<crate::device_digest_workspace::DeviceDigestWorkspace>,
-        wait_slice: &mut impl FnMut() -> Result<std::time::Duration, crate::StartupSourceError>,
-        first_setup_failure: &mut Option<crate::StartupSourceError>,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        self.require_consumed_network_output_stop()?;
-        let Some(fingerprint) = self.fingerprint.as_mut() else {
-            return Ok(());
-        };
-        let workspace = workspace.ok_or(LiveVcpuTimeCallbackError::DeviceDigestWorkspace {
-            source: crate::DeviceDigestWorkspaceError::Ownership {
-                reason: "fork child lacks its separately admitted workspace",
-            },
-        })?;
-        let worker = LiveFingerprintDigestWorker::spawn(
-            fingerprint.slot,
-            worker_quiescence,
-            workspace,
-            wait_slice,
-            first_setup_failure,
-        )?;
-        let inherited = std::mem::replace(&mut fingerprint.worker, worker);
-        std::mem::forget(inherited);
-        Ok(())
     }
 
     /// Captures and publishes a requested fingerprint at a control boundary.

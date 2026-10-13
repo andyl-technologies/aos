@@ -214,7 +214,8 @@ pub use assignment_ledger::{
     AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptExecutionOrigin,
     AttemptRuntimeState, AttemptStateCas, CheckpointPromotionExecutionBasis,
     CompletedFindingCandidate, DirectoryAssignmentLedger, ExactCheckpointResumeBasis,
-    MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
+    MemoryAssignmentLedger, SourceTransferIntent, SourceTransferPhase, SourceTransferState,
+    visit_directory_attempt_states_bounded,
 };
 pub use automatic_finding_runner::{
     AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,
@@ -317,13 +318,14 @@ pub use campaign_server::{
 };
 pub use campaign_store_quota::LinuxProjectQuotaBinder;
 pub use campaign_transfer::{
-    CampaignArchiveDurabilityReceipt, CampaignArchiveTransferEndpoint,
-    CampaignArchiveTransferError, CampaignTransferJournalError, CampaignTransferOperationId,
-    CampaignTransferRetentionAdmin, CampaignTransferRetentionFence,
+    CampaignArchiveDurabilityReceipt, CampaignArchiveExecutionPossession,
+    CampaignArchiveTransferEndpoint, CampaignArchiveTransferError, CampaignTransferJournalError,
+    CampaignTransferOperationId, CampaignTransferRetentionAdmin, CampaignTransferRetentionFence,
     CampaignTransferRetentionGeneration, CampaignTransferRetentionRoot,
     CampaignTransferRetentionSummary, DirectoryCampaignTransferJournal,
     ExactPinCampaignArchiveCheckpointResolver, transfer_campaign_archive_durably,
     transfer_campaign_archive_durably_with_boundary,
+    transfer_campaign_archive_for_execution_with_boundary,
 };
 pub use control_responsiveness::{
     DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND, DaemonControlResponsiveRoute,
@@ -427,7 +429,8 @@ pub use executor_supervisor::{
     ExecutionCancellation, ExecutionCheckpointRequest, ExecutorAvailability, ExecutorCapacity,
     ExecutorCapacityError, HostOperationalCapacity, HostOperationalCapacityError,
     LocalExecutorError, LocalExecutorSupervisor, PausedCheckpointPromotionRecovery, QueuedAttempt,
-    TerminalFailureOutcome, stage_prepared_attempt_result,
+    SourceTransferFailure, SourceTransferPersistenceOutcome, SourceTransferPreparation,
+    SourceTransferReleaseAuthorization, TerminalFailureOutcome, stage_prepared_attempt_result,
 };
 pub(crate) use executor_worker::stage_prepared_attempt_result_journal;
 pub use executor_worker::{
@@ -523,13 +526,15 @@ pub(crate) use managed_qemu_hot_fork_source_world_pool::{
     SharedQemuHotForkSourceWorldProviderError,
 };
 pub use packaged_qemu_executor::{
-    AttachedPackagedQemuExecutor, MAX_PACKAGED_SCENARIO_CATALOG_BYTES,
+    AttachedPackagedQemuExecutor, GuardedCampaignOwnerRetirementError, GuardedSourceTransferOffer,
+    GuardedSourceTransferOperation, GuardedTransferError, MAX_PACKAGED_SCENARIO_CATALOG_BYTES,
     PackagedExactPinMaterializerError, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
     PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError, PackagedQemuExecutorError,
     PackagedQemuExecutorJoinError, PackagedQemuExecutorJoinFailures,
     PackagedQemuExecutorStartError, PackagedQemuHotForkConfig, PackagedQemuHotForkConfigError,
     PackagedQemuHotForkSourceShutdownError, PackagedRamCatalogConfig,
-    PackagedRamCatalogConfigError, PreparationExpiredCause,
+    PackagedRamCatalogConfigError, PreparationExpiredCause, ReceivingExecutionPreparation,
+    ReceivingExecutionPreparationError,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use paused_checkpoint_promotion::{

@@ -296,6 +296,7 @@ pub(crate) struct QemuSingleHotForkSourceWorldProvider {
     key: QemuHotForkSourceWorldKey,
     source: Option<ProductionVmHotForkSourceWorld>,
     checked_out: Option<QemuHotForkSourceWorldCheckoutIdentity>,
+    quarantined: bool,
 }
 
 #[cfg(test)]
@@ -309,18 +310,56 @@ impl QemuSingleHotForkSourceWorldProvider {
             key,
             source: Some(source),
             checked_out: None,
+            quarantined: false,
         }
     }
 
     /// Returns whether the exact source world is currently reusable.
     #[must_use]
-    pub const fn available(&self) -> bool {
-        self.source.is_some()
+    pub fn available(&self) -> bool {
+        !self.quarantined
+            && self
+                .source
+                .as_ref()
+                .is_some_and(|source| self.checked_out.is_none() && !source.fork_target_is_owned())
     }
 
     /// Removes the reconciled source for explicit descendant-lineage retirement.
     pub(crate) fn take_available(&mut self) -> Option<ProductionVmHotForkSourceWorld> {
+        if self.quarantined
+            || self
+                .source
+                .as_ref()
+                .is_some_and(ProductionVmHotForkSourceWorld::fork_target_is_owned)
+        {
+            return None;
+        }
         self.source.take()
+    }
+
+    fn restore_returned_source(&mut self, mut source: ProductionVmHotForkSourceWorld) {
+        if source.fork_target_is_owned() {
+            self.source = Some(source);
+            return;
+        }
+        if source.restore_retained_service_supervisor().is_err() {
+            self.quarantined = true;
+            self.source = Some(source);
+            return;
+        }
+        match source.into_reusable() {
+            Ok(source) => {
+                self.source = Some(source);
+                self.checked_out = None;
+            }
+            Err(failure) => match failure.into_retained_source() {
+                Ok(source) => self.source = Some(source),
+                Err(failure) => {
+                    self.quarantined = true;
+                    let _retained_for_process_lifetime = Box::leak(Box::new(failure));
+                }
+            },
+        }
     }
 }
 
@@ -335,6 +374,22 @@ impl QemuHotForkSourceWorldProvider for QemuSingleHotForkSourceWorldProvider {
         &mut self,
         key: &QemuHotForkSourceWorldKey,
     ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
+        if self.quarantined
+            || self
+                .source
+                .as_ref()
+                .is_some_and(ProductionVmHotForkSourceWorld::fork_target_is_owned)
+        {
+            return Ok(None);
+        }
+        if self.checked_out.is_some()
+            && let Some(source) = self.source.take()
+        {
+            self.restore_returned_source(source);
+        }
+        if self.checked_out.is_some() || self.quarantined {
+            return Ok(None);
+        }
         let identity = self.source.as_ref().and_then(|source| {
             let continuation = source.continuation().ok()?;
             if &self.key != key
@@ -360,7 +415,7 @@ impl QemuHotForkSourceWorldProvider for QemuSingleHotForkSourceWorldProvider {
     }
 
     fn restore(&mut self, source: QemuHotForkSourceWorldLease) {
-        let source = match source.into_exclusive_source() {
+        let mut source = match source.into_exclusive_source() {
             Ok(source) => source,
             Err(source) => {
                 let _retained_for_process_lifetime = Box::leak(source);
@@ -375,21 +430,15 @@ impl QemuHotForkSourceWorldProvider for QemuSingleHotForkSourceWorldProvider {
             let _ = source.retire();
             return;
         }
-        self.checked_out = None;
         if self.source.is_some() {
             let _ = source.retire();
             return;
         }
-        match source.into_reusable() {
-            Ok(source) => self.source = Some(source),
-            Err(failure) => {
-                let _retained_for_process_lifetime = Box::leak(Box::new(failure));
-            }
-        }
+        self.restore_returned_source(source);
     }
 
     fn abandon(&mut self) {
-        self.checked_out = None;
+        self.quarantined = true;
     }
 }
 
@@ -974,21 +1023,38 @@ where
                 )));
             }
         };
-        let mut guard =
-            match self
-                .resources
-                .begin(process_resources, context.cancellation().clone(), None)
-            {
-                Ok(guard) => guard,
-                Err(failure) => {
-                    let (error, _) = failure.into_parts();
-                    drop(source_world);
-                    self.sources.restore(source_lease);
-                    return Err(AttemptWorkerFailure::Retryable(Self::Error::Resource(
-                        error,
-                    )));
-                }
-            };
+        let permit = match source_world
+            .lock()
+            .map_err(|_| String::from("source-world ownership lock is poisoned"))
+            .and_then(|mut source| {
+                source
+                    .lend_fork_target_permit()
+                    .map_err(|error| error.to_string())
+            }) {
+            Ok(permit) => permit,
+            Err(message) => {
+                drop(source_world);
+                self.sources.restore(source_lease);
+                return Err(AttemptWorkerFailure::Retryable(Self::Error::Source(
+                    message,
+                )));
+            }
+        };
+        let mut guard = match self.resources.begin_fork_target(
+            permit,
+            process_resources,
+            context.cancellation().clone(),
+        ) {
+            Ok(guard) => guard,
+            Err(failure) => {
+                let (error, _) = failure.into_parts();
+                drop(source_world);
+                self.sources.restore(source_lease);
+                return Err(AttemptWorkerFailure::Retryable(Self::Error::Resource(
+                    error,
+                )));
+            }
+        };
         if guard.resource_limits() != process_resources
             || !guard
                 .cancellation()
@@ -1031,7 +1097,11 @@ where
             )));
         }
         let maximum_nodes = input.scenario().world().vm_nodes().len();
-        let resources = match QemuHotForkWorldResourceOwner::new(guard, maximum_nodes) {
+        let resources = match QemuHotForkWorldResourceOwner::new_fork_target(
+            guard,
+            maximum_nodes,
+            Arc::clone(&source_world),
+        ) {
             Ok(resources) => resources,
             Err(error) => {
                 drop(source_world);
@@ -1217,7 +1287,11 @@ where
                     )
                     .map_err(|error| error.to_string())?;
                 target
-                    .install_host_ram_registration(registration, supervisor.clone())
+                    .install_host_ram_registration(
+                        registration,
+                        supervisor.clone(),
+                        launch_resources.guest_memory_bytes(),
+                    )
                     .map_err(|error| error.to_string())?;
                 Ok::<_, String>(supervisor)
             })();
@@ -1237,29 +1311,42 @@ where
                 }
             };
             child_supervisors.insert(node.clone(), supervisor);
-            let prepared = target
-                .prepare_generation_run_directory(launch_resources)
-                .and_then(|mut directory| {
-                    let custody = target.host_ram_custody().ok_or_else(|| {
-                        QemuVmRealizationError::Executor {
+            let prepared = (|| {
+                let contract = target.child_process_contract()?;
+                source_world
+                    .lock()
+                    .map_err(|_| QemuVmRealizationError::Executor {
+                        operation: "prepare same-family hot-fork directory",
+                        message: String::from("source-world ownership lock is poisoned"),
+                    })?
+                    .prepare_fork_target_run_directory(contract, launch_resources)
+                    .map_err(|error| QemuVmRealizationError::Executor {
+                        operation: "prepare same-family hot-fork directory",
+                        message: error.to_string(),
+                    })
+            })()
+            .and_then(|mut directory| {
+                let custody =
+                    target
+                        .host_ram_custody()
+                        .ok_or_else(|| QemuVmRealizationError::Executor {
                             operation: "retain hot-fork child RAM custody",
                             message: String::from("admitted child lost its exact launch custody"),
-                        }
+                        })?;
+                directory
+                    .retain_ram_launch_custody(custody.clone())
+                    .map_err(|source| QemuVmRealizationError::Executor {
+                        operation: "retain hot-fork child directory custody",
+                        message: source.to_string(),
                     })?;
-                    directory
-                        .retain_ram_launch_custody(custody.clone())
-                        .map_err(|source| QemuVmRealizationError::Executor {
-                            operation: "retain hot-fork child directory custody",
-                            message: source.to_string(),
-                        })?;
-                    directory
-                        .provision_hot_fork_child_files(target.child_process_contract()?)
-                        .map_err(|source| QemuVmRealizationError::Executor {
-                            operation: "provision private hot-fork child files",
-                            message: source.to_string(),
-                        })?;
-                    Ok(directory)
-                });
+                directory
+                    .provision_hot_fork_child_files(target.child_process_contract()?)
+                    .map_err(|source| QemuVmRealizationError::Executor {
+                        operation: "provision private hot-fork child files",
+                        message: source.to_string(),
+                    })?;
+                Ok(directory)
+            });
             let run_directory = match prepared {
                 Ok(directory) => directory,
                 Err(error) => {

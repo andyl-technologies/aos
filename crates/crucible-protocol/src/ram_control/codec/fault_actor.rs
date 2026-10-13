@@ -16,7 +16,7 @@ fn validate(report: RamControlFaultActorReport) -> Result<(), RamControlError> {
 }
 
 pub(super) fn encode(
-    out: &mut Vec<u8>,
+    out: &mut impl super::ByteSink,
     report: Option<RamControlFaultActorReport>,
 ) -> Result<(), RamControlError> {
     out.push(u8::from(report.is_some()));

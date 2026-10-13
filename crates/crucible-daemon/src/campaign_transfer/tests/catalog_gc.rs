@@ -1,5 +1,6 @@
 //! Partial Catalog batch publication, real namespace exclusion and GC restart.
 
+mod execution_possession;
 mod fixture;
 
 use std::fs::{self, File};

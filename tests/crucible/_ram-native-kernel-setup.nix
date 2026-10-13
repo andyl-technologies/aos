@@ -9,7 +9,9 @@
   lanes,
   buildGraph,
   storageImageBytes ? 8589934592,
-}: ''
+}: let
+  deviceProbe = import ./_ram-userfaultfd-device.nix {inherit pkgs;};
+in ''
   for kernel_config in ${pkgs.linux}/boot/config-*; do
     ${pkgs.grep}/bin/grep -qx 'CONFIG_USERFAULTFD=y' "$kernel_config"
     ${pkgs.grep}/bin/grep -qx 'CONFIG_CFS_BANDWIDTH=y' "$kernel_config"
@@ -21,8 +23,10 @@
   # This policy applies only to this disposable outer VM. The invoking
   # builder's kernel policy and namespaces are never modified.
   test -e /proc/sys/vm/unprivileged_userfaultfd
-  echo 1 > /proc/sys/vm/unprivileged_userfaultfd
-  test "$(cat /proc/sys/vm/unprivileged_userfaultfd)" = 1
+  test "$(cat /proc/sys/vm/unprivileged_userfaultfd)" = 0
+  ${deviceProbe}/bin/crucible-userfaultfd-device-probe
+  test "$(cat /proc/sys/vm/unprivileged_userfaultfd)" = 0
+  test "$(${pkgs.coreutils}/bin/stat -c '%g:%a' /dev/userfaultfd)" = '29000:660'
   mkdir -p /sys/fs/cgroup
   if ! ${pkgs.grep}/bin/grep -q ' /sys/fs/cgroup cgroup2 ' /proc/mounts; then
     ${pkgs.util-linux}/bin/mount -t cgroup2 none /sys/fs/cgroup

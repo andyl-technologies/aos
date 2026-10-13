@@ -53,6 +53,9 @@ mod fault_channels;
 mod fault_events;
 #[path = "node_set/lifecycle.rs"]
 mod lifecycle;
+#[cfg(target_os = "linux")]
+#[path = "node_set/receiving_transfer.rs"]
+mod receiving_transfer;
 
 #[cfg(target_os = "linux")]
 pub use block_boundary::QemuNodeSetBlockBoundaryCheckpoint;

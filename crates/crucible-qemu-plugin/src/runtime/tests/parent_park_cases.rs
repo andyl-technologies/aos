@@ -14,8 +14,7 @@ use std::time::Duration;
 fn fixture_runtime(fixture: &LiveInstallFixture) -> PluginRuntimeOwner {
     let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
     let mut reservation = reserve_runtime().unwrap_or_else(|error| panic!("reservation: {error}"));
-    reservation.startup_source_model =
-        Some(crate::startup_source::test_support::InstallerStartupSourceModel::ready());
+    reservation.startup_source_model = Some(fixture.startup_model());
     let runtime = install_live_runtime(
         41,
         fixture.args(),
@@ -96,7 +95,7 @@ fn parent_park_owns_actual_runtime_drain_until_explicit_relinquishment() {
     let _runtime_state = isolate_runtime_state_for_test();
     let fixture = LiveInstallFixture::new();
     let runtime = fixture_runtime(&fixture);
-    let state = runtime._callbacks.state.as_ref();
+    let state = runtime.resources()._callbacks.state.as_ref();
     let workers = [
         parked_worker(Arc::clone(&state.workers), WORKER_RUN_CONTROL, &deadline),
         parked_worker(Arc::clone(&state.workers), WORKER_TEARDOWN, &deadline),
@@ -138,7 +137,7 @@ fn parent_park_refuses_before_hold_and_never_retries_original_birth() {
     let _runtime_state = isolate_runtime_state_for_test();
     let fixture = LiveInstallFixture::new();
     let runtime = fixture_runtime(&fixture);
-    let state = runtime._callbacks.state.as_ref();
+    let state = runtime.resources()._callbacks.state.as_ref();
     let mut owner = parent_park::ParentParkDrainOwner::retain(state);
     let calls = Cell::new(0);
 
@@ -166,7 +165,7 @@ fn parent_park_keeps_callback_cause_and_independent_original_post() {
     let _runtime_state = isolate_runtime_state_for_test();
     let fixture = LiveInstallFixture::new();
     let runtime = fixture_runtime(&fixture);
-    let state = runtime._callbacks.state.as_ref();
+    let state = runtime.resources()._callbacks.state.as_ref();
     let workers = [
         parked_worker(Arc::clone(&state.workers), WORKER_RUN_CONTROL, &deadline),
         parked_worker(Arc::clone(&state.workers), WORKER_TEARDOWN, &deadline),
@@ -202,7 +201,7 @@ fn parent_park_arbitration_excludes_legacy_release_before_owner_publication() {
     let _runtime_state = isolate_runtime_state_for_test();
     let fixture = LiveInstallFixture::new();
     let runtime = fixture_runtime(&fixture);
-    let state = runtime._callbacks.state.as_ref();
+    let state = runtime.resources()._callbacks.state.as_ref();
     let held = state
         .setup
         .mapped_region()
@@ -240,7 +239,7 @@ fn parent_park_registered_userdata_retains_actual_allocation_without_active_hold
     let _runtime_state = isolate_runtime_state_for_test();
     let fixture = LiveInstallFixture::new();
     let runtime = fixture_runtime(&fixture);
-    let state = runtime._callbacks.state.as_ref().get_ref();
+    let state = runtime.resources()._callbacks.state.as_ref().get_ref();
     let allocation = std::ptr::from_ref(state).cast_mut();
     let worker_state = Arc::downgrade(&state.workers);
     assert!(!state.parent_park_retained.load(Ordering::Acquire));
@@ -268,7 +267,7 @@ fn parent_park_revalidates_actual_pending_transition_before_any_ring_release() {
     let _runtime_state = isolate_runtime_state_for_test();
     let fixture = LiveInstallFixture::new();
     let runtime = fixture_runtime(&fixture);
-    let state = runtime._callbacks.state.as_ref();
+    let state = runtime.resources()._callbacks.state.as_ref();
     let workers = [
         parked_worker(Arc::clone(&state.workers), WORKER_RUN_CONTROL, &deadline),
         parked_worker(Arc::clone(&state.workers), WORKER_TEARDOWN, &deadline),

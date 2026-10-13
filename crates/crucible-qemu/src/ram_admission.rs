@@ -48,9 +48,9 @@ fn logical_page_count(topology: &Topology) -> Result<u64, RamError> {
     })
 }
 
-// The private executor independently checks these conservative bounds against
-// its actual slot leases, page states and arena allocations before activation.
-fn private_paging_metadata_bytes(topology: &Topology) -> Result<u64, RamError> {
+// This declared-shape lower bound cannot describe private target layouts. Actual
+// admission uses the executor's complete versioned request for the sealed shape.
+fn known_private_paging_metadata_lower_bound(topology: &Topology) -> Result<u64, RamError> {
     let pages = logical_page_count(topology)?;
     let slots = private_spill_quota_bytes(topology)? / 4096;
     let store = slots
@@ -86,36 +86,44 @@ fn mapping_alignment_reserve(topology: &Topology) -> Result<u64, RamError> {
 
 /// Calculates RAM resource requirements from an authenticated native inventory.
 ///
-/// Native metadata and scratch are complete peak quantities from the executor,
-/// including its independently owned dirty, borrower and capture planes. Four
-/// dense immutable snapshots and two page-rounded private spill generations
-/// are admitted alongside two logical backing versions;
+/// Native metadata and scratch retain the executor's independent ownership.
+/// The authenticated Rust requirement includes four dense immutable snapshots,
+/// live and staged pager controls, and two private spill generations. The host
+/// composes these requests alongside two logical backing versions;
 /// CAS transport work is additionally bounded by its operation concurrency.
 /// A caller composes this RAM subsystem with its process and device-state
 /// reserves before comparing it with the retained complete node entitlement.
 ///
 /// # Errors
 ///
-/// Returns an error for an empty inventory, zero native peak or operation count,
-/// or arithmetic overflow in any resource component.
+/// Returns an error for an empty inventory, zero peak or operation count,
+/// a Rust request below the public observer lower bound, or arithmetic overflow.
 pub fn actual_inventory_ram_requirements(
     topology: &Topology,
     native_metadata_bytes: u64,
     native_scratch_bytes: u64,
+    rust_metadata_required_bytes: u64,
     simultaneous_cas_operations: u32,
 ) -> Result<HostResourceVector, RamError> {
     if topology.total_logical_bytes() == 0
         || native_metadata_bytes == 0
         || native_scratch_bytes == 0
+        || rust_metadata_required_bytes == 0
         || simultaneous_cas_operations == 0
     {
         return Err(RamError::InvalidLength);
     }
-    let paging_metadata = private_paging_metadata_bytes(topology)?;
-    let metadata_bytes = RamSnapshot::maximum_metadata_bytes(topology, 4)?
+    // Only the public observer lower bound is independently reconstructed here.
+    // Private pager layouts come from the authenticated immutable report; they
+    // are never guessed by, linked into or reissued from the Apache host.
+    let observer_lower_bound = RamSnapshot::maximum_metadata_bytes(topology, 4)?
         .checked_add(RAM_ROOT_RECORD_METADATA_BYTES)
-        .and_then(|bytes| bytes.checked_add(paging_metadata))
-        .and_then(|bytes| bytes.checked_add(native_metadata_bytes))
+        .ok_or(RamError::Overflow)?;
+    if rust_metadata_required_bytes < observer_lower_bound {
+        return Err(RamError::ResourceLimit);
+    }
+    let metadata_bytes = native_metadata_bytes
+        .checked_add(rust_metadata_required_bytes)
         .ok_or(RamError::Overflow)?;
     let staging_bytes = RAM_CAS_OPERATION_SCRATCH_BYTES
         .checked_mul(u64::from(simultaneous_cas_operations))
@@ -178,7 +186,7 @@ pub fn known_ram_launch_requirements(
     )?;
     // A committed view, old batch candidate, growing replacement and one
     // transient update may coexist while another virtual batch action prepares.
-    let paging_metadata = private_paging_metadata_bytes(&topology)?;
+    let paging_metadata = known_private_paging_metadata_lower_bound(&topology)?;
     let rust_metadata = RamSnapshot::maximum_metadata_bytes(&topology, 4)?
         .checked_add(RAM_ROOT_RECORD_METADATA_BYTES)
         .and_then(|bytes| bytes.checked_add(paging_metadata))
@@ -341,7 +349,10 @@ mod tests {
             Limits::default(),
         )
         .unwrap_or_else(|error| panic!("RAM admission fixture: {error}"));
-        let actual = actual_inventory_ram_requirements(&topology, 16384, 32768, 2)
+        let rust_request = RamSnapshot::maximum_metadata_bytes(&topology, 4).unwrap()
+            + RAM_ROOT_RECORD_METADATA_BYTES
+            + known_private_paging_metadata_lower_bound(&topology).unwrap();
+        let actual = actual_inventory_ram_requirements(&topology, 16384, 32768, rust_request, 2)
             .unwrap_or_else(|error| panic!("RAM admission fixture: {error}"));
 
         assert_eq!(
@@ -349,7 +360,7 @@ mod tests {
             RamSnapshot::maximum_metadata_bytes(&topology, 4)
                 .unwrap_or_else(|error| panic!("RAM admission fixture: {error}"))
                 + RAM_ROOT_RECORD_METADATA_BYTES
-                + private_paging_metadata_bytes(&topology)
+                + known_private_paging_metadata_lower_bound(&topology)
                     .unwrap_or_else(|error| panic!("RAM admission fixture: {error}"))
                 + 16384
         );
@@ -362,8 +373,10 @@ mod tests {
             12288 + 2 * 4096 * 2 + actual.metadata_bytes + actual.staging_bytes
         );
         assert_eq!(actual.backing_peak_bytes, 4 * 12288 + actual.staging_bytes);
-        assert!(actual_inventory_ram_requirements(&topology, 0, 32768, 2).is_err());
-        assert!(actual_inventory_ram_requirements(&topology, u64::MAX, 32768, 2).is_err());
+        assert!(actual_inventory_ram_requirements(&topology, 0, 32768, rust_request, 2).is_err());
+        assert!(
+            actual_inventory_ram_requirements(&topology, u64::MAX, 32768, rust_request, 2).is_err()
+        );
     }
 
     #[test]
@@ -384,7 +397,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("RAM admission fixture: {error}")),
             2 * 3 * 4096
         );
-        let paging_metadata = private_paging_metadata_bytes(&topology)
+        let paging_metadata = known_private_paging_metadata_lower_bound(&topology)
             .unwrap_or_else(|error| panic!("RAM admission fixture: {error}"));
         // Duplicate native mutation targets retain the producer's complete
         // 65,536-entry bound even for this three-page guest. Unique-coordinate
@@ -405,7 +418,10 @@ mod tests {
                 - diagnostic_banks,
             8160
         );
-        let actual = actual_inventory_ram_requirements(&topology, 16384, 32768, 1)
+        let rust_request = RamSnapshot::maximum_metadata_bytes(&topology, 4).unwrap()
+            + RAM_ROOT_RECORD_METADATA_BYTES
+            + paging_metadata;
+        let actual = actual_inventory_ram_requirements(&topology, 16384, 32768, rust_request, 1)
             .unwrap_or_else(|error| panic!("RAM admission fixture: {error}"));
         assert_eq!(
             actual.backing_peak_bytes,
@@ -415,5 +431,52 @@ mod tests {
             actual.resident_peak_bytes,
             4098 + 16384 + actual.metadata_bytes + actual.staging_bytes
         );
+    }
+
+    #[test]
+    fn complete_report_refuses_the_unchanged_omitting_entitlement() {
+        use crucible_linux_resource::ram_policy::{HostRamTarget, HostResourceLedger};
+
+        let topology = Topology::new(
+            vec![RegionDescriptor::new("main", RegionClass::MutableMain, 4096).unwrap()],
+            Limits::default(),
+        )
+        .unwrap();
+        let observer = RamSnapshot::maximum_metadata_bytes(&topology, 4).unwrap()
+            + RAM_ROOT_RECORD_METADATA_BYTES;
+        let historical_rust =
+            observer + known_private_paging_metadata_lower_bound(&topology).unwrap();
+        // This scalar models the extra target controls in an authenticated report.
+        // The Apache host never interprets their private layout or issues credit.
+        let complete_rust = historical_rust + 8192;
+        let old =
+            actual_inventory_ram_requirements(&topology, 4096, 16384, historical_rust, 1).unwrap();
+        let complete =
+            actual_inventory_ram_requirements(&topology, 4096, 16384, complete_rust, 1).unwrap();
+        assert_eq!(complete.metadata_bytes - old.metadata_bytes, 8192);
+        assert_eq!(complete.resident_peak_bytes - old.resident_peak_bytes, 8192);
+        assert_eq!(complete.backing_peak_bytes, old.backing_peak_bytes);
+        assert_eq!(complete.metadata_bytes - 4096, complete_rust);
+
+        let target = HostRamTarget {
+            daemon_epoch: [1; 32],
+            owner_id: [2; 32],
+            node_id: [3; 32],
+            owner_generation: 1,
+            arena_generation: 1,
+            retained_template: false,
+        };
+        let mut unchanged = HostResourceLedger::new(old);
+        assert!(unchanged.admit(target, complete).is_err());
+        assert_eq!(unchanged.capacity(), old);
+        assert_eq!(unchanged.reserved(), HostResourceVector::default());
+        let mut exact = HostResourceLedger::new(complete);
+        exact.admit(target, complete).unwrap();
+        assert_eq!(exact.owner_reservation(target).unwrap().1, complete);
+        assert!(actual_inventory_ram_requirements(&topology, 4096, 16384, 0, 1).is_err());
+        assert!(
+            actual_inventory_ram_requirements(&topology, 4096, 16384, observer - 1, 1).is_err()
+        );
+        assert!(actual_inventory_ram_requirements(&topology, 4096, 16384, u64::MAX, 1).is_err());
     }
 }

@@ -39,7 +39,11 @@ pub(super) extern "C" fn observe_transaction(
             .cache
             .try_lock()
             .map_err(|_| "RAM observer has an active capture")?;
-        if cache.frozen || cache.restore.is_some() {
+        if cache.frozen
+            || cache.restore.is_some()
+            || cache.held.is_some()
+            || cache.held_accepted.is_some()
+        {
             return Err(RamError::Invariant("RAM observer is frozen"));
         }
         if phase == 0 {
@@ -77,6 +81,11 @@ impl RootCache {
         topology_generation: u64,
         pages: &[PreparedPage],
     ) -> Result<(), RamError> {
+        if self.ordinary_active || self.held.is_some() || self.held_accepted.is_some() {
+            return Err(RamError::Invariant(
+                "held candidate owns RAM mutation admission",
+            ));
+        }
         if self.pending.as_ref().is_some_and(|pending| {
             pending.transaction != transaction || pending.topology_generation != topology_generation
         }) {

@@ -1,7 +1,8 @@
 //! Real-kernel paging evidence under genuine preparation and native ownership.
 //!
-//! The disposable outer VM enables userfaultfd. The inner guest runs the same
-//! unmodified AOS kernel and initramfs in both lanes. The test preserves the
+//! The disposable outer VM grants scoped device access with the sysctl closed.
+//! The inner guest runs the same unmodified AOS kernel and initramfs in both
+//! lanes. The test preserves the
 //! full execution peak and exercises the implementation beneath the public
 //! capability gate; successful socket setup does not authorize that gate.
 
@@ -71,7 +72,7 @@ fn production_managed_paging_preserves_guest_state_and_cold_writes() {
         std::fs::read_to_string("/proc/sys/vm/unprivileged_userfaultfd")
             .expect("real kernel policy")
             .trim(),
-        "1"
+        "0"
     );
     let source = paging_scenario();
     let reference = run_lane(&source, "resident", 31_000, false);

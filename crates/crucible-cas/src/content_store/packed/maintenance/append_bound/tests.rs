@@ -395,7 +395,7 @@ fn point_geometry_and_invalid_private_inputs_keep_their_existing_bound() -> Resu
             let legacy = AppendBound::point(height, objects + 1)?;
             assert!(batch.pages <= legacy.pages);
         }
-        for objects in [0, 65, u64::MAX - 1] {
+        for objects in [0, 257, u64::MAX - 1] {
             let point = AppendBound::point(height, objects + 1);
             let batch = AppendBound::batch(height, objects);
             match (point, batch) {
@@ -409,5 +409,146 @@ fn point_geometry_and_invalid_private_inputs_keep_their_existing_bound() -> Resu
         AppendBound::batch(0, u64::MAX),
         Err(StoreError::Quota)
     ));
+    Ok(())
+}
+
+#[test]
+fn four_window_transaction_bounds_actual_append_and_keeps_unpublished_root()
+-> Result<(), FixtureError> {
+    let fixture = Fixture::new()?;
+    let snapshot = seeded(&fixture, 1024)?;
+    let old_root = fs::read(fixture.backend.admin.join(INDEX_FILE))?;
+    let old_arena = arena_path(&fixture, &snapshot);
+    let before = fs::metadata(&old_arena)?.len();
+    let incoming = (0..256_u64)
+        .map(|slot| {
+            (
+                object(1 + slot * 128),
+                IndexEntry {
+                    pack: PackId([8; 32]),
+                    offset: slot,
+                    length: 1,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut operation = Operation {
+        original: Some(&fixture.original),
+        boundary: &mut || Ok(()),
+    };
+    let mut progress = checked_publication::Progress::default();
+    let bound = AppendBound::batch(snapshot.header.height, 256)?.bytes()?;
+    let replacement = maintenance::replacement(
+        &fixture.backend,
+        &snapshot,
+        &incoming,
+        PACK_BYTES,
+        &mut operation,
+        &mut progress,
+    )?;
+
+    assert_eq!(fs::read(fixture.backend.admin.join(INDEX_FILE))?, old_root);
+    assert_eq!(replacement.header.count, snapshot.header.count + 256);
+    fixture.backend.publish_index(&replacement)?;
+    let resulting = replacement.snapshot();
+    let resulting_path = arena_path(&fixture, &resulting);
+    let actual = if resulting_path == old_arena {
+        fs::metadata(&resulting_path)?.len() - before
+    } else {
+        // A compacted arena contains a copied authenticated prefix before the
+        // new append tail. Compare only the tail after that initial builder.
+        // For this finite fixture the complete fresh arena is itself smaller
+        // than the conservative append allowance, a stronger assertion.
+        fs::metadata(&resulting_path)?.len()
+    };
+    assert!(
+        actual <= bound,
+        "actual {actual} exceeds aggregate bound {bound}"
+    );
+    let reader = resulting.reader(&fixture.backend, &mut operation)?;
+    for (id, entry) in &incoming {
+        assert_eq!(
+            reader
+                .find(wire::Key::object(*id), &mut operation)?
+                .map(wire::Value::entry)
+                .transpose()?,
+            Some(*entry)
+        );
+    }
+    for ordinal in 0..1024_u64 {
+        assert_eq!(
+            reader.find(wire::Key::object(object(ordinal * 2)), &mut operation)?,
+            Some(value(ordinal * 2))
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn aggregate_windows_include_every_raised_height_without_changing_node_width()
+-> Result<(), FixtureError> {
+    assert_eq!(wire::MAX_ROWS, 64);
+    for height in 0..wire::MAX_HEIGHT as u8 {
+        for count in [65_u64, 127, 128, 129, 255, 256] {
+            let mut remaining = count;
+            let mut raised = height;
+            let mut expected = 0;
+            while remaining != 0 {
+                let width = remaining.min(64);
+                expected += AppendBound::batch(raised, width)?.bytes()?;
+                remaining -= width;
+                raised = height + 1;
+            }
+            let bound = AppendBound::batch(height, count)?;
+            assert_eq!(bound.bytes()?, expected);
+            assert_eq!(bound.changes, count + 1);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn oversized_private_transaction_refuses_before_any_original_io() -> Result<(), FixtureError> {
+    let fixture = Fixture::new()?;
+    let snapshot = seeded(&fixture, 64)?;
+    let before = fs::read(fixture.backend.admin.join(INDEX_FILE))?;
+    let baseline = fixture.usage()?;
+    let incoming = (0..257_u64)
+        .map(|slot| {
+            (
+                object(1 + slot * 128),
+                IndexEntry {
+                    pack: PackId([8; 32]),
+                    offset: slot,
+                    length: 1,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut calls = 0;
+    let mut boundary = || {
+        calls += 1;
+        Ok(())
+    };
+    let mut operation = Operation {
+        original: Some(&fixture.original),
+        boundary: &mut boundary,
+    };
+    let mut progress = checked_publication::Progress::default();
+
+    let result = maintenance::replacement(
+        &fixture.backend,
+        &snapshot,
+        &incoming,
+        PACK_BYTES,
+        &mut operation,
+        &mut progress,
+    );
+    assert!(matches!(result, Err(StoreError::Incompatible)));
+    drop(result);
+    assert_eq!(calls, 0);
+    assert_eq!(fs::read(fixture.backend.admin.join(INDEX_FILE))?, before);
+    assert_eq!(fixture.usage()?, baseline);
+    assert!(!progress.outcome.index_reclamation_pending);
     Ok(())
 }

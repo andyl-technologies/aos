@@ -479,3 +479,81 @@ fn original_liveness_refuses_either_poisoned_ownership_lock() {
         ));
     }
 }
+
+#[test]
+fn authenticated_service_interval_keeps_elapsed_birth_and_forbids_renewal() {
+    let now = kernel_monotonic_ns().unwrap() / 1000;
+    let start = now.checked_sub(500_000).unwrap();
+    let end = now.checked_add(30_000_000).unwrap();
+    let root =
+        HostOperationSupervisor::from_service_interval(HostOperationBudgets::default(), start, end)
+            .unwrap();
+    let child = root
+        .new_budget_owner(HostOperationBudgets::default())
+        .unwrap();
+
+    assert!(root.elapsed() >= Duration::from_millis(500));
+    assert!(root.shares_outer_cap(&child));
+    assert_eq!(
+        child.outer_cap_binding().unwrap().original_monotonic_ns,
+        start * 1000
+    );
+    assert!(root.amend_outer_cap(0, None).is_err());
+    assert!(
+        root.amend_outer_cap(0, Some(Duration::from_secs(31)))
+            .is_err()
+    );
+    assert!(
+        HostOperationSupervisor::from_service_interval(HostOperationBudgets::default(), start, now)
+            .is_err()
+    );
+}
+
+#[test]
+fn retained_completed_preparation_keeps_main_cancellation_without_fresh_work() {
+    let now = kernel_monotonic_ns().unwrap() / 1000;
+    let root = HostOperationSupervisor::from_service_interval(
+        HostOperationBudgets::default(),
+        now - 1,
+        now + 30_000_000,
+    )
+    .unwrap();
+    let guard = root.begin_work(HostOperationClass::Preparation, 0).unwrap();
+    guard.verify_retained_phase().unwrap();
+    guard.complete().unwrap();
+
+    guard.verify_retained_phase().unwrap();
+    assert!(guard.wait_slice().is_err());
+    root.cancel().unwrap();
+    assert!(matches!(
+        guard.verify_retained_phase(),
+        Err(HostSupervisionError::Terminal {
+            state: HostOperationState::Canceled
+        })
+    ));
+}
+
+#[test]
+fn failed_preparation_cannot_become_a_retained_healthy_main() {
+    let root = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(30)),
+    )
+    .unwrap();
+    let guard = root.begin_work(HostOperationClass::Preparation, 0).unwrap();
+    root.lock()
+        .unwrap()
+        .operations
+        .get_mut(&guard.id)
+        .unwrap()
+        .state = HostOperationState::Expired;
+
+    assert!(matches!(
+        guard.verify_retained_phase(),
+        Err(HostSupervisionError::DeadlineExpired {
+            class: HostOperationClass::Preparation,
+            ..
+        })
+    ));
+    assert!(guard.complete().is_err());
+}

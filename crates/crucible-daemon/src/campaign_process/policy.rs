@@ -53,6 +53,14 @@ pub(crate) struct ProcessPolicy {
     pub blocking_threads: usize,
     /// Authored stack extent for each runtime worker.
     pub thread_stack_bytes: usize,
+    /// Main/runtime descriptor purpose independent of managed SQLite leases.
+    pub baseline_file_descriptors: u64,
+    /// Enables the authenticated normal guardian/workload executor hierarchy.
+    pub delegated_executor: bool,
+    /// Exact immutable executor deployment, empty for an ordinary service.
+    pub executor_deployment: String,
+    /// Explicit device-access group, zero only when no executor is installed.
+    pub userfaultfd_group_id: u32,
 }
 
 impl ProcessPolicy {
@@ -81,6 +89,7 @@ impl ProcessPolicy {
             self.metadata_bytes,
             self.sqlite_bootstrap_bytes,
             self.sqlite_heap_bytes,
+            self.baseline_file_descriptors,
         ]
         .contains(&0)
             || self.sqlite_connections == 0
@@ -90,6 +99,15 @@ impl ProcessPolicy {
             || self.main_thread_stack_bytes < 16_384
         {
             return Err("campaign process resource partitions must be finite and positive");
+        }
+        if self.delegated_executor {
+            if !self.executor_deployment.starts_with("/nix/store/")
+                || self.userfaultfd_group_id == 0
+            {
+                return Err("normal executor deployment is not immutable");
+            }
+        } else if !self.executor_deployment.is_empty() || self.userfaultfd_group_id != 0 {
+            return Err("ordinary process cannot publish an executor deployment");
         }
         let resident = self
             .baseline_resident_bytes
@@ -120,6 +138,7 @@ impl ProcessPolicy {
             || u64::try_from(self.sqlite_connections)
                 .ok()
                 .and_then(|n| n.checked_mul(2))
+                .and_then(|n| n.checked_add(self.baseline_file_descriptors))
                 .is_none_or(|n| n > self.file_descriptors)
             || self.runtime_seconds.checked_mul(1_000_000).is_none()
             || self
@@ -158,6 +177,10 @@ mod tests {
             worker_threads: 2,
             blocking_threads: 2,
             thread_stack_bytes: 1 << 20,
+            baseline_file_descriptors: 4,
+            delegated_executor: false,
+            executor_deployment: String::new(),
+            userfaultfd_group_id: 0,
         }
     }
 
@@ -182,6 +205,10 @@ mod tests {
             worker_threads = 2
             blocking_threads = 2
             thread_stack_bytes = 1048576
+            baseline_file_descriptors = 4
+            delegated_executor = false
+            executor_deployment = ""
+            userfaultfd_group_id = 0
         "#;
         let parsed: ProcessPolicy = toml::from_str(document).expect("explicit process policy");
         assert!(parsed.validate().is_ok());
@@ -215,6 +242,30 @@ mod tests {
         assert!(value.validate().is_err());
         let mut value = policy();
         value.file_descriptors = 31;
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn normal_deployment_requires_explicit_immutable_identity_and_device_group() {
+        let mut normal = policy();
+        normal.delegated_executor = true;
+        assert!(normal.validate().is_err());
+        normal.executor_deployment = "/nix/store/example-executor.toml".into();
+        assert!(normal.validate().is_err());
+        normal.userfaultfd_group_id = 1001;
+        assert!(normal.validate().is_ok());
+        normal.executor_deployment = "/tmp/operator.toml".into();
+        assert!(normal.validate().is_err());
+        normal.delegated_executor = false;
+        assert!(normal.validate().is_err());
+    }
+
+    #[test]
+    fn runtime_descriptor_credit_cannot_hide_behind_sqlite_capacity() {
+        let mut value = policy();
+        value.baseline_file_descriptors = 0;
+        assert!(value.validate().is_err());
+        value.baseline_file_descriptors = value.file_descriptors;
         assert!(value.validate().is_err());
     }
 }

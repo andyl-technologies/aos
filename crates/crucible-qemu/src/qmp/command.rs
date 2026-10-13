@@ -201,6 +201,10 @@ pub(super) enum QmpCommand<'a> {
         tag: &'a QmpSnapshotTag,
         job_id: &'a str,
     },
+    #[cfg(target_os = "linux")]
+    CheckpointBegin {
+        receipt: crate::ram_control::CheckpointArmReceipt,
+    },
     CheckpointCapture {
         request: &'a QmpCheckpointCaptureRequest,
     },
@@ -355,6 +359,8 @@ impl QmpCommand<'_> {
             Self::ParentParkDrain { .. } => QmpCommandKind::ParentParkDrain,
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
             Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
+            #[cfg(target_os = "linux")]
+            Self::CheckpointBegin { .. } => QmpCommandKind::CheckpointBegin,
             Self::CheckpointCapture { .. } => QmpCommandKind::CheckpointCapture,
             Self::CheckpointTopology { .. } => QmpCommandKind::CheckpointTopology,
             Self::CheckpointRestore { .. } => QmpCommandKind::CheckpointRestore,
@@ -449,6 +455,8 @@ impl QmpCommand<'_> {
                     "devices": [QMP_SNAPSHOT_VMSTATE_DEVICE],
                 },
             }),
+            #[cfg(target_os = "linux")]
+            Self::CheckpointBegin { receipt } => super::checkpoint_begin::request(*receipt),
             Self::CheckpointCapture { request } => json!({
                 "execute": QMP_CHECKPOINT_CAPTURE_COMMAND,
                 "arguments": request.wire_value(),

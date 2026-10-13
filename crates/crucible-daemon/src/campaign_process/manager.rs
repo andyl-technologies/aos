@@ -21,6 +21,7 @@ pub(super) async fn verify(
         cpu_quota_percent: policy.cpu_quota_percent,
         baseline_resident_bytes: policy.baseline_resident_bytes,
         metadata_bytes: policy.metadata_bytes,
+        delegated_executor: policy.delegated_executor,
     })
     .await
     .map_err(message)

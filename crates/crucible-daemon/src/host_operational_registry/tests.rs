@@ -109,6 +109,7 @@ fn placement_reply(status: &HostRamStatus) -> RamControlReply {
         effective_floor_bytes: status.effective_floor_bytes,
         limitation_reasons: 0,
         measurements_available: false,
+        resident_observation: None,
         private_resident_bytes: 0,
         shared_resident_bytes_observed: 0,
         preserved_backing_bytes: 0,
@@ -264,6 +265,7 @@ fn saturated_control_query_retains_authority_and_authenticated_session() {
         effective_floor_bytes: 32,
         limitation_reasons: 0,
         measurements_available: false,
+        resident_observation: None,
         private_resident_bytes: 0,
         shared_resident_bytes_observed: 0,
         preserved_backing_bytes: 0,
@@ -459,6 +461,7 @@ fn inventory_requires_live_kernel_authority_and_ledger_subsets_remain_bounded() 
         topology: &topology,
         native_metadata_bytes: 8 * 1024 * 1024,
         native_scratch_bytes: 32 * 1024,
+        rust_metadata_required_bytes: initial.metadata_bytes,
         owner_resources,
     };
     assert!(
@@ -505,6 +508,7 @@ fn inventory_requires_live_kernel_authority_and_ledger_subsets_remain_bounded() 
         &topology,
         admission.native_metadata_bytes,
         admission.native_scratch_bytes,
+        admission.rust_metadata_required_bytes,
         1,
     )
     .unwrap();
@@ -1356,4 +1360,54 @@ fn cancellation_client_contention_expires_same_cleanup_without_releasing_owner()
     );
     drop(client);
     drop(peer);
+}
+
+#[test]
+fn partial_resident_cut_binds_owner_without_current_convergence_or_headroom() {
+    let _scope = crucible::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite registry interval fixture: {error}"));
+    let fixture = fixture(64 * 1024);
+    let owner = fixture
+        .registry
+        .node(fixture.target)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut status = output::copy_status(&owner.state.lock().unwrap_or_else(|e| panic!("{e}")))
+        .unwrap_or_else(|e| panic!("{e}"));
+    status.policy_revision = 1;
+    status.applied_policy_revision = 1;
+    let mut reply = placement_reply(&status);
+    reply.applied_policy_revision = status.policy_revision;
+    reply.resident_observation = Some(
+        crucible_protocol::ram_control::RamControlResidentObservation {
+            availability: crucible_protocol::ram_control::RAM_OBSERVATION_TOTAL_RESIDENT,
+            topology_generation: status.target.arena_generation,
+            policy_revision: status.policy_revision,
+            policy_generation: 2,
+            worker_generation: 3,
+            writer_generation: 4,
+            covered_bytes: reply.logical_ram_bytes,
+            total_resident_bytes: 0,
+            effective_target_bytes: reply.logical_ram_bytes,
+            started_ns: 8,
+            completed_ns: 9,
+        },
+    );
+    reply.convergence = crucible_protocol::ram_control::RamControlConvergence::Blocked;
+    let before_resources = status.admitted_resources;
+    let policy = status.requested_policy;
+    let revision = status.policy_revision;
+    mutation::observe_reply(&mut status, reply, policy, revision).unwrap_or_else(|e| panic!("{e}"));
+    assert!(status.resident_observation.is_some());
+    assert!(!status.measurements_available);
+    assert_eq!(status.convergence, HostRamConvergence::Blocked);
+    assert_eq!(status.admitted_resources, before_resources);
+
+    let before = output::copy_status(&status).unwrap_or_else(|e| panic!("{e}"));
+    reply
+        .resident_observation
+        .as_mut()
+        .unwrap_or_else(|| panic!("cut absent"))
+        .topology_generation += 1;
+    assert!(mutation::observe_reply(&mut status, reply, policy, revision).is_err());
+    assert_eq!(status, before);
 }

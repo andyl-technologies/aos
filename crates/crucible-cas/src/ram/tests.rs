@@ -16,6 +16,7 @@ use crate::content_store::{
 
 use super::*;
 
+mod backend_equivalence;
 mod bounded_read;
 mod bounded_tree_parser;
 mod catalog_progress;

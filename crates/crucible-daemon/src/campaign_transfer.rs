@@ -41,7 +41,11 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
+mod execution_possession;
 mod journal_io;
+pub use execution_possession::{
+    CampaignArchiveExecutionPossession, transfer_campaign_archive_for_execution_with_boundary,
+};
 #[cfg(test)]
 use journal_io::fail_next_directory_sync;
 use journal_io::{

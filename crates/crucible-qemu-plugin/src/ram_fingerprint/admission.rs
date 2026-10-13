@@ -164,22 +164,10 @@ pub(super) extern "C" fn observe_admission(
             .ok_or("RAM metadata requirement overflow")?;
         #[cfg(target_os = "linux")]
         if let Some(spill_quota) = crate::paged_ram::controller::admitted_spill_quota()? {
-            let pages = topology.regions().iter().try_fold(0_u64, |total, region| {
-                total
-                    .checked_add(region.geometry().page_count())
-                    .ok_or("RAM page-state count overflow")
-            })?;
-            let regions = u32::try_from(topology.regions().len())
-                .map_err(|_| RamError::Invariant("RAM pager region count overflow"))?;
-            required = required
-                .checked_add(
-                    crate::paged_ram::PausedPagingOwner::required_metadata_bytes(
-                        pages,
-                        regions,
-                        spill_quota,
-                    )?,
-                )
-                .ok_or("RAM paging metadata requirement overflow")?;
+            required = crate::paged_ram::PausedPagingOwner::required_rust_metadata_bytes(
+                &topology,
+                spill_quota,
+            )?;
         }
         if allowance < required {
             return Err(RamError::MetadataAdmission {

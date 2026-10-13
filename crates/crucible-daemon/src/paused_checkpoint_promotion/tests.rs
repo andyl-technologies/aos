@@ -341,6 +341,7 @@ fn identical_replay_root_can_reconcile_a_later_pause_execution() {
         execution: second_execution,
         checkpoint,
         promotion_basis,
+        source_transfer: None,
     };
     second.prepared.execution = second_execution;
 
@@ -657,6 +658,7 @@ pub(crate) fn prepare_repository_promotion_fixture(
             ExecutionRetentionIntent::RetainOnFailure,
             AttemptRetentionPolicyDisposition::Disabled,
         )),
+        source_transfer: None,
     };
     let capacity =
         ExecutorCapacity::new(1, 1, 64 * 1024 * 1024, 0, 1_000).expect("executor capacity");

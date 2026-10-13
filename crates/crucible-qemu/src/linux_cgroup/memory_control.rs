@@ -54,33 +54,7 @@ impl LinuxQemuCgroupMemoryControl {
                 path: self.path.clone(),
             });
         }
-        validate_cgroup_v2(&self.directory, &self.path)?;
-        let mut current = open_control(
-            &self.directory,
-            &self.path,
-            "memory.max",
-            ControlAccess::Read,
-        )?;
-        let actual = read_control(
-            &mut current,
-            &self.path.join("memory.max"),
-            "authenticate current QEMU memory limit",
-            MAX_CGROUP_CONTROL_BYTES,
-        )?;
-        if actual.trim_ascii_end() != expected.to_string() {
-            return Err(LinuxQemuCgroupError::ControlValue {
-                path: self.path.join("memory.max"),
-                expected: expected.to_string(),
-                actual,
-            });
-        }
-        drop(current);
-        write_control(
-            &self.directory,
-            &self.path,
-            "memory.max",
-            format!("{requested}\n").as_bytes(),
-        )?;
+        tighten_pinned_memory(&self.directory, &self.path, expected, requested)?;
         if self.watcher_state.load(Ordering::Acquire) != WATCHER_RUNNING {
             return Err(LinuxQemuCgroupError::WatcherNotRunning {
                 path: self.path.clone(),
@@ -88,4 +62,55 @@ impl LinuxQemuCgroupMemoryControl {
         }
         Ok(())
     }
+}
+
+/// Writes and authenticates a nonzero monotonic limit through a pinned directory.
+///
+/// # Errors
+/// Refuses stale current limits, non-cgroup descriptors, or write/readback failure.
+pub(crate) fn tighten_process_envelope(
+    directory: &OwnedFd,
+    expected: u64,
+    requested: u64,
+) -> Result<(), LinuxQemuCgroupError> {
+    tighten_pinned_memory(
+        directory,
+        Path::new("retained QEMU process envelope"),
+        expected,
+        requested,
+    )
+}
+
+fn tighten_pinned_memory(
+    directory: &OwnedFd,
+    path: &Path,
+    expected: u64,
+    requested: u64,
+) -> Result<(), LinuxQemuCgroupError> {
+    if requested == 0 || requested > expected {
+        return Err(LinuxQemuCgroupError::InvalidLimit);
+    }
+    validate_cgroup_v2(directory, path)?;
+    let mut current = open_control(directory, path, "memory.max", ControlAccess::Read)?;
+    let actual = read_control(
+        &mut current,
+        &path.join("memory.max"),
+        "authenticate current QEMU memory limit",
+        MAX_CGROUP_CONTROL_BYTES,
+    )?;
+    if actual.trim_ascii_end() != expected.to_string() {
+        return Err(LinuxQemuCgroupError::ControlValue {
+            path: path.join("memory.max"),
+            expected: expected.to_string(),
+            actual,
+        });
+    }
+    drop(current);
+    write_control(
+        directory,
+        path,
+        "memory.max",
+        format!("{requested}\n").as_bytes(),
+    )?;
+    Ok(())
 }

@@ -21,6 +21,8 @@ struct FakeGuard {
     active_capacity: Option<Arc<AtomicUsize>>,
     run_root: TempDir,
     next_generation: usize,
+    target_ram_binding_calls: u64,
+    target_ram_binding_guest_bytes: Option<u64>,
     terminal: bool,
 }
 
@@ -75,6 +77,21 @@ impl QemuAttemptResourceGuard for FakeGuard {
 }
 
 impl QemuAttemptProcessResourceGuard for FakeGuard {
+    fn bind_fork_target_ram_custody(
+        &mut self,
+        _contract: &QemuChildProcessContract,
+        _registration: &crucible_qemu::ram_control::RamControlRegistration,
+        _supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        guest_ram_bytes: u64,
+        _custody: &crucible_qemu::QemuRamLaunchCustody,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.target_ram_binding_calls += 1;
+        self.target_ram_binding_guest_bytes = Some(guest_ram_bytes);
+        Err(world_resource_error(
+            "fixture guard cannot issue a native Target RAM purpose",
+        ))
+    }
+
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         Ok(&self.process_contract)
     }
@@ -150,6 +167,8 @@ fn guard(
         active_capacity: None,
         run_root: TempDir::new().map_err(|error| world_resource_error(error.to_string()))?,
         next_generation: 0,
+        target_ram_binding_calls: 0,
+        target_ram_binding_guest_bytes: None,
         terminal: false,
     })
 }
@@ -553,5 +572,159 @@ fn aggregate_finish_refuses_an_active_auxiliary_lifecycle() -> Result<(), QemuVm
 
     assert_eq!(finishes.load(Ordering::Acquire), 0);
     assert_eq!(quarantines.load(Ordering::Acquire), 1);
+    Ok(())
+}
+
+struct UnpublishedTargetRamRegistrar {
+    registrations: Arc<AtomicUsize>,
+}
+
+impl crucible_qemu::ram_control::RamControlRegistrar for UnpublishedTargetRamRegistrar {
+    fn register(
+        &self,
+        _target: crucible_linux_resource::ram_policy::HostRamTarget,
+        _initial_policy: crucible_linux_resource::ram_policy::HostRamPolicy,
+        _resources: crucible_linux_resource::ram_policy::HostResourceVector,
+        _supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        _client: Option<crucible_qemu::ram_control::RamControlClient>,
+    ) -> Result<(), crucible_protocol::ram_control::RamControlError> {
+        self.registrations.fetch_add(1, Ordering::AcqRel);
+        Err(crucible_protocol::ram_control::RamControlError::AuthorityMismatch)
+    }
+
+    fn retire_unpublished_after_cleanup(
+        &self,
+        _target: crucible_linux_resource::ram_policy::HostRamTarget,
+        _resources: crucible_linux_resource::ram_policy::HostResourceVector,
+    ) -> Result<(), crucible_protocol::ram_control::RamControlError> {
+        Ok(())
+    }
+}
+
+fn unpublished_target_ram_registration(
+    generation: u64,
+) -> Result<
+    (
+        crucible_qemu::ram_control::RamControlRegistration,
+        Arc<AtomicUsize>,
+    ),
+    QemuVmRealizationError,
+> {
+    use crucible_linux_resource::host_supervision::HostOperationBudgets;
+    use crucible_linux_resource::ram_policy::{HostRamMode, HostRamPolicy, HostRamTarget};
+
+    let registrations = Arc::new(AtomicUsize::new(0));
+    let registration = crucible_qemu::ram_control::RamControlRegistration {
+        target: HostRamTarget {
+            daemon_epoch: [1; 32],
+            owner_id: [2; 32],
+            node_id: [3; 32],
+            owner_generation: generation,
+            arena_generation: 1,
+            retained_template: false,
+        },
+        initial_policy: HostRamPolicy {
+            mode: HostRamMode::DiskOriented,
+            resident_target_bytes: 4096,
+            eviction_preference: 0,
+            writeback_bytes_per_second: 1,
+            maximum_paging_io_in_flight: 1,
+            prefetch_on_increase: false,
+            latency: HostOperationBudgets::default(),
+        },
+        resources: crucible_linux_resource::ram_policy::HostResourceVector::default(),
+        spill_quota_bytes: 0,
+        host_services: crucible_linux_resource::host_services::HostServiceAllocator::new(
+            1, 1, 4096,
+        )
+        .map_err(|error| world_resource_error(error.to_string()))?,
+        registrar: Arc::new(UnpublishedTargetRamRegistrar {
+            registrations: Arc::clone(&registrations),
+        }),
+    };
+    Ok((registration, registrations))
+}
+
+#[test]
+fn target_ram_binding_refusal_keeps_registration_unpublished() -> Result<(), QemuVmRealizationError>
+{
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationSupervisor,
+    };
+
+    let finishes = Arc::new(AtomicUsize::new(0));
+    let quarantines = Arc::new(AtomicUsize::new(0));
+    let mut owner = QemuHotForkWorldResourceOwner::new(
+        guard(Arc::clone(&finishes), Arc::clone(&quarantines))?,
+        1,
+    )?;
+    let mut target = owner.reserve_process_node(identity("target", 2)?)?;
+    let (registration, registrations) = unpublished_target_ram_registration(2)?;
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)
+        .map_err(|error| world_resource_error(error.to_string()))?;
+    let guest_ram_bytes = 1024 * 1024;
+
+    assert!(
+        target
+            .install_host_ram_registration(registration, supervisor, guest_ram_bytes)
+            .is_err()
+    );
+
+    assert!(target.host_ram_registration().is_none());
+    assert_eq!(registrations.load(Ordering::Acquire), 0);
+    let state = owner
+        .state
+        .lock()
+        .map_err(|_| world_resource_error("fixture registry poison"))?;
+    assert_eq!(state.guard.target_ram_binding_calls, 1);
+    assert_eq!(
+        state.guard.target_ram_binding_guest_bytes,
+        Some(guest_ram_bytes)
+    );
+    drop(state);
+
+    target.abort_without_child()?;
+    owner.finish()?;
+    assert_eq!(finishes.load(Ordering::Acquire), 1);
+    assert_eq!(quarantines.load(Ordering::Acquire), 0);
+    Ok(())
+}
+
+#[test]
+fn stale_target_ram_generation_refuses_before_target_binding() -> Result<(), QemuVmRealizationError>
+{
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationSupervisor,
+    };
+
+    let mut owner = QemuHotForkWorldResourceOwner::new(
+        guard(Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)))?,
+        1,
+    )?;
+    let mut target = owner.reserve_process_node(identity("target", 2)?)?;
+    let (registration, registrations) = unpublished_target_ram_registration(3)?;
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)
+        .map_err(|error| world_resource_error(error.to_string()))?;
+
+    assert!(
+        target
+            .install_host_ram_registration(registration, supervisor, 1024 * 1024)
+            .is_err()
+    );
+
+    assert!(target.host_ram_registration().is_none());
+    assert_eq!(registrations.load(Ordering::Acquire), 0);
+    assert_eq!(
+        owner
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("fixture registry poison"))?
+            .guard
+            .target_ram_binding_calls,
+        0
+    );
+
+    target.abort_without_child()?;
+    owner.finish()?;
     Ok(())
 }

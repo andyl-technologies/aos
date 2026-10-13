@@ -113,6 +113,36 @@ impl HostServiceAllocator {
         self.capacity.resident_bytes
     }
 
+    // The authenticated Main retains its already-paid descriptor counter, not
+    // a replacement bank. Draining the unused remainder prevents another
+    // operational purpose from spending capacity assigned to the host table.
+    pub(crate) fn retain_descriptor_remainder(
+        &self,
+    ) -> Result<Option<HostServiceLease>, HostServiceError> {
+        let mut used = self
+            .capacity
+            .used
+            .lock()
+            .map_err(|_| HostServiceError::Unavailable)?;
+        let descriptors = self
+            .capacity
+            .descriptors
+            .checked_sub(used.descriptors)
+            .ok_or(HostServiceError::CapacityExhausted)?;
+        if descriptors == 0 {
+            return Ok(None);
+        }
+        let reservation = ServiceReservation {
+            capacity: Arc::clone(&self.capacity),
+            tasks: 0,
+            descriptors,
+            resident_bytes: 0,
+        };
+        used.descriptors = self.capacity.descriptors;
+        drop(used);
+        Ok(Some(reservation.into_lease()))
+    }
+
     /// Verifies retained accounting without creating a new service reservation.
     ///
     /// The shared capacity remains owned through every allocator and lease.
@@ -556,6 +586,23 @@ mod tests {
         let replacement = allocator.reserve_resources(1, 4, 4096).unwrap();
         assert_eq!(replacement.tasks(), 1);
         assert_eq!(replacement.file_descriptors(), 4);
+    }
+
+    #[test]
+    fn retained_descriptor_remainder_uses_the_existing_counter() {
+        let allocator = HostServiceAllocator::new(1, 8, 4096).unwrap();
+        let existing = allocator.reserve_resources(0, 3, 0).unwrap();
+        let remaining = allocator.retain_descriptor_remainder().unwrap().unwrap();
+        assert_eq!(existing.file_descriptors(), 3);
+        assert_eq!(remaining.file_descriptors(), 5);
+        assert!(allocator.reserve_resources(0, 1, 0).is_err());
+        assert!(allocator.retain_descriptor_remainder().unwrap().is_none());
+        // A facade clone cannot release its shared physical assignment.
+        let alias = remaining.clone();
+        drop(remaining);
+        assert!(allocator.reserve_resources(0, 1, 0).is_err());
+        drop(alias);
+        assert!(allocator.reserve_resources(0, 5, 0).is_ok());
     }
 
     #[test]

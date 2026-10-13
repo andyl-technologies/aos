@@ -12,7 +12,9 @@ use std::os::fd::AsRawFd;
 use thiserror::Error;
 
 #[cfg(unix)]
-use crucible_protocol::{ControlLifecycleStream, ReceivedSetup};
+use crucible_protocol::ControlLifecycleStream;
+#[cfg(all(test, unix))]
+use crucible_protocol::ReceivedSetup;
 use crucible_shmem::NodeSlot;
 
 use crate::{
@@ -27,12 +29,15 @@ use crate::{
 #[cfg(unix)]
 use crate::{
     PluginSetupCompletion, PluginSetupError, PluginSetupFailureStage,
-    prepare_setup_completion as plugin_prepare_setup_completion,
-    receive_setup_with_descriptors as plugin_receive_setup_with_descriptors,
     send_ready_setup_ack as plugin_send_ready_setup_ack,
 };
 #[cfg(unix)]
 use crate::{plugin_handshake_config, validate_plugin_handshake};
+#[cfg(all(test, unix))]
+use crate::{
+    prepare_setup_completion as plugin_prepare_setup_completion,
+    receive_setup_with_descriptors as plugin_receive_setup_with_descriptors,
+};
 
 mod live;
 
@@ -205,6 +210,7 @@ impl PluginRegistrationSequence {
     /// order, the socket closes, the frame is malformed, or the frame carries
     /// anything other than exactly three `SCM_RIGHTS` descriptors.
     #[cfg(unix)]
+    #[cfg(test)]
     pub fn receive_setup_with_descriptors<S>(
         &mut self,
         stream: &mut S,
@@ -226,6 +232,7 @@ impl PluginRegistrationSequence {
     /// Returns [`PluginRegistrationSequenceError`] when setup receive is out of
     /// order or the lifecycle-aware descriptor handoff fails.
     #[cfg(unix)]
+    #[cfg(test)]
     pub fn receive_setup_with_descriptors_lifecycle<S>(
         &mut self,
         control: &mut ControlLifecycleStream<S>,
@@ -251,6 +258,27 @@ impl PluginRegistrationSequence {
         Ok(setup)
     }
 
+    /// Records the selected setup consumed by the same native Source owner.
+    #[cfg(unix)]
+    pub(crate) fn accept_native_setup<S>(
+        &mut self,
+        control: &mut ControlLifecycleStream<S>,
+        original: &crate::startup_source::InstallerStartupSource,
+    ) -> Result<crate::setup::SetupPreparationInput, PluginRegistrationSequenceError> {
+        self.ensure_next_step(PluginRegistrationStep::ReceiveSetup)?;
+        let input = original
+            .native_setup()
+            .and_then(crate::setup::SetupPreparationInput::from_native_setup)
+            .map_err(|source| {
+                self.fail_step(PluginRegistrationStep::ReceiveSetup, source.to_string())
+            })?;
+        control.plugin_commit_preexec_setup().map_err(|source| {
+            self.fail_step(PluginRegistrationStep::ReceiveSetup, source.to_string())
+        })?;
+        self.record_step_unchecked(PluginRegistrationStep::ReceiveSetup)?;
+        Ok(input)
+    }
+
     /// Maps shared memory, validates setup ABI state, and arms the wake fd.
     ///
     /// On success this records both [`PluginRegistrationStep::MapSharedMemory`]
@@ -264,6 +292,7 @@ impl PluginRegistrationSequence {
     /// with the negotiated handshake assignment, the wake fd cannot be armed, or
     /// the nonzero failure `SetupAck` cannot be sent.
     #[cfg(unix)]
+    #[cfg(test)]
     pub fn prepare_setup_completion<W>(
         &mut self,
         writer: &mut W,

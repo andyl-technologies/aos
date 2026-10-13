@@ -119,7 +119,7 @@ fn status_request_has_frozen_explicit_width_big_endian_bytes() {
     let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
         .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
     let bytes = encode_request(&HostOperationalRequest::Status { target: target() }).unwrap();
-    let mut expected = vec![0, 0, 0, 2, 1];
+    let mut expected = vec![0, 0, 0, 4, 1];
     expected.extend_from_slice(&[0x11; 32]);
     expected.extend_from_slice(&[0x22; 32]);
     expected.extend_from_slice(&[0x33; 32]);
@@ -172,30 +172,131 @@ fn operational_codec_refuses_unknown_tags_trailing_and_oversized_data() {
     assert!(decode_request(&vec![0; HOST_OPERATIONAL_MAX_BYTES + 1]).is_err());
 }
 
+fn update_with_duration(duration: Duration) -> HostOperationalRequest {
+    let mut request = update();
+    let HostOperationalRequest::UpdatePolicy { policy, .. } = &mut request else {
+        panic!("fixture policy request");
+    };
+    policy.latency.classes[0] = HostOperationBudget {
+        poll_interval: duration,
+        progress_timeout: Some(duration),
+        total_timeout: Some(duration),
+    };
+    request
+}
+
 #[test]
-fn configured_durations_are_exact_nonzero_milliseconds() {
-    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
-        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
-    let mut request = update();
-    let HostOperationalRequest::UpdatePolicy { policy, .. } = &mut request else {
-        panic!("fixture");
-    };
-    policy.latency.classes[0].poll_interval = Duration::ZERO;
-    assert!(encode_request(&request).is_err());
+fn configured_durations_preserve_exact_positive_nanoseconds() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024).unwrap();
+    for duration in [
+        Duration::from_nanos(1),
+        Duration::from_micros(500),
+        Duration::from_nanos(crucible_protocol::ram_control::RAM_CONTROL_MAX_ALLOWANCE_NS),
+    ] {
+        let request = update_with_duration(duration);
+        let bytes = encode_request(&request).unwrap();
+        assert_eq!(&bytes[..4], &4_u32.to_be_bytes());
+        // Schema/tag, full RAM target, revision/key, then placement fields.
+        let first_poll = 5 + 113 + 8 + 32 + 23;
+        assert_eq!(
+            &bytes[first_poll..first_poll + 8],
+            &(duration.as_nanos() as u64).to_be_bytes()
+        );
+        assert!(validate_request(&bytes).is_ok());
+        assert_eq!(decode_request(&bytes).unwrap(), request);
 
-    let mut request = update();
-    let HostOperationalRequest::UpdatePolicy { policy, .. } = &mut request else {
-        panic!("fixture");
-    };
-    policy.latency.classes[0].total_timeout = Some(Duration::from_nanos(1));
-    assert!(encode_request(&request).is_err());
+        let request = HostOperationalRequest::AmendOuterCap {
+            target: HostOuterCapTarget {
+                daemon_epoch: [0x11; 32],
+                owner: HostOuterCapOwner::Execution([0x22; 32]),
+                owner_generation: 7,
+                cap_id: [0x77; 32],
+            },
+            expected_cap_revision: 5,
+            idempotency_key: [0x44; 32],
+            allowance: Some(duration),
+        };
+        assert_eq!(
+            decode_request(&encode_request(&request).unwrap()).unwrap(),
+            request
+        );
+    }
+}
 
-    let mut request = update();
-    let HostOperationalRequest::UpdatePolicy { policy, .. } = &mut request else {
-        panic!("fixture");
+#[test]
+fn configured_nanoseconds_refuse_zero_overflow_and_predecessor_schemas() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024).unwrap();
+    for duration in [
+        Duration::ZERO,
+        Duration::from_nanos(crucible_protocol::ram_control::RAM_CONTROL_MAX_ALLOWANCE_NS + 1),
+        Duration::MAX,
+    ] {
+        assert!(encode_request(&update_with_duration(duration)).is_err());
+        let request = HostOperationalRequest::AmendOuterCap {
+            target: HostOuterCapTarget {
+                daemon_epoch: [0x11; 32],
+                owner: HostOuterCapOwner::Execution([0x22; 32]),
+                owner_generation: 7,
+                cap_id: [0x77; 32],
+            },
+            expected_cap_revision: 5,
+            idempotency_key: [0x44; 32],
+            allowance: Some(duration),
+        };
+        assert!(encode_request(&request).is_err());
+    }
+    let current = encode_request(&update_with_duration(Duration::from_nanos(1))).unwrap();
+    for value in [
+        0,
+        crucible_protocol::ram_control::RAM_CONTROL_MAX_ALLOWANCE_NS + 1,
+        u64::MAX,
+    ] {
+        // First budget: poll:u64, progress:tag/u64, total:tag/u64.
+        for offset in [181, 190, 199] {
+            let mut invalid = current.to_vec();
+            invalid[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+            assert!(decode_request(&invalid).is_err());
+            assert!(validate_request(&invalid).is_err());
+        }
+    }
+    let response = encode_response(&HostOperationalResponse::Status(Box::new(status()))).unwrap();
+    for schema in [1_u32, 2, 3] {
+        let mut old = current.to_vec();
+        old[..4].copy_from_slice(&schema.to_be_bytes());
+        assert!(decode_request(&old).is_err());
+        assert!(validate_request(&old).is_err());
+        let mut old = response.to_vec();
+        old[..4].copy_from_slice(&schema.to_be_bytes());
+        assert!(decode_response(&old).is_err());
+    }
+}
+
+#[test]
+fn request_digest_distinguishes_nanosecond_allowances_and_wire_editions() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024).unwrap();
+    let request = update_with_duration(Duration::from_nanos(1));
+    let current = host_operational_request_digest("operator-a", &request).unwrap();
+    assert_ne!(
+        current,
+        host_operational_request_digest(
+            "operator-a",
+            &update_with_duration(Duration::from_nanos(2))
+        )
+        .unwrap()
+    );
+    let wire = encode_request(&request).unwrap();
+    let digest_wire = |bytes: &[u8]| {
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"crucible.host-ram.request.v1\0");
+        digest.update(&10_u32.to_be_bytes());
+        digest.update(b"operator-a");
+        digest.update(bytes);
+        *digest.finalize().as_bytes()
     };
-    policy.latency.classes[0].total_timeout = Some(Duration::from_secs(u64::MAX));
-    assert!(encode_request(&request).is_err());
+    assert_eq!(current, digest_wire(&wire));
+    let mut predecessor = wire.to_vec();
+    predecessor[..4].copy_from_slice(&3_u32.to_be_bytes());
+    assert_ne!(current, digest_wire(&predecessor));
 }
 
 #[test]
@@ -255,6 +356,7 @@ fn status() -> HostRamStatus {
         effective_floor_bytes: 4096,
         limitation_reasons: vec!["compulsory fault buffer".into()],
         measurements_available: true,
+        resident_observation: None,
         activity: Some(HostRamActivity {
             successful_missing_installs: 3,
             successful_missing_read_installs: 1,
@@ -474,35 +576,31 @@ fn backend_preferences_do_not_imply_low_peak_or_lifecycle_qualification() {
 }
 
 #[test]
-fn positive_submillisecond_remaining_time_never_appears_expired() {
-    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
-        .unwrap_or_else(|error| panic!("finite operational codec fixture: {error}"));
-    let mut fixture = status();
-    fixture.outer_caps[0].status.remaining = Some(Duration::from_nanos(1));
-    fixture.outstanding_operations[0]
-        .effective_deadline
-        .as_mut()
-        .unwrap()
-        .remaining = Duration::from_nanos(999_999);
-    let decoded = decode_response(
-        &encode_response(&HostOperationalResponse::Status(Box::new(fixture))).unwrap(),
-    )
-    .unwrap();
-    let HostOperationalResponse::Status(decoded) = decoded.value() else {
-        panic!("fixture");
-    };
-    assert_eq!(
-        decoded.outer_caps[0].status.remaining,
-        Some(Duration::from_millis(1))
-    );
-    assert_eq!(
-        decoded.outstanding_operations[0]
+fn remaining_time_preserves_exact_nanoseconds_and_expired_zero() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024).unwrap();
+    for remaining in [
+        Duration::ZERO,
+        Duration::from_nanos(1),
+        Duration::from_micros(500),
+    ] {
+        let mut fixture = status();
+        fixture.outer_caps[0].status.remaining = Some(remaining);
+        fixture.outstanding_operations[0]
             .effective_deadline
-            .as_ref()
+            .as_mut()
             .unwrap()
-            .remaining,
-        Duration::from_millis(1)
-    );
+            .remaining = remaining;
+        let response = HostOperationalResponse::Status(Box::new(fixture));
+        assert_eq!(
+            decode_response(&encode_response(&response).unwrap()).unwrap(),
+            response
+        );
+    }
+    let mut fixture = status();
+    fixture.outer_caps[0].status.remaining = Some(Duration::from_nanos(
+        crucible_protocol::ram_control::RAM_CONTROL_MAX_ALLOWANCE_NS + 1,
+    ));
+    assert!(encode_response(&HostOperationalResponse::Status(Box::new(fixture))).is_err());
 }
 
 #[test]
@@ -820,4 +918,99 @@ fn decoded_policy_keeps_original_credit_after_wire_and_budget_close() {
     assert_eq!(policy.maximum_paging_io_in_flight, 2);
     drop(policy);
     assert_eq!(used.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn partial_residency_interval_is_available_without_complete_measurements() {
+    let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite interval fixture: {error}"));
+    let mut fixture = status();
+    fixture.measurements_available = false;
+    fixture.private_resident_bytes = 0;
+    fixture.shared_resident_bytes_observed = 0;
+    fixture.preserved_backing_bytes = 0;
+    fixture.private_dirty_bytes = 0;
+    fixture.writeback_pending_bytes = 0;
+    fixture.resident_observation = Some(HostRamResidentObservation {
+        availability: crucible_protocol::ram_control::RAM_OBSERVATION_TOTAL_RESIDENT,
+        topology_generation: fixture.target.arena_generation,
+        policy_revision: fixture.applied_policy_revision,
+        policy_generation: 3,
+        worker_generation: 4,
+        writer_generation: 7,
+        covered_bytes: 8192,
+        total_resident_bytes: 4096,
+        effective_target_bytes: 4096,
+        started_ns: 20,
+        completed_ns: 25,
+    });
+    fixture.convergence = HostRamConvergence::Blocked;
+    assert!(fixture.placement_receipt.is_none());
+    let observation = fixture.resident_observation.unwrap();
+    let response = HostOperationalResponse::Status(Box::new(fixture));
+    let encoded = encode_response(&response).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        decode_response(&encoded).unwrap_or_else(|e| panic!("{e}")),
+        response
+    );
+    // Locate the literal fixed record, not a guessed status-field offset. The
+    // fixture has no placement receipt, exercising its validation early return.
+    let mut record = observation.availability.to_be_bytes().to_vec();
+    for field in [
+        observation.topology_generation,
+        observation.policy_revision,
+        observation.policy_generation,
+        observation.worker_generation,
+        observation.writer_generation,
+        observation.covered_bytes,
+        observation.total_resident_bytes,
+        observation.effective_target_bytes,
+        observation.started_ns,
+        observation.completed_ns,
+    ] {
+        record.extend_from_slice(&field.to_be_bytes());
+    }
+    let offset = encoded
+        .windows(record.len())
+        .position(|bytes| bytes == record)
+        .unwrap();
+    assert_eq!(
+        encoded
+            .windows(record.len())
+            .filter(|bytes| *bytes == record)
+            .count(),
+        1
+    );
+    for (field_offset, value) in [
+        (4, 0),
+        (4, observation.topology_generation + 1),
+        (12, 0),
+        (12, observation.policy_revision + 1),
+        (20, 0),
+        (28, 0),
+        (36, 0),
+        (44, 0),
+        (52, observation.covered_bytes + 1),
+        (68, 0),
+        (76, observation.started_ns - 1),
+    ] {
+        let mut invalid = encoded.clone();
+        invalid[offset + field_offset..offset + field_offset + 8]
+            .copy_from_slice(&value.to_be_bytes());
+        let mut reader = Reader::new(&invalid).unwrap();
+        assert_eq!(reader.u8().unwrap(), 1);
+        assert!(reader.status().is_err());
+        assert!(decode_response(&invalid).is_err());
+    }
+    for availability in [0_u32, 2] {
+        let mut invalid = encoded.clone();
+        invalid[offset..offset + 4].copy_from_slice(&availability.to_be_bytes());
+        let mut reader = Reader::new(&invalid).unwrap();
+        assert_eq!(reader.u8().unwrap(), 1);
+        assert!(reader.status().is_err());
+        assert!(decode_response(&invalid).is_err());
+    }
+    let mut old = encoded.to_vec();
+    old[..4].copy_from_slice(&2_u32.to_be_bytes());
+    assert!(decode_response(&old).is_err());
 }

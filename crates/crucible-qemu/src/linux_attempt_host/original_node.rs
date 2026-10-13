@@ -5,24 +5,28 @@
 //! caller-supplied flag, raw contract getter or replacement account grants it.
 
 use std::io;
+
+mod issuer;
+pub use issuer::InstalledNodeLaunchIssuer;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crucible_linux_resource::host_supervision::{HostOperationGuard, HostSupervisionError};
 
-use super::{
-    LinuxQemuAttemptHostOwner, OriginalActorAccountError, OriginalActorDecodeOwner,
-    OriginalNativeNodeBinding,
-};
+#[cfg(feature = "private-measurement-domain")]
+use super::OriginalActorDecodeOwner;
+use super::{LinuxQemuAttemptHostOwner, OriginalActorAccountError, OriginalNativeNodeBinding};
+#[cfg(feature = "private-measurement-domain")]
 use crate::qmp::readonly_backing_stream::{BackingEvent, QmpReadOnlyBackingReceipt};
+#[cfg(feature = "private-measurement-domain")]
 use crate::qmp::readonly_backing_transport::{
     BackingCaptureFailure, capture_with_verified_contract,
 };
+#[cfg(feature = "private-measurement-domain")]
 use crate::qmp::{QmpClient, QmpTimeoutStream};
 use crate::supervision::{
-    QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError,
-    QemuProductionFreshLaunchAdmission,
+    QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuProductionFreshLaunchAdmission,
 };
-use crate::{QemuNode, QemuPreparedRunDirectory, QemuVmRealizationError};
+use crate::{QemuNode, QemuVmRealizationError};
 
 #[derive(Debug, thiserror::Error)]
 enum FreshLaunchCause {
@@ -34,6 +38,10 @@ enum FreshLaunchCause {
     Launch(#[source] QemuLiveNodeStepGateError),
     #[error("original device-digest workspace refused: {0}")]
     Workspace(#[source] crate::spawn::DeviceDigestWorkspaceIssueError),
+    #[error("installed launch artifact refused: {0}")]
+    Artifact(#[source] crate::artifact_identity::ControlledInstallerIdentityError),
+    #[error("installed process purpose refused: {0}")]
+    Purpose(#[source] super::InstalledProcessPurposeError),
 }
 
 /// Retains a fresh launch's first refusal and its independent original postcut.
@@ -46,6 +54,7 @@ pub struct OriginalNativeFreshLaunchError {
     primary: OnceLock<FreshLaunchCause>,
     original_after: OnceLock<HostSupervisionError>,
     node: Mutex<Option<QemuNode>>,
+    exact_launch: Mutex<Option<crate::QemuProductionExactRestoreLaunch>>,
     workspace: Mutex<Option<crate::spawn::OriginalDeviceDigestWorkspace>>,
 }
 
@@ -55,6 +64,7 @@ impl OriginalNativeFreshLaunchError {
             primary: OnceLock::new(),
             original_after: OnceLock::new(),
             node: Mutex::new(None),
+            exact_launch: Mutex::new(None),
             workspace: Mutex::new(None),
         })
     }
@@ -75,6 +85,22 @@ impl OriginalNativeFreshLaunchError {
             .node
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = node;
+    }
+
+    /// Retains the exact node, its directory and root relation on a late refusal.
+    pub(crate) fn retain_exact_launch(
+        &self,
+        launch: crate::QemuProductionExactRestoreLaunch,
+        after: HostSupervisionError,
+    ) {
+        let _ = self.primary.set(FreshLaunchCause::Binding(
+            OriginalActorAccountError::Supervision(after),
+        ));
+        let _ = self.original_after.set(after);
+        *self
+            .exact_launch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(launch);
     }
 
     /// Borrows the independent same-original refusal after the initiating cut.
@@ -128,6 +154,14 @@ impl Drop for OriginalNativeFreshLaunchError {
             // witness deliberately prevents vector/control credit reuse.
             std::mem::forget(node);
         }
+        if let Some(launch) = self
+            .exact_launch
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            std::mem::forget(launch);
+        }
     }
 }
 
@@ -174,17 +208,48 @@ impl OriginalNativeFreshPreparation {
         Arc::clone(&self.failure)
     }
 
-    pub(super) fn launch(
+    pub(super) fn launch<'a, T>(
         &mut self,
-        host: &LinuxQemuAttemptHostOwner,
-        config: &QemuLiveNodeStepGateConfig,
-        admission: QemuProductionFreshLaunchAdmission<'_>,
-    ) -> Result<QemuNode, Arc<OriginalNativeFreshLaunchError>> {
-        self.enter();
+        host: &'a LinuxQemuAttemptHostOwner,
+        config: &'a QemuLiveNodeStepGateConfig,
+        admission: QemuProductionFreshLaunchAdmission<'a>,
+        complete: impl FnOnce(
+            &'a QemuLiveNodeStepGateConfig,
+            QemuProductionFreshLaunchAdmission<'a>,
+            OriginalNativeNodeBinding,
+            Option<crate::spawn::OriginalDeviceDigestWorkspace>,
+        ) -> Result<T, QemuLiveNodeStepGateError>,
+        retain_refusal: impl FnOnce(T, &OriginalNativeFreshLaunchError, HostSupervisionError),
+    ) -> Result<T, Arc<OriginalNativeFreshLaunchError>> {
         let (directory, identity) = admission.original_node_basis();
+        self.launch_bound(
+            host,
+            config,
+            |binding, workspace, contract| {
+                let admission = QemuProductionFreshLaunchAdmission::admit(
+                    config, directory, contract, identity,
+                )?;
+                complete(config, admission, binding, workspace)
+            },
+            retain_refusal,
+        )
+    }
+
+    fn launch_bound<'a, T>(
+        &mut self,
+        host: &'a LinuxQemuAttemptHostOwner,
+        config: &'a QemuLiveNodeStepGateConfig,
+        complete: impl FnOnce(
+            OriginalNativeNodeBinding,
+            Option<crate::spawn::OriginalDeviceDigestWorkspace>,
+            &'a crate::QemuChildProcessContract,
+        ) -> Result<T, QemuLiveNodeStepGateError>,
+        retain_refusal: impl FnOnce(T, &OriginalNativeFreshLaunchError, HostSupervisionError),
+    ) -> Result<T, Arc<OriginalNativeFreshLaunchError>> {
+        self.enter();
         let failure = Arc::clone(&self.failure);
         let launch =
-            host.launch_original_fresh_node(config, directory, identity, &self.original, failure);
+            host.launch_original_node(config, &self.original, failure, complete, retain_refusal);
         if launch.is_ok() {
             self.lease.completed = true;
         }
@@ -207,6 +272,7 @@ impl Drop for FreshLaunchLease {
 
 /// Preserves the typed bound-host or transport refusal during an observation.
 #[derive(Debug, thiserror::Error)]
+#[cfg(feature = "private-measurement-domain")]
 pub enum OriginalBackingObservationError<'owner> {
     /// The same roster, live generation, decoder or preparation identity refused.
     #[error("original backing binding refused: {0}")]
@@ -229,6 +295,7 @@ pub enum OriginalBackingObservationError<'owner> {
 ///
 /// Only the retained host can construct this opaque observation. It exposes
 /// no process contract, guard or account and grants no replacement authority.
+#[cfg(feature = "private-measurement-domain")]
 pub struct OriginalBoundBackingObservation<'host, 'owner> {
     host: &'host LinuxQemuAttemptHostOwner,
     binding: &'host OriginalNativeNodeBinding,
@@ -257,13 +324,86 @@ impl LinuxQemuAttemptHostOwner {
         let mut preparation = attempt
             .prepare_fresh_launch()
             .map_err(|source| QemuLiveNodeStepGateError::OriginalNativeAccount { source })?;
-        match preparation.launch(self, config, admission) {
+        match preparation.launch(
+            self,
+            config,
+            admission,
+            crate::supervision::launch_qemu_original_fresh_node,
+            |node, failure, after| {
+                failure.record(
+                    FreshLaunchCause::Binding(OriginalActorAccountError::Supervision(after)),
+                    None,
+                    Some(node),
+                );
+            },
+        ) {
             Ok(node) => Ok(node),
             Err(error) => {
                 let source = attempt.retain_launch_refusal(error);
                 Err(QemuLiveNodeStepGateError::OriginalNativeLaunch { source })
             }
         }
+    }
+
+    /// Retains an admitted stopped child before the first guest resume.
+    ///
+    /// This uses the ordinary original issuer and stopped launch stage. The
+    /// caller must retain this host while using the stage, and then physically
+    /// reap the child. No raw PID, copied contract or replacement account can
+    /// construct the returned owner.
+    ///
+    /// # Errors
+    /// Refuses absent original custody, exhausted incarnation shares, actual
+    /// launch failure or the independent original postcut. A late refusal reaps
+    /// the actual child and retains unreaped custody in the typed failure.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn launch_paused_fresh_node<'a>(
+        &'a self,
+        config: &'a QemuLiveNodeStepGateConfig,
+        admission: QemuProductionFreshLaunchAdmission<'a>,
+    ) -> Result<crate::supervision::PausedLiveNodeLaunch<'a>, QemuLiveNodeStepGateError> {
+        let attempt = self.original_account.as_ref().ok_or(
+            QemuLiveNodeStepGateError::OriginalNativeAccount {
+                source: OriginalActorAccountError::Unavailable,
+            },
+        )?;
+        let mut preparation = attempt
+            .prepare_fresh_launch()
+            .map_err(|source| QemuLiveNodeStepGateError::OriginalNativeAccount { source })?;
+        match preparation.launch(
+            self,
+            config,
+            admission,
+            crate::supervision::prepare_qemu_original_fresh_node,
+            |stage, failure, after| {
+                let primary = stage.reap_refused(
+                    QemuLiveNodeStepGateError::OriginalNativeAccount {
+                        source: OriginalActorAccountError::Supervision(after),
+                    },
+                    attempt.cleanup(),
+                );
+                failure.record(FreshLaunchCause::Launch(primary), Some(after), None);
+            },
+        ) {
+            Ok(stage) => Ok(stage),
+            Err(error) => {
+                let source = attempt.retain_launch_refusal(error);
+                Err(QemuLiveNodeStepGateError::OriginalNativeLaunch { source })
+            }
+        }
+    }
+
+    /// Restores an exact node through this same retained installed issuer.
+    ///
+    /// # Errors
+    /// Preserves actual materialization, issuer, launch and independent original
+    /// refusals with the exact node, directory and repository relation retained.
+    pub fn launch_exact_node(
+        &self,
+        request: crate::QemuProductionExactRestoreRequest,
+    ) -> Result<crate::QemuProductionExactRestoreLaunch, QemuLiveNodeStepGateError> {
+        self.lend_installed_node_issuer()?
+            .launch_exact_node(request)
     }
 
     /// Launches a fresh node with this owner's one admitted generation witness.
@@ -277,94 +417,51 @@ impl LinuxQemuAttemptHostOwner {
     /// Refuses a missing or terminal original host, a different preparation,
     /// an exhausted active/staged node census, invalid fresh artifacts, or actual launch failure.
     /// A late original refusal retains a successfully created node.
-    fn launch_original_fresh_node(
-        &self,
-        config: &QemuLiveNodeStepGateConfig,
-        run_directory: &QemuPreparedRunDirectory,
-        identity: QemuLiveNodeIdentity<'_>,
+    fn launch_original_node<'a, T>(
+        &'a self,
+        config: &'a QemuLiveNodeStepGateConfig,
         original: &Arc<HostOperationGuard>,
         failure: Arc<OriginalNativeFreshLaunchError>,
-    ) -> Result<QemuNode, Arc<OriginalNativeFreshLaunchError>> {
-        let launch = (|| {
-            if self.terminal {
-                return Err(FreshLaunchCause::Binding(
-                    OriginalActorAccountError::Unavailable,
-                ));
-            }
-            let attempt = self
-                .original_account
-                .as_ref()
-                .ok_or(FreshLaunchCause::Binding(
-                    OriginalActorAccountError::Unavailable,
-                ))?;
-            let binding = attempt
-                .prepare_node_binding(original)
-                .map_err(FreshLaunchCause::Binding)?;
-            // The source-qualified admission precedes even a per-spawn
-            // contract duplicate. Absence cannot become an enabled None path.
-            let workspace_purpose = config
-                .requires_device_digest_workspace()
-                .then(|| {
-                    attempt.prepare_device_digest_workspace(
-                        original,
-                        config.original_process_generation(),
-                    )
-                })
-                .transpose()
-                .map_err(FreshLaunchCause::Binding)?;
-            let contract = self
-                .process_contract()
-                .map_err(FreshLaunchCause::Contract)?;
-            let admission = QemuProductionFreshLaunchAdmission::admit(
-                config,
-                run_directory,
-                contract,
-                identity,
-            )
-            .map_err(FreshLaunchCause::Launch)?;
-            if let Some(purpose) = workspace_purpose {
-                let mut held = failure
-                    .workspace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                // The already-precreated failure body owns the holder before
-                // its first Arc or FD effect. A refusal retains this same slot.
-                *held = Some(crate::spawn::OriginalDeviceDigestWorkspace::new(purpose));
-                held.as_mut()
-                    .ok_or(FreshLaunchCause::Workspace(
-                        crate::spawn::DeviceDigestWorkspaceIssueError::Unavailable,
-                    ))?
-                    .create()
-                    .map_err(FreshLaunchCause::Workspace)?;
-            }
-            let workspace = failure
-                .workspace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            crate::supervision::launch_qemu_original_fresh_node(
-                config, admission, binding, workspace,
-            )
-            .map_err(FreshLaunchCause::Launch)
-        })();
-        let original_after = original.wait_slice().err();
-        match (launch, original_after) {
-            (Ok(node), None) => Ok(node),
-            (Ok(node), Some(after)) => {
+        complete: impl FnOnce(
+            OriginalNativeNodeBinding,
+            Option<crate::spawn::OriginalDeviceDigestWorkspace>,
+            &'a crate::QemuChildProcessContract,
+        ) -> Result<T, QemuLiveNodeStepGateError>,
+        retain_refusal: impl FnOnce(T, &OriginalNativeFreshLaunchError, HostSupervisionError),
+    ) -> Result<T, Arc<OriginalNativeFreshLaunchError>> {
+        let issuer = match self.lend_installed_node_issuer() {
+            Ok(issuer) => issuer,
+            Err(source) => {
                 failure.record(
-                    FreshLaunchCause::Binding(OriginalActorAccountError::Supervision(after)),
+                    FreshLaunchCause::Launch(source),
+                    original.wait_slice().err(),
                     None,
-                    Some(node),
                 );
-                Err(failure)
+                return Err(failure);
             }
-            (Err(primary), original_after) => {
-                failure.record(primary, original_after, None);
-                Err(failure)
+        };
+        let contract = match self.process_contract() {
+            Ok(contract) => contract,
+            Err(source) => {
+                failure.record(
+                    FreshLaunchCause::Contract(source),
+                    original.wait_slice().err(),
+                    None,
+                );
+                return Err(failure);
             }
-        }
+        };
+        issuer.launch_original_node(
+            config,
+            contract,
+            original,
+            failure,
+            complete,
+            retain_refusal,
+        )
     }
 
+    #[cfg(feature = "private-measurement-domain")]
     pub(crate) fn verify_original_park_binding(
         &self,
         binding: &OriginalNativeNodeBinding,
@@ -382,6 +479,7 @@ impl LinuxQemuAttemptHostOwner {
         decoder.verify_original(original)
     }
 
+    #[cfg(feature = "private-measurement-domain")]
     pub(crate) fn enter_original_park_quiescence(
         &self,
         binding: &OriginalNativeNodeBinding,
@@ -404,6 +502,7 @@ impl LinuxQemuAttemptHostOwner {
         decoder.enter_park_quiescence(original, contract)
     }
 
+    #[cfg(feature = "private-measurement-domain")]
     pub(crate) fn bind_readonly_backing_observation<'host, 'owner>(
         &'host self,
         binding: &'host OriginalNativeNodeBinding,
@@ -430,6 +529,7 @@ impl LinuxQemuAttemptHostOwner {
     }
 }
 
+#[cfg(feature = "private-measurement-domain")]
 impl<'host, 'owner> OriginalBoundBackingObservation<'host, 'owner> {
     pub(crate) fn capture<S: QmpTimeoutStream>(
         self,

@@ -11,6 +11,7 @@ mod checked_readers;
 mod composition;
 mod merkle_reads;
 mod publication_acceptance;
+mod publication_width;
 mod statement_reuse;
 mod whole_reads;
 

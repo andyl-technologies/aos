@@ -27,6 +27,7 @@ where
             Some(AttemptRuntimeState::Paused {
                 checkpoint,
                 promotion_basis: None,
+                source_transfer: None,
                 ..
             }) if checkpoint == expected => Ok(Some(
                 SelectedExactCheckpointRoot::after_durable_checkpoint(checkpoint),
@@ -114,6 +115,7 @@ where
             AttemptRuntimeState::Paused {
                 execution: current_execution,
                 checkpoint,
+                source_transfer: None,
                 ..
             } if current_execution == execution => {
                 Ok(CheckpointRequestOutcome::Paused { checkpoint })
@@ -221,6 +223,7 @@ where
             AttemptRuntimeState::Paused {
                 execution,
                 checkpoint: current_checkpoint,
+                source_transfer: None,
                 ..
             } if execution == queued.execution && current_checkpoint == checkpoint => {
                 if worker_finished {
@@ -229,9 +232,11 @@ where
                 }
                 Ok(CheckpointPublicationOutcome::AlreadyPaused)
             }
-            AttemptRuntimeState::Paused { execution, .. } if execution == queued.execution => {
-                Err(LocalExecutorError::ConflictingCheckpoint)
-            }
+            AttemptRuntimeState::Paused {
+                execution,
+                source_transfer: None,
+                ..
+            } if execution == queued.execution => Err(LocalExecutorError::ConflictingCheckpoint),
             AttemptRuntimeState::Completed { execution, .. }
             | AttemptRuntimeState::Canceled { execution, .. }
                 if execution == queued.execution =>
@@ -296,6 +301,7 @@ where
                             queued.request.retention_policy(),
                         ),
                     ),
+                    source_transfer: None,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 self.mark_worker_finished(execution);
@@ -308,15 +314,18 @@ where
             AttemptRuntimeState::Paused {
                 execution,
                 checkpoint: current_checkpoint,
+                source_transfer: None,
                 ..
             } if execution == queued.execution && current_checkpoint == checkpoint => {
                 self.mark_worker_finished(execution);
                 self.release_active_if_present(execution)?;
                 Ok(CheckpointCompletionOutcome::AlreadyPaused)
             }
-            AttemptRuntimeState::Paused { execution, .. } if execution == queued.execution => {
-                Err(LocalExecutorError::ConflictingCheckpoint)
-            }
+            AttemptRuntimeState::Paused {
+                execution,
+                source_transfer: None,
+                ..
+            } if execution == queued.execution => Err(LocalExecutorError::ConflictingCheckpoint),
             AttemptRuntimeState::Running { .. }
             | AttemptRuntimeState::CheckpointRequested { .. }
             | AttemptRuntimeState::CheckpointPublishing { .. }

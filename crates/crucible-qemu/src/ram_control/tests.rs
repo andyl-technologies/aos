@@ -35,6 +35,7 @@ fn state() -> RamControlReply {
         inventory_region: None,
         limitation_reasons: RAM_LIMIT_COMPULSORY_FLOOR,
         measurements_available: true,
+        resident_observation: None,
         requested_policy_revision: 1,
         applied_policy_revision: 1,
         reservation_revision: 1,
@@ -50,7 +51,7 @@ fn state() -> RamControlReply {
     }
 }
 
-fn response(frame: RamControlFrame) -> RamControlFrame {
+pub(crate) fn response(frame: RamControlFrame) -> RamControlFrame {
     RamControlFrame {
         message: RamControlMessage::Reply {
             request_digest: ram_control_request_digest(&frame).unwrap(),
@@ -105,8 +106,8 @@ fn pager_controller_total_deadline_cannot_be_extended_by_trickle_reads() {
 }
 
 #[test]
-fn pager_controller_budget_conversion_is_exact_and_rejects_rounding() {
-    let policy = HostRamPolicy {
+fn pager_controller_budget_conversion_preserves_exact_nanoseconds() {
+    let mut policy = HostRamPolicy {
         mode: HostRamMode::Managed,
         resident_target_bytes: 4096,
         eviction_preference: 80,
@@ -115,10 +116,38 @@ fn pager_controller_budget_conversion_is_exact_and_rejects_rounding() {
         prefetch_on_increase: false,
         latency: HostOperationBudgets::default(),
     };
-    assert_eq!(policy_from_wire(policy_to_wire(policy).unwrap()), policy);
-    let mut fractional = policy;
-    fractional.latency.classes[0].poll_interval = Duration::from_nanos(1_500_000);
-    assert!(policy_to_wire(fractional).is_err());
+    for duration in [Duration::from_nanos(1), Duration::from_micros(500)] {
+        policy.latency.classes[0] = HostOperationBudget {
+            poll_interval: duration,
+            progress_timeout: Some(duration),
+            total_timeout: Some(duration),
+        };
+        let wire = policy_to_wire(policy).unwrap();
+        let encoded = encode_ram_control_budgets(&wire.budgets).unwrap();
+        let observed = decode_ram_control_budgets(&encoded).unwrap();
+
+        assert_eq!(budgets_from_wire(observed).unwrap(), policy.latency);
+        assert_eq!(policy_from_wire(wire).unwrap(), policy);
+        assert_eq!(wire.budgets[0].poll_ns, duration.as_nanos() as u64);
+    }
+}
+
+#[test]
+fn budget_conversion_refuses_zero_and_unrepresentable_values_in_both_directions() {
+    for duration in [
+        Duration::ZERO,
+        Duration::from_nanos(RAM_CONTROL_MAX_ALLOWANCE_NS + 1),
+        Duration::MAX,
+    ] {
+        let mut budgets = HostOperationBudgets::default();
+        budgets.classes[0].total_timeout = Some(duration);
+        assert!(budgets_to_wire(budgets).is_err());
+    }
+    for value in [0, RAM_CONTROL_MAX_ALLOWANCE_NS + 1, u64::MAX] {
+        let mut budgets = budgets_to_wire(HostOperationBudgets::default()).unwrap();
+        budgets[0].total_ns = Some(value);
+        assert!(budgets_from_wire(budgets).is_err());
+    }
 }
 
 #[test]
@@ -207,6 +236,7 @@ fn native_inventory_grant_retains_the_original_setup_guard() {
         region_count: 1,
         native_metadata_bytes: 4096,
         native_scratch_bytes: 4096,
+        rust_metadata_required_bytes: 8192,
         owner_resources: RamControlOwnerInventory {
             existing_tasks: 1,
             existing_file_descriptors: 1,
@@ -243,6 +273,31 @@ fn native_inventory_grant_retains_the_original_setup_guard() {
     let mut client =
         RamControlClient::connect_supervised(host, [4; 32], target(), supervisor.clone()).unwrap();
     let inventory = client.inventory().unwrap();
+    let exact_metadata = report.native_metadata_bytes + report.rust_metadata_required_bytes;
+    let undersized = HostResourceVector {
+        metadata_bytes: exact_metadata - 1,
+        ..HostResourceVector::default()
+    };
+    assert!(matches!(
+        client.grant_inventory(&inventory, undersized, 8192),
+        Err(RamControlError::AuthorityMismatch)
+    ));
+    let exact = HostResourceVector {
+        metadata_bytes: exact_metadata + 1,
+        ..undersized
+    };
+    let mut changed = inventory.clone();
+    changed.report.rust_metadata_required_bytes += 1;
+    assert!(matches!(
+        client.grant_inventory(&changed, exact, 8192),
+        Err(RamControlError::AuthorityMismatch)
+    ));
+    changed = inventory.clone();
+    changed.report.topology_generation += 1;
+    assert!(matches!(
+        client.grant_inventory(&changed, exact, 8192),
+        Err(RamControlError::AuthorityMismatch)
+    ));
     let original = supervisor.operation_statuses().unwrap();
     assert_eq!(original.len(), 1);
     assert_eq!(original[0].class, HostOperationClass::Setup);

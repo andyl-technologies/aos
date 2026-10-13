@@ -79,6 +79,7 @@ impl LinuxQemuAttemptHostFactory {
             native_resources: None,
             original_retirement_pinned: false,
             original_account: None,
+            fork_target: None,
             terminal: false,
         });
         let owner = saved

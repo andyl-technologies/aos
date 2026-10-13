@@ -113,8 +113,30 @@ pub(super) fn hash_exact_checkpoint_file_sha256_with_boundary(
     hash_exact_checkpoint_open_file_sha256_with_boundary(&mut file, path, boundary)
 }
 
+/// Supplies checked artifact I/O without requiring an unchecked file escape.
+pub(super) trait CheckpointArtifactFile: std::io::Read + std::io::Seek {
+    /// Returns the retained artifact's physical metadata.
+    ///
+    /// # Errors
+    /// Refuses the file observation or the retained capture original.
+    fn metadata(&mut self) -> std::io::Result<std::fs::Metadata>;
+}
+
+impl CheckpointArtifactFile for File {
+    fn metadata(&mut self) -> std::io::Result<std::fs::Metadata> {
+        File::metadata(self)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl CheckpointArtifactFile for crucible_qemu::QemuCheckpointDeviceReader<'_> {
+    fn metadata(&mut self) -> std::io::Result<std::fs::Metadata> {
+        crucible_qemu::QemuCheckpointDeviceReader::metadata(self)
+    }
+}
+
 pub(super) fn hash_exact_checkpoint_open_file_sha256_with_boundary(
-    file: &mut File,
+    file: &mut impl CheckpointArtifactFile,
     diagnostic_path: &Path,
     boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
 ) -> Result<ContentHash, SchedulerError> {
@@ -692,7 +714,7 @@ pub(super) fn prepare_exact_checkpoint_set_with_boundary(
 /// Returns an error for cancellation, an inadmissible length, allocation
 /// failure, unavailable source bytes, or failure to persist a chunk.
 pub(super) fn stage_open_checkpoint_artifact_chunks_with_boundary(
-    source_file: &mut File,
+    source_file: &mut impl CheckpointArtifactFile,
     diagnostic_path: &Path,
     object_directory: &Path,
     role: &str,

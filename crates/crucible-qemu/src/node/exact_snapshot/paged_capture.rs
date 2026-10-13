@@ -46,6 +46,7 @@ pub struct QemuCapturedRamPage {
 #[derive(Debug)]
 pub(super) struct QemuPagedRamCapture {
     file: File,
+    original: Option<super::CheckpointOriginalLoan>,
     root: RootRecord,
     generation: u64,
     initial: bool,
@@ -55,7 +56,33 @@ pub(super) struct QemuPagedRamCapture {
 }
 
 impl QemuPagedRamCapture {
-    pub(super) fn admit(mut file: File, expected_bytes: u64) -> Result<Self, QemuNodeError> {
+    #[cfg(test)]
+    pub(super) fn admit(file: File, expected_bytes: u64) -> Result<Self, QemuNodeError> {
+        Self::admit_inner(file, expected_bytes, None)
+    }
+
+    pub(super) fn admit_under_original(
+        file: File,
+        expected_bytes: u64,
+        original: super::CheckpointOriginalLoan,
+    ) -> Result<Self, QemuNodeError> {
+        original.check().map_err(original_node_error)?;
+        let work = Self::admit_inner(file, expected_bytes, Some(original.clone()));
+        match (work, original.check().err()) {
+            (Err(source), Some(original_after)) => Err(QemuNodeError::CheckpointPostcut {
+                source: Box::new(source),
+                original_after,
+            }),
+            (Ok(_), Some(source)) => Err(original_node_error(source)),
+            (work, None) => work,
+        }
+    }
+
+    fn admit_inner(
+        mut file: File,
+        expected_bytes: u64,
+        original: Option<super::CheckpointOriginalLoan>,
+    ) -> Result<Self, QemuNodeError> {
         if expected_bytes < HEADER_BYTES as u64
             || file.metadata().map_err(capture_io)?.len() != expected_bytes
         {
@@ -64,6 +91,7 @@ impl QemuPagedRamCapture {
         file.seek(SeekFrom::Start(0)).map_err(capture_io)?;
         let mut header = [0; HEADER_BYTES];
         file.read_exact(&mut header).map_err(capture_io)?;
+        check_node_original(original.as_ref())?;
         let initial = u32be(&header[12..16]);
         let generation = u64be(&header[16..24]);
         let records = u64be(&header[24..32]);
@@ -85,9 +113,12 @@ impl QemuPagedRamCapture {
             .try_reserve_exact(root_length)
             .map_err(|_| invalid("root allocation"))?;
         encoded.resize(root_length, 0);
+        check_node_original(original.as_ref())?;
         file.read_exact(&mut encoded).map_err(capture_io)?;
+        check_node_original(original.as_ref())?;
         let root = RootRecord::decode(&encoded, Limits::default())
             .map_err(|error| invalid(format!("page capture root record: {error}")))?;
+        check_node_original(original.as_ref())?;
         if root.scope() != Scope::Exact || root.digest().as_bytes() != &header[40..72] {
             return Err(invalid("page capture root or scope"));
         }
@@ -108,6 +139,7 @@ impl QemuPagedRamCapture {
         }
         Ok(Self {
             file,
+            original,
             root,
             generation,
             initial: initial == 1,
@@ -115,6 +147,16 @@ impl QemuPagedRamCapture {
             remaining_bytes,
             previous: None,
         })
+    }
+
+    pub(super) fn original_loan(&self) -> Result<super::CheckpointOriginalLoan, QemuNodeError> {
+        self.original
+            .clone()
+            .ok_or_else(|| QemuNodeError::CheckpointOriginal {
+                source: super::capture_original::CheckpointOriginalError::before(
+                    super::capture_original::CheckpointOriginalCause::MissingOwner,
+                ),
+            })
     }
 
     pub(super) fn record(&self) -> &RootRecord {
@@ -130,6 +172,34 @@ impl QemuPagedRamCapture {
     }
 
     pub(super) fn next_page(&mut self) -> Result<Option<QemuCapturedRamPage>, CaptureReadError> {
+        self.check_original()?;
+        let work = self.next_page_inner();
+        let original_after = self
+            .original
+            .as_ref()
+            .and_then(|original| original.check().err());
+        match (work, original_after) {
+            (Err(source), Some(original_after)) => Err(CaptureReadError::Io(
+                std::io::Error::other(CheckpointReadPostcut {
+                    source,
+                    original_after,
+                }),
+            )),
+            (Ok(_), Some(source)) => Err(CaptureReadError::Io(std::io::Error::other(source))),
+            (work, None) => work,
+        }
+    }
+
+    fn check_original(&self) -> Result<(), CaptureReadError> {
+        if let Some(original) = &self.original {
+            original
+                .check()
+                .map_err(|source| CaptureReadError::Io(std::io::Error::other(source)))?;
+        }
+        Ok(())
+    }
+
+    fn next_page_inner(&mut self) -> Result<Option<QemuCapturedRamPage>, CaptureReadError> {
         if self.remaining_records == 0 {
             if self.remaining_bytes != 0 {
                 return Err(CaptureReadError::Malformed("trailing page capture bytes"));
@@ -141,6 +211,7 @@ impl QemuPagedRamCapture {
         }
         let mut header = [0; PAGE_HEADER_BYTES];
         self.file.read_exact(&mut header)?;
+        self.check_original()?;
         let region_ordinal = u32be(&header[..4]);
         let length = u32be(&header[4..8]);
         let page_index = u64be(&header[8..16]);
@@ -166,7 +237,9 @@ impl QemuPagedRamCapture {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(length as usize)?;
         bytes.resize(length as usize, 0);
+        self.check_original()?;
         self.file.read_exact(&mut bytes)?;
+        self.check_original()?;
         self.previous = Some(coordinate);
         self.remaining_records -= 1;
         self.remaining_bytes -= encoded_bytes;
@@ -177,6 +250,33 @@ impl QemuPagedRamCapture {
             bytes,
         }))
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{source}; checkpoint original postcut: {original_after}")]
+struct CheckpointReadPostcut {
+    #[source]
+    source: CaptureReadError,
+    original_after: crucible_linux_resource::host_supervision::HostSupervisionError,
+}
+
+fn original_node_error(
+    source: crucible_linux_resource::host_supervision::HostSupervisionError,
+) -> QemuNodeError {
+    QemuNodeError::CheckpointOriginal {
+        source: super::capture_original::CheckpointOriginalError::before(
+            super::capture_original::CheckpointOriginalCause::Original(source),
+        ),
+    }
+}
+
+fn check_node_original(
+    original: Option<&super::CheckpointOriginalLoan>,
+) -> Result<(), QemuNodeError> {
+    if let Some(original) = original {
+        original.check().map_err(original_node_error)?;
+    }
+    Ok(())
 }
 
 fn invalid(message: impl Into<String>) -> QemuNodeError {

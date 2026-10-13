@@ -26,6 +26,7 @@ pub(crate) struct PreparedChildArenas {
     reservation: Option<MetadataReservation>,
     arena_reservation: Option<MetadataReservation>,
     capture_work: Option<service::capture_work::FaultWorkOwner>,
+    resident_observation: Option<super::physical_observation::ResidentObservationState>,
     mode: crucible_protocol::ram_control::RamControlMode,
     captured: bool,
 }
@@ -100,6 +101,7 @@ impl PausedPagingOwner {
             return Err(RamError::Invariant("parent paging authority is not active"));
         }
         let budget = crate::ram_fingerprint::fork_metadata_budget()?;
+        super::admission::verify_service_header_extent()?;
         match (source.as_ref(), parent_service.source.as_ref()) {
             (Some(child), Some(parent))
                 if child.topology_generation
@@ -145,6 +147,7 @@ impl PausedPagingOwner {
             .len();
         let metadata_bytes = pages
             .checked_mul(size_of::<PageState>())
+            .and_then(|bytes| bytes.checked_add(PageStates::control_bytes()))
             .ok_or("child paging metadata overflow")?;
         let reservation = budget.reserve_bytes(metadata_bytes as u64)?;
         let arena_bytes = parent_service
@@ -161,6 +164,8 @@ impl PausedPagingOwner {
         arenas.try_reserve_exact(parent_service.arenas.len())?;
         arenas.extend_from_slice(&parent_service.arenas);
         let capture_work = service::capture_work::FaultWorkOwner::prepare(&budget)?;
+        let resident_observation =
+            super::physical_observation::ResidentObservationState::prepare(&budget)?;
         // Negotiate host capability only. This descriptor is unregistered and
         // closed before the fork; its mm identity is never reused by the child.
         drop(Registration::open()?);
@@ -178,6 +183,7 @@ impl PausedPagingOwner {
             reservation: Some(reservation),
             arena_reservation: Some(arena_reservation),
             capture_work: Some(capture_work),
+            resident_observation: Some(resident_observation),
             captured: false,
             mode: policy.mode,
         })
@@ -302,11 +308,11 @@ impl PreparedChildArenas {
             source: self.source.clone(),
             spill: self.spill.clone(),
             arenas: self.arenas.take().ok_or("child arenas already consumed")?,
-            states: Mutex::new(
+            states: Mutex::new(PageStates::new(
                 self.states
                     .take()
                     .ok_or("child versions already consumed")?,
-            ),
+            )),
             placement_dependency: Mutex::new(None),
             worker: Mutex::new(None),
             capture_work: self
@@ -317,6 +323,10 @@ impl PreparedChildArenas {
             activated: AtomicBool::new(false),
             destructive: AtomicBool::new(true),
             retained_token: AtomicU64::new(0),
+            resident_observation: self
+                .resident_observation
+                .take()
+                .ok_or("child residency observation custody absent")?,
             failed: AtomicBool::new(false),
             lifetime: Mutex::new(service::ActorLifetime::default()),
             operations: self.operations.clone(),

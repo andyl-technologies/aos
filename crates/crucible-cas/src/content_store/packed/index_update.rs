@@ -576,7 +576,7 @@ impl Update {
             backend,
             self.header.instance,
             self.header.generation,
-            bytes,
+            &node,
             operation,
         )?;
         Ok(Child {

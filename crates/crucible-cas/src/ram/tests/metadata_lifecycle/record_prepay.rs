@@ -1,6 +1,8 @@
 //! Closed-record allocation and original-callback provenance regressions.
 #![cfg(test)]
 
+mod publication_width;
+
 use super::*;
 use crate::ram::codec::{PAGE_SCHEMA, TreeNode};
 use crate::ram::record_account::{RecordAccount, RecordAllocationPlan};

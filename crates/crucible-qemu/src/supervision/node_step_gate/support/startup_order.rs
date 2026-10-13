@@ -8,7 +8,7 @@
 use super::*;
 use crate::QemuPluginIpcControlChannel;
 use crate::host_setup::tests::plugin_peer_complete_setup_after_ack;
-use crate::spawn::create_test_spawn_resource_pair;
+use crate::spawn::{create_test_spawn_resource_pair, prepare_test_preexec_setup};
 use crucible_linux_resource::host_supervision::{HostOperationBudget, HostOperationBudgets};
 use crucible_linux_resource::ram_policy::HostRamTarget;
 use crucible_protocol::ram_control::{
@@ -26,7 +26,8 @@ fn ram_authentication_progresses_after_descriptor_setup_and_mapped_prime()
 -> Result<(), Box<dyn Error>> {
     let config = RegionConfig::new(1, 4);
     let layout = RegionLayout::for_config(config)?;
-    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    let (mut resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    prepare_test_preexec_setup(&mut resources, config)?;
     let (host_ram, mut peer_ram) = UnixStream::pair()?;
     let (waiting_for_setup, setup_wait) = mpsc::channel();
     let (waiting_for_prime, prime_wait) = mpsc::channel();
@@ -163,6 +164,7 @@ fn ready_reply() -> RamControlReply {
         writeback_pending_bytes: 0,
         limitation_reasons: 0,
         measurements_available: true,
+        resident_observation: None,
         convergence: RamControlConvergence::Stable,
         inventory: None,
         inventory_region: None,

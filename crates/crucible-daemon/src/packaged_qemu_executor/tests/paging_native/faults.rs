@@ -44,7 +44,7 @@ fn production_managed_memory_faults_preserve_replay_state() {
         std::fs::read_to_string("/proc/sys/vm/unprivileged_userfaultfd")
             .expect("disposable host kernel userfaultfd policy")
             .trim(),
-        "1"
+        "0"
     );
     let mut bitflips = 0;
     let mut missing = 0;

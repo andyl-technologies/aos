@@ -18,7 +18,7 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 crucible-ram = { path = "../crucible-ram", optional = true }
 libc = { workspace = true }
-rustix = { workspace = true, features = ["time"] }
+rustix = { workspace = true, features = ["time", "try_close"] }
 thiserror = { workspace = true }
 zbus = { workspace = true }
 

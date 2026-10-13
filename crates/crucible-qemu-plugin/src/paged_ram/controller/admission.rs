@@ -89,7 +89,27 @@ pub(crate) fn admit_native_inventory(
             "native RAM inventory byte count changed",
         ));
     }
-    drop(regions);
+    // Move the already staged descriptor owner into canonical validation. The
+    // existing two-inventory staging request covers its transient shared slice;
+    // no descriptor or topology clone is created for the metadata request.
+    let topology = crucible_ram::Topology::new(regions, crucible_ram::Limits::default())?;
+    if topology.total_logical_bytes() != logical_bytes {
+        return Err(RamError::Invariant(
+            "canonical RAM inventory byte count changed",
+        ));
+    }
+    let spill_quota_required = topology.regions().iter().try_fold(0_u64, |total, region| {
+        region
+            .geometry()
+            .page_count()
+            .checked_mul(2 * super::super::PAGE_BYTES as u64)
+            .and_then(|bytes| total.checked_add(bytes))
+            .ok_or(RamError::Invariant("sealed spill metadata extent overflow"))
+    })?;
+    let rust_metadata_required_bytes =
+        PausedPagingOwner::required_rust_metadata_bytes(&topology, spill_quota_required)?;
+    drop(topology);
+    operation.wait_slice()?;
     {
         let mut state = controller
             .state
@@ -105,6 +125,7 @@ pub(crate) fn admit_native_inventory(
                 region_count,
                 native_metadata_bytes,
                 native_scratch_bytes,
+                rust_metadata_required_bytes,
                 owner_resources,
                 granted: false,
             },
@@ -127,15 +148,13 @@ pub(crate) fn admit_native_inventory(
         }
         std::thread::sleep(slice.min(Duration::from_millis(10)));
     };
-    let mut allowance = 0;
-    let status = (controller.native_grant)(generation, grant.metadata_bytes, &mut allowance);
-    if status != 0 || allowance == 0 {
-        controller.mark_failed();
-        return Err(RamError::Native {
-            operation: "grant native RAM inventory",
-            status,
-        });
-    }
+    let allowance = grant_native_rust_allowance(
+        &controller,
+        operation.as_ref(),
+        generation,
+        grant.metadata_bytes,
+        rust_metadata_required_bytes,
+    )?;
     let owner = PausedPagingOwner::new(grant, controller.clone())?;
     owner.seal_geometry(generation, logical_bytes)?;
     let spill = controller
@@ -163,24 +182,63 @@ pub(crate) fn admit_native_inventory(
     Ok(Some(allowance))
 }
 
+/// Checks the native residual grant before pager or service construction.
+///
+/// The request remains under the same installing operation; the native return
+/// is an independently owned allowance, never a new installer purpose.
+///
+/// # Errors
+/// Refuses an expired original, failed native grant, or a residual allowance
+/// below the complete reported Rust requirement.
+pub(super) fn grant_native_rust_allowance(
+    controller: &LivePagerController,
+    operation: &dyn SourceOperation,
+    generation: u64,
+    metadata_bytes: u64,
+    rust_metadata_required_bytes: u64,
+) -> Result<u64, RamError> {
+    operation.wait_slice()?;
+    let mut allowance = 0;
+    let status = (controller.native_grant)(generation, metadata_bytes, &mut allowance);
+    if status != 0 || allowance == 0 {
+        controller.mark_failed();
+        return Err(RamError::Native {
+            operation: "grant native RAM inventory",
+            status,
+        });
+    }
+    if allowance < rust_metadata_required_bytes {
+        controller.mark_failed();
+        return Err(RamError::MetadataAdmission {
+            required: rust_metadata_required_bytes,
+            admitted: allowance,
+        });
+    }
+    operation.wait_slice()?;
+    Ok(allowance)
+}
+
+// Only this explicit native status precedes every collector or census effect.
+// Negative errno values preserve terminal causes and never authorize a retry.
+const NATIVE_INVENTORY_PENDING_RECORD: c_int = 1;
+
 /// Keeps native census and subsequent grant installation under one setup start.
 ///
 /// The native call remains on the pre-CPU main actor with BQL. It can block while
 /// draining native workers, so the independent host setup watchdog supplies
 /// process containment; these checks refuse a late success before publication.
-/// No controller lock is held while the exporter runs.
+/// A record-drain pending result retries under that same setup operation before
+/// native census begins. No controller lock is held while the exporter runs.
 ///
 /// # Errors
 /// Refuses expired or unavailable original setup authority before export or
 /// publication, and preserves the original native status when export fails.
 pub(super) fn export_owner_inventory(
     controller: &LivePagerController,
-    export: impl FnOnce(&mut RamControlOwnerInventory) -> c_int,
+    mut export: impl FnMut(&mut RamControlOwnerInventory) -> c_int,
 ) -> Result<(RamControlOwnerInventory, Arc<dyn SourceOperation>), RamError> {
     let operation: Arc<dyn SourceOperation> =
         Arc::from(controller.begin(SourceOperationClass::ControlSetup)?);
-    operation.wait_slice()?;
-
     let mut inventory = RamControlOwnerInventory {
         existing_tasks: 0,
         existing_file_descriptors: 0,
@@ -188,14 +246,40 @@ pub(super) fn export_owner_inventory(
         prospective_tasks: 1,
         prospective_file_descriptors: 5,
     };
-    let status = export(&mut inventory);
-    if status != 0 {
-        return Err(RamError::Native {
-            operation: "authenticate pre-CPU owner inventory",
-            status,
-        });
+    loop {
+        operation.wait_slice()?;
+        let status = export(&mut inventory);
+        if status == 0 {
+            break;
+        }
+        if status != NATIVE_INVENTORY_PENDING_RECORD {
+            return Err(RamError::Native {
+                operation: "authenticate pre-CPU owner inventory",
+                status,
+            });
+        }
+        if inventory.existing_tasks != 0
+            || inventory.existing_file_descriptors != 0
+            || inventory.registered_service_tasks != 0
+        {
+            return Err(RamError::Invariant(
+                "pending native inventory contains census output",
+            ));
+        }
+
+        // Native retains the same requested dispatch hold before its census.
+        // Current records can drain without Main; preserve this setup start and
+        // leave all collector or cleanup failures terminal.
+        let slice = operation.wait_slice()?;
+        std::thread::sleep(slice.min(Duration::from_millis(10)));
     }
     operation.wait_slice()?;
+    if inventory.existing_tasks == 0
+        || inventory.existing_file_descriptors == 0
+        || inventory.registered_service_tasks > inventory.existing_tasks
+    {
+        return Err(RamError::Invariant("native owner census is incomplete"));
+    }
 
     Ok((inventory, operation))
 }

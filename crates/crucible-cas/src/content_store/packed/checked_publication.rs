@@ -207,7 +207,7 @@ pub(super) fn publish(
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<PutBatchReceipt, StoreError> {
     checked_reader::check(original, boundary)?;
-    if objects.len() > 64 {
+    if objects.len() > batch::MAX_PUBLICATION_OBJECTS {
         return Err(StoreError::Quota);
     }
     let receipt_credit = batch::admit_receipts(original, objects.len(), backend.name.len())?;

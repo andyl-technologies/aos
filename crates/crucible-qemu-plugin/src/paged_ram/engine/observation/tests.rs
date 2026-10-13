@@ -14,9 +14,9 @@ fn policy(mode: RamControlMode) -> RamControlPolicy {
         maximum_paging_io_in_flight: 1,
         prefetch_on_increase: false,
         budgets: [crucible_protocol::ram_control::RamControlBudget {
-            poll_ms: 1,
-            progress_ms: None,
-            total_ms: Some(30_000),
+            poll_ns: 1_000_000,
+            progress_ns: None,
+            total_ns: Some(30_000_000_000),
         }; crucible_protocol::ram_control::RAM_CONTROL_BUDGET_COUNT],
     }
 }

@@ -77,6 +77,25 @@ mod tests {
     }
 
     #[test]
+    fn physical_target_pin_waits_for_actual_contract_and_stage_aliases()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let contract = contract();
+        let stage = contract.retain_process_stage_binding();
+        let mut retirement = contract.retain_process_stage_retirement();
+        let alias = contract.try_clone_for_attempt_generation()?;
+        drop(contract);
+
+        assert!(retirement.close().is_err());
+        drop(alias);
+        assert!(retirement.close().is_err());
+
+        drop(stage);
+        retirement.close()?;
+        assert!(retirement.close().is_err());
+        Ok(())
+    }
+
+    #[test]
     fn process_stage_binding_accepts_only_the_same_retained_attempt() {
         let original = contract();
         let binding = original.retain_process_stage_binding();
@@ -88,5 +107,42 @@ mod tests {
         drop(original);
         assert!(duplicate.verify_process_stage_binding(&binding).is_ok());
         assert!(QemuProcessStageBinding::retained_control_bytes().unwrap() > 0);
+    }
+}
+
+/// Pins the existing contract allocation until physical aliases have closed.
+///
+/// The containing fixed target loan pays this same allocation before contract
+/// birth. Retaining this pin allocates nothing and lends no launch authority.
+pub(crate) struct QemuProcessStageRetirement {
+    attempt: Option<Arc<AttemptResourceBinding>>,
+}
+
+impl QemuChildProcessContract {
+    pub(crate) fn retain_process_stage_retirement(&self) -> QemuProcessStageRetirement {
+        QemuProcessStageRetirement {
+            attempt: Some(Arc::clone(&self.attempt_binding)),
+        }
+    }
+}
+
+impl QemuProcessStageRetirement {
+    /// Closes only the uniquely retained, physically retired contract allocation.
+    ///
+    /// Callers separately prove process and cgroup retirement. Surviving strong
+    /// contracts or weak stage witnesses refuse without dropping this same pin.
+    pub(crate) fn close(&mut self) -> Result<(), QemuProcessStageIdentityError> {
+        let attempt = self.attempt.as_mut().ok_or(QemuProcessStageIdentityError)?;
+        Arc::get_mut(attempt).ok_or(QemuProcessStageIdentityError)?;
+        drop(self.attempt.take());
+        Ok(())
+    }
+}
+
+impl Drop for QemuProcessStageRetirement {
+    fn drop(&mut self) {
+        if let Some(attempt) = self.attempt.take() {
+            std::mem::forget(attempt);
+        }
     }
 }

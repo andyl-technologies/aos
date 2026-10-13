@@ -25,6 +25,7 @@ use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, fcntl_get_seals, memfd_
 
 use serde::Deserialize;
 
+mod actor_family;
 mod actor_partition;
 mod issuer_birth;
 mod issuer_catalog;
@@ -32,6 +33,7 @@ mod issuer_custody;
 mod issuer_parent;
 mod parent_evidence;
 
+pub use actor_family::AuthenticatedActorFamily;
 pub use actor_partition::{CertifiedActorPartition, CertifiedNativeStage};
 pub use issuer_custody::IssuerCustodyRefusal;
 pub use parent_evidence::{
@@ -61,6 +63,9 @@ pub enum MeasurementOriginError {
     /// The peer, record, executable or policy does not identify this invocation.
     #[error("original measurement issuance refused at {0}")]
     Authentication(&'static str),
+    /// The same retained actor operation refuses before or after a family check.
+    #[error("original actor family operation refused: {0}")]
+    OriginalOperation(#[source] crate::host_supervision::HostSupervisionError),
     /// The fixed policy omits or exceeds an original role.
     #[error("original measurement operator contract is invalid")]
     Contract,

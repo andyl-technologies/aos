@@ -603,6 +603,8 @@ where
     // classifies direct and transitive roots. Recompute reachability from that
     // classification so promoting an archive object to an operational root
     // cannot leave its newly required descendants eligible for deletion.
+    let close = super::reachability::ClosePurpose::<CampaignGcApplyError<L::Error>>::new(operation)
+        .map_err(CampaignGcApplyError::Reachability)?;
     let current_reachable = Reachability::authenticate(
         repository,
         roots.ordinary.iter().copied(),
@@ -611,36 +613,44 @@ where
         operation,
     )
     .map_err(CampaignGcApplyError::Reachability)?;
-    for candidate in journal.candidates().iter() {
-        operation
-            .check()
-            .map_err(CampaignGcApplyError::Reachability)?;
-        if matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable)
-            && current_reachable
-                .contains_with_boundary(&candidate.id(), &mut || operation.check())
-                .map_err(CampaignGcApplyError::Reachability)?
-        {
-            return Err(CampaignGcApplyError::CandidateBecameReachable { id: candidate.id() });
+    let authenticated = (|| {
+        for candidate in journal.candidates().iter() {
+            operation
+                .check()
+                .map_err(CampaignGcApplyError::Reachability)?;
+            if matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable)
+                && current_reachable
+                    .contains_with_boundary(&candidate.id(), &mut || operation.check())
+                    .map_err(CampaignGcApplyError::Reachability)?
+            {
+                return Err(CampaignGcApplyError::CandidateBecameReachable { id: candidate.id() });
+            }
         }
-    }
-    for (target, planned) in physical.iter().zip(journal.plan().physical()) {
-        let mut fence =
-            target
-                .acquire_inventory(operation)
-                .map_err(|source| CampaignGcApplyError::Blob {
+        for (target, planned) in physical.iter().zip(journal.plan().physical()) {
+            let mut fence = target.acquire_inventory(operation).map_err(|source| {
+                CampaignGcApplyError::Blob {
                     backend: target.backend().to_owned(),
                     source,
-                })?;
-        validate_physical_inventory(
-            target,
-            planned,
-            journal.candidates(),
-            fence.as_mut(),
-            operation,
-        )?;
-    }
+                }
+            })?;
+            validate_physical_inventory(
+                target,
+                planned,
+                journal.candidates(),
+                fence.as_mut(),
+                operation,
+            )?;
+        }
 
-    authenticate(journal, physical, &current_reachable, operation)?;
+        authenticate(journal, physical, &current_reachable, operation)?;
+        Ok(())
+    })();
+    current_reachable.finish(
+        close,
+        authenticated,
+        operation,
+        CampaignGcApplyError::Reachability,
+    )?;
 
     operation
         .check()

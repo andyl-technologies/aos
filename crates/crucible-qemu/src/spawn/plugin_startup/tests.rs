@@ -78,9 +78,16 @@ fn missing_installed_profile_refuses_before_setup_or_service_reservation()
     let original_cap = supervisor.cap_id();
     let original_budgets = supervisor.budgets()?;
 
-    let refusal = OriginalPluginStartup::prepare(&supervisor, &contract, &registration, 1)
-        .err()
-        .ok_or("registered startup unexpectedly issued an installed profile")?;
+    let refusal = OriginalPluginStartup::prepare(
+        &supervisor,
+        &contract,
+        &registration,
+        1,
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        None,
+    )
+    .err()
+    .ok_or("registered startup unexpectedly issued an installed profile")?;
 
     assert!(matches!(
         &refusal.source,
@@ -97,9 +104,16 @@ fn missing_installed_profile_refuses_before_setup_or_service_reservation()
     let same_capacity = services.reserve_resources(1, 1, 4096)?;
 
     drop(same_capacity);
-    let with_capacity = OriginalPluginStartup::prepare(&supervisor, &contract, &registration, 1)
-        .err()
-        .ok_or("registered startup bypassed the missing profile after capacity became free")?;
+    let with_capacity = OriginalPluginStartup::prepare(
+        &supervisor,
+        &contract,
+        &registration,
+        1,
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        None,
+    )
+    .err()
+    .ok_or("registered startup bypassed the missing profile after capacity became free")?;
     assert!(matches!(
         &with_capacity.source,
         PluginStartupCause::InstalledProfileUnavailable
@@ -114,5 +128,146 @@ fn missing_installed_profile_refuses_before_setup_or_service_reservation()
     assert_eq!(first_setup.status()?.operation_id, 1);
     first_setup.complete()?;
     drop(still_full_capacity);
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[test]
+fn startup_outside_request_keeps_the_actual_body_and_subscriber_extents() {
+    let hosted = u64::try_from(
+        std::mem::size_of::<OriginalPluginStartup>()
+            + std::mem::size_of::<Option<PluginStartupState>>()
+            + std::mem::size_of::<PluginStartupState>()
+            + std::mem::size_of::<PluginStartupError>()
+            + FDINFO_BYTES
+            + 1,
+    )
+    .unwrap()
+        + HostServiceLease::metadata_bytes();
+
+    let requested = OriginalPluginStartup::host_allocation_extent().unwrap();
+
+    assert_eq!(
+        OriginalPluginStartup::control_allocation_extent(),
+        Some(hosted)
+    );
+    assert_eq!(
+        requested,
+        hosted + HostOperationGuard::original_setup_cancellation_bytes()
+    );
+    assert!(requested > hosted);
+}
+
+// This fixed host fixture exercises the original and receiver cuts only. It
+// constructs no process-purpose loan, native entitlement or spawn capability.
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+fn hosted_startup() -> Result<
+    (
+        OriginalPluginStartup,
+        rustix::fd::OwnedFd,
+        HostServiceAllocator,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let extent = OriginalPluginStartup::host_allocation_extent()?;
+    let services = HostServiceAllocator::new(1, 2, extent)?;
+    let control = services.reserve_resources(
+        0,
+        1,
+        OriginalPluginStartup::control_allocation_extent().ok_or("unrepresentable host extent")?,
+    )?;
+    let original = supervisor.begin_control(HostOperationClass::Setup)?;
+    let event = rustix::event::eventfd(
+        0,
+        rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
+    )?;
+    let subscriber = services.reserve_resources(
+        0,
+        1,
+        HostOperationGuard::original_setup_cancellation_bytes(),
+    )?;
+    let alias = rustix::io::fcntl_dupfd_cloexec(&event, 3)?;
+    original.retain_original_setup_cancellation(alias, subscriber)?;
+    let basis = original.serialize_original_setup_basis()?;
+    let mut cap_id = [0; 32];
+    cap_id.copy_from_slice(&basis[16..48]);
+    let u64_at = |offset: usize| {
+        let mut bytes = [0; 8];
+        bytes.copy_from_slice(&basis[offset..offset + 8]);
+        u64::from_be_bytes(bytes)
+    };
+    let metadata = rustix::fs::fstat(&event)?;
+    let record = StartupOperation::new(StartupOperationFields {
+        cap_id,
+        operation_id: u64_at(48),
+        original_start_ns: u64_at(56),
+        absolute_end_ns: u64_at(64),
+        poll_ns: u64_at(72),
+        process_generation: 1,
+        original_total_metadata_bytes: extent,
+        cancellation_device: metadata.st_dev,
+        cancellation_inode: metadata.st_ino,
+        cancellation_event_id: event_identity(event.as_raw_fd())?,
+        cancellation_descriptor: super::super::QEMU_STARTUP_CANCELLATION_FD,
+    })?;
+    let startup = OriginalPluginStartup {
+        body: Box::new(Some(PluginStartupState {
+            services: services.clone(),
+            workspace: None,
+            original,
+            record,
+        })),
+        _control: control,
+    };
+    Ok((startup, event, services))
+}
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[test]
+fn unavailable_receiver_keeps_the_actual_setup_and_control_owned()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (startup, event, services) = hosted_startup()?;
+    let before = startup.record()?;
+
+    let refusal = startup
+        .require_preexec_receiver()
+        .err()
+        .ok_or("receiver unexpectedly issued")?;
+
+    assert!(matches!(
+        refusal.source,
+        PluginStartupCause::ReceiverPurposeUnavailable
+    ));
+    assert!(refusal.original_after.is_none());
+    assert_eq!(startup.record()?, before);
+    assert_eq!(
+        startup.state()?.original.status()?.state,
+        crucible_linux_resource::host_supervision::HostOperationState::Running
+    );
+    assert!(services.reserve_resources(0, 1, 1).is_err());
+    startup.complete()?;
+    drop(startup);
+    drop(event);
+    let released =
+        services.reserve_resources(0, 2, OriginalPluginStartup::host_allocation_extent()?)?;
+    drop(released);
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[test]
+fn cancelled_setup_precedes_the_receiver_unavailable_refusal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (startup, event, _) = hosted_startup()?;
+    rustix::io::write(&event, &1u64.to_ne_bytes())?;
+
+    let refusal = startup
+        .require_preexec_receiver()
+        .err()
+        .ok_or("cancelled Setup continued")?;
+
+    assert!(matches!(refusal.source, PluginStartupCause::Original(_)));
+    assert!(startup.check().is_err());
     Ok(())
 }

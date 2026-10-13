@@ -183,3 +183,38 @@ fn event_log_hydration_rejects_changed_bytes_before_writing() {
     );
     assert!(resumed_store.get(&identity).is_err());
 }
+
+#[test]
+fn stopped_restore_keeps_logical_admission_refusal_before_physical_hold() {
+    assert!(
+        !ExactRestoreExposure::Released
+            .physical_pause(ProductionNodeServiceState::Running)
+            .unwrap_or_else(|error| panic!("ordinary running target: {error}"))
+    );
+    for exposure in [
+        ExactRestoreExposure::Released,
+        ExactRestoreExposure::AwaitingOwnershipCommit,
+    ] {
+        assert!(
+            exposure
+                .physical_pause(ProductionNodeServiceState::PoweredOff)
+                .unwrap_or_else(|error| panic!("powered-off target remains stopped: {error}"))
+        );
+        let error = exposure
+            .physical_pause(ProductionNodeServiceState::PermanentlyFailed)
+            .err()
+            .unwrap_or_else(|| panic!("permanently failed exact target must refuse"));
+        assert!(
+            error
+                .to_string()
+                .contains("permanently failed node cannot carry an exact restore target")
+        );
+    }
+    assert!(
+        ExactRestoreExposure::AwaitingOwnershipCommit
+            .physical_pause(ProductionNodeServiceState::Running)
+            .unwrap_or_else(|error| panic!(
+                "maintenance running target is physically held: {error}"
+            ))
+    );
+}

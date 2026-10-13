@@ -51,7 +51,7 @@ impl Write for Transcript {
 }
 
 fn host_config() -> HostHandshakeConfig {
-    assert_eq!(CONTROL_PROTOCOL_VERSION, 5);
+    assert_eq!(CONTROL_PROTOCOL_VERSION, 7);
     HostHandshakeConfig {
         proto_version: CONTROL_PROTOCOL_VERSION,
         abi_version: CURRENT_SHMEM_ABI,
@@ -91,6 +91,9 @@ fn predecessor_and_mixed_peers_are_rejected_without_ack() {
         (0, CURRENT_SHMEM_ABI),
         (1, CURRENT_SHMEM_ABI),
         (2, CURRENT_SHMEM_ABI),
+        (4, CURRENT_SHMEM_ABI),
+        (5, CURRENT_SHMEM_ABI),
+        (6, CURRENT_SHMEM_ABI),
         (PREDECESSOR_CONTROL, PREDECESSOR_SHMEM_ABI),
         (PREDECESSOR_CONTROL, CURRENT_SHMEM_ABI),
         (CONTROL_PROTOCOL_VERSION, PREDECESSOR_SHMEM_ABI),
@@ -148,6 +151,9 @@ fn predecessor_ack_cannot_authorize_setup() {
         (0, CURRENT_SHMEM_ABI),
         (1, CURRENT_SHMEM_ABI),
         (2, CURRENT_SHMEM_ABI),
+        (4, CURRENT_SHMEM_ABI),
+        (5, CURRENT_SHMEM_ABI),
+        (6, CURRENT_SHMEM_ABI),
         (PREDECESSOR_CONTROL, PREDECESSOR_SHMEM_ABI),
         (PREDECESSOR_CONTROL, CURRENT_SHMEM_ABI),
         (CONTROL_PROTOCOL_VERSION, PREDECESSOR_SHMEM_ABI),

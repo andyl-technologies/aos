@@ -10,6 +10,15 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+mod installer_controls;
+
+pub use installer_controls::{
+    InstallerControlAllocation, InstallerControlIdentity, InstallerControlIdentityError,
+};
+
+#[cfg(target_os = "linux")]
+pub(crate) use installer_controls::ControlledInstallerIdentityError;
+
 const CONTENT_ADDRESS_PREFIX: &str = "sha256:";
 
 /// Opaque identity of one marker-authenticated QEMU and plugin launch pair.
@@ -482,6 +491,19 @@ mod tests {
             )
             .expect("write plugin marker");
         }
+    }
+
+    #[test]
+    fn installer_geometry_refuses_mutable_fixture_before_sidecar_read() {
+        let fixture = ArtifactFixture::new();
+        let identity =
+            QemuLaunchArtifactIdentity::authenticate(fixture.qemu.clone(), fixture.plugin.clone())
+                .expect("ordinary artifact identity");
+
+        assert!(matches!(
+            identity.installer_control_identity(),
+            Err(InstallerControlIdentityError::Unavailable)
+        ));
     }
 
     fn required_abi_version() -> String {

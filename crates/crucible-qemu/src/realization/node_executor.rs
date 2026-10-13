@@ -24,7 +24,7 @@ use crate::{
 #[cfg(target_os = "linux")]
 use crate::{
     QemuProductionExactRestoreLaunch, QemuProductionExactRestoreRequest,
-    QemuProductionFreshLaunchAdmission, launch_qemu_production_fresh_node,
+    QemuProductionFreshLaunchAdmission,
 };
 
 use super::{

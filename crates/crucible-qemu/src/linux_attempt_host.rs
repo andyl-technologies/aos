@@ -12,9 +12,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod fork_target;
+pub use fork_target::LinuxQemuForkTargetPermit;
+
 mod configuration;
 pub use configuration::{AdmittedHostConfigurationError, LinuxQemuAttemptHostConfig};
 
+mod native_account;
 mod native_resources;
 #[cfg(feature = "private-measurement-domain")]
 pub(crate) mod parent_setup;
@@ -22,14 +26,11 @@ pub(crate) mod parent_setup;
 pub(crate) use parent_setup::OriginalParentSetup;
 #[cfg(feature = "private-measurement-domain")]
 mod original_actor;
-#[cfg(feature = "private-measurement-domain")]
 mod original_host;
-#[cfg(feature = "private-measurement-domain")]
 mod original_node;
-#[cfg(feature = "private-measurement-domain")]
 mod original_roster;
+pub use native_account::OriginalActorAccountError;
 use native_resources::NativeResourceState;
-#[cfg(feature = "private-measurement-domain")]
 pub use native_resources::OriginalNativeControlRetirement;
 pub use native_resources::{LinuxQemuNativeResourceController, LinuxQemuNativeResourceError};
 #[cfg(all(
@@ -39,24 +40,25 @@ pub use native_resources::{LinuxQemuNativeResourceController, LinuxQemuNativeRes
 pub use original_actor::ControlledOriginalActorParkFixture;
 #[cfg(feature = "private-measurement-domain")]
 pub use original_actor::{
-    OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorCatalogAccounts,
-    OriginalActorCatalogPurpose, OriginalActorDecodeOwner, OriginalActorParkCaller,
-    OriginalActorParkCallerLease, OriginalActorParkImportError, OriginalActorParkImports,
-    OriginalActorParkQuiescence, OriginalActorParkQuiescenceError,
-    OriginalActorServiceLaunchPurpose, OriginalActorServicePolicy, OriginalCatalogAuditError,
-    OriginalCatalogPhysicalAudit, OriginalGuestServiceHandle, OriginalGuestServiceOwner,
+    OriginalActorAccountCustody, OriginalActorCatalogAccounts, OriginalActorCatalogPurpose,
+    OriginalActorDecodeOwner, OriginalActorParkCaller, OriginalActorParkCallerLease,
+    OriginalActorParkImportError, OriginalActorParkImports, OriginalActorParkQuiescence,
+    OriginalActorParkQuiescenceError, OriginalActorServiceLaunchPurpose,
+    OriginalActorServicePolicy, OriginalCatalogAuditError, OriginalCatalogPhysicalAudit,
+    OriginalGuestServiceHandle, OriginalGuestServiceOwner,
 };
-#[cfg(feature = "private-measurement-domain")]
 pub use original_host::OriginalNativePhysicalRetirement;
 #[cfg(feature = "private-measurement-domain")]
+pub use original_node::OriginalBackingObservationError;
+#[cfg(feature = "private-measurement-domain")]
 pub use original_node::OriginalBoundBackingObservation;
-#[cfg(feature = "private-measurement-domain")]
-pub use original_node::{OriginalBackingObservationError, OriginalNativeFreshLaunchError};
-#[cfg(feature = "private-measurement-domain")]
+pub use original_node::{InstalledNodeLaunchIssuer, OriginalNativeFreshLaunchError};
+pub(crate) use original_roster::TargetWatcherOriginal;
+pub(crate) use original_roster::device_digest::AllocationWorkspaceRecord;
 pub(crate) use original_roster::{
-    NativeAccountAttempt, OriginalDeviceDigestWorkspacePurpose, OriginalNativeNodeBinding,
+    InstalledIncarnationRetirement, InstalledProcessPurposeError, NativeAccountAttempt,
+    OriginalDeviceDigestWorkspacePurpose, OriginalNativeNodeBinding,
 };
-#[cfg(feature = "private-measurement-domain")]
 pub use original_roster::{OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
@@ -90,8 +92,8 @@ pub struct LinuxQemuAttemptHostFactory {
     process: LinuxQemuAttemptProcessFactory,
     storage: LinuxQemuAttemptStorageFactory,
     poisoned: bool,
-    #[cfg(feature = "private-measurement-domain")]
     original_accounts: Option<OriginalNativeAccountFactoryBinding>,
+    normal_roster: Option<OriginalNativeAccountRoster>,
 }
 
 impl LinuxQemuAttemptHostFactory {
@@ -109,8 +111,8 @@ impl LinuxQemuAttemptHostFactory {
             process,
             storage,
             poisoned: false,
-            #[cfg(feature = "private-measurement-domain")]
             original_accounts: None,
+            normal_roster: None,
         })
     }
 
@@ -179,7 +181,6 @@ impl LinuxQemuAttemptHostFactory {
             });
         }
 
-        #[cfg(feature = "private-measurement-domain")]
         if self.original_accounts.is_some() {
             return self.begin_original_with_checkpoint_root(
                 maximum_vcpus,
@@ -222,10 +223,9 @@ impl LinuxQemuAttemptHostFactory {
             maximum_writable_bytes,
             quarantine: None,
             native_resources: None,
-            #[cfg(feature = "private-measurement-domain")]
             original_retirement_pinned: false,
-            #[cfg(feature = "private-measurement-domain")]
             original_account: None,
+            fork_target: None,
             terminal: false,
         })
     }
@@ -248,10 +248,9 @@ pub struct LinuxQemuAttemptHostOwner {
     maximum_writable_bytes: u64,
     quarantine: Option<LinuxQemuAttemptHostQuarantine>,
     native_resources: Option<Arc<NativeResourceState>>,
-    #[cfg(feature = "private-measurement-domain")]
     original_retirement_pinned: bool,
-    #[cfg(feature = "private-measurement-domain")]
     original_account: Option<original_roster::NativeAccountAttempt>,
+    fork_target: Option<fork_target::ForkTargetCustody>,
     terminal: bool,
 }
 
@@ -371,6 +370,9 @@ impl LinuxQemuAttemptHostOwner {
     pub fn native_resource_controller(
         &mut self,
     ) -> Result<LinuxQemuNativeResourceController, QemuVmRealizationError> {
+        if self.fork_target.is_some() {
+            return self.fork_target_native_controller();
+        }
         self.check_operational_boundary()?;
         if self.native_resources.is_none() {
             let memory = self
@@ -378,7 +380,6 @@ impl LinuxQemuAttemptHostOwner {
                 .as_ref()
                 .ok_or_else(|| missing_authority("pin native memory controller"))?
                 .memory_control();
-            #[cfg(feature = "private-measurement-domain")]
             let memory = match self.original_account.as_ref() {
                 Some(original) => original.after(memory),
                 None => memory,
@@ -390,7 +391,6 @@ impl LinuxQemuAttemptHostOwner {
                 .ok_or_else(|| missing_authority("pin native quota controller"))?
                 .quota_controller()
                 .map_err(|error| map_storage_error("pin native quota controller", &error));
-            #[cfg(feature = "private-measurement-domain")]
             let quota = match self.original_account.as_ref() {
                 Some(original) => original.after(quota),
                 None => quota,
@@ -403,7 +403,6 @@ impl LinuxQemuAttemptHostOwner {
                 self.maximum_writable_bytes,
             ));
         }
-        #[cfg(feature = "private-measurement-domain")]
         if self.original_account.is_some() && !self.original_retirement_pinned {
             let pin = self.retain_original_native_control().map_err(|source| {
                 QemuVmRealizationError::ModelCopy {
@@ -421,7 +420,6 @@ impl LinuxQemuAttemptHostOwner {
             .as_ref()
             .map(NativeResourceState::controller)
             .ok_or_else(|| missing_authority("lend native resource controller"));
-        #[cfg(feature = "private-measurement-domain")]
         if let Some(original) = self.original_account.as_ref() {
             return original.after(result);
         }
@@ -542,14 +540,13 @@ impl LinuxQemuAttemptHostOwner {
     ///
     /// Returns an executor error after cancellation, cleanup, or quarantine.
     pub fn check_operational_boundary(&self) -> Result<(), QemuVmRealizationError> {
-        #[cfg(feature = "private-measurement-domain")]
         if let Some(original) = self.original_account.as_ref() {
             original
                 .require_original()
                 .map_err(original_roster::original_error)?;
         }
         if self.terminal
-            || self.storage.is_none()
+            || (self.storage.is_none() && self.fork_target.is_none())
             || self
                 .native_resources
                 .as_ref()
@@ -576,7 +573,9 @@ impl LinuxQemuAttemptHostOwner {
     /// Returns an operational error while retaining both owners for exact
     /// quarantine transfer. Success attests process reap before storage release.
     pub fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
-        #[cfg(feature = "private-measurement-domain")]
+        if self.fork_target.is_some() {
+            return self.finish_fork_target();
+        }
         if let Some(original) = self.original_account.as_ref() {
             if self.terminal {
                 return original.after(Err(QemuVmRealizationError::ReapQuarantined {
@@ -620,7 +619,10 @@ impl LinuxQemuAttemptHostOwner {
             return;
         }
         self.retire_native_resources();
-        #[cfg(feature = "private-measurement-domain")]
+        if self.fork_target.is_some() {
+            self.quarantine_fork_target();
+            return;
+        }
         if let Some(original) = self.original_account.as_ref() {
             let owners = original_roster::RetainedNativeHost {
                 process: self.process.take(),
@@ -658,7 +660,7 @@ impl QemuHotForkChildProcessOwner for LinuxQemuAttemptHostOwner {
         &mut self,
         basis: QemuHotForkChildProcessBasis,
     ) -> Result<Self::Authority, QemuNodeChannelError> {
-        if self.terminal || self.storage.is_none() {
+        if self.terminal || (self.storage.is_none() && self.fork_target.is_none()) {
             return Err(QemuNodeChannelError::new(
                 "retain forked child process",
                 "combined attempt host authority is terminal",

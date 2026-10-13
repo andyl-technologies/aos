@@ -21,6 +21,8 @@ use crucible_linux_resource::host_services::{
     HostServiceBootstrap, HostServiceLease, HostServiceLeasePair,
 };
 
+#[path = "campaign_process/executor.rs"]
+mod executor;
 #[path = "campaign_process/manager.rs"]
 mod manager;
 #[path = "campaign_process/policy.rs"]
@@ -34,6 +36,8 @@ static ENTRY: AtomicBool = AtomicBool::new(false);
 static ACTOR: OnceLock<ProcessActor> = OnceLock::new();
 
 struct ProcessActor {
+    // Runtime task/descriptor custody closes only with this permanent actor.
+    _runtime: HostServiceLease,
     accounts: crucible_linux_resource::host_services::process_birth::AuthenticatedProcessResources,
     native_bootstrap_bytes: u64,
     heap_bytes: u64,
@@ -175,6 +179,11 @@ pub enum CampaignProcessAdmissionError {
     /// The same original process heap or credit could not be admitted.
     #[error(transparent)]
     Store(StoreError),
+    /// The normal same-main executor admission retains its actual first cause.
+    #[error(transparent)]
+    ExecutorPurpose(
+        #[from] crucible_linux_resource::host_services::process_birth::ServiceBirthError,
+    ),
     /// The exact Parent purpose refusal remains in original process custody.
     #[cfg(feature = "private-measurement-domain")]
     #[error(transparent)]
@@ -285,6 +294,7 @@ impl CampaignProcessOwner {
         let structure = HostServiceBootstrap::control_bytes()
             .map_err(|error| CampaignProcessAdmissionError::policy(error.to_string()))?
             .checked_add(std::mem::size_of::<ProcessActor>() as u64)
+            .and_then(|bytes| bytes.checked_add(HostServiceLease::metadata_bytes()))
             .ok_or_else(|| {
                 CampaignProcessAdmissionError::policy(
                     "campaign process account structure overflows",
@@ -303,7 +313,18 @@ impl CampaignProcessOwner {
             .map_err(|error| CampaignProcessAdmissionError::policy(error.to_string()))?;
         // There is one private entry and no re-exec path. Publication moves the
         // two admitted counters straight into permanent inline actor storage.
+        let runtime_tasks = u64::try_from(policy.worker_threads)
+            .ok()
+            .and_then(|n| n.checked_add(u64::try_from(policy.blocking_threads).ok()?))
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(|| {
+                CampaignProcessAdmissionError::policy("campaign runtime task purpose overflows")
+            })?;
+        let runtime_credit = accounts
+            .reserve_resident(runtime_tasks, policy.baseline_file_descriptors, 0)
+            .map_err(|error| CampaignProcessAdmissionError::policy(error.to_string()))?;
         let actor = ACTOR.get_or_init(|| ProcessActor {
+            _runtime: runtime_credit,
             accounts,
             native_bootstrap_bytes: policy.sqlite_bootstrap_bytes,
             heap_bytes: policy.sqlite_heap_bytes,

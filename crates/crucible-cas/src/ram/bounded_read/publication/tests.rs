@@ -675,3 +675,90 @@ fn directory_fallback_retains_the_actual_outer_graph_admission() {
     );
     fixture.finish_receipt();
 }
+
+#[test]
+fn real_graph_publication_dense_and_gapped_entries_keep_the_same_authenticated_reads() {
+    for gapped in [false, true] {
+        let mut fixture = Fixture::new();
+        let baseline = fixture.bank.usage().expect("held publication baseline");
+        let mut expected = [None; 6];
+        let length = if gapped { 6 } else { 3 };
+        for index in 0..3 {
+            expected[if gapped { 2 * index + 1 } else { index }] = fixture.expected[index];
+        }
+        {
+            let mut boundary = || Ok(());
+            let mut work = Work::new(
+                crate::ram::RamStoreLimits::default(),
+                &fixture.original,
+                &mut boundary,
+            )
+            .expect("same original Work");
+
+            read_publication(
+                &fixture.store,
+                &expected[..length],
+                fixture.receipt.as_ref().expect("actual receipt"),
+                &mut work,
+            )
+            .expect("dense and sparse entries authenticate the same three physical bodies");
+            assert_eq!(work.visits, 3);
+            assert_eq!(
+                work.io_bytes,
+                fixture
+                    .bodies
+                    .iter()
+                    .map(|bytes| bytes.len() as u64)
+                    .sum::<u64>()
+            );
+        }
+        assert_eq!(
+            fixture.bank.usage().expect("same bank after view closes"),
+            baseline
+        );
+        fixture.finish_receipt();
+    }
+}
+
+#[test]
+fn real_graph_dense_first_receipt_refusal_precedes_readback_admission() {
+    let mut fixture = Fixture::new();
+    let baseline = fixture.bank.usage().expect("held publication baseline");
+    let mut expected = [
+        fixture.expected[0],
+        fixture.expected[1],
+        fixture.expected[2],
+    ];
+    expected[0] = expected[1];
+    {
+        let mut boundary = || Ok(());
+        let mut work = Work::new(
+            crate::ram::RamStoreLimits::default(),
+            &fixture.original,
+            &mut boundary,
+        )
+        .expect("same original Work");
+
+        let error = read_publication(
+            &fixture.store,
+            &expected,
+            fixture.receipt.as_ref().expect("actual receipt"),
+            &mut work,
+        )
+        .expect_err("dense indexed entries preserve the first receipt refusal");
+        assert!(
+            matches!(error, RamStoreError::Store(StoreError::Corrupt { id })
+            if Some(id) == expected[0].map(|entry| entry.0))
+        );
+        assert_eq!(fixture.requests(), 0);
+        assert_eq!(work.visits, 0);
+    }
+    assert_eq!(
+        fixture
+            .bank
+            .usage()
+            .expect("no admitted view or leaked control"),
+        baseline
+    );
+    fixture.finish_receipt();
+}

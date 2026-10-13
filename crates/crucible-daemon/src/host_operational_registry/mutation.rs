@@ -558,6 +558,14 @@ pub(super) fn observe_reply(
     {
         return Err(HostOperationalError::Unavailable);
     }
+    if reply.resident_observation.is_some_and(|observation| {
+        observation.validate().is_err()
+            || observation.topology_generation != status.target.arena_generation
+            || observation.covered_bytes != reply.logical_ram_bytes
+            || observation.policy_revision != reply.applied_policy_revision
+    }) {
+        return Err(HostOperationalError::Unavailable);
+    }
     let applied_mode = if reply.applied_policy_revision == revision {
         policy.mode
     } else {
@@ -610,6 +618,7 @@ pub(super) fn observe_reply(
         });
     status.effective_resident_target_bytes = reply.effective_resident_target_bytes;
     status.effective_floor_bytes = reply.effective_floor_bytes;
+    status.resident_observation = reply.resident_observation;
     status.measurements_available = reply.measurements_available;
     status.activity = reply.activity;
     status.private_resident_bytes = reply.private_resident_bytes;

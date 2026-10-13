@@ -8,12 +8,12 @@ use crate::owned_decode::{DecodeBudget, DecodeScratch};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MemoryPublicationOutcome {
     /// Number of new immutable map entries published by this operation.
-    pub published_objects: u8,
+    pub published_objects: u16,
     /// Number of inputs authenticated and accepted by the backend.
     ///
     /// This count includes existing entries and does not grant outer facade
     /// acceptance. Memory publication makes no durable-storage claim.
-    pub accepted_objects: u8,
+    pub accepted_objects: u16,
 }
 
 /// Retains a checked Memory failure with its exact publication evidence.
@@ -123,7 +123,7 @@ pub(super) fn publish(
 ) -> Result<PutBatchReceipt, StoreError> {
     backend.require_namespace()?;
     checked_reader::check(original, boundary)?;
-    if objects.len() > 64 {
+    if objects.len() > batch::MAX_PUBLICATION_OBJECTS {
         return Err(StoreError::Quota);
     }
     let receipt_credit = batch::admit_receipts(original, objects.len(), backend.name.len())?;

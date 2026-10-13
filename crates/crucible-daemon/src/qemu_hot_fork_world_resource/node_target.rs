@@ -59,7 +59,11 @@ where
         &mut self,
         registration: crucible_qemu::ram_control::RamControlRegistration,
         supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
-    ) -> Result<(), QemuVmRealizationError> {
+        guest_ram_bytes: u64,
+    ) -> Result<(), QemuVmRealizationError>
+    where
+        G: QemuAttemptProcessResourceGuard,
+    {
         if self.host_ram.is_some()
             || registration.target.owner_generation != self.identity.generation()
         {
@@ -67,7 +71,29 @@ where
                 "hot-fork RAM ownership was reused or names another node generation",
             ));
         }
+        let contract = self.process_contract.as_ref().ok_or_else(|| {
+            world_resource_error("hot-fork RAM target has no installed process contract")
+        })?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.released || state.terminal || !state.issued.contains(&self.identity) {
+            return Err(world_resource_error(
+                "hot-fork RAM target is not operational",
+            ));
+        }
+
         let custody = crucible_qemu::QemuRamLaunchCustody::new(&registration);
+        state.guard.bind_fork_target_ram_custody(
+            contract,
+            &registration,
+            &supervisor,
+            guest_ram_bytes,
+            &custody,
+        )?;
+        drop(state);
+
         self.host_ram = Some((registration, supervisor, custody));
         Ok(())
     }
@@ -249,7 +275,10 @@ where
                 "hot-fork node launch target is not operational",
             ));
         }
-        state.guard.prepare_generation_run_directory(requirements)
+        let contract = self.process_contract.as_ref().ok_or_else(|| {
+            world_resource_error("hot-fork node target lost its installed process contract")
+        })?;
+        state.prepare_generation_run_directory(contract, requirements)
     }
 
     fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {

@@ -121,6 +121,16 @@ impl RamControlClient {
         resources: HostResourceVector,
         spill_quota_bytes: u64,
     ) -> Result<(), RamControlError> {
+        let minimum_metadata = inventory
+            .report
+            .native_metadata_bytes
+            .checked_add(inventory.report.rust_metadata_required_bytes)
+            .ok_or(RamControlError::InvalidFrame)?;
+        if inventory.report.rust_metadata_required_bytes == 0
+            || resources.metadata_bytes < minimum_metadata
+        {
+            return Err(RamControlError::AuthorityMismatch);
+        }
         let pending = self
             .pending_admission
             .take()

@@ -7,6 +7,66 @@
 use super::*;
 
 impl LinuxQemuAttemptHostFactory {
+    /// Checks that this factory's actual Source and Target roster is quiescent.
+    ///
+    /// This nonblocking observation releases no slot, controller, namespace or
+    /// credit. Whole-owner shutdown must separately close its actual dispatcher
+    /// and roster; paths, scalar limits and caller completion flags are absent.
+    ///
+    /// # Errors
+    /// Refuses absent normal custody, foreign binding, competing roster access,
+    /// surviving Source/Target state, or the same original's refusal.
+    pub fn verify_native_quiescent(&self) -> Result<(), QemuVmRealizationError> {
+        let roster = self
+            .normal_roster
+            .as_ref()
+            .ok_or_else(|| missing_authority("verify normal QEMU roster quiescence"))?;
+        if let Some(binding) = self.original_accounts.as_ref() {
+            if !roster.matches_binding(binding) {
+                return Err(missing_authority("verify same QEMU factory roster"));
+            }
+        } else if !self.poisoned {
+            return Err(missing_authority(
+                "verify retained QEMU factory terminal custody",
+            ));
+        }
+        // A missing binding is allowed only after this actual factory entered
+        // terminal retirement and dropped its own weak alias. The retained
+        // normal roster remains the authority on every later retry.
+        roster
+            .verify_quiescent()
+            .map_err(original_roster::original_error)
+    }
+
+    /// Retains the actual normal main subdivision in this genuine factory.
+    ///
+    /// Publication precedes factory opening. This move keeps the owner outside
+    /// all native states, while process and project-quota enforcement remain the
+    /// existing concrete factory's responsibility.
+    ///
+    /// # Errors
+    /// Refuses a poisoned, occupied or mismatched factory. Refused custody is
+    /// retained rather than treating facade destruction as physical cleanup.
+    pub fn bind_normal_accounts(
+        &mut self,
+        roster: OriginalNativeAccountRoster,
+        binding: OriginalNativeAccountFactoryBinding,
+    ) -> Result<(), OriginalActorAccountError> {
+        if self.poisoned
+            || self.process.is_poisoned()
+            || self.original_accounts.is_some()
+            || self.normal_roster.is_some()
+            || !roster.matches_binding(&binding)
+        {
+            std::mem::forget(roster);
+            std::mem::forget(binding);
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        self.normal_roster = Some(roster);
+        self.original_accounts = Some(binding);
+        Ok(())
+    }
+
     /// Binds this genuine factory once to its admitted external account roster.
     ///
     /// The same concrete factory keeps its existing pinned process and storage
@@ -15,7 +75,6 @@ impl LinuxQemuAttemptHostFactory {
     ///
     /// # Errors
     /// Refuses poisoned or already bound factories without replacing custody.
-    #[cfg(feature = "private-measurement-domain")]
     pub fn bind_original_accounts(
         &mut self,
         binding: OriginalNativeAccountFactoryBinding,
@@ -43,6 +102,9 @@ impl LinuxQemuAttemptHostFactory {
                 maximum_resident_bytes,
                 maximum_writable_bytes,
             )
+            .map_err(original_roster::original_error)?;
+        original
+            .verify_actor_family(&self.process)
             .map_err(original_roster::original_error)?;
         let storage = match self.storage.begin(maximum_writable_bytes) {
             Ok(storage) => storage,
@@ -104,7 +166,7 @@ impl LinuxQemuAttemptHostFactory {
                 return Err(original_roster::setup_refusal(&original, error, cleanup));
             }
         };
-        let owner = LinuxQemuAttemptHostOwner {
+        let mut owner = LinuxQemuAttemptHostOwner {
             process: Some(process),
             storage: Some(storage),
             maximum_vcpus,
@@ -114,8 +176,43 @@ impl LinuxQemuAttemptHostFactory {
             native_resources: None,
             original_retirement_pinned: false,
             original_account: Some(original),
+            fork_target: None,
             terminal: false,
         };
+        let assignment = owner.process_contract().and_then(|contract| {
+            owner
+                .original_account
+                .as_ref()
+                .ok_or_else(|| missing_authority("retain original process purpose"))?
+                .bind_configured_process_family(contract)
+                .map_err(|source| QemuVmRealizationError::ModelCopy {
+                    source: Box::new(source),
+                })
+        });
+        if let Err(primary) = assignment {
+            self.poisoned = true;
+            let original = owner
+                .original_account
+                .take()
+                .ok_or_else(|| missing_authority("retain refused original process purpose"))?;
+            let cleanup = original
+                .retain_unsettled(original_roster::RetainedNativeHost {
+                    process: owner.process.take(),
+                    storage: owner.storage.take(),
+                    native_resources: owner.native_resources.take(),
+                    unconfigured: None,
+                })
+                .map_err(original_roster::original_error);
+            owner.terminal = true;
+            return Err(original_roster::setup_refusal(&original, primary, cleanup));
+        }
+        // The factory's authored ceiling stays unchanged. This owner and its
+        // later native controller report the actual refreshed kernel limit.
+        owner.maximum_resident_bytes = owner
+            .process_contract()?
+            .configured_process_envelope()
+            .ok_or_else(|| missing_authority("retain refreshed process envelope"))?
+            .maximum_resident_bytes();
         if let Some(original) = owner.original_account.as_ref() {
             original
                 .require_original()
@@ -137,7 +234,6 @@ impl LinuxQemuAttemptHostOwner {
     /// Refuses an owner that has not created its actual native resource state,
     /// has already transferred or retired that state, or has already issued
     /// its one nonduplicable terminal pin.
-    #[cfg(feature = "private-measurement-domain")]
     pub fn retain_original_native_control(
         &mut self,
     ) -> Result<OriginalNativeControlRetirement, LinuxQemuNativeResourceError> {
@@ -174,7 +270,11 @@ impl LinuxQemuAttemptHostOwner {
             self.finish()?;
             return Ok(None);
         }
-        self.close_original_physical_owners()?;
+        if self.fork_target.is_some() {
+            self.close_fork_target_physical_owners()?;
+        } else {
+            self.close_original_physical_owners()?;
+        }
         Ok(Some(OriginalNativePhysicalRetirement { host: self }))
     }
 
@@ -184,6 +284,11 @@ impl LinuxQemuAttemptHostOwner {
     }
 
     fn close_original_physical_owners(&mut self) -> Result<(), QemuVmRealizationError> {
+        if self.fork_target_is_owned() {
+            return Err(missing_authority(
+                "close Source with retained QEMU fork target",
+            ));
+        }
         let cleanup = self
             .original_account
             .as_ref()
@@ -220,6 +325,9 @@ impl LinuxQemuAttemptHostOwner {
     }
 
     fn close_original_vector(&mut self) -> Result<(), QemuVmRealizationError> {
+        if self.fork_target.is_some() {
+            return self.close_fork_target_vector();
+        }
         self.original_account
             .as_ref()
             .ok_or_else(|| missing_authority("close original native vector"))?
@@ -250,6 +358,9 @@ impl OriginalNativePhysicalRetirement<'_> {
         &self,
         controller: &LinuxQemuNativeResourceController,
     ) -> Result<bool, OriginalActorAccountError> {
+        if let Some(target) = self.host.fork_target.as_ref() {
+            return target.reservation.matches_controller(controller);
+        }
         self.host
             .original_account
             .as_ref()
@@ -262,6 +373,13 @@ impl OriginalNativePhysicalRetirement<'_> {
     /// # Errors
     /// Refuses missing or terminal original cleanup custody.
     pub fn check_cleanup(&self) -> Result<(), QemuVmRealizationError> {
+        if let Some(target) = self.host.fork_target.as_ref() {
+            return target
+                .reservation
+                .cleanup()
+                .map(|_| ())
+                .map_err(original_roster::original_error);
+        }
         self.host
             .original_account
             .as_ref()
@@ -280,6 +398,13 @@ impl OriginalNativePhysicalRetirement<'_> {
         &self,
         result: Result<(), QemuVmRealizationError>,
     ) -> Result<(), QemuVmRealizationError> {
+        if let Some(target) = self.host.fork_target.as_ref() {
+            let cleanup = target
+                .reservation
+                .cleanup()
+                .map_err(original_roster::original_error)?;
+            return original_roster::after_cleanup(result, &cleanup);
+        }
         self.host
             .original_account
             .as_ref()
@@ -299,6 +424,12 @@ impl OriginalNativePhysicalRetirement<'_> {
         &self,
         controller: &mut LinuxQemuNativeResourceController,
     ) -> Result<(), QemuVmRealizationError> {
+        if let Some(target) = self.host.fork_target.as_ref() {
+            return target
+                .reservation
+                .close_registry_control(controller)
+                .map_err(original_roster::original_error);
+        }
         self.host
             .original_account
             .as_ref()

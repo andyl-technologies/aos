@@ -38,6 +38,10 @@ impl VerifiedStore {
 }
 
 impl ImmutableBlobBackend for VerifiedStore {
+    fn prefers_wide_publication_groups(&self) -> bool {
+        self.child.prefers_wide_publication_groups()
+    }
+
     fn checked_publication_metadata(
         &self,
         kind: ObjectKind,
@@ -162,6 +166,12 @@ struct RoutedObjectAdmission {
 }
 
 impl ImmutableBlobBackend for RoutedStore {
+    fn prefers_wide_publication_groups(&self) -> bool {
+        self.routes
+            .values()
+            .all(|child| child.prefers_wide_publication_groups())
+    }
+
     fn read_with_boundary(
         &self,
         original: &crate::owned_decode::DecodeBudget,
@@ -181,7 +191,7 @@ impl ImmutableBlobBackend for RoutedStore {
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {
         super::checked_reader::check(original, boundary)?;
-        if objects.len() > 64 {
+        if objects.len() > super::batch::MAX_PUBLICATION_OBJECTS {
             return Err(StoreError::Quota);
         }
         let Some((first_id, _)) = objects.first() else {
@@ -345,6 +355,10 @@ impl DurabilityPolicyStore {
 }
 
 impl ImmutableBlobBackend for DurabilityPolicyStore {
+    fn prefers_wide_publication_groups(&self) -> bool {
+        self.child.prefers_wide_publication_groups()
+    }
+
     fn read_with_boundary(
         &self,
         original: &crate::owned_decode::DecodeBudget,
@@ -381,7 +395,7 @@ impl ImmutableBlobBackend for DurabilityPolicyStore {
         account
             .verify_live()
             .map_err(|error| admission_under(account, error))?;
-        if objects.len() > 64 {
+        if objects.len() > super::batch::MAX_PUBLICATION_OBJECTS {
             return Err(StoreError::Quota);
         }
         for (id, _) in objects {
@@ -391,9 +405,10 @@ impl ImmutableBlobBackend for DurabilityPolicyStore {
                 .map_err(|error| admission_under(account, error))?;
             self.requirement(*id)?;
         }
-        let mut bounds = [CheckedPublicationMetadata::default(); 64];
+        let mut bounds = super::batch::PrepaidBatchVec::with_capacity(account, objects.len())?;
+        bounds.resize(objects.len(), CheckedPublicationMetadata::default());
         let mut maximum_placements = 0;
-        for ((id, _), bound) in objects.iter().zip(&mut bounds) {
+        for ((id, _), bound) in objects.iter().zip(bounds.iter_mut()) {
             *bound = self.child.checked_publication_metadata(id.kind())?;
             maximum_placements = maximum_placements.max(bound.maximum_placements);
         }
@@ -417,7 +432,8 @@ impl ImmutableBlobBackend for DurabilityPolicyStore {
                     reason: "batch receipt count differs from input",
                 });
             }
-            for (((id, source), receipt), bound) in objects.iter().zip(receipts.iter()).zip(bounds)
+            for (((id, source), receipt), bound) in
+                objects.iter().zip(receipts.iter()).zip(bounds.iter())
             {
                 boundary()?;
                 if receipt.id != *id
@@ -592,6 +608,13 @@ impl TieredStore {
 }
 
 impl ImmutableBlobBackend for TieredStore {
+    fn prefers_wide_publication_groups(&self) -> bool {
+        self.tiers
+            .iter()
+            .filter(|tier| tier.writable)
+            .all(|tier| tier.backend.prefers_wide_publication_groups())
+    }
+
     fn checked_publication_metadata(
         &self,
         kind: ObjectKind,
@@ -761,6 +784,10 @@ impl ReadThroughStore {
 }
 
 impl ImmutableBlobBackend for ReadThroughStore {
+    fn prefers_wide_publication_groups(&self) -> bool {
+        self.source.prefers_wide_publication_groups()
+    }
+
     fn checked_publication_metadata(
         &self,
         kind: ObjectKind,
@@ -1030,6 +1057,10 @@ impl MetricsStore {
 }
 
 impl ImmutableBlobBackend for MetricsStore {
+    fn prefers_wide_publication_groups(&self) -> bool {
+        self.child.prefers_wide_publication_groups()
+    }
+
     fn checked_publication_metadata(
         &self,
         kind: ObjectKind,
@@ -1075,7 +1106,7 @@ impl ImmutableBlobBackend for MetricsStore {
         objects: &[(ContentId, BlobHandle)],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {
-        if objects.len() > 64 {
+        if objects.len() > super::batch::MAX_PUBLICATION_OBJECTS {
             original
                 .verify_live()
                 .map_err(|error| admission_under(original, error))?;
@@ -1230,6 +1261,12 @@ impl WriteThroughStore {
 }
 
 impl ImmutableBlobBackend for WriteThroughStore {
+    fn prefers_wide_publication_groups(&self) -> bool {
+        self.children
+            .iter()
+            .all(|child| child.prefers_wide_publication_groups())
+    }
+
     fn read_with_boundary(
         &self,
         original: &crate::owned_decode::DecodeBudget,

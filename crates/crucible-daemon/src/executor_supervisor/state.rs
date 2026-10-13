@@ -74,6 +74,11 @@ where
         expected: Option<AttemptRuntimeState>,
         next: Option<AttemptRuntimeState>,
     ) -> Result<AttemptAdvance<L::Error>, LocalExecutorError<L::Error>> {
+        if expected.is_some_and(|state| state.source_transfer().is_some()) {
+            return Err(LocalExecutorError::LedgerInvariant {
+                reason: "ordinary transition cannot change a source transfer fence",
+            });
+        }
         let outcome = match self.ledger.compare_exchange_attempt(key, expected, next) {
             Ok(outcome) => outcome,
             Err(error) => {

@@ -1,10 +1,11 @@
 //! Owns the GPL process's coherent, incremental logical RAM identity.
 //!
-//! QEMU lends a bounded page stream while its native writer fence is held.
-//! This observer retains immutable Merkle snapshots, never guest addresses.
-//! Capture completion acknowledges only the native root consumer; checkpoint,
-//! eviction and transfer obligations have independent ownership. The pager
-//! must use the pure page digest primitive and never enter this observer.
+//! QEMU lends bounded capture pages through private native entry points. The
+//! observer retains immutable Merkle snapshots, never guest addresses. Logical
+//! publication and native fingerprint dirty retirement remain separate; checkpoint,
+//! eviction and transfer have independent ownership. Capture entry points and
+//! claim cleanup live in `native`; held and ordinary ownership have separate
+//! adapters. The pager uses pure page digests and never enters this observer.
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -20,8 +21,14 @@ use crucible_ram::{
 
 mod admission;
 mod candidate;
+mod held;
+mod native;
+mod ordinary;
 pub(crate) use admission::admitted_inventory;
 pub(crate) use candidate::CaptureClose;
+pub(crate) use held::{cleanup_held_claim, observe_held, retire_held_cache};
+use native::{CaptureClaim, NativeApis, symbol};
+pub(crate) use ordinary::FingerprintBaseline;
 mod mutation;
 use mutation::observe_transaction;
 mod restore;
@@ -37,8 +44,8 @@ const MAX_PREPARED_PAGES: usize = 65_536;
 const SCOPES: [Scope; 3] = [Scope::Execution, Scope::Exact, Scope::Lifecycle];
 
 #[repr(C)]
-#[derive(Default)]
-struct CaptureHeader {
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CaptureHeader {
     schema: u32,
     region_count: u32,
     topology_generation: u64,
@@ -47,7 +54,7 @@ struct CaptureHeader {
 }
 
 #[repr(C)]
-struct CaptureRegion {
+pub(crate) struct CaptureRegion {
     id_length: u32,
     class: u32,
     mask: u32,
@@ -71,7 +78,7 @@ impl Default for CaptureRegion {
 
 #[repr(C)]
 #[derive(Default)]
-struct CapturePage {
+pub(crate) struct CapturePage {
     region_index: u32,
     valid_length: u32,
     page_index: u64,
@@ -90,69 +97,9 @@ type ReadRegion = extern "C" fn(u64, u32, *mut CaptureRegion) -> c_int;
 type CaptureReadRegion = extern "C" fn(u64, u64, u32, *mut CaptureRegion) -> c_int;
 type NextPage = extern "C" fn(u64, u64, *mut u64, *mut CapturePage, *mut u8, usize) -> c_int;
 type FinishCapture = extern "C" fn(u64, u64, u32) -> c_int;
+type ObservationOnly = extern "C" fn(u64, u64, *mut u32) -> c_int;
 type AdmissionObserver = extern "C" fn(*const admission::AdmissionHeader, u64) -> c_int;
 type RegisterAdmissionObserver = extern "C" fn(Option<AdmissionObserver>) -> c_int;
-
-#[derive(Clone, Copy)]
-struct NativeApis {
-    begin: BeginCapture,
-    region: CaptureReadRegion,
-    next: NextPage,
-    finish: FinishCapture,
-    register: RegisterObserver,
-    register_record: RegisterRecordObserver,
-    register_transaction: RegisterTransactionObserver,
-    admission_region: ReadRegion,
-    register_admission: RegisterAdmissionObserver,
-}
-
-impl NativeApis {
-    fn resolve() -> Result<Self, RamError> {
-        // SAFETY: these symbols belong to the versioned GPL-private ABI, whose
-        // native declarations have precisely the repr(C) layouts above. All
-        // borrowed output pointers expire before each synchronous call returns.
-        unsafe {
-            Ok(Self {
-                begin: std::mem::transmute::<*mut c_void, BeginCapture>(symbol(
-                    b"qemu_plugin_crucible_ram_capture_begin_v2\0",
-                )?),
-                region: std::mem::transmute::<*mut c_void, CaptureReadRegion>(symbol(
-                    b"qemu_plugin_crucible_ram_capture_region_v2\0",
-                )?),
-                next: std::mem::transmute::<*mut c_void, NextPage>(symbol(
-                    b"qemu_plugin_crucible_ram_capture_next_page_v2\0",
-                )?),
-                finish: std::mem::transmute::<*mut c_void, FinishCapture>(symbol(
-                    b"qemu_plugin_crucible_ram_capture_finish_v2\0",
-                )?),
-                register: std::mem::transmute::<*mut c_void, RegisterObserver>(symbol(
-                    b"qemu_plugin_crucible_register_ram_root_observer_v2\0",
-                )?),
-                register_record: std::mem::transmute::<*mut c_void, RegisterRecordObserver>(
-                    symbol(b"qemu_plugin_crucible_register_ram_root_record_observer_v1\0")?,
-                ),
-                register_transaction: std::mem::transmute::<*mut c_void, RegisterTransactionObserver>(
-                    symbol(b"qemu_plugin_crucible_register_ram_root_transaction_v1\0")?,
-                ),
-                admission_region: std::mem::transmute::<*mut c_void, ReadRegion>(symbol(
-                    b"qemu_plugin_crucible_ram_admission_region_v1\0",
-                )?),
-                register_admission: std::mem::transmute::<*mut c_void, RegisterAdmissionObserver>(
-                    symbol(b"qemu_plugin_crucible_register_ram_admission_v1\0")?,
-                ),
-            })
-        }
-    }
-}
-
-fn symbol(name: &'static [u8]) -> Result<*mut c_void, RamError> {
-    // SAFETY: every caller supplies a static NUL-terminated symbol name.
-    let address = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr().cast()) };
-    if address.is_null() {
-        return Err(RamError::MissingSymbol(name));
-    }
-    Ok(address)
-}
 
 struct CachedView {
     topology_generation: u64,
@@ -191,10 +138,14 @@ struct PreparedPage {
 #[derive(Default)]
 struct RootCache {
     frozen: bool,
+    ordinary_active: bool,
+    held_publication: Option<u64>,
     budget: Option<MetadataBudget>,
     view: Option<CachedView>,
     pending: Option<PendingMutation>,
     restore: Option<restore::PendingRestore>,
+    held: Option<held::StagedView>,
+    held_accepted: Option<crate::runtime::HeldReaderIdentity>,
 }
 
 struct Observer {
@@ -315,34 +266,31 @@ pub(crate) extern "C" fn observe_root(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || -> Result<([u8; 32], u64), RamError> {
             let observer = OBSERVER.get().ok_or("RAM observer is not installed")?;
+            if owner_token == 0 {
+                return ordinary::observe_ordinary(observer, SCOPES[scope as usize])
+                    .map(|(root, bytes)| (*root.as_bytes(), bytes));
+            }
             let mut cache = observer
                 .cache
                 .try_lock()
                 .map_err(|_| "RAM observer is busy or poisoned")?;
-            if cache.frozen {
+            if cache.frozen
+                || cache.ordinary_active
+                || cache.held.is_some()
+                || cache.held_accepted.is_some()
+            {
                 return Err(RamError::Invariant(
                     "RAM observer admission is frozen for fork",
                 ));
             }
-            if owner_token != 0 {
-                return cache
-                    .observe_candidate(
-                        observer.apis,
-                        SCOPES[scope as usize],
-                        owner_token,
-                        &mut capture_close,
-                    )
-                    .map(|(digest, bytes)| (*digest.as_bytes(), bytes));
-            }
-            cache.refresh(observer.apis)?;
-            let view = cache
-                .view
-                .as_ref()
-                .ok_or("RAM observer has no committed snapshot")?;
-            Ok((
-                *view.roots[scope as usize].as_bytes(),
-                view.logical_bytes[scope as usize],
-            ))
+            cache
+                .observe_candidate(
+                    observer.apis,
+                    SCOPES[scope as usize],
+                    owner_token,
+                    &mut capture_close,
+                )
+                .map(|(digest, bytes)| (*digest.as_bytes(), bytes))
         },
     ));
 
@@ -366,100 +314,57 @@ pub(crate) extern "C" fn observe_root(
     }
 }
 
-/// A native dirty claim is aborted on every unwinding or validation path.
-struct CaptureClaim {
-    apis: NativeApis,
-    header: CaptureHeader,
-    owner_token: u64,
-    finished: bool,
-}
-
-impl CaptureClaim {
-    fn begin(apis: NativeApis, full: bool, owner_token: u64) -> Result<Self, RamError> {
-        let claim = Self::open(apis, full, owner_token)?;
-        claim.validate_header()?;
-        Ok(claim)
-    }
-
-    fn open(apis: NativeApis, full: bool, owner_token: u64) -> Result<Self, RamError> {
-        let mut header = CaptureHeader::default();
-        status(
-            (apis.begin)(u32::from(full), owner_token, &mut header),
-            "begin RAM capture",
-        )?;
-        Ok(Self {
-            apis,
-            header,
-            owner_token,
-            finished: false,
-        })
-    }
-
-    fn validate_header(&self) -> Result<(), RamError> {
-        if self.header.schema != CAPTURE_SCHEMA
-            || self.header.region_count == 0
-            || self.header.region_count as usize > MAX_REGIONS
-            || self.header.topology_generation == 0
-            || self.header.capture_generation == 0
-            || self.header.metadata_budget_bytes == 0
-        {
-            return Err(RamError::Invariant("invalid native RAM capture header"));
-        }
-        Ok(())
-    }
-
-    fn commit(mut self) -> Result<(), RamError> {
-        status(
-            (self.apis.finish)(self.header.capture_generation, self.owner_token, 1),
-            "commit RAM capture",
-        )?;
-        self.finished = true;
-        Ok(())
-    }
-
-    /// Attempts cleanup once without acknowledging dirty pages or rearming RAM.
-    ///
-    /// The returned status belongs to the sole cleanup attempt, so a prior
-    /// failure can be retained separately from cleanup refusal. `None` means
-    /// the claim was already committed or cleanup was attempted; it does not
-    /// prove cleanup succeeded. A refusal leaves native custody intact.
-    fn close_without_ack(&mut self) -> Option<c_int> {
-        if self.finished {
-            return None;
-        }
-        let result = (self.apis.finish)(self.header.capture_generation, self.owner_token, 0);
-        self.finished = true;
-        Some(result)
-    }
-}
-
-impl Drop for CaptureClaim {
-    fn drop(&mut self) {
-        if !self.finished {
-            let _ = self.close_without_ack();
-        }
-    }
-}
-
 impl RootCache {
-    fn refresh(&mut self, apis: NativeApis) -> Result<(), RamError> {
-        if self.pending.is_some() || self.restore.is_some() {
+    fn refresh(
+        &mut self,
+        apis: NativeApis,
+        outer: &mut crate::paged_ram::controller::FingerprintCall,
+    ) -> Result<(), RamError> {
+        if self.ordinary_active
+            || self.held.is_some()
+            || self.held_accepted.is_some()
+            || self.pending.is_some()
+            || self.restore.is_some()
+        {
             return Err(RamError::Invariant(
                 "RAM mutation candidate owns observer admission",
             ));
         }
-        let mut full = self.view.is_none();
-        let mut claim = CaptureClaim::begin(apis, full, 0)?;
+        let full = self.view.is_none();
+        let mut claim = CaptureClaim::open(apis, full, 0)?;
+        claim.close_notice = Some(outer.close_notice());
+        outer.bind_capture(
+            claim.header.capture_generation,
+            claim.header.topology_generation,
+            claim.header.region_count,
+        )?;
+        claim.validate_header()?;
         if self
             .view
             .as_ref()
             .is_some_and(|view| view.topology_generation != claim.header.topology_generation)
         {
-            drop(claim);
-            full = true;
-            claim = CaptureClaim::begin(apis, true, 0)?;
+            // The existing caller can close this exact claim, but a new
+            // inventory needs the same Original's authenticated restart loan.
+            // Retain a refused close rather than replacing its generation.
+            let close_status = claim
+                .close_without_ack()
+                .ok_or("topology restart lost its actual capture claim")?;
+            status(close_status, "close RAM capture before topology restart")?;
+            return Err(RamError::Invariant(
+                "RAM topology restart requires current Source inventory custody",
+            ));
         }
 
+        let mut observation_only = 0;
+        status(
+            (apis.observation_only)(claim.header.capture_generation, 0, &mut observation_only),
+            "query ordinary observation mode",
+        )?;
+        if observation_only > 1 {
+            return Err(RamError::Invariant("invalid ordinary observation mode"));
+        }
+        outer.set_observation_mode(observation_only == 1)?;
         let admitted = self.metadata_budget(claim.header.metadata_budget_bytes)?;
         let inventory_reservation = admitted
             .reserve_bytes(
@@ -507,8 +412,9 @@ impl RootCache {
         };
         let source = self.view.as_ref().and_then(|view| view.source.clone());
         let (snapshot, changed) =
-            consume_pages(&claim, &regions, snapshot, full, source.as_deref())?;
+            consume_ordinary_pages(&claim, &regions, snapshot, full, source.as_deref(), outer)?;
         if !full && !changed {
+            outer.post_observation_only()?;
             claim.commit()?;
             return Ok(());
         }
@@ -549,7 +455,7 @@ impl RootCache {
             source: if full { None } else { source },
             _inventory_reservation: inventory_reservation,
         });
-        if let Err(error) = claim.commit() {
+        if let Err(error) = outer.post_observation_only().and_then(|_| claim.commit()) {
             self.view = prior;
             return Err(error);
         }
@@ -604,9 +510,66 @@ fn read_region_inventory(
 fn consume_pages(
     claim: &CaptureClaim,
     regions: &[RegionDescriptor],
+    snapshot: RamSnapshot,
+    full: bool,
+    source: Option<&dyn RamProofSource>,
+) -> Result<(RamSnapshot, bool), RamError> {
+    consume_pages_with(regions, snapshot, full, source, |cursor, page, bytes| {
+        (claim.apis.next)(
+            claim.header.capture_generation,
+            claim.owner_token,
+            cursor,
+            page,
+            bytes.as_mut_ptr(),
+            bytes.len(),
+        )
+    })
+}
+
+fn consume_ordinary_pages(
+    claim: &CaptureClaim,
+    regions: &[RegionDescriptor],
+    snapshot: RamSnapshot,
+    full: bool,
+    source: Option<&dyn RamProofSource>,
+    outer: &crate::paged_ram::controller::FingerprintCall,
+) -> Result<(RamSnapshot, bool), RamError> {
+    consume_pages_with_progress(
+        regions,
+        snapshot,
+        full,
+        source,
+        |cursor, page, bytes| {
+            (claim.apis.next)(
+                claim.header.capture_generation,
+                claim.owner_token,
+                cursor,
+                page,
+                bytes.as_mut_ptr(),
+                bytes.len(),
+            )
+        },
+        |units| outer.completed_units(units),
+    )
+}
+
+fn consume_pages_with(
+    regions: &[RegionDescriptor],
+    snapshot: RamSnapshot,
+    full: bool,
+    source: Option<&dyn RamProofSource>,
+    next: impl FnMut(&mut u64, &mut CapturePage, &mut [u8; LOGICAL_PAGE_SIZE as usize]) -> c_int,
+) -> Result<(RamSnapshot, bool), RamError> {
+    consume_pages_with_progress(regions, snapshot, full, source, next, |_| Ok(()))
+}
+
+fn consume_pages_with_progress(
+    regions: &[RegionDescriptor],
     mut snapshot: RamSnapshot,
     full: bool,
     source: Option<&dyn RamProofSource>,
+    mut next: impl FnMut(&mut u64, &mut CapturePage, &mut [u8; LOGICAL_PAGE_SIZE as usize]) -> c_int,
+    mut completed: impl FnMut(u64) -> Result<(), RamError>,
 ) -> Result<(RamSnapshot, bool), RamError> {
     let mut cursor = 0_u64;
     let mut previous = None;
@@ -625,14 +588,7 @@ fn consume_pages(
     loop {
         let before = cursor;
         let mut page = CapturePage::default();
-        let result = (claim.apis.next)(
-            claim.header.capture_generation,
-            claim.owner_token,
-            &mut cursor,
-            &mut page,
-            bytes.as_mut_ptr(),
-            bytes.len(),
-        );
+        let result = next(&mut cursor, &mut page, &mut bytes);
         if result == 1 {
             break;
         }
@@ -658,7 +614,9 @@ fn consume_pages(
         }
 
         if batch_region.is_some_and(|index| index != region_index) || batch.len() == UPDATE_BATCH {
+            let units = batch.len() as u64;
             snapshot = apply_batch(snapshot, regions, batch_region, &mut batch, source)?;
+            completed(units)?;
         }
         batch_region = Some(region_index);
         batch.push((
@@ -680,10 +638,12 @@ fn consume_pages(
         ));
     }
     let changed = previous.is_some();
-    Ok((
-        apply_batch(snapshot, regions, batch_region, &mut batch, source)?,
-        changed,
-    ))
+    let units = batch.len() as u64;
+    let snapshot = apply_batch(snapshot, regions, batch_region, &mut batch, source)?;
+    if units != 0 {
+        completed(units)?;
+    }
+    Ok((snapshot, changed))
 }
 
 fn apply_batch(
@@ -801,7 +761,12 @@ extern "C" fn observe_record(
     let result = std::panic::catch_unwind(|| -> Result<(), c_int> {
         let observer = OBSERVER.get().ok_or(-libc::ENODEV)?;
         let cache = observer.cache.try_lock().map_err(|_| -libc::EBUSY)?;
-        if cache.pending.is_some() || cache.restore.is_some() {
+        if cache.ordinary_active
+            || cache.held.is_some()
+            || cache.held_accepted.is_some()
+            || cache.pending.is_some()
+            || cache.restore.is_some()
+        {
             return Err(-libc::EBUSY);
         }
         let view = cache.view.as_ref().ok_or(-libc::ENODATA)?;
@@ -852,7 +817,12 @@ pub(crate) fn fork_metadata_budget() -> Result<MetadataBudget, RamError> {
         .cache
         .try_lock()
         .map_err(|_| RamError::Invariant("RAM fork budget observer unavailable"))?;
-    if cache.pending.is_some() || cache.restore.is_some() {
+    if cache.ordinary_active
+        || cache.held.is_some()
+        || cache.held_accepted.is_some()
+        || cache.pending.is_some()
+        || cache.restore.is_some()
+    {
         return Err(RamError::Invariant(
             "RAM fork budget admission belongs to another transaction",
         ));
@@ -870,16 +840,22 @@ pub(crate) fn fork_metadata_budget() -> Result<MetadataBudget, RamError> {
 /// already frozen. The native caller must hold the proved writer fence.
 pub(crate) fn prepare_fork() -> Result<(), RamError> {
     let observer = observer()?;
+    ordinary::observe_ordinary(observer, Scope::Exact)?;
     let mut cache = observer
         .cache
         .try_lock()
-        .map_err(|_| "RAM observer has an active capture")?;
-    if cache.frozen || cache.pending.is_some() || cache.restore.is_some() {
+        .map_err(|_| "RAM fork cache busy")?;
+    if cache.frozen
+        || cache.ordinary_active
+        || cache.held.is_some()
+        || cache.held_accepted.is_some()
+        || cache.pending.is_some()
+        || cache.restore.is_some()
+    {
         return Err(RamError::Invariant(
-            "RAM observer already frozen or preparing a mutation",
+            "RAM fork admission changed after observation",
         ));
     }
-    cache.refresh(observer.apis)?;
     cache.frozen = true;
     Ok(())
 }
@@ -894,7 +870,12 @@ pub(crate) fn final_seal() -> Result<(), RamError> {
         .cache
         .try_lock()
         .map_err(|_| "RAM observer is active at final seal")?;
-    if cache.frozen && cache.view.is_some() && cache.pending.is_none() && cache.restore.is_none() {
+    if cache.frozen
+        && !cache.ordinary_active
+        && cache.view.is_some()
+        && cache.pending.is_none()
+        && cache.restore.is_none()
+    {
         Ok(())
     } else {
         Err(RamError::Invariant(
@@ -947,3 +928,8 @@ mod capture_claim_tests;
 #[cfg(test)]
 #[path = "ram_fingerprint/candidate_tests.rs"]
 mod candidate_tests;
+
+#[cfg(test)]
+pub(crate) fn ordinary_fixture_baseline() -> FingerprintBaseline {
+    ordinary::FingerprintBaseline::fixture(&RootCache::default())
+}

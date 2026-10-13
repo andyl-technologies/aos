@@ -8,7 +8,7 @@ use std::alloc::Layout;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
 
-use crucible_protocol::plugin_setup_plan::DeviceDigestPurpose;
+use crate::linux_attempt_host::AllocationWorkspaceRecord;
 use crucible_protocol::{DEVICE_DIGEST_WORKSPACE_BYTES, SetupDeviceDigestWorkspaceFd};
 use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, fstat, ftruncate, memfd_create};
 
@@ -38,7 +38,7 @@ pub(crate) enum DeviceDigestWorkspaceIssueError {
 #[derive(Debug)]
 pub(crate) struct DeviceDigestWorkspaceBody {
     descriptor: Option<OwnedFd>,
-    record: Option<DeviceDigestPurpose>,
+    record: Option<AllocationWorkspaceRecord>,
 }
 
 impl DeviceDigestWorkspaceBody {
@@ -61,7 +61,18 @@ impl DeviceDigestWorkspaceBody {
         })
     }
 
-    pub(crate) fn record(&self) -> Result<&DeviceDigestPurpose, DeviceDigestWorkspaceIssueError> {
+    pub(super) fn duplicate_for_preexec(&self) -> Result<OwnedFd, DeviceDigestWorkspaceIssueError> {
+        let descriptor = self
+            .descriptor
+            .as_ref()
+            .ok_or(DeviceDigestWorkspaceIssueError::Unavailable)?;
+        rustix::io::fcntl_dupfd_cloexec(descriptor, super::CHILD_SOURCE_FD_MIN)
+            .map_err(|source| kernel("duplicate preexec alias", source))
+    }
+
+    pub(crate) fn record(
+        &self,
+    ) -> Result<&AllocationWorkspaceRecord, DeviceDigestWorkspaceIssueError> {
         self.record
             .as_ref()
             .ok_or(DeviceDigestWorkspaceIssueError::Unavailable)
@@ -79,6 +90,21 @@ pub(crate) struct OriginalDeviceDigestWorkspace {
 }
 
 impl OriginalDeviceDigestWorkspace {
+    /// Supplies a real descriptor body for component ownership regressions.
+    ///
+    /// It has no issued purpose or record and cannot pass any Setup view check.
+    #[cfg(test)]
+    pub(crate) fn descriptor_ownership_mechanism(descriptor: OwnedFd) -> Self {
+        Self {
+            body: Some(Arc::new(DeviceDigestWorkspaceBody {
+                descriptor: Some(descriptor),
+                record: None,
+            })),
+            purpose: None,
+            handed_over: false,
+        }
+    }
+
     /// Pure target geometry for the fixed issuer; no caller selects an amount.
     pub(crate) fn host_allocation_extent() -> Result<u64, DeviceDigestWorkspaceIssueError> {
         let (arc, _) = Layout::new::<(

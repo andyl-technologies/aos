@@ -102,10 +102,53 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
+    restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
+    node_launcher: Box<dyn ProductionVmNodeLauncher>,
+    hot_fork_restore: Option<ProductionVmHotForkRestore>,
+) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    build_production_vm_lifecycle_loop_with_restore_exposure(
+        scenario,
+        source,
+        config,
+        restore_checkpoint,
+        node_launcher,
+        hot_fork_restore,
+        ExactRestoreExposure::Released,
+    )
+}
+
+/// Physical preparation does not change the checkpoint's logical node states.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ExactRestoreExposure {
+    Released,
+    AwaitingOwnershipCommit,
+}
+
+impl ExactRestoreExposure {
+    fn physical_pause(self, state: ProductionNodeServiceState) -> Result<bool, LifecycleApiError> {
+        // Validate the logical disposition before overriding the physical
+        // pause. A failed logical target cannot become restorable by transfer.
+        let logical_pause = restored_node_paused(state)?;
+        Ok(logical_pause || self == Self::AwaitingOwnershipCommit)
+    }
+}
+
+pub(super) fn build_production_vm_lifecycle_loop_with_restore_exposure(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    config: &ProductionVmLifecycleConfig,
     mut restore_checkpoint: Option<ProductionVmExactCheckpointSet>,
     mut node_launcher: Box<dyn ProductionVmNodeLauncher>,
     mut hot_fork_restore: Option<ProductionVmHotForkRestore>,
+    exposure: ExactRestoreExposure,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
+    if exposure == ExactRestoreExposure::AwaitingOwnershipCommit
+        && (restore_checkpoint.is_none() || hot_fork_restore.is_some())
+    {
+        return Err(loop_factory_error(
+            "maintenance ownership preparation requires one complete exact restore",
+        ));
+    }
     if !cfg!(target_os = "linux") {
         return Err(loop_factory_error(
             "production local-QEMU lifecycle requires a Linux host",
@@ -785,11 +828,8 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             let authority = repository_restore.as_mut().ok_or_else(|| {
                 loop_factory_error("exact restore has no repository target authority")
             })?;
-            let admission = authority.take_node_admission(
-                &vm.id,
-                snapshot,
-                restored_node_paused(service_state)?,
-            )?;
+            let physically_paused = exposure.physical_pause(service_state)?;
+            let admission = authority.take_node_admission(&vm.id, snapshot, physically_paused)?;
             if let Some(expected) = repository_parent_identity {
                 let (checkpoint, target, frontier) = admission.basis.target.ram_identity();
                 if QmpCheckpointIdentity::new(checkpoint, target, frontier) != expected {

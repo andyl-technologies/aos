@@ -10,17 +10,27 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crucible_linux_resource::host_supervision::HostOperationGuard;
 
+use super::native_account::{OriginalActorAccountError, OriginalNativeAccountCredit};
 use super::native_resources::NativeResourceState;
 use super::native_resources::OriginalNativeControlRetirement;
-use super::original_actor::{OriginalActorAccountError, OriginalNativeAccountCredit};
 use crate::QemuVmRealizationError;
 use crate::linux_attempt_process::LinuxQemuAttemptProcessOwner;
 use crate::linux_attempt_storage::LinuxQemuAttemptStorageOwner;
 
-mod device_digest;
+pub(crate) mod device_digest;
+mod fork_target;
+mod process_purpose;
+mod target_dispatcher;
+pub(in crate::linux_attempt_host) use fork_target::ForkTargetReservation;
+pub(crate) use target_dispatcher::TargetWatcherOriginal;
 mod retirement;
 
+use process_purpose::{cleanup_control_extent, fresh_launch_control_extent};
+
 pub(crate) use device_digest::OriginalDeviceDigestWorkspacePurpose;
+pub(crate) use process_purpose::{
+    InstalledIncarnationRetirement, InstalledProcessPurposeError, InstalledProcessPurposeLoan,
+};
 
 const MAX_NATIVE_WORKERS: usize = 4;
 // The fixed workflow has one VM; its existing lifecycle admits one active
@@ -37,6 +47,15 @@ pub struct OriginalNativeAccountRoster {
     held: Option<Arc<Mutex<NativeRoster>>>,
     retiring_credits: [Option<OriginalNativeAccountCredit>; MAX_NATIVE_WORKERS],
 }
+
+impl std::fmt::Debug for OriginalNativeAccountRoster {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("OriginalNativeAccountRoster { .. }")
+    }
+}
+
+#[cfg(test)]
+mod family_constructor_tests;
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- these actual loan/guard/slot controls panic only when custody, original refusal or generation exclusion fails; they mint no authenticated parent or kernel grant.
@@ -60,6 +79,211 @@ mod tests {
         let (roster, binding) =
             OriginalNativeAccountRoster::publish([Some(credit), None, None, None], 1).unwrap();
         (roster, binding, supervisor)
+    }
+
+    #[test]
+    fn target_loan_refuses_missing_source_control_before_occupying_its_slot() {
+        let (_roster, binding, _supervisor) = roster();
+        let attempt = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        let (control, _) = std::os::unix::net::UnixStream::pair().unwrap();
+        let event = rustix::event::eventfd(0, rustix::event::EventfdFlags::NONBLOCK).unwrap();
+        let contract = crate::QemuChildProcessContract::for_test(control.into(), event, 4096);
+        let held = attempt.roster.upgrade().unwrap();
+        let before = held.lock().unwrap().slots[attempt.index]
+            .assigned_metadata_bytes()
+            .unwrap();
+
+        assert!(attempt.reserve_fork_target(&contract).is_err());
+
+        let state = held.lock().unwrap();
+        let slot = &state.slots[attempt.index];
+        assert!(!slot.fork_target.is_owned());
+        assert_eq!(slot.active, Some(attempt.generation));
+        assert_eq!(slot.assigned_metadata_bytes().unwrap(), before);
+        assert!(slot.installed_process.is_none());
+    }
+
+    #[test]
+    fn installed_issuer_refuses_missing_physical_control_without_entering_launch() {
+        let (_roster, binding, _supervisor) = roster();
+        let attempt = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        let held = attempt.roster.upgrade().unwrap();
+        let before = held.lock().unwrap().slots[attempt.index]
+            .assigned_metadata_bytes()
+            .unwrap();
+
+        assert!(attempt.require_live_launch_control().is_err());
+
+        let state = held.lock().unwrap();
+        let slot = &state.slots[attempt.index];
+        assert_eq!(slot.active, Some(attempt.generation));
+        assert_eq!(slot.assigned_metadata_bytes().unwrap(), before);
+        assert_eq!(slot.node_bindings_live, 0);
+        assert!(!slot.launch_in_flight);
+        assert!(slot.installed_process.is_none());
+    }
+
+    #[test]
+    fn installed_issuer_cannot_follow_a_reused_original_generation() {
+        let (_roster, binding, _supervisor) = roster();
+        let old = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        old.close_vector().unwrap();
+        let successor = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+
+        assert!(old.require_live_launch_control().is_err());
+
+        let state = successor.roster.upgrade().unwrap();
+        let state = state.lock().unwrap();
+        let slot = &state.slots[successor.index];
+        assert_eq!(slot.active, Some(successor.generation));
+        assert!(!slot.launch_in_flight);
+        assert_eq!(slot.node_bindings_live, 0);
+    }
+
+    #[test]
+    fn cleanup_guard_history_stays_assigned_across_slot_reuse() {
+        let (_roster, binding, _supervisor) = roster();
+        let first = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        let first_cleanup = first.cleanup().unwrap();
+        let held = first.roster.upgrade().unwrap();
+        let initial = held.lock().unwrap().slots[first.index].cleanup_controls_bytes;
+        assert!(initial > 0);
+
+        first.close_vector().unwrap();
+        let second = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        let second_cleanup = second.cleanup().unwrap();
+
+        assert!(!Arc::ptr_eq(&first_cleanup, &second_cleanup));
+        let state = held.lock().unwrap();
+        assert_eq!(
+            state.slots[second.index].cleanup_controls_bytes,
+            2 * initial
+        );
+        assert_eq!(
+            state.slots[second.index].assigned_metadata_bytes().unwrap(),
+            2 * initial
+                + state.slots[second.index].launch_controls_bytes
+                + state.slots[second.index].process_binding_bytes
+        );
+    }
+
+    #[test]
+    fn claim_prepays_process_binding_and_fresh_controls_before_process_sealing() {
+        let (_roster, binding, _supervisor) = roster();
+        let attempt = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        let held = attempt.roster.upgrade().unwrap();
+        let state = held.lock().unwrap();
+        let slot = &state.slots[attempt.index];
+
+        assert_eq!(
+            slot.process_binding_bytes,
+            crate::QemuProcessStageBinding::retained_control_bytes().unwrap()
+        );
+        assert_eq!(
+            slot.launch_controls_bytes,
+            fresh_launch_control_extent().unwrap()
+        );
+        assert_eq!(
+            slot.assigned_metadata_bytes().unwrap(),
+            slot.process_binding_bytes + slot.launch_controls_bytes
+        );
+        assert!(!slot.launch_in_flight);
+        assert!(slot.cleanup.is_none());
+        assert!(slot.installed_process.is_none());
+    }
+
+    #[test]
+    fn refused_early_assignment_preserves_unclaimed_generation_and_charge() {
+        let (_roster, binding, _supervisor) = roster();
+        let held = binding.roster.upgrade().unwrap();
+        let next = {
+            let mut state = held.lock().unwrap();
+            let slot = &mut state.slots[0];
+            slot.cleanup_controls_bytes = slot.credit.as_ref().unwrap().total_metadata_bytes();
+            state.next_generation
+        };
+
+        assert!(binding.claim(1, 512 << 20, 1 << 30).is_err());
+
+        let state = held.lock().unwrap();
+        let slot = &state.slots[0];
+        assert_eq!(state.next_generation, next);
+        assert!(slot.active.is_none());
+        assert_eq!(slot.process_binding_bytes, 0);
+        assert_eq!(slot.launch_controls_bytes, 0);
+        assert_eq!(
+            slot.cleanup_controls_bytes,
+            slot.credit.as_ref().unwrap().total_metadata_bytes()
+        );
+    }
+
+    #[test]
+    fn descriptor_fixture_cannot_issue_a_complete_process_purpose() {
+        let (_roster, binding, _supervisor) = roster();
+        let attempt = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        let (control, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let event = rustix::event::eventfd(0, rustix::event::EventfdFlags::NONBLOCK).unwrap();
+        let contract = crate::QemuChildProcessContract::for_test(control.into(), event, 1 << 30);
+        let held = attempt.roster.upgrade().unwrap();
+        let before = held.lock().unwrap().slots[attempt.index]
+            .assigned_metadata_bytes()
+            .unwrap();
+
+        assert!(matches!(
+            attempt.bind_configured_process_family(&contract),
+            Err(InstalledProcessPurposeError::Identity)
+        ));
+
+        let state = held.lock().unwrap();
+        let slot = &state.slots[attempt.index];
+        assert!(slot.installed_process.is_none());
+        assert_eq!(slot.assigned_metadata_bytes().unwrap(), before);
+        assert_eq!(slot.active, Some(attempt.generation));
+    }
+
+    #[test]
+    fn original_cancellation_precedes_process_identity_and_keeps_slot_credit() {
+        let (_roster, binding, supervisor) = roster();
+        let attempt = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        let (control, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let event = rustix::event::eventfd(0, rustix::event::EventfdFlags::NONBLOCK).unwrap();
+        let contract = crate::QemuChildProcessContract::for_test(control.into(), event, 1 << 30);
+        supervisor.cancel().unwrap();
+
+        assert!(matches!(
+            attempt.bind_configured_process_family(&contract),
+            Err(InstalledProcessPurposeError::Original(
+                OriginalActorAccountError::Supervision(_)
+            ))
+        ));
+
+        let held = attempt.roster.upgrade().unwrap();
+        let state = held.lock().unwrap();
+        let slot = &state.slots[attempt.index];
+        assert!(slot.installed_process.is_none());
+        assert!(slot.credit.is_some());
+        assert_eq!(slot.active, Some(attempt.generation));
+        assert!(slot.process_binding_bytes > 0);
+    }
+
+    #[test]
+    fn launch_assignment_cannot_spend_retained_cleanup_credit_again() {
+        let (_roster, binding, _supervisor) = roster();
+        let attempt = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        let _cleanup = attempt.cleanup().unwrap();
+        let held = attempt.roster.upgrade().unwrap();
+        {
+            let state = held.lock().unwrap();
+            let slot = &state.slots[attempt.index];
+            let total = slot.credit.as_ref().unwrap().total_metadata_bytes();
+            assert!(slot.require_metadata_assignment(total).is_err());
+            assert!(slot.launch_controls_bytes > 0);
+        }
+
+        let preparation = attempt.prepare_fresh_launch().unwrap();
+        assert!(held.lock().unwrap().slots[attempt.index].launch_controls_bytes > 0);
+        drop(preparation);
+        assert!(!held.lock().unwrap().slots[attempt.index].launch_in_flight);
     }
 
     #[test]
@@ -181,6 +405,7 @@ mod tests {
             native_resources: None,
             original_retirement_pinned: false,
             original_account: Some(attempt),
+            fork_target: None,
             terminal: false,
         };
         cleanup.complete().unwrap();
@@ -216,6 +441,7 @@ mod tests {
             native_resources: None,
             original_retirement_pinned: false,
             original_account: Some(attempt),
+            fork_target: None,
             terminal: false,
         };
         assert!(binding.claim(1, 512 << 20, 1 << 30).is_err());
@@ -262,6 +488,7 @@ mod tests {
             native_resources: None,
             original_retirement_pinned: false,
             original_account: Some(attempt),
+            fork_target: None,
             terminal: false,
         };
 
@@ -583,6 +810,8 @@ pub(crate) struct OriginalNativeNodeBinding {
     roster: Weak<Mutex<NativeRoster>>,
     index: usize,
     generation: u64,
+    installed_process: Option<InstalledProcessPurposeLoan>,
+    issued_process_record: Option<process_purpose::IssuedInstalledProcessRecord>,
 }
 
 pub(crate) struct NativeAccountAttempt {
@@ -682,12 +911,73 @@ struct NativeSlot {
     digest_purposes:
         [device_digest::DigestPurposeState; MAX_ORIGINAL_NATIVE_NODE_GENERATIONS as usize],
     launch_controls_bytes: u64,
+    cleanup_controls_bytes: u64,
+    process_binding_bytes: u64,
+    issuer_controls_bytes: u64,
+    family_constructor_bytes: u64,
+    installed_process: Option<process_purpose::InstalledProcessState>,
     launch_in_flight: bool,
     launch_abandoned: bool,
     launch_refusal: Option<Arc<super::original_node::OriginalNativeFreshLaunchError>>,
     control: Option<OriginalNativeControlRetirement>,
     cleanup: Option<Arc<HostOperationGuard>>,
     unsettled: Option<RetainedNativeHost>,
+    fork_target: fork_target::ForkTargetSlot,
+}
+
+impl NativeSlot {
+    fn assigned_metadata_bytes(&self) -> Result<u64, OriginalActorAccountError> {
+        self.digest_purposes.iter().try_fold(
+            self.launch_controls_bytes
+                .checked_add(self.cleanup_controls_bytes)
+                .and_then(|bytes| bytes.checked_add(self.process_binding_bytes))
+                .and_then(|bytes| bytes.checked_add(self.issuer_controls_bytes))
+                .and_then(|bytes| bytes.checked_add(self.family_constructor_bytes))
+                .ok_or(OriginalActorAccountError::Unavailable)?,
+            |used, purpose| {
+                used.checked_add(purpose.metadata_bytes())
+                    .ok_or(OriginalActorAccountError::Unavailable)
+            },
+        )
+    }
+
+    /// Prices fixed helper copies before entering their constructor frame.
+    fn reserve_family_constructor(&mut self) -> Result<(), OriginalActorAccountError> {
+        let extent = process_purpose::family_constructor_extent()?;
+        if self.family_constructor_bytes == extent {
+            return Ok(());
+        }
+        if self.family_constructor_bytes != 0 {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        self.require_metadata_assignment(extent)?;
+        // This peak is reused under this slot's exclusive lock. Keeping it
+        // assigned avoids a new history debit for every successful campaign.
+        self.family_constructor_bytes = extent;
+        Ok(())
+    }
+
+    fn require_metadata_assignment(&self, bytes: u64) -> Result<(), OriginalActorAccountError> {
+        let credit = self
+            .credit
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let total = self
+            .assigned_metadata_bytes()?
+            .checked_add(bytes)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let process_bytes = self.installed_process.as_ref().map_or(
+            0,
+            process_purpose::InstalledProcessState::reserved_metadata_bytes,
+        );
+        if total
+            .checked_add(process_bytes)
+            .is_none_or(|total| total > credit.total_metadata_bytes())
+        {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        Ok(())
+    }
 }
 
 /// The same created owners, moved before a refusal can drop or replace them.
@@ -751,6 +1041,38 @@ impl std::fmt::Debug for NativeAccountAttempt {
 }
 
 impl OriginalNativeAccountRoster {
+    /// Publishes the sole checked normal native subdivision before factory use.
+    ///
+    /// The original main permanently assigns this request alongside its registry
+    /// Services. Roster storage stays outside the process envelope within the
+    /// same subdivision; it is never another independently spendable bank.
+    ///
+    /// # Errors
+    /// Refuses repeated native publication, insufficient original capacity,
+    /// invalid preparation identity or target control overflow before Arc birth.
+    pub fn publish_normal(
+        purpose: &Arc<
+            crucible_linux_resource::host_services::process_birth::AuthenticatedNativeSlotPurpose,
+        >,
+        request: crucible_linux_resource::ram_policy::HostResourceVector,
+        preparation: &Arc<HostOperationGuard>,
+    ) -> Result<(Self, OriginalNativeAccountFactoryBinding), OriginalActorAccountError> {
+        purpose.verify_native_preparation(preparation)?;
+        let subdivision = purpose.claim_native_roster(request)?;
+        let credit = OriginalNativeAccountCredit::from_normal(
+            subdivision,
+            preparation,
+            Self::allocation_extent()?,
+        )?;
+        Self::publish([Some(credit), None, None, None], 1)
+    }
+
+    pub(super) fn matches_binding(&self, binding: &OriginalNativeAccountFactoryBinding) -> bool {
+        self.held
+            .as_ref()
+            .is_some_and(|held| Weak::ptr_eq(&Arc::downgrade(held), &binding.roster))
+    }
+
     pub(super) fn publish(
         credits: [Option<OriginalNativeAccountCredit>; MAX_NATIVE_WORKERS],
         width: usize,
@@ -763,18 +1085,24 @@ impl OriginalNativeAccountRoster {
         }
         let roster = Arc::new(Mutex::new(NativeRoster {
             slots: credits.map(|credit| NativeSlot {
+                issuer_controls_bytes: credit.as_ref().map_or(0, |held| held.normal_controls_bytes),
                 credit,
+                family_constructor_bytes: 0,
                 active: None,
                 node_bindings_live: 0,
                 digest_purposes: [device_digest::DigestPurposeState::default();
                     MAX_ORIGINAL_NATIVE_NODE_GENERATIONS as usize],
                 launch_controls_bytes: 0,
+                cleanup_controls_bytes: 0,
+                process_binding_bytes: 0,
+                installed_process: None,
                 launch_in_flight: false,
                 launch_abandoned: false,
                 launch_refusal: None,
                 control: None,
                 cleanup: None,
                 unsettled: None,
+                fork_target: fork_target::ForkTargetSlot::default(),
             }),
             width,
             next_generation: 1,
@@ -827,7 +1155,8 @@ impl OriginalNativeAccountRoster {
             .lock()
             .map_err(|_| original_error(OriginalActorAccountError::Unavailable))?;
         for slot in &mut state.slots {
-            if slot.unsettled.is_none() {
+            fork_target::retry_unsettled_target(slot)?;
+            if slot.fork_target.is_owned() || slot.unsettled.is_none() {
                 continue;
             }
             let cleanup = retain_cleanup(slot).map_err(original_error)?;
@@ -919,9 +1248,45 @@ impl OriginalNativeAccountFactoryBinding {
             return Err(OriginalActorAccountError::Unavailable);
         }
         let generation = state.next_generation;
-        state.next_generation = generation
+        let next_generation = generation
             .checked_add(1)
             .ok_or(OriginalActorAccountError::Unavailable)?;
+        // Contract sealing creates this shared control before fresh-launch
+        // preparation. Its Weak witnesses can retain the header after the last
+        // descriptor closes, so keep the history assigned until roster free.
+        let extent = crate::QemuProcessStageBinding::retained_control_bytes()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .checked_add(credit.normal_preparation_extent()?)
+            .and_then(|bytes| bytes.checked_add(fork_target::retained_control_extent().ok()?))
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let slot = &mut state.slots[index];
+        let launch = if slot.launch_controls_bytes == 0 {
+            fresh_launch_control_extent()?
+        } else {
+            0
+        };
+        slot.require_metadata_assignment(
+            extent
+                .checked_add(launch)
+                .ok_or(OriginalActorAccountError::Unavailable)?,
+        )?;
+        if launch != 0 {
+            slot.launch_controls_bytes = launch;
+        }
+        slot.process_binding_bytes = slot
+            .process_binding_bytes
+            .checked_add(extent)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        if let Err(error) = slot
+            .credit
+            .as_mut()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .enter_normal_preparation()
+        {
+            slot.launch_abandoned = true;
+            return Err(error);
+        }
+        state.next_generation = next_generation;
         state.slots[index].active = Some(generation);
         Ok(NativeAccountAttempt {
             roster: Weak::clone(&self.roster),
@@ -932,6 +1297,67 @@ impl OriginalNativeAccountFactoryBinding {
 }
 
 impl NativeAccountAttempt {
+    /// Checks retained physical control before a lent issuer can enter a body.
+    pub(super) fn require_live_launch_control(&self) -> Result<(), OriginalActorAccountError> {
+        let roster = self
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let state = roster
+            .lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state
+            .slots
+            .get(self.index)
+            .filter(|slot| {
+                slot.active == Some(self.generation)
+                    && slot.unsettled.is_none()
+                    && slot.launch_refusal.is_none()
+                    && !slot.launch_abandoned
+                    && slot
+                        .control
+                        .as_ref()
+                        .is_some_and(OriginalNativeControlRetirement::is_available)
+            })
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        slot.credit
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .require_original()
+    }
+
+    /// Lends the same generation without creating a replacement account or loan.
+    pub(super) fn borrow_installed_issuer_attempt(
+        &self,
+        contract: &crate::QemuChildProcessContract,
+    ) -> Result<Self, OriginalActorAccountError> {
+        self.require_live_launch_control()?;
+        let roster = self
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let state = roster
+            .lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state
+            .slots
+            .get(self.index)
+            .filter(|slot| slot.active == Some(self.generation))
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        if !slot
+            .installed_process
+            .as_ref()
+            .is_some_and(|purpose| purpose.matches_launch_contract(contract))
+        {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        Ok(Self {
+            roster: Weak::clone(&self.roster),
+            index: self.index,
+            generation: self.generation,
+        })
+    }
+
     pub(super) fn cleanup(&self) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
         let roster = self
             .roster
@@ -1020,42 +1446,9 @@ impl NativeAccountAttempt {
             .ok_or(OriginalActorAccountError::Unavailable)?;
         credit.require_original()?;
 
-        // Assign this fixed target purpose once within the already reserved
-        // TOTAL pair, before any error Arc exists. Future native allowance must
-        // subtract this assignment together with the other native control rows;
-        // it is not another physical resident grant or another paired debit.
+        // claim() assigns this actual target extent before process sealing.
         if slot.launch_controls_bytes == 0 {
-            let (error_layout, _) = std::alloc::Layout::new::<(
-                std::sync::atomic::AtomicUsize,
-                std::sync::atomic::AtomicUsize,
-            )>()
-            .extend(std::alloc::Layout::new::<
-                super::original_node::OriginalNativeFreshLaunchError,
-            >())
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
-            let bytes = error_layout
-                .pad_to_align()
-                .size()
-                .checked_add(
-                    usize::from(MAX_ORIGINAL_NATIVE_NODE_GENERATIONS)
-                        * std::mem::size_of::<Option<OriginalNativeNodeBinding>>(),
-                )
-                .and_then(|bytes| {
-                    bytes.checked_add(std::mem::size_of::<
-                        super::original_node::OriginalNativeFreshPreparation,
-                    >())
-                })
-                .and_then(|bytes| {
-                    bytes.checked_add(std::mem::size_of::<
-                        Arc<super::original_node::OriginalNativeFreshLaunchError>,
-                    >())
-                })
-                .and_then(|bytes| u64::try_from(bytes).ok())
-                .ok_or(OriginalActorAccountError::Unavailable)?;
-            if bytes > credit.total_metadata_bytes() {
-                return Err(OriginalActorAccountError::Unavailable);
-            }
-            slot.launch_controls_bytes = bytes;
+            return Err(OriginalActorAccountError::Unavailable);
         }
         let preparation = credit.prepare_fresh_launch(NativeAccountAttempt {
             roster: Weak::clone(&self.roster),
@@ -1159,6 +1552,8 @@ impl NativeAccountAttempt {
             roster: Weak::clone(&self.roster),
             index: self.index,
             generation: self.generation,
+            installed_process: None,
+            issued_process_record: None,
         };
         drop(state);
         if let Err(error) = self.require_original() {
@@ -1335,17 +1730,20 @@ fn retain_cleanup(
             .ok_or(OriginalActorAccountError::Unavailable)?;
         // The guard Arc is within the already admitted TOTAL metadata. The
         // finite supervisor BTree was charged once as initial actor structure.
-        let (layout, _) = std::alloc::Layout::new::<(
-            std::sync::atomic::AtomicUsize,
-            std::sync::atomic::AtomicUsize,
-        )>()
-        .extend(std::alloc::Layout::new::<HostOperationGuard>())
-        .map_err(|_| OriginalActorAccountError::Unavailable)?;
-        let extent = u64::try_from(layout.pad_to_align().size())
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
-        if extent > credit.total_metadata_bytes() {
+        let extent = cleanup_control_extent()?;
+        if let Some(purpose) = slot.installed_process.as_mut()
+            && !purpose.consume_cleanup(extent)
+        {
             return Err(OriginalActorAccountError::Unavailable);
         }
+        slot.require_metadata_assignment(extent)?;
+        // Returned guard aliases may outlive a closed generation. Keep each
+        // assigned body charged until whole-roster retirement, rather than
+        // treating completion or dropping this slot's alias as physical free.
+        slot.cleanup_controls_bytes = slot
+            .cleanup_controls_bytes
+            .checked_add(extent)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
         slot.cleanup = Some(Arc::new(credit.begin_cleanup()?));
     }
     let cleanup = slot
@@ -1397,6 +1795,11 @@ fn close_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
         || slot.launch_refusal.is_some()
         || slot.launch_in_flight
         || slot.launch_abandoned
+        || slot.fork_target.is_owned()
+        || slot
+            .installed_process
+            .as_ref()
+            .is_some_and(|purpose| !purpose.can_retire())
     {
         return Err(OriginalActorAccountError::Unavailable);
     }
@@ -1407,6 +1810,9 @@ fn close_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
         .ok_or(OriginalActorAccountError::Unavailable)?;
     cleanup.complete()?;
     slot.cleanup = None;
+    // The host calls this only after actual process/descendant and storage
+    // containment. Drop the family witness before allowing another generation.
+    slot.installed_process = None;
     // Paired credit remains fully charged after genuine vector closure.
     slot.active = None;
     Ok(())

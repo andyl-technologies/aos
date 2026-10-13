@@ -17,9 +17,29 @@ pub(crate) struct PagingStatusSnapshot {
     pub(crate) authority: PagingAuthoritySnapshot,
     pub(crate) placement_receipt: Option<RamControlPlacementReceipt>,
     pub(crate) convergence: RamControlConvergence,
+    pub(crate) resident_observation:
+        Option<crucible_protocol::ram_control::RamControlResidentObservation>,
 }
 
 impl PausedPagingOwner {
+    /// Records the existing component fixture's acknowledged policy tuple.
+    ///
+    /// This test-only setup does not schedule work, issue native authority or
+    /// establish physical convergence. Production updates use `apply_policy`.
+    ///
+    /// # Panics
+    /// Panics when the fixture's policy mutex is poisoned.
+    #[cfg(test)]
+    pub(in crate::paged_ram) fn record_capture_fixture_policy(
+        &self,
+        policy: RamControlPolicy,
+        revision: u64,
+    ) {
+        *self.policy.lock().unwrap() = Some(policy);
+        self.requested_policy_revision
+            .store(revision, Ordering::Release);
+    }
+
     /// Borrows existing owners without waiting, allocating, faulting or sampling RAM.
     ///
     /// # Errors
@@ -55,6 +75,7 @@ impl PausedPagingOwner {
         }
         let generation = self.policy_generation.load(Ordering::Acquire);
         if queued
+            .receipt
             .as_ref()
             .is_some_and(|queued| queued.generation != generation)
         {
@@ -88,18 +109,45 @@ impl PausedPagingOwner {
                 && receipt.topology_generation == topology_generation
                 && policy.is_some_and(|policy| policy.mode == receipt.mode)
         });
-        let convergence = observed_convergence(
-            authority,
-            *policy,
-            revision,
-            queued.is_some(),
-            placement_receipt,
-            verified_locked_bytes,
-        );
+        let convergence = if authority.failed {
+            RamControlConvergence::Failed
+        } else if queued.capture.is_held() {
+            RamControlConvergence::Blocked
+        } else {
+            observed_convergence(
+                authority,
+                *policy,
+                revision,
+                queued.receipt.is_some(),
+                placement_receipt,
+                verified_locked_bytes,
+            )
+        };
+        let resident_observation = active
+            .as_ref()
+            .map(|service| {
+                service
+                    .resident_observation
+                    .try_lock()
+                    .map(|value| {
+                        (*value).filter(|observation| {
+                            observation.topology_generation == topology_generation
+                                && observation.policy_revision == revision
+                                && observation.policy_generation == generation
+                                && observation.worker_generation == service.worker_generation
+                                && observation.covered_bytes == logical_bytes
+                        })
+                    })
+                    .map_err(|_| RamError::Invariant("resident observation ownership unavailable"))
+            })
+            .transpose()?
+            .flatten();
+
         Ok(PagingStatusSnapshot {
             authority,
             placement_receipt,
             convergence,
+            resident_observation,
         })
     }
 }

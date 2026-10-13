@@ -112,6 +112,32 @@ impl QemuNodeChannelError {
 /// Reports a failure returned by the scheduler-facing QEMU node wrapper.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuNodeError {
+    /// Capture failed before the separately observed process cleanup.
+    #[error("{source}; checkpoint cleanup refusal: {cleanup:?}")]
+    CheckpointCleanup {
+        /// Initiating failure, retained as the actual typed carrier.
+        #[source]
+        source: Box<QemuNodeError>,
+        /// Secondary cleanup failure; absence means that cleanup succeeded.
+        cleanup: Option<Box<QemuNodeError>>,
+    },
+    /// Capture work failed before its independently checked original postcut.
+    #[cfg(target_os = "linux")]
+    #[error("{source}; checkpoint original postcut: {original_after}")]
+    CheckpointPostcut {
+        /// Initiating node failure, preserved without diagnostic replacement.
+        #[source]
+        source: Box<QemuNodeError>,
+        /// Same retained original's separate post-operation refusal.
+        original_after: HostSupervisionError,
+    },
+    /// The actual checkpoint original or its matched native receiver refused.
+    #[cfg(target_os = "linux")]
+    #[error("checkpoint original refused: {source}")]
+    CheckpointOriginal {
+        /// Typed first cause and independent original postcut.
+        source: super::exact_snapshot::capture_original::CheckpointOriginalError,
+    },
     /// A role-specific child channel failed an operation.
     #[error("{plane} channel operation {operation} failed: {message}")]
     Channel {

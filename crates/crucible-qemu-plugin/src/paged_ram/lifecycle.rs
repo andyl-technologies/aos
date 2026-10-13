@@ -55,7 +55,16 @@ impl NativeLifecycle {
 /// Returns an error for missing admission, unavailable native APIs, duplicate
 /// installation, or rejected registration. Managed cold mappings require their
 /// separately qualified manager before this function can accept its endpoint.
-pub(crate) fn install(args: &PluginArgs, plugin_id: u64) -> Result<(), RamError> {
+pub(crate) fn install(
+    args: &PluginArgs,
+    plugin_id: u64,
+    setup: &crate::PluginSetupCompletion,
+    userdata: *mut c_void,
+) -> Result<(), RamError> {
+    if args.ram_control().is_some() {
+        setup.require_installer_control_purpose()?;
+    }
+
     #[cfg(feature = "kernel-swap-measurement")]
     super::research_resident::install(args)?;
 
@@ -77,7 +86,7 @@ pub(crate) fn install(args: &PluginArgs, plugin_id: u64) -> Result<(), RamError>
             status,
         });
     }
-    super::controller::install(args)?;
+    super::controller::install(args, plugin_id, setup, userdata)?;
     if args.ram_control().is_some() {
         super::fork::install(plugin_id)?;
     }

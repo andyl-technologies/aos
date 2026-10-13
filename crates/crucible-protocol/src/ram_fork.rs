@@ -337,9 +337,9 @@ mod tests {
                         maximum_paging_io_in_flight: 1,
                         prefetch_on_increase: false,
                         budgets: [RamControlBudget {
-                            poll_ms: 10,
-                            progress_ms: Some(1000),
-                            total_ms: Some(10_000),
+                            poll_ns: 10_000_000,
+                            progress_ns: Some(1_000_000_000),
+                            total_ns: Some(10_000_000_000),
                         }; RAM_CONTROL_BUDGET_COUNT],
                     },
                 }),

@@ -34,6 +34,10 @@ use crate::QemuNodeChannelError;
 #[cfg(any(test, feature = "test-support"))]
 mod block_completion_observation;
 mod checkpoint;
+#[cfg(target_os = "linux")]
+mod checkpoint_begin;
+#[cfg(target_os = "linux")]
+mod checkpoint_original_wait;
 mod command;
 #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
 mod selectable_reset;
@@ -48,6 +52,7 @@ pub use parent_park_drain::{QmpParentParkDrainReceipt, QmpParentParkDrainState};
 mod paused_cpu;
 #[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
 pub(crate) mod readonly_backing_stream;
+mod receiving_runstate;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 pub use readonly_backing_stream::{
     BackingEvent as QmpReadOnlyBackingEvent, BackingOwner as QmpReadOnlyBackingOwner,
@@ -375,6 +380,10 @@ pub struct QmpClient<S> {
     predeclared_debug_guest_endpoint: bool,
     poisoned: bool,
     host_supervisor: Option<HostOperationSupervisor>,
+    #[cfg(target_os = "linux")]
+    checkpoint_loan: Option<crate::CheckpointOriginalLoan>,
+    #[cfg(target_os = "linux")]
+    checkpoint_request: Option<checkpoint_begin::CheckpointRequestReceipt>,
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
     selectable_reset_correlation: u64,
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
@@ -455,6 +464,10 @@ where
             predeclared_debug_guest_endpoint: false,
             poisoned: false,
             host_supervisor: supervisor,
+            #[cfg(target_os = "linux")]
+            checkpoint_loan: None,
+            #[cfg(target_os = "linux")]
+            checkpoint_request: None,
             #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
             selectable_reset_correlation: 0,
             #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
@@ -532,6 +545,33 @@ where
     pub const fn with_predeclared_debug_guest_endpoint(mut self) -> Self {
         self.predeclared_debug_guest_endpoint = true;
         self
+    }
+
+    /// Retains the caller's paid original through exact capture and disposition.
+    ///
+    /// # Errors
+    /// Refuses an unusable stream, a different retained original or its boundary.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn bind_checkpoint_original(
+        &mut self,
+        original: crate::CheckpointOriginalLoan,
+    ) -> Result<(), QmpError> {
+        self.ensure_usable()?;
+        if let Some(existing) = &self.checkpoint_loan
+            && !existing.same_owner(&original)
+        {
+            return Err(QmpError::InvalidBound {
+                operation: "bind checkpoint original",
+            });
+        }
+        original
+            .check()
+            .map_err(|source| QmpError::CheckpointOriginal {
+                operation: "bind checkpoint original",
+                source,
+            })?;
+        self.checkpoint_loan = Some(original);
+        Ok(())
     }
 
     /// Saves the VMState snapshot under a tag derived from a checkpoint address.
@@ -696,6 +736,22 @@ where
     /// this client.
     #[cfg(unix)]
     pub fn install_descriptor(
+        &mut self,
+        name: &QmpDescriptorName,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        #[cfg(target_os = "linux")]
+        let original = self.checkpoint_loan.clone();
+        let work = self.install_descriptor_inner(name, descriptor);
+        #[cfg(target_os = "linux")]
+        if let Some(original) = original {
+            return self.checkpoint_postcut(work, &original, QmpCommandKind::GetFd.wire_name());
+        }
+        work
+    }
+
+    #[cfg(unix)]
+    fn install_descriptor_inner(
         &mut self,
         name: &QmpDescriptorName,
         descriptor: BorrowedFd<'_>,
@@ -1064,6 +1120,27 @@ where
         &mut self,
         command: QmpCommand<'_>,
     ) -> Result<QmpCommandReturn, QmpError> {
+        #[cfg(target_os = "linux")]
+        if command.kind() != QmpCommandKind::Quit
+            && let Some(original) = self.checkpoint_loan.clone()
+        {
+            return self
+                .exchange_under_checkpoint_original(command, original.guard())
+                .map_err(|failure| match failure.original_after {
+                    Some(original_after) => QmpError::CheckpointPostcut {
+                        source: Box::new(failure.source),
+                        original_after,
+                    },
+                    None => failure.source,
+                });
+        }
+        self.send_command_return_inner(command)
+    }
+
+    fn send_command_return_inner(
+        &mut self,
+        command: QmpCommand<'_>,
+    ) -> Result<QmpCommandReturn, QmpError> {
         self.ensure_usable()?;
         let kind = command.kind();
         let deadline = self.operation_deadline(kind)?;
@@ -1089,12 +1166,6 @@ where
         Ok(response)
     }
 
-    #[cfg(any(
-        test,
-        feature = "test-support",
-        feature = "kernel-swap-measurement",
-        feature = "private-measurement-domain"
-    ))]
     fn exchange_under(
         &mut self,
         command: QmpCommand<'_>,
@@ -1140,10 +1211,57 @@ where
         Ok(response)
     }
 
+    #[cfg(target_os = "linux")]
+    fn checkpoint_postcut<T>(
+        &mut self,
+        work: Result<T, QmpError>,
+        original: &crate::CheckpointOriginalLoan,
+        operation: &'static str,
+    ) -> Result<T, QmpError> {
+        match (work, original.check().err()) {
+            (Err(source), Some(original_after)) => {
+                self.poisoned = true;
+                self.stream.get_mut().poison_qmp_stream();
+                Err(QmpError::CheckpointPostcut {
+                    source: Box::new(source),
+                    original_after,
+                })
+            }
+            (Ok(_), Some(source)) => {
+                self.poisoned = true;
+                self.stream.get_mut().poison_qmp_stream();
+                Err(QmpError::CheckpointOriginal { operation, source })
+            }
+            (work, None) => work,
+        }
+    }
+
     fn operation_deadline(
         &self,
         command: QmpCommandKind,
     ) -> Result<QmpOperationDeadline<'static>, QmpError> {
+        #[cfg(target_os = "linux")]
+        if command != QmpCommandKind::Quit
+            && let Some(original) = &self.checkpoint_loan
+        {
+            original
+                .check()
+                .map_err(|source| QmpError::CheckpointOriginal {
+                    operation: command.wire_name(),
+                    source,
+                })?;
+            return Ok(QmpOperationDeadline {
+                supervision: None,
+                timeout: self.io_timeout_policy.command_timeout,
+                shared: None,
+                checkpoint_original: None,
+                checkpoint_loan: Some(original.clone()),
+                borrowed: None,
+                #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+                paired: None,
+                _lifetime: std::marker::PhantomData,
+            });
+        }
         let class = match command {
             QmpCommandKind::CheckpointCapture | QmpCommandKind::CheckpointTopology => {
                 HostOperationClass::CheckpointCapture
@@ -1241,6 +1359,21 @@ where
             }
 
             if attempt + 1 < self.job_poll_policy.max_polls {
+                #[cfg(target_os = "linux")]
+                if let Some(original) = &self.checkpoint_loan {
+                    let slice = checkpoint_original_wait::wait_slice(
+                        original.guard(),
+                        command.wire_name(),
+                    )?;
+                    thread::sleep(self.job_poll_policy.poll_interval.min(slice));
+                    original
+                        .check()
+                        .map_err(|source| QmpError::CheckpointOriginal {
+                            operation: command.wire_name(),
+                            source,
+                        })?;
+                    continue;
+                }
                 thread::sleep(self.job_poll_policy.poll_interval);
             }
         }
@@ -1467,12 +1600,10 @@ struct QmpOperationDeadline<'a> {
     supervision: Option<HostSupervisionDeadline>,
     timeout: Duration,
     shared: Option<HostOperationGuard>,
-    #[cfg(any(
-        test,
-        feature = "test-support",
-        feature = "kernel-swap-measurement",
-        feature = "private-measurement-domain"
-    ))]
+    #[cfg(target_os = "linux")]
+    checkpoint_original: Option<&'a HostOperationGuard>,
+    #[cfg(target_os = "linux")]
+    checkpoint_loan: Option<crate::CheckpointOriginalLoan>,
     borrowed: Option<&'a HostOperationGuard>,
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     paired: Option<&'a HostOperationGuard>,
@@ -1487,6 +1618,10 @@ impl QmpOperationDeadline<'_> {
             supervision: Some(HostSupervisionDeadline::start(timeout)),
             timeout,
             shared: None,
+            #[cfg(target_os = "linux")]
+            checkpoint_original: None,
+            #[cfg(target_os = "linux")]
+            checkpoint_loan: None,
             #[cfg(any(
                 test,
                 feature = "test-support",
@@ -1501,6 +1636,14 @@ impl QmpOperationDeadline<'_> {
     }
 
     fn remaining(&self, operation: &'static str) -> Result<Duration, QmpError> {
+        #[cfg(target_os = "linux")]
+        if let Some(original) = &self.checkpoint_loan {
+            return checkpoint_original_wait::wait_slice(original.guard(), operation);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(original) = self.checkpoint_original {
+            return checkpoint_original_wait::wait_slice(original, operation);
+        }
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         if let Some(family) = self.paired {
             let actor = self.borrowed.ok_or(QmpError::InvalidBound {
@@ -1508,12 +1651,6 @@ impl QmpOperationDeadline<'_> {
             })?;
             return parent_park_drain::paired_wait_slice(actor, family, operation);
         }
-        #[cfg(any(
-            test,
-            feature = "test-support",
-            feature = "kernel-swap-measurement",
-            feature = "private-measurement-domain"
-        ))]
         if let Some(guard) = self.borrowed {
             return guard
                 .wait_slice()
@@ -1554,6 +1691,9 @@ impl QmpOperationDeadline<'_> {
 
     fn retry_slice(&self, error: &io::Error) -> bool {
         let supervised = self.shared.is_some();
+        #[cfg(target_os = "linux")]
+        let supervised =
+            supervised || self.checkpoint_original.is_some() || self.checkpoint_loan.is_some();
         #[cfg(any(
             test,
             feature = "test-support",
@@ -1569,6 +1709,16 @@ impl QmpOperationDeadline<'_> {
     }
 
     fn complete(&self, operation: &'static str) -> Result<(), QmpError> {
+        #[cfg(target_os = "linux")]
+        if let Some(original) = &self.checkpoint_loan {
+            return checkpoint_original_wait::wait_slice(original.guard(), operation).map(|_| ());
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(original) = self.checkpoint_original {
+            // An exchange is neither whole-capture completion nor required
+            // work progress. Pending queries cannot restart the idle clock.
+            return checkpoint_original_wait::wait_slice(original, operation).map(|_| ());
+        }
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         if let Some(family) = self.paired {
             let actor = self.borrowed.ok_or(QmpError::InvalidBound {
@@ -1576,12 +1726,6 @@ impl QmpOperationDeadline<'_> {
             })?;
             return parent_park_drain::complete_pair(actor, family, operation);
         }
-        #[cfg(any(
-            test,
-            feature = "test-support",
-            feature = "kernel-swap-measurement",
-            feature = "private-measurement-domain"
-        ))]
         if let Some(guard) = self.borrowed {
             return guard
                 .progress(1)
@@ -1793,6 +1937,9 @@ pub enum QmpCommandKind {
     SaveVm,
     /// VMState snapshot deletion.
     DeleteSnapshot,
+    /// Consumes the retained native checkpoint request before any stop effects.
+    #[cfg(target_os = "linux")]
+    CheckpointBegin,
     /// Exact direct or delta checkpoint capture.
     CheckpointCapture,
     /// Bounded topology metadata before host catalog graph admission.
@@ -1897,6 +2044,8 @@ impl QmpCommandKind {
             Self::Capabilities => QMP_CAPABILITIES_COMMAND,
             Self::SaveVm => QMP_SNAPSHOT_SAVE_COMMAND,
             Self::DeleteSnapshot => QMP_SNAPSHOT_DELETE_COMMAND,
+            #[cfg(target_os = "linux")]
+            Self::CheckpointBegin => checkpoint_begin::COMMAND,
             Self::CheckpointCapture => QMP_CHECKPOINT_CAPTURE_COMMAND,
             Self::CheckpointTopology => checkpoint_topology::COMMAND,
             Self::CheckpointRestore => QMP_CHECKPOINT_RESTORE_COMMAND,

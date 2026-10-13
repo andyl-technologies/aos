@@ -11,6 +11,33 @@ use super::*;
 /// native node at a time. Implementations retain the original service cap and
 /// refuse preparation until the preceding node has completed physical cleanup.
 pub trait QemuReplayValidationRegistrationPreparation: Send + Sync {
+    /// Restores one admitted exact replay leg through the retained native owner.
+    ///
+    /// # Errors
+    /// Refuses missing installed custody or the actual issuer/restore boundary.
+    fn launch_exact_node(
+        &self,
+        _request: QemuProductionExactRestoreRequest,
+    ) -> Result<QemuProductionExactRestoreLaunch, QemuLiveNodeStepGateError> {
+        Err(QemuLiveNodeStepGateError::OriginalNativeAccount {
+            source: crate::OriginalActorAccountError::Unavailable,
+        })
+    }
+
+    /// Builds the fresh replay leg through this same retained native issuer.
+    ///
+    /// # Errors
+    /// Refuses missing installed custody or the actual original launch boundary.
+    fn launch_fresh_node(
+        &self,
+        _config: &QemuLiveNodeStepGateConfig,
+        _admission: QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+        Err(QemuLiveNodeStepGateError::OriginalNativeAccount {
+            source: crate::OriginalActorAccountError::Unavailable,
+        })
+    }
+
     /// Returns the live service supervisor sharing the original outer cap.
     fn supervisor(&self) -> crucible_linux_resource::host_supervision::HostOperationSupervisor;
 
@@ -140,8 +167,13 @@ impl QemuReplayValidationExactAdmission {
             let registration = preparation.prepare(&self.config, &self.modeled_node)?;
             request = request.with_replay_ram_registration(registration, preparation.supervisor());
         }
-        let result = request
-            .launch()
+        let result = self
+            .registration_preparation
+            .as_ref()
+            .ok_or(QemuLiveNodeStepGateError::OriginalNativeAccount {
+                source: crate::OriginalActorAccountError::Unavailable,
+            })
+            .and_then(|issuer| issuer.launch_exact_node(request))
             .map(QemuProductionExactRestoreLaunch::into_paused_parts);
         let result = result.map(|(node, run_directory, target)| {
             self.run_directory = Some(run_directory);
@@ -227,8 +259,14 @@ impl QemuReplayValidationThinAdmission {
             process_contract,
             self.identity.borrowed(),
         );
-        let result =
-            launch.and_then(|launch| launch_qemu_production_fresh_node(&launch_config, launch));
+        let result = launch.and_then(|launch| {
+            self.registration_preparation
+                .as_ref()
+                .ok_or(QemuLiveNodeStepGateError::OriginalNativeAccount {
+                    source: crate::OriginalActorAccountError::Unavailable,
+                })?
+                .launch_fresh_node(&launch_config, launch)
+        });
         retain_profile_restore_result(result, &mut self.failed_child, config)
     }
 }

@@ -134,10 +134,9 @@ impl HostOperationGuard {
     /// Refuses a different operation class, absent subscription, original
     /// cancellation or expiry, and unavailable synchronization or descriptor.
     pub fn check_original_quiescence_cancellation(&self) -> Result<(), HostSupervisionError> {
-        if self.status()?.class != HostOperationClass::Quiescence {
-            return Err(HostSupervisionError::InvalidBudget);
-        }
-        self.check_original_cancellation()
+        #[cfg(feature = "private-measurement-domain")]
+        self.check_original_preparation()?;
+        self.check_original_cancellation_for(HostOperationClass::Quiescence)
     }
 
     /// Waits for this owner's wake within both actual Quiescence slices.
@@ -325,5 +324,80 @@ mod tests {
         assert!(account.reserve_resources(0, 1, 1).is_ok());
         assert!(pause.serialize_original_quiescence_basis().is_err());
         Ok(())
+    }
+
+    #[test]
+    fn wrong_class_remains_primary_even_when_the_same_supervisor_is_canceled() {
+        let supervisor =
+            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+        let setup = supervisor.begin(HostOperationClass::Setup).unwrap();
+        supervisor.cancel().unwrap();
+
+        assert_eq!(
+            setup.check_original_quiescence_cancellation(),
+            Err(HostSupervisionError::InvalidBudget)
+        );
+        assert!(matches!(
+            setup.check_original_setup_cancellation(),
+            Err(HostSupervisionError::Terminal {
+                state: HostOperationState::Canceled
+            })
+        ));
+    }
+
+    #[test]
+    fn direct_decision_check_retains_missing_and_signaled_subscriber_refusals() {
+        let supervisor =
+            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+        let pause = supervisor.begin(HostOperationClass::Quiescence).unwrap();
+        let cancellation = event().unwrap();
+        let account = HostServiceAllocator::new(1, 1, 8192).unwrap();
+
+        assert_eq!(
+            pause.check_original_quiescence_cancellation(),
+            Err(HostSupervisionError::Unavailable)
+        );
+        subscribe(&pause, &cancellation, &account).unwrap();
+        pause.check_original_quiescence_cancellation().unwrap();
+        rustix::io::write(&cancellation, &1_u64.to_ne_bytes()).unwrap();
+
+        assert!(matches!(
+            pause.check_original_quiescence_cancellation(),
+            Err(HostSupervisionError::Terminal {
+                state: HostOperationState::Canceled
+            })
+        ));
+        assert!(readable(&cancellation).unwrap());
+        assert!(account.reserve_resources(0, 1, 1).is_err());
+    }
+
+    #[test]
+    fn direct_decision_check_observes_policy_expiration_from_same_original_start() {
+        let supervisor =
+            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+        let pause = supervisor.begin(HostOperationClass::Quiescence).unwrap();
+        let id = pause.status().unwrap().operation_id;
+        let cancellation = event().unwrap();
+        let account = HostServiceAllocator::new(1, 1, 8192).unwrap();
+        subscribe(&pause, &cancellation, &account).unwrap();
+        let (revision, mut budgets) = supervisor.budgets().unwrap();
+        budgets.classes[HostOperationClass::Quiescence as usize].total_timeout =
+            Some(std::time::Duration::from_nanos(1));
+        supervisor.update_budgets(revision, budgets).unwrap();
+
+        for _ in 0..2 {
+            assert!(matches!(
+                pause.check_original_quiescence_cancellation(),
+                Err(HostSupervisionError::DeadlineExpired {
+                    operation_id,
+                    class: HostOperationClass::Quiescence,
+                }) if operation_id == id
+            ));
+        }
+
+        let status = pause.status().unwrap();
+        assert_eq!(status.operation_id, id);
+        assert_eq!(status.state, HostOperationState::Expired);
+        assert_eq!(supervisor.operation_statuses().unwrap().len(), 1);
     }
 }

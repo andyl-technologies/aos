@@ -1749,6 +1749,10 @@ impl WriteBackRetentionAdmin for StoreGraph {
 }
 
 impl ImmutableBlobBackend for StoreGraph {
+    fn prefers_wide_publication_groups(&self) -> bool {
+        self.root.prefers_wide_publication_groups()
+    }
+
     fn read_merkle_node_with_boundary(
         &self,
         original: &crate::owned_decode::DecodeBudget,

@@ -40,7 +40,7 @@ fn group_presence_reuses_actual_paid_page_after_new_page_loans_are_denied()
         assert_eq!(retained.0, before.0, "no descriptor survives a lookup");
         assert_eq!(
             retained.1 - before.1,
-            wire::PAGE_BYTES as u64 + std::mem::size_of::<PresenceScratch<'_, '_>>() as u64
+            (2 * wire::PAGE_BYTES) as u64 + std::mem::size_of::<PresenceScratch<'_, '_>>() as u64
         );
 
         fixture.refuse_page_reservations();
@@ -55,6 +55,7 @@ fn group_presence_reuses_actual_paid_page_after_new_page_loans_are_denied()
             Some(value(64).entry()?),
         );
         assert_eq!(fixture.usage()?, retained);
+        assert_eq!(scratch.as_ref().unwrap().root.identical_reads, 1);
         drop(scratch);
         assert_eq!(fixture.usage()?, before);
     }
@@ -137,6 +138,7 @@ fn group_presence_freshly_authenticates_mutated_page_bytes() -> Result<(), Fixtu
         .expect_err("retained storage never substitutes for fresh bytes");
     assert!(matches!(error, StoreError::Incompatible));
     assert_eq!(fixture.usage()?, retained);
+    assert_eq!(scratch.as_ref().unwrap().root.identical_reads, 0);
     Ok(())
 }
 

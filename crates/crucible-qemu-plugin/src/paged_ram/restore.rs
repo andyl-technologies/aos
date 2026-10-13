@@ -23,7 +23,7 @@ use crucible_ram::{
 
 use super::PAGE_BYTES;
 use super::source::{
-    LazyPageSource, NativePageHasher, SourceOperationClass, SourceOperationFactory,
+    LazyPageSource, NativePageHasher, SourceOperation, SourceOperationClass, SourceOperationFactory,
 };
 use crate::ram_fingerprint::{PreparedRestoreCache, RamProofSource};
 
@@ -113,16 +113,41 @@ impl RestorePageSource {
         hasher: Option<&NativePageHasher>,
     ) -> Result<(u32, PageDigest), super::source::SourceFetchError> {
         super::source::with_observation_operation(self.operations.as_ref(), |operation| {
-            self.connection
-                .try_lock()
-                .map_err(|_| {
-                    super::source::SourceFetchError::unavailable(
-                        "restore source ownership uncertain",
-                    )
-                })?
-                .fetch_with_borrowed_hasher(region_ordinal, page_index, operation, output, hasher)
-                .map(|(length, digest, _)| (length, digest))
+            self.fetch_with_retained_operation(
+                region_ordinal,
+                page_index,
+                operation,
+                output,
+                hasher,
+            )
         })
+    }
+
+    /// Borrows an already admitted exchange while retaining this exact source.
+    ///
+    /// The caller authenticates and retains the operation and its purpose. This
+    /// helper starts no clock or factory operation and transfers no source
+    /// authority. A future checkpoint reader must first hold the whole source/
+    /// page fence and lend its native-validated original read loan here.
+    ///
+    /// # Errors
+    /// Refuses busy source custody, terminal supervision, transport, proof or
+    /// hashing failure. An admitted exchange failure preserves endpoint poison.
+    pub(super) fn fetch_with_retained_operation(
+        &self,
+        region_ordinal: u32,
+        page_index: u64,
+        operation: &dyn SourceOperation,
+        output: &mut [u8; PAGE_BYTES],
+        hasher: Option<&NativePageHasher>,
+    ) -> Result<(u32, PageDigest), super::source::SourceFetchError> {
+        self.connection
+            .try_lock()
+            .map_err(|_| {
+                super::source::SourceFetchError::unavailable("restore source ownership uncertain")
+            })?
+            .fetch_with_borrowed_hasher(region_ordinal, page_index, operation, output, hasher)
+            .map(|(length, digest, _)| (length, digest))
     }
 
     fn fetch_with_class(
@@ -139,9 +164,59 @@ impl RestorePageSource {
             .fetch_with_proof_supervised(region_ordinal, page_index, operation.as_ref(), output)
             .map(|(length, digest, _)| (length, digest))
     }
+
+    // Return the original exchange cause to the existing keeper before any
+    // owned diagnostic conversion; proof bytes alone do not complete its post.
+    fn fetch_proof_with_retained_operation(
+        &self,
+        region_id: &str,
+        page_index: u64,
+        operation: &dyn SourceOperation,
+        scratch: &mut [u8; PAGE_BYTES],
+    ) -> Result<PageProof, super::source::SourceFetchError> {
+        let ordinal = self
+            .record
+            .topology()
+            .regions()
+            .binary_search_by(|region| region.id().cmp(region_id))
+            .map_err(|_| {
+                super::source::SourceFetchError::Owner(RamError::Invariant(
+                    "retained proof region is absent",
+                ))
+            })?;
+        let ordinal = u32::try_from(ordinal).map_err(|_| {
+            super::source::SourceFetchError::Owner(RamError::Invariant(
+                "retained proof ordinal overflow",
+            ))
+        })?;
+        self.connection
+            .try_lock()
+            .map_err(|_| {
+                super::source::SourceFetchError::Owner(RamError::Invariant(
+                    "retained proof source ownership uncertain",
+                ))
+            })?
+            .fetch_with_borrowed_hasher(ordinal, page_index, operation, scratch, None)
+            .map(|(_, _, proof)| proof)
+    }
 }
 
+#[cfg(test)]
+mod borrowed_source_tests;
+
 impl RamProofSource for RestorePageSource {
+    fn proof_with_retained_operation(
+        &self,
+        region_id: &str,
+        page_index: u64,
+        operation: &dyn SourceOperation,
+        scratch: &mut [u8; PAGE_BYTES],
+        reader: &super::engine::HeldCheckpointRead,
+    ) -> Result<PageProof, RamError> {
+        self.fetch_proof_with_retained_operation(region_id, page_index, operation, scratch)
+            .map_err(|error| reader.retain_source_error(error))
+    }
+
     fn source_record(&self) -> &RootRecord {
         &self.record
     }

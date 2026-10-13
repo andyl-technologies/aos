@@ -26,6 +26,22 @@ pub(crate) trait RamProofSource: Send + Sync {
     ///
     /// Returns an error for cancellation, deadline expiry or invalid authority.
     fn proof(&self, region_id: &str, page_index: u64) -> Result<PageProof, RamError>;
+
+    /// Authenticates a proof under an already retained original observation.
+    ///
+    /// # Errors
+    /// Refuses absent borrowed exchange support or the actual source/proof cut.
+    /// The caller must hold authentic native read and whole page/source custody.
+    fn proof_with_retained_operation(
+        &self,
+        _region_id: &str,
+        _page_index: u64,
+        _operation: &dyn crate::paged_ram::source::SourceOperation,
+        _scratch: &mut [u8; crate::paged_ram::PAGE_BYTES],
+        _reader: &crate::paged_ram::engine::HeldCheckpointRead,
+    ) -> Result<PageProof, RamError> {
+        Err(RamError::Invariant("source has no retained proof exchange"))
+    }
 }
 
 pub(super) struct PendingRestore {
@@ -44,7 +60,13 @@ impl RootCache {
         &mut self,
         replacement: Arc<dyn RamProofSource>,
     ) -> Result<Arc<dyn RamProofSource>, RamError> {
-        if !self.frozen || self.pending.is_some() || self.restore.is_some() {
+        if !self.frozen
+            || self.ordinary_active
+            || self.held.is_some()
+            || self.held_accepted.is_some()
+            || self.pending.is_some()
+            || self.restore.is_some()
+        {
             return Err(RamError::Invariant(
                 "source rebind requires exclusive frozen child custody",
             ));
@@ -139,7 +161,13 @@ pub(crate) fn capture_restore_inventory() -> Result<
         .cache
         .try_lock()
         .map_err(|_| "RAM observer has an active capture")?;
-    if cache.frozen || cache.pending.is_some() || cache.restore.is_some() {
+    if cache.frozen
+        || cache.ordinary_active
+        || cache.pending.is_some()
+        || cache.restore.is_some()
+        || cache.held.is_some()
+        || cache.held_accepted.is_some()
+    {
         return Err(RamError::Invariant(
             "RAM observer admission is owned by another transaction",
         ));
@@ -187,7 +215,13 @@ pub(crate) fn prepare_restore(
         .cache
         .try_lock()
         .map_err(|_| "RAM observer has an active capture")?;
-    if cache.frozen || cache.pending.is_some() || cache.restore.is_some() {
+    if cache.frozen
+        || cache.ordinary_active
+        || cache.pending.is_some()
+        || cache.restore.is_some()
+        || cache.held.is_some()
+        || cache.held_accepted.is_some()
+    {
         return Err(RamError::Invariant(
             "RAM observer admission is already owned",
         ));

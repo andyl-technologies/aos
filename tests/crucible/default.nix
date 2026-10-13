@@ -116,6 +116,14 @@ in rec {
       inherit (bindings) caseBindings;
     };
   in {
+    blake3Backends = import ./ram-blake3-backends.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.ram.blake3Backends";
+    };
+    normalService = import ./ram-normal-service-fixture.nix {
+      inherit pkgs lib mkSystem;
+      attrPath = "checks.crucible.ram.normalService";
+    };
     livePaging = import ./ram-live-paging.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.ram.livePaging";

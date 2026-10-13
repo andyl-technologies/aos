@@ -2275,7 +2275,7 @@ fn execution_key(request: &SubmitAttemptRequest) -> AttemptExecutionKey {
     AttemptExecutionKey::for_request(request)
 }
 
-fn request(
+pub(super) fn request(
     assignment_byte: u8,
     attempt_byte: u8,
     epoch: DaemonEpoch,
@@ -2387,7 +2387,7 @@ fn selected_savepoint_request(
     .expect("selected savepoint request")
 }
 
-fn lineage(byte: u8) -> CampaignLineageId {
+pub(super) fn lineage(byte: u8) -> CampaignLineageId {
     CampaignLineageId::parse(&typed_content_id(
         "crucible.campaign.lineage",
         "campaign-fact",
@@ -2426,11 +2426,11 @@ fn campaign_fact(byte: u8) -> CampaignFactId {
     .expect("campaign fact")
 }
 
-fn resources(vcpus: u32, resident: u64, disk: u64) -> AttemptResourceLimits {
+pub(super) fn resources(vcpus: u32, resident: u64, disk: u64) -> AttemptResourceLimits {
     AttemptResourceLimits::new(vcpus, resident, disk, 32).expect("resources")
 }
 
-fn daemon_epoch(byte: u8) -> DaemonEpoch {
+pub(super) fn daemon_epoch(byte: u8) -> DaemonEpoch {
     DaemonEpoch::from_bytes([byte; 16]).expect("daemon epoch")
 }
 
@@ -2452,7 +2452,7 @@ fn finding_candidate(byte: u8) -> FindingCandidateBundleId {
     .expect("finding candidate")
 }
 
-fn checkpoint(byte: u8) -> ExactCheckpointId {
+pub(super) fn checkpoint(byte: u8) -> ExactCheckpointId {
     ExactCheckpointId::parse(&format!(
         "crucible.executor.exact-checkpoint-root@exact-manifest.6.{}",
         encode_hex(&[byte; 32])

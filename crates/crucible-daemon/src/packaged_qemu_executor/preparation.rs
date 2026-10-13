@@ -244,30 +244,27 @@ where
     use crate::executor_supervisor::{ExecutorBootstrapConfiguration, ExecutorBootstrapResources};
     use crucible_api::host_operational::HostOperationalError;
 
-    #[cfg(feature = "private-measurement-domain")]
-    let preparation_supervisor = if let Some(original) = &config.original_preparation {
-        original.derive_supervisor(
-            config
-                .host_operation_budgets()
-                .ok_or(HostOperationalError::Unavailable)?,
-        )?
+    // This shared entry also serves GuardedCampaignOwner::open. A preparation
+    // clock or private native binding alone does not pay the registry account.
+    #[cfg(not(test))]
+    if config.normal_executor.is_none() {
+        return Err(PackagedQemuExecutorError::MissingNormalProcessOwner);
+    }
+    let budgets = config
+        .host_operation_budgets()
+        .ok_or(HostOperationalError::Unavailable)?;
+    let preparation_supervisor = if let Some(normal) = &config.normal_executor {
+        normal.derive_supervisor(budgets)?
     } else {
-        HostOperationSupervisor::new(
-            config
-                .host_operation_budgets()
-                .ok_or(HostOperationalError::Unavailable)?,
-            None,
-        )
-        .map_err(|_| HostOperationalError::Unavailable)?
+        #[cfg(test)]
+        {
+            // Only the explicit component build retains its isolated recipe.
+            HostOperationSupervisor::new(budgets, None)
+                .map_err(|_| HostOperationalError::Unavailable)?
+        }
+        #[cfg(not(test))]
+        return Err(PackagedQemuExecutorError::MissingNormalProcessOwner);
     };
-    #[cfg(not(feature = "private-measurement-domain"))]
-    let preparation_supervisor = HostOperationSupervisor::new(
-        config
-            .host_operation_budgets()
-            .ok_or(HostOperationalError::Unavailable)?,
-        None,
-    )
-    .map_err(|_| HostOperationalError::Unavailable)?;
     let bootstrap = crucible_api::vm_lifecycle::HostRamBootstrapLimits::new(
         u64::from(config.host.maximum_tasks()),
         config.host.maximum_file_descriptors(),
@@ -286,7 +283,7 @@ where
     registry_owner.update(b"crucible.host.operational-registry-owner.v1\0");
     registry_owner.update(&config.daemon_epoch.as_bytes());
     let registry_owner = *registry_owner.finalize().as_bytes();
-    let mut ownership = ExecutorBootstrapResources::new(ExecutorBootstrapConfiguration {
+    let configuration = ExecutorBootstrapConfiguration {
         capacity: config.capacity,
         operational_capacity: config.host_operational_capacity,
         assignment_resources: config
@@ -300,7 +297,17 @@ where
         registry_resources,
         registry_maximum_inodes,
         preparation_supervisor: preparation_supervisor.clone(),
-    })?;
+    };
+    let mut ownership = if let Some(normal) = config.normal_executor.clone() {
+        ExecutorBootstrapResources::new_with_normal(configuration, Some(normal))?
+    } else {
+        #[cfg(test)]
+        {
+            ExecutorBootstrapResources::new(configuration)?
+        }
+        #[cfg(not(test))]
+        return Err(PackagedQemuExecutorError::MissingNormalProcessOwner);
+    };
     let startup_services = ownership.services()?;
     // The original complete account and finite scope exist before the ledger
     // can create its writer lock, retention record or any durable directory.
@@ -531,9 +538,15 @@ pub(super) fn run_capture<T>(
     let budgets = config
         .host_operation_budgets()
         .ok_or(HostOperationalError::Unavailable)?;
-    let supervisor = HostOperationSupervisor::new(budgets, None).map_err(|error| {
-        PackagedQemuExecutorError::PreparationSupervisor(std::io::Error::other(error))
-    })?;
+    let supervisor = if let Some(normal) = &config.normal_executor {
+        normal.derive_supervisor(budgets).map_err(|source| {
+            PackagedQemuExecutorError::PreparationSupervisor(std::io::Error::other(source))
+        })?
+    } else {
+        HostOperationSupervisor::new(budgets, None).map_err(|error| {
+            PackagedQemuExecutorError::PreparationSupervisor(std::io::Error::other(error))
+        })?
+    };
     let daemon =
         crate::host_operational_registry::operational_identity(config.daemon_epoch.as_bytes());
     let mut owner_hash = blake3::Hasher::new();

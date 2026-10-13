@@ -5,6 +5,7 @@
   memoryMaxBytes = 67108864;
   tasksMax = 8;
   fileDescriptors = 64;
+  baselineFileDescriptors = 4;
   runtimeSeconds = 60;
   startupTimeoutSeconds = 30;
   mainThreadStackBytes = 1048576;

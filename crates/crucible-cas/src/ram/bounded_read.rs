@@ -6,6 +6,7 @@ use super::codec::{TreeNode, TreeRef, read_envelope_from, validate_tree};
 use super::{LeasedRamRoot, RamStoreError, Work};
 use std::cell::Cell;
 
+pub(super) mod canonical_session;
 pub(super) mod publication;
 
 #[derive(Clone, Copy)]
@@ -19,6 +20,7 @@ enum ReadPhase {
 
 enum ReadTask<'read> {
     Publication(publication::Readback<'read>),
+    CloseCanonical(crate::content_store::ContentId),
     Tree(TreeRef),
     Inventory {
         store: &'read super::RamStore,
@@ -26,6 +28,7 @@ enum ReadTask<'read> {
         record: &'read crucible_ram::RootRecord,
         regions: &'read [TreeRef],
         visitor: &'read mut dyn FnMut(crate::content_store::ContentId) -> Result<(), RamStoreError>,
+        page_visitor: Option<&'read mut super::RamPageVisitor<'read>>,
     },
     Canonical {
         id: crate::content_store::ContentId,
@@ -43,6 +46,7 @@ impl ReadTask<'_> {
     fn reborrow(&mut self) -> ReadTask<'_> {
         match self {
             Self::Publication(readback) => ReadTask::Publication(*readback),
+            Self::CloseCanonical(root) => ReadTask::CloseCanonical(*root),
             Self::Tree(expected) => ReadTask::Tree(*expected),
             Self::Inventory {
                 store,
@@ -50,12 +54,14 @@ impl ReadTask<'_> {
                 record,
                 regions,
                 visitor,
+                page_visitor,
             } => ReadTask::Inventory {
                 store,
                 root: *root,
                 record,
                 regions,
                 visitor: &mut **visitor,
+                page_visitor: super::restore::reborrow_visitor(page_visitor),
             },
             Self::Canonical {
                 id,
@@ -81,6 +87,7 @@ impl ReadTask<'_> {
 
 enum ReadValue {
     Publication,
+    CanonicalClosed,
     Tree(TreeNode),
     Inventory,
     Canonical(Option<Vec<u8>>),
@@ -169,8 +176,8 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
         forward(&mut request)
     }
 
-    // Only complete inventories and bounded publication readback can borrow a
-    // pinned leaf view. Other tasks retain their existing checked lookup.
+    // Complete inventories and publication readback borrow a pinned leaf view.
+    // Explicit archive turns retain only paid metadata through the same facade.
     pub(crate) fn execute_graph_inventory(
         &mut self,
         facade: &dyn ImmutableBlobBackend,
@@ -179,8 +186,10 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
     ) -> Result<(), StoreError> {
         if !matches!(
             self.task,
-            ReadTask::Inventory { .. } | ReadTask::Publication(_)
-        ) {
+            ReadTask::Inventory { .. } | ReadTask::Publication(_) | ReadTask::CloseCanonical(_)
+        ) && !(self.work.canonical_session_enabled
+            && matches!(self.task, ReadTask::Canonical { .. }))
+        {
             return self.execute_existing_checked(facade);
         }
         let previous = self.inventory_admission;
@@ -227,8 +236,12 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
             self.state.phase = ReadPhase::Failed;
             return Err(first);
         }
+        if matches!(self.task, ReadTask::CloseCanonical(_)) {
+            return self.execute_close_canonical();
+        }
         self.state.phase = ReadPhase::Active;
         let result = match &mut self.task {
+            ReadTask::CloseCanonical(_) => unreachable!("terminal storage closes before dispatch"),
             ReadTask::Publication(readback) => readback.execute_existing(self.work),
             ReadTask::Tree(expected) => read_envelope_from(backend, expected.id, self.work, true)
                 .and_then(|envelope| validate_tree(&envelope, *expected))
@@ -254,11 +267,13 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
                 record,
                 regions,
                 visitor,
+                page_visitor,
             } => {
                 let mut access = super::inventory::ExistingInventory {
                     store,
                     work: self.work,
                     visitor: &mut **visitor,
+                    page_visitor: super::restore::reborrow_visitor(page_visitor),
                 };
                 super::inventory::walk(record, regions, *root, &mut access)
                     .map(|()| ReadValue::Inventory)
@@ -293,6 +308,12 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
         &mut self,
         backend: &crate::content_store::PackedBlobBackend,
     ) -> Result<(), StoreError> {
+        if matches!(self.task, ReadTask::CloseCanonical(_)) {
+            return self.execute_close_canonical();
+        }
+        if self.work.canonical_session_enabled && matches!(self.task, ReadTask::Canonical { .. }) {
+            return self.execute_packed_canonical(backend);
+        }
         if matches!(self.task, ReadTask::Publication(_)) {
             return self.execute_packed_publication(backend);
         }
@@ -335,6 +356,7 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
                 record,
                 regions,
                 visitor,
+                page_visitor,
                 ..
             } = &mut self.task
             else {
@@ -359,6 +381,7 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
             let mut access = super::inventory::CheckedInventory {
                 work: self.work,
                 visitor: &mut **visitor,
+                page_visitor: super::restore::reborrow_visitor(page_visitor),
                 source: &mut source,
                 verify: &mut verify,
             };
@@ -402,6 +425,9 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
             self.state.phase = ReadPhase::Failed;
             return Err(first);
         }
+        if matches!(self.task, ReadTask::CloseCanonical(_)) {
+            return self.execute_close_canonical();
+        }
         let expected = match &self.task {
             ReadTask::Tree(expected) => *expected,
             ReadTask::Canonical { .. } => return self.execute_sqlite_canonical(backend),
@@ -409,6 +435,7 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
             ReadTask::Inventory { .. } | ReadTask::Publication(_) => {
                 return self.execute_existing_checked(backend);
             }
+            ReadTask::CloseCanonical(_) => unreachable!("terminal storage closes before decoding"),
         };
         if expected.id.schema_version() != 1 {
             self.state.phase = ReadPhase::Failed;
@@ -818,6 +845,7 @@ pub(super) fn read_tree(
     match request.finish(provider).map_err(RamStoreError::from)? {
         ReadValue::Tree(node) => Ok(node),
         ReadValue::Difference(_)
+        | ReadValue::CanonicalClosed
         | ReadValue::Canonical(_)
         | ReadValue::Inventory
         | ReadValue::Publication => {
@@ -859,6 +887,7 @@ pub(super) fn read_difference(
     match request.finish(provider).map_err(RamStoreError::from)? {
         ReadValue::Difference(value) => Ok(value),
         ReadValue::Tree(_)
+        | ReadValue::CanonicalClosed
         | ReadValue::Canonical(_)
         | ReadValue::Inventory
         | ReadValue::Publication => {
@@ -991,6 +1020,7 @@ pub(super) fn read_inventory(
     record: &crucible_ram::RootRecord,
     regions: &[TreeRef],
     visitor: &mut dyn FnMut(crate::content_store::ContentId) -> Result<(), RamStoreError>,
+    mut page_visitor: Option<&mut super::RamPageVisitor<'_>>,
     work: &mut Work<'_>,
 ) -> Result<(), RamStoreError> {
     if let Some(first) = work.account.read_failure() {
@@ -1000,6 +1030,14 @@ pub(super) fn read_inventory(
         let error = RamStoreError::from_admission(work.original(), error);
         return Err(work.account.fail_read(error).into());
     }
+    let bytes = std::mem::size_of::<ReadState>()
+        .checked_add(std::mem::size_of::<BoundedReadRequest<'_, '_>>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(RamStoreError::Limit("inventory read control"))?;
+    let _control = work
+        .original()
+        .reserve_scratch_bytes(bytes)
+        .map_err(|error| RamStoreError::from_admission(work.original(), error))?;
     let mut state = ReadState {
         phase: ReadPhase::Ready,
         pending: Cell::new(None),
@@ -1012,6 +1050,7 @@ pub(super) fn read_inventory(
             record,
             regions,
             visitor,
+            page_visitor: super::restore::reborrow_visitor(&mut page_visitor),
         },
         state: &mut state,
         physical: None,

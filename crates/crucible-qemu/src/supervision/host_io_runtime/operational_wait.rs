@@ -9,6 +9,7 @@ use super::*;
 /// Uses a live original-start owner when admitted, with a fixture-only fallback.
 pub(crate) enum OperationPollBudget<'a> {
     Borrowed(&'a HostOperationGuard),
+    BorrowedCheckpoint(&'a HostOperationGuard),
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     BorrowedPair(&'a HostOperationGuard, &'a HostOperationGuard),
     Supervised(HostOperationGuard),
@@ -16,6 +17,28 @@ pub(crate) enum OperationPollBudget<'a> {
 }
 
 impl<'a> OperationPollBudget<'a> {
+    /// Borrows the retained checkpoint original and its cancellation subscriber.
+    pub(crate) fn borrow_checkpoint_original(
+        original: &'a HostOperationGuard,
+        operation: &'static str,
+    ) -> Result<Self, QemuAsyncDriverRuntimeError> {
+        Self::checkpoint_slice(original, operation)?;
+        Ok(Self::BorrowedCheckpoint(original))
+    }
+
+    fn checkpoint_slice(
+        original: &HostOperationGuard,
+        operation: &'static str,
+    ) -> Result<Duration, QemuAsyncDriverRuntimeError> {
+        let check = || {
+            original.check_original_quiescence_cancellation()?;
+            let slice = original.wait_slice()?;
+            original.check_original_quiescence_cancellation()?;
+            Ok(slice)
+        };
+        check().map_err(|source| Self::failure(operation, source))
+    }
+
     /// Borrows the caller's live operation without creating or completing one.
     pub(crate) fn borrow_original(
         original: &'a HostOperationGuard,
@@ -83,6 +106,7 @@ impl<'a> OperationPollBudget<'a> {
         operation: &'static str,
     ) -> Result<Option<Duration>, QemuAsyncDriverRuntimeError> {
         match self {
+            Self::BorrowedCheckpoint(guard) => Self::checkpoint_slice(guard, operation).map(Some),
             Self::Borrowed(guard) => guard
                 .wait_slice()
                 .map(Some)
@@ -105,6 +129,13 @@ impl<'a> OperationPollBudget<'a> {
         operation: &'static str,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         match self {
+            Self::BorrowedCheckpoint(guard) => {
+                Self::checkpoint_slice(guard, operation)?;
+                guard
+                    .wait_for_change()
+                    .map_err(|source| Self::failure(operation, source))?;
+                Self::checkpoint_slice(guard, operation).map(|_| ())
+            }
             Self::Borrowed(guard) => guard
                 .wait_for_change()
                 .map_err(|source| Self::failure(operation, source)),
@@ -128,6 +159,9 @@ impl<'a> OperationPollBudget<'a> {
         &self,
         operation: &'static str,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if let Self::BorrowedCheckpoint(guard) = self {
+            Self::checkpoint_slice(guard, operation)?;
+        }
         if let Self::Borrowed(guard) = self {
             guard
                 .wait_slice()
@@ -157,6 +191,37 @@ impl<'a> OperationPollBudget<'a> {
 mod tests {
     use super::*;
     use crucible_linux_resource::host_supervision::HostOperationBudgets;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn checkpoint_ack_wait_borrows_one_original_and_keeps_subscriber_refusal() {
+        use crate::node::exact_snapshot::capture_original::loan_fixture;
+        use crucible_linux_resource::host_supervision::HostOperationState;
+
+        let (_owner, original, supervisor, event, _account) = loan_fixture();
+        let budget = OperationPollBudget::borrow_checkpoint_original(
+            original.guard(),
+            "checkpoint acknowledgement",
+        )
+        .unwrap();
+
+        assert!(
+            budget
+                .remaining("checkpoint acknowledgement")
+                .unwrap()
+                .is_some()
+        );
+        budget.complete("checkpoint acknowledgement").unwrap();
+        let status = supervisor.operation_statuses().unwrap();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].state, HostOperationState::Running);
+
+        rustix::io::write(&event, &1_u64.to_ne_bytes()).unwrap();
+
+        assert!(budget.complete("checkpoint acknowledgement").is_err());
+        assert!(budget.remaining("checkpoint acknowledgement").is_err());
+        assert_eq!(supervisor.operation_statuses().unwrap().len(), 1);
+    }
 
     #[test]
     fn changed_class_allowance_applies_to_original_wait_start() {

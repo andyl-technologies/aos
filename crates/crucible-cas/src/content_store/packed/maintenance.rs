@@ -7,8 +7,9 @@
 mod append_bound;
 
 use super::index_format::{self as wire, Key, PackRecord, Value};
-use super::index_io::Operation;
+use super::index_io::{Bytes, Operation};
 use super::placement_index::IndexSnapshot;
+use super::placement_index::{FreshRoot, Reader};
 use super::*;
 use crate::owned_decode::DecodeScratch;
 use append_bound::AppendBound;
@@ -115,6 +116,37 @@ pub(super) fn accounting(index: &IndexSnapshot) -> PackedStorageAccounting {
     }
 }
 
+// Both images and their loans retire before the enclosing control credit.
+struct ValidationLookup {
+    page: Bytes,
+    root: FreshRoot,
+    _control: Option<DecodeScratch>,
+}
+
+impl ValidationLookup {
+    fn new(operation: &Operation<'_>) -> Result<Self, StoreError> {
+        let control = operation.reserve_array::<Option<Self>>(1)?;
+        let page = operation.buffer(wire::PAGE_BYTES)?;
+        let root = FreshRoot::new(operation)?;
+        Ok(Self {
+            page,
+            root,
+            _control: control,
+        })
+    }
+
+    // The retained reader still freshly authenticates every page. Only its
+    // buffer allocation and identical root layout validation are reused.
+    fn find(
+        &mut self,
+        reader: &Reader<'_>,
+        key: Key,
+        operation: &mut Operation<'_>,
+    ) -> Result<Option<Value>, StoreError> {
+        reader.find_into_reusing_root(key, &mut self.page, &mut self.root, operation)
+    }
+}
+
 pub(super) fn validate(
     backend: &PackedBlobBackend,
     index: &IndexSnapshot,
@@ -122,6 +154,15 @@ pub(super) fn validate(
 ) -> Result<(), StoreError> {
     let reader = index.reader(backend, operation)?;
     let mut cursor = reader.cursor(operation)?;
+    let mut lookup = if index.header.arena.is_some() {
+        Some(ValidationLookup::new(operation)?)
+    } else {
+        None
+    };
+    let mut find = |key, operation: &mut Operation<'_>| match &mut lookup {
+        Some(lookup) => lookup.find(&reader, key, operation),
+        None => reader.find(key, operation),
+    };
     let mut objects = 0_u64;
     let mut logical_bytes = 0_u64;
     let mut packs = 0_u64;
@@ -133,7 +174,7 @@ pub(super) fn validate(
         value.validate_for(key)?;
         if key.0[0] == 0 {
             let entry = value.entry()?;
-            let stored = reader.find(Key::pack(entry.pack), operation)?;
+            let stored = find(Key::pack(entry.pack), operation)?;
             reference_mismatch |= stored.is_none();
             if let Some(stored) = stored {
                 stored.pack_record()?;
@@ -149,7 +190,7 @@ pub(super) fn validate(
             let mut live_objects = 0_u64;
             let mut live_bytes = 0_u64;
             for row in &manifest.entries {
-                let indexed = reader.find(Key::object(row.id), operation)?;
+                let indexed = find(Key::object(row.id), operation)?;
                 if let Some(indexed) = indexed {
                     let entry = indexed.entry()?;
                     if entry.pack == pack {
@@ -340,7 +381,7 @@ pub(super) fn replacement(
     operation: &mut Operation<'_>,
     progress: &mut checked_publication::Progress,
 ) -> Result<placement_index::EncodedIndex, StoreError> {
-    if entries.is_empty() {
+    if entries.is_empty() || entries.len() > crate::content_store::batch::MAX_PUBLICATION_OBJECTS {
         return Err(StoreError::Incompatible);
     }
     let pack = entries[0].1.pack;
@@ -354,9 +395,14 @@ pub(super) fn replacement(
         operation,
         progress,
     )?;
-    let work = update.insert_absent_batch(backend, entries, operation);
-    progress.outcome.index_reclamation_pending |= update.uncommitted_backing();
-    work?;
+    // A wider physical transaction preserves the proven <=64-row mutation
+    // kernel. No intermediate root is published; all source bytes already
+    // authenticated in caller order before this one durable replacement.
+    for window in entries.chunks(wire::MAX_ROWS) {
+        let work = update.insert_absent_batch(backend, window, operation);
+        progress.outcome.index_reclamation_pending |= update.uncommitted_backing();
+        work?;
+    }
     let key = Key::pack(pack);
     let prior = update
         .find(key, operation)?
@@ -544,3 +590,6 @@ pub(super) fn ordinary_completion<T>(
         )),
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -17,6 +17,9 @@ pub enum RamError {
     /// Canonical identity, proof, geometry or admitted metadata failed.
     #[error(transparent)]
     Core(#[from] crucible_ram::RamError),
+    /// The retained installer Source refused before control allocations.
+    #[error(transparent)]
+    InstallerSource(crate::StartupSourceError),
     /// A private native operation returned its original status or errno.
     #[error("native RAM operation {operation} failed ({status})")]
     Native {
@@ -96,6 +99,7 @@ impl PartialEq for RamError {
         match (self, other) {
             (Self::FaultActorTestExit, Self::FaultActorTestExit) => true,
             (Self::Core(left), Self::Core(right)) => left == right,
+            (Self::InstallerSource(left), Self::InstallerSource(right)) => left == right,
             (
                 Self::Native {
                     operation: left,

@@ -57,3 +57,58 @@ where
         checkpoint_handoff::install(Arc::clone(&self.admission), queued, checkpoints);
     }
 }
+
+impl<V: AttemptAdmissionValidator + Send + Sync + 'static>
+    CampaignActorPort<crate::DirectoryAssignmentLedger, V>
+{
+    /// Runs the bounded durable transfer cut on the original sole writer.
+    /// This dedicated path permits local ledger I/O only; it never invokes
+    /// remote transport, native callbacks or a replacement capacity actor.
+    pub(crate) fn prepare_source_transfer<'original>(
+        &self,
+        key: crate::AttemptExecutionKey,
+        expected: crate::AttemptRuntimeState,
+        intent: crate::SourceTransferIntent,
+        original: &'original crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<
+        Result<
+            crate::SourceTransferPreparation<'original>,
+            crate::SourceTransferFailure<crate::AssignmentLedgerError>,
+        >,
+        HostOperationalError,
+    > {
+        self.admission.with_routed_supervisor(false, |supervisor| {
+            Ok(supervisor.prepare_source_transfer(key, expected, intent, original))
+        })
+    }
+
+    pub(crate) fn release_source_transfer(
+        &self,
+        preparation: &crate::SourceTransferPreparation<'_>,
+        authorization: crate::SourceTransferReleaseAuthorization<'_>,
+    ) -> Result<
+        Result<(), crate::SourceTransferFailure<crate::AssignmentLedgerError>>,
+        HostOperationalError,
+    > {
+        self.admission.with_routed_supervisor(false, |supervisor| {
+            Ok(supervisor.release_source_transfer(preparation, authorization))
+        })
+    }
+
+    pub(crate) fn write_receiving_transfer(
+        &self,
+        expected: Option<crate::assignment_ledger::ReceivingTransferRecord>,
+        next: crate::assignment_ledger::ReceivingTransferRecord,
+        boundary: &mut dyn FnMut() -> Result<
+            (),
+            crucible_linux_resource::host_supervision::HostSupervisionError,
+        >,
+    ) -> Result<
+        Result<(), crate::executor_supervisor::ReceivingTransitionFailure>,
+        HostOperationalError,
+    > {
+        self.admission.with_routed_supervisor(false, |supervisor| {
+            Ok(supervisor.write_receiving_transfer(expected, next, boundary))
+        })
+    }
+}

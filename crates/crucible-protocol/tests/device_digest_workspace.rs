@@ -25,13 +25,13 @@ fn setup_workspace_is_fixed_big_endian_56_bytes_under_the_unchanged_cap() {
     let expected = enabled_setup();
     let frame = control_encode_host_msg(&expected);
 
-    assert_eq!(CONTROL_PROTOCOL_VERSION, 5);
+    assert_eq!(CONTROL_PROTOCOL_VERSION, 7);
     assert_eq!(MAX_FRAME_SIZE, 64);
     assert_eq!(MAX_PAYLOAD_SIZE, 63);
     assert_eq!(frame.len(), 61);
-    assert_eq!(&frame[..5], &[0, 0, 0, 57, 1]);
+    assert_eq!(&frame[..5], &[0, 0, 0, 57, 0x14]);
     assert_eq!(&frame[13..17], &1_u32.to_be_bytes());
-    assert_eq!(&frame[17..21], &1_u32.to_be_bytes());
+    assert_eq!(&frame[17..21], &2_u32.to_be_bytes());
     assert_eq!(&frame[21..29], &3_u64.to_be_bytes());
     assert_eq!(&frame[29..37], &9_u64.to_be_bytes());
     assert_eq!(&frame[37..45], &11_u64.to_be_bytes());
@@ -65,7 +65,7 @@ fn workspace_unknown_schema_flags_and_zero_generations_refuse() {
     let frame = control_encode_host_msg(&enabled_setup());
     for (offset, width, replacement) in [
         (13, 4, 2_u64),
-        (17, 4, 2),
+        (17, 4, 1),
         (21, 8, 0),
         (29, 8, 0),
         (37, 8, 0),

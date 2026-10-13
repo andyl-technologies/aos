@@ -2,14 +2,14 @@
 //!
 //! The schema is independent of Rust layouts and serde. Every integer is big
 //! endian, every enum and optional discriminator is one byte, and durations are
-//! exact unsigned milliseconds. Decoding rejects unknown tags and trailing data
+//! exact unsigned nanoseconds in the signed monotonic range. Decoding rejects unknown tags and trailing data
 //! before any executor controller is invoked.
 
 use super::*;
 mod records;
 use records::{Reader, Writer};
 
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 4;
 type Result<T> = std::result::Result<T, HostOperationalError>;
 
 fn invalid(message: &str) -> HostOperationalError {
@@ -22,8 +22,8 @@ fn invalid(message: &str) -> HostOperationalError {
 ///
 /// # Errors
 ///
-/// Returns an error for zero generations, invalid policy fields, inexact or
-/// overflowing durations, a message exceeding the canonical size limit, or
+/// Returns an error for zero generations, invalid policy fields, zero configured or
+/// unrepresentable durations, a message exceeding the canonical size limit, or
 /// missing or exhausted original allocation authority. The returned buffer
 /// retains its original credit through its final owner.
 pub fn encode_request(request: &HostOperationalRequest) -> Result<crate::AdmittedOutput<Vec<u8>>> {

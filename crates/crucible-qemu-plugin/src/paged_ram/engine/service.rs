@@ -48,7 +48,7 @@ pub(super) struct FaultService {
     pub(super) source: Option<Arc<RestorePageSource>>,
     pub(super) spill: Arc<Mutex<super::super::PreservedPages>>,
     pub(super) arenas: Vec<Arena>,
-    pub(super) states: Mutex<Vec<PageState>>,
+    pub(super) states: Mutex<PageStates>,
     pub(super) placement_dependency: Mutex<Option<Arc<dyn SourceOperation>>>,
     pub(super) worker: Mutex<Option<JoinHandle<Result<(), RamError>>>>,
     pub(super) capture_work: FaultWorkOwner,
@@ -58,6 +58,7 @@ pub(super) struct FaultService {
     pub(super) failed: AtomicBool,
     pub(super) lifetime: Mutex<ActorLifetime>,
     pub(super) retained_token: AtomicU64,
+    pub(super) resident_observation: super::physical_observation::ResidentObservationState,
     pub(super) operations: Arc<dyn SourceOperationFactory>,
     pub(super) worker_generation: u64,
     pub(super) native: NativeOperations,
@@ -258,6 +259,9 @@ impl FaultService {
                 // The body owns a consumed event before operation admission and
                 // retains its actual scratch/claim on every unresolved return.
                 let mut work = self.capture_work.try_lock()?;
+                if self.capture_work.acknowledge_pause_at_boundary(&work)? {
+                    break;
+                }
                 let Some(fault) = self.registration.read_fault().map_err(RamError::from)? else {
                     break;
                 };
@@ -703,7 +707,7 @@ fn read_operational_page<const ROOT_SCRATCH: bool>(
                     .ok_or("operational page coordinate absent")?
                     .resident;
                 if !resident {
-                    let length = if ROOT_SCRATCH {
+                    let length = {
                         let mut source_failure = None;
                         match service.read_cold_with_hasher::<true>(
                             arena,
@@ -734,8 +738,6 @@ fn read_operational_page<const ROOT_SCRATCH: bool>(
                                 ));
                             }
                         }
-                    } else {
-                        service.read_cold(arena, page_index, coordinate, true, bytes)?
                     };
                     if length as usize != valid {
                         return Err(RamError::Invariant(

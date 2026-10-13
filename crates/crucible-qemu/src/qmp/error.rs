@@ -5,6 +5,16 @@ use super::*;
 /// Typed errors returned by the minimal QMP client.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QmpError {
+    /// A command failed before the same checkpoint original's independent postcut.
+    #[cfg(target_os = "linux")]
+    #[error("{source}; checkpoint original postcut: {original_after}")]
+    CheckpointPostcut {
+        /// Initiating typed command, parsing or transport cause.
+        #[source]
+        source: Box<QmpError>,
+        /// Separately observed original refusal after that initiating failure.
+        original_after: crucible_linux_resource::host_supervision::HostSupervisionError,
+    },
     /// Shared host supervision expired, canceled, or lost operational authority.
     #[error("{operation} host supervision failed: {message}")]
     OperationalSupervision {
@@ -12,6 +22,15 @@ pub enum QmpError {
         operation: &'static str,
         /// The exact operational failure, excluded from guest outcomes.
         message: String,
+    },
+    /// The retained checkpoint original refused without diagnostic allocation.
+    #[cfg(target_os = "linux")]
+    #[error("{operation} checkpoint original refused: {source}")]
+    CheckpointOriginal {
+        /// Actual QMP exchange whose original boundary refused.
+        operation: &'static str,
+        /// Exact typed original refusal, retained without a String conversion.
+        source: crucible_linux_resource::host_supervision::HostSupervisionError,
     },
     /// Native reset processing refused after accepting the exact pending request.
     #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]

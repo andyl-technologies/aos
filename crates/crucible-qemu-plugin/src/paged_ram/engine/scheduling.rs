@@ -6,6 +6,15 @@
 
 use super::*;
 
+mod checkpoint;
+
+#[derive(Default)]
+pub(super) struct PlacementQueue {
+    pub(super) receipt: Option<QueuedPlacement>,
+    pub(super) capture: checkpoint::PlacementCapture,
+    dispatching: bool,
+}
+
 type Schedule = extern "C" fn(PhysicalCallback, *mut c_void) -> c_int;
 type Cancel = extern "C" fn() -> c_int;
 
@@ -29,6 +38,23 @@ fn native_scheduler() -> Result<(Schedule, Cancel), RamError> {
     }
 }
 
+fn prepare_placement_receipt(
+    queue: &mut PlacementQueue,
+    operations: &dyn SourceOperationFactory,
+    generation: u64,
+) -> Result<(), RamError> {
+    if let Some(queued) = queue.receipt.as_mut() {
+        queued.generation = generation;
+    } else {
+        queue.receipt = Some(QueuedPlacement {
+            operation: Arc::from(operations.begin(SourceOperationClass::Quiescence)?),
+            generation,
+            completed_work: Arc::new(AtomicU64::new(0)),
+        });
+    }
+    Ok(())
+}
+
 impl PausedPagingOwner {
     pub(super) fn schedule_reclaim(&self, generation: u64) -> Result<(), RamError> {
         let (schedule, _) = native_scheduler()?;
@@ -36,15 +62,8 @@ impl PausedPagingOwner {
             .queued_operation
             .lock()
             .map_err(|_| RamError::Invariant("placement queue unavailable"))?;
-        if let Some(queued) = queued.as_mut() {
-            queued.generation = generation;
-        } else {
-            *queued = Some(QueuedPlacement {
-                operation: Arc::from(self.operations.begin(SourceOperationClass::Quiescence)?),
-                generation,
-                completed_work: Arc::new(AtomicU64::new(0)),
-            });
-        }
+        queued.capture.require_open()?;
+        prepare_placement_receipt(&mut queued, self.operations.as_ref(), generation)?;
 
         // The operational registry retains this owner until successful queue
         // cancellation. Child rebind occurs only after parent actors joined
@@ -71,6 +90,7 @@ impl PausedPagingOwner {
             .queued_operation
             .lock()
             .map_err(|_| RamError::Invariant("placement queue unavailable"))?;
+        queued.capture.require_open()?;
         let status = cancel();
         if status != 0 {
             return Err(RamError::Native {
@@ -80,32 +100,36 @@ impl PausedPagingOwner {
         }
         // Native cancellation proves mailbox disposition, not original
         // operation completion. A refused completion keeps this same receipt.
-        finish_queued_receipt(&mut queued, None, || Ok(()))?;
+        finish_queued_receipt(&mut queued.receipt, None, || Ok(()))?;
         Ok(())
     }
 
     pub(super) fn execute_scheduled_before_resume(&self) -> Result<bool, RamError> {
-        let queued = self
-            .queued_operation
-            .lock()
-            .map_err(|_| RamError::Invariant("placement queue unavailable"))?
-            .is_some();
-        if !queued {
-            return Ok(false);
-        }
         let (_, cancel) = native_scheduler()?;
-        let status = cancel();
-        if status != 0 {
-            return Err(RamError::Native {
-                operation: "claim placement before resume",
-                status,
-            });
+        {
+            let queued = self
+                .queued_operation
+                .lock()
+                .map_err(|_| RamError::Invariant("placement queue unavailable"))?;
+            queued.capture.require_open()?;
+            if queued.receipt.is_none() {
+                return Ok(false);
+            }
+            // Keep the same gate through the actual cancellation effect.
+            let status = cancel();
+            if status != 0 {
+                return Err(RamError::Native {
+                    operation: "claim placement before resume",
+                    status,
+                });
+            }
         }
         self.run_queued_placement()?;
         if self
             .queued_operation
             .lock()
             .map_err(|_| RamError::Invariant("placement queue unavailable"))?
+            .receipt
             .is_some()
         {
             return Err(RamError::Native {
@@ -117,12 +141,34 @@ impl PausedPagingOwner {
     }
 
     fn run_queued_placement(&self) -> Result<(), RamError> {
+        {
+            let mut queued = self
+                .queued_operation
+                .lock()
+                .map_err(|_| RamError::Invariant("placement queue unavailable"))?;
+            queued.require_dispatch()?;
+            if queued.receipt.is_none() {
+                return Ok(());
+            }
+            if queued.dispatching {
+                return Err(RamError::Invariant("placement dispatch already retained"));
+            }
+            // Native mailbox state does not cover synchronous before-resume
+            // dispatch. Publish this actual borrower before cloning its work.
+            queued.dispatching = true;
+        }
+        let work = self.run_queued_placement_inner();
+        finish_placement_dispatch(&self.queued_operation, work)
+    }
+
+    fn run_queued_placement_inner(&self) -> Result<(), RamError> {
         let (operation, generation, completed_work) = {
             let queued = self
                 .queued_operation
                 .lock()
                 .map_err(|_| RamError::Invariant("placement queue unavailable"))?;
-            let Some(queued) = queued.as_ref() else {
+            queued.require_dispatch()?;
+            let Some(queued) = queued.receipt.as_ref() else {
                 return Ok(());
             };
             (
@@ -143,6 +189,15 @@ impl PausedPagingOwner {
                 if *status == -libc::EAGAIN || *status == -libc::EBUSY)
             {
                 let (schedule, _) = native_scheduler()?;
+                let queued = self
+                    .queued_operation
+                    .lock()
+                    .map_err(|_| RamError::Invariant("placement queue unavailable"))?;
+                if queued.capture.is_held() {
+                    // The unfinished accepted receipt stays held; native
+                    // disposition restores it after the capture transaction.
+                    return Ok(());
+                }
                 let status = schedule(queued_placement, (self as *const Self).cast_mut().cast());
                 if status == 0 {
                     return Ok(());
@@ -160,10 +215,27 @@ impl PausedPagingOwner {
             .queued_operation
             .lock()
             .map_err(|_| RamError::Invariant("placement queue unavailable"))?;
-        finish_queued_receipt(&mut queued, Some(generation), || {
-            self.complete_placement_receipt(generation)
-        })?;
+        queued.finish_receipt(generation, || self.complete_placement_receipt(generation))?;
         Ok(())
+    }
+}
+
+// The initiating work failure remains primary when final ownership is
+// poisoned. An unavailable final owner leaves dispatching retained; only a
+// successful work result may return the cleanup refusal as its first cause.
+fn finish_placement_dispatch(
+    queue: &Mutex<PlacementQueue>,
+    work: Result<(), RamError>,
+) -> Result<(), RamError> {
+    match queue.lock() {
+        Ok(mut queue) => {
+            queue.dispatching = false;
+            work
+        }
+        Err(_) => match work {
+            Err(first) => Err(first),
+            Ok(()) => Err(RamError::Invariant("placement queue unavailable")),
+        },
     }
 }
 

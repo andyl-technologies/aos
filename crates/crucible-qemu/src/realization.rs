@@ -566,6 +566,17 @@ fn validate_baked_genesis_node_set(
 /// Errors returned by QEMU VM realization coordination.
 #[derive(Debug, Error)]
 pub enum QemuVmRealizationError {
+    /// Actual kernel event counters recorded a contained family OOM kill.
+    ///
+    /// The associated physical process owner already completed empty-group
+    /// cleanup. This diagnostic does not attribute an exit signal to a child.
+    #[cfg(target_os = "linux")]
+    #[error("contained QEMU process family exceeded its kernel memory envelope: {failure}")]
+    HostMemoryLimit {
+        /// Original same-cgroup counter baseline and closure observation.
+        #[source]
+        failure: crate::LinuxQemuMemoryLimitFailure,
+    },
     /// An original-owner metadata reservation refused a launch-model copy.
     #[error("QEMU launch-model copy admission failed: {source}")]
     ModelCopy {

@@ -17,17 +17,45 @@ pub(super) fn lookup(
     range: Option<ByteRange>,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<BlobHandle, StoreError> {
+    lookup_using_session(backend, original, id, range, None, boundary)
+}
+
+/// Opens fresh object paths while borrowing a same-operation manifest.
+///
+/// # Errors
+/// Returns the normal checked lookup refusals or an incompatible session owner.
+pub(super) fn lookup_cached(
+    backend: &PackedBlobBackend,
+    original: &DecodeBudget,
+    id: ContentId,
+    session: &mut super::canonical_session::Session,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<BlobHandle, StoreError> {
+    lookup_using_session(backend, original, id, None, Some(session), boundary)
+}
+
+fn lookup_using_session(
+    backend: &PackedBlobBackend,
+    original: &DecodeBudget,
+    id: ContentId,
+    range: Option<ByteRange>,
+    mut session: Option<&mut super::canonical_session::Session>,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<BlobHandle, StoreError> {
     checked_reader::check(original, boundary)?;
     let _lifecycle = checked_io::lock(backend, LIFECYCLE_LOCK_FILE, true, original, boundary)?;
     let _state = checked_io::lock(backend, STATE_LOCK_FILE, false, original, boundary)?;
     let index = index_snapshot::IndexSnapshot::read(backend, original, boundary)?;
+    if let Some(session) = session.as_mut() {
+        session.bind_generation(backend, original, index.digest())?;
+    }
     if index.header.count == 0 {
         return Err(StoreError::NotFound { id });
     }
     let entry = index
         .find(backend, id, original, boundary)?
         .ok_or(StoreError::NotFound { id })?;
-    open_entry(backend, original, id, entry, range, boundary)
+    open_entry_with_session(backend, original, id, entry, range, session, boundary)
 }
 
 pub(super) fn open_entry(
@@ -36,6 +64,23 @@ pub(super) fn open_entry(
     id: ContentId,
     entry: IndexEntry,
     range: Option<ByteRange>,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<BlobHandle, StoreError> {
+    open_entry_with_session(backend, original, id, entry, range, None, boundary)
+}
+
+// crucible-lint: allow rust-allow -- the selected range and optional paid manifest retain the same source/file custody.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The selected range and optional paid manifest retain the same source/file custody."
+)]
+fn open_entry_with_session(
+    backend: &PackedBlobBackend,
+    original: &DecodeBudget,
+    id: ContentId,
+    entry: IndexEntry,
+    range: Option<ByteRange>,
+    session: Option<&mut super::canonical_session::Session>,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<BlobHandle, StoreError> {
     // Source and file controls share one credit. Every source/reader alias
@@ -73,15 +118,19 @@ pub(super) fn open_entry(
         }
     })?;
     let file_length = checked_io::length(&file, original, boundary)?;
-    authenticate_manifest(
-        file.file(),
-        backend.configuration,
-        id,
-        entry,
-        file_length,
-        original,
-        boundary,
-    )?;
+    if let Some(session) = session {
+        session.authenticate(file.file(), backend, original, id, entry, boundary)?;
+    } else {
+        authenticate_manifest(
+            file.file(),
+            backend.configuration,
+            id,
+            entry,
+            file_length,
+            original,
+            boundary,
+        )?;
+    }
     let range = range.unwrap_or(ByteRange {
         offset: 0,
         length: entry.length,

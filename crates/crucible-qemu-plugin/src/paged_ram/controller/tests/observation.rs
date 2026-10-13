@@ -110,7 +110,7 @@ fn cancellation_keeps_observation_blocked_without_creating_work() {
     assert_eq!(reply.disposition, RamControlDisposition::Canceled);
     assert_eq!(reply.convergence, RamControlConvergence::Blocked);
     assert_counters_unavailable(&reply);
-    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
 }
 
 #[test]
@@ -131,5 +131,132 @@ fn expired_original_is_failed_without_a_new_deadline_or_operation() {
     let reply = controller.status();
     assert_eq!(reply.convergence, RamControlConvergence::Failed);
     assert_counters_unavailable(&reply);
-    assert_eq!(controller.operations.load(Ordering::Acquire), 0);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn placement_status_preserves_full_execution_peak_across_advisory_and_strict_modes() {
+    let controller = observed_controller();
+    let mut state = controller.state.lock().unwrap();
+    let owner = state.owner.as_ref().unwrap().clone();
+    owner.seal_geometry(1, 8192).unwrap();
+    state.resources = RamControlResources {
+        resident_peak_bytes: 16384,
+        backing_peak_bytes: 16384,
+        metadata_bytes: 4096,
+        staging_bytes: 4096,
+        paging_io_slots: 1,
+        cpu_slots: 1,
+        task_slots: 1,
+        file_descriptors: 3,
+    };
+    state.inventory = Some(Inventory {
+        report: RamControlInventoryReport {
+            topology_generation: 1,
+            logical_bytes: 8192,
+            region_count: 1,
+            native_metadata_bytes: 4096,
+            native_scratch_bytes: 4096,
+            rust_metadata_required_bytes: 4096,
+            owner_resources: RamControlOwnerInventory {
+                existing_tasks: 1,
+                existing_file_descriptors: 3,
+                registered_service_tasks: 0,
+                prospective_tasks: 0,
+                prospective_file_descriptors: 0,
+            },
+            granted: false,
+        },
+        regions: vec![RamControlInventoryRegion::new(0, 8192, 1, "main").unwrap()],
+        grant: None,
+        operation: None,
+    });
+    let mut policy = RamControlPolicy {
+        mode: RamControlMode::Managed,
+        resident_target_bytes: 0,
+        eviction_preference: 100,
+        writeback_bytes_per_second: 4096,
+        maximum_paging_io_in_flight: 1,
+        prefetch_on_increase: false,
+        budgets: state.budgets,
+    };
+    let retained_resources = state.resources;
+    drop(state);
+
+    // These are acknowledged configuration observations, without native lock,
+    // reclaim or physical convergence claims. Status must not start an operation.
+    for (revision, mode, target, effective, limited) in [
+        (1, RamControlMode::Managed, 0, 0, true),
+        (2, RamControlMode::DiskOriented, 4096, 4096, true),
+        (3, RamControlMode::ResidentRequired, 0, 8192, false),
+        (4, RamControlMode::Managed, 8192, 8192, false),
+    ] {
+        policy.mode = mode;
+        policy.resident_target_bytes = target;
+        owner.record_capture_fixture_policy(policy, revision);
+        let mut state = controller.state.lock().unwrap();
+        state.policy = Some(policy);
+        state.requested_revision = revision;
+        state.applied_revision = revision;
+        drop(state);
+
+        let reply = controller.status();
+        assert_eq!(reply.disposition, RamControlDisposition::Accepted);
+        assert_eq!(reply.effective_resident_target_bytes, effective);
+        assert_eq!(
+            reply.limitation_reasons & RAM_LIMIT_EXECUTION_PEAK != 0,
+            limited
+        );
+        assert_eq!(reply.convergence, RamControlConvergence::Blocked);
+        assert_counters_unavailable(&reply);
+        assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
+        assert_eq!(
+            controller.state.lock().unwrap().resources,
+            retained_resources
+        );
+        if mode != RamControlMode::ResidentRequired {
+            owner.admit_policy(&policy).unwrap();
+        }
+    }
+
+    // A smaller target is still not authority to run with a smaller peak.
+    let insufficient = PausedPagingOwner::new(
+        crate::args::PluginRamResources {
+            resident_peak_bytes: 12288,
+            backing_peak_bytes: 16384,
+            metadata_bytes: 4096,
+            staging_bytes: 4096,
+            paging_io_slots: 1,
+            cpu_slots: 1,
+            task_slots: 1,
+            file_descriptors: 3,
+        },
+        Arc::new(NoStatusOperations),
+    )
+    .unwrap();
+    insufficient.seal_geometry(1, 8192).unwrap();
+    policy.resident_target_bytes = 0;
+    assert!(matches!(
+        insufficient.admit_policy(&policy),
+        Err(RamError::MetadataAdmission {
+            required: 16384,
+            admitted: 12288
+        })
+    ));
+}
+
+#[test]
+fn unknown_inventory_does_not_advertise_a_low_execution_peak_or_strict_size() {
+    let (controller, mut policy, _) = applied_controller();
+    policy.mode = RamControlMode::ResidentRequired;
+    controller.state.lock().unwrap().policy = Some(policy);
+
+    let reply = controller.status();
+
+    assert_eq!(reply.logical_ram_bytes, 0);
+    assert_eq!(reply.effective_resident_target_bytes, 0);
+    assert_eq!(reply.limitation_reasons & RAM_LIMIT_EXECUTION_PEAK, 0);
+    assert_eq!(reply.convergence, RamControlConvergence::Blocked);
+    assert_counters_unavailable(&reply);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
 }

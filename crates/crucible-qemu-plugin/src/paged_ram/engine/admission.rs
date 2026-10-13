@@ -3,6 +3,37 @@
 use super::*;
 
 impl PausedPagingOwner {
+    /// Returns the complete Rust metadata request for one sealed inventory.
+    ///
+    /// Native metadata and separately issued installer controls retain their own
+    /// purposes. This scalar describes the observer and live/staged pager request;
+    /// its transport does not grant capacity or renew the installing operation.
+    ///
+    /// # Errors
+    /// Refuses empty geometry or overflow in the complete request.
+    pub(crate) fn required_rust_metadata_bytes(
+        topology: &crucible_ram::Topology,
+        spill_quota: u64,
+    ) -> Result<u64, RamError> {
+        if topology.total_logical_bytes() == 0 || spill_quota == 0 {
+            return Err(RamError::Invariant("empty Rust metadata inventory"));
+        }
+        let pages = topology.regions().iter().try_fold(0_u64, |total, region| {
+            total
+                .checked_add(region.geometry().page_count())
+                .ok_or(RamError::Invariant("Rust metadata page count overflow"))
+        })?;
+        let regions = u32::try_from(topology.regions().len())
+            .map_err(|_| RamError::Invariant("Rust metadata region count overflow"))?;
+        let paging = Self::required_metadata_bytes(pages, regions, spill_quota)?;
+        crucible_ram::RamSnapshot::maximum_metadata_bytes(topology, 4)?
+            .checked_add(9 * 3 * 1024 * 1024)
+            .and_then(|bytes| bytes.checked_add(paging))
+            .ok_or(RamError::Invariant(
+                "complete Rust metadata request overflow",
+            ))
+    }
+
     /// Bounds live and pre-fork staged pager metadata using actual logical pages.
     ///
     /// # Errors
@@ -33,14 +64,24 @@ impl PausedPagingOwner {
             .and_then(|bytes| bytes.checked_add(PAGE_BYTES as u64))
             .ok_or("prepared write receipt bound overflow")?;
         let native_mutation_scratch = 56 * 65536 + 2 * PAGE_BYTES as u64;
+        let page_version_controls = u64::try_from(PageStates::control_bytes())
+            .ok()
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or("live and staged page vector control overflow")?;
         let fault_work = service::capture_work::FaultWorkOwner::required_metadata_bytes()?
             .checked_mul(2)
             .ok_or("live and staged fault work metadata overflow")?;
+        let resident_observations =
+            super::physical_observation::ResidentObservationState::required_metadata_bytes()?
+                .checked_mul(2)
+                .ok_or("live and staged resident observation metadata overflow")?;
         store
             .checked_add(page_states)
             .and_then(|bytes| bytes.checked_add(arenas))
             .and_then(|bytes| bytes.checked_mul(2))
             .and_then(|bytes| bytes.checked_add(fault_work))
+            .and_then(|bytes| bytes.checked_add(page_version_controls))
+            .and_then(|bytes| bytes.checked_add(resident_observations))
             .and_then(|bytes| bytes.checked_add(mutation_receipt))
             .and_then(|bytes| bytes.checked_add(native_mutation_scratch))
             .and_then(|bytes| bytes.checked_add(2 * (16 * u64::from(regions) + 256)))
@@ -118,6 +159,20 @@ pub(super) fn prepare_service(
     )
 }
 
+/// Checks the already declared 1024-byte enclosing control allowance.
+///
+/// # Errors
+/// Refuses a target whose real service header and Arc counters exceed it.
+pub(super) fn verify_service_header_extent() -> Result<(), RamError> {
+    let bytes = size_of::<FaultService>()
+        .checked_add(2 * size_of::<usize>())
+        .ok_or("fault service header extent overflow")?;
+    if bytes > 1024 {
+        return Err(RamError::Invariant("fault service exceeds admitted header"));
+    }
+    Ok(())
+}
+
 pub(super) struct ServiceConfiguration {
     pub(super) topology_generation: u64,
     pub(super) operations: Arc<dyn SourceOperationFactory>,
@@ -146,6 +201,9 @@ pub(super) fn prepare_service_for_inventory(
         .try_lock()
         .map_err(|_| "spill metadata admission unavailable")?
         .admit_metadata(budget)?;
+    // The existing same-bank arena reservation includes this fixed service
+    // header and the actual two Arc counters. Growth must fit, never raise it.
+    verify_service_header_extent()?;
     let arena_bytes = regions
         .len()
         .checked_mul(std::mem::size_of::<Arena>())
@@ -194,6 +252,7 @@ pub(super) fn prepare_service_for_inventory(
     }
     let metadata = pages
         .checked_mul(std::mem::size_of::<PageState>())
+        .and_then(|bytes| bytes.checked_add(PageStates::control_bytes()))
         .ok_or("paging metadata size overflow")?;
     let reservation = budget
         .reserve_bytes(metadata as u64)
@@ -219,19 +278,23 @@ pub(super) fn prepare_service_for_inventory(
         }
     }
     let capture_work = service::capture_work::FaultWorkOwner::prepare(budget)?;
+    // The distinct result body is prepaid under this same inventory account
+    // before either body or enclosing service allocation, not by a status poll.
+    let resident_observation =
+        super::physical_observation::ResidentObservationState::prepare(budget)?;
     let registration = Registration::open().map_err(RamError::from)?;
     let generation = NEXT_WORKER_GENERATION
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
             current.checked_add(1)
         })
         .map_err(|_| "paging worker generation exhausted")?;
-    Ok(Arc::new(FaultService {
+    let service = Arc::new(FaultService {
         registration: Arc::new(registration),
         counters,
         source,
         spill,
         arenas,
-        states: Mutex::new(states),
+        states: Mutex::new(PageStates::new(states)),
         placement_dependency: Mutex::new(None),
         worker: Mutex::new(None),
         capture_work,
@@ -241,12 +304,14 @@ pub(super) fn prepare_service_for_inventory(
         failed: AtomicBool::new(false),
         lifetime: Mutex::new(service::ActorLifetime::default()),
         retained_token: AtomicU64::new(0),
+        resident_observation,
         operations,
         worker_generation: generation,
         native,
         _reservation: reservation,
         _arena_reservation: arena_reservation,
-    }))
+    });
+    Ok(service)
 }
 
 #[cfg(test)]
@@ -274,6 +339,43 @@ mod tests {
                 "admission cannot perform operational work",
             ))
         }
+    }
+
+    #[test]
+    fn complete_report_contains_the_actual_live_and_staged_fixed_bodies() {
+        use crucible_ram::{Limits, RamSnapshot, RegionClass, RegionDescriptor, Topology};
+
+        let topology = Topology::new(
+            vec![
+                RegionDescriptor::new("main", RegionClass::MutableMain, PAGE_BYTES as u64).unwrap(),
+            ],
+            Limits::default(),
+        )
+        .unwrap();
+        let spill_quota = 2 * PAGE_BYTES as u64;
+        let observer =
+            RamSnapshot::maximum_metadata_bytes(&topology, 4).unwrap() + 9 * 3 * 1024 * 1024;
+        let paging = PausedPagingOwner::required_metadata_bytes(1, 1, spill_quota).unwrap();
+        let fixed = 2 * (service::capture_work::FaultWorkOwner::required_metadata_bytes().unwrap()
+            + PageStates::control_bytes() as u64
+            + super::super::physical_observation::ResidentObservationState::required_metadata_bytes().unwrap());
+        let complete =
+            PausedPagingOwner::required_rust_metadata_bytes(&topology, spill_quota).unwrap();
+        let omitting_target_controls = observer + paging - fixed;
+
+        assert_eq!(complete, observer + paging);
+        assert_eq!(complete - omitting_target_controls, fixed);
+        assert!(fixed >= 2 * PAGE_BYTES as u64);
+        let unchanged = crucible_ram::MetadataBudget::new(omitting_target_controls);
+        assert!(unchanged.reserve_bytes(complete).is_err());
+        assert_eq!(unchanged.used_bytes(), 0);
+        let exact = crucible_ram::MetadataBudget::new(complete);
+        let retained = exact.reserve_bytes(complete).unwrap();
+        assert_eq!(exact.used_bytes(), complete);
+        drop(retained);
+        assert_eq!(exact.used_bytes(), 0);
+        assert!(PausedPagingOwner::required_rust_metadata_bytes(&topology, 0).is_err());
+        assert!(PausedPagingOwner::required_metadata_bytes(u64::MAX, 1, spill_quota).is_err());
     }
 
     #[test]
@@ -332,9 +434,9 @@ mod tests {
             maximum_paging_io_in_flight: 1,
             prefetch_on_increase: false,
             budgets: [RamControlBudget {
-                poll_ms: 1,
-                progress_ms: Some(100),
-                total_ms: Some(100),
+                poll_ns: 1_000_000,
+                progress_ns: Some(100_000_000),
+                total_ns: Some(100_000_000),
             }; 14],
         };
 

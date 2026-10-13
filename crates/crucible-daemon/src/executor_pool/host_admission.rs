@@ -126,6 +126,46 @@ impl<L: Send + 'static, V: Send + Sync + 'static> PreparedExecutorActor<L, V> {
         })
     }
 
+    /// Atomically closes standalone admission after actual native quiescence.
+    ///
+    /// # Errors
+    /// Refuses another route, active or queued work, actual native reservations,
+    /// retained uncertainty, or competing/poisoned actor custody. No owner or
+    /// charge is released; terminal cleanup keeps using the same actor.
+    pub(crate) fn try_begin_terminal(&mut self) -> Result<(), HostOperationalError> {
+        let mut route = self
+            .admission
+            .route
+            .try_lock()
+            .map_err(|_| HostOperationalError::Unavailable)?;
+        let routed = match &*route {
+            AdmissionRoute::Preparing(state) => state,
+            AdmissionRoute::Terminal(state) if state.ptr_eq(&Arc::downgrade(&self.state)) => {
+                return Ok(());
+            }
+            _ => return Err(HostOperationalError::Unavailable),
+        };
+        if !routed.ptr_eq(&Arc::downgrade(&self.state)) {
+            return Err(HostOperationalError::Unavailable);
+        }
+        let supervisor = self
+            .state
+            .supervisor
+            .try_lock()
+            .map_err(|_| HostOperationalError::Unavailable)?;
+        if supervisor
+            .as_ref()
+            .is_none_or(|actor| !actor.native_ownership_is_quiescent())
+        {
+            return Err(HostOperationalError::Unavailable);
+        }
+
+        // The same route lock serializes native admission and this terminal
+        // cut. Cleanup can continue, but no new assignment or Service can enter.
+        *route = AdmissionRoute::Terminal(Arc::downgrade(&self.state));
+        Ok(())
+    }
+
     /// Returns a campaign port sharing this actor's original admission route.
     pub(crate) fn campaign_port(&self) -> CampaignActorPort<L, V> {
         CampaignActorPort::new(Arc::clone(&self.admission))
@@ -342,7 +382,9 @@ impl<L: Send + 'static, V: Send + Sync + 'static> HostAdmission<L, V> {
                 if !cleanup && shared.state.load(Ordering::Acquire) != POOL_RUNNING {
                     return Err(HostOperationalError::Unavailable);
                 }
-                // No filesystem or socket I/O occurs under the actor lock.
+                // Ordinary admission callbacks perform no filesystem or socket
+                // I/O. The dedicated transfer methods serialize bounded local
+                // ledger publication here; no remote/native callback runs.
                 let mut executor = shared
                     .executor
                     .lock()

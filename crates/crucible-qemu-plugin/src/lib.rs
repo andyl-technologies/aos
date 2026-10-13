@@ -267,12 +267,15 @@ pub use runtime::{
     active_runtime_is_published,
 };
 pub use setup::PluginReadySetupAck;
-#[cfg(unix)]
 pub use setup::{
     ArmedWakeFd, PluginSetupBootBarrierError, PluginSetupCompletion, PluginSetupError,
     PluginSetupFailureStage, RegisteredWakeFd, WakeFdArmError, WakeFdRegisterError,
-    prepare_setup_completion, receive_and_prepare_setup_completion, receive_setup_with_descriptors,
     send_callback_registration_failure_ack, send_ready_setup_ack,
+};
+#[cfg(unix)]
+#[cfg(all(test, unix))]
+pub use setup::{
+    prepare_setup_completion, receive_and_prepare_setup_completion, receive_setup_with_descriptors,
 };
 pub use shmem_ordering::PluginShmemOrdering;
 pub use teardown::{

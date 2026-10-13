@@ -19,6 +19,8 @@ use crate::content_store::{
 };
 use crate::owned_decode::DecodeBudget;
 
+mod pending_publication;
+
 const VOLUME_BYTES: u64 = 512 << 20;
 const VOLUME_PAGES: u64 = VOLUME_BYTES / 4096;
 const VOLUME_OBJECTS: u64 = 3 * VOLUME_PAGES;
@@ -55,6 +57,23 @@ impl Fixture {
     }
 
     fn with_quota(root: &Path, quota: Arc<FixtureRamQuota>) -> Self {
+        Self::with_admitted(
+            root,
+            quota,
+            BTreeSet::from([
+                ObjectKind::RamExtent,
+                ObjectKind::RamTree,
+                ObjectKind::ExactManifest,
+                ObjectKind::Trace,
+            ]),
+        )
+    }
+
+    fn with_admitted(
+        root: &Path,
+        quota: Arc<FixtureRamQuota>,
+        admitted_kinds: BTreeSet<ObjectKind>,
+    ) -> Self {
         let physical = StoreNodeId::new("physical").unwrap();
         let packed = StoreNodeId::new("packed").unwrap();
         let policy = StorePhysicalQuotaPolicyId::new("model/packed-volume").unwrap();
@@ -69,12 +88,7 @@ impl Fixture {
             StoreGraphConfig {
                 gc_mark_root: None,
                 root: physical.clone(),
-                admitted_kinds: BTreeSet::from([
-                    ObjectKind::RamExtent,
-                    ObjectKind::RamTree,
-                    ObjectKind::ExactManifest,
-                    ObjectKind::Trace,
-                ]),
+                admitted_kinds,
                 nodes: BTreeMap::from([
                     (
                         physical,
@@ -245,6 +259,10 @@ fn packed_incompressible_512_mib_capture_archive_restore_and_repack() {
     exercise_volume(VOLUME_BYTES);
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Measures fixed fixture stages without supplying guest or operational time."
+)]
 fn exercise_volume(bytes: u64) {
     let source_directory = tempfile::tempdir().unwrap();
     let destination_directory = tempfile::tempdir().unwrap();
@@ -261,6 +279,7 @@ fn exercise_volume(bytes: u64) {
         .store
         .admit_ram_publication(&topology(bytes), Scope::Exact)
         .unwrap();
+    let capture_started = std::time::Instant::now();
     let root = source
         .store
         .capture(
@@ -272,8 +291,19 @@ fn exercise_volume(bytes: u64) {
             &mut || Ok(()),
         )
         .unwrap();
+    // crucible-lint: allow direct-diagnostic -- this fixed fixture separates completed work without changing its original deadline.
+    eprintln!(
+        "packed volume capture returned: elapsed={:?}",
+        capture_started.elapsed()
+    );
     drop(source_retention);
+    let accounting_started = std::time::Instant::now();
     assert_eq!(source.objects(), objects);
+    // crucible-lint: allow direct-diagnostic -- this fixed fixture reports authenticated accounting separately from capture.
+    eprintln!(
+        "packed volume accounting completed: elapsed={:?}",
+        accounting_started.elapsed()
+    );
     // crucible-lint: allow direct-diagnostic -- this fixed volume fixture reports completed stages, not performance qualification.
     eprintln!("packed volume captured: bytes={bytes} objects={objects}");
     assert_restored(&source, &root, pages);
@@ -447,38 +477,426 @@ fn first_page(store: &RamStore, mut reference: TreeRef, original: &DecodeBudget)
 }
 
 fn assert_restored(fixture: &Fixture, root: &LeasedRamRoot, pages: u64) {
-    let mut boundary = || Ok(());
-    let mut work = Work::new(fixture.store.limits, &fixture.original, &mut boundary).unwrap();
     let mut restored = 0;
-    restore_tree(&fixture.store, root.regions[0], 0, &mut restored, &mut work);
+    let report = fixture
+        .store
+        .visit_pages(
+            root,
+            &fixture.original,
+            &mut || Ok(()),
+            &mut |_, index, bytes| {
+                let mut expected = [0_u8; 4096];
+                fill_page(index, &mut expected);
+                assert_eq!(bytes, expected);
+                assert_eq!(index, restored);
+                restored += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
     assert_eq!(restored, pages);
+    assert_eq!(report.pages, pages);
+    assert_eq!(report.logical_bytes, pages * 4096);
 }
 
-fn restore_tree(
-    store: &RamStore,
-    reference: TreeRef,
-    first: u64,
-    restored: &mut u64,
-    work: &mut Work<'_>,
-) {
-    match store.read_tree(reference, work).unwrap() {
-        TreeNode::Padding => panic!("power-of-two incompressible volume has no padding"),
-        TreeNode::Leaf { page, digest } => {
-            let stored = store.read_page_object(page, digest, work).unwrap();
-            let mut expected = [0_u8; 4096];
-            fill_page(first, &mut expected);
-            assert_eq!(stored.bytes(), expected);
-            *restored += 1;
+fn capture_pages(fixture: &Fixture, pages: u64) -> LeasedRamRoot {
+    let retention = fixture.retention();
+    fixture
+        .store
+        .capture(
+            topology(pages * 4096),
+            Scope::Exact,
+            &mut random_page,
+            &retention,
+            &fixture.original,
+            &mut || Ok(()),
+        )
+        .unwrap()
+}
+
+#[test]
+fn page_traversal_preserves_order_lengths_and_linear_object_visits() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path());
+    let root = capture_pages(&fixture, 8);
+    let baseline = fixture.quota.0.usage().unwrap();
+    let mut visited = 0;
+
+    let report = fixture
+        .store
+        .visit_pages(
+            &root,
+            &fixture.original,
+            &mut || Ok(()),
+            &mut |region, index, bytes| {
+                assert_eq!(region.id(), "main");
+                assert_eq!(index, visited);
+                let mut expected = [0_u8; 4096];
+                fill_page(index, &mut expected);
+                assert_eq!(bytes, expected);
+                visited += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    assert_eq!(report.pages, 8);
+    assert_eq!(report.logical_bytes, 8 * 4096);
+    assert_eq!(report.object_visits, 15 + 8);
+    assert_eq!(visited, 8);
+    assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
+    assert_eq!(
+        fixture
+            .store
+            .verify(&root, &fixture.original, &mut || Ok(()))
+            .unwrap(),
+        report
+    );
+}
+
+#[test]
+fn page_traversal_final_visitor_refusal_keeps_the_original_failure_and_closes_storage() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path());
+    let root = capture_pages(&fixture, 3);
+    let baseline = fixture.quota.0.usage().unwrap();
+    let operation = fixture.original.child().unwrap();
+    let mut visited = 0;
+
+    let error = fixture
+        .store
+        .visit_pages(&root, &operation, &mut || Ok(()), &mut |_, index, _| {
+            visited += 1;
+            if index == 2 {
+                operation.charge_bytes(u64::MAX).unwrap_err();
+            }
+            Ok(())
+        })
+        .unwrap_err();
+
+    assert_eq!(visited, 3);
+    assert!(operation.check().is_err());
+    drop((error, operation));
+    assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
+    fixture.original.verify_live().unwrap();
+}
+
+#[test]
+fn page_traversal_retains_the_typed_visitor_failure_without_visiting_later_pages() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path());
+    let root = capture_pages(&fixture, 3);
+    let baseline = fixture.quota.0.usage().unwrap();
+    let mut visited = 0;
+
+    let error = fixture
+        .store
+        .visit_pages(&root, &fixture.original, &mut || Ok(()), &mut |_, _, _| {
+            visited += 1;
+            Err(RamStoreError::Invalid("actual page visitor failure"))
+        })
+        .unwrap_err();
+
+    let RamStoreError::Store(StoreError::RamValidation { source }) = &error else {
+        panic!("actual visitor cause remains typed: {error:?}");
+    };
+    assert!(matches!(
+        source.storage_failure(),
+        RamStoreError::Invalid("actual page visitor failure")
+    ));
+    assert_eq!(visited, 1);
+    drop(error);
+    assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
+}
+
+#[test]
+fn page_traversal_authenticates_later_page_bytes_after_the_reader_is_retained() {
+    use std::os::unix::fs::FileExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path());
+    let root = capture_pages(&fixture, 3);
+    let baseline = fixture.quota.0.usage().unwrap();
+    let mut expected = [0_u8; 4096];
+    fill_page(1, &mut expected);
+    let (path, offset) = std::fs::read_dir(directory.path().join("objects/packs"))
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.unwrap().path();
+            let bytes = std::fs::read(&path).unwrap();
+            bytes
+                .windows(expected.len())
+                .position(|bytes| bytes == expected)
+                .map(|offset| (path, offset))
+        })
+        .next()
+        .expect("the real second page exists in a physical pack");
+    let mut visited = 0;
+
+    let error = fixture
+        .store
+        .visit_pages(
+            &root,
+            &fixture.original,
+            &mut || Ok(()),
+            &mut |_, index, _| {
+                visited += 1;
+                if index == 0 {
+                    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+                    file.write_all_at(&[expected[0] ^ 1], offset as u64)
+                        .unwrap();
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(visited, 1);
+    drop(error);
+    assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
+}
+
+#[test]
+fn packed_archive_sender_reuses_paid_manifest_and_allows_same_store_archive() {
+    use crucible_protocol::ram_transfer::{
+        RamTransferControl, RamTransferLimits, RamTransferMessage, RamTransferNodeCoordinate,
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path());
+    let root = capture_pages(&fixture, 8);
+    let baseline = fixture.quota.0.usage().unwrap();
+    let world = ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        6,
+        b"bounded archive session owner",
+    );
+    let operation = [93; 32];
+    let mut sender = RamTransferSender::new(
+        fixture.store.clone(),
+        root.clone(),
+        operation,
+        world,
+        "packed-session-destination",
+        1,
+        RamTransferLimits {
+            objects: 100,
+            bytes: 1 << 20,
+            chunk_bytes: 64 << 10,
+        },
+        &fixture.original,
+    )
+    .unwrap();
+    let root_response = sender
+        .respond(
+            RamTransferMessage {
+                operation,
+                control: RamTransferControl::WantNode {
+                    coordinate: RamTransferNodeCoordinate::Root,
+                    object: root.object_id().to_string(),
+                },
+            },
+            &mut || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(sender.canonical_manifest_reads_for_test(), 1);
+    drop(root_response);
+    let tree = root.regions[0];
+    let catalog_response = sender
+        .respond(
+            RamTransferMessage {
+                operation,
+                control: RamTransferControl::WantNode {
+                    coordinate: RamTransferNodeCoordinate::Catalog {
+                        region_id: "main".into(),
+                        first_page: 0,
+                        height: tree.height,
+                    },
+                    object: tree.id.to_string(),
+                },
+            },
+            &mut || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(sender.canonical_manifest_reads_for_test(), 1);
+    assert_eq!(fixture.quota.0.usage().unwrap().0, baseline.0);
+    drop(catalog_response);
+
+    // The first source remains live while the real coordinator reads/publishes
+    // the same namespace. No retained source lock may block this archive.
+    let retention = fixture.retention();
+    let archive = fixture
+        .store
+        .transfer_archive_to(
+            &root,
+            world,
+            &fixture.store,
+            "same-store-session-destination",
+            [94; 32],
+            &retention,
+            &fixture.original,
+            &fixture.original,
+            &mut || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(archive.root().object_id(), root.object_id());
+    assert_eq!(archive.report().copied_objects, 0);
+    assert!(archive.report().authenticated_existing_objects > 0);
+    drop((archive, retention));
+    let closed = sender
+        .respond(
+            RamTransferMessage {
+                operation,
+                control: RamTransferControl::ClosureStored {
+                    ram_root: root.object_id().to_string(),
+                },
+            },
+            &mut || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(sender.canonical_manifest_reads_for_test(), 0);
+    drop((closed, sender));
+    assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
+}
+
+#[test]
+fn packed_archive_sender_request_limit_closes_cache_without_extra_source_read() {
+    use crucible_protocol::ram_transfer::{
+        RamTransferControl, RamTransferLimits, RamTransferMessage, RamTransferNodeCoordinate,
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path());
+    let root = capture_pages(&fixture, 8);
+    let baseline = fixture.quota.0.usage().unwrap();
+    let operation = [95; 32];
+    let mut sender = RamTransferSender::new(
+        fixture.store.clone(),
+        root.clone(),
+        operation,
+        ContentId::for_bytes(ObjectKind::ExactManifest, 6, b"bounded archive limit owner"),
+        "packed-session-destination",
+        1,
+        RamTransferLimits {
+            objects: 1,
+            bytes: 1 << 20,
+            chunk_bytes: 64 << 10,
+        },
+        &fixture.original,
+    )
+    .unwrap();
+    let want = RamTransferMessage {
+        operation,
+        control: RamTransferControl::WantNode {
+            coordinate: RamTransferNodeCoordinate::Root,
+            object: root.object_id().to_string(),
+        },
+    };
+    drop(sender.respond(want.clone(), &mut || Ok(())).unwrap());
+    assert_eq!(sender.canonical_manifest_reads_for_test(), 1);
+    let visits = sender.state_for_test().1;
+    assert!(matches!(
+        sender.respond(want, &mut || Ok(())),
+        Err(RamStoreError::Limit("transfer requests"))
+    ));
+    assert_eq!(sender.state_for_test().1, visits);
+    assert_eq!(sender.canonical_manifest_reads_for_test(), 0);
+    drop(sender);
+    assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
+}
+
+#[test]
+fn packed_archive_sender_warm_cache_does_not_admit_a_forbidden_catalog_kind() {
+    use crucible_protocol::ram_transfer::{
+        RamTransferControl, RamTransferLimits, RamTransferMessage, RamTransferNodeCoordinate,
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path());
+    let root = capture_pages(&fixture, 8);
+    let restricted = Fixture::with_admitted(
+        directory.path(),
+        fixture.quota.clone(),
+        BTreeSet::from([
+            ObjectKind::ExactManifest,
+            ObjectKind::RamExtent,
+            ObjectKind::Trace,
+        ]),
+    );
+    let baseline = fixture.quota.0.usage().unwrap();
+    let operation = [96; 32];
+    let mut sender = RamTransferSender::new(
+        restricted.store.clone(),
+        root.clone(),
+        operation,
+        ContentId::for_bytes(
+            ObjectKind::ExactManifest,
+            6,
+            b"bounded archive admission owner",
+        ),
+        "packed-session-destination",
+        1,
+        RamTransferLimits {
+            objects: 100,
+            bytes: 1 << 20,
+            chunk_bytes: 64 << 10,
+        },
+        &restricted.original,
+    )
+    .unwrap();
+    drop(
+        sender
+            .respond(
+                RamTransferMessage {
+                    operation,
+                    control: RamTransferControl::WantNode {
+                        coordinate: RamTransferNodeCoordinate::Root,
+                        object: root.object_id().to_string(),
+                    },
+                },
+                &mut || Ok(()),
+            )
+            .unwrap(),
+    );
+    assert_eq!(sender.canonical_manifest_reads_for_test(), 1);
+    let tree = root.regions[0];
+    let visits = sender.state_for_test().1;
+    let index_before =
+        std::fs::read(directory.path().join("objects/.packed-admin/index-v1")).unwrap();
+    let error = sender
+        .respond(
+            RamTransferMessage {
+                operation,
+                control: RamTransferControl::WantNode {
+                    coordinate: RamTransferNodeCoordinate::Catalog {
+                        region_id: "main".into(),
+                        first_page: 0,
+                        height: tree.height,
+                    },
+                    object: tree.id.to_string(),
+                },
+            },
+            &mut || Ok(()),
+        )
+        .err()
+        .unwrap();
+    let RamStoreError::Store(stored) = &error else {
+        panic!("{error:?}");
+    };
+    assert!(matches!(
+        stored.original_failure(),
+        StoreError::InvalidGraph {
+            violation: crate::content_store::GraphViolation::RouteCoverage,
+            ..
         }
-        TreeNode::Branch { left, right } => {
-            restore_tree(store, left, first, restored, work);
-            restore_tree(
-                store,
-                right,
-                first + (1_u64 << (reference.height - 1)),
-                restored,
-                work,
-            );
-        }
-    }
+    ));
+    assert_eq!(sender.state_for_test().1, visits);
+    assert_eq!(
+        std::fs::read(directory.path().join("objects/.packed-admin/index-v1")).unwrap(),
+        index_before
+    );
+    assert_eq!(sender.canonical_manifest_reads_for_test(), 0);
+    assert_eq!(fixture.quota.0.usage().unwrap().0, baseline.0);
+    drop(sender);
+    assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
 }

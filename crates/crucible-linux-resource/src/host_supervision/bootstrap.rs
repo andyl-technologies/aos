@@ -251,6 +251,7 @@ impl HostSupervisionBootstrap {
                     root_wakeup: changed,
                     revision: self.state.cap_revision,
                     allowance: self.state.cap_allowance,
+                    authenticated_service_span: None,
                     state: self.state.cap_state,
                     next_owner: 0,
                     rosters: BTreeMap::from([(0, (self.state.budgets, None))]),

@@ -286,10 +286,13 @@ fn assert_native_capture_failure_reaps(
         .capture_native_hot_fork_vmstate_paused(&node_identity, checkpoint.clone())
         .expect_err("indeterminate QMP save must reject native capture");
 
-    let message = error.to_string();
+    let QemuNodeError::CheckpointCleanup { source, cleanup } = error else {
+        panic!("capture did not retain its initiating failure and cleanup result: {error}");
+    };
+    assert!(cleanup.is_none(), "process cleanup refused: {cleanup:?}");
+    let message = source.to_string();
     assert!(message.contains("save_checkpoint_vmstate"), "{message}");
     assert!(message.contains(expected_failure), "{message}");
-    assert!(message.contains("terminated and reaped"), "{message}");
     assert!(node.child_reaped());
     assert_eq!(
         node.lifecycle_state(),
@@ -463,7 +466,7 @@ fn qemu_node_retains_process_endpoints_when_reap_fails() -> Result<(), Box<dyn E
     // Reap the fixture's owned child before installing the controlled
     // externally parented process that remains alive through every rung.
     assert!(node.shutdown_child()?.reaped);
-    node.child = QemuNodeProcessControl::External(Box::new(UnreapableExternalProcessControl));
+    node.child = QemuNodeProcessControl::external(Box::new(UnreapableExternalProcessControl));
     log.lock().unwrap().clear();
 
     let error = node
@@ -494,7 +497,7 @@ fn bounded_scheduler_preemption_rejects_externally_owned_process() -> Result<(),
         [QemuAsyncWaitOutcome::Completed],
     )?;
     assert!(node.shutdown_child()?.reaped);
-    node.child = QemuNodeProcessControl::External(Box::new(UnreapableExternalProcessControl));
+    node.child = QemuNodeProcessControl::external(Box::new(UnreapableExternalProcessControl));
 
     let evidence = crate::BoundedSchedulerPreemptionEvidence::default();
     node.enable_bounded_scheduler_preemption(evidence.claim()?);

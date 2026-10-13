@@ -116,6 +116,7 @@ fn fixture() -> (RootCache, NativeApis) {
             ..RootCache::default()
         },
         NativeApis {
+            observation_only: super::tests::observation_only,
             begin,
             region,
             next,

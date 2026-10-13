@@ -131,6 +131,7 @@ impl PausedPagingOwner {
             policy_generation: self.policy_generation.load(Ordering::Acquire),
             mode: crucible_protocol::ram_control::RamControlMode::Managed,
             receipt: None,
+            resident_observation: None,
             establish_guarantee: false,
             operation,
             completed_work,
@@ -190,6 +191,7 @@ impl PausedPagingOwner {
             policy_generation: self.policy_generation.load(Ordering::Acquire),
             mode: policy.mode,
             receipt: None,
+            resident_observation: None,
             establish_guarantee: self.placement_receipt().is_none_or(|receipt| {
                 receipt.policy_revision != self.requested_policy_revision.load(Ordering::Acquire)
                     || receipt.mode != policy.mode
@@ -217,6 +219,8 @@ pub(super) struct PhysicalPlacement<'a> {
     pub(super) mode: crucible_protocol::ram_control::RamControlMode,
     pub(super) receipt: Option<crucible_protocol::ram_control::RamControlPlacementReceipt>,
     pub(super) establish_guarantee: bool,
+    pub(super) resident_observation:
+        Option<crucible_protocol::ram_control::RamControlResidentObservation>,
     pub(super) operation: Option<Arc<dyn SourceOperation>>,
     completed_work: Arc<AtomicU64>,
     error: Option<RamError>,
@@ -262,11 +266,21 @@ impl PhysicalPlacement<'_> {
                 status,
             }));
         }
+        if !self.activate {
+            self.check_budget()?;
+        }
         if complete_here {
             operation.complete()?;
         }
         if !self.activate {
             self.publish_placement(complete_here)?;
+            self.check_policy_generation()?;
+            *self
+                .service
+                .resident_observation
+                .try_lock()
+                .map_err(|_| "resident observation publication unavailable")? =
+                self.resident_observation;
         }
         Ok(())
     }
@@ -371,6 +385,18 @@ impl PhysicalPlacement<'_> {
     }
 
     pub(super) fn reclaim_pages(&mut self) -> Result<(), RamError> {
+        let mut scratch = [0_u8; PAGE_BYTES];
+        self.reclaim_pages_with_scratch(&mut scratch)?;
+        // Reuse the existing admitted page scratch only after preservation and
+        // prefetch have finished. The same original/certificate still owns it.
+        self.resident_observation = Some(self.sample_residency(&mut scratch)?);
+        Ok(())
+    }
+
+    fn reclaim_pages_with_scratch(
+        &mut self,
+        scratch: &mut [u8; PAGE_BYTES],
+    ) -> Result<(), RamError> {
         let mut resident = self
             .service
             .states
@@ -380,9 +406,8 @@ impl PhysicalPlacement<'_> {
             .filter(|state| state.resident)
             .count() as u64
             * PAGE_BYTES as u64;
-        let mut scratch = [0_u8; PAGE_BYTES];
         if self.prefetch && resident < self.target {
-            self.prefetch_pages(&mut resident, &mut scratch)?;
+            self.prefetch_pages(&mut resident, scratch)?;
         }
         let removable = resident.saturating_sub(self.target);
         let quota = resident
@@ -448,7 +473,7 @@ impl PhysicalPlacement<'_> {
                                     .spill
                                     .try_lock()
                                     .map_err(|_| "spill authority unavailable")?
-                                    .preserve(&scratch, PAGE_BYTES as u32, state.version)
+                                    .preserve(scratch, PAGE_BYTES as u32, state.version)
                                     .map_err(|error| self.owner.writeback_failure(error.into()))?;
                                 count_completed(&self.service.counters.preserved_writes)?;
                                 operation.wait_slice()?;

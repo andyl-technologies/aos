@@ -195,7 +195,21 @@ impl ManagedQemuHotForkSourceWorld {
     /// Returns whether this source may be checked out immediately.
     #[must_use]
     pub fn available(&self) -> bool {
-        self.source.is_some() && !self.invalidated && !self.parent_park_owned()
+        self.source.is_some()
+            && !self.invalidated
+            && !self.parent_park_owned()
+            && !self.fork_target_owned()
+    }
+
+    fn fork_target_owned(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(ProductionVmHotForkSourceWorld::fork_target_is_owned)
+            || self.leased_source.as_ref().is_some_and(|source| {
+                source
+                    .try_lock()
+                    .map_or(true, |source| source.fork_target_is_owned())
+            })
     }
 
     fn parent_park_owned(&self) -> bool {
@@ -213,10 +227,11 @@ impl ManagedQemuHotForkSourceWorld {
         (self.source.is_some() || self.leased_source.is_some())
             && !self.invalidated
             && !self.parent_park_owned()
+            && !self.fork_target_owned()
     }
 
     fn begin_lease(&mut self) -> Option<Arc<Mutex<ProductionVmHotForkSourceWorld>>> {
-        if self.invalidated || self.parent_park_owned() {
+        if self.invalidated || self.parent_park_owned() || self.fork_target_owned() {
             return None;
         }
         if let Some(source) = &self.leased_source {
@@ -229,7 +244,7 @@ impl ManagedQemuHotForkSourceWorld {
     }
 
     fn finish_leases(&mut self) {
-        if self.invalidated || self.parent_park_owned() {
+        if self.invalidated || self.parent_park_owned() || self.fork_target_owned() {
             return;
         }
         let Some(source) = self.leased_source.take() else {
@@ -257,13 +272,23 @@ impl ManagedQemuHotForkSourceWorld {
     }
 
     fn take(&mut self) -> Option<ProductionVmHotForkSourceWorld> {
-        if self.invalidated || self.leased_source.is_some() || self.parent_park_owned() {
+        if self.invalidated
+            || self.leased_source.is_some()
+            || self.parent_park_owned()
+            || self.fork_target_owned()
+        {
             return None;
         }
         self.source.take()
     }
 
     fn restore(&mut self, mut source: ProductionVmHotForkSourceWorld) {
+        if source.fork_target_is_owned() {
+            // Keep the actual owner without restoring supervision or claiming
+            // reusable Source while its physical Target remains retained.
+            self.source = Some(source);
+            return;
+        }
         if self.parent_park_owned() {
             std::mem::forget(source);
             return;
@@ -283,7 +308,7 @@ impl ManagedQemuHotForkSourceWorld {
     }
 
     fn invalidate(&mut self) {
-        if self.parent_park_owned() {
+        if self.parent_park_owned() || self.fork_target_owned() {
             // Preserve the real pool record, complete source and occupied charge.
             self.invalidated = true;
             return;
@@ -506,17 +531,24 @@ impl HotCheckpointSourceDemoter<ManagedQemuHotForkSourceWorld> for QemuHotForkSo
                 QemuHotForkSourceWorldDemotionError::TemplateKeyMismatch { expected, actual },
             ));
         }
-        let Some(source) = world.take() else {
+        let Some(mut source) = world.take() else {
             return Err(HotCheckpointTemplateDemotionFailure::new(
                 world,
                 QemuHotForkSourceWorldDemotionError::Unavailable,
             ));
         };
-        if let Err(source) = source.retire() {
-            world.invalidated = true;
+        if let Err(error) = source.retire() {
+            if source.continuation().is_ok() {
+                // Retirement moves this identity before starting cleanup. A
+                // pre-effect refusal keeps the same owner available for retry,
+                // even if the target loan clears just after that refusal.
+                world.source = Some(source);
+            } else {
+                world.invalidated = true;
+            }
             return Err(HotCheckpointTemplateDemotionFailure::new(
                 world,
-                QemuHotForkSourceWorldDemotionError::Retirement(source),
+                QemuHotForkSourceWorldDemotionError::Retirement(error),
             ));
         }
         Ok(())
@@ -574,8 +606,9 @@ impl QemuHotForkSourceWorldLease {
     }
 
     pub(crate) fn reauthenticates_source(&self) -> bool {
-        self.source.lock().is_ok_and(|mut source| {
-            self.identity.matches(&source)
+        self.source.try_lock().is_ok_and(|mut source| {
+            !source.fork_target_is_owned()
+                && self.identity.matches(&source)
                 && source.restore_retained_service_supervisor().is_ok()
                 && source.fork_continuation().is_ok()
         })
@@ -652,6 +685,8 @@ struct ManagedQemuHotForkSourceWorldLeaseRecord {
     source: Weak<Mutex<ProductionVmHotForkSourceWorld>>,
     resources: HotCheckpointResourceProfile,
     _permit: crate::HotCheckpointForkPermit,
+    returned_lease: Option<QemuHotForkSourceWorldLease>,
+    abandoned: bool,
 }
 
 /// Durable, resource-accounted provider for complete source worlds.

@@ -85,7 +85,7 @@ fn canonical_genesis_rejects_a_physical_counter_foreign_to_its_ready_point()
     let failure = ManagedQemuHotForkSourceWorld::bind(source_key(&source), source)
         .err()
         .ok_or("foreign physical counter admitted")?;
-    let (source, error) = failure.into_parts();
+    let (mut source, error) = failure.into_parts();
     let diagnostic = error.to_string();
     assert!(diagnostic.contains("physical_time=Some(VirtualTime { ticks: 37 })"));
     assert!(diagnostic.contains("epoch_ready_point=Some(NodeCounter { ticks: 38 })"));
@@ -123,7 +123,7 @@ fn canonical_genesis_rejects_completed_quanta_and_preserves_its_diagnostic()
     let failure = ManagedQemuHotForkSourceWorld::bind(source_key(&source), source)
         .err()
         .ok_or("completed quantum admitted as genesis")?;
-    let (source, error) = failure.into_parts();
+    let (mut source, error) = failure.into_parts();
     assert!(error.to_string().contains("frontier=0 quanta=1"));
     source.retire()?;
     Ok(())
@@ -167,7 +167,7 @@ fn canonical_genesis_rejects_recorded_events_and_foreign_configuration_keys()
     let failure = ManagedQemuHotForkSourceWorld::bind(source_key(&source), source)
         .err()
         .ok_or("recorded event admitted as genesis")?;
-    let (source, error) = failure.into_parts();
+    let (mut source, error) = failure.into_parts();
     assert!(error.to_string().contains("event_log="));
     source.retire()?;
 
@@ -181,7 +181,7 @@ fn canonical_genesis_rejects_recorded_events_and_foreign_configuration_keys()
     let failure = ManagedQemuHotForkSourceWorld::bind(key, source)
         .err()
         .ok_or("foreign configuration key admitted")?;
-    let (source, error) = failure.into_parts();
+    let (mut source, error) = failure.into_parts();
     assert!(matches!(
         error,
         ManagedQemuHotForkSourceWorldBindingError::SourceKeyMismatch { .. }
@@ -344,7 +344,7 @@ fn resource_decline_retires_the_source_and_keeps_a_cold_fallback() {
     let slot = pool
         .retain_cold_fallback(key.template_key(), fallback)
         .expect("retain declined source fallback");
-    let source = match candidate.into_source() {
+    let mut source = match candidate.into_source() {
         Ok(source) => source,
         Err(_candidate) => panic!("declined source remains owned"),
     };
@@ -390,7 +390,7 @@ fn resource_decline_retires_the_source_and_keeps_a_cold_fallback() {
             .expect("reuse declined source fallback after restart");
         assert_eq!(reused, slot);
         assert_eq!(pool.cold_fallbacks().count(), 1);
-        let source = match candidate.into_source() {
+        let mut source = match candidate.into_source() {
             Ok(source) => source,
             Err(_candidate) => panic!("restarted declined source remains owned"),
         };
@@ -416,7 +416,7 @@ fn same_configuration_at_an_advanced_frontier_is_rejected() {
     let failure = ManagedQemuHotForkSourceWorld::bind(key, source)
         .err()
         .expect("advanced same-configuration boundary must be rejected");
-    let (source, error) = failure.into_parts();
+    let (mut source, error) = failure.into_parts();
 
     assert!(matches!(
         error,

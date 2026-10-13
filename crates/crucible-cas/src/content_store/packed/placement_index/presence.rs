@@ -14,6 +14,7 @@ pub(in crate::content_store::packed) struct PresenceScratch<'s, 'o> {
     snapshot: &'s IndexSnapshot,
     original: &'o DecodeBudget,
     page: Bytes,
+    root: FreshRoot,
     _control: DecodeScratch,
 }
 
@@ -60,16 +61,23 @@ impl IndexSnapshot {
                 .reserve_scratch_array::<PresenceScratch<'_, '_>>(1)
                 .map_err(|error| batch::admission_under(original, error))?;
             let page = operation.buffer(wire::PAGE_BYTES)?;
+            let root = FreshRoot::new(&operation)?;
             *scratch = Some(PresenceScratch {
                 snapshot: self,
                 original,
                 page,
+                root,
                 _control: control,
             });
         }
         let retained = scratch.as_mut().ok_or(StoreError::Incompatible)?;
         reader
-            .find_into(Key::object(id), &mut retained.page, &mut operation)?
+            .find_into_reusing_root(
+                Key::object(id),
+                &mut retained.page,
+                &mut retained.root,
+                &mut operation,
+            )?
             .map(Value::entry)
             .transpose()
     }

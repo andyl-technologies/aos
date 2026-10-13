@@ -39,14 +39,12 @@ pub struct LinuxQemuNativeResourceController {
 /// and outside the enclosing factory allocation. Process retirement and state
 /// draining do not discharge a surviving weak controller's allocation tail.
 /// This pin creates no control allocation or resource entitlement.
-#[cfg(feature = "private-measurement-domain")]
 #[derive(Debug)]
 #[must_use = "retain external original credit until this actual control closes"]
 pub struct OriginalNativeControlRetirement {
     state: Option<Arc<NativeResourceState>>,
 }
 
-#[cfg(feature = "private-measurement-domain")]
 impl OriginalNativeControlRetirement {
     pub(super) fn retain(state: &Arc<NativeResourceState>) -> Self {
         Self {
@@ -69,6 +67,12 @@ impl OriginalNativeControlRetirement {
         .extend(std::alloc::Layout::new::<NativeResourceState>())
         .ok()?;
         u64::try_from(layout.pad_to_align().size()).ok()
+    }
+
+    pub(super) fn is_available(&self) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(NativeResourceState::available)
     }
 
     pub(super) fn matches_controller(
@@ -149,7 +153,6 @@ impl OriginalNativeControlRetirement {
     }
 }
 
-#[cfg(feature = "private-measurement-domain")]
 impl Drop for OriginalNativeControlRetirement {
     fn drop(&mut self) {
         if let Some(state) = self.state.take() {
@@ -160,7 +163,6 @@ impl Drop for OriginalNativeControlRetirement {
     }
 }
 
-#[cfg(feature = "private-measurement-domain")]
 fn unwrap_without_weak<T>(mut value: Arc<T>) -> Result<T, Arc<T>> {
     let observed_weak = Arc::weak_count(&value);
     #[cfg(test)]
@@ -178,7 +180,6 @@ fn unwrap_without_weak<T>(mut value: Arc<T>) -> Result<T, Arc<T>> {
     Arc::try_unwrap(value)
 }
 
-#[cfg(feature = "private-measurement-domain")]
 fn release_registry_weak<T>(
     state: &Arc<T>,
     registry: &mut Weak<T>,
@@ -346,6 +347,19 @@ impl NativeResourceState {
                 failed: false,
             }),
         })
+    }
+
+    pub(super) fn lend_quota(
+        state: &Arc<Self>,
+    ) -> Result<LinuxProjectQuotaController, LinuxQemuNativeResourceError> {
+        let limits = state
+            .limits
+            .lock()
+            .map_err(|_| LinuxQemuNativeResourceError::Retired)?;
+        if !state.active.load(Ordering::Acquire) || limits.failed {
+            return Err(LinuxQemuNativeResourceError::Retired);
+        }
+        Ok(limits.quota.clone())
     }
 
     pub(super) fn controller(state: &Arc<Self>) -> LinuxQemuNativeResourceController {

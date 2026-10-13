@@ -357,3 +357,44 @@ fn private_spill_requires_canonical_separate_nonaliasing_quota() {
         );
     }
 }
+
+#[test]
+fn standalone_initial_roster_preserves_nanoseconds_without_controller_entitlement() {
+    use crucible_protocol::ram_control::{
+        RAM_CONTROL_BUDGET_COUNT, RamControlBudget, encode_ram_control_budgets,
+    };
+
+    let base = "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1,storage_completed_history_gaps=1";
+    for value in [1, 500_000] {
+        let budgets = [RamControlBudget {
+            poll_ns: value,
+            progress_ns: Some(value),
+            total_ns: Some(value),
+        }; RAM_CONTROL_BUDGET_COUNT];
+        let encoded = encode_ram_control_budgets(&budgets).unwrap();
+        let parse = |bytes: &[u8]| {
+            PluginArgs::parse(&format!(
+                "{base},ram_initial_budgets={}",
+                hex::encode(bytes)
+            ))
+        };
+
+        let args = parse(&encoded).unwrap();
+        assert_eq!(args.ram_initial_budgets(), Some(budgets));
+        assert!(args.ram_control().is_none());
+        assert!(args.ram_resources().is_none());
+
+        for schema in [9_u32, 10] {
+            let mut previous = encoded.clone();
+            previous[..4].copy_from_slice(&schema.to_be_bytes());
+            assert_eq!(
+                parse(&previous),
+                Err(PluginArgsParseError::InvalidRamResources)
+            );
+        }
+        let mut corrupt = encoded.clone();
+        corrupt[4..12].fill(0);
+        assert!(parse(&corrupt).is_err());
+        assert!(parse(&encoded[..encoded.len() - 1]).is_err());
+    }
+}

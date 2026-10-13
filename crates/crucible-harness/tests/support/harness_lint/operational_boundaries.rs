@@ -53,6 +53,8 @@ const SUPERVISION_EXPORTS: &[&str] = &[
     "begin_original_capture_supervisor",
     "begin_original_cleanup_control",
     "status",
+    // This check validates the existing original and exposes no clock value.
+    "verify_operation_class",
     "wait_slice",
     "wait_for_change",
     "wait_for_active_work_change",

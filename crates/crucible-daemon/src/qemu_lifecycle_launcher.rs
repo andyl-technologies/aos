@@ -20,8 +20,6 @@ use crucible_qemu::{
 };
 
 #[cfg(not(feature = "private-measurement-domain"))]
-use crucible_qemu::launch_qemu_production_fresh_node;
-
 use crate::{
     ExactCheckpointStore, ExecutionCancellation, QemuAttemptGenerationLease,
     QemuAttemptGenerationResourceOwner, QemuAttemptProcessResourceGuard,
@@ -164,7 +162,9 @@ where
             Ok(atomic) => atomic,
             Err(error) => return Err(abort_unspawned_generation(lease, error)),
         };
-        let (node, run_directory) = match atomic.launch() {
+        let (node, run_directory) = match atomic
+            .launch(|request| self.owner.launch_exact_node(request))
+        {
             Ok(launched) => launched,
             Err(mut error) => {
                 let message = launch_error_chain(&error);
@@ -287,16 +287,7 @@ where
                 process_contract,
                 identity,
             )
-            .and_then(|admission| {
-                #[cfg(feature = "private-measurement-domain")]
-                {
-                    self.owner.launch_fresh_node(&launch, admission)
-                }
-                #[cfg(not(feature = "private-measurement-domain"))]
-                {
-                    launch_qemu_production_fresh_node(&launch, admission)
-                }
-            });
+            .and_then(|admission| self.owner.launch_fresh_node(&launch, admission));
             (launched, retained_contract)
         };
         let node = match launched {
@@ -409,6 +400,28 @@ impl<G> ProductionVmNodeLauncher for QemuAttemptProductionVmNodeLauncher<G>
 where
     G: QemuAttemptProcessResourceGuard + Send,
 {
+    #[cfg(target_os = "linux")]
+    fn fork_target_is_owned(&self) -> bool {
+        self.owner.fork_target_is_owned()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn lend_fork_target_permit(
+        &mut self,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, LifecycleApiError> {
+        self.owner.lend_fork_target_permit()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_run_directory(
+        &mut self,
+        target_contract: &QemuChildProcessContract,
+        requirements: crucible_qemu::QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, LifecycleApiError> {
+        self.owner
+            .prepare_fork_target_run_directory(target_contract, requirements)
+    }
+
     fn parent_park_drain_is_owned(&self) -> bool {
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         {

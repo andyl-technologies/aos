@@ -19,6 +19,7 @@ use crucible_protocol::ram_page::{
 use crucible_ram::{Limits, PageDigest, PageProof, RamRootDigest, RootRecord, Scope};
 
 use super::PAGE_BYTES;
+use super::controller::{CheckpointWorkAdmission, HeldCheckpointWork};
 
 /// Borrows a native observer's finalized page hasher for one synchronous read.
 ///
@@ -102,6 +103,25 @@ impl From<io::Error> for ObservationOperationError {
 ///
 /// Socket bytes, polling, retries and proof CPU work do not renew progress.
 pub(crate) trait SourceOperation: Send + Sync {
+    /// Retains this actual operation as held checkpoint work in its own registry.
+    ///
+    /// # Errors
+    /// Refuses tokens without the exact controller/registry disposition contract.
+    /// The loan does not complete work or issue native capture authority.
+    fn retain_checkpoint_work(
+        self: std::sync::Arc<Self>,
+        _admission: &mut CheckpointWorkAdmission<'_>,
+    ) -> Result<HeldCheckpointWork, crate::ram_error::RamError> {
+        Err(crate::ram_error::RamError::Invariant(
+            "checkpoint work disposition unsupported",
+        ))
+    }
+
+    /// Matches only the exact live token retained by the controller policy cut.
+    fn matches_checkpoint_work(&self, _admission: &CheckpointWorkAdmission<'_>) -> bool {
+        false
+    }
+
     /// Returns the current finite polling/deadline slice without restarting time.
     ///
     /// # Errors

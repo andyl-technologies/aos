@@ -156,10 +156,33 @@ impl HostOperationGuard {
     }
 
     pub(super) fn check_original_cancellation(&self) -> Result<(), HostSupervisionError> {
+        self.check_original_cancellation_class(None)
+    }
+
+    /// Checks the actual entered class and subscriber without status evidence.
+    ///
+    /// # Errors
+    /// Refuses a different class before terminal disposition, or an absent,
+    /// expired, canceled or unavailable original cancellation subscriber.
+    pub(super) fn check_original_cancellation_for(
+        &self,
+        class: HostOperationClass,
+    ) -> Result<(), HostSupervisionError> {
+        self.check_original_cancellation_class(Some(class))
+    }
+
+    fn check_original_cancellation_class(
+        &self,
+        expected: Option<HostOperationClass>,
+    ) -> Result<(), HostSupervisionError> {
         let mut state = self.supervisor.lock()?;
-        self.supervisor
-            .evaluate_decision(&mut state, self.id)?
-            .require_running(self.id)?;
+        let decision = self.supervisor.evaluate_decision(&mut state, self.id)?;
+        // The old class check preceded terminal refusal. Preserve that error
+        // ordering without allocating the public deadline evidence vector.
+        if expected.is_some_and(|class| class != decision.class) {
+            return Err(HostSupervisionError::InvalidBudget);
+        }
+        decision.require_running(self.id)?;
         state
             .operations
             .get(&self.id)
@@ -180,6 +203,25 @@ impl HostOperationGuard {
     /// finite deadline, or unrepresentable shared-kernel coordinates.
     pub fn serialize_original_setup_basis(&self) -> Result<[u8; 80], HostSupervisionError> {
         self.serialize_original_operation_basis(HostOperationClass::Setup, *b"CRUCSTP1", 2, 128)
+    }
+
+    /// Serializes the retained containing Preparation without renewing its clock.
+    ///
+    /// These bytes describe an existing operation; they are not authority by
+    /// themselves. A launch issuer must retain this guard and authenticate its
+    /// relationship to the separately entered Setup before publishing a carrier.
+    /// The Preparation and Setup operation identities remain distinct.
+    ///
+    /// # Errors
+    /// Refuses another class, cancellation, a terminal owner, or an unavailable
+    /// finite original deadline or kernel-clock coordinate.
+    pub fn serialize_original_preparation_basis(&self) -> Result<[u8; 80], HostSupervisionError> {
+        self.serialize_original_operation_basis(
+            HostOperationClass::Preparation,
+            *b"CRUCPRP1",
+            1,
+            80,
+        )
     }
 
     pub(super) fn serialize_original_operation_basis(
@@ -296,6 +338,28 @@ fn coordinate(origin: u64, elapsed: std::time::Duration) -> Result<u64, HostSupe
 mod tests {
     use super::*;
     use crate::host_supervision::{HostOperationBudgets, HostOperationSupervisor};
+
+    #[test]
+    fn containing_preparation_keeps_its_operation_and_separate_setup_identity()
+    -> Result<(), HostSupervisionError> {
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let preparation = supervisor.begin(HostOperationClass::Preparation)?;
+        let setup = supervisor.begin(HostOperationClass::Setup)?;
+
+        let first = preparation.serialize_original_preparation_basis()?;
+        let repeated = preparation.serialize_original_preparation_basis()?;
+        let startup = setup.serialize_original_setup_basis()?;
+
+        assert_eq!(first, repeated);
+        assert_eq!(&first[..8], b"CRUCPRP1");
+        assert_eq!(&first[16..48], &startup[16..48]);
+        assert_ne!(&first[48..56], &startup[48..56]);
+        assert!(setup.serialize_original_preparation_basis().is_err());
+        assert!(preparation.serialize_original_setup_basis().is_err());
+        supervisor.cancel()?;
+        assert!(preparation.serialize_original_preparation_basis().is_err());
+        Ok(())
+    }
 
     #[test]
     fn same_entered_setup_serializes_without_restarting_its_original_deadline()

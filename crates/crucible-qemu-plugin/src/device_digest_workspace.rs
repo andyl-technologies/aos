@@ -7,7 +7,9 @@
 
 // SPDX-License-Identifier: GPL-2.0-only
 
-use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
+#[cfg(test)]
+use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, IntoRawFd};
 use std::ptr::NonNull;
 
 use crucible_protocol::{DEVICE_DIGEST_WORKSPACE_BYTES, DeviceDigestWorkspaceBinding};
@@ -64,45 +66,6 @@ pub(crate) struct DeviceDigestWorkspacePreparationFailure {
     pub(crate) source: DeviceDigestWorkspaceError,
 }
 
-/// Holds both initial claim descriptors while native acceptance is uncertain.
-pub(crate) struct RefusedInitialDeviceDigestWorkspace {
-    workspace: Option<DeviceDigestWorkspace>,
-    purpose_plan: Option<OwnedFd>,
-}
-
-impl RefusedInitialDeviceDigestWorkspace {
-    pub(crate) fn retain_with_source_owner(
-        failure: DeviceDigestWorkspacePreparationFailure,
-    ) -> Self {
-        Self {
-            workspace: Some(failure.workspace),
-            purpose_plan: None,
-        }
-    }
-
-    pub(crate) fn retain(
-        failure: DeviceDigestWorkspacePreparationFailure,
-        purpose_plan: OwnedFd,
-    ) -> Self {
-        Self {
-            workspace: Some(failure.workspace),
-            purpose_plan: Some(purpose_plan),
-        }
-    }
-}
-
-impl Drop for RefusedInitialDeviceDigestWorkspace {
-    fn drop(&mut self) {
-        // Neither claim descriptor can be proved unborrowed on a nonzero
-        // status. Their same native purpose remains outstanding until actual
-        // process containment; dropping this header does not report cleanup.
-        if let Some(plan) = self.purpose_plan.take() {
-            let _retained_until_exit = plan.into_raw_fd();
-        }
-        drop(self.workspace.take());
-    }
-}
-
 /// A failed close retains the same mapping/descriptor rather than a replacement.
 pub(crate) struct DeviceDigestWorkspaceCloseFailure {
     pub(crate) workspace: DeviceDigestWorkspace,
@@ -111,7 +74,7 @@ pub(crate) struct DeviceDigestWorkspaceCloseFailure {
 
 /// Private mapping owner; only a joined parent may close a running worker's view.
 pub(crate) struct DeviceDigestWorkspace {
-    descriptor: Option<OwnedFd>,
+    descriptor: Option<crate::startup_source::SetupDescriptor>,
     mapping: Option<*mut libc::c_void>,
     owner_process: u32,
     binding: DeviceDigestWorkspaceBinding,
@@ -133,7 +96,7 @@ impl DeviceDigestWorkspace {
         plugin_id: u64,
         process_generation: u64,
         binding: DeviceDigestWorkspaceBinding,
-        descriptor: OwnedFd,
+        descriptor: crate::startup_source::SetupDescriptor,
         purpose_plan_fd: i32,
     ) -> Result<Self, DeviceDigestWorkspacePreparationFailure> {
         let mut workspace = Self {
@@ -324,6 +287,10 @@ impl DeviceDigestWorkspace {
 
     fn close_descriptor(mut self) -> Result<(), DeviceDigestWorkspaceCloseFailure> {
         if let Some(descriptor) = self.descriptor.take() {
+            let Some(descriptor) = descriptor.into_owned() else {
+                // Native keeps its role until physical process retirement.
+                return Ok(());
+            };
             let raw = descriptor.into_raw_fd();
             // SAFETY: this owner relinquished its sole descriptor exactly once.
             // A failed Linux close is never retried by number or stale Drop.
@@ -347,14 +314,14 @@ impl Drop for DeviceDigestWorkspace {
         // by the parent control; lost ownership is confined to native physical
         // termination, while the external original purpose remains outstanding.
         if let Some(descriptor) = self.descriptor.take() {
-            let _retained_until_containment = descriptor.into_raw_fd();
+            descriptor.retain_until_process_exit();
         }
         self.mapping.take();
     }
 }
 
 fn validate_descriptor(
-    descriptor: &OwnedFd,
+    descriptor: &crate::startup_source::SetupDescriptor,
     binding: DeviceDigestWorkspaceBinding,
 ) -> Result<(), DeviceDigestWorkspaceError> {
     let fd = descriptor.as_raw_fd();
@@ -462,6 +429,7 @@ impl DeviceDigestWorkspace {
             device: stat.st_dev,
             inode: stat.st_ino,
         };
+        let descriptor = crate::startup_source::SetupDescriptor::from(descriptor);
         validate_descriptor(&descriptor, binding).unwrap();
         Self {
             descriptor: Some(descriptor),

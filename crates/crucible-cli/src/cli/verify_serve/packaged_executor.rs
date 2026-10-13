@@ -367,9 +367,16 @@ pub(super) fn prepare_cli_packaged_executor(
     executor_socket: &Path,
     deployment_path: &Path,
     lifecycle: crucible_api::ProductionVmLifecycleConfig,
-    process_heap: &crucible_daemon::campaign_store_composition::SqliteProcessHeap,
+    process_owner: &crucible_daemon::campaign_process::CampaignProcessOwner,
 ) -> Result<PreparedCliPackagedExecutor, CliError> {
+    let process_heap = process_owner.heap();
+    process_owner
+        .verify_executor_deployment(deployment_path)
+        .map_err(|source| serve_error(format!("campaign immutable executor binding: {source}")))?;
     let deployment = load_validated_deployment(deployment_path)?;
+    process_owner
+        .verify_executor_fault_group(deployment.child_group_id)
+        .map_err(|source| serve_error(format!("campaign kernel-fault child binding: {source}")))?;
     let operations = deployment_operations(&deployment)?;
     let host = deployment_host(&deployment)?;
     let capacity = deployment_capacity(&deployment)?;
@@ -415,6 +422,9 @@ pub(super) fn prepare_cli_packaged_executor(
     let config = config
         .with_sqlite_process_heap(process_heap)
         .map_err(|error| serve_error(format!("campaign process heap binding: {error}")))?;
+    let config = config
+        .with_process_owner(process_owner)
+        .map_err(|error| serve_error(format!("campaign original executor binding: {error}")))?;
     let executor = prepared
         .prepare_packaged_executor(config)
         .map_err(|error| {

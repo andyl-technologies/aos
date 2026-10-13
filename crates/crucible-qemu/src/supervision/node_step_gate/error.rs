@@ -11,15 +11,23 @@ pub enum QemuLiveNodeStepGateError {
     #[error("fingerprint startup requires an issued device-digest workspace")]
     DeviceDigestWorkspaceUnavailable,
     /// The same original native account refused the fixed launch purpose.
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     #[error("original native launch account refused: {source}")]
     OriginalNativeAccount {
         /// The actual original account or supervision refusal.
         #[source]
         source: crate::OriginalActorAccountError,
     },
+    /// The retained physical owner refused its actual process contract.
+    #[cfg(target_os = "linux")]
+    #[error("installed native process contract refused: {source}")]
+    OriginalNativeContract {
+        /// The actual initiating process-owner refusal.
+        #[source]
+        source: crate::QemuVmRealizationError,
+    },
     /// The paid same-slot error control retains the first launch and postcut.
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     #[error("original native fresh launch refused: {source}")]
     OriginalNativeLaunch {
         /// The same existing shared control retained by the external slot.

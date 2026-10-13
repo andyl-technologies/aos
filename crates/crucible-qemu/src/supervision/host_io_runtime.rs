@@ -1115,7 +1115,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         original: &crucible_linux_resource::host_supervision::HostOperationGuard,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let operation = "quiesce for checkpoint";
-        let deadline = OperationPollBudget::borrow_original(original, operation)?;
+        let deadline = OperationPollBudget::borrow_checkpoint_original(original, operation)?;
         let remaining = deadline.remaining(operation)?.ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(operation, "original operation has expired")
         })?;

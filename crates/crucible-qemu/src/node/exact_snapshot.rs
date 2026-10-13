@@ -18,6 +18,13 @@ use std::sync::Arc;
 
 mod capture;
 #[cfg(target_os = "linux")]
+pub(crate) mod capture_original;
+#[cfg(target_os = "linux")]
+pub use capture_original::{
+    CheckpointArmLoan, CheckpointOriginalCause, CheckpointOriginalError, CheckpointOriginalLoan,
+    CheckpointTransportCause,
+};
+#[cfg(target_os = "linux")]
 mod paged_capture;
 
 #[cfg(all(test, target_os = "linux"))]
@@ -464,11 +471,18 @@ impl QemuExactCheckpointCaptureResult {
         self.paged.next_page()
     }
 
-    /// Returns the retained device-state descriptor for durable publication.
-    #[must_use]
-    pub fn device_output_mut(&mut self) -> &mut File {
-        &mut self.device
+    /// Borrows device bytes under the same retained checkpoint original.
+    ///
+    /// # Errors
+    /// Refuses a capture without its admitted original owner.
+    pub fn device_output_mut(&mut self) -> Result<QemuCheckpointDeviceReader<'_>, QemuNodeError> {
+        let original = self.paged.original_loan()?;
+        Ok(QemuCheckpointDeviceReader {
+            file: &mut self.device,
+            original,
+        })
     }
+
     /// Returns the captured Apache host continuation.
     #[must_use]
     pub const fn snapshot(&self) -> &crate::QemuVmSnapshot {
@@ -686,5 +700,65 @@ mod capture_admission_tests {
 
         assert!(error.to_string().contains("another modeled node"));
         Ok(())
+    }
+}
+
+/// Reads retained device bytes without exporting an unchecked file handle.
+///
+/// Each physical read, seek and metadata observation checks the same original
+/// before and after the effect. The capture continues to own the descriptor.
+#[cfg(target_os = "linux")]
+pub struct QemuCheckpointDeviceReader<'a> {
+    file: &'a mut File,
+    original: CheckpointOriginalLoan,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, thiserror::Error)]
+#[error("{source}; checkpoint original postcut: {original_after}")]
+struct DeviceReadPostcut {
+    #[source]
+    source: std::io::Error,
+    original_after: crucible_linux_resource::host_supervision::HostSupervisionError,
+}
+
+#[cfg(target_os = "linux")]
+impl QemuCheckpointDeviceReader<'_> {
+    fn with_original<T>(
+        &mut self,
+        effect: impl FnOnce(&mut File) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        self.original.check().map_err(std::io::Error::other)?;
+        let work = effect(self.file);
+        match (work, self.original.check().err()) {
+            (Err(source), Some(original_after)) => Err(std::io::Error::other(DeviceReadPostcut {
+                source,
+                original_after,
+            })),
+            (Ok(_), Some(source)) => Err(std::io::Error::other(source)),
+            (work, None) => work,
+        }
+    }
+
+    /// Observes retained device length under the same checkpoint original.
+    ///
+    /// # Errors
+    /// Refuses the original boundary or the actual file metadata operation.
+    pub fn metadata(&mut self) -> std::io::Result<std::fs::Metadata> {
+        self.with_original(|file| file.metadata())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::io::Read for QemuCheckpointDeviceReader<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.with_original(|file| std::io::Read::read(file, bytes))
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::io::Seek for QemuCheckpointDeviceReader<'_> {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.with_original(|file| std::io::Seek::seek(file, position))
     }
 }

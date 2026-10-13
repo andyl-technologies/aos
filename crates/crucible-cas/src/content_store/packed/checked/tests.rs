@@ -4,6 +4,8 @@
 //! observe descriptor counters and checked behavior, not native quota install
 //! or allocation closure of the surrounding fixture and allocator controls.
 
+mod publication_width;
+
 use super::*;
 use crate::content_store::StorePhysicalQuotaGuard;
 use crate::content_store::test_resources::FixtureResourceBudget;

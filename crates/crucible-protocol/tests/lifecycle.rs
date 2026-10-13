@@ -7,7 +7,7 @@ use std::error::Error;
 #[cfg(unix)]
 use std::fs::File;
 #[cfg(unix)]
-use std::io::Write;
+use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
@@ -592,4 +592,116 @@ fn plugin_setup_lifecycle_stream(
     let _ = plugin.plugin_recv_setup_with_descriptors()?;
 
     Ok(plugin)
+}
+
+/// Advances an actual socket through the ordinary Hello/HelloAck exchange.
+#[cfg(unix)]
+fn preexec_ack_stream(
+    socket: UnixStream,
+    peer: &mut UnixStream,
+) -> Result<ControlLifecycleStream<UnixStream>, Box<dyn Error>> {
+    let mut stream = ControlLifecycleStream::connected_unix_stream(socket)?;
+    peer.write_all(&control_encode_plugin_msg(&PluginMsg::Hello {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: 25,
+    }))?;
+    stream.host_accept_handshake(HostHandshakeConfig {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: 25,
+        slot_index: 0,
+        node_count: 1,
+    })?;
+    assert!(matches!(
+        control_decode_host_msg(&read_control_frame(peer)?)?,
+        HostMsg::HelloAck { .. }
+    ));
+    Ok(stream)
+}
+
+#[cfg(unix)]
+fn selected_preexec_frame() -> [u8; 61] {
+    let mut frame = [0; 61];
+    frame[..4].copy_from_slice(&57_u32.to_be_bytes());
+    frame[4] = 0x14;
+    frame[5..13].copy_from_slice(&4096_u64.to_be_bytes());
+    frame[21..29].copy_from_slice(&1_u64.to_be_bytes());
+    frame
+}
+
+#[cfg(unix)]
+#[test]
+fn completed_preexec_receipt_commits_without_a_second_frame() -> Result<(), Box<dyn Error>> {
+    let (host, mut peer) = UnixStream::pair()?;
+    let alias = host.try_clone()?;
+    let descriptor = File::open("/dev/null")?;
+    let frame = selected_preexec_frame();
+    let receipt = crucible_protocol::send_preexec_setup_frame_with_descriptors(
+        host.as_raw_fd(),
+        &frame,
+        &[descriptor.as_raw_fd(); 3],
+    )?;
+    let mut observed = [0; 61];
+    peer.read_exact(&mut observed)?;
+    assert_eq!(observed, frame);
+
+    // A real duplicate refers to the same physical endpoint, unlike another
+    // stream with identical frame bytes. The receipt is consumed exactly once.
+    let mut stream = preexec_ack_stream(alias, &mut peer)?;
+    stream.host_commit_preexec_setup(receipt)?;
+    assert_eq!(stream.state(), ControlLifecycleState::SetupSent);
+    peer.set_nonblocking(true)?;
+    assert_eq!(
+        peer.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn preexec_receipt_refuses_another_endpoint_without_advancing() -> Result<(), Box<dyn Error>> {
+    let (first, mut first_peer) = UnixStream::pair()?;
+    let descriptor = File::open("/dev/null")?;
+    let receipt = crucible_protocol::send_preexec_setup_frame_with_descriptors(
+        first.as_raw_fd(),
+        &selected_preexec_frame(),
+        &[descriptor.as_raw_fd(); 3],
+    )?;
+    first_peer.read_exact(&mut [0; 61])?;
+
+    let (second, mut second_peer) = UnixStream::pair()?;
+    let mut stream = preexec_ack_stream(second, &mut second_peer)?;
+    assert!(stream.host_commit_preexec_setup(receipt).is_err());
+    assert_eq!(stream.state(), ControlLifecycleState::HelloAcknowledged);
+    second_peer.set_nonblocking(true)?;
+    assert_eq!(
+        second_peer.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn selected_preexec_geometry_refuses_before_any_frame() -> Result<(), Box<dyn Error>> {
+    let (host, mut peer) = UnixStream::pair()?;
+    let descriptor = File::open("/dev/null")?;
+    for range in [5..13, 21..29] {
+        let mut frame = selected_preexec_frame();
+        frame[range].fill(0);
+        assert!(
+            crucible_protocol::send_preexec_setup_frame_with_descriptors(
+                host.as_raw_fd(),
+                &frame,
+                &[descriptor.as_raw_fd(); 3],
+            )
+            .is_err()
+        );
+    }
+    peer.set_nonblocking(true)?;
+    assert_eq!(
+        peer.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    Ok(())
 }

@@ -220,3 +220,110 @@ fn logical_coordinate_validation_keeps_its_typed_cause() {
         std::mem::align_of::<CaptureReadError>()
     );
 }
+
+#[test]
+fn original_paid_capture_reads_pages_without_entering_another_operation() {
+    let (mut owner, original, supervisor, _event, account) =
+        super::super::capture_original::loan_fixture();
+    let (_, bytes) = fixture();
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&bytes).unwrap();
+    let mut capture =
+        QemuPagedRamCapture::admit_under_original(file, bytes.len() as u64, original).unwrap();
+
+    assert_eq!(capture.next_page().unwrap().unwrap().bytes.len(), 4096);
+    assert_eq!(capture.next_page().unwrap().unwrap().bytes.len(), 3);
+    assert!(capture.next_page().unwrap().is_none());
+    assert_eq!(supervisor.operation_statuses().unwrap().len(), 1);
+
+    owner.retire_after_reap();
+    assert!(account.reserve_resources(0, 2, 16384).is_err());
+    drop(capture);
+    assert!(account.reserve_resources(0, 2, 16384).is_ok());
+}
+
+#[test]
+fn retained_page_reader_refuses_cancellation_before_advancing_the_real_file() {
+    let (_owner, original, supervisor, event, _account) =
+        super::super::capture_original::loan_fixture();
+    let (_, bytes) = fixture();
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&bytes).unwrap();
+    let mut capture =
+        QemuPagedRamCapture::admit_under_original(file, bytes.len() as u64, original).unwrap();
+    let offset = capture.file.stream_position().unwrap();
+    rustix::io::write(&event, &1_u64.to_ne_bytes()).unwrap();
+
+    let error = capture.next_page().unwrap_err();
+
+    let CaptureReadError::Io(error) = error else {
+        panic!("expected typed original refusal");
+    };
+    assert!(
+        error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<crucible_linux_resource::host_supervision::HostSupervisionError>()
+            .is_some()
+    );
+    assert_eq!(capture.file.stream_position().unwrap(), offset);
+    assert_eq!(capture.remaining_records, 2);
+    assert_eq!(supervisor.operation_statuses().unwrap().len(), 1);
+}
+
+#[test]
+fn canceled_original_refuses_before_spool_metadata_or_root_decode() {
+    let (_owner, original, supervisor, event, _account) =
+        super::super::capture_original::loan_fixture();
+    let file = tempfile::tempfile().unwrap();
+    rustix::io::write(&event, &1_u64.to_ne_bytes()).unwrap();
+
+    let error = QemuPagedRamCapture::admit_under_original(file, 0, original).unwrap_err();
+
+    assert!(matches!(error, QemuNodeError::CheckpointOriginal { .. }));
+    assert_eq!(supervisor.operation_statuses().unwrap().len(), 1);
+}
+
+#[test]
+fn device_publication_reader_checks_same_original_on_read_seek_and_metadata() {
+    let (_owner, original, supervisor, _event, _account) =
+        super::super::capture_original::loan_fixture();
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(b"device").unwrap();
+    let mut reader = super::super::QemuCheckpointDeviceReader {
+        file: &mut file,
+        original,
+    };
+
+    reader.seek(SeekFrom::Start(0)).unwrap();
+    assert_eq!(reader.metadata().unwrap().len(), 6);
+    let mut bytes = [0; 6];
+    reader.read_exact(&mut bytes).unwrap();
+
+    assert_eq!(&bytes, b"device");
+    assert_eq!(supervisor.operation_statuses().unwrap().len(), 1);
+}
+
+#[test]
+fn canceled_device_original_refuses_read_and_seek_without_moving_file_cursor() {
+    let (_owner, original, supervisor, event, _account) =
+        super::super::capture_original::loan_fixture();
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(b"device").unwrap();
+    file.seek(SeekFrom::Start(2)).unwrap();
+    let mut reader = super::super::QemuCheckpointDeviceReader {
+        file: &mut file,
+        original,
+    };
+    rustix::io::write(&event, &1_u64.to_ne_bytes()).unwrap();
+    let mut bytes = [0; 1];
+
+    assert!(reader.read(&mut bytes).is_err());
+    assert!(reader.seek(SeekFrom::Start(0)).is_err());
+    assert!(reader.metadata().is_err());
+    drop(reader);
+
+    assert_eq!(file.stream_position().unwrap(), 2);
+    assert_eq!(bytes, [0]);
+    assert_eq!(supervisor.operation_statuses().unwrap().len(), 1);
+}

@@ -14,18 +14,20 @@ use crate::ram::codec::{
 #[derive(Clone, Copy)]
 pub(super) struct Readback<'read> {
     store: &'read crate::ram::RamStore,
-    expected: &'read [Option<(ContentId, u64)>; MAX_PUBLICATION_BATCH_OBJECTS],
+    expected: &'read [Option<(ContentId, u64)>],
     receipts: &'read [PutReceipt],
 }
 
 impl Readback<'_> {
     fn entry(&self, index: usize) -> Result<(ContentId, u64), RamStoreError> {
-        self.expected
-            .iter()
-            .flatten()
-            .nth(index)
-            .copied()
-            .ok_or(RamStoreError::Invalid("RAM publication readback entry"))
+        // The entry-count check proves a dense batch has no absent entries.
+        // Sparse callers retain their original receipt-to-entry ordering.
+        let entry = if self.expected.len() == self.receipts.len() {
+            self.expected.get(index).copied().flatten()
+        } else {
+            self.expected.iter().flatten().nth(index).copied()
+        };
+        entry.ok_or(RamStoreError::Invalid("RAM publication readback entry"))
     }
 
     fn validate(&self, index: usize) -> Result<ContentId, RamStoreError> {
@@ -50,14 +52,16 @@ impl Readback<'_> {
 
 pub(in crate::ram) fn read_publication(
     store: &crate::ram::RamStore,
-    expected: &[Option<(ContentId, u64)>; MAX_PUBLICATION_BATCH_OBJECTS],
+    expected: &[Option<(ContentId, u64)>],
     receipts: &[PutReceipt],
     work: &mut Work<'_>,
 ) -> Result<(), RamStoreError> {
     if let Some(first) = work.account.read_failure() {
         return Err(first.into());
     }
-    if receipts.len() != expected.iter().flatten().count() {
+    if expected.len() > MAX_PUBLICATION_BATCH_OBJECTS
+        || receipts.len() != expected.iter().flatten().count()
+    {
         return Err(RamStoreError::Invalid(
             "RAM publication batch receipt count",
         ));

@@ -11,26 +11,39 @@ use super::supervision::OperationalStart;
 use crate::ram_error::RamError;
 use std::fs::File;
 use std::io;
-use std::os::fd::{BorrowedFd, FromRawFd, IntoRawFd};
+use std::os::fd::BorrowedFd;
 use std::os::raw::{c_int, c_void};
-use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crucible_protocol::ram_control::*;
 use crucible_ram::RegionDescriptor;
 
-use super::control::{PagerControl, PagerControlWorker, QuiescedRamControl};
+use super::control::PagerControl;
 use super::engine::PausedPagingOwner;
 use super::source::{
     ObservationOperationError, SourceOperation, SourceOperationClass, SourceOperationFactory,
 };
 use crate::PluginArgs;
 
+mod actor;
+mod fingerprint;
+#[cfg(test)]
+pub(crate) use fingerprint::fixture_fingerprint;
+pub(crate) use fingerprint::{
+    FingerprintCall, FingerprintCloseNotice, borrow_fingerprint, check_fingerprint,
+    end_fingerprint, prepare_fingerprint_entry, rearm_fingerprint,
+};
+mod prebirth;
+pub(crate) use prebirth::InstallerControlRequests;
+pub(super) use prebirth::configured_shared_allocation_layout;
+
 mod admission;
 mod aliases;
+mod capture;
+pub(crate) use capture::work::{CheckpointWorkAdmission, HeldCheckpointWork};
+pub(crate) use capture::{CheckpointPagerOwner, retain_pager_owner};
 mod fault_actor;
 mod fork;
 pub(crate) use admission::{
@@ -54,7 +67,6 @@ fn controller() -> Result<Option<Arc<LivePagerController>>, RamError> {
         .map_err(|_| RamError::Invariant("RAM controller publication poisoned"))
 }
 
-type NativeWorker = extern "C" fn(u32, u64, u64, u32) -> c_int;
 type NativeOwnerInventory = extern "C" fn(*mut u64, *mut u64, *mut u64) -> c_int;
 
 type NativeGrant = extern "C" fn(u64, u64, *mut u64) -> c_int;
@@ -84,6 +96,7 @@ struct State {
     fork_preparing: bool,
     policy_applying: bool,
     child_bootstrap: bool,
+    checkpoint: capture::CheckpointAdmission,
 }
 
 /// Retains real control, budget and arena authority until process disposition.
@@ -93,15 +106,13 @@ struct LivePagerController {
     fault_actor_test_entitlement: Option<[u8; 32]>,
     state: Arc<Mutex<State>>,
     canceled: Arc<AtomicBool>,
-    operations: Arc<AtomicUsize>,
-    native_worker: NativeWorker,
+    operations: Arc<capture::work::OperationRegistry>,
     native_grant: NativeGrant,
     child_runtime_ready: ChildRuntimeReady,
     spill: Mutex<Option<File>>,
     spill_quota: u64,
-    worker: Mutex<Option<PagerControlWorker>>,
-    paused: Mutex<Option<QuiescedRamControl>>,
-    joining: Mutex<Option<JoinHandle<Result<QuiescedRamControl, RamControlError>>>>,
+    actor: Mutex<actor::ActorState>,
+    fingerprint: Mutex<fingerprint::FingerprintState>,
 }
 
 /// Returns only the admitted independent operation factory.
@@ -129,12 +140,28 @@ pub(crate) fn current_owner() -> Result<Option<Arc<PausedPagingOwner>>, RamError
     Ok(owner)
 }
 
+/// Returns allocation requests for the fixed controller and initial pager bodies.
+///
+/// This is layout information only; the installer Source must independently
+/// issue the prebirth purpose before any allocation or descriptor effect.
+///
+/// # Errors
+/// Returns an error when the configured layout requests cannot be represented.
+pub(crate) fn installer_control_requests() -> Result<InstallerControlRequests, RamError> {
+    prebirth::required_control_requests()
+}
+
 /// Starts actual independent dispatch before native machine inventory admission.
 ///
 /// # Errors
 /// Refuses incomplete launch resources/timing, unavailable native ownership
 /// APIs, duplicate setup, invalid Unix streams or failed worker creation.
-pub(crate) fn install(args: &PluginArgs) -> Result<(), RamError> {
+pub(crate) fn install(
+    args: &PluginArgs,
+    plugin_id: u64,
+    setup: &crate::PluginSetupCompletion,
+    userdata: *mut c_void,
+) -> Result<(), RamError> {
     let Some(control) = args.ram_control() else {
         return Ok(());
     };
@@ -163,19 +190,10 @@ pub(crate) fn install(args: &PluginArgs) -> Result<(), RamError> {
         .ok_or("RAM control lacks original-start outer binding")?;
     outer.validate()?;
     validate_infrastructure(&budgets, Some(outer))?;
-    // SAFETY: launch admission guarantees this descriptor is an owned connected
-    // Unix stream. Duplicate it before conversion so the fixed launch inventory
-    // retains its original descriptor role until process cleanup.
-    let fd = unsafe { BorrowedFd::borrow_raw(control.descriptor) }.try_clone_to_owned()?;
-    // SAFETY: the unique duplicated descriptor transfers exactly once to UnixStream.
-    let stream = unsafe { UnixStream::from_raw_fd(fd.into_raw_fd()) };
-    validate_stream(&stream)?;
-    // SAFETY: symbols have the exact matching GPL-private native declarations.
-    let native_worker = unsafe {
-        std::mem::transmute::<*mut c_void, NativeWorker>(symbol(
-            b"qemu_plugin_crucible_ram_service_worker_v1\0",
-        )?)
-    };
+    // Actual seven-row Source admission precedes the configured controller
+    // allocation. Native exclusively owns the RAM endpoint and sole worker.
+    setup.require_installer_control_purpose()?;
+    let actor = actor::ActorState::new(plugin_id, userdata)?;
     // SAFETY: the grant callback lends one scalar output within this process.
     let native_grant = unsafe {
         std::mem::transmute::<*mut c_void, NativeGrant>(symbol(
@@ -209,17 +227,16 @@ pub(crate) fn install(args: &PluginArgs) -> Result<(), RamError> {
             fork_preparing: false,
             policy_applying: false,
             child_bootstrap: false,
+            checkpoint: capture::CheckpointAdmission::default(),
         })),
         canceled: Arc::new(AtomicBool::new(false)),
-        operations: Arc::new(AtomicUsize::new(0)),
-        native_worker,
+        operations: Arc::new(capture::work::OperationRegistry::default()),
         native_grant,
         child_runtime_ready,
         spill: Mutex::new(Some(spill)),
         spill_quota,
-        worker: Mutex::new(None),
-        paused: Mutex::new(None),
-        joining: Mutex::new(None),
+        actor: Mutex::new(actor),
+        fingerprint: Mutex::new(fingerprint::FingerprintState::configured()?),
     });
     {
         let mut current = CONTROLLER
@@ -230,14 +247,17 @@ pub(crate) fn install(args: &PluginArgs) -> Result<(), RamError> {
         }
         *current = Some(controller.clone());
     }
-    let worker =
-        PagerControlWorker::start(stream, control.session, control.target, controller.clone())?;
-    *controller
-        .worker
-        .lock()
-        .map_err(|_| RamError::Invariant("RAM worker owner poisoned"))? = Some(worker);
-    controller.await_worker_ready(SourceOperationClass::ControlSetup)?;
+    actor::install(&controller, setup, control.descriptor)?;
     Ok(())
+}
+
+fn remaining_allowance_ns(allowance_ns: u64, elapsed: Duration) -> Option<Duration> {
+    if allowance_ns == 0 || allowance_ns > RAM_CONTROL_MAX_ALLOWANCE_NS {
+        return None;
+    }
+    Duration::from_nanos(allowance_ns)
+        .checked_sub(elapsed)
+        .filter(|remaining| !remaining.is_zero())
 }
 
 fn validate_infrastructure(
@@ -246,9 +266,9 @@ fn validate_infrastructure(
 ) -> Result<(), RamError> {
     for index in [0, 2, 3, 5, 6, 10, 13] {
         let budget = budgets[index];
-        if budget.poll_ms == 0
-            || (budget.total_ms.is_none()
-                && budget.progress_ms.is_none()
+        if budget.poll_ns == 0
+            || (budget.total_ns.is_none()
+                && budget.progress_ns.is_none()
                 && (index == 13
                     || !outer.is_some_and(|cap| {
                         cap.allowance_ns.is_some() && cap.state == RamControlOuterState::Running
@@ -263,18 +283,6 @@ fn validate_infrastructure(
 }
 
 impl LivePagerController {
-    fn await_worker_ready(&self, class: SourceOperationClass) -> Result<(), RamError> {
-        let operation = self.begin(class)?;
-        self.worker
-            .lock()
-            .map_err(|_| RamError::Invariant("RAM worker ownership poisoned"))?
-            .as_ref()
-            .ok_or("RAM control worker absent")?
-            .wait_ready(operation.as_ref())?;
-        operation.complete()?;
-        Ok(())
-    }
-
     fn mark_failed(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.failed = true;
@@ -323,12 +331,29 @@ impl LivePagerController {
         let requested_target = state
             .policy
             .map_or(logical, |policy| policy.resident_target_bytes);
-        let effective_target = requested_target.max(floor);
+        // A strict resident guarantee covers the complete logical inventory,
+        // independently of its advisory target and current lock observation.
+        let mode_target = if state
+            .policy
+            .is_some_and(|policy| policy.mode == RamControlMode::ResidentRequired)
+        {
+            logical
+        } else {
+            requested_target
+        };
+        let effective_target = mode_target.max(floor);
         let mut limitations = 0;
         if requested_target < floor {
             limitations |= RAM_LIMIT_COMPULSORY_FLOOR;
         }
-        if state.resources.resident_peak_bytes < logical {
+        // Removal is confined to paused boundaries. A low residency target
+        // therefore never reduces the full-RAM execution peak reservation.
+        if logical != 0
+            && requested_target < logical
+            && state
+                .policy
+                .is_some_and(|policy| policy.mode != RamControlMode::ResidentRequired)
+        {
             limitations |= RAM_LIMIT_EXECUTION_PEAK;
         }
         let activity = state.owner.as_ref().map(|owner| {
@@ -385,6 +410,17 @@ impl LivePagerController {
             // Live lock coverage and completed activity are separate evidence.
             // Neither supplies all five fresh physical page classifications.
             measurements_available: false,
+            resident_observation: observation
+                .as_ref()
+                .and_then(|snapshot| snapshot.resident_observation)
+                .filter(|observation| {
+                    observation.policy_revision == state.applied_revision
+                        && !failed
+                        && !state.outer_expired
+                        && !state.fork_preparing
+                        && !state.child_bootstrap
+                        && !self.canceled.load(Ordering::Acquire)
+                }),
             private_resident_bytes: 0,
             shared_resident_bytes_observed: 0,
             preserved_backing_bytes: 0,
@@ -395,15 +431,18 @@ impl LivePagerController {
             } else if observation_unavailable
                 || state.fork_preparing
                 || state.child_bootstrap
+                || state.checkpoint.is_held()
                 || self.canceled.load(Ordering::Acquire)
             {
                 RamControlConvergence::Blocked
             } else if state.policy_applying || state.requested_revision != state.applied_revision {
                 RamControlConvergence::Applying
             } else {
-                observation.map_or(RamControlConvergence::Blocked, |snapshot| {
-                    snapshot.convergence
-                })
+                observation
+                    .as_ref()
+                    .map_or(RamControlConvergence::Blocked, |snapshot| {
+                        snapshot.convergence
+                    })
             },
         };
         // The same retained outer original bounds this read-only snapshot too.
@@ -414,6 +453,7 @@ impl LivePagerController {
         {
             state.outer_expired = true;
             reply.convergence = RamControlConvergence::Failed;
+            reply.resident_observation = None;
         }
         reply
     }
@@ -438,6 +478,7 @@ impl LivePagerController {
             effective_floor_bytes: 0,
             limitation_reasons: 0,
             measurements_available: false,
+            resident_observation: None,
             private_resident_bytes: 0,
             shared_resident_bytes_observed: 0,
             preserved_backing_bytes: 0,
@@ -451,13 +492,6 @@ impl LivePagerController {
 impl PagerControl for LivePagerController {
     fn identity(&self) -> RamControlTarget {
         self.target
-    }
-
-    fn worker_enter(&self) -> io::Result<()> {
-        self.worker_role(true)
-    }
-    fn worker_exit(&self) -> io::Result<()> {
-        self.worker_role(false)
     }
 
     fn apply(
@@ -477,7 +511,10 @@ impl PagerControl for LivePagerController {
         if state.failed || state.outer_expired || self.canceled.load(Ordering::Acquire) {
             return self.reply(&mut state, RamControlDisposition::AdmissionRefused);
         }
-        if state.fork_preparing || state.policy_applying {
+        if state.fork_preparing
+            || state.policy_applying
+            || state.checkpoint_producer_held(&self.state, &self.operations)
+        {
             return self.reply(&mut state, RamControlDisposition::Unavailable);
         }
         // Child adoption can complete the initial policy before its host
@@ -576,11 +613,14 @@ impl PagerControl for LivePagerController {
         action: crucible_protocol::ram_control::RamControlPerformanceAction,
     ) -> RamControlReply {
         use crucible_protocol::ram_control::RamControlPerformanceAction;
-        let owner = {
+        let (owner, mut dispatch) = {
             let Ok(mut state) = self.state.try_lock() else {
                 return self.unavailable();
             };
-            if state.fork_preparing || state.policy_applying {
+            if state.fork_preparing
+                || state.policy_applying
+                || state.checkpoint_producer_held(&self.state, &self.operations)
+            {
                 return self.reply(&mut state, RamControlDisposition::Unavailable);
             }
             // Reading or closing an existing diagnostic interval remains possible
@@ -600,9 +640,16 @@ impl PagerControl for LivePagerController {
             let Some(owner) = state.owner.as_ref().cloned() else {
                 return self.reply(&mut state, RamControlDisposition::Unavailable);
             };
-            owner
+            let Ok(dispatch) = capture::work::PerformanceDispatch::begin(self.operations.clone())
+            else {
+                return self.reply(&mut state, RamControlDisposition::Unavailable);
+            };
+            (owner, dispatch)
         };
         let result = owner.performance(action);
+        if result.is_ok() {
+            dispatch.settle();
+        }
         let Ok(mut state) = self.state.try_lock() else {
             return self.unavailable();
         };
@@ -660,7 +707,10 @@ impl PagerControl for LivePagerController {
         let Some(inventory) = state.inventory.as_ref() else {
             return self.reply(&mut state, RamControlDisposition::Unavailable);
         };
-        let minimum_metadata = inventory.report.native_metadata_bytes;
+        let minimum_metadata = inventory
+            .report
+            .native_metadata_bytes
+            .checked_add(inventory.report.rust_metadata_required_bytes);
         let minimum_scratch = inventory.report.native_scratch_bytes;
         let minimum_spill = inventory
             .regions
@@ -674,7 +724,8 @@ impl PagerControl for LivePagerController {
                 total.checked_add(padded)
             })
             .and_then(|padded| padded.checked_mul(2));
-        let valid = minimum_spill.is_some_and(|minimum| spill_quota >= minimum)
+        let valid = inventory.report.rust_metadata_required_bytes > 0
+            && minimum_spill.is_some_and(|minimum| spill_quota == minimum)
             && spill_quota > 0
             && spill_quota <= grant.backing_peak_bytes
             && spill_quota >= inventory.report.logical_bytes
@@ -689,7 +740,7 @@ impl PagerControl for LivePagerController {
             && grant.task_slots == initial.task_slots
             && grant.file_descriptors == initial.file_descriptors
             && grant.metadata_bytes >= initial.metadata_bytes
-            && grant.metadata_bytes > minimum_metadata
+            && minimum_metadata.is_some_and(|minimum| grant.metadata_bytes >= minimum)
             && grant.staging_bytes >= initial.staging_bytes
             && grant.staging_bytes >= minimum_scratch
             && inventory
@@ -789,22 +840,6 @@ impl PagerControl for LivePagerController {
     }
 }
 
-impl LivePagerController {
-    fn worker_role(&self, enter: bool) -> io::Result<()> {
-        // SAFETY: gettid has no pointer arguments and reports this actual thread.
-        let tid = unsafe { libc::syscall(libc::SYS_gettid) };
-        let tid = u64::try_from(tid).map_err(|_| io::Error::other("invalid control worker TID"))?;
-        let status = (self.native_worker)(2, self.target.owner_generation, tid, u32::from(enter));
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "native control role refused ({status})"
-            )))
-        }
-    }
-}
-
 fn outer_remaining(cap: RamControlOuterCap) -> io::Result<Option<Duration>> {
     outer_remaining_for::<false>(cap).map_err(ObservationOperationError::into_io)
 }
@@ -849,11 +884,13 @@ fn outer_remaining_for<const BORROWED: bool>(
 struct LiveOperation {
     state: Arc<Mutex<State>>,
     canceled: Arc<AtomicBool>,
-    operations: Arc<AtomicUsize>,
+    operations: Arc<capture::work::OperationRegistry>,
     class: usize,
     started: OperationalStart,
     progress: Mutex<OperationProgress>,
     terminal: AtomicU8,
+    tracked: bool,
+    admitted: AtomicBool,
 }
 
 struct OperationProgress {
@@ -861,8 +898,13 @@ struct OperationProgress {
     last_completed: OperationalStart,
 }
 
-impl SourceOperationFactory for LivePagerController {
-    fn begin(&self, class: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
+impl LivePagerController {
+    // The same admission orders both ordinary boxed operations and a native
+    // record's caller-funded inline operation against the policy cut.
+    fn begin_inline<const BORROWED: bool>(
+        &self,
+        class: SourceOperationClass,
+    ) -> Result<LiveOperation, ObservationOperationError> {
         let class = match class {
             SourceOperationClass::ControlSetup => 0,
             SourceOperationClass::Cleanup => 13,
@@ -872,11 +914,43 @@ impl SourceOperationFactory for LivePagerController {
             SourceOperationClass::Quiescence => 6,
             SourceOperationClass::ForkRearm => 10,
         };
-        self.operations
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < MAX_OPERATIONS).then_some(count + 1)
-            })
-            .map_err(|_| io::Error::other("RAM operation slots exhausted"))?;
+        {
+            let mut state = self.state.lock().map_err(|_| {
+                ObservationOperationError::static_error::<BORROWED>(
+                    io::ErrorKind::Other,
+                    "RAM operation admission poisoned",
+                )
+            })?;
+            if class != 0
+                && class != 13
+                && state.checkpoint_producer_held(&self.state, &self.operations)
+            {
+                return Err(if BORROWED {
+                    ObservationOperationError::Static {
+                        kind: io::ErrorKind::WouldBlock,
+                        message: "checkpoint retains operation admission",
+                    }
+                } else {
+                    ObservationOperationError::Io(io::Error::from_raw_os_error(libc::EBUSY))
+                });
+            }
+            // The same lock orders this actual token admission against the
+            // checkpoint policy cut. Already admitted work may still settle.
+            self.operations
+                .capacity
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    (count < MAX_OPERATIONS).then_some(count + 1)
+                })
+                .map_err(|_| {
+                    ObservationOperationError::static_error::<BORROWED>(
+                        io::ErrorKind::Other,
+                        "RAM operation slots exhausted",
+                    )
+                })?;
+            if class != 0 && class != 13 {
+                self.operations.start();
+            }
+        }
         let started = OperationalStart::begin();
         let operation = LiveOperation {
             state: self.state.clone(),
@@ -889,8 +963,26 @@ impl SourceOperationFactory for LivePagerController {
                 last_completed: started,
             }),
             terminal: AtomicU8::new(0),
+            tracked: class != 0 && class != 13,
+            admitted: AtomicBool::new(false),
         };
-        operation.wait_slice()?;
+        // A borrowed record stores this actual clock and owner before its
+        // first fallible supervision cut. The ordinary boxed factory preserves
+        // its historical initial check before returning the operation.
+        if !BORROWED {
+            operation
+                .wait_slice()
+                .map_err(ObservationOperationError::Io)?;
+        }
+        Ok(operation)
+    }
+}
+
+impl SourceOperationFactory for LivePagerController {
+    fn begin(&self, class: SourceOperationClass) -> io::Result<Box<dyn SourceOperation>> {
+        let operation = self
+            .begin_inline::<false>(class)
+            .map_err(ObservationOperationError::into_io)?;
         Ok(Box::new(operation))
     }
 
@@ -898,14 +990,34 @@ impl SourceOperationFactory for LivePagerController {
         &self,
         exchange: &mut dyn FnMut(&dyn SourceOperation),
     ) -> Result<(), ObservationOperationError> {
-        self.operations
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < MAX_OPERATIONS).then_some(count + 1)
-            })
-            .map_err(|_| ObservationOperationError::Static {
-                kind: io::ErrorKind::Other,
-                message: "RAM operation slots exhausted",
-            })?;
+        if fingerprint::with_outer_exchange(self, exchange)? {
+            return Ok(());
+        }
+        {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| ObservationOperationError::Static {
+                    kind: io::ErrorKind::Other,
+                    message: "RAM observation admission poisoned",
+                })?;
+            if state.checkpoint_producer_held(&self.state, &self.operations) {
+                return Err(ObservationOperationError::Static {
+                    kind: io::ErrorKind::WouldBlock,
+                    message: "checkpoint retains ordinary observation admission",
+                });
+            }
+            self.operations
+                .capacity
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    (count < MAX_OPERATIONS).then_some(count + 1)
+                })
+                .map_err(|_| ObservationOperationError::Static {
+                    kind: io::ErrorKind::Other,
+                    message: "RAM operation slots exhausted",
+                })?;
+            self.operations.start();
+        }
         let started = OperationalStart::begin();
         let operation = LiveOperation {
             state: self.state.clone(),
@@ -918,6 +1030,8 @@ impl SourceOperationFactory for LivePagerController {
                 last_completed: started,
             }),
             terminal: AtomicU8::new(0),
+            tracked: true,
+            admitted: AtomicBool::new(false),
         };
         operation.wait_slice_for_observation()?;
         exchange(&operation);
@@ -926,6 +1040,36 @@ impl SourceOperationFactory for LivePagerController {
 }
 
 impl LiveOperation {
+    fn progress_for_observation(
+        &self,
+        completed_units: u64,
+    ) -> Result<(), ObservationOperationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ObservationOperationError::Static {
+                kind: io::ErrorKind::Other,
+                message: "fingerprint progress ownership poisoned",
+            })?;
+        self.current_slice_for::<true>(&mut state)?;
+        let mut progress = self
+            .progress
+            .lock()
+            .map_err(|_| ObservationOperationError::Static {
+                kind: io::ErrorKind::Other,
+                message: "fingerprint progress counter poisoned",
+            })?;
+        if completed_units <= progress.completed_units {
+            return Err(ObservationOperationError::Static {
+                kind: io::ErrorKind::InvalidInput,
+                message: "fingerprint completed units did not increase",
+            });
+        }
+        progress.completed_units = completed_units;
+        progress.last_completed = OperationalStart::begin();
+        Ok(())
+    }
+
     fn current_slice(&self, state: &mut State) -> io::Result<Duration> {
         self.current_slice_for::<false>(state)
             .map_err(ObservationOperationError::into_io)
@@ -1005,27 +1149,24 @@ impl LiveOperation {
             })?
             .last_completed
             .elapsed();
-        let mut slice = Duration::from_millis(budget.poll_ms);
+        let mut slice = Duration::from_nanos(budget.poll_ns);
         if let Some(remaining) = outer {
             slice = slice.min(remaining);
         }
         for (allowance, elapsed) in [
-            (budget.total_ms, self.started.elapsed()),
-            (budget.progress_ms, progress_elapsed),
+            (budget.total_ns, self.started.elapsed()),
+            (budget.progress_ns, progress_elapsed),
         ]
         .into_iter()
         .filter_map(|(allowance, elapsed)| allowance.map(|allowance| (allowance, elapsed)))
         {
-            let remaining = Duration::from_millis(allowance)
-                .checked_sub(elapsed)
-                .filter(|remaining| !remaining.is_zero())
-                .ok_or_else(|| {
-                    self.terminal.store(2, Ordering::Release);
-                    ObservationOperationError::static_error::<BORROWED>(
-                        io::ErrorKind::TimedOut,
-                        "RAM operation allowance expired",
-                    )
-                })?;
+            let remaining = remaining_allowance_ns(allowance, elapsed).ok_or_else(|| {
+                self.terminal.store(2, Ordering::Release);
+                ObservationOperationError::static_error::<BORROWED>(
+                    io::ErrorKind::TimedOut,
+                    "RAM operation allowance expired",
+                )
+            })?;
             slice = slice.min(remaining);
         }
         if slice.is_zero() {
@@ -1034,11 +1175,23 @@ impl LiveOperation {
                 "RAM polling allowance expired",
             ));
         }
+        self.admitted.store(true, Ordering::Release);
         Ok(slice)
     }
 }
 
 impl SourceOperation for LiveOperation {
+    fn retain_checkpoint_work(
+        self: Arc<Self>,
+        admission: &mut CheckpointWorkAdmission<'_>,
+    ) -> Result<HeldCheckpointWork, RamError> {
+        admission.retain(self)
+    }
+
+    fn matches_checkpoint_work(&self, admission: &CheckpointWorkAdmission<'_>) -> bool {
+        admission.matches(self)
+    }
+
     fn wait_slice_for_observation(&self) -> Result<Duration, ObservationOperationError> {
         let mut state = self
             .state
@@ -1068,6 +1221,9 @@ impl SourceOperation for LiveOperation {
                 kind: io::ErrorKind::Other,
                 message: "RAM operation already completed",
             });
+        }
+        if self.tracked {
+            self.operations.finish(false);
         }
         Ok(())
     }
@@ -1116,13 +1272,20 @@ impl SourceOperation for LiveOperation {
         {
             return Err(io::Error::other("RAM operation already completed"));
         }
+        if self.tracked {
+            self.operations.finish(false);
+        }
         Ok(())
     }
 }
 
 impl Drop for LiveOperation {
     fn drop(&mut self) {
-        self.operations.fetch_sub(1, Ordering::AcqRel);
+        if self.tracked && self.terminal.load(Ordering::Acquire) != 1 {
+            self.operations
+                .finish(self.admitted.load(Ordering::Acquire));
+        }
+        self.operations.capacity.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -1134,33 +1297,6 @@ fn symbol(name: &'static [u8]) -> Result<*mut c_void, RamError> {
     } else {
         Ok(pointer)
     }
-}
-
-fn validate_stream(stream: &UnixStream) -> Result<(), RamError> {
-    use std::os::fd::AsRawFd;
-    stream.local_addr().and_then(|_| stream.peer_addr())?;
-    let mut kind: c_int = 0;
-    let mut length = std::mem::size_of_val(&kind) as libc::socklen_t;
-    // SAFETY: the retained stream owns its FD and both checked output scalar
-    // buffers have getsockopt's required size and lifetime.
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_TYPE,
-            (&mut kind as *mut c_int).cast(),
-            &mut length,
-        )
-    };
-    if result != 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    if kind != libc::SOCK_STREAM || length as usize != std::mem::size_of_val(&kind) {
-        return Err(RamError::Invariant(
-            "RAM control requires a connected Unix stream",
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

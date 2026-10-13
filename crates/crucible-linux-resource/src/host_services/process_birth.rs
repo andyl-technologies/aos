@@ -9,6 +9,14 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
+mod executor_family;
+mod executor_purpose;
+pub use executor_family::AuthenticatedServiceFamily;
+pub use executor_purpose::{
+    AuthenticatedNativeSlotPurpose, AuthenticatedNativeSubdivision,
+    AuthenticatedTargetDispatcherPurpose,
+};
+
 use super::{
     AdmittedHostServiceBootstrap, HostServiceAllocator, HostServiceError, HostServiceLease,
     HostServiceLeasePair,
@@ -52,13 +60,20 @@ pub struct ServiceBirthContract<'policy> {
     pub baseline_resident_bytes: u64,
     /// The independently tracked metadata subset in bytes.
     pub metadata_bytes: u64,
+    /// Requires the manager's delegated guardian and workload hierarchy.
+    pub delegated_executor: bool,
 }
 
 /// Retains the authenticated main incarnation and its pinned containment root.
 ///
 /// This owner exposes no raw cgroup path or descriptor and issues no accounts.
 pub struct VerifiedServiceBirth {
+    start: u64,
     deadline: u64,
+    group: String,
+    delegated_executor: bool,
+    memory_max_bytes: u64,
+    cpu_quota_percent: u64,
     invocation: [u8; 16],
     _cgroup: File,
     resident_bytes: u64,
@@ -110,6 +125,8 @@ impl VerifiedServiceBirth {
             resident,
             metadata,
             birth: self,
+            executor_attempted: std::sync::atomic::AtomicBool::new(false),
+            executor_purpose: std::sync::OnceLock::new(),
             #[cfg(feature = "private-measurement-domain")]
             attempt: std::sync::Mutex::new(parent_attempt::AttemptSlot::new(backing)),
         })
@@ -124,11 +141,35 @@ pub struct AuthenticatedProcessResources {
     resident: HostServiceAllocator,
     metadata: HostServiceAllocator,
     birth: VerifiedServiceBirth,
+    executor_attempted: std::sync::atomic::AtomicBool,
+    executor_purpose: std::sync::OnceLock<std::sync::Arc<AuthenticatedNativeSlotPurpose>>,
     #[cfg(feature = "private-measurement-domain")]
     attempt: std::sync::Mutex<parent_attempt::AttemptSlot>,
 }
 
 impl AuthenticatedProcessResources {
+    /// Derives supervision from this main's authenticated original interval.
+    ///
+    /// # Errors
+    /// Refuses an expired birth, invalid budgets or clock conversion. Neither
+    /// loader nor admission time is removed from the original allowance.
+    fn derive_executor_supervisor(
+        &self,
+        budgets: crate::host_supervision::HostOperationBudgets,
+    ) -> Result<
+        crate::host_supervision::HostOperationSupervisor,
+        crate::host_supervision::HostSupervisionError,
+    > {
+        if !self.is_live() {
+            return Err(crate::host_supervision::HostSupervisionError::Unavailable);
+        }
+        crate::host_supervision::HostOperationSupervisor::from_service_interval(
+            budgets,
+            self.birth.start,
+            self.birth.deadline,
+        )
+    }
+
     /// Checks the unchanged enclosing invocation and operational end.
     pub fn is_live(&self) -> bool {
         self.birth.is_live()
@@ -165,12 +206,30 @@ impl AuthenticatedProcessResources {
 
 /// Reports an original service-birth authentication diagnostic.
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct ServiceBirthError(String);
+pub enum ServiceBirthError {
+    /// The immutable birth or its actual kernel identity was refused.
+    #[error("{0}")]
+    Policy(String),
+    /// The unchanged original operation retains its concrete first cause.
+    #[error(transparent)]
+    Supervision(#[from] crate::host_supervision::HostSupervisionError),
+    /// The actual descriptor partition syscall failed before its postcut.
+    #[error("{operation} failed: {source}")]
+    Kernel {
+        /// Static description of the physical operation.
+        operation: &'static str,
+        /// Original operating-system cause, without text erasure.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The same original account refused a resource debit.
+    #[error(transparent)]
+    Resource(#[from] HostServiceError),
+}
 
 impl ServiceBirthError {
     fn policy(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self::Policy(message.into())
     }
 }
 
@@ -333,20 +392,35 @@ pub async fn authenticate(
         ));
     }
     let own_group = bounded_read(Path::new("/proc/self/cgroup"), 4096)?;
-    let same_root = own_group
-        .lines()
-        .any(|line| line.strip_prefix("0::") == Some(group.as_str()));
+    let same_root = matches_service_membership(&own_group, &group, policy.delegated_executor);
     #[cfg(feature = "private-measurement-domain")]
     let same_root = same_root
-        || own_group.lines().any(|line| {
-            line.strip_prefix("0::")
-                .and_then(|value| value.strip_suffix("/guardian"))
-                == Some(group.as_str())
-        });
+        || (!policy.delegated_executor
+            && own_group.lines().any(|line| {
+                line.strip_prefix("0::")
+                    .and_then(|value| value.strip_suffix("/guardian"))
+                    == Some(group.as_str())
+            }));
     if !same_root {
         return Err(ServiceBirthError::policy(
             "campaign process is not contained in the original unified cgroup",
         ));
+    }
+    if policy.delegated_executor {
+        let delegated: bool = service.get_property("Delegate").await.map_err(message)?;
+        let subgroup: String = service
+            .get_property("DelegateSubgroup")
+            .await
+            .map_err(message)?;
+        let swap: u64 = service
+            .get_property("MemorySwapMax")
+            .await
+            .map_err(message)?;
+        if !delegated || subgroup != "guardian" || swap != 0 {
+            return Err(ServiceBirthError::policy(
+                "campaign executor delegation differs from its immutable policy",
+            ));
+        }
     }
     let cgroup_path = Path::new("/sys/fs/cgroup").join(group.trim_start_matches('/'));
     for (file, expected) in [
@@ -379,7 +453,17 @@ pub async fn authenticate(
         .ok_or_else(|| {
             ServiceBirthError::policy("campaign original runtime deadline has expired")
         })?;
-    let cgroup = File::open(&cgroup_path).map_err(message)?;
+    let cgroup = File::from(
+        rustix::fs::open(
+            &cgroup_path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(message)?,
+    );
     #[cfg(feature = "private-measurement-domain")]
     let cpu = File::from(
         rustix::fs::openat(
@@ -400,7 +484,12 @@ pub async fn authenticate(
         ));
     }
     Ok(VerifiedServiceBirth {
+        start,
         deadline,
+        group,
+        delegated_executor: policy.delegated_executor,
+        memory_max_bytes: policy.memory_max_bytes,
+        cpu_quota_percent: policy.cpu_quota_percent,
         invocation,
         _cgroup: cgroup,
         resident_bytes: policy.memory_max_bytes - policy.baseline_resident_bytes,
@@ -426,6 +515,20 @@ fn bounded_read(path: &Path, maximum: usize) -> Result<String, ServiceBirthError
     String::from_utf8(bytes).map_err(message)
 }
 
+fn matches_service_membership(own_group: &str, root: &str, delegated: bool) -> bool {
+    let Some(actual) = own_group
+        .strip_prefix("0::")
+        .and_then(|line| line.strip_suffix('\n'))
+    else {
+        return false;
+    };
+    if delegated {
+        actual.strip_suffix("/guardian") == Some(root)
+    } else {
+        actual == root
+    }
+}
+
 fn message(error: impl std::fmt::Display) -> ServiceBirthError {
     ServiceBirthError::policy(error.to_string())
 }
@@ -445,8 +548,13 @@ pub fn monotonic_microseconds() -> Option<u64> {
 mod tests {
     use super::*;
 
-    fn birth() -> VerifiedServiceBirth {
+    pub(super) fn birth() -> VerifiedServiceBirth {
         VerifiedServiceBirth {
+            start: 1,
+            group: String::new(),
+            delegated_executor: false,
+            memory_max_bytes: 1 << 20,
+            cpu_quota_percent: 100,
             deadline: u64::MAX,
             invocation: [1; 16],
             _cgroup: tempfile::tempfile().unwrap(),
@@ -533,7 +641,7 @@ mod tests {
             Ok(_) => panic!("oversized containment must refuse"),
             Err(error) => error,
         };
-        assert!(matches!(&oversized, ServiceBirthError(_)));
+        assert!(matches!(&oversized, ServiceBirthError::Policy(_)));
         assert_eq!(
             oversized.to_string(),
             "campaign containment read exceeds its fixed bound"
@@ -547,7 +655,7 @@ mod tests {
             Ok(_) => panic!("invalid containment text must refuse"),
             Err(error) => error,
         };
-        assert!(matches!(&invalid_text, ServiceBirthError(_)));
+        assert!(matches!(&invalid_text, ServiceBirthError::Policy(_)));
         assert_eq!(invalid_text.to_string(), expected);
         Ok(())
     }

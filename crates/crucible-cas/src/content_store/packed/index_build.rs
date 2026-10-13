@@ -222,7 +222,7 @@ impl Builder {
             backend,
             self.header.instance,
             self.header.generation,
-            &bytes.value,
+            &node,
             operation,
         )?;
         Ok(Child { upper, reference })
@@ -316,7 +316,7 @@ impl Builder {
             backend,
             self.header.instance,
             self.header.generation,
-            &bytes.value,
+            &node,
             operation,
         )?;
         Ok(Child { upper, reference })

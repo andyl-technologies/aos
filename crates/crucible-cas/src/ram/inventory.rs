@@ -1,4 +1,4 @@
-//! Streams authenticated RAM reachability while the collector owns exclusion.
+//! Streams authenticated RAM graphs under retained inventory or root ownership.
 
 use crucible_ram::RegionDescriptor;
 
@@ -45,7 +45,7 @@ impl RamStore {
         let (record, regions) = self.read_root(root, &mut work)?;
         self.admit_topology(record.topology())?;
         self.validate_root_catalogs(&record, &regions)?;
-        super::bounded_read::read_inventory(self, root, &record, &regions, visitor, &mut work)
+        super::bounded_read::read_inventory(self, root, &record, &regions, visitor, None, &mut work)
     }
 }
 
@@ -53,6 +53,8 @@ pub(super) trait InventoryAccess {
     fn tree(&mut self, reference: TreeRef) -> Result<TreeNode, RamStoreError>;
     fn page(
         &mut self,
+        region: &RegionDescriptor,
+        index: u64,
         id: ContentId,
         digest: crucible_ram::PageDigest,
     ) -> Result<usize, RamStoreError>;
@@ -63,6 +65,7 @@ pub(super) struct ExistingInventory<'read, 'operation> {
     pub(super) store: &'read RamStore,
     pub(super) work: &'read mut Work<'operation>,
     pub(super) visitor: &'read mut dyn FnMut(ContentId) -> Result<(), RamStoreError>,
+    pub(super) page_visitor: Option<&'read mut super::RamPageVisitor<'read>>,
 }
 
 impl InventoryAccess for ExistingInventory<'_, '_> {
@@ -72,12 +75,20 @@ impl InventoryAccess for ExistingInventory<'_, '_> {
 
     fn page(
         &mut self,
+        region: &RegionDescriptor,
+        index: u64,
         id: ContentId,
         digest: crucible_ram::PageDigest,
     ) -> Result<usize, RamStoreError> {
-        self.store
-            .read_page_object(id, digest, self.work)
-            .map(|page| page.len())
+        let page = self.store.read_page_object(id, digest, self.work)?;
+        visit_page(
+            region,
+            index,
+            &page,
+            super::restore::reborrow_visitor(&mut self.page_visitor),
+            self.work,
+        )?;
+        Ok(page.len())
     }
 
     fn visit(&mut self, id: ContentId) -> Result<(), RamStoreError> {
@@ -112,7 +123,7 @@ fn visit_region(
     match access.tree(reference)? {
         TreeNode::Padding => {}
         TreeNode::Leaf { page, digest } => {
-            if access.page(page, digest)? != valid_length(region, first)? {
+            if access.page(region, first, page, digest)? != valid_length(region, first)? {
                 return Err(RamStoreError::Invalid("inventory page valid length"));
             }
             access.visit(page)?;
@@ -133,6 +144,7 @@ fn visit_region(
 pub(super) struct CheckedInventory<'read, 'operation, F, V> {
     pub(super) work: &'read mut Work<'operation>,
     pub(super) visitor: &'read mut dyn FnMut(ContentId) -> Result<(), RamStoreError>,
+    pub(super) page_visitor: Option<&'read mut super::RamPageVisitor<'read>>,
     pub(super) source: &'read mut F,
     pub(super) verify: &'read mut V,
 }
@@ -162,6 +174,8 @@ where
 
     fn page(
         &mut self,
+        region: &RegionDescriptor,
+        index: u64,
         id: ContentId,
         digest: crucible_ram::PageDigest,
     ) -> Result<usize, RamStoreError> {
@@ -171,10 +185,38 @@ where
         let envelope =
             super::codec::read_envelope_using(id, self.work, false, self.source, self.verify)?;
         super::codec::validate_page_envelope(&envelope, digest)?;
-        Ok(super::RamPageBytes::new(envelope).len())
+        let page = super::RamPageBytes::new(envelope);
+        visit_page(
+            region,
+            index,
+            &page,
+            super::restore::reborrow_visitor(&mut self.page_visitor),
+            self.work,
+        )?;
+        (self.verify)(self.work.original())?;
+        Ok(page.len())
     }
 
     fn visit(&mut self, id: ContentId) -> Result<(), RamStoreError> {
         (self.visitor)(id)
     }
+}
+
+/// Validates each borrowed page before exposing it to a restore visitor.
+fn visit_page(
+    region: &RegionDescriptor,
+    index: u64,
+    page: &super::RamPageBytes,
+    visitor: Option<&mut super::RamPageVisitor<'_>>,
+    work: &mut Work<'_>,
+) -> Result<(), RamStoreError> {
+    if page.len() != valid_length(region, index)? {
+        return Err(RamStoreError::Invalid("inventory page valid length"));
+    }
+    if let Some(visitor) = visitor {
+        work.account.check_boundary(work.boundary)?;
+        visitor(region, index, page.bytes())?;
+        work.account.check_boundary(work.boundary)?;
+    }
+    Ok(())
 }

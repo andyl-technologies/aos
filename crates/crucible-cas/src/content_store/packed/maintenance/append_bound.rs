@@ -1,9 +1,10 @@
 //! Conservative append geometry for the actual bounded mutation algorithm.
 //!
-//! A multipoint group visits at most one old root and one affected subtree per
+//! Each <=64-row window visits at most one old root and one affected subtree per
 //! input at every lower level. Each affected node emits at most two pages, and
 //! a root split emits one more. The subsequent pack-record point update keeps
-//! its separate conservative allowance, including a height raised by the group.
+//! its separate conservative allowance, including heights raised by the windows.
+//! Wider transactions sum window bounds; the on-disk 64-row fan-in is unchanged.
 
 use super::{StoreError, wire};
 
@@ -36,6 +37,11 @@ impl AppendBound {
     /// Refuses checked record-count or page-count overflow.
     pub(super) fn batch(height: u8, objects: u64) -> Result<Self, StoreError> {
         let changes = objects.checked_add(1).ok_or(StoreError::Quota)?;
+        if objects > wire::MAX_ROWS as u64
+            && objects <= crate::content_store::batch::MAX_PUBLICATION_OBJECTS as u64
+        {
+            return Self::publication(height, objects);
+        }
         if !(1..=wire::MAX_ROWS as u64).contains(&objects) {
             // Preserve the old geometry for an invalid private caller. The
             // existing insertion validator retains its later refusal cut.
@@ -61,6 +67,30 @@ impl AppendBound {
         // group. Keep that conservative bound rather than require more space.
         let pages = combined_pages.min(point_pages(u64::from(height), changes)?);
         Ok(Self { changes, pages })
+    }
+
+    // Each <=64 insertion emits at most two replacements per old child.
+    // A raised root starts with exactly two children. Across at most three
+    // remaining windows it can grow to at most 2 * 2^3 = 16 children, below
+    // the unchanged fan-in64. Thus the complete transaction raises height
+    // at most once. The first window uses h; remaining windows use h+1.
+    // Each window's unused pack allowance remains conservative; the final
+    // allowance covers the sole actual pack-record point update.
+    fn publication(height: u8, objects: u64) -> Result<Self, StoreError> {
+        let mut remaining = objects;
+        let mut raised = height;
+        let mut pages = 0_u64;
+        while remaining != 0 {
+            let count = remaining.min(wire::MAX_ROWS as u64);
+            let window = Self::batch(raised, count)?;
+            pages = pages.checked_add(window.pages).ok_or(StoreError::Quota)?;
+            remaining -= count;
+            raised = height.checked_add(1).ok_or(StoreError::Quota)?;
+        }
+        Ok(Self {
+            changes: objects.checked_add(1).ok_or(StoreError::Quota)?,
+            pages,
+        })
     }
 
     /// Converts the append page allowance into native arena bytes.

@@ -43,6 +43,7 @@ pub use directory::OriginalDirectoryRefOwner;
 mod memory;
 mod namespace;
 mod packed;
+pub(crate) use packed::canonical_session::Session as PackedCanonicalSession;
 pub(crate) use packed::read_view::View as PackedReadView;
 mod physical_quota;
 mod prepaid_source;
@@ -1761,6 +1762,17 @@ pub trait ImmutableBlobBackend: Send + Sync {
         request: &mut crate::ram::BoundedReadRequest<'_, '_>,
     ) -> Result<(), StoreError> {
         request.execute_existing_checked(self)
+    }
+
+    /// Reports whether bounded callers benefit from wider publication groups.
+    ///
+    /// This advisory capability changes only caller staging width. Every group
+    /// still needs its existing admission, authentication and durable receipt.
+    /// Sequential leaves keep the default small grouping to avoid retaining
+    /// additional encoded objects without sharing a publication transaction.
+    #[doc(hidden)]
+    fn prefers_wide_publication_groups(&self) -> bool {
+        false
     }
 
     /// Idempotently places canonical bytes under their expected logical ID.

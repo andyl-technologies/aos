@@ -9,16 +9,38 @@
 //! concrete trap and guest-memory callback ABI is available.
 
 pub(crate) mod callback_quiescence;
+mod checkpoint;
+pub(crate) use checkpoint::fingerprint::{FingerprintApi, FingerprintBorrowContext};
+pub(crate) use checkpoint::reader::{
+    CaptureLoan, HeldClaimCleanup, HeldReadContext, HeldReaderIdentity,
+};
+
+pub(crate) use checkpoint::{LocalDisposition, NativeMailbox, NativeRoot, RootStage};
 mod device_workspace;
+mod hot_fork;
 pub(crate) mod live_callbacks;
 mod live_whitebox;
 mod parent_park;
 mod worker_quiescence;
 
 use callback_quiescence::LiveCallbackQuiescence;
+use hot_fork::{
+    check_hot_fork_network_rx, crucible_qemu_plugin_hot_fork_barrier,
+    crucible_qemu_plugin_hot_fork_child_runtime, hot_fork_child_process_generation_matches,
+    hot_fork_mapping_disposition_status,
+};
+
+#[cfg(test)]
+use hot_fork::{
+    collect_hot_fork_state_with_network_rx_check, host_mapping_extent,
+    hot_fork_child_endpoint_identity_matches, hot_fork_child_mapping_basis_matches,
+    hot_fork_control_socket_cookie, hot_fork_eventfd_identity_token_from_fdinfo,
+    hot_fork_wake_eventfd_id,
+};
+
 use worker_quiescence::{
     LiveWorkerQuiescence, WORKER_FINGERPRINT, WORKER_REQUIRED, WORKER_RUN_CONTROL, WORKER_TEARDOWN,
-    WorkerForkChildResetError, WorkerQuiescenceSnapshot,
+    WorkerQuiescenceSnapshot,
 };
 
 #[cfg(test)]
@@ -29,14 +51,12 @@ pub use live_callbacks::{
 use live_callbacks::{LiveVcpuTimeCallbackCapabilities, LiveVcpuTimeCallbackRegistrar};
 
 #[cfg(unix)]
+use crate::startup_source::SetupControlSocket;
+#[cfg(unix)]
 use std::io::{self, Read as _, Write as _};
 use std::marker::PhantomPinned;
 #[cfg(unix)]
-use std::net::Shutdown;
-#[cfg(unix)]
 use std::os::fd::BorrowedFd;
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -97,18 +117,6 @@ impl LiveRuntimeTeardownRouter {
             .send(trigger)
             .map_err(|_disconnected| ())
     }
-
-    fn replace(&self, sender: mpsc::Sender<LiveRuntimeTeardownTrigger>) -> Result<(), ()> {
-        let mut current = self.sender.lock().map_err(|_poisoned| ())?;
-        *current = sender;
-        Ok(())
-    }
-}
-
-/// Process-lifetime ownership of workers created after a successful fork.
-struct HotForkChildWorkerOwner {
-    _control_reader: std::thread::JoinHandle<()>,
-    _teardown_worker: std::thread::JoinHandle<()>,
 }
 
 /// Exact QEMU-staged resource basis installed into one fork child.
@@ -216,50 +224,6 @@ enum HotForkChildRuntimeError {
     /// The staged child generation was not the exact successor of this runtime.
     #[error("fork-child process generation did not exactly advance the template")]
     ProcessGeneration,
-    /// The private setup-region mapping could not be installed and revalidated.
-    #[error("fork-child private setup mapping failed")]
-    Mapping {
-        /// Exact mapping or layout failure.
-        source: crate::setup::PluginSetupChildMappingError,
-    },
-    /// The replacement control endpoint could not be duplicated.
-    #[error("fork-child control endpoint duplication failed")]
-    DuplicateControl {
-        /// Underlying descriptor duplication failure.
-        source: std::io::Error,
-    },
-    /// Callback-held teardown routes could not be rebound.
-    #[error("fork-child teardown route replacement failed")]
-    TeardownRoute,
-    /// Inherited parked worker accounting could not be reset safely.
-    #[error("fork-child worker accounting reset failed")]
-    WorkerReset {
-        /// Exact inherited worker-state failure.
-        source: WorkerForkChildResetError,
-    },
-    /// The optional fingerprint worker could not be recreated.
-    #[error("fork-child fingerprint worker initialization failed")]
-    FingerprintWorker {
-        /// Underlying worker construction failure.
-        source: LiveVcpuTimeCallbackError,
-    },
-    /// The replacement teardown worker cannot address the exact mapped slot.
-    #[error("fork-child teardown slot is unavailable")]
-    TeardownSlot {
-        /// Underlying mapped-region access failure.
-        source: crucible_shmem::MappedSetupRegionAccessError,
-    },
-    /// A required replacement worker thread could not be created.
-    #[error("fork-child {worker} thread creation failed")]
-    WorkerSpawn {
-        /// Stable worker role.
-        worker: &'static str,
-        /// Underlying thread creation failure.
-        source: std::io::Error,
-    },
-    /// The process-local replacement worker owner was poisoned or occupied.
-    #[error("fork-child worker ownership is unavailable")]
-    WorkerOwner,
     /// Fresh workers have not all reached their held receive boundary.
     #[error("fork-child workers have not reached the complete parked set")]
     WorkersNotReady,
@@ -405,8 +369,6 @@ pub(crate) struct OwnedCallbackRuntimeState {
     mapping_excluded_from_child: AtomicBool,
     child_runtime_state: AtomicU8,
     child_mapping_installed: AtomicBool,
-    child_binding: Mutex<Option<HotForkChildResourceBinding>>,
-    child_workers: Mutex<Option<HotForkChildWorkerOwner>>,
     process_generation: u64,
     slot_index: u32,
     control_fd: std::os::fd::RawFd,
@@ -416,7 +378,10 @@ pub(crate) struct OwnedCallbackRuntimeState {
     owner_process: u32,
     workspace_disarmed: bool,
     claimed_workspace_fd: i32,
-    refused_child_workspace: Option<crate::device_digest_workspace::DeviceDigestWorkspace>,
+    checkpoint_api: Option<checkpoint::NativeApi>,
+    checkpoint: Mutex<checkpoint::Slot>,
+    checkpoint_owner_retained: AtomicBool,
+    checkpoint_registration_retained: AtomicBool,
     parent_park_api: Option<parent_park::NativeApi>,
     parent_park: Mutex<parent_park::Slot>,
     parent_park_retained: AtomicBool,
@@ -436,6 +401,30 @@ fn check_fingerprint_setup_original(
 }
 
 impl OwnedCallbackRuntimeState {
+    /// Describes the configured runtime Box and its two shared control allocations.
+    ///
+    /// The configured Rust Arc header precedes its body with alignment padding.
+    /// This request describes allocation layouts only, not allocator backing,
+    /// channels, worker threads or descriptors.
+    fn allocation_requests() -> Result<[std::alloc::Layout; 3], crate::StartupSourceError> {
+        #[repr(C, align(2))]
+        struct SharedAllocationHeader {
+            strong: std::sync::atomic::AtomicUsize,
+            weak: std::sync::atomic::AtomicUsize,
+        }
+        let shared = |body: std::alloc::Layout| {
+            std::alloc::Layout::new::<SharedAllocationHeader>()
+                .extend(body)
+                .map(|(layout, _)| layout.pad_to_align())
+                .map_err(|_| crate::StartupSourceError::Ownership {
+                    reason: "runtime shared allocation layout overflowed",
+                })
+        };
+        let quiescence = shared(std::alloc::Layout::new::<LiveCallbackQuiescence>())?;
+        let workers = shared(std::alloc::Layout::new::<LiveWorkerQuiescence>())?;
+        Ok([std::alloc::Layout::new::<Self>(), quiescence, workers])
+    }
+
     fn pin(
         worker_mask: u64,
         setup: PluginSetupCompletion,
@@ -456,8 +445,6 @@ impl OwnedCallbackRuntimeState {
             mapping_excluded_from_child: AtomicBool::new(false),
             child_runtime_state: AtomicU8::new(CHILD_RUNTIME_TEMPLATE),
             child_mapping_installed: AtomicBool::new(false),
-            child_binding: Mutex::new(None),
-            child_workers: Mutex::new(None),
             process_generation,
             slot_index,
             control_fd,
@@ -467,7 +454,10 @@ impl OwnedCallbackRuntimeState {
             owner_process: std::process::id(),
             workspace_disarmed: false,
             claimed_workspace_fd: -1,
-            refused_child_workspace: None,
+            checkpoint_api: None,
+            checkpoint: Mutex::new(checkpoint::Slot::default()),
+            checkpoint_owner_retained: AtomicBool::new(false),
+            checkpoint_registration_retained: AtomicBool::new(false),
             parent_park_api: None,
             parent_park: Mutex::new(parent_park::Slot::new()),
             parent_park_retained: AtomicBool::new(false),
@@ -496,276 +486,6 @@ impl OwnedCallbackRuntimeState {
             slot_index: self.slot_index,
             process_generation,
         })
-    }
-
-    /// Installs private child resources and starts every replacement worker.
-    ///
-    /// The caller invokes this only in the fork child after QEMU has replaced
-    /// the manifest control and wake descriptor numbers. Callback, ring, and
-    /// worker barriers remain held on success; QEMU must poll
-    /// [`Self::hot_fork_child_snapshot`] and call
-    /// [`Self::release_hot_fork_child`] before guest execution resumes.
-    fn prepare_hot_fork_child(
-        mut self: Pin<&mut Self>,
-        private_ring_fd: BorrowedFd<'_>,
-        expected_identity: crucible_shmem::SetupRegionBackingIdentity,
-        binding: HotForkChildResourceBinding,
-    ) -> Result<HotForkChildRuntimeSnapshot, HotForkChildRuntimeError> {
-        let state = self.as_ref().get_ref();
-        if let Err(phase) = state.child_runtime_state.compare_exchange(
-            CHILD_RUNTIME_TEMPLATE,
-            CHILD_RUNTIME_INITIALIZING,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            return Err(HotForkChildRuntimeError::WrongPhase { phase });
-        }
-
-        // SAFETY: the hot-fork barrier has excluded every callback and worker
-        // operation before this method is invoked. Mutating fields in place
-        // does not move the pinned runtime or any callback allocation.
-        let state = unsafe { self.as_mut().get_unchecked_mut() };
-        let result =
-            state.prepare_hot_fork_child_inner(private_ring_fd, expected_identity, binding);
-        match result {
-            Ok(snapshot) => Ok(snapshot),
-            Err(error) => {
-                state
-                    .child_runtime_state
-                    .store(CHILD_RUNTIME_FAILED, Ordering::Release);
-                Err(error)
-            }
-        }
-    }
-
-    fn prepare_hot_fork_child_inner(
-        &mut self,
-        private_ring_fd: BorrowedFd<'_>,
-        expected_identity: crucible_shmem::SetupRegionBackingIdentity,
-        binding: HotForkChildResourceBinding,
-    ) -> Result<HotForkChildRuntimeSnapshot, HotForkChildRuntimeError> {
-        let callbacks = self.quiescence.snapshot();
-        let workers = self.workers.snapshot();
-        if !callbacks.hot_fork_held
-            || callbacks.teardown_closed
-            || callbacks.in_flight != 0
-            || !workers.held
-            || workers.parked_mask != workers.worker_mask
-            || workers.pending_mask != 0
-            || workers.operations_in_flight != 0
-            || !self.mapping_excluded_from_child.load(Ordering::Acquire)
-        {
-            return Err(HotForkChildRuntimeError::TemplateNotQuiescent);
-        }
-        if binding.parent_process_generation != self.process_generation
-            || binding.parent_process_generation == 0
-            || binding.parent_process_generation.checked_add(1)
-                != Some(binding.child_process_generation)
-        {
-            return Err(HotForkChildRuntimeError::ProcessGeneration);
-        }
-        if !self.workspace_disarmed || self.owner_process == std::process::id() {
-            return Err(HotForkChildRuntimeError::TemplateNotQuiescent);
-        }
-
-        // A child needs its separately issued native Source before any fresh
-        // workspace/control reconstruction. The parent installer and pager
-        // operation cannot authorize the child incarnation.
-        self.require_child_startup_source()?;
-        let workspace = self.prepare_child_device_workspace(binding)?;
-
-        let control = crate::abi::duplicate_control_stream(self.control_fd)
-            .map_err(|source| HotForkChildRuntimeError::DuplicateControl { source })?;
-        let control = ControlLifecycleStream::restored_run_via_shared_memory(control);
-        let (teardown_sender, teardown_receiver) = mpsc::channel();
-
-        self.setup
-            .install_hot_fork_child_mapping(private_ring_fd, expected_identity)
-            .map_err(|source| HotForkChildRuntimeError::Mapping { source })?;
-        self.child_mapping_installed.store(true, Ordering::Release);
-        self.mapping_excluded_from_child
-            .store(false, Ordering::Release);
-
-        // MADV_DONTFORK deliberately leaves the retained mapping owner unable
-        // to dereference its template address until the exact private mapping
-        // has been installed. Validate the copied ring barrier only after that
-        // replacement is present, but before any replacement worker starts.
-        let rings = self
-            .setup
-            .mapped_region()
-            .hot_fork_ring_io_snapshot()
-            .map_err(|_source| HotForkChildRuntimeError::TemplateNotQuiescent)?;
-        if !rings.quiescent() {
-            return Err(HotForkChildRuntimeError::TemplateNotQuiescent);
-        }
-
-        self.teardown_router
-            .replace(teardown_sender.clone())
-            .map_err(|()| HotForkChildRuntimeError::TeardownRoute)?;
-        self.workers
-            .reset_fork_child_workers()
-            .map_err(|source| HotForkChildRuntimeError::WorkerReset { source })?;
-
-        if let Some(live) = self.live_vcpu_time.as_mut() {
-            live.as_mut()
-                .get_mut()
-                .rebind_hot_fork_process_generation(
-                    binding.parent_process_generation,
-                    binding.child_process_generation,
-                )
-                .map_err(|_source| HotForkChildRuntimeError::ProcessGeneration)?;
-            live.as_mut().get_mut().rebind_stop_caller_identity(
-                expected_identity,
-                self.slot_index,
-                binding.child_process_generation,
-            );
-            live.as_mut().get_mut().rebind_control_stage_identity(
-                expected_identity,
-                self.slot_index,
-                binding.child_process_generation,
-            );
-            live.as_mut()
-                .get_mut()
-                .reinitialize_hot_fork_child_workers(
-                    Arc::clone(&self.workers),
-                    workspace,
-                    &mut || {
-                        Err(crate::StartupSourceError::Ownership {
-                            reason: "separately issued child startup Source is unavailable",
-                        })
-                    },
-                    &mut self.startup_failure,
-                )
-                .map_err(|source| HotForkChildRuntimeError::FingerprintWorker { source })?;
-        }
-
-        let teardown_handle = self
-            .control_teardown_handle(binding.child_process_generation)
-            .map_err(|source| HotForkChildRuntimeError::TeardownSlot { source })?;
-        let request_shutdown = self.request_shutdown;
-        let teardown_workers = Arc::clone(&self.workers);
-        let teardown_worker = std::thread::Builder::new()
-            .name(String::from("crucible-teardown"))
-            .spawn(move || {
-                run_runtime_thread_fail_loud("fork-child teardown worker", || {
-                    run_teardown_worker(
-                        teardown_receiver,
-                        teardown_handle,
-                        request_shutdown,
-                        teardown_workers,
-                    );
-                });
-            })
-            .map_err(|source| HotForkChildRuntimeError::WorkerSpawn {
-                worker: "teardown",
-                source,
-            })?;
-
-        let reader_sender = teardown_sender;
-        let control_workers = Arc::clone(&self.workers);
-        let control_reader = std::thread::Builder::new()
-            .name(String::from("crucible-run-control"))
-            .spawn(move || {
-                run_runtime_thread_fail_loud("fork-child RUN control reader", || {
-                    let _delivered = run_control_reader(control, reader_sender, control_workers);
-                });
-            })
-            .map_err(|source| HotForkChildRuntimeError::WorkerSpawn {
-                worker: "RUN control reader",
-                source,
-            })?;
-
-        // Both guards are released before the snapshot below, which takes the
-        // binding lock again; holding it across that call deadlocks the child
-        // on its own mutex, which the live fork flight surfaced as a child
-        // that never greeted on its private QMP endpoint.
-        {
-            let mut owner = self
-                .child_workers
-                .lock()
-                .map_err(|_poisoned| HotForkChildRuntimeError::WorkerOwner)?;
-            if owner.is_some() {
-                return Err(HotForkChildRuntimeError::WorkerOwner);
-            }
-            *owner = Some(HotForkChildWorkerOwner {
-                _control_reader: control_reader,
-                _teardown_worker: teardown_worker,
-            });
-        }
-        {
-            let mut installed_binding = self
-                .child_binding
-                .lock()
-                .map_err(|_poisoned| HotForkChildRuntimeError::WorkerOwner)?;
-            if installed_binding.is_some() {
-                return Err(HotForkChildRuntimeError::WorkerOwner);
-            }
-            *installed_binding = Some(binding);
-        }
-        self.process_generation = binding.child_process_generation;
-        self.owner_process = std::process::id();
-        self.child_runtime_state
-            .store(CHILD_RUNTIME_WORKERS_HELD, Ordering::Release);
-        Ok(self.hot_fork_child_snapshot())
-    }
-
-    /// Returns one exact snapshot of fork-child mapping and worker readiness.
-    fn hot_fork_child_snapshot(&self) -> HotForkChildRuntimeSnapshot {
-        let callbacks = self.quiescence.snapshot();
-        let binding = self
-            .child_binding
-            .lock()
-            .map_or_else(|poisoned| **poisoned.get_ref(), |binding| *binding)
-            .unwrap_or_default();
-        HotForkChildRuntimeSnapshot {
-            phase: self.child_runtime_state.load(Ordering::Acquire),
-            workers: self.workers.snapshot(),
-            callbacks_held: callbacks.hot_fork_held,
-            mapping_installed: self.child_mapping_installed.load(Ordering::Acquire),
-            binding,
-        }
-    }
-
-    /// Releases a fully reconstructed child runtime into ordinary execution.
-    fn release_hot_fork_child(
-        &mut self,
-    ) -> Result<HotForkChildRuntimeSnapshot, HotForkChildRuntimeError> {
-        let phase = self.child_runtime_state.load(Ordering::Acquire);
-        if phase != CHILD_RUNTIME_WORKERS_HELD {
-            return Err(HotForkChildRuntimeError::WrongPhase { phase });
-        }
-        if !self.workers.fork_child_workers_ready() {
-            return Err(HotForkChildRuntimeError::WorkersNotReady);
-        }
-        let rings = self
-            .setup
-            .mapped_region()
-            .hot_fork_ring_io_snapshot()
-            .map_err(|_source| HotForkChildRuntimeError::RingBarrier)?;
-        if !rings.quiescent() {
-            return Err(HotForkChildRuntimeError::RingBarrier);
-        }
-
-        self.require_child_startup_source()?;
-
-        self.setup
-            .mapped_region()
-            .release_hot_fork_ring_io()
-            .map_err(|_source| HotForkChildRuntimeError::RingBarrier)?;
-        let callbacks = self.quiescence.release_hot_fork();
-        let workers = self.workers.release();
-        if callbacks.hot_fork_held
-            || callbacks.teardown_closed
-            || callbacks.in_flight != 0
-            || workers.held
-        {
-            self.child_runtime_state
-                .store(CHILD_RUNTIME_FAILED, Ordering::Release);
-            return Err(HotForkChildRuntimeError::RingBarrier);
-        }
-        self.child_runtime_state
-            .store(CHILD_RUNTIME_ACTIVE, Ordering::Release);
-        Ok(self.hot_fork_child_snapshot())
     }
 
     /// Marks an isolated registration-order fixture that intentionally does
@@ -1099,7 +819,11 @@ pub struct RequiredOwnedCallbacksRegistered {
 impl Drop for RequiredOwnedCallbacksRegistered {
     fn drop(&mut self) {
         let state = self.state.as_ref().get_ref();
-        if !state.parent_park_retained.load(Ordering::Acquire)
+        if !state
+            .checkpoint_registration_retained
+            .load(Ordering::Acquire)
+            && !state.checkpoint_owner_retained.load(Ordering::Acquire)
+            && !state.parent_park_retained.load(Ordering::Acquire)
             && !state
                 .parent_park_registration_retained
                 .load(Ordering::Acquire)
@@ -1407,8 +1131,8 @@ impl LiveControlTeardownHandle {
 }
 
 #[cfg(unix)]
-fn read_run_control_trigger(
-    mut control: ControlLifecycleStream<UnixStream>,
+fn read_run_control_trigger<S: std::io::Read + std::io::Write>(
+    mut control: ControlLifecycleStream<S>,
 ) -> LiveRuntimeTeardownTrigger {
     match PluginHostQuit::read_from_run_control(&mut control) {
         Ok(host_quit) => LiveRuntimeTeardownTrigger::HostQuit(host_quit),
@@ -1419,8 +1143,8 @@ fn read_run_control_trigger(
 }
 
 #[cfg(unix)]
-fn run_control_reader(
-    control: ControlLifecycleStream<UnixStream>,
+fn run_control_reader<S: std::io::Read + std::io::Write>(
+    control: ControlLifecycleStream<S>,
     teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
     workers: Arc<LiveWorkerQuiescence>,
 ) -> bool {
@@ -1504,7 +1228,7 @@ fn complete_live_teardown(
 
 #[cfg(all(unix, test))]
 fn run_control_worker(
-    control: ControlLifecycleStream<UnixStream>,
+    control: ControlLifecycleStream<std::os::unix::net::UnixStream>,
     teardown_handle: LiveControlTeardownHandle,
     request_shutdown: QemuRequestShutdownFn,
 ) {
@@ -1699,566 +1423,6 @@ enum PostRegistrationStage {
     Finalize,
 }
 
-/// Rejects checkpoint handoff when guest RX ownership is ambiguous.
-fn check_hot_fork_network_rx(
-    live: Option<&live_callbacks::LiveVcpuTimeCallbackState>,
-    action: u32,
-) -> Result<(), std::os::raw::c_int> {
-    if matches!(
-        action,
-        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD | crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY
-    ) && live.is_some_and(live_callbacks::LiveVcpuTimeCallbackState::network_rx_commit_uncertain)
-    {
-        return Err(-libc::EPROTO);
-    }
-
-    Ok(())
-}
-
-/// Checks RX ownership before and after acquiring the barrier's factual state.
-fn collect_hot_fork_state_with_network_rx_check<T>(
-    live: Option<&live_callbacks::LiveVcpuTimeCallbackState>,
-    action: u32,
-    collect: impl FnOnce() -> Result<T, std::os::raw::c_int>,
-) -> Result<T, std::os::raw::c_int> {
-    check_hot_fork_network_rx(live, action)?;
-    let snapshot = collect()?;
-
-    // An RX callback may fail after the entry check but before the acquired
-    // quiescence snapshot. Recheck after observing in-flight work.
-    check_hot_fork_network_rx(live, action)?;
-    Ok(snapshot)
-}
-
-extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
-    action: u32,
-    status: *mut crate::QemuPluginHotForkBarrierStatus,
-    userdata: *mut std::ffi::c_void,
-) -> std::os::raw::c_int {
-    if status.is_null() || userdata.is_null() {
-        return -libc::EINVAL;
-    }
-    // SAFETY: registration passes the stable pinned runtime-owner address, and
-    // production retains that allocation for the QEMU process lifetime.
-    let state = unsafe { &*userdata.cast::<OwnedCallbackRuntimeState>() };
-    // Arbitrate the entire legacy operation against companion acquisition and
-    // disposition. An entry snapshot alone cannot exclude a later workspace or
-    // ring release racing the new owner.
-    let Ok(_parent_park_arbitration) = state.parent_park.try_lock() else {
-        return -libc::EBUSY;
-    };
-    if state.parent_park_retained.load(Ordering::Acquire) || state.quiescence.parent_hold_owned() {
-        // Legacy QUERY also transfers workspace custody on its ordinary path.
-        // A retained companion is observed only through its own CHECK operation.
-        return -libc::EBUSY;
-    }
-    if action != crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE
-        && state.workers.identity_snapshot().is_err()
-    {
-        return -libc::EPROTO;
-    }
-    let snapshot = collect_hot_fork_state_with_network_rx_check(
-        state
-            .live_vcpu_time
-            .as_ref()
-            .map(|live| live.as_ref().get_ref()),
-        action,
-        || {
-            let snapshot = match action {
-                crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD => {
-                    let snapshot = state.quiescence.hold_hot_fork();
-                    let Ok(rings) = state.setup.mapped_region().hold_hot_fork_ring_io() else {
-                        state.quiescence.release_hot_fork();
-                        return Err(-libc::EPROTO);
-                    };
-                    let workers = state.workers.hold();
-                    if !state.mapping_excluded_from_child.load(Ordering::Acquire) {
-                        if let Err(error) =
-                            state.setup.mapped_region().exclude_from_hot_fork_child()
-                        {
-                            state.workers.release();
-                            let _released_rings =
-                                state.setup.mapped_region().release_hot_fork_ring_io();
-                            state.quiescence.release_hot_fork();
-                            return Err(hot_fork_mapping_disposition_status(error));
-                        }
-                        state
-                            .mapping_excluded_from_child
-                            .store(true, Ordering::Release);
-                    }
-                    if snapshot.in_flight == 0
-                        && workers.parked_mask == workers.worker_mask
-                        && workers.pending_mask == 0
-                        && workers.operations_in_flight == 0
-                        && let Some(live) = state.live_vcpu_time.as_ref()
-                    {
-                        // SAFETY: the complete held callback/worker snapshots
-                        // exclude all access to the transferred workspace.
-                        unsafe { live.hold_fingerprint_workspace() }.map_err(|_| -libc::EPROTO)?;
-                    }
-                    (snapshot, rings, workers)
-                }
-                crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY => {
-                    let snapshot = state.quiescence.snapshot();
-                    let Ok(rings) = state.setup.mapped_region().hot_fork_ring_io_snapshot() else {
-                        return Err(-libc::EPROTO);
-                    };
-                    let workers = state.workers.snapshot();
-                    if snapshot.hot_fork_held
-                        && snapshot.in_flight == 0
-                        && workers.held
-                        && workers.parked_mask == workers.worker_mask
-                        && workers.pending_mask == 0
-                        && workers.operations_in_flight == 0
-                        && let Some(live) = state.live_vcpu_time.as_ref()
-                    {
-                        // SAFETY: this is the same complete held/parked cut.
-                        unsafe { live.hold_fingerprint_workspace() }.map_err(|_| -libc::EPROTO)?;
-                    }
-                    (snapshot, rings, workers)
-                }
-                crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE => {
-                    if let Some(live) = state.live_vcpu_time.as_ref() {
-                        // SAFETY: callbacks/workers remain excluded until the
-                        // same parent workspace has been restored successfully.
-                        unsafe { live.restore_fingerprint_workspace() }
-                            .map_err(|_| -libc::EPROTO)?;
-                    }
-                    if state.mapping_excluded_from_child.load(Ordering::Acquire) {
-                        if let Err(error) = state
-                            .setup
-                            .mapped_region()
-                            .restore_hot_fork_parent_inheritance()
-                        {
-                            return Err(hot_fork_mapping_disposition_status(error));
-                        }
-                        state
-                            .mapping_excluded_from_child
-                            .store(false, Ordering::Release);
-                    }
-                    let Ok(rings) = state.setup.mapped_region().release_hot_fork_ring_io() else {
-                        return Err(-libc::EPROTO);
-                    };
-                    let snapshot = state.quiescence.release_hot_fork();
-                    let workers = state.workers.release();
-                    (snapshot, rings, workers)
-                }
-                _ => return Err(-libc::EINVAL),
-            };
-            Ok(snapshot)
-        },
-    );
-    let (snapshot, rings, workers) = match snapshot {
-        Ok(snapshot) => snapshot,
-        Err(status) => return status,
-    };
-    if snapshot.hot_fork_held != workers.held || workers.identity_failed {
-        return -libc::EPROTO;
-    }
-    let Ok(struct_size) =
-        u32::try_from(std::mem::size_of::<crate::QemuPluginHotForkBarrierStatus>())
-    else {
-        return -libc::EOVERFLOW;
-    };
-    let flags = (u32::from(snapshot.hot_fork_held) * crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_HELD)
-        | (u32::from(snapshot.teardown_closed) * crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_TEARDOWN)
-        | (u32::from(state.mapping_excluded_from_child.load(Ordering::Acquire))
-            * crate::QEMU_PLUGIN_HOT_FORK_BARRIER_FLAG_MAPPING_DONTFORK);
-    // SAFETY: the caller supplied a non-null out pointer for this synchronous
-    // callback. The fixed C/Rust ABI layouts are checked by QEMU before use.
-    unsafe {
-        status.write(crate::QemuPluginHotForkBarrierStatus {
-            schema_version: crate::QEMU_PLUGIN_HOT_FORK_BARRIER_STATUS_VERSION,
-            struct_size,
-            flags,
-            reserved: 0,
-            in_flight: snapshot.in_flight,
-            ring_count: rings.ring_count(),
-            rings_held: rings.held_rings(),
-            ring_producers_in_flight: rings.producers_in_flight(),
-            ring_consumers_in_flight: rings.consumers_in_flight(),
-            worker_mask: workers.worker_mask,
-            parked_worker_mask: workers.parked_mask,
-            pending_worker_mask: workers.pending_mask,
-            worker_operations_in_flight: workers.operations_in_flight,
-            worker_process_id: workers.process_id,
-            worker_membership_generation: workers.membership_generation,
-            worker_thread_ids: workers.thread_ids,
-        });
-    }
-    0
-}
-
-extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
-    action: u32,
-    plan: *const crate::QemuPluginHotForkChildPlan,
-    status: *mut crate::QemuPluginHotForkChildStatus,
-    userdata: *mut std::ffi::c_void,
-) -> std::os::raw::c_int {
-    if status.is_null() || userdata.is_null() {
-        return -libc::EINVAL;
-    }
-
-    // SAFETY: registration passes the stable pinned runtime-owner address.
-    // QEMU invokes initialization/release only while the complete plugin
-    // barrier excludes every callback and inherited worker operation.
-    let retained = unsafe { &*userdata.cast::<OwnedCallbackRuntimeState>() };
-    if retained.parent_park_retained.load(Ordering::Acquire)
-        || retained.quiescence.parent_hold_owned()
-    {
-        // The genuine staged-child companion has not lent this parent borrow.
-        // Refuse before forming a mutable runtime projection or touching a
-        // copied worker mutex/mapping owner.
-        return -libc::EBUSY;
-    }
-    // SAFETY: the existing native child barrier excludes all borrowed runtime
-    // access, and no retained parent companion borrow remains.
-    let state = unsafe { &mut *userdata.cast::<OwnedCallbackRuntimeState>() };
-    if action == crate::QEMU_PLUGIN_HOT_FORK_CHILD_DISARM {
-        if plan.is_null() {
-            return -libc::EINVAL;
-        }
-        // SAFETY: native code retains this fixed synchronous early-entry plan.
-        let plan = unsafe { *plan };
-        let disarmed = match state.disarm_child_device_workspace(&plan) {
-            Ok(disarmed) => disarmed,
-            Err(status) => return status,
-        };
-        // SAFETY: native code retains the non-null fixed output through return.
-        unsafe { status.write(disarmed) };
-        return 0;
-    }
-
-    let result = match action {
-        crate::QEMU_PLUGIN_HOT_FORK_CHILD_INITIALIZE => {
-            if plan.is_null() {
-                return -libc::EINVAL;
-            }
-            // SAFETY: QEMU retains the fixed-layout plan for this synchronous
-            // callback invocation, and the non-null pointer is read only once.
-            let plan = unsafe { *plan };
-            if let Some(rejected) = hot_fork_child_plan_rejection(&plan, state) {
-                // The child's stderr is its branch-private diagnostics stream
-                // by now, so the host learns which check failed.
-                emit_control_worker_diagnostic(&format!(
-                    "hot-fork child plan rejected: {rejected}"
-                ));
-                return -libc::EPROTO;
-            }
-            let Some(identity) = crucible_shmem::SetupRegionBackingIdentity::from_parts(
-                plan.shmem_device,
-                plan.shmem_inode,
-                plan.shmem_length,
-            ) else {
-                return -libc::EPROTO;
-            };
-            // SAFETY: the plan guarantees that QEMU owns this descriptor for
-            // the synchronous callback. Installation duplicates the mapping,
-            // not descriptor ownership, before the callback returns.
-            let private_ring_fd = unsafe { BorrowedFd::borrow_raw(plan.private_ring_fd) };
-            // SAFETY: the process-lifetime owner was pinned before registration
-            // and the mutable reference is not used to move it.
-            let state = unsafe { Pin::new_unchecked(&mut *state) };
-            state.prepare_hot_fork_child(private_ring_fd, identity, plan.into())
-        }
-        crate::QEMU_PLUGIN_HOT_FORK_CHILD_QUERY => Ok(state.hot_fork_child_snapshot()),
-        crate::QEMU_PLUGIN_HOT_FORK_CHILD_RELEASE => state.release_hot_fork_child(),
-        _ => return -libc::EINVAL,
-    };
-    let snapshot = match result {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            emit_control_worker_diagnostic(&format!(
-                "hot-fork child runtime action {action} failed: {error}"
-            ));
-            return hot_fork_child_runtime_status(error);
-        }
-    };
-
-    let Ok(struct_size) = u32::try_from(std::mem::size_of::<crate::QemuPluginHotForkChildStatus>())
-    else {
-        return -libc::EOVERFLOW;
-    };
-    let workers_ready = snapshot.phase == CHILD_RUNTIME_WORKERS_HELD
-        && state.workers.snapshot_ready(&snapshot.workers);
-    let flags = (u32::from(snapshot.callbacks_held)
-        * crate::QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_CALLBACKS_HELD)
-        | (u32::from(snapshot.mapping_installed)
-            * crate::QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_MAPPING_INSTALLED)
-        | (u32::from(workers_ready) * crate::QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_WORKERS_READY)
-        | (u32::from(snapshot.phase == CHILD_RUNTIME_ACTIVE)
-            * crate::QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_ACTIVE)
-        | (u32::from(snapshot.phase == CHILD_RUNTIME_FAILED)
-            * crate::QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_FAILED)
-        | (u32::from(state.workspace_disarmed)
-            * crate::QEMU_PLUGIN_HOT_FORK_CHILD_FLAG_WORKSPACE_DISARMED);
-    // SAFETY: the caller supplied a non-null out pointer for this synchronous
-    // callback. QEMU validates the exact fixed layout before using the result.
-    unsafe {
-        status.write(crate::QemuPluginHotForkChildStatus {
-            schema_version: crate::QEMU_PLUGIN_HOT_FORK_CHILD_STATUS_VERSION,
-            struct_size,
-            flags,
-            phase: u32::from(snapshot.phase),
-            parent_process_generation: snapshot.binding.parent_process_generation,
-            child_process_generation: snapshot.binding.child_process_generation,
-            template_generation: snapshot.binding.template_generation,
-            private_ring_generation: snapshot.binding.private_ring_generation,
-            plugin_endpoint_generation: snapshot.binding.plugin_endpoint_generation,
-            plugin_barrier_generation: snapshot.binding.plugin_barrier_generation,
-            control_socket_cookie: snapshot.binding.control_socket_cookie,
-            wake_eventfd_id: snapshot.binding.wake_eventfd_id,
-            source_mapping_start: snapshot.binding.source_mapping_start,
-            source_mapping_length: snapshot.binding.source_mapping_length,
-            source_mapping_offset: snapshot.binding.source_mapping_offset,
-            worker_mask: snapshot.workers.worker_mask,
-            parked_worker_mask: snapshot.workers.parked_mask,
-            pending_worker_mask: snapshot.workers.pending_mask,
-            worker_operations_in_flight: snapshot.workers.operations_in_flight,
-            account_generation: snapshot.binding.account_generation,
-            workspace_generation: snapshot.binding.workspace_generation,
-            workspace_device: snapshot.binding.workspace_device,
-            workspace_inode: snapshot.binding.workspace_inode,
-            workspace_length: snapshot.binding.workspace_length,
-            workspace_fd: state.claimed_workspace_fd,
-            workspace_reserved: 0,
-        });
-    }
-    0
-}
-
-const HOT_FORK_ENDPOINT_FDINFO_MAX_BYTES: u64 = 4_096;
-
-/// Returns the first check a fork-child plan fails, named for diagnostics.
-///
-/// Every check is a protocol invariant between QEMU's plan and the runtime
-/// state the plugin sealed at registration; the first failure is reported
-/// because later checks describe the same plan.
-fn hot_fork_child_plan_rejection(
-    plan: &crate::QemuPluginHotForkChildPlan,
-    state: &OwnedCallbackRuntimeState,
-) -> Option<&'static str> {
-    let expected_size = std::mem::size_of::<crate::QemuPluginHotForkChildPlan>();
-    let checks: [(&'static str, bool); 23] = [
-        (
-            "schema version",
-            plan.schema_version == crate::QEMU_PLUGIN_HOT_FORK_CHILD_PLAN_VERSION,
-        ),
-        (
-            "struct size",
-            usize::try_from(plan.struct_size).ok() == Some(expected_size),
-        ),
-        ("flags", plan.flags == 0),
-        ("reserved", plan.reserved == 0),
-        (
-            "process generation",
-            hot_fork_child_process_generation_matches(plan, state.process_generation),
-        ),
-        ("template generation", plan.template_generation != 0),
-        ("private ring generation", plan.private_ring_generation != 0),
-        (
-            "plugin endpoint generation",
-            plan.plugin_endpoint_generation != 0,
-        ),
-        (
-            "plugin barrier generation",
-            plan.plugin_barrier_generation != 0,
-        ),
-        ("control socket cookie", plan.control_socket_cookie != 0),
-        ("wake eventfd id", plan.wake_eventfd_id != 0),
-        ("reserved fd", plan.reserved_fd == -1),
-        ("private ring fd", plan.private_ring_fd >= 0),
-        ("control fd", plan.control_fd == state.control_fd),
-        ("wake fd", plan.wake_fd == state.setup.wake_fd().as_raw_fd()),
-        (
-            "private ring fd distinct from control fd",
-            plan.private_ring_fd != plan.control_fd,
-        ),
-        (
-            "private ring fd distinct from wake fd",
-            plan.private_ring_fd != plan.wake_fd,
-        ),
-        (
-            "worker mask",
-            plan.worker_mask == state.workers.worker_mask(),
-        ),
-        (
-            "endpoint identity",
-            hot_fork_child_endpoint_identity_matches(plan),
-        ),
-        (
-            "mapping basis",
-            hot_fork_child_mapping_basis_matches(plan, &state.setup),
-        ),
-        ("workspace disarmed", state.workspace_disarmed),
-        (
-            "workspace fields",
-            device_workspace::child_workspace_matches(plan, state),
-        ),
-        ("plan", true),
-    ];
-    checks
-        .into_iter()
-        .find_map(|(name, holds)| (!holds).then_some(name))
-}
-
-fn hot_fork_child_endpoint_identity_matches(plan: &crate::QemuPluginHotForkChildPlan) -> bool {
-    hot_fork_control_socket_cookie(plan.control_fd).ok() == Some(plan.control_socket_cookie)
-        && hot_fork_wake_eventfd_id(plan.wake_fd).ok() == Some(plan.wake_eventfd_id)
-}
-
-/// Returns the whole-page VMA extent that a shared mapping of `length` spans.
-///
-/// The setup region length is an exact protocol value while QEMU binds and
-/// reports the page-rounded mapping, so the plan is compared at page
-/// granularity.
-fn host_mapping_extent(length: u64) -> u64 {
-    // SAFETY: sysconf reads a process-constant kernel parameter and touches no
-    // memory owned by this crate.
-    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    let page = u64::try_from(page).unwrap_or(4096).max(1);
-    length
-        .checked_add(page - 1)
-        .map_or(u64::MAX, |rounded| rounded - rounded % page)
-}
-
-fn hot_fork_child_mapping_basis_matches(
-    plan: &crate::QemuPluginHotForkChildPlan,
-    setup: &crate::setup::PluginSetupCompletion,
-) -> bool {
-    usize::try_from(plan.source_mapping_start).ok() == Some(setup.mapped_region().mapping_start())
-        && plan.source_mapping_length == host_mapping_extent(setup.mapped_region().region_len())
-        && plan.source_mapping_length == host_mapping_extent(plan.shmem_length)
-        && plan.source_mapping_offset == 0
-        && plan
-            .source_mapping_start
-            .checked_add(plan.source_mapping_length)
-            .is_some()
-}
-
-fn hot_fork_child_process_generation_matches(
-    plan: &crate::QemuPluginHotForkChildPlan,
-    current: u64,
-) -> bool {
-    current != 0
-        && plan.parent_process_generation == current
-        && current.checked_add(1) == Some(plan.child_process_generation)
-}
-
-fn hot_fork_control_socket_cookie(descriptor: std::os::fd::RawFd) -> io::Result<u64> {
-    let mut cookie = 0_u64;
-    let mut length = std::mem::size_of::<u64>() as libc::socklen_t;
-    let status =
-        // SAFETY: `cookie` and `length` are valid output buffers for SO_COOKIE.
-        unsafe {
-            libc::getsockopt(
-                descriptor,
-                libc::SOL_SOCKET,
-                libc::SO_COOKIE,
-                std::ptr::from_mut(&mut cookie).cast(),
-                &mut length,
-            )
-        };
-    if status != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if length as usize != std::mem::size_of::<u64>() || cookie == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "control socket returned an invalid SO_COOKIE",
-        ));
-    }
-    Ok(cookie)
-}
-
-// The versioned child plan carries kernel eventfd-id plus one; zero is absent.
-fn hot_fork_wake_eventfd_id(descriptor: std::os::fd::RawFd) -> io::Result<u64> {
-    let path = format!("/proc/self/fdinfo/{descriptor}");
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(HOT_FORK_ENDPOINT_FDINFO_MAX_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > HOT_FORK_ENDPOINT_FDINFO_MAX_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "eventfd fdinfo exceeds its fixed bound",
-        ));
-    }
-    let text = std::str::from_utf8(&bytes).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("eventfd fdinfo is not UTF-8: {error}"),
-        )
-    })?;
-    hot_fork_eventfd_identity_token_from_fdinfo(text)
-}
-
-fn hot_fork_eventfd_identity_token_from_fdinfo(text: &str) -> io::Result<u64> {
-    let mut identity = None;
-    for line in text.lines() {
-        let Some(value) = line.strip_prefix("eventfd-id:") else {
-            continue;
-        };
-        if identity.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "eventfd fdinfo repeats eventfd-id",
-            ));
-        }
-        let parsed = value.trim().parse::<u64>().map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("eventfd-id is invalid: {error}"),
-            )
-        })?;
-        // Linux may allocate eventfd ID zero. The versioned plan uses a
-        // one-based token so zero can keep denoting an absent identity.
-        identity = Some(parsed.checked_add(1).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "eventfd-id exceeds token range")
-        })?);
-    }
-    identity.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "eventfd fdinfo omits eventfd-id",
-        )
-    })
-}
-
-fn hot_fork_child_runtime_status(error: HotForkChildRuntimeError) -> std::os::raw::c_int {
-    match error {
-        HotForkChildRuntimeError::WrongPhase { .. } => -libc::EALREADY,
-        HotForkChildRuntimeError::Workspace { .. } => -libc::EPROTO,
-        HotForkChildRuntimeError::WorkersNotReady => -libc::EAGAIN,
-        HotForkChildRuntimeError::DuplicateControl { source }
-        | HotForkChildRuntimeError::WorkerSpawn { source, .. } => source
-            .raw_os_error()
-            .filter(|errno| *errno > 0)
-            .map_or(-libc::EIO, |errno| -errno),
-        HotForkChildRuntimeError::TemplateNotQuiescent
-        | HotForkChildRuntimeError::ProcessGeneration
-        | HotForkChildRuntimeError::Mapping { .. }
-        | HotForkChildRuntimeError::TeardownRoute
-        | HotForkChildRuntimeError::WorkerReset { .. }
-        | HotForkChildRuntimeError::FingerprintWorker { .. }
-        | HotForkChildRuntimeError::TeardownSlot { .. }
-        | HotForkChildRuntimeError::WorkerOwner
-        | HotForkChildRuntimeError::RingBarrier => -libc::EPROTO,
-    }
-}
-
-fn hot_fork_mapping_disposition_status(
-    error: crucible_shmem::HotForkMappingDispositionError,
-) -> std::os::raw::c_int {
-    match error {
-        crucible_shmem::HotForkMappingDispositionError::Unsupported => -libc::ENOTSUP,
-        crucible_shmem::HotForkMappingDispositionError::Madvise { source, .. } => source
-            .raw_os_error()
-            .filter(|errno| *errno > 0)
-            .map_or(-libc::EIO, |errno| -errno),
-    }
-}
-
 #[cfg(test)]
 static TEST_POST_REGISTRATION_PANIC_STAGE: AtomicU8 = AtomicU8::new(u8::MAX);
 
@@ -2443,19 +1607,18 @@ impl OwnedCallbackRegistrar for FailClosedOwnedCallbackRegistrar {
 
 /// Process-lifetime state retained after a successful plugin installation.
 ///
-/// Production publication deliberately forgets this owner, so its mapping and
-/// callback allocations remain valid whether the lifecycle reader is blocked,
-/// the teardown worker is draining callbacks, or both have returned after
-/// requesting QEMU shutdown. Non-published owners interrupt and join the reader,
-/// then signal and join the teardown worker in [`Drop`] before Rust may release
-/// any mapped callback state.
+/// Native borrowed endpoints are interrupted only by their authentic owner.
+/// Callback-addressable resources remain retained through process containment;
+/// successful native interruption proves only that worker joins may proceed.
 pub struct PluginRuntimeOwner {
+    resources: std::mem::ManuallyDrop<RuntimeResources>,
+}
+
+struct RuntimeResources {
     plugin_id: QemuPluginId,
     args: PluginArgs,
-    control_interrupt: UnixStream,
-    teardown_interrupt: mpsc::Sender<LiveRuntimeTeardownTrigger>,
     #[cfg(test)]
-    _retained_control: Option<ControlLifecycleStream<UnixStream>>,
+    _retained_control: Option<ControlLifecycleStream<SetupControlSocket>>,
     #[cfg(test)]
     _retained_teardown_receiver: Option<mpsc::Receiver<LiveRuntimeTeardownTrigger>>,
     control_reader: Option<std::thread::JoinHandle<()>>,
@@ -2466,36 +1629,52 @@ pub struct PluginRuntimeOwner {
     _ready: PluginRegistrationReady,
 }
 
+impl RuntimeResources {
+    fn join_finished_workers(&mut self) {
+        join_finished_worker(&mut self.control_reader);
+        join_finished_worker(&mut self.teardown_worker);
+    }
+}
+
+fn join_finished_worker(worker: &mut Option<std::thread::JoinHandle<()>>) {
+    // Socket interruption permits a return, but a held barrier can still park
+    // the same worker. Observe its actual completion before any blocking join.
+    if worker
+        .as_ref()
+        .is_some_and(std::thread::JoinHandle::is_finished)
+        && let Some(worker) = worker.take()
+    {
+        let _joined = worker.join();
+    }
+}
+
 impl Drop for PluginRuntimeOwner {
     fn drop(&mut self) {
-        let _shutdown = self.control_interrupt.shutdown(Shutdown::Both);
-        if let Some(reader) = self.control_reader.take() {
-            let _joined = reader.join();
+        // This calls the native creating-thread cut on the SAME holder.
+        // Expiry/refusal never authorizes shutdown of Rust's borrowed view.
+        if self.resources._callbacks.setup().interrupt_runtime_reader() == Ok(true) {
+            self.resources.join_finished_workers();
         }
-        let _interrupted =
-            self.teardown_interrupt
-                .send(LiveRuntimeTeardownTrigger::RunControlFault {
-                    diagnostic: String::from(
-                        "runtime owner dropped before process-lifetime shutdown",
-                    ),
-                });
-        if let Some(worker) = self.teardown_worker.take() {
-            let _joined = worker.join();
-        }
+        // ManuallyDrop retains parked/unreturned workers, mappings, callbacks
+        // and native-purpose custody. Completed joins do not retire them.
     }
 }
 
 impl PluginRuntimeOwner {
+    fn resources(&self) -> &RuntimeResources {
+        &self.resources
+    }
+
     /// Returns the QEMU-assigned plugin identifier.
     #[must_use]
-    pub const fn plugin_id(&self) -> QemuPluginId {
-        self.plugin_id
+    pub fn plugin_id(&self) -> QemuPluginId {
+        self.resources().plugin_id
     }
 
     /// Returns the validated launch arguments retained by this runtime.
     #[must_use]
-    pub const fn args(&self) -> &PluginArgs {
-        &self.args
+    pub fn args(&self) -> &PluginArgs {
+        &self.resources().args
     }
 }
 
@@ -2627,43 +1806,39 @@ where
         .preflight(&args)
         .map_err(|source| PluginRuntimeInstallError::OwnedCallbacks { source })?;
 
-    let control_stream = crate::abi::duplicate_control_stream(args.sim_fd()).map_err(|source| {
-        PluginRuntimeInstallError::DuplicateControlFd {
-            fd: args.sim_fd(),
-            source,
-        }
-    })?;
-    let control_interrupt = control_stream.try_clone().map_err(|source| {
-        PluginRuntimeInstallError::DuplicateControlFd {
-            fd: args.sim_fd(),
-            source,
-        }
-    })?;
-    let mut control_stream = ControlLifecycleStream::connected_unix_stream(control_stream)
-        .map_err(|source| PluginRuntimeInstallError::ControlLifecycle { source })?;
-    reservation.mark_irreversible();
-    let handshake = sequence
-        .perform_control_handshake_lifecycle(&mut control_stream, &args)
-        .map_err(registration_error)?;
-    let time_control = sequence
-        .request_time_control(capabilities.request_time_control)
-        .map_err(registration_error)?;
-    let setup = sequence
-        .receive_setup_with_descriptors_lifecycle(&mut control_stream)
-        .map_err(registration_error)?;
-    // This is the sole production Source acquisition: the actual SCM receive
-    // above produced this same third OwnedFd. Reserve its inline custody before
-    // invoking native code, including nonzero/ambiguous returns and unwinds.
-    let (input, plan) = crate::setup::separate_received_plan(setup);
+    #[cfg(not(test))]
+    let selected = crate::startup_source::native_setup_selected()
+        .map_err(|source| PluginRuntimeInstallError::StartupSource { source })?;
+    #[cfg(test)]
+    let selected = if reservation
+        .startup_source_model
+        .as_ref()
+        .is_some_and(|model| model.has_setup())
+    {
+        true
+    } else {
+        crate::startup_source::native_setup_selected()
+            .map_err(|source| PluginRuntimeInstallError::StartupSource { source })?
+    };
+    if !selected {
+        return Err(PluginRuntimeInstallError::StartupSource {
+            source: crate::StartupSourceError::Ownership {
+                reason: "current native setup carrier is required",
+            },
+        });
+    }
+    // Retain the Source before its acquisition; neither refusal nor unwind
+    // can turn native-owned aliases into Rust close/re-receive custody.
     reservation.startup_source =
-        Some(crate::startup_source::InstallerStartupSource::retain_received_plan(plugin_id, plan));
+        Some(crate::startup_source::InstallerStartupSource::retain_native_setup(plugin_id));
+    reservation.mark_irreversible();
     let original =
         reservation
             .startup_source
             .as_mut()
             .ok_or(PluginRuntimeInstallError::StartupSource {
                 source: crate::StartupSourceError::Ownership {
-                    reason: "reserved original startup custody is absent",
+                    reason: "selected original startup custody is absent",
                 },
             })?;
     #[cfg(test)]
@@ -2671,8 +1846,56 @@ where
         original.inject_model(model);
     }
     original
-        .acquire()
+        .acquire_native_setup()
         .map_err(|source| PluginRuntimeInstallError::StartupSource { source })?;
+    let control_stream = original
+        .control_socket()
+        .map_err(|source| PluginRuntimeInstallError::StartupSource { source })?;
+    if std::os::fd::AsRawFd::as_raw_fd(&control_stream) != args.sim_fd() {
+        return Err(PluginRuntimeInstallError::StartupSource {
+            source: crate::StartupSourceError::Ownership {
+                reason: "selected control differs from launch arguments",
+            },
+        });
+    }
+    let mut control_stream = ControlLifecycleStream::connected_unix_stream(control_stream)
+        .map_err(|source| PluginRuntimeInstallError::ControlLifecycle { source })?;
+    reservation.mark_irreversible();
+    let handshake_result = sequence.perform_control_handshake_lifecycle(&mut control_stream, &args);
+    // Observe the postcut even on primary I/O failure; it cannot replace the
+    // first handshake cause. Native retains any original refusal independently.
+    let handshake_post = reservation
+        .startup_source
+        .as_ref()
+        .map(|original| original.check());
+    let handshake = handshake_result.map_err(registration_error)?;
+    if let Some(post) = handshake_post {
+        post.map_err(|source| PluginRuntimeInstallError::StartupSource { source })?;
+    }
+    let time_control = sequence
+        .request_time_control(capabilities.request_time_control)
+        .map_err(registration_error)?;
+    let original =
+        reservation
+            .startup_source
+            .as_ref()
+            .ok_or(PluginRuntimeInstallError::StartupSource {
+                source: crate::StartupSourceError::Ownership {
+                    reason: "selected original startup custody is absent",
+                },
+            })?;
+    let input = sequence
+        .accept_native_setup(&mut control_stream, original)
+        .map_err(registration_error)?;
+    let original =
+        reservation
+            .startup_source
+            .as_ref()
+            .ok_or(PluginRuntimeInstallError::StartupSource {
+                source: crate::StartupSourceError::Ownership {
+                    reason: "original startup custody is absent before mapping",
+                },
+            })?;
     let mut setup = {
         let mut setup_writer = PluginSetupWriter(&mut control_stream);
         sequence
@@ -2689,9 +1912,22 @@ where
                 },
             })?;
     setup.retain_startup_source(original);
+    // Fixed-control admission precedes runtime birth and stays with the same
+    // Source for the later controller and initial pager prebirth check.
+    setup
+        .reserve_installer_control_purpose()
+        .map_err(|source| PluginRuntimeInstallError::StartupSource { source })?;
+    let runtime_requests = OwnedCallbackRuntimeState::allocation_requests()
+        .map_err(|source| PluginRuntimeInstallError::StartupSource { source })?;
+    setup
+        .reserve_runtime_allocations(runtime_requests)
+        .map_err(|source| PluginRuntimeInstallError::StartupSource { source })?;
 
     let (teardown_sender, teardown_receiver) = mpsc::channel();
     let teardown_router = LiveRuntimeTeardownRouter::new(teardown_sender.clone());
+    setup
+        .check_runtime_allocations()
+        .map_err(|source| PluginRuntimeInstallError::StartupSource { source })?;
     let callback_state = OwnedCallbackRuntimeState::pin(
         plugin_worker_mask(&args),
         setup,
@@ -2706,6 +1942,15 @@ where
     let post_registration = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut retained = CallbackStateRetention::new(callback_state);
         maybe_inject_post_registration_panic(post_registration_stage);
+        // Registration retains this same pinned allocation before the RAM
+        // actor can be born. It acquires no controller or service proof here.
+        if let Err(status) = checkpoint::register(plugin_id, retained.registering_mut()?) {
+            return Err(fail_post_registration_before_ready_ack_lifecycle(
+                &mut control_stream,
+                PluginRuntimeInstallError::CheckpointPagerRejected { status },
+                &mut acknowledgement_state,
+            ));
+        }
         let registration_mask =
             match callback_registrar.register(&args, retained.registering_mut()?) {
                 Ok(registration_mask) => registration_mask,
@@ -2893,6 +2138,12 @@ where
             if let Err(source) = control_stream.enter_run_via_shared_memory() {
                 fatal_policy.terminate(PluginRuntimeInstallError::ControlLifecycle { source });
             }
+            match control_stream.plugin_run_io_mut() {
+                Ok(control) => control.enter_run(),
+                Err(source) => {
+                    fatal_policy.terminate(PluginRuntimeInstallError::ControlLifecycle { source })
+                }
+            }
             #[cfg(not(test))]
             let mut callbacks_registered = callbacks_registered;
             #[cfg(not(test))]
@@ -2955,11 +2206,9 @@ where
             #[cfg(test)]
             let (retained_control, control_reader, teardown_worker) =
                 (Some(control_stream), None, None);
-            Ok(PluginRuntimeOwner {
+            let resources = RuntimeResources {
                 plugin_id,
                 args,
-                control_interrupt,
-                teardown_interrupt: teardown_sender,
                 #[cfg(test)]
                 _retained_control: retained_control,
                 #[cfg(test)]
@@ -2970,6 +2219,9 @@ where
                 _callbacks: callbacks_registered,
                 _boot_release: boot_release,
                 _ready: ready,
+            };
+            Ok(PluginRuntimeOwner {
+                resources: std::mem::ManuallyDrop::new(resources),
             })
         }
         Ok(Err(error)) => {
@@ -3168,14 +2420,6 @@ pub enum PluginRuntimeInstallError {
         /// Same retained worker failure or missing original Setup authority.
         source: LiveVcpuTimeCallbackError,
     },
-    /// The inherited control descriptor could not be duplicated safely.
-    #[error("duplicating plugin control fd {fd} failed: {source}")]
-    DuplicateControlFd {
-        /// Rejected inherited descriptor.
-        fd: i32,
-        /// Underlying descriptor error.
-        source: std::io::Error,
-    },
     /// The lifecycle-aware control stream could not be advanced safely.
     #[error("plugin control lifecycle failed: {source}")]
     ControlLifecycle {
@@ -3248,6 +2492,12 @@ pub enum PluginRuntimeInstallError {
     /// Native refused registration of the actual parent drain companion.
     #[error("parent park/drain companion registration refused ({status})")]
     ParentParkDrainRejected {
+        /// Exact signed native registrar status.
+        status: i32,
+    },
+    /// Native refused registration of the retained checkpoint pager owner.
+    #[error("checkpoint pager registration refused ({status})")]
+    CheckpointPagerRejected {
         /// Exact signed native registrar status.
         status: i32,
     },

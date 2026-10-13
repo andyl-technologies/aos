@@ -31,6 +31,7 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
                 crucible_daemon::campaign_process::CampaignProcessAdmissionError::Store(source) => {
                     CliError::SqliteStartup(source)
                 }
+                crucible_daemon::campaign_process::CampaignProcessAdmissionError::ExecutorPurpose(source) => serve_error(source.to_string()),
                 #[cfg(feature = "private-parent-fixture")]
                 source @ (crucible_daemon::campaign_process::CampaignProcessAdmissionError::ParentAdmission(_)
                 | crucible_daemon::campaign_process::CampaignProcessAdmissionError::Parent(_)) => {
@@ -68,11 +69,18 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
             args,
             shutdown,
             process.heap(),
+            Some(&process),
         ))
     } else {
         let decoding = crate::cli_input_resources::original_budget()?;
         let admitted = crucible_api::admit_future(
-            run_serve_with_process_heap_until_shutdown(cli, args, shutdown, process.heap()),
+            run_serve_with_process_heap_until_shutdown(
+                cli,
+                args,
+                shutdown,
+                process.heap(),
+                Some(&process),
+            ),
             decoding,
         )
         .map_err(|source| CliError::LifecycleAdmission(Box::new(source)))?;
@@ -85,6 +93,7 @@ async fn run_serve_with_process_heap_until_shutdown<S>(
     args: &ServeArgs,
     shutdown: S,
     process_heap: &crucible_daemon::campaign_store_composition::SqliteProcessHeap,
+    process: Option<&crucible_daemon::campaign_process::CampaignProcessOwner>,
 ) -> Result<(), CliError>
 where
     S: Future<Output = Result<(), CliError>> + Send + 'static,
@@ -202,6 +211,7 @@ where
             Some(campaign_debug_lifecycle),
             None,
             Some(process_heap),
+            process,
         )?;
         if let Some((owner, verify_findings)) = campaign_service
             .as_ref()
@@ -251,7 +261,7 @@ where
     }
     let control_plane = Arc::new(tokio::sync::Mutex::new(control_plane));
     let campaign_service =
-        open_local_campaign_service_with_heap(args, None, None, None, Some(process_heap))?;
+        open_local_campaign_service_with_heap(args, None, None, None, Some(process_heap), process)?;
     announce_campaign_service(cli, campaign_service.as_ref());
     run_bound_daemon_services(
         listener,
@@ -336,6 +346,7 @@ fn open_local_campaign_service_with_heap(
     campaign_debug_lifecycle: Option<Arc<dyn crucible_daemon::CampaignDebugLifecycleAdmission>>,
     private_target_attempt: Option<crucible_campaign::AttemptId>,
     process_heap: Option<&crucible_daemon::campaign_store_composition::SqliteProcessHeap>,
+    process_owner: Option<&crucible_daemon::campaign_process::CampaignProcessOwner>,
 ) -> Result<Option<PreparedLocalCampaignService>, CliError> {
     validate_campaign_runtime_attachments(args)?;
     let (Some(socket), Some(state), Some(policy)) = (
@@ -434,8 +445,8 @@ fn open_local_campaign_service_with_heap(
                 production_qemu.ok_or_else(|| {
                     serve_error("--campaign-packaged-executor requires --production-qemu")
                 })?,
-                process_heap.ok_or_else(|| {
-                    serve_error("packaged catalog requires the original process heap")
+                process_owner.ok_or_else(|| {
+                    serve_error("normal packaged executor requires its authenticated main owner")
                 })?,
             )?)
         }
@@ -1129,7 +1140,7 @@ where
 {
     let heap = crucible_cas::content_store::fixture_sqlite_heap()
         .map_err(|error| serve_error(format!("test process heap: {error}")))?;
-    run_serve_with_process_heap_until_shutdown(cli, args, shutdown, &heap).await
+    run_serve_with_process_heap_until_shutdown(cli, args, shutdown, &heap, None).await
 }
 
 #[cfg(test)]
@@ -1147,6 +1158,7 @@ pub(crate) fn open_local_campaign_service(
         campaign_debug_lifecycle,
         private_target_attempt,
         Some(&heap),
+        None,
     )
 }
 

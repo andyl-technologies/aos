@@ -3,6 +3,16 @@
 //! Reports contain logical identities and checked scalar capacities only. Host
 //! addresses and native mapping layouts remain private to the GPL process.
 //! Every region response is tied to the report's immutable topology generation.
+//!
+//! ```text
+//! InventoryBody = U8(marker=1|2)
+//!   || BE64(topology_generation, logical_bytes, native_metadata_bytes,
+//!           native_scratch_bytes, rust_metadata_required_bytes)
+//!   || BE64(existing_tasks, existing_fds, service_tasks, future_tasks, future_fds)
+//!   || BE32(region_count) || U8(granted) || optional portable region
+//! ```
+//! The Rust request at byte 33 of this body belongs to the same immutable
+//! inventory. It excludes native and installer purposes and never issues credit.
 
 use super::RamControlError;
 
@@ -72,10 +82,14 @@ pub struct RamControlOwnerInventory {
 
 impl RamControlOwnerInventory {
     pub(super) fn validate(self) -> Result<(), RamControlError> {
-        if self.existing_tasks == 0 || self.existing_tasks > 65536
-            || self.existing_file_descriptors == 0 || self.existing_file_descriptors > 65536
+        if self.existing_tasks == 0
+            || self.existing_tasks > 65536
+            || self.existing_file_descriptors == 0
+            || self.existing_file_descriptors > 65536
             || self.registered_service_tasks > self.existing_tasks
-            || self.prospective_tasks > 65536 || self.prospective_file_descriptors > 65536 {
+            || self.prospective_tasks > 65536
+            || self.prospective_file_descriptors > 65536
+        {
             return Err(RamControlError::InvalidFrame);
         }
         Ok(())
@@ -95,6 +109,11 @@ pub struct RamControlInventoryReport {
     pub native_metadata_bytes: u64,
     /// Actual native observation/population scratch requirement.
     pub native_scratch_bytes: u64,
+    /// Complete executor Rust metadata request for this immutable inventory.
+    ///
+    /// Includes live and staged pager bodies; excludes separately owned native
+    /// metadata and installer controls. This request never issues resource credit.
+    pub rust_metadata_required_bytes: u64,
     /// Authenticated actual owner inventory and explicit future backend roles.
     pub owner_resources: RamControlOwnerInventory,
     /// Whether the authenticated initial grant was accepted by the native owner.

@@ -339,6 +339,10 @@ impl PhysicalQuotaStore {
 }
 
 impl ImmutableBlobBackend for PhysicalQuotaStore {
+    fn prefers_wide_publication_groups(&self) -> bool {
+        self.child.prefers_wide_publication_groups()
+    }
+
     fn read_merkle_node_with_boundary(
         &self,
         original: &crate::owned_decode::DecodeBudget,
@@ -408,7 +412,7 @@ impl ImmutableBlobBackend for PhysicalQuotaStore {
         account
             .verify_live()
             .map_err(|error| admission_under(account, error))?;
-        if objects.len() > 64 {
+        if objects.len() > super::batch::MAX_PUBLICATION_OBJECTS {
             return Err(StoreError::Quota);
         }
         boundary()?;

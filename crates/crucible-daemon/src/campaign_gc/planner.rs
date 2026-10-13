@@ -587,6 +587,9 @@ where
     inventory_transfers(root_sources.transfers, &mut roots, operation)?;
     let root_manifest = CampaignGcRootManifest::new(roots.unique.iter().copied(), operation)?;
 
+    let close =
+        super::reachability::ClosePurpose::<CampaignGcPlanningError<L::Error>>::new(operation)
+            .map_err(CampaignGcPlanningError::Reachability)?;
     let reachable = Reachability::authenticate(
         repository,
         roots.ordinary.iter().copied(),
@@ -595,47 +598,55 @@ where
         operation,
     )
     .map_err(CampaignGcPlanningError::Reachability)?;
-    let reachable_objects = reachable.len();
+    let result = (|| {
+        let reachable_objects = reachable.len();
 
-    let mut planned = plan_physical(physical, &reachable, operation)?;
-    planned.candidates.retain(|candidate| {
-        !matches!(
-            candidate.reason(),
-            CampaignGcCandidateReason::ReachableCache { .. }
-        ) || !roots.pending_write_back.contains(&candidate.id())
-    });
-    planned.reachable_cache_candidates = u64::try_from(
-        planned
-            .candidates
-            .iter()
-            .filter(|candidate| {
-                matches!(
-                    candidate.reason(),
-                    CampaignGcCandidateReason::ReachableCache { .. }
-                )
-            })
-            .count(),
+        let mut planned = plan_physical(physical, &reachable, operation)?;
+        planned.candidates.retain(|candidate| {
+            !matches!(
+                candidate.reason(),
+                CampaignGcCandidateReason::ReachableCache { .. }
+            ) || !roots.pending_write_back.contains(&candidate.id())
+        });
+        planned.reachable_cache_candidates = u64::try_from(
+            planned
+                .candidates
+                .iter()
+                .filter(|candidate| {
+                    matches!(
+                        candidate.reason(),
+                        CampaignGcCandidateReason::ReachableCache { .. }
+                    )
+                })
+                .count(),
+        )
+        .map_err(|_| CampaignGcPlanningError::Manifest(CampaignGcManifestError::EntryLimit))?;
+        let candidate_manifest = CampaignGcCandidateManifest::new(planned.candidates)?
+            .with_credit(output_credit.clone());
+        let plan = CampaignGcPlan::new(
+            store_graph,
+            root_manifest.id(),
+            ref_summary,
+            ledger_summary,
+            candidate_manifest.summary(),
+            planned.physical_basis,
+        )?
+        .with_credit(output_credit);
+        Ok(CampaignGcPreparedPlan {
+            plan,
+            roots: root_manifest,
+            candidates: candidate_manifest,
+            reachable_objects,
+            unreachable_candidates: planned.unreachable_candidates,
+            reachable_cache_candidates: planned.reachable_cache_candidates,
+        })
+    })();
+    reachable.finish(
+        close,
+        result,
+        operation,
+        CampaignGcPlanningError::Reachability,
     )
-    .map_err(|_| CampaignGcPlanningError::Manifest(CampaignGcManifestError::EntryLimit))?;
-    let candidate_manifest =
-        CampaignGcCandidateManifest::new(planned.candidates)?.with_credit(output_credit.clone());
-    let plan = CampaignGcPlan::new(
-        store_graph,
-        root_manifest.id(),
-        ref_summary,
-        ledger_summary,
-        candidate_manifest.summary(),
-        planned.physical_basis,
-    )?
-    .with_credit(output_credit);
-    Ok(CampaignGcPreparedPlan {
-        plan,
-        roots: root_manifest,
-        candidates: candidate_manifest,
-        reachable_objects,
-        unreachable_candidates: planned.unreachable_candidates,
-        reachable_cache_candidates: planned.reachable_cache_candidates,
-    })
 }
 
 struct PlannedPhysical {

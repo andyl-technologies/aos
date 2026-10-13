@@ -51,6 +51,22 @@ impl<S> QemuQmpMachineControlChannel for QemuQmpExactSnapshotControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
+    #[cfg(target_os = "linux")]
+    fn bind_checkpoint_original(
+        &mut self,
+        original: crate::CheckpointOriginalLoan,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate.bind_checkpoint_original(original)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn begin_checkpoint_receiving(
+        &mut self,
+        receipt: crate::ram_control::CheckpointArmReceipt,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate.begin_checkpoint_receiving(receipt)
+    }
+
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     fn parent_park_stopped_generation(
         &mut self,
@@ -184,6 +200,13 @@ where
 
     fn is_paused_for_hot_fork_template(&mut self) -> Result<bool, QemuNodeChannelError> {
         self.vmstate.is_paused_for_hot_fork_template()
+    }
+
+    fn is_stopped_for_transfer(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<bool, QemuNodeChannelError> {
+        self.vmstate.is_stopped_for_transfer(original)
     }
 
     fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
@@ -803,7 +826,7 @@ pub(crate) struct QemuNodeFactoryRuntime<A, R> {
     async_policy: QemuAsyncDriverPolicy,
     crash_detector: QemuCrashDetector,
     host_io_runtime: R,
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     original_native_binding: Option<crate::linux_attempt_host::OriginalNativeNodeBinding>,
 }
 
@@ -825,12 +848,12 @@ impl<A, R> QemuNodeFactoryRuntime<A, R> {
             async_policy,
             crash_detector,
             host_io_runtime,
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            #[cfg(target_os = "linux")]
             original_native_binding: None,
         }
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn with_original_binding(
         mut self,
         binding: crate::linux_attempt_host::OriginalNativeNodeBinding,
@@ -872,7 +895,7 @@ where
         async_policy,
         crash_detector,
         host_io_runtime,
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        #[cfg(target_os = "linux")]
         original_native_binding,
     } = runtime;
     let prepared_setup = prepare_qemu_node_setup(setup, shmem_config, send_authorizer)?;
@@ -885,7 +908,7 @@ where
             async_policy,
             crash_detector,
             host_io_runtime,
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            #[cfg(target_os = "linux")]
             original_native_binding,
         },
     ))
@@ -987,7 +1010,7 @@ where
         async_policy,
         crash_detector,
         mut host_io_runtime,
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        #[cfg(target_os = "linux")]
         original_native_binding,
     } = runtime;
     if let Some(supervisor) = host_io_runtime.host_operation_supervisor() {
@@ -1237,7 +1260,7 @@ where
             async_policy,
             crash_detector,
             host_io_runtime,
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            #[cfg(target_os = "linux")]
             original_native_binding,
         },
     );
@@ -1297,7 +1320,7 @@ struct PreparedNodeRuntime<R> {
     async_policy: QemuAsyncDriverPolicy,
     crash_detector: QemuCrashDetector,
     host_io_runtime: R,
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     original_native_binding: Option<crate::linux_attempt_host::OriginalNativeNodeBinding>,
 }
 
@@ -1316,7 +1339,7 @@ where
         async_policy,
         crash_detector,
         host_io_runtime,
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        #[cfg(target_os = "linux")]
         original_native_binding,
     } = runtime;
     let qmp_machine_control = QemuQmpExactSnapshotControlChannel::new(qmp);
@@ -1324,7 +1347,7 @@ where
         prepared_setup.plugin_control,
         prepared_setup.shmem_hot_path,
         qmp_machine_control,
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        #[cfg(target_os = "linux")]
         original_native_binding,
     );
 

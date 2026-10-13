@@ -76,6 +76,8 @@ mod linux_attempt_storage;
 // Raw cgroup mutation stays internal; `linux_attempt_process` exposes only the
 // sealed process owner needed by the still-separate quota/session composition.
 mod linux_cgroup;
+#[cfg(target_os = "linux")]
+pub use linux_cgroup::LinuxQemuMemoryLimitFailure;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 mod private_parent_vm;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
@@ -198,20 +200,21 @@ pub use launch::{
 pub use linux_attempt_host::ControlledOriginalActorParkFixture;
 #[cfg(target_os = "linux")]
 pub use linux_attempt_host::{
-    AdmittedHostConfigurationError, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
-    LinuxQemuAttemptHostOwner, LinuxQemuNativeResourceController, LinuxQemuNativeResourceError,
+    AdmittedHostConfigurationError, InstalledNodeLaunchIssuer, LinuxQemuAttemptHostConfig,
+    LinuxQemuAttemptHostFactory, LinuxQemuAttemptHostOwner, LinuxQemuForkTargetPermit,
+    LinuxQemuNativeResourceController, LinuxQemuNativeResourceError, OriginalActorAccountError,
+    OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
+    OriginalNativeControlRetirement, OriginalNativePhysicalRetirement,
 };
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 #[doc(hidden)]
 pub use linux_attempt_host::{
-    OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorCatalogAccounts,
-    OriginalActorCatalogPurpose, OriginalActorDecodeOwner, OriginalActorParkCaller,
-    OriginalActorParkCallerLease, OriginalActorParkImportError, OriginalActorParkImports,
-    OriginalActorParkQuiescence, OriginalActorParkQuiescenceError,
-    OriginalActorServiceLaunchPurpose, OriginalActorServicePolicy, OriginalBoundBackingObservation,
-    OriginalCatalogAuditError, OriginalCatalogPhysicalAudit, OriginalGuestServiceHandle,
-    OriginalGuestServiceOwner, OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
-    OriginalNativeControlRetirement, OriginalNativePhysicalRetirement,
+    OriginalActorAccountCustody, OriginalActorCatalogAccounts, OriginalActorCatalogPurpose,
+    OriginalActorDecodeOwner, OriginalActorParkCaller, OriginalActorParkCallerLease,
+    OriginalActorParkImportError, OriginalActorParkImports, OriginalActorParkQuiescence,
+    OriginalActorParkQuiescenceError, OriginalActorServiceLaunchPurpose,
+    OriginalActorServicePolicy, OriginalBoundBackingObservation, OriginalCatalogAuditError,
+    OriginalCatalogPhysicalAudit, OriginalGuestServiceHandle, OriginalGuestServiceOwner,
 };
 #[cfg(target_os = "linux")]
 pub use linux_attempt_process::{
@@ -273,7 +276,10 @@ pub use node::{
 #[cfg(unix)]
 pub use node::{QemuHotForkPluginRingImage, QemuVirtualTimerFireWitness};
 #[cfg(target_os = "linux")]
-pub use node::{QemuProcessIdentity, linux_process_identity, quarantine_orphaned_qemu_process};
+pub use node::{
+    QemuProcessIdentity, QemuStoppedTransferError, linux_process_identity,
+    quarantine_orphaned_qemu_process,
+};
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 pub use node::{
     QemuTestHotForkIsolationFault, QemuTestHotForkOutcome, QemuTestHotForkSourceError,
@@ -463,3 +469,9 @@ pub use supervision::{
 
 /// World-derived device producer identity retained by live I/O queues.
 pub use supervision::{QemuWorldIoBinding, QemuWorldIoBindingError};
+
+#[cfg(target_os = "linux")]
+pub use node::{
+    CheckpointArmLoan, CheckpointOriginalCause, CheckpointOriginalError, CheckpointOriginalLoan,
+    CheckpointTransportCause, QemuCheckpointDeviceReader,
+};

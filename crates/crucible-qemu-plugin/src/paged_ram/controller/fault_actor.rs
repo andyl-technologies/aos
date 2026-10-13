@@ -15,7 +15,11 @@ impl LivePagerController {
         if self.fault_actor_test_entitlement != Some(entitlement) {
             return self.reply(&mut state, RamControlDisposition::Unsupported);
         }
-        if state.fork_preparing || state.policy_applying {
+        if state.fork_preparing
+            || state.policy_applying
+            || (action == RamControlFaultActorAction::RequestExit
+                && state.checkpoint_producer_held(&self.state, &self.operations))
+        {
             return self.reply(&mut state, RamControlDisposition::AdmissionRefused);
         }
         if state

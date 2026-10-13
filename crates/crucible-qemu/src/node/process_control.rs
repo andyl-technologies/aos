@@ -86,9 +86,40 @@ pub trait QemuNodeExternalProcessControl: fmt::Debug + Send {
     fn reap(&mut self, timeout: Duration) -> Result<QemuReap, QemuShutdownTargetError>;
 }
 
+/// Keeps checkpoint custody with the actual externally parented process loan.
+///
+/// The real direct parent retains wait authority. Dropping this adapter cannot
+/// manufacture a reap or return native custody from a signal request.
+#[derive(Debug)]
+pub(super) struct ExternalNodeProcess {
+    control: Box<dyn QemuNodeExternalProcessControl>,
+    #[cfg(target_os = "linux")]
+    checkpoint_original: Option<super::exact_snapshot::capture_original::CheckpointOriginal>,
+}
+
+impl ExternalNodeProcess {
+    #[cfg(target_os = "linux")]
+    fn observe_reap(&mut self) {
+        if self.control.reaped()
+            && let Some(original) = self.checkpoint_original.as_mut()
+        {
+            original.retire_after_reap();
+        }
+    }
+}
+
+impl Drop for ExternalNodeProcess {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        self.observe_reap();
+        // Without a real parent receipt, the original's receiving destructor
+        // retains its actual event, operation, and account through containment.
+    }
+}
+
 pub(super) enum QemuNodeProcessControl {
     Direct(QemuNodeChild),
-    External(Box<dyn QemuNodeExternalProcessControl>),
+    External(ExternalNodeProcess),
 }
 
 impl fmt::Debug for QemuNodeProcessControl {
@@ -101,17 +132,45 @@ impl fmt::Debug for QemuNodeProcessControl {
 }
 
 impl QemuNodeProcessControl {
+    pub(super) fn external(control: Box<dyn QemuNodeExternalProcessControl>) -> Self {
+        Self::External(ExternalNodeProcess {
+            control,
+            #[cfg(target_os = "linux")]
+            checkpoint_original: None,
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn checkpoint_original(
+        &self,
+    ) -> Option<&super::exact_snapshot::capture_original::CheckpointOriginal> {
+        match self {
+            Self::Direct(child) => child.checkpoint_original.as_ref(),
+            Self::External(child) => child.checkpoint_original.as_ref(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn checkpoint_original_slot(
+        &mut self,
+    ) -> &mut Option<super::exact_snapshot::capture_original::CheckpointOriginal> {
+        match self {
+            Self::Direct(child) => &mut child.checkpoint_original,
+            Self::External(child) => &mut child.checkpoint_original,
+        }
+    }
+
     pub(super) fn reaped(&self) -> bool {
         match self {
             Self::Direct(child) => child.reaped(),
-            Self::External(control) => control.reaped(),
+            Self::External(child) => child.control.reaped(),
         }
     }
 
     pub(super) fn process_id(&self) -> u32 {
         match self {
             Self::Direct(child) => child.process_id(),
-            Self::External(control) => control.process_id(),
+            Self::External(child) => child.control.process_id(),
         }
     }
 
@@ -120,21 +179,26 @@ impl QemuNodeProcessControl {
     ) -> Result<Option<ExitStatus>, QemuShutdownTargetError> {
         match self {
             Self::Direct(child) => child.try_wait_natural_exit(),
-            Self::External(control) => control.try_wait_natural_exit(),
+            Self::External(child) => {
+                let result = child.control.try_wait_natural_exit();
+                #[cfg(target_os = "linux")]
+                child.observe_reap();
+                result
+            }
         }
     }
 
     pub(super) fn send_sigterm(&mut self) -> Result<(), QemuShutdownTargetError> {
         match self {
             Self::Direct(child) => child.send_sigterm(),
-            Self::External(control) => control.send_sigterm(),
+            Self::External(child) => child.control.send_sigterm(),
         }
     }
 
     pub(super) fn send_sigkill(&mut self) -> Result<(), QemuShutdownTargetError> {
         match self {
             Self::Direct(child) => child.send_sigkill(),
-            Self::External(control) => control.send_sigkill(),
+            Self::External(child) => child.control.send_sigkill(),
         }
     }
 
@@ -145,14 +209,24 @@ impl QemuNodeProcessControl {
     ) -> Result<QemuChildWait, QemuShutdownTargetError> {
         match self {
             Self::Direct(child) => child.wait_for_exit(rung, timeout),
-            Self::External(control) => control.wait_for_exit(rung, timeout),
+            Self::External(child) => {
+                let result = child.control.wait_for_exit(rung, timeout);
+                #[cfg(target_os = "linux")]
+                child.observe_reap();
+                result
+            }
         }
     }
 
     pub(super) fn reap(&mut self, timeout: Duration) -> Result<QemuReap, QemuShutdownTargetError> {
         match self {
             Self::Direct(child) => child.reap(timeout),
-            Self::External(control) => control.reap(timeout),
+            Self::External(child) => {
+                let result = child.control.reap(timeout);
+                #[cfg(target_os = "linux")]
+                child.observe_reap();
+                result
+            }
         }
     }
 

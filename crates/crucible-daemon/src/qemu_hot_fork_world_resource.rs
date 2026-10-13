@@ -47,6 +47,7 @@ where
     G: QemuAttemptResourceGuard,
 {
     guard: G,
+    source_world: Option<Arc<Mutex<crucible_api::ProductionVmHotForkSourceWorld>>>,
     maximum_nodes: usize,
     issued: BTreeSet<ProductionVmNodeGeneration>,
     released: BTreeSet<ProductionVmNodeGeneration>,
@@ -55,6 +56,30 @@ where
     auxiliary_lifecycle_active: bool,
     terminal: bool,
     terminal_failure: Option<String>,
+}
+
+impl<G> QemuHotForkWorldResourceState<G>
+where
+    G: QemuAttemptProcessResourceGuard,
+{
+    // All target generations use the same retained Source quota. Ordinary
+    // source-free owners remain available for non-target component fixtures.
+    fn prepare_generation_run_directory(
+        &mut self,
+        target_contract: &QemuChildProcessContract,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        #[cfg(target_os = "linux")]
+        if let Some(source_world) = &self.source_world {
+            let mut source = source_world.lock().map_err(|_| {
+                world_resource_error("retained source-world ownership lock is poisoned")
+            })?;
+            return source
+                .prepare_fork_target_run_directory(target_contract, requirements)
+                .map_err(|error| world_resource_error(error.to_string()));
+        }
+        self.guard.prepare_generation_run_directory(requirements)
+    }
 }
 
 /// Indivisible attempt-resource owner shared by every child in one forked World.
@@ -113,6 +138,7 @@ where
         Ok(Self {
             state: Arc::new(Mutex::new(QemuHotForkWorldResourceState {
                 guard,
+                source_world: None,
                 maximum_nodes,
                 issued: BTreeSet::new(),
                 released: BTreeSet::new(),
@@ -125,6 +151,31 @@ where
             resources,
             cancellation,
         })
+    }
+
+    /// Retains the complete source alongside the actual same-family target guard.
+    ///
+    /// # Errors
+    /// Refuses an invalid world bound while retaining both physical authorities.
+    pub(crate) fn new_fork_target(
+        guard: G,
+        maximum_nodes: usize,
+        source_world: Arc<Mutex<crucible_api::ProductionVmHotForkSourceWorld>>,
+    ) -> Result<Self, QemuVmRealizationError> {
+        let owner = match Self::new(guard, maximum_nodes) {
+            Ok(owner) => owner,
+            Err(error) => {
+                std::mem::forget(source_world);
+                return Err(error);
+            }
+        };
+        let mut state = owner
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("new target world resource registry is poisoned"))?;
+        state.source_world = Some(source_world);
+        drop(state);
+        Ok(owner)
     }
 
     /// Reserves one exact child generation before its QEMU fork transaction.
@@ -440,6 +491,110 @@ impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldLifecycleGuard<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    #[cfg(target_os = "linux")]
+    fn bind_fork_target_ram_custody(
+        &mut self,
+        contract: &QemuChildProcessContract,
+        registration: &crucible_qemu::ram_control::RamControlRegistration,
+        supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        guest_ram_bytes: u64,
+        custody: &crucible_qemu::QemuRamLaunchCustody,
+    ) -> Result<(), QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal {
+            return Err(world_resource_error(
+                "target RAM keeper launcher is terminal",
+            ));
+        }
+        state.guard.bind_fork_target_ram_custody(
+            contract,
+            registration,
+            supervisor,
+            guest_ram_bytes,
+            custody,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn fork_target_is_owned(&self) -> bool {
+        self.state
+            .lock()
+            .map_or(true, |state| state.guard.fork_target_is_owned())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn lend_fork_target_permit(
+        &mut self,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal {
+            return Err(world_resource_error("target source launcher is terminal"));
+        }
+        state.guard.lend_fork_target_permit()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_run_directory(
+        &mut self,
+        target_contract: &QemuChildProcessContract,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal {
+            return Err(world_resource_error("target source launcher is terminal"));
+        }
+        state
+            .guard
+            .prepare_fork_target_run_directory(target_contract, requirements)
+    }
+
+    fn installed_node_issuer(
+        &self,
+    ) -> Result<crucible_qemu::InstalledNodeLaunchIssuer, crucible_qemu::QemuLiveNodeStepGateError>
+    {
+        let state = self.state.lock().map_err(|_| {
+            crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                source: crucible_qemu::OriginalActorAccountError::Unavailable,
+            }
+        })?;
+        if self.finished || state.terminal {
+            return Err(
+                crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                    source: crucible_qemu::OriginalActorAccountError::Unavailable,
+                },
+            );
+        }
+        state.guard.installed_node_issuer()
+    }
+
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        self.installed_node_issuer()?
+            .launch_fresh_node(config, admission)
+    }
+
+    fn launch_exact_node(
+        &self,
+        request: crucible_qemu::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu::QemuProductionExactRestoreLaunch,
+        crucible_qemu::QemuLiveNodeStepGateError,
+    > {
+        self.installed_node_issuer()?.launch_exact_node(request)
+    }
+
     fn native_resource_controller(
         &mut self,
     ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
@@ -483,7 +638,7 @@ where
                 "hot-fork world lifecycle launcher cannot prepare a generation directory",
             ));
         }
-        state.guard.prepare_generation_run_directory(requirements)
+        state.prepare_generation_run_directory(&self.process_contract, requirements)
     }
 
     fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {

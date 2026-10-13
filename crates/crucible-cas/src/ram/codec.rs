@@ -32,7 +32,8 @@ pub(super) const PAGE_SCHEMA: &str = "crucible.ram.page";
 pub(super) const TREE_SCHEMA: &str = "crucible.ram.tree";
 pub(super) const ROOT_SCHEMA: &str = "crucible.ram.root";
 pub(super) const SCHEMA_VERSION: u32 = 1;
-pub(super) const MAX_PUBLICATION_BATCH_OBJECTS: usize = 64;
+pub(super) const MAX_PUBLICATION_BATCH_OBJECTS: usize =
+    crate::content_store::batch::MAX_PUBLICATION_OBJECTS;
 const MAX_PUBLICATION_BATCH_BYTES: u64 = 4 * 1024 * 1024;
 
 pub(super) fn object_limits(id: ContentId) -> Result<(u64, usize), RamStoreError> {
@@ -110,33 +111,44 @@ impl RamStore {
             encoded_source(bytes, account, original)?
         };
         if let Some(pending) = &work.pending {
-            if let Some(existing) = pending.iter().find(|existing| existing.id == id) {
-                if *existing.envelope != *envelope {
-                    return Err(StoreError::Corrupt { id }.into());
+            let mut pending_position = match pending.lookup(id)? {
+                super::PendingLookup::Occupied(existing) => {
+                    if *existing.envelope != *envelope {
+                        return Err(StoreError::Corrupt { id }.into());
+                    }
+                    (work.boundary)()?;
+                    return Ok(id);
                 }
-                (work.boundary)()?;
-                return Ok(id);
-            }
-            let buffered_bytes = pending.iter().try_fold(0_u64, |total, object| {
-                total
-                    .checked_add(object.source.logical_length())
-                    .ok_or(RamStoreError::Limit("RAM publication batch bytes"))
-            })?;
+                super::PendingLookup::Vacant(position) => position,
+            };
+            let buffered_bytes = pending.encoded_bytes;
             if buffered_bytes
                 .checked_add(source.logical_length())
                 .is_none_or(|total| total > MAX_PUBLICATION_BATCH_BYTES)
-                || pending.len() == MAX_PUBLICATION_BATCH_OBJECTS
+                || pending.len() == pending.capacity()
             {
                 self.flush_publication_batch(work)?;
+                // The old array closed; its insertion position cannot name the
+                // replacement batch. The fresh empty batch starts at zero.
+                pending_position = 0;
             }
             if let Some(pending) = &mut work.pending {
                 let envelope = input.into_pending(account, source.logical_length() as usize)?;
                 (work.boundary)()?;
-                pending.push(PendingPublication {
-                    id,
-                    source,
-                    envelope,
-                });
+                let encoded_bytes = pending
+                    .encoded_bytes
+                    .checked_add(source.logical_length())
+                    .filter(|total| *total <= MAX_PUBLICATION_BATCH_BYTES)
+                    .ok_or(RamStoreError::Limit("RAM publication batch bytes"))?;
+                pending.push_at(
+                    pending_position,
+                    PendingPublication {
+                        id,
+                        source,
+                        envelope,
+                    },
+                )?;
+                pending.encoded_bytes = encoded_bytes;
                 return Ok(id);
             }
         }
@@ -172,9 +184,12 @@ impl RamStore {
             if pending.len() > MAX_PUBLICATION_BATCH_OBJECTS {
                 return Err(RamStoreError::Limit("RAM publication batch object count"));
             }
-            let mut expected = [None; MAX_PUBLICATION_BATCH_OBJECTS];
-            for (slot, object) in expected.iter_mut().zip(pending.iter()) {
-                *slot = Some((object.id, object.source.logical_length()));
+            let mut expected = crate::content_store::batch::PrepaidBatchVec::with_capacity(
+                work.original(),
+                pending.len(),
+            )?;
+            for object in pending.iter() {
+                expected.push(Some((object.id, object.source.logical_length())));
             }
             (work.boundary)()?;
             let original = work.original();
@@ -221,21 +236,37 @@ impl RamStore {
                 "RAM publication batch already present",
             ));
         }
+        // Wider staging benefits only children that share the durable group.
+        // Sequential leaves retain the original smaller simultaneous extent.
+        let count = if self.backend.prefers_wide_publication_groups() {
+            MAX_PUBLICATION_BATCH_OBJECTS
+        } else {
+            64
+        };
         let account = work.original();
+        // The fixed position index is part of the concrete PendingBatch control;
+        // this same original loan covers it before any array/control is born.
         let extent = (std::mem::size_of::<PendingPublication>() as u64)
-            .checked_mul(MAX_PUBLICATION_BATCH_OBJECTS as u64)
+            .checked_mul(count as u64)
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PendingBatch>() as u64))
             .ok_or(RamStoreError::Limit("RAM publication batch allocation"))?;
         let credit = account.reserve_scratch_bytes(extent).map_err(admission)?;
         let mut objects = Vec::new();
         objects
-            .try_reserve_exact(MAX_PUBLICATION_BATCH_OBJECTS)
+            .try_reserve_exact(count)
             .map_err(|source| StoreError::StreamIo {
                 operation: "allocate RAM publication batch",
                 source: std::io::Error::other(source),
             })?;
+        if objects.capacity() != count {
+            return Err(RamStoreError::Limit("RAM publication batch capacity"));
+        }
         work.pending = Some(PendingBatch {
             objects,
+            sorted_positions: [0; MAX_PUBLICATION_BATCH_OBJECTS],
+            #[cfg(test)]
+            identity_comparisons: std::cell::Cell::new(0),
+            encoded_bytes: 0,
             _credit: credit,
         });
         Ok(())

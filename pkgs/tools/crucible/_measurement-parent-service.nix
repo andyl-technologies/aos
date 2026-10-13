@@ -10,6 +10,7 @@
     "memoryMaxBytes"
     "tasksMax"
     "fileDescriptors"
+    "baselineFileDescriptors"
     "runtimeSeconds"
     "startupTimeoutSeconds"
     "mainThreadStackBytes"
@@ -47,6 +48,10 @@
       worker_threads = ${toString process.workerThreads}
       blocking_threads = ${toString process.blockingThreads}
       thread_stack_bytes = ${toString process.threadStackBytes}
+      baseline_file_descriptors = ${toString process.baselineFileDescriptors}
+      delegated_executor = false
+      executor_deployment = ""
+      userfaultfd_group_id = 0
     '';
   };
   createWorkload = pkgs.writeTextFile {

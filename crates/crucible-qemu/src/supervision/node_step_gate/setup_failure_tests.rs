@@ -14,7 +14,7 @@ use crucible_shmem::{RegionConfig, RegionLayout};
 
 use super::*;
 use crate::host_setup::{complete_qemu_host_plugin_setup, tests::plugin_peer_reject_setup};
-use crate::spawn::create_test_spawn_resource_pair;
+use crate::spawn::{create_test_spawn_resource_pair, prepare_test_preexec_setup};
 use crate::{QemuFaultCapabilityRequirement, QemuHostPluginSetupError, QemuNodeChild};
 
 #[test]
@@ -22,7 +22,9 @@ fn invalid_region_setup_reaps_real_child_before_scheduler_admission() -> Result<
 {
     let config = RegionConfig::new(1, 4);
     let layout = RegionLayout::for_config(config)?;
-    let (resources, _plugin_socket) = create_test_spawn_resource_pair(layout.region_size + 4096)?;
+    let (mut resources, _plugin_socket) =
+        create_test_spawn_resource_pair(layout.region_size + 4096)?;
+    prepare_test_preexec_setup(&mut resources, config)?;
     let (child, process_id) = sleeping_test_child()?;
 
     let error = complete_host_setup_or_reap(child, || {
@@ -56,7 +58,8 @@ fn nonready_ack_after_descriptor_handoff_reaps_real_child_before_scheduler_admis
 -> Result<(), Box<dyn Error>> {
     let config = RegionConfig::new(1, 4);
     let layout = RegionLayout::for_config(config)?;
-    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    let (mut resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    prepare_test_preexec_setup(&mut resources, config)?;
     let plugin_peer = thread::spawn(move || plugin_peer_reject_setup(plugin_socket, false));
     let (child, process_id) = sleeping_test_child()?;
 

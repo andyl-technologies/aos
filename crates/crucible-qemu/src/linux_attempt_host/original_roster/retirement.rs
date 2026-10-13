@@ -9,6 +9,28 @@
 use super::*;
 
 impl OriginalNativeAccountRoster {
+    /// Checks real closed slots without freeing this retained roster or credit.
+    ///
+    /// # Errors
+    /// Refuses competing access, poison, live Source/Target custody or original.
+    pub(super) fn verify_quiescent(&self) -> Result<(), OriginalActorAccountError> {
+        if let Some(held) = self.held.as_ref() {
+            let state = held
+                .try_lock()
+                .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            for slot in &state.slots {
+                verify_closed_slot(slot)?;
+                if let Some(credit) = slot.credit.as_ref() {
+                    credit.require_original()?;
+                }
+            }
+        }
+        for credit in self.retiring_credits.iter().flatten() {
+            credit.require_original()?;
+        }
+        Ok(())
+    }
+
     /// Frees the closed roster before releasing its original native pairs.
     ///
     /// This closes only native roster custody. It does not certify retirement
@@ -61,7 +83,8 @@ impl OriginalNativeAccountRoster {
 }
 
 fn verify_closed_slot(slot: &NativeSlot) -> Result<(), OriginalActorAccountError> {
-    if slot.active.is_some()
+    if slot.fork_target.is_owned()
+        || slot.active.is_some()
         || slot.node_bindings_live != 0
         || slot
             .digest_purposes
@@ -85,6 +108,33 @@ mod tests {
     use crucible_linux_resource::host_supervision::{
         HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
     };
+
+    #[test]
+    fn quiescence_observation_preserves_real_roster_credit_and_factory_binding()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let original = Arc::new(supervisor.begin(HostOperationClass::Preparation)?);
+        let (credit, resident, metadata) = OriginalNativeAccountCredit::mechanism_credit(original)?;
+        let (mut roster, binding) =
+            OriginalNativeAccountRoster::publish([Some(credit), None, None, None], 1)?;
+
+        roster.verify_quiescent()?;
+        assert!(roster.held.is_some());
+        assert!(roster.try_close().is_err());
+        assert!(
+            resident
+                .reserve_native_pair(&metadata, 69, 1056, 1536 << 20, 512 << 20)
+                .is_err()
+        );
+
+        let attempt = binding.claim(1, 512 << 20, 1 << 30)?;
+        assert!(roster.verify_quiescent().is_err());
+        drop(attempt);
+        assert!(roster.verify_quiescent().is_err());
+        drop(binding);
+        assert!(roster.try_close().is_err());
+        Ok(())
+    }
 
     #[test]
     fn weak_factory_binding_blocks_credit_release_until_actual_roster_free()

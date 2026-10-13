@@ -3,7 +3,6 @@
 use super::*;
 
 use std::cell::Cell;
-use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
@@ -11,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize};
 
 use crucible_protocol::{
     HostMsg, PluginHandshakeConfig, SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED,
-    SetupDescriptorFds, control_encode_host_msg, read_control_frame,
+    control_encode_host_msg, read_control_frame,
 };
 use crucible_shmem::{KIND_VM, NodeSlot, RegionConfig, RegionHeader, RegionLayout, STATUS_DONE};
 
@@ -429,25 +428,9 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
         .unwrap_or_else(|error| panic!("plugin handshake should complete: {error}"));
     let _hello = read_control_frame(&mut host)
         .unwrap_or_else(|error| panic!("plugin Hello should read: {error}"));
-    let shmem = File::open("/dev/null")
-        .unwrap_or_else(|error| panic!("shmem fixture should open: {error}"));
-    let wake =
-        File::open("/dev/null").unwrap_or_else(|error| panic!("wake fixture should open: {error}"));
-    crucible_protocol::send_setup_with_descriptors(
-        host.as_raw_fd(),
-        4096,
-        SetupDescriptorFds {
-            process_generation: 1,
-            device_digest_workspace: None,
-            shmem_fd: shmem.as_raw_fd(),
-            wake_fd: wake.as_raw_fd(),
-            plugin_setup_plan_fd: shmem.as_raw_fd(),
-        },
-    )
-    .unwrap_or_else(|error| panic!("setup descriptors should send: {error}"));
-    let _setup = plugin
-        .plugin_recv_setup_with_descriptors()
-        .unwrap_or_else(|error| panic!("setup descriptors should receive: {error}"));
+    plugin
+        .plugin_commit_preexec_setup()
+        .unwrap_or_else(|error| panic!("preaccepted setup should commit: {error}"));
     plugin
         .plugin_send_ready_setup_ack()
         .unwrap_or_else(|error| panic!("ready setup ack should send: {error}"));
@@ -509,8 +492,7 @@ fn install_expecting_post_registration_fatal<R>(
 where
     R: OwnedCallbackRegistrar,
 {
-    reservation.startup_source_model =
-        Some(crate::startup_source::test_support::InstallerStartupSourceModel::ready());
+    reservation.startup_source_model = Some(fixture.startup_model());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         install_live_runtime_with_fatal_policy(
             plugin_id,
@@ -979,11 +961,11 @@ fn assert_source_refusal_before_registration(
     let _runtime_state = isolate_runtime_state_for_test();
     reset_capability_call_counts();
     let fixture = LiveInstallFixture::new();
-    let host = fixture.spawn_host_until_setup();
     let registrar = RecordingSuccessfulCallbackRegistrar::new();
     let mut reservation = reserve_runtime()
         .unwrap_or_else(|error| panic!("fixture runtime reservation failed: {error:?}"));
-    reservation.startup_source_model = model;
+    let modeled = model.is_some();
+    reservation.startup_source_model = model.map(|model| model.with_setup(fixture.model_setup()));
 
     let error = install_live_runtime(
         73,
@@ -994,7 +976,6 @@ fn assert_source_refusal_before_registration(
     )
     .err()
     .unwrap_or_else(|| panic!("Source refusal must prevent installation"));
-    join_host(host);
 
     assert!(matches!(
         error,
@@ -1003,15 +984,21 @@ fn assert_source_refusal_before_registration(
     assert_eq!(registrar.state_address.get(), 0);
     assert_eq!(wake_registration_count(), 0);
     assert!(reservation.startup_source_model.is_none());
+    fixture.assert_control_silent();
+    if !modeled {
+        assert!(reservation.startup_source.is_none());
+        drop(reservation);
+        assert_eq!(RUNTIME_STATE.load(Ordering::Acquire), RUNTIME_VACANT);
+        return;
+    }
     let original = reservation
         .startup_source
         .as_ref()
-        .unwrap_or_else(|| panic!("Source refusal must retain the received plan owner"));
+        .unwrap_or_else(|| panic!("Source refusal must retain the original fixture owner"));
     assert!(original.acquire_was_attempted_for_test());
     let descriptor = original
-        .plan_fd()
-        .unwrap_or_else(|error| panic!("Source refusal lost the retained plan: {error:?}"))
-        .as_raw_fd();
+        .retained_model_plan_fd_for_test()
+        .unwrap_or_else(|| panic!("Source refusal lost its retained fixture plan owner"));
     // SAFETY: this inspects the exact retained fixture plan owner after refusal.
     assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0);
     fixture.assert_control_silent();
@@ -1020,8 +1007,7 @@ fn assert_source_refusal_before_registration(
     // SAFETY: these explicit fixture paths have no native borrower. The same
     // retained descriptor was not closed by failed-owner containment.
     assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0);
-    // SAFETY: the preceding inspection proved this fixture retained the unique fd; no native borrower exists.
-    assert_eq!(unsafe { libc::close(descriptor) }, 0);
+    assert_eq!(RUNTIME_STATE.load(Ordering::Acquire), RUNTIME_FAILED);
 }
 
 #[test]
@@ -1035,11 +1021,11 @@ fn modeled_source_refusal_precedes_wake_and_callback_registration() {
 }
 
 #[test]
-fn unmodeled_install_keeps_unavailable_native_source_refusal() {
+fn unselected_install_refuses_before_control_io_or_source_acquisition() {
     assert_source_refusal_before_registration(
         None,
-        crate::StartupSourceError::Unavailable {
-            symbol: "qemu_plugin_crucible_startup_source_acquire_v1",
+        crate::StartupSourceError::Ownership {
+            reason: "current native setup carrier is required",
         },
     );
 }
@@ -1052,8 +1038,7 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-    reservation.startup_source_model =
-        Some(crate::startup_source::test_support::InstallerStartupSourceModel::ready());
+    reservation.startup_source_model = Some(fixture.startup_model());
 
     let runtime = install_live_runtime(
         41,
@@ -1114,9 +1099,15 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
             ..exact_endpoint_plan
         }
     ));
-    let source_mapping_start =
-        u64::try_from(runtime._callbacks.setup().mapped_region().mapping_start())
-            .unwrap_or_else(|error| panic!("mapping start should fit the fixed ABI: {error}"));
+    let source_mapping_start = u64::try_from(
+        runtime
+            .resources()
+            ._callbacks
+            .setup()
+            .mapped_region()
+            .mapping_start(),
+    )
+    .unwrap_or_else(|error| panic!("mapping start should fit the fixed ABI: {error}"));
     let exact_mapping_plan = crate::QemuPluginHotForkChildPlan {
         shmem_length: length,
         source_mapping_start,
@@ -1127,28 +1118,28 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     };
     assert!(hot_fork_child_mapping_basis_matches(
         &exact_mapping_plan,
-        runtime._callbacks.setup(),
+        runtime.resources()._callbacks.setup(),
     ));
     assert!(!hot_fork_child_mapping_basis_matches(
         &crate::QemuPluginHotForkChildPlan {
             source_mapping_start: source_mapping_start + 4096,
             ..exact_mapping_plan
         },
-        runtime._callbacks.setup(),
+        runtime.resources()._callbacks.setup(),
     ));
     assert!(!hot_fork_child_mapping_basis_matches(
         &crate::QemuPluginHotForkChildPlan {
             source_mapping_length: super::host_mapping_extent(length) - 1,
             ..exact_mapping_plan
         },
-        runtime._callbacks.setup(),
+        runtime.resources()._callbacks.setup(),
     ));
     assert!(!hot_fork_child_mapping_basis_matches(
         &crate::QemuPluginHotForkChildPlan {
             source_mapping_offset: 4096,
             ..exact_mapping_plan
         },
-        runtime._callbacks.setup(),
+        runtime.resources()._callbacks.setup(),
     ));
     let exact_generation_plan = crate::QemuPluginHotForkChildPlan {
         parent_process_generation: 1,
@@ -1335,14 +1326,14 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
         .unwrap_or_else(|error| panic!("control teardown handle should validate: {error}"));
     assert!(!teardown_handle.quiescence.is_closed());
     (test_capabilities().request_shutdown)(0);
-    let callback_state_address = runtime._callbacks.state_address_for_test();
+    let callback_state_address = runtime.resources()._callbacks.state_address_for_test();
     let runtime = (runtime,);
     assert_eq!(
-        runtime.0._callbacks.state_address_for_test(),
+        runtime.0.resources()._callbacks.state_address_for_test(),
         callback_state_address
     );
     assert_eq!(
-        runtime.0._callbacks.registration_mask().bits(),
+        runtime.0.resources()._callbacks.registration_mask().bits(),
         OwnedCallbackRegistrationMask::BASE_REQUIRED
     );
     reservation.publish(runtime.0);
@@ -1358,8 +1349,7 @@ fn live_install_seals_the_optional_fingerprint_worker() {
     let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-    reservation.startup_source_model =
-        Some(crate::startup_source::test_support::InstallerStartupSourceModel::ready());
+    reservation.startup_source_model = Some(fixture.startup_model());
 
     let runtime = install_live_runtime(
         42,
@@ -1442,8 +1432,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
     };
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-    reservation.startup_source_model =
-        Some(crate::startup_source::test_support::InstallerStartupSourceModel::ready());
+    reservation.startup_source_model = Some(fixture.startup_model());
 
     let runtime = install_live_runtime(
         51,
@@ -1470,7 +1459,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
     );
     assert_eq!(LIVE_NETWORK_TX_REGISTRATIONS.load(Ordering::SeqCst), 1);
     assert_eq!(
-        runtime._callbacks.registration_mask(),
+        runtime.resources()._callbacks.registration_mask(),
         OwnedCallbackRegistrationMask::required_for(&fixture.args())
     );
 
@@ -1751,8 +1740,7 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
 
-    reservation.startup_source_model =
-        Some(crate::startup_source::test_support::InstallerStartupSourceModel::ready());
+    reservation.startup_source_model = Some(fixture.startup_model());
 
     let runtime = install_live_runtime(
         54,
@@ -1764,7 +1752,7 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     .unwrap_or_else(|error| panic!("default production callbacks should install: {error}"));
 
     assert_eq!(
-        runtime._callbacks.registration_mask(),
+        runtime.resources()._callbacks.registration_mask(),
         OwnedCallbackRegistrationMask::base_required()
     );
     let registrations_after = live_registration_counts();
@@ -1913,6 +1901,8 @@ fn handshake_failure_marks_the_singleton_failed_before_second_install_attempt() 
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
 
+    reservation.startup_source_model = Some(fixture.startup_model());
+
     let error = install_live_runtime(
         48,
         fixture.args(),
@@ -2013,4 +2003,49 @@ fn device_workspace_private_layout_preserves_prefix_and_appends_fixed_fields() {
         std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_reserved),
         180
     );
+}
+
+#[test]
+fn held_reader_remains_owned_after_socket_interruption_until_actual_return() {
+    let (host, plugin) = running_plugin_control_pair();
+    let (sender, receiver) = mpsc::channel();
+    let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
+    let held = workers.hold();
+    assert!(held.held);
+    let reader_workers = Arc::clone(&workers);
+    let mut reader = Some(std::thread::spawn(move || {
+        let _delivered = run_control_reader(plugin, sender, reader_workers);
+    }));
+
+    host.shutdown(std::net::Shutdown::Both).unwrap();
+    let mut parked = false;
+    for _attempt in 0..100_000 {
+        if workers.snapshot().parked_mask & WORKER_RUN_CONTROL != 0 {
+            parked = true;
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(parked, "same reader must park at its still-held barrier");
+
+    join_finished_worker(&mut reader);
+    assert!(reader.is_some(), "an unreturned worker must remain owned");
+    assert!(!reader.as_ref().unwrap().is_finished());
+    assert!(receiver.try_recv().is_err());
+
+    // Fixture cleanup releases its own reversible hold; production Drop does
+    // not release or clear a barrier to invent completion or retirement.
+    workers.release();
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    for _attempt in 0..100_000 {
+        if reader.as_ref().unwrap().is_finished() {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(reader.as_ref().unwrap().is_finished());
+    join_finished_worker(&mut reader);
+    assert!(reader.is_none());
 }

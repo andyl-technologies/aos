@@ -222,7 +222,7 @@ extern "C" fn prepare(
                     cancellation,
                     source.binding,
                     &source.root_record,
-                    child_control.operations(),
+                    child_control.operations()?,
                 )?)
             }
             None if source_fd >= 0 => {
@@ -238,7 +238,7 @@ extern "C" fn prepare(
                 Some(owner.prepare_child(super::engine::ChildArenaConfiguration {
                     generation,
                     resources: plan.resources,
-                    operations: child_control.operations(),
+                    operations: child_control.operations()?,
                     source,
                     spill_file: spill,
                     spill_quota: plan.spill_quota_bytes,
@@ -411,7 +411,7 @@ fn activate_child(stage: &mut Stage) -> Result<(), RamError> {
         .control
         .take()
         .ok_or("RAM child control already consumed")?;
-    stage.retained[0] = control.descriptor();
+    stage.retained[0] = control.descriptor()?;
     stage.retained_count = 1;
     let owner = if let Some(cold) = stage.cold.take() {
         let custody = cold.activate_child()?;
@@ -431,7 +431,7 @@ fn activate_child(stage: &mut Stage) -> Result<(), RamError> {
     } else {
         let owner = PausedPagingOwner::rebind_resident(
             stage.resources,
-            control.operations(),
+            control.operations()?,
             stage.topology_generation,
             stage.logical_bytes,
         )?;

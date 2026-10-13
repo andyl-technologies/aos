@@ -290,6 +290,69 @@ impl RetainedTemplateServiceFactory {
         Ok((service, basis))
     }
 
+    /// Keeps the authenticated import's original live across stopped restore.
+    pub(crate) fn start_for_maintenance_import<'owner>(
+        &self,
+        imported: crate::imported_checkpoint::AuthenticatedImportedCheckpoint<'owner>,
+        cancellation: ExecutionCancellation,
+    ) -> Result<
+        (
+            RetainedTemplateService,
+            crate::imported_checkpoint::ImportedCheckpointBasis,
+            crate::imported_checkpoint::ImportedCheckpointMaintenance<'owner>,
+        ),
+        PackagedQemuExecutorError,
+    > {
+        if imported.authentication_owner().cancellation().is_canceled()
+            || imported
+                .authentication_owner()
+                .host_ram_resource_ceiling()
+                .is_none()
+        {
+            return Err(HostOperationalError::Unavailable.into());
+        }
+        let requested = imported.resources();
+        let ceiling = self
+            .config
+            .assignment_limits()
+            .ok_or(HostOperationalError::Unavailable)?;
+        if requested.maximum_vcpus() > ceiling.maximum_vcpus()
+            || requested.maximum_resident_bytes() > ceiling.maximum_resident_bytes()
+            || requested.maximum_disk_bytes() > ceiling.maximum_disk_bytes()
+            || requested.maximum_execution_quanta() > ceiling.maximum_execution_quanta()
+        {
+            return Err(HostOperationalError::InvalidMessage {
+                message: "maintenance import exceeds receiver assignment limits".into(),
+            }
+            .into());
+        }
+        let original = imported
+            .authentication_owner()
+            .host_operation_supervisor()
+            .ok_or(HostOperationalError::Unavailable)?;
+        // The enclosing supervisor is the actual authentication original, not
+        // a fresh replay clock. A complete independent Service is still paid.
+        let constrained = self.clone().with_outer_supervisor(original.clone());
+        let mut service = RetainedTemplateService::start(
+            &constrained,
+            imported.source(),
+            Some(imported.checkpoint()),
+            ServiceHeadroom::FutureAssignment,
+            ServicePurpose::Replay,
+            cancellation,
+        )?;
+        let (basis, selected, maintenance) =
+            imported.into_maintenance_launch().map_err(|source| {
+                PackagedQemuExecutorError::PreparationSupervisor(std::io::Error::other(source))
+            })?;
+        service.context = service
+            .context
+            .clone()
+            .with_service_resources(basis.resources)
+            .install_selected_checkpoint(Some(selected));
+        Ok((service, basis, maintenance))
+    }
+
     /// Admits receiver genesis while retaining the authentication owner's cap.
     pub(crate) fn start_for_imported_genesis(
         &self,

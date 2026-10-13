@@ -29,3 +29,16 @@ fn irreversible_reservation_failure_blocks_second_install_attempt() {
         Err(PluginRuntimeInstallError::RuntimeAlreadyReserved)
     ));
 }
+
+#[test]
+fn runtime_request_retains_the_worker_registry_allocation() {
+    let requests = OwnedCallbackRuntimeState::allocation_requests().unwrap();
+
+    // A worker registry is a genuinely shared body with a mutex and condition
+    // variable. Its request must not reuse the small callback gate or merely
+    // price the Arc pointer stored inline in the runtime Box.
+    assert!(requests[2].size() > std::mem::size_of::<LiveWorkerQuiescence>());
+    assert!(requests[2].size() > requests[1].size());
+    assert!(requests[2].size() > std::mem::size_of::<Arc<LiveWorkerQuiescence>>());
+    assert!(requests[2].align() >= std::mem::align_of::<LiveWorkerQuiescence>());
+}

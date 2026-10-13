@@ -632,6 +632,27 @@ where
         Ok(())
     }
 
+    /// Commits the one already-queued pre-exec frame after the ordinary handshake.
+    ///
+    /// This consumes a complete-write receipt for this same socket. It performs
+    /// no second descriptor send and supplies no allocation or startup purpose.
+    ///
+    /// # Errors
+    /// Refuses a different physical socket or a lifecycle outside HelloAck.
+    pub fn host_commit_preexec_setup(
+        &mut self,
+        receipt: crate::PreexecSetupHandover,
+    ) -> Result<(), ControlLifecycleIoError> {
+        if !receipt.matches_socket(self.stream.as_raw_fd())? {
+            return Err(DescriptorHandoverError::MalformedAncillary {
+                reason: "pre-exec receipt belongs to another control socket",
+            }
+            .into());
+        }
+        self.lifecycle.observe(ControlLifecycleEvent::HostSetup)?;
+        Ok(())
+    }
+
     /// Receives `Setup` and its fixed-order descriptors through the lifecycle.
     ///
     /// # Errors

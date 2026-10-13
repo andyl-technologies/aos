@@ -229,7 +229,6 @@ where
     }
 
     /// Retains terminal original launch custody without allocating a diagnostic.
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     pub(crate) fn quarantine_original_launch(&mut self) {
         if self.terminal {
             return;
@@ -284,6 +283,44 @@ where
         Ok(invoke(contract))
     }
 
+    /// Reports the actual guard's retained target loan before source cleanup.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fork_target_is_owned(&self) -> bool {
+        self.guard.fork_target_is_owned()
+    }
+
+    /// Lends the source permit without replacing this generation's actual guard.
+    ///
+    /// # Errors
+    /// Refuses terminal ownership, operational failure or missing source custody.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn lend_fork_target_permit(
+        &mut self,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, LifecycleApiError> {
+        self.check_operational_boundary()?;
+        self.guard
+            .lend_fork_target_permit()
+            .map_err(|error| generation_error(format!("lend same-family target permit: {error}")))
+    }
+
+    /// Prepares the target's distinct generation under the actual source quota.
+    ///
+    /// # Errors
+    /// Refuses terminal ownership, a foreign target or unavailable source storage.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_fork_target_run_directory(
+        &mut self,
+        target_contract: &QemuChildProcessContract,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, LifecycleApiError> {
+        self.check_operational_boundary()?;
+        self.guard
+            .prepare_fork_target_run_directory(target_contract, requirements)
+            .map_err(|error| {
+                generation_error(format!("prepare same-family target directory: {error}"))
+            })
+    }
+
     /// Provisions one fresh generation directory under the aggregate guard.
     ///
     /// # Errors
@@ -324,7 +361,6 @@ where
     }
 
     /// Launches under this owner's retained guard without replacing its custody.
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     pub(crate) fn launch_fresh_node(
         &self,
         config: &crucible_qemu::QemuLiveNodeStepGateConfig,
@@ -338,6 +374,27 @@ where
             );
         }
         self.guard.launch_fresh_node(config, admission)
+    }
+
+    /// Restores through this same generation owner's retained physical guard.
+    ///
+    /// # Errors
+    /// Refuses terminal ownership or the actual installed issuer and restore.
+    pub(crate) fn launch_exact_node(
+        &self,
+        request: crucible_qemu::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu::QemuProductionExactRestoreLaunch,
+        crucible_qemu::QemuLiveNodeStepGateError,
+    > {
+        if self.terminal {
+            return Err(
+                crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                    source: crucible_qemu::OriginalActorAccountError::Unavailable,
+                },
+            );
+        }
+        self.guard.launch_exact_node(request)
     }
 
     /// Retains an unreaped child from a failed generation launch.

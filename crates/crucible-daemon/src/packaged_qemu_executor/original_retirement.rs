@@ -29,6 +29,9 @@ pub enum OriginalPackagedRetirementError {
     /// The same exact-pin materializer returned its initiating cause.
     #[error("original exact-pin retirement refused: {0}")]
     Materializer(#[source] OriginalMaterializerRetirementError),
+    /// The actual Main dispatcher remains physically retained by this owner.
+    #[error("original Main Target dispatcher retirement refused: {0}")]
+    TargetDispatcher(#[source] QemuVmRealizationError),
     /// Native roster custody refused after the executor body was freed.
     #[error("original native roster retirement refused: {0}")]
     Accounts(#[from] crucible_qemu::OriginalActorAccountError),
@@ -39,7 +42,8 @@ impl PackagedQemuExecutor {
     ///
     /// # Errors
     /// Refuses a retained hot-fork source, unfinished or failed workers, the
-    /// real materializer or the saved original. Refusal leaves this body owned.
+    /// real materializer, actual Main dispatcher or saved original. Refusal
+    /// leaves this body owned.
     pub(crate) fn try_retire_original(
         &mut self,
         original: &HostOperationGuard,
@@ -54,6 +58,16 @@ impl PackagedQemuExecutor {
         self.exact_pin_materializer
             .try_retire_original(original)
             .map_err(OriginalPackagedRetirementError::Materializer)?;
+        original.wait_slice()?;
+        self.guarded_state
+            .host
+            .as_ref()
+            .ok_or_else(|| QemuVmRealizationError::ExecutorUnavailable {
+                operation: "retire original Main Target dispatcher",
+                message: String::from("actual saved Linux host factory is absent"),
+            })
+            .and_then(SharedQemuAttemptHostResourceFactory::finish_target_dispatcher)
+            .map_err(OriginalPackagedRetirementError::TargetDispatcher)?;
         original.wait_slice()?;
         Ok(())
     }

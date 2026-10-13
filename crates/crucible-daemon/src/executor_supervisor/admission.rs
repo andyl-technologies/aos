@@ -292,6 +292,7 @@ where
         let AttemptRuntimeState::Paused {
             execution: prior_execution,
             checkpoint,
+            source_transfer: None,
             ..
         } = current
         else {
@@ -442,6 +443,7 @@ where
                 execution_basis: current_basis,
                 execution,
                 checkpoint,
+                source_transfer: None,
                 ..
             }) if current_basis == execution_basis => {
                 return self.persist_response(
@@ -807,6 +809,7 @@ where
                     Some(AttemptRuntimeState::Paused {
                         execution: source_execution,
                         checkpoint: source_checkpoint,
+                        source_transfer: None,
                         ..
                     }) => AttemptExecutionOrigin::SelectedSavepoint {
                         certificate: selection,

@@ -186,8 +186,6 @@ pub struct QemuLaunchPluginConfig {
     ram_initial_budgets: Option<String>,
     ram_outer_cap: Option<String>,
     original_startup: Option<crucible_protocol::plugin_setup_plan::StartupOperation>,
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    device_digest_purpose: Option<crucible_protocol::plugin_setup_plan::DeviceDigestPurpose>,
 }
 
 impl QemuLaunchPluginConfig {
@@ -219,8 +217,6 @@ impl QemuLaunchPluginConfig {
             ram_initial_budgets: None,
             ram_outer_cap: None,
             original_startup: None,
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-            device_digest_purpose: None,
         }
     }
 
@@ -416,7 +412,7 @@ impl QemuLaunchPluginConfig {
     /// remains unaccepted at revision zero until the independent Apply exchange.
     ///
     /// # Errors
-    /// Refuses fractional, zero, or overflowing durations and invalid encoding.
+    /// Refuses zero or unrepresentable nanosecond durations and invalid encoding.
     pub fn with_ram_initial_budgets(
         mut self,
         budgets: crucible_linux_resource::host_supervision::HostOperationBudgets,
@@ -497,14 +493,8 @@ impl QemuLaunchPluginConfig {
         owner: &crate::spawn::OriginalPluginStartup,
     ) -> Result<Self, crate::spawn::PluginStartupError> {
         self.original_startup = Some(owner.record()?);
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-        if let Some(body) = owner.workspace_view()? {
-            self.device_digest_purpose = Some(
-                *body
-                    .record()
-                    .map_err(|source| owner.workspace_refusal(source))?,
-            );
-        }
+        // Allocation-purpose Workspace2 is lent by the retained owner directly
+        // to the selected pre-exec carrier; it is never encoded as legacy W1.
         Ok(self)
     }
 
@@ -517,11 +507,6 @@ impl QemuLaunchPluginConfig {
         );
         let plan = match self.original_startup {
             Some(startup) => plan.with_startup_operation(startup),
-            None => plan,
-        };
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-        let plan = match self.device_digest_purpose {
-            Some(purpose) => plan.with_device_digest_purpose(purpose),
             None => plan,
         };
         plan

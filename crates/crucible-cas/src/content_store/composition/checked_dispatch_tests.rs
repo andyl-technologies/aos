@@ -218,8 +218,8 @@ fn assert_metrics_oversized_batch_has_no_effects(count: usize) -> Result<(), Sto
 }
 
 #[test]
-fn metrics_rejects_65_inputs_before_preflight_or_effects() -> Result<(), StoreError> {
-    assert_metrics_oversized_batch_has_no_effects(65)
+fn metrics_rejects_one_past_maximum_inputs_before_preflight_or_effects() -> Result<(), StoreError> {
+    assert_metrics_oversized_batch_has_no_effects(super::super::batch::MAX_PUBLICATION_OBJECTS + 1)
 }
 
 #[test]
@@ -239,7 +239,8 @@ fn metrics_oversized_batch_preserves_closed_original_under_unrelated_ambient()
     let _ambient = unrelated.enter();
     let bytes = b"closed original must take precedence over batch quota";
     let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, bytes);
-    let input = vec![(id, BlobHandle::from_bytes(bytes)); 65];
+    let input =
+        vec![(id, BlobHandle::from_bytes(bytes)); super::super::batch::MAX_PUBLICATION_OBJECTS + 1];
     quota.revoked.store(true, Ordering::SeqCst);
     let mut callbacks = 0;
 

@@ -301,7 +301,7 @@ fn source_admission_accounts_for_live_child_lease_reservations() {
                 && pressure.descriptor_count()
                 && pressure.overlay_count()
     ));
-    let candidate = match candidate.into_source() {
+    let mut candidate = match candidate.into_source() {
         Ok(candidate) => candidate,
         Err(candidate) => {
             let _retained_for_process_lifetime = Box::leak(candidate);
@@ -586,7 +586,7 @@ fn exclusive_source_refuses_live_and_weak_borrowers_before_the_world_lock() {
     assert!(potential_child.upgrade().is_some());
     drop(potential_child);
 
-    let source = lease
+    let mut source = lease
         .into_exclusive_source()
         .expect("sole complete world owner");
     source
@@ -813,4 +813,402 @@ fn declared_multi_node_parent_park_refuses_before_pool_publication() {
     assert!(decoder.try_close().is_ok());
     assert!(resident.reserve_resources(1, 64, 1 << 20).is_ok());
     assert!(metadata.reserve_resources(1, 64, 1 << 20).is_ok());
+}
+
+// crucible-lint: allow rust-allow -- this genuine control awaits the qualified Main-owned Source fixture; it cannot manufacture an issuer from a scalar or external PID.
+#[allow(
+    dead_code,
+    reason = "The authentic normal Main Source fixture remains unqualified."
+)]
+fn genuine_target_loan_preserves_the_same_pool_lease_until_target_cleanup(
+    source: ProductionVmHotForkSourceWorld,
+    target_factory: &mut crate::ComposedQemuAttemptResourceGuardFactory<
+        crate::SharedQemuAttemptHostResourceFactory<crate::LinuxQemuAttemptHostResourceFactory>,
+    >,
+    target_resources: crucible_campaign::AttemptResourceLimits,
+    cancellation: crate::ExecutionCancellation,
+) {
+    use crate::{QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory};
+
+    let continuation = source
+        .continuation()
+        .expect("authentic Source continuation");
+    let key = QemuHotForkSourceWorldKey::new(
+        lineage_id(0x7a),
+        continuation.configuration().def.id(),
+        continuation.configuration().id(),
+        compatibility_profile(),
+    );
+    let usage = source
+        .measure_retained_resources()
+        .expect("actual Source resources");
+    let doubled_bytes = |value: u64| {
+        value
+            .checked_mul(2)
+            .expect("finite Source plus Target bytes")
+    };
+    let doubled_count = |value: u32| {
+        value
+            .checked_mul(2)
+            .expect("finite Source plus Target count")
+    };
+    let ceiling = HotCheckpointResourceProfile::new(
+        doubled_bytes(usage.template_bytes()),
+        doubled_bytes(usage.expected_private_dirty_bytes()),
+        doubled_count(usage.process_count()),
+        doubled_count(usage.virtual_cpu_count()),
+        doubled_count(usage.descriptor_count()),
+        doubled_count(usage.overlay_count()),
+    )
+    .expect("one Source and one actual Target ceiling");
+    let limits = HotCheckpointLimits::new(1, ceiling, 8, u64::MAX).expect("finite native pool");
+    let mut pool = ManagedQemuHotForkSourceWorldPool::open(
+        limits,
+        ReapingDemotionSink,
+        MemoryHotCheckpointFallbackRetentionStore::new(),
+    )
+    .expect("actual Source pool");
+    pool.admit_authenticated_source(
+        AuthenticatedCanonicalQemuHotForkSource::new_for_test(key.clone(), source),
+        HotCheckpointHotnessSignals::new(),
+        exact_fallback(0x7b),
+    )
+    .expect("canonical authentic Source admission");
+    let shared = SharedManagedQemuHotForkSourceWorldPool::new(pool);
+    let mut provider = shared.provider().expect("same provider");
+    let lease = provider
+        .checkout(&key)
+        .expect("checkout")
+        .expect("actual Source lease");
+    let source_owner = Arc::clone(&lease.source);
+    let (before_usage, sequence, ordinal) = {
+        let pool = shared.pool.lock().expect("pool");
+        let record = pool
+            .leased_out
+            .get(&provider.provider)
+            .expect("same record");
+        (
+            pool.source_lease_usage(),
+            record.lease,
+            record._permit.ordinal(),
+        )
+    };
+
+    // This call crosses the erased launcher to the actual original G. There
+    // is no descriptor, scalar, constructor or alternate fixture issuer.
+    let permit = source_owner
+        .lock()
+        .expect("actual Source")
+        .lend_fork_target_permit()
+        .expect("genuine same-family target permit");
+    let mut target = target_factory
+        .begin_fork_target(permit, target_resources, cancellation)
+        .expect("same actual factory Target birth");
+    assert!(source_owner.lock().expect("Source").fork_target_is_owned());
+
+    provider.restore(lease);
+
+    {
+        let pool = shared.pool.lock().expect("pool");
+        let record = pool
+            .leased_out
+            .get(&provider.provider)
+            .expect("retained same record");
+        assert_eq!(record.lease, sequence);
+        assert_eq!(record._permit.ordinal(), ordinal);
+        assert_eq!(pool.source_lease_usage(), before_usage);
+        assert!(record.returned_lease.is_some());
+        assert!(!record.abandoned);
+        assert!(!pool.source_available(&key));
+        assert!(!pool.source_lease_available(&key));
+    }
+    assert!(provider.checkout(&key).is_err());
+
+    // No QEMU child or RAM service is started in this pre-carrier control.
+    // The actual Target still must close its real physical host before reuse.
+    target.finish().expect("actual Target physical cleanup");
+    drop(target);
+    assert!(
+        !source_owner
+            .lock()
+            .expect("same Source")
+            .fork_target_is_owned()
+    );
+    drop(source_owner);
+    let next = provider
+        .checkout(&key)
+        .expect("retry after physical cleanup")
+        .expect("same Source reusable after real Target retirement");
+    provider.restore(next);
+    assert_eq!(
+        shared.pool.lock().expect("pool").source_lease_usage(),
+        HotCheckpointUsage::default()
+    );
+    shared.orderly_shutdown().expect("actual Source retirement");
+}
+
+#[test]
+fn unobservable_source_return_retains_the_exact_lease_permit_and_charge() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    // These controls exercise mutex custody and accounting with the scripted
+    // Source fixture. They do not issue a genuine native Target permit.
+    for poison_source in [false, true] {
+        let source_node =
+            scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source node");
+        let (_nodes, mut source) =
+            prepared_multi_node_hot_fork_source_world_for_test(vec![source_node])
+                .expect("prepared source world");
+        let key = QemuHotForkSourceWorldKey::new(
+            lineage_id(0x74),
+            source.continuation().unwrap().configuration().def.id(),
+            source.continuation().unwrap().configuration().id(),
+            compatibility_profile(),
+        );
+        let usage = source.measure_retained_resources().expect("source usage");
+        let ceiling = HotCheckpointResourceProfile::new(
+            usage.template_bytes() * 3,
+            usage.expected_private_dirty_bytes() * 3,
+            usage.process_count() * 3,
+            usage.virtual_cpu_count() * 3,
+            usage.descriptor_count() * 3,
+            usage.overlay_count() * 3,
+        )
+        .expect("parent-and-two-child ceiling");
+        let limits =
+            HotCheckpointLimits::new(1, ceiling, 3, u64::MAX).expect("bounded lease limits");
+        let mut pool = ManagedQemuHotForkSourceWorldPool::open(
+            limits,
+            ReapingDemotionSink,
+            MemoryHotCheckpointFallbackRetentionStore::new(),
+        )
+        .expect("source pool");
+        pool.admit_authenticated_source(
+            AuthenticatedCanonicalQemuHotForkSource::new_for_test(key.clone(), source),
+            HotCheckpointHotnessSignals::new(),
+            exact_fallback(0x75),
+        )
+        .expect("admit source");
+
+        let lease = pool
+            .checkout_lease_for(1, &key)
+            .expect("checkout")
+            .expect("lease");
+        let source_owner = Arc::clone(&lease.source);
+        let template = lease.template;
+        let record = pool.leased_out.get(&1).expect("lease record");
+        let sequence = record.lease;
+        let ordinal = record._permit.ordinal();
+        let charge = pool.source_lease_usage();
+        let next_lease = pool.next_lease;
+        if poison_source {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _source_guard = source_owner.lock().expect("source before poison");
+                panic!("poison the Source custody mutex");
+            }));
+            assert!(result.is_err());
+        }
+        let source_guard = if poison_source {
+            None
+        } else {
+            Some(source_owner.lock().expect("hold Source custody"))
+        };
+
+        assert!(!lease.reauthenticates_source());
+        pool.restore_lease_for(1, lease);
+
+        let record = pool.leased_out.get(&1).expect("same retained record");
+        assert_eq!(record.lease, sequence);
+        assert_eq!(record._permit.ordinal(), ordinal);
+        let returned = record
+            .returned_lease
+            .as_ref()
+            .expect("exact returned receipt");
+        assert_eq!(returned.managed_lease, Some(sequence));
+        assert!(Arc::ptr_eq(&returned.source, &source_owner));
+        assert!(!record.abandoned);
+        assert_eq!(pool.source_lease_usage(), charge);
+        assert!(!pool.source_lease_available(&key));
+        assert!(
+            pool.checkout_lease_for(2, &key)
+                .expect("busy Source refusal")
+                .is_none()
+        );
+        assert_eq!(pool.next_lease, next_lease);
+        assert_eq!(pool.source_lease_usage(), charge);
+        assert_eq!(pool.leased_out.len(), 1);
+        assert!(Arc::ptr_eq(
+            pool.worlds
+                .get(&template)
+                .unwrap()
+                .leased_source
+                .as_ref()
+                .unwrap(),
+            &source_owner,
+        ));
+
+        drop(source_guard);
+        drop(source_owner);
+        if poison_source {
+            assert!(pool.checkout_lease_for(1, &key).is_err());
+            assert_eq!(pool.source_lease_usage(), charge);
+            assert_eq!(pool.leased_out.get(&1).unwrap().lease, sequence);
+            assert!(pool.leased_out.get(&1).unwrap().returned_lease.is_some());
+        } else {
+            let replacement = pool
+                .checkout_lease_for(1, &key)
+                .expect("retry after custody becomes observable")
+                .expect("replacement lease");
+            assert_ne!(replacement.managed_lease, Some(sequence));
+            assert_eq!(
+                pool.leased_out.get(&1).unwrap()._permit.ordinal(),
+                ordinal + 1
+            );
+            pool.restore_lease_for(1, replacement);
+            assert_eq!(pool.source_lease_usage(), HotCheckpointUsage::default());
+            assert!(pool.orderly_shutdown().is_ok());
+        }
+    }
+}
+
+fn source_pool_for_transition_controls() -> (
+    ManagedQemuHotForkSourceWorldPool<
+        ReapingDemotionSink,
+        MemoryHotCheckpointFallbackRetentionStore,
+    >,
+    QemuHotForkSourceWorldKey,
+) {
+    let source_node =
+        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source node");
+    let (_nodes, mut source) =
+        prepared_multi_node_hot_fork_source_world_for_test(vec![source_node])
+            .expect("prepared source world");
+    let key = QemuHotForkSourceWorldKey::new(
+        lineage_id(0x76),
+        source.continuation().unwrap().configuration().def.id(),
+        source.continuation().unwrap().configuration().id(),
+        compatibility_profile(),
+    );
+    let usage = source.measure_retained_resources().expect("source usage");
+    let ceiling = HotCheckpointResourceProfile::new(
+        usage.template_bytes() * 2,
+        usage.expected_private_dirty_bytes() * 2,
+        usage.process_count() * 2,
+        usage.virtual_cpu_count() * 2,
+        usage.descriptor_count() * 2,
+        usage.overlay_count() * 2,
+    )
+    .expect("parent-and-child ceiling");
+    let limits = HotCheckpointLimits::new(1, ceiling, 2, u64::MAX).expect("bounded lease limits");
+    let mut pool = ManagedQemuHotForkSourceWorldPool::open(
+        limits,
+        ReapingDemotionSink,
+        MemoryHotCheckpointFallbackRetentionStore::new(),
+    )
+    .expect("source pool");
+    pool.admit_authenticated_source(
+        AuthenticatedCanonicalQemuHotForkSource::new_for_test(key.clone(), source),
+        HotCheckpointHotnessSignals::new(),
+        exact_fallback(0x77),
+    )
+    .expect("admit source");
+    (pool, key)
+}
+
+#[test]
+fn lease_identity_exhaustion_preserves_exclusive_source_retirement() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+    let (mut pool, key) = source_pool_for_transition_controls();
+    let template = manager_source_key(&key);
+    pool.next_lease = u64::MAX;
+    let source_identity = QemuHotForkSourceWorldCheckoutIdentity::capture(
+        pool.worlds.get(&template).unwrap().source.as_ref().unwrap(),
+    )
+    .expect("exclusive Source identity");
+
+    let result = pool.checkout_lease_for(1, &key);
+
+    assert!(matches!(
+        result,
+        Err(ManagedQemuHotForkSourceWorldCheckoutError::LeaseIdentityExhausted)
+    ));
+    assert_eq!(pool.next_lease, u64::MAX);
+    assert!(pool.checked_out.is_empty());
+    assert!(pool.leased_out.is_empty());
+    assert_eq!(pool.source_lease_usage(), HotCheckpointUsage::default());
+    let world = pool.worlds.get(&template).expect("same Source world");
+    assert!(world.leased_source.is_none());
+    assert!(source_identity.matches(world.source.as_ref().expect("exclusive Source")));
+    assert!(!world.invalidated);
+    assert!(pool.source_available(&key));
+    assert_eq!(
+        pool.orderly_shutdown()
+            .expect("retire exclusive Source")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn unobservable_source_abandonment_retains_the_same_record_and_quarantine_charge() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    // These mutex controls use a scripted Source; they neither lend a genuine
+    // opaque native Target permit nor attest a successful Target incarnation.
+    for poison_source in [false, true] {
+        let (mut pool, key) = source_pool_for_transition_controls();
+        let lease = pool
+            .checkout_lease_for(1, &key)
+            .expect("checkout")
+            .expect("lease");
+        let source_owner = Arc::clone(&lease.source);
+        let template = lease.template;
+        let record = pool.leased_out.get(&1).expect("lease record");
+        let sequence = record.lease;
+        let ordinal = record._permit.ordinal();
+        let charge = pool.source_lease_usage();
+        if poison_source {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _source_guard = source_owner.lock().expect("source before poison");
+                panic!("poison the abandoned Source custody mutex");
+            }));
+            assert!(result.is_err());
+        }
+        let source_guard = if poison_source {
+            None
+        } else {
+            Some(source_owner.lock().expect("hold Source custody"))
+        };
+
+        pool.abandon_lease_for(1);
+
+        let record = pool.leased_out.get(&1).expect("retained abandoned record");
+        assert_eq!(record.lease, sequence);
+        assert_eq!(record._permit.ordinal(), ordinal);
+        assert!(record.abandoned);
+        assert!(Arc::ptr_eq(
+            &record.source.upgrade().unwrap(),
+            &source_owner
+        ));
+        assert_eq!(pool.source_lease_usage(), charge);
+        let world = pool.worlds.get(&template).expect("same quarantined world");
+        assert!(world.invalidated);
+        assert!(Arc::ptr_eq(
+            world.leased_source.as_ref().unwrap(),
+            &source_owner
+        ));
+        assert!(!pool.source_available(&key));
+        assert!(!pool.source_lease_available(&key));
+
+        drop(source_guard);
+        pool.restore_lease_for(1, lease);
+        assert!(pool.checkout_lease_for(1, &key).is_err());
+        assert_eq!(pool.source_lease_usage(), charge);
+        assert_eq!(pool.leased_out.get(&1).unwrap().lease, sequence);
+        assert_eq!(pool.leased_out.get(&1).unwrap()._permit.ordinal(), ordinal);
+        assert!(pool.worlds.get(&template).unwrap().invalidated);
+    }
 }

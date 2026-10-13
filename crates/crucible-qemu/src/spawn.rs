@@ -28,23 +28,34 @@ use crate::{
     QemuNodeChild,
 };
 
+#[cfg(target_os = "linux")]
+mod process_envelope;
+#[cfg(target_os = "linux")]
+pub(crate) use process_envelope::{ConfiguredProcessEnvelope, ProcessEnvelopeRefinementError};
+
 mod control_delivery_trace;
-#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[cfg(target_os = "linux")]
 mod device_digest_workspace;
 mod image_launch;
 mod materialization;
 mod plugin_startup;
+#[cfg(target_os = "linux")]
+pub(crate) mod preexec_setup;
+#[cfg(target_os = "linux")]
+pub(crate) mod ram_endpoint_binding;
 mod ram_spill;
 mod run_directory;
 mod worker_stack_profile;
 
-#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[cfg(target_os = "linux")]
 pub(crate) use device_digest_workspace::{
     DeviceDigestWorkspaceBody, DeviceDigestWorkspaceIssueError, OriginalDeviceDigestWorkspace,
 };
 
 pub(crate) use plugin_startup::OriginalPluginStartup;
 pub use plugin_startup::PluginStartupError;
+#[cfg(target_os = "linux")]
+pub use preexec_setup::PreexecSetupError;
 pub(crate) use worker_stack_profile::GuardedWorkerStackProfile;
 
 pub(crate) use control_delivery_trace::valid_control_delivery_row;
@@ -94,6 +105,7 @@ pub struct QemuChildProcessContract {
     cancellation_event: OwnedFd,
     maximum_vcpus: u32,
     maximum_resident_bytes: u64,
+    maximum_tasks: Option<u32>,
     maximum_writable_bytes: u64,
     maximum_file_descriptors: Option<u64>,
     maximum_locked_bytes: u64,
@@ -110,9 +122,30 @@ pub(crate) struct QemuChildFileLimits {
 }
 
 #[derive(Debug)]
-struct AttemptResourceBinding;
+struct AttemptResourceBinding {
+    // Refinement closes before the first attempted exec. Genuine duplicates
+    // observe the same effective ceiling through this retained binding.
+    // The state is shared by the existing allocation, never a new authority.
+    launch_state: std::sync::atomic::AtomicU8,
+    effective_resident_bytes: std::sync::atomic::AtomicU64,
+    effective_file_descriptors: std::sync::atomic::AtomicU64,
+}
 
+impl AttemptResourceBinding {
+    fn new(resident_bytes: u64, file_descriptors: Option<u64>) -> Self {
+        Self {
+            launch_state: std::sync::atomic::AtomicU8::new(0),
+            effective_resident_bytes: std::sync::atomic::AtomicU64::new(resident_bytes),
+            effective_file_descriptors: std::sync::atomic::AtomicU64::new(
+                file_descriptors.unwrap_or(0),
+            ),
+        }
+    }
+}
+
+mod child_privilege;
 mod process_stage_binding;
+pub(crate) use process_stage_binding::QemuProcessStageRetirement;
 pub use process_stage_binding::{QemuProcessStageBinding, QemuProcessStageIdentityError};
 
 fn invalid_input(operation: &'static str, message: &'static str) -> QemuSpawnError {
@@ -293,6 +326,8 @@ impl QemuChildProcessContract {
     /// Returns [`QemuSpawnError::Io`] when a retained descriptor cannot be
     /// duplicated.
     pub fn try_clone_for_attempt_generation(&self) -> Result<Self, QemuSpawnError> {
+        self.attempt_binding.check_clone_available()?;
+
         let cgroup_directory = self
             .cgroup_directory
             .as_ref()
@@ -323,6 +358,7 @@ impl QemuChildProcessContract {
             cancellation_event,
             maximum_vcpus: self.maximum_vcpus,
             maximum_resident_bytes: self.maximum_resident_bytes,
+            maximum_tasks: self.maximum_tasks,
             maximum_writable_bytes: self.maximum_writable_bytes,
             maximum_file_descriptors: self.maximum_file_descriptors,
             maximum_locked_bytes: self.maximum_locked_bytes,
@@ -355,9 +391,53 @@ impl QemuChildProcessContract {
     fn admitted_resource_ceiling(&self) -> (u32, u64, u64) {
         (
             self.maximum_vcpus,
-            self.maximum_resident_bytes,
+            self.effective_resident_bytes(),
             self.maximum_writable_bytes,
         )
+    }
+
+    fn effective_resident_bytes(&self) -> u64 {
+        self.attempt_binding
+            .effective_resident_bytes
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn effective_file_descriptors(&self) -> Option<u64> {
+        self.maximum_file_descriptors.map(|_| {
+            self.attempt_binding
+                .effective_file_descriptors
+                .load(std::sync::atomic::Ordering::Acquire)
+        })
+    }
+
+    /// Returns the descriptor-index floor of the actual fixed child assignments.
+    ///
+    /// Stdio and every selected launch target must fit below NOFILE. This is
+    /// neither an aggregate family entitlement nor a promise that transient
+    /// opens or unrelated inherited descriptors fit inside the chosen limit.
+    pub(crate) const fn required_launch_file_descriptors() -> u64 {
+        let targets = [
+            libc::STDERR_FILENO,
+            QEMU_PLUGIN_CONTROL_FD,
+            QEMU_PLUGIN_SHMEM_FD,
+            QEMU_PLUGIN_WAKE_FD,
+            QEMU_VMSTATE_LAUNCH_FD,
+            QEMU_ROOT_OVERLAY_READ_LAUNCH_FD,
+            QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD,
+            crate::QEMU_PLUGIN_RAM_CONTROL_FD,
+            QEMU_RAM_SOURCE_LAUNCH_FD,
+            QEMU_RAM_SPILL_LAUNCH_FD,
+            QEMU_STARTUP_CANCELLATION_FD,
+        ];
+        let mut highest = libc::STDERR_FILENO;
+        let mut index = 0;
+        while index < targets.len() {
+            if targets[index] > highest {
+                highest = targets[index];
+            }
+            index += 1;
+        }
+        highest as u64 + 1
     }
 
     /// Builds one child-side containment and credential contract.
@@ -380,10 +460,12 @@ impl QemuChildProcessContract {
                 "memory-lock entitlement must be finite",
             ));
         }
-        if files.descriptors < 16 {
+        if files.descriptors == libc::RLIM_INFINITY
+            || files.descriptors < Self::required_launch_file_descriptors()
+        {
             return Err(invalid_input(
                 "seal QEMU descriptor limit",
-                "descriptor limit cannot accommodate fixed launch descriptors",
+                "descriptor limit must be finite and accommodate fixed launch descriptors",
             ));
         }
         validate_cgroup_directory_fd(&cgroup_directory)?;
@@ -395,11 +477,15 @@ impl QemuChildProcessContract {
             cancellation_event,
             maximum_vcpus: cgroup_limits.maximum_vcpus(),
             maximum_resident_bytes: cgroup_limits.maximum_resident_bytes(),
+            maximum_tasks: Some(cgroup_limits.maximum_tasks()),
             maximum_writable_bytes: files.writable_bytes,
             maximum_file_descriptors: Some(files.descriptors),
             maximum_locked_bytes: files.locked_bytes,
             credentials: Some(credentials),
-            attempt_binding: Arc::new(AttemptResourceBinding),
+            attempt_binding: Arc::new(AttemptResourceBinding::new(
+                cgroup_limits.maximum_resident_bytes(),
+                Some(files.descriptors),
+            )),
             exact_checkpoint_root,
         })
     }
@@ -489,11 +575,12 @@ impl QemuChildProcessContract {
             cancellation_event,
             maximum_vcpus,
             maximum_resident_bytes,
+            maximum_tasks: None,
             maximum_writable_bytes,
             maximum_file_descriptors: None,
             maximum_locked_bytes: 0,
             credentials: None,
-            attempt_binding: Arc::new(AttemptResourceBinding),
+            attempt_binding: Arc::new(AttemptResourceBinding::new(maximum_resident_bytes, None)),
             exact_checkpoint_root,
         }
     }
@@ -520,11 +607,12 @@ impl QemuChildProcessContract {
             cancellation_event,
             maximum_vcpus,
             maximum_resident_bytes,
+            maximum_tasks: None,
             maximum_writable_bytes,
             maximum_file_descriptors: None,
             maximum_locked_bytes: 0,
             credentials: None,
-            attempt_binding: Arc::new(AttemptResourceBinding),
+            attempt_binding: Arc::new(AttemptResourceBinding::new(maximum_resident_bytes, None)),
             exact_checkpoint_root: None,
         }
     }
@@ -583,14 +671,16 @@ pub struct QemuSpawnHostResources {
     region_len: u64,
     fault_node_hash: [u8; 32],
     process_generation: u64,
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
+    preexec_receipt: Option<crucible_protocol::PreexecSetupHandover>,
+    #[cfg(target_os = "linux")]
     device_digest_workspace: Option<Arc<DeviceDigestWorkspaceBody>>,
     service_lease: Option<crucible_linux_resource::host_services::HostServiceLease>,
     launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl QemuSpawnHostResources {
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn retain_device_digest_workspace(&mut self, body: Arc<DeviceDigestWorkspaceBody>) {
         self.device_digest_workspace = Some(body);
     }
@@ -668,7 +758,9 @@ impl QemuSpawnHostResources {
             region_len: self.region_len,
             fault_node_hash: self.fault_node_hash,
             process_generation: self.process_generation,
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            #[cfg(target_os = "linux")]
+            preexec_receipt: self.preexec_receipt,
+            #[cfg(target_os = "linux")]
             device_digest_workspace: self.device_digest_workspace,
             launch_cleanup: self.launch_cleanup,
         }
@@ -687,14 +779,23 @@ pub struct QemuSpawnSetupResources {
     region_len: u64,
     fault_node_hash: [u8; 32],
     process_generation: u64,
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
+    preexec_receipt: Option<crucible_protocol::PreexecSetupHandover>,
+    #[cfg(target_os = "linux")]
     device_digest_workspace: Option<Arc<DeviceDigestWorkspaceBody>>,
     service_lease: Option<crucible_linux_resource::host_services::HostServiceLease>,
     launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl QemuSpawnSetupResources {
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_preexec_receipt(
+        &mut self,
+    ) -> Option<crucible_protocol::PreexecSetupHandover> {
+        self.preexec_receipt.take()
+    }
+
+    #[cfg(target_os = "linux")]
     pub(crate) fn take_device_digest_workspace(
         &mut self,
     ) -> Option<Arc<DeviceDigestWorkspaceBody>> {
@@ -843,6 +944,33 @@ pub enum QemuSpawnError {
         /// Original independently configured service capacity refusal.
         #[from]
         source: crucible_linux_resource::host_services::HostServiceError,
+    },
+    /// The actual registered startup refused before selected native birth.
+    #[error("registered startup refused: {source}")]
+    PluginStartup {
+        /// The original typed startup cause and retained control loan.
+        #[source]
+        source: PluginStartupError,
+    },
+    /// The actual original Setup refused an independent boundary check.
+    #[error("original Setup refused: {source}")]
+    OriginalStartup {
+        /// The unchanged original cancellation or deadline cause.
+        #[source]
+        source: crucible_linux_resource::host_supervision::HostSupervisionError,
+    },
+    /// The sole selected plan or descriptor handover refused with its owner.
+    #[error("pre-exec handover refused: {source}")]
+    Preexec {
+        /// The first cause, independent postcut and actual retained aliases.
+        #[source]
+        source: PreexecSetupError,
+    },
+    /// The selected region exceeds the prepaid encoder overlap or fixed topology.
+    #[error("selected pre-exec region {region_len} does not fit its funded single-node encoder")]
+    PreexecRegionUnsupported {
+        /// Actual requested region size, which grants no additional credit.
+        region_len: u64,
     },
     /// The shared-memory region length was zero.
     #[error("shared-memory region length must be non-zero")]
@@ -1155,11 +1283,43 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     host_services: Option<&crucible_linux_resource::host_services::HostServiceAllocator>,
     launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
+    spawn_prepared_qemu_child_with_preexec(
+        command,
+        run_directory,
+        region_len,
+        contract,
+        host_services,
+        launch_cleanup,
+        None,
+    )
+}
+
+pub(crate) fn spawn_prepared_qemu_child_with_preexec(
+    command: &QemuLaunchCommand,
+    run_directory: &QemuPreparedRunDirectory,
+    region_len: u64,
+    contract: &QemuChildProcessContract,
+    host_services: Option<&crucible_linux_resource::host_services::HostServiceAllocator>,
+    launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
+    preexec: Option<preexec_setup::BorrowedPreexecSetup<'_>>,
+) -> Result<QemuSpawnedChild, QemuSpawnError> {
     GuardedWorkerStackProfile::for_environment(command.diagnostic_envs())
         .ok_or(QemuSpawnError::UnsupportedWorkerStackProfile)?;
 
     run_directory.validate_launch_basis(command, contract)?;
     run_directory.revalidate()?;
+    if let Some(selected) = preexec.as_ref() {
+        selected
+            .startup
+            .require_preexec_receiver()
+            .map_err(|source| QemuSpawnError::PluginStartup { source })?;
+        if region_len == 0
+            || region_len > crucible_protocol::plugin_setup_plan::PLUGIN_SETUP_PLAN_MAX_BYTES as u64
+            || selected.region_config.vm_node_count != 1
+        {
+            return Err(QemuSpawnError::PreexecRegionUnsupported { region_len });
+        }
+    }
     let spill_quota = if command.ram_control().is_some() {
         let bytes = command.ram_backing_quota_bytes().unwrap_or(0);
         if bytes < 4096 || bytes > contract.maximum_writable_bytes {
@@ -1169,6 +1329,19 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     } else {
         None
     };
+    // Reserve the same selected owner before endpoint birth and binder landing.
+    // Declaring it first keeps its final control after the physical pair locals.
+    let mut prepared_preexec = preexec
+        .as_ref()
+        .map(|selected| {
+            let cleanup = launch_cleanup
+                .as_ref()
+                .ok_or(QemuSpawnError::RegionLengthZero)?
+                .clone();
+            preexec_setup::PreparedPreexecSetup::reserve(selected.startup, cleanup)
+                .map_err(|source| QemuSpawnError::Preexec { source })
+        })
+        .transpose()?;
     // Three socket pairs, three temporary duplicated child endpoints, two
     // shared-memory descriptors, two wake descriptors, and three image pins.
     let service_lease = host_services
@@ -1193,6 +1366,46 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
             bytes,
         )?);
     }
+    if let Some(preexec) = preexec {
+        let ram_endpoint =
+            child_resources.issue_ram_control_endpoint(&resources, command, contract, &preexec)?;
+        let owner = prepared_preexec.take().ok_or_else(|| QemuSpawnError::Io {
+            operation: "retain prepaid selected pre-exec owner",
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "selected pre-exec owner was consumed before endpoint sealing",
+            ),
+        })?;
+        let owner = owner
+            .prepare(
+                preexec.startup,
+                preexec.binding,
+                contract,
+                preexec.supervisor,
+                preexec.registration,
+                ram_endpoint.as_ref(),
+                command.plugin_setup_plan(),
+                region_len,
+                preexec.region_config,
+                &resources.shmem_fd,
+                &resources.wake_fd,
+            )
+            .map_err(|source| QemuSpawnError::Preexec { source })?;
+        let mut owner = owner
+            .queue(&resources.control_socket, preexec.startup)
+            .map_err(|source| QemuSpawnError::Preexec { source })?;
+        resources.preexec_receipt = owner.take_receipt();
+        prepared_preexec = Some(owner);
+    }
+    let selected_preexec = prepared_preexec.is_some();
+    if selected_preexec {
+        // A failed spawn can follow a successful fork or partial pre-exec.
+        // Until actual reap is known, queued aliases and their original owner
+        // must not retire as a never-started launch.
+        if let Some(cleanup) = launch_cleanup.as_ref() {
+            cleanup.child_started();
+        }
+    }
     let child = spawn_process_with_resources(
         command.executable(),
         &launch_args,
@@ -1203,9 +1416,13 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
         Some(BorrowedSpawnProcessContract {
             process: contract,
             startup: command.plugin_setup_plan().startup_operation(),
+            selected_preexec,
         }),
     )?;
     let mut child = QemuNodeChild::new(child);
+    if let Some(owner) = prepared_preexec.take() {
+        child.retain_preexec_setup(owner);
+    }
     if let Some(cleanup) = launch_cleanup {
         child.retain_launch_cleanup(cleanup);
     }
@@ -1226,7 +1443,7 @@ pub(crate) fn validate_guarded_launch_requirements(
     requirements
         .validate_ceiling(
             contract.maximum_vcpus,
-            contract.maximum_resident_bytes,
+            contract.effective_resident_bytes(),
             contract.maximum_writable_bytes,
         )
         .map_err(|source| QemuSpawnError::LaunchResources { source })
@@ -1275,7 +1492,9 @@ fn create_spawn_resources(
             region_len,
             fault_node_hash: [0; 32],
             process_generation: 0,
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            #[cfg(target_os = "linux")]
+            preexec_receipt: None,
+            #[cfg(target_os = "linux")]
             device_digest_workspace: None,
         },
         QemuSpawnChildResources {
@@ -1309,12 +1528,156 @@ pub(crate) fn create_test_spawn_resource_pair(
     ))
 }
 
+/// Initializes and prequeues real transport fixtures without issuing native authority.
+///
+/// # Errors
+/// Returns actual layout, descriptor, serialization, sealing or one-shot send errors.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn prepare_test_preexec_setup(
+    resources: &mut QemuSpawnHostResources,
+    config: crucible_shmem::RegionConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crucible_protocol::plugin_setup_plan::{
+        PluginSetupPlan, StartupOperation, StartupOperationFields,
+    };
+    use std::os::unix::fs::FileExt as _;
+
+    if resources.preexec_receipt.is_some() {
+        return Err("fixture setup was already queued".into());
+    }
+    let region = crucible_shmem::RegionAllocation::new(config)?;
+    let bytes = region.setup_region_bytes()?;
+    if bytes.len() as u64 > resources.region_len {
+        return Err("fixture region does not fit its actual backing".into());
+    }
+    let shmem = fs::File::from(resources.shmem_fd.try_clone()?);
+    shmem.write_all_at(&bytes, 0)?;
+    drop(shmem);
+
+    // These syntax-only fields deliberately do not name an issued native account
+    // or usable original. The fixture qualifies transport, never native startup.
+    let startup = StartupOperation::new(StartupOperationFields {
+        cap_id: [0xa1; 32],
+        operation_id: 1,
+        original_start_ns: 1,
+        absolute_end_ns: 2,
+        poll_ns: 1,
+        process_generation: resources.process_generation,
+        cancellation_device: 0,
+        cancellation_inode: 1,
+        cancellation_event_id: 1,
+        cancellation_descriptor: resources.wake_fd.as_raw_fd(),
+        original_total_metadata_bytes: 4096,
+    })?;
+    let mut purpose = [0_u8; crucible_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES];
+    purpose[..8].copy_from_slice(b"CRUCPUR6");
+    purpose[8..12].copy_from_slice(&6_u32.to_be_bytes());
+    purpose[12..16].copy_from_slice(
+        &(crucible_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES as u32).to_be_bytes(),
+    );
+    for (offset, value) in [
+        (16, 4096_u64),
+        (96, resources.process_generation),
+        (520, 1),
+        (528, 1),
+        (536, 100_000),
+        (544, 1),
+        (552, 1),
+        (560, 1),
+    ] {
+        purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    purpose[184..216].copy_from_slice(&startup.fields().cap_id);
+    // Syntax-only reservations exercise the codec; they issue no native owner.
+    for (offset, value) in [
+        (24, 2048_u64),
+        (72, 512),
+        (80, 1),
+        (88, 9),
+        (104, 1024),
+        (112, 256),
+        (120, 1),
+        (128, 32),
+        (136, 1),
+        (472, 1024),
+        (480, 2),
+        (528, 100_000),
+    ] {
+        purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    let mut family = [0; 256];
+    family[..8].copy_from_slice(b"CRUCFAM1");
+    family[8..12].copy_from_slice(&1_u32.to_be_bytes());
+    family[12..16].copy_from_slice(&256_u32.to_be_bytes());
+    family[16..48].copy_from_slice(&purpose[184..216]);
+    family[48..56].copy_from_slice(&9_u64.to_be_bytes());
+    family[56..64].copy_from_slice(&9_u64.to_be_bytes());
+    for (index, identity) in [(0, 11), (1, 13)] {
+        let offset = 64 + index * 96;
+        family[offset..offset + 4].copy_from_slice(&(index as u32).to_be_bytes());
+        family[offset + 8..offset + 40].fill(identity);
+        for (relative, value) in [
+            (40, 1024_u64),
+            (56, 1024),
+            (64, 256),
+            (72, 1),
+            (80, 32),
+            (88, 1),
+        ] {
+            family[offset + relative..offset + relative + 8].copy_from_slice(&value.to_be_bytes());
+        }
+    }
+    purpose[744..1000].copy_from_slice(&family);
+    let selectable = crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::new(
+        crucible_protocol::selectable_catalog_plan::SelectablePlanLimits::new(1, 1, 1)?,
+        Vec::new(),
+        crucible_protocol::selectable_catalog_plan::SelectablePlanContinuation::cold(),
+    )?;
+    let bytes = PluginSetupPlan::new(
+        crucible_protocol::app_random_branch_plan::AppRandomBranchPlan::default(),
+        selectable,
+    )
+    .with_startup_operation(startup)
+    .encode_preexec(&purpose, None)?;
+    let plan = fs::File::from(memfd_region(u64::try_from(bytes.len())?)?);
+    plan.write_all_at(&bytes, 0)?;
+    rustix::fs::fcntl_add_seals(
+        &plan,
+        rustix::fs::SealFlags::GROW
+            | rustix::fs::SealFlags::SHRINK
+            | rustix::fs::SealFlags::WRITE
+            | rustix::fs::SealFlags::SEAL,
+    )?;
+
+    let frame: [u8; 61] =
+        crucible_protocol::control_encode_host_msg(&crucible_protocol::HostMsg::Setup {
+            region_len: resources.region_len,
+            process_generation: resources.process_generation,
+            device_digest_workspace: None,
+        })
+        .try_into()
+        .map_err(|_| "fixture current setup frame size differs")?;
+    resources.preexec_receipt = Some(
+        crucible_protocol::send_preexec_setup_frame_with_descriptors(
+            resources.control_socket.as_raw_fd(),
+            &frame,
+            &[
+                resources.shmem_fd.as_raw_fd(),
+                resources.wake_fd.as_raw_fd(),
+                plan.as_raw_fd(),
+            ],
+        )?,
+    );
+    Ok(())
+}
+
 // The startup borrow belongs to the same already-authenticated launch plan.
 // Grouping it with the actual process contract keeps retention at this private
 // spawn boundary; neither a bool nor a numeric descriptor issues authority.
 struct BorrowedSpawnProcessContract<'contract> {
     process: &'contract QemuChildProcessContract,
     startup: Option<&'contract crucible_protocol::plugin_setup_plan::StartupOperation>,
+    selected_preexec: bool,
 }
 
 fn spawn_process_with_resources(
@@ -1326,6 +1689,15 @@ fn spawn_process_with_resources(
     envs: &[(&str, &str)],
     process_contract: Option<BorrowedSpawnProcessContract<'_>>,
 ) -> Result<Child, QemuSpawnError> {
+    if let Some(contract) = &process_contract {
+        // A failed or ambiguous spawn still closes pre-exec refinement. Later
+        // generations may use this same frozen contract, never reopen it.
+        contract.process.attempt_binding.freeze_for_launch()?;
+    }
+
+    let selected_preexec = process_contract
+        .as_ref()
+        .is_some_and(|contract| contract.selected_preexec);
     let retain_startup_cancellation = process_contract
         .as_ref()
         .is_some_and(|contract| contract.startup.is_some());
@@ -1343,7 +1715,7 @@ fn spawn_process_with_resources(
         cgroup_procs: contract.process.cgroup_procs.as_raw_fd(),
         cancellation_event: contract.process.cancellation_event.as_raw_fd(),
         maximum_file_bytes: contract.process.maximum_writable_bytes,
-        maximum_file_descriptors: contract.process.maximum_file_descriptors,
+        maximum_file_descriptors: contract.process.effective_file_descriptors(),
         maximum_locked_bytes: contract.process.maximum_locked_bytes,
         credentials: contract.process.credentials,
     });
@@ -1359,6 +1731,9 @@ fn spawn_process_with_resources(
         .map(|overlay| (overlay.read.as_raw_fd(), overlay.write.as_raw_fd()));
 
     let mut command = guarded_qemu_process_command(executable, args, envs);
+    if selected_preexec {
+        command.env("QEMU_CRUCIBLE_PREEXEC_SETUP", "4");
+    }
 
     // SAFETY: the closure only calls async-signal-safe syscalls between fork
     // and exec: `write`, `poll`, `setrlimit`, `openat`, `fstat`, `fchdir`, raw
@@ -1515,6 +1890,14 @@ fn run_guarded_qemu_setup_probe_inner(
         process_contract,
         setup.root_overlay.map(AsRawFd::as_raw_fd),
     );
+
+    process_contract
+        .attempt_binding
+        .freeze_for_launch()
+        .map_err(|source| QemuGuardedImagePreparationError {
+            source,
+            child: None,
+        })?;
 
     let mut child = command
         .spawn()
@@ -1696,7 +2079,7 @@ fn install_guarded_helper_authority_with_probe_pin(
         cgroup_procs: process_contract.cgroup_procs.as_raw_fd(),
         cancellation_event: process_contract.cancellation_event.as_raw_fd(),
         maximum_file_bytes: process_contract.maximum_writable_bytes,
-        maximum_file_descriptors: process_contract.maximum_file_descriptors,
+        maximum_file_descriptors: process_contract.effective_file_descriptors(),
         maximum_locked_bytes: process_contract.maximum_locked_bytes,
         credentials: process_contract.credentials,
     };
@@ -1847,6 +2230,14 @@ fn run_guarded_image_tool_for_purpose(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     install_guarded_helper_authority(&mut command, run_directory, process_contract);
+    process_contract
+        .attempt_binding
+        .freeze_for_launch()
+        .map_err(|source| QemuGuardedImagePreparationError {
+            source,
+            child: None,
+        })?;
+
     let child = command
         .spawn()
         .map_err(|source| QemuGuardedImagePreparationError {
@@ -2130,7 +2521,7 @@ fn install_child_credentials(credentials: QemuChildCredentials) -> io::Result<()
     if user_changed != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(())
+    child_privilege::clear_and_verify(credentials)
 }
 
 fn validate_cgroup_procs_fd(fd: &OwnedFd) -> Result<(), QemuSpawnError> {

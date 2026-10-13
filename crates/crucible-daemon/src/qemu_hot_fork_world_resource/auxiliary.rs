@@ -215,6 +215,19 @@ where
 {
     type Guard = QemuHotForkWorldAuxiliaryResourceGuard<F::Guard>;
 
+    #[cfg(target_os = "linux")]
+    fn begin_fork_target(
+        &mut self,
+        permit: crucible_qemu::LinuxQemuForkTargetPermit,
+        resources: AttemptResourceLimits,
+        cancellation: ExecutionCancellation,
+    ) -> Result<Self::Guard, crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure>
+    {
+        self.fresh
+            .begin_fork_target(permit, resources, cancellation)
+            .map(QemuHotForkWorldAuxiliaryResourceGuard::Fresh)
+    }
+
     fn begin(
         &mut self,
         resources: AttemptResourceLimits,
@@ -402,6 +415,114 @@ impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldAuxiliaryGuard<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    #[cfg(target_os = "linux")]
+    fn bind_fork_target_ram_custody(
+        &mut self,
+        contract: &QemuChildProcessContract,
+        registration: &crucible_qemu::ram_control::RamControlRegistration,
+        supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        guest_ram_bytes: u64,
+        custody: &crucible_qemu::QemuRamLaunchCustody,
+    ) -> Result<(), QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+            return Err(world_resource_error(
+                "target RAM keeper launcher is terminal",
+            ));
+        }
+        state.guard.bind_fork_target_ram_custody(
+            contract,
+            registration,
+            supervisor,
+            guest_ram_bytes,
+            custody,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn fork_target_is_owned(&self) -> bool {
+        self.state
+            .lock()
+            .map_or(true, |state| state.guard.fork_target_is_owned())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn lend_fork_target_permit(
+        &mut self,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+            return Err(world_resource_error(
+                "auxiliary source launcher is terminal",
+            ));
+        }
+        state.guard.lend_fork_target_permit()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_run_directory(
+        &mut self,
+        target_contract: &QemuChildProcessContract,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+            return Err(world_resource_error(
+                "auxiliary source launcher is terminal",
+            ));
+        }
+        state
+            .guard
+            .prepare_fork_target_run_directory(target_contract, requirements)
+    }
+
+    fn installed_node_issuer(
+        &self,
+    ) -> Result<crucible_qemu::InstalledNodeLaunchIssuer, crucible_qemu::QemuLiveNodeStepGateError>
+    {
+        let state = self.state.lock().map_err(|_| {
+            crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                source: crucible_qemu::OriginalActorAccountError::Unavailable,
+            }
+        })?;
+        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+            return Err(
+                crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                    source: crucible_qemu::OriginalActorAccountError::Unavailable,
+                },
+            );
+        }
+        state.guard.installed_node_issuer()
+    }
+
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        self.installed_node_issuer()?
+            .launch_fresh_node(config, admission)
+    }
+
+    fn launch_exact_node(
+        &self,
+        request: crucible_qemu::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu::QemuProductionExactRestoreLaunch,
+        crucible_qemu::QemuLiveNodeStepGateError,
+    > {
+        self.installed_node_issuer()?.launch_exact_node(request)
+    }
+
     fn native_resource_controller(
         &mut self,
     ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
@@ -445,7 +566,7 @@ where
                 "hot-fork world auxiliary lifecycle cannot prepare a generation directory",
             ));
         }
-        state.guard.prepare_generation_run_directory(requirements)
+        state.prepare_generation_run_directory(&self.process_contract, requirements)
     }
 
     fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
@@ -537,6 +658,90 @@ impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldAuxiliaryResourceGua
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    #[cfg(target_os = "linux")]
+    fn bind_fork_target_ram_custody(
+        &mut self,
+        contract: &QemuChildProcessContract,
+        registration: &crucible_qemu::ram_control::RamControlRegistration,
+        supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        guest_ram_bytes: u64,
+        custody: &crucible_qemu::QemuRamLaunchCustody,
+    ) -> Result<(), QemuVmRealizationError> {
+        match self {
+            Self::Fresh(guard) => guard.bind_fork_target_ram_custody(
+                contract,
+                registration,
+                supervisor,
+                guest_ram_bytes,
+                custody,
+            ),
+            Self::Retained(guard) => guard.bind_fork_target_ram_custody(
+                contract,
+                registration,
+                supervisor,
+                guest_ram_bytes,
+                custody,
+            ),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn fork_target_is_owned(&self) -> bool {
+        match self {
+            Self::Fresh(guard) => guard.fork_target_is_owned(),
+            Self::Retained(guard) => guard.fork_target_is_owned(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn lend_fork_target_permit(
+        &mut self,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+        match self {
+            Self::Fresh(guard) => guard.lend_fork_target_permit(),
+            Self::Retained(guard) => guard.lend_fork_target_permit(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_run_directory(
+        &mut self,
+        target_contract: &QemuChildProcessContract,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        match self {
+            Self::Fresh(guard) => {
+                guard.prepare_fork_target_run_directory(target_contract, requirements)
+            }
+            Self::Retained(guard) => {
+                guard.prepare_fork_target_run_directory(target_contract, requirements)
+            }
+        }
+    }
+
+    fn installed_node_issuer(
+        &self,
+    ) -> Result<crucible_qemu::InstalledNodeLaunchIssuer, crucible_qemu::QemuLiveNodeStepGateError>
+    {
+        match self {
+            Self::Fresh(guard) => guard.installed_node_issuer(),
+            Self::Retained(guard) => guard.installed_node_issuer(),
+        }
+    }
+
+    fn launch_exact_node(
+        &self,
+        request: crucible_qemu::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu::QemuProductionExactRestoreLaunch,
+        crucible_qemu::QemuLiveNodeStepGateError,
+    > {
+        match self {
+            Self::Fresh(guard) => guard.launch_exact_node(request),
+            Self::Retained(guard) => guard.launch_exact_node(request),
+        }
+    }
+
     fn native_resource_controller(
         &mut self,
     ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
@@ -547,7 +752,6 @@ where
         }
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     fn launch_fresh_node(
         &self,
         config: &crucible_qemu::QemuLiveNodeStepGateConfig,

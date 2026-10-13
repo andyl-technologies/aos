@@ -11,6 +11,9 @@
 //! intent fences that key after restart; it is never reinterpreted as a new
 //! request. Direct filename lookup is the bounded disk index: history is not
 //! loaded into memory or silently forgotten to admit another mutation.
+//! The strict journal edition includes the embedded nanosecond response schema.
+//! Charged predecessor histories and predecessor key records refuse in place;
+//! they are neither migrated nor treated as absent to permit another apply.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,7 +26,7 @@ use crate::owned_advisory_lock::OwnedAdvisoryLock;
 pub(super) const RECORD_CHARGE: u64 = 32 * 1024;
 pub(super) const FIXED_HISTORY_CHARGE: u64 = 64 * 1024;
 const MAX_RECORD_BYTES: u64 = 8192;
-const MAGIC: &[u8; 8] = b"HOSTCTL1";
+const MAGIC: &[u8; 8] = b"HOSTCTL2";
 
 pub(super) struct History {
     root: AnchoredDirectory,
@@ -288,5 +291,137 @@ mod tests {
 
         assert!(History::open(directory.path(), 1024 * 1024).is_err());
         assert!(staged_path.exists());
+    }
+
+    fn predecessor_record(payload: &[u8]) -> Vec<u8> {
+        let mut bytes = b"HOSTCTL1".to_vec();
+        bytes.extend_from_slice(payload);
+        let digest = blake3::hash(&bytes);
+        bytes.extend_from_slice(digest.as_bytes());
+        bytes
+    }
+
+    #[test]
+    fn predecessor_history_refuses_in_place_without_losing_charges_or_key_fences() {
+        let directory = tempfile::tempdir().unwrap();
+        let counters = predecessor_record(&(FIXED_HISTORY_CHARGE + RECORD_CHARGE).to_be_bytes());
+        fs::write(directory.path().join("counters"), &counters).unwrap();
+        assert!(History::open(directory.path(), 1024 * 1024).is_err());
+        assert_eq!(
+            fs::read(directory.path().join("counters")).unwrap(),
+            counters
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let history = History::open(directory.path(), 1024 * 1024).unwrap();
+        let target = [1; 32];
+        let key = [2; 32];
+        let digest = [3; 32];
+        let target_directory = history.directory(target);
+        history
+            .root
+            .ensure_directory(&target_directory, "test-predecessor-key")
+            .unwrap();
+        let prepared = target_directory.join(format!("{}.prepared", hex(key)));
+        let bytes = predecessor_record(&digest);
+        let file = history
+            .root
+            .create_new_regular(&prepared, "test-predecessor-intent")
+            .unwrap();
+        file.write_all_sync(&bytes).unwrap();
+        drop(file);
+        assert!(matches!(
+            history.lookup(target, key, digest),
+            Err(HostOperationalError::Unavailable)
+        ));
+        assert_eq!(fs::read(&prepared).unwrap(), bytes);
+
+        let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024).unwrap();
+        let response = HostOperationalResponse::OuterCapAmendment {
+            request_digest: digest,
+            target: crucible_api::host_operational::HostOuterCapTarget {
+                daemon_epoch: [1; 32],
+                owner: crucible_api::host_operational::HostOuterCapOwner::Execution([2; 32]),
+                owner_generation: 7,
+                cap_id: [3; 32],
+            },
+            disposition: crucible_api::host_operational::HostOperationalDisposition::Accepted,
+            accepted_cap_revision: Some(5),
+            accepted_allowance: Some(None),
+        };
+        // This receipt contains no duration scalar: apart from its schema, its
+        // fields retain the predecessor layout for accepted cap removal.
+        let mut encoded = codec::encode_response(&response).unwrap().to_vec();
+        encoded[..4].copy_from_slice(&3_u32.to_be_bytes());
+        let mut payload = digest.to_vec();
+        payload.extend_from_slice(&encoded);
+        let bytes = predecessor_record(&payload);
+        let committed = target_directory.join(format!("{}.committed", hex(key)));
+        let file = history
+            .root
+            .create_new_regular(&committed, "test-predecessor-acceptance")
+            .unwrap();
+        file.write_all_sync(&bytes).unwrap();
+        drop(file);
+        assert!(matches!(
+            history.lookup(target, key, digest),
+            Err(HostOperationalError::Unavailable)
+        ));
+        assert_eq!(fs::read(&committed).unwrap(), bytes);
+        assert!(prepared.exists());
+    }
+
+    #[test]
+    fn nanosecond_acceptance_replays_after_restart_and_fences_changed_bytes() {
+        use crucible_api::host_operational::{
+            HostOperationalDisposition, HostOperationalRequest, HostOuterCapOwner,
+            HostOuterCapTarget, host_operational_request_digest,
+        };
+        use std::time::Duration;
+
+        let _scope = crucible::test_support::fixture_decode_scope(32 * 1024 * 1024).unwrap();
+        for allowance in [Duration::from_nanos(1), Duration::from_micros(500)] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut history = History::open(directory.path(), 1024 * 1024).unwrap();
+            let target = HostOuterCapTarget {
+                daemon_epoch: [1; 32],
+                owner: HostOuterCapOwner::Execution([2; 32]),
+                owner_generation: 7,
+                cap_id: [3; 32],
+            };
+            let request = HostOperationalRequest::AmendOuterCap {
+                target,
+                expected_cap_revision: 4,
+                idempotency_key: [5; 32],
+                allowance: Some(allowance),
+            };
+            let digest = host_operational_request_digest("operator-a", &request).unwrap();
+            let response = HostOperationalResponse::OuterCapAmendment {
+                request_digest: digest,
+                target,
+                disposition: HostOperationalDisposition::Accepted,
+                accepted_cap_revision: Some(5),
+                accepted_allowance: Some(Some(allowance)),
+            };
+            assert!(history.prepare([6; 32], [5; 32], digest).unwrap());
+            history.commit([6; 32], [5; 32], digest, &response).unwrap();
+            drop(history);
+
+            let history = History::open(directory.path(), 1024 * 1024).unwrap();
+            let replayed = history.lookup([6; 32], [5; 32], digest).unwrap().unwrap();
+            assert_eq!(replayed.value(), &response);
+            let changed = HostOperationalRequest::AmendOuterCap {
+                target,
+                expected_cap_revision: 4,
+                idempotency_key: [5; 32],
+                allowance: Some(allowance + Duration::from_nanos(1)),
+            };
+            let changed_digest = host_operational_request_digest("operator-a", &changed).unwrap();
+            assert!(matches!(
+                history.lookup([6; 32], [5; 32], changed_digest),
+                Err(HostOperationalError::IdempotencyConflict)
+            ));
+            assert_eq!(history.reserved_bytes, FIXED_HISTORY_CHARGE + RECORD_CHARGE);
+        }
     }
 }

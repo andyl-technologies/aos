@@ -172,7 +172,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             qmp_machine_control: Box::new(crate::QemuQmpExactSnapshotControlChannel::new(
                 child_qmp,
             )),
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            #[cfg(target_os = "linux")]
             original_native_binding: None,
         };
         Self {
@@ -315,7 +315,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             host_io_binding,
         };
         Ok(QemuNode {
-            child: QemuNodeProcessControl::External(process),
+            child: QemuNodeProcessControl::external(process),
             channels,
             checkpoint_cancellation: Some(checkpoint_cancellation),
             hot_fork_private_ring_stage: None,
@@ -365,7 +365,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             _launch_cleanup: launch_cleanup,
             // A source generation's original witness cannot authorize a fork
             // child. Only the admitted fresh factory issues this observation.
-            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            #[cfg(target_os = "linux")]
             original_native_binding: None,
         })
     }

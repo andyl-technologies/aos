@@ -67,10 +67,12 @@ impl Arena {
         backend: &PackedBlobBackend,
         instance: [u8; 32],
         generation: u64,
-        bytes: &[u8],
+        node: &Node<'_>,
         operation: &mut Operation<'_>,
     ) -> Result<PageReference, StoreError> {
-        let node = Node::parse_pending(bytes)?;
+        // The parsed node borrows the exact immutable image being appended.
+        // Its caller has already authenticated the checksum and row layout.
+        let bytes = node.encoded_bytes();
         if node.count == 0 {
             return Err(StoreError::Incompatible);
         }

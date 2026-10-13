@@ -1026,6 +1026,33 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         } else {
             None
         };
+        let (events, mut failures) = self.shutdown_physical_outcome();
+        if let Some(error) = pending_error {
+            failures.push(error);
+        }
+        if let Some(error) = signal_fault_branch_error {
+            failures.push(error);
+        }
+        if let Some(error) = replay_error {
+            failures.push(error);
+        }
+        if let Some(error) = campaign_replay_error {
+            failures.push(error);
+        }
+        if let Some(error) = search_override_error {
+            failures.push(error);
+        }
+        self.finish_shutdown_result(events, failures)
+    }
+}
+
+impl ProductionVmLifecycleLoop {
+    /// Reaps native custody without deciding whether modeled replay completed.
+    /// Only the opaque, never-exposed stopped owner uses this independently of
+    /// the ordinary shutdown's unchanged semantic exhaustion checks.
+    fn shutdown_physical_outcome(
+        &mut self,
+    ) -> (Option<Vec<SchedulerEventLogEntry>>, Vec<SchedulerError>) {
         let gateway_shutdown = self.debug_gateway.take().map(|gateway| {
             gateway
                 .shutdown()
@@ -1080,21 +1107,14 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         if let Err(error) = launcher_shutdown {
             failures.push(error);
         }
-        if let Some(error) = pending_error {
-            failures.push(error);
-        }
-        if let Some(error) = signal_fault_branch_error {
-            failures.push(error);
-        }
-        if let Some(error) = replay_error {
-            failures.push(error);
-        }
-        if let Some(error) = campaign_replay_error {
-            failures.push(error);
-        }
-        if let Some(error) = search_override_error {
-            failures.push(error);
-        }
+        (events, failures)
+    }
+
+    fn finish_shutdown_result(
+        &mut self,
+        events: Option<Vec<SchedulerEventLogEntry>>,
+        mut failures: Vec<SchedulerError>,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         if failures.len() == 1 {
             return Err(failures.remove(0));
         }
@@ -1117,9 +1137,13 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.persist_lifecycle_state()?;
         Ok(events)
     }
-}
 
-impl ProductionVmLifecycleLoop {
+    pub(super) fn abort_stopped_restore(&mut self) -> Result<(), SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
+        let (events, failures) = self.shutdown_physical_outcome();
+        self.finish_shutdown_result(events, failures).map(|_| ())
+    }
+
     /// Retains failed-node counter origins without querying a retired process.
     fn checkpoint_node_icount(&self, node: &NodeId) -> Result<Icount, SchedulerError> {
         let retired = match self.node_service_states.get(node) {

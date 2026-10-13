@@ -204,7 +204,10 @@ struct FakeNative {
     aborts: usize,
     full_requests: Vec<u32>,
     fail_commit: bool,
+    fail_abort: bool,
 }
+
+static FAKE_SUITE: Mutex<()> = Mutex::new(());
 
 static FAKE: Mutex<FakeNative> = Mutex::new(FakeNative {
     pages: Vec::new(),
@@ -212,6 +215,7 @@ static FAKE: Mutex<FakeNative> = Mutex::new(FakeNative {
     aborts: 0,
     full_requests: Vec::new(),
     fail_commit: false,
+    fail_abort: false,
 });
 
 extern "C" fn begin(full: u32, owner_token: u64, header: *mut CaptureHeader) -> c_int {
@@ -286,6 +290,9 @@ extern "C" fn finish(_generation: u64, owner_token: u64, commit: u32) -> c_int {
         native.commits += 1;
     } else {
         native.aborts += 1;
+        if native.fail_abort {
+            return -libc::EBUSY;
+        }
     }
     0
 }
@@ -316,6 +323,7 @@ extern "C" fn capture_region(
 
 pub(super) fn apis() -> NativeApis {
     NativeApis {
+        observation_only: super::tests::observation_only,
         begin,
         region: capture_region,
         next,
@@ -330,17 +338,18 @@ pub(super) fn apis() -> NativeApis {
 
 #[test]
 fn coherent_stream_preserves_unchanged_roots_and_refuses_missing_pages() {
+    let _fixture = FAKE_SUITE.lock().unwrap();
     *FAKE.lock().unwrap() = FakeNative::default();
     let mut cache = RootCache::default();
 
     FAKE.lock().unwrap().pages = vec![(0, 0, vec![7; 4096]), (0, 1, vec![8])];
-    assert!(cache.refresh(apis()).is_err());
+    assert!(refresh_fixture(&mut cache).is_err());
     assert!(cache.view.is_none());
     assert_eq!(FAKE.lock().unwrap().aborts, 1);
     assert_eq!(FAKE.lock().unwrap().commits, 0);
 
     FAKE.lock().unwrap().pages.push((1, 0, vec![9]));
-    cache.refresh(apis()).unwrap();
+    refresh_fixture(&mut cache).unwrap();
     let initial = cache.view.as_ref().unwrap().snapshot.clone();
     let initial_root = initial.scoped_root(Scope::Execution).unwrap();
     assert_eq!(
@@ -361,7 +370,7 @@ fn coherent_stream_preserves_unchanged_roots_and_refuses_missing_pages() {
     let retained_metadata = cache.view.as_ref().unwrap().budget.used_bytes();
 
     FAKE.lock().unwrap().pages.clear();
-    cache.refresh(apis()).unwrap();
+    refresh_fixture(&mut cache).unwrap();
     assert_eq!(cache.view.as_ref().unwrap().roots[0], initial_root);
     assert_eq!(
         cache.view.as_ref().unwrap().records[0].bytes.as_ptr(),
@@ -373,7 +382,7 @@ fn coherent_stream_preserves_unchanged_roots_and_refuses_missing_pages() {
     );
 
     FAKE.lock().unwrap().pages = vec![(0, 1, vec![10])];
-    cache.refresh(apis()).unwrap();
+    refresh_fixture(&mut cache).unwrap();
     let changed = &cache.view.as_ref().unwrap().snapshot;
     assert_ne!(changed.scoped_root(Scope::Execution).unwrap(), initial_root);
     assert_eq!(
@@ -391,7 +400,7 @@ fn coherent_stream_preserves_unchanged_roots_and_refuses_missing_pages() {
 
     let committed = changed.scoped_root(Scope::Execution).unwrap();
     FAKE.lock().unwrap().pages = vec![(0, 1, vec![11]), (0, 1, vec![12])];
-    assert!(cache.refresh(apis()).is_err());
+    assert!(refresh_fixture(&mut cache).is_err());
     assert_eq!(cache.view.as_ref().unwrap().roots[0], committed);
     let native = FAKE.lock().unwrap();
     assert_eq!(native.commits, 3);
@@ -406,7 +415,7 @@ fn coherent_stream_preserves_unchanged_roots_and_refuses_missing_pages() {
         native.pages = vec![(0, 1, vec![15])];
         native.fail_commit = true;
     }
-    assert!(cache.refresh(apis()).is_err());
+    assert!(refresh_fixture(&mut cache).is_err());
     assert_eq!(cache.view.as_ref().unwrap().roots[0], committed);
     assert_eq!(cache.view.as_ref().unwrap().records[0].bytes, prior_records);
     assert_eq!(
@@ -428,7 +437,7 @@ fn coherent_stream_preserves_unchanged_roots_and_refuses_missing_pages() {
     cache.prepare_mutation(7, 1, &pages).unwrap();
     assert_eq!(cache.view.as_ref().unwrap().roots[0], committed);
     assert_ne!(cache.pending.as_ref().unwrap().roots[0], committed);
-    assert!(cache.refresh(apis()).is_err());
+    assert!(refresh_fixture(&mut cache).is_err());
     assert!(cache.finish_mutation(8, 1, true).is_err());
     cache.finish_mutation(7, 1, false).unwrap();
     assert_eq!(cache.view.as_ref().unwrap().roots[0], committed);
@@ -456,4 +465,82 @@ fn private_native_capture_layouts_are_fixed() {
     assert_eq!(std::mem::size_of::<CaptureRegion>(), 280);
     assert_eq!(std::mem::size_of::<CapturePage>(), 24);
     assert_eq!(std::mem::size_of::<PreparedPage>(), 32);
+}
+
+// The private Merkle fixtures supply synthetic native byte streams only. Their
+// real local bounded operation exercises module post/rollback; it issues no
+// native Source, stopped boundary, loan, dirty ACK or readiness evidence.
+pub(super) extern "C" fn observation_only(
+    _generation: u64,
+    _owner: u64,
+    output: *mut u32,
+) -> c_int {
+    if output.is_null() {
+        return -libc::EINVAL;
+    }
+    // SAFETY: these isolated private API tables lend one initialized output.
+    unsafe {
+        output.write(1);
+    }
+    0
+}
+
+fn refresh_fixture(cache: &mut RootCache) -> Result<(), RamError> {
+    let mut operation = crate::paged_ram::controller::fixture_fingerprint(
+        ordinary::FingerprintBaseline::fixture(cache),
+    )?;
+    operation.check_before_begin()?;
+    cache.refresh(apis(), &mut operation)?;
+    operation.finish()
+}
+
+#[test]
+fn topology_change_never_opens_an_unbound_replacement_capture() {
+    let _fixture = FAKE_SUITE.lock().unwrap();
+    for fail_abort in [false, true] {
+        *FAKE.lock().unwrap() = FakeNative {
+            pages: vec![
+                (0, 0, vec![1; 4096]),
+                (0, 1, vec![2; 1]),
+                (1, 0, vec![3; 1]),
+            ],
+            ..FakeNative::default()
+        };
+        let mut cache = RootCache::default();
+        refresh_fixture(&mut cache).unwrap();
+        let view = cache.view.as_mut().unwrap();
+        view.topology_generation = 2;
+        let prior_roots = view.roots;
+        let prior_record = view.records[0].bytes.as_ptr();
+        {
+            let mut native = FAKE.lock().unwrap();
+            native.full_requests.clear();
+            native.commits = 0;
+            native.aborts = 0;
+            native.fail_abort = fail_abort;
+        }
+
+        let result = refresh_fixture(&mut cache);
+
+        if fail_abort {
+            assert!(
+                matches!(result, Err(RamError::Native { status, .. }) if status == -libc::EBUSY)
+            );
+        } else {
+            assert!(matches!(
+                result,
+                Err(RamError::Invariant(
+                    "RAM topology restart requires current Source inventory custody"
+                ))
+            ));
+        }
+        let native = FAKE.lock().unwrap();
+        assert_eq!(native.full_requests, vec![0]);
+        assert_eq!(native.aborts, 1);
+        assert_eq!(native.commits, 0);
+        let view = cache.view.as_ref().unwrap();
+        assert_eq!(view.topology_generation, 2);
+        assert_eq!(view.roots, prior_roots);
+        assert_eq!(view.records[0].bytes.as_ptr(), prior_record);
+    }
 }

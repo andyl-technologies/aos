@@ -222,7 +222,7 @@ pub enum ControlDirection {
 #[repr(u8)]
 pub enum ControlTag {
     /// Host-to-plugin setup frame carrying the shared-memory region length.
-    Setup = 0x01,
+    Setup = 0x14,
     /// Plugin-to-host setup acknowledgement frame.
     SetupAck = 0x02,
     /// Host-to-plugin graceful shutdown request.
@@ -784,7 +784,7 @@ pub fn control_encode_host_msg(message: &HostMsg) -> Vec<u8> {
                 &[
                     FieldValue::U64(*region_len),
                     FieldValue::U32(present),
-                    FieldValue::U32(present),
+                    FieldValue::U32(present * 2),
                     FieldValue::U64(*process_generation),
                     FieldValue::U64(workspace.account_generation),
                     FieldValue::U64(workspace.workspace_generation),
@@ -840,7 +840,7 @@ pub fn control_decode_host_msg(frame: &[u8]) -> Result<HostMsg, FrameDecodeError
                 {
                     None
                 }
-                (1, 1) => {
+                (1, 2) => {
                     binding.validate()?;
                     Some(binding)
                 }
@@ -1205,6 +1205,85 @@ pub fn send_setup_with_descriptors(
         SETUP_DESCRIPTOR_COUNT
     };
     send_frame_with_fds(socket_fd, &frame, &fds[..count])
+}
+
+/// Records a complete one-shot pre-exec write on one physical Unix socket.
+///
+/// This non-cloneable receipt is an I/O fact, never allocation or startup
+/// authority. Only the complete fixed-frame sender constructs it. The retained
+/// issuer must still authenticate and own the sealed plan and descriptor loans.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct PreexecSetupHandover {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl PreexecSetupHandover {
+    pub(crate) fn matches_socket(&self, socket: RawFd) -> Result<bool, DescriptorHandoverError> {
+        let (device, inode) = preexec_socket_identity(socket)?;
+        Ok((device, inode) == (self.device, self.inode))
+    }
+}
+
+#[cfg(unix)]
+fn preexec_socket_identity(socket: RawFd) -> Result<(u64, u64), DescriptorHandoverError> {
+    let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `status` points to writable storage for one native stat value.
+    // The syscall initializes it completely only on its zero return.
+    if unsafe { libc::fstat(socket, status.as_mut_ptr()) } != 0 {
+        return Err(DescriptorHandoverError::Io {
+            operation: "authenticate pre-exec control socket",
+            errno: std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO),
+        });
+    }
+    // SAFETY: successful fstat initialized this entire value.
+    let status = unsafe { status.assume_init() };
+    if status.st_mode & libc::S_IFMT != libc::S_IFSOCK {
+        return Err(DescriptorHandoverError::MalformedAncillary {
+            reason: "pre-exec handover requires its retained socket",
+        });
+    }
+    Ok((status.st_dev as u64, status.st_ino as u64))
+}
+
+/// Sends the fixed selected pre-exec edition without changing lifecycle state.
+///
+/// This process-neutral transport grants no allocation or startup authority.
+/// The issuer owns and authenticates the sealed plan and every descriptor.
+/// A partial send is terminal; callers retain uncertain queued aliases.
+///
+/// # Errors
+/// Refuses another frame edition, an invalid fixed descriptor roster, or any
+/// ancillary/send failure. It never retries a partially sent frame.
+#[cfg(unix)]
+pub fn send_preexec_setup_frame_with_descriptors(
+    socket_fd: RawFd,
+    frame: &[u8; 61],
+    descriptors: &[RawFd],
+) -> Result<PreexecSetupHandover, DescriptorHandoverError> {
+    let workspace = frame[13..17] == 1_u32.to_be_bytes();
+    if frame[..4] != 57_u32.to_be_bytes()
+        || frame[4] != TAG_SETUP
+        || frame[5..13] == [0; 8]
+        || frame[21..29] == [0; 8]
+        || !matches!(descriptors.len(), 3 | 4)
+        || descriptors.iter().any(|descriptor| *descriptor < 0)
+        || workspace != (descriptors.len() == 4)
+        || (!workspace && frame[13..21] != [0; 8])
+        || (!workspace && frame[29..61] != [0; 32])
+        || (workspace && frame[17..21] != 2_u32.to_be_bytes())
+    {
+        return Err(DescriptorHandoverError::MalformedAncillary {
+            reason: "selected pre-exec frame or descriptor roster differs",
+        });
+    }
+    let (device, inode) = preexec_socket_identity(socket_fd)?;
+    send_frame_with_fds(socket_fd, frame, descriptors)?;
+    Ok(PreexecSetupHandover { device, inode })
 }
 
 /// Receives a `Setup` frame and its fixed-order descriptors from a Unix socket.

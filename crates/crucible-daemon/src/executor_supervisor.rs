@@ -106,8 +106,15 @@ pub(crate) use execution_control::{
     ExecutionCheckpointHandoff,
 };
 pub use execution_control::{CheckpointHandoffFailure, ExecutionCancellation};
+mod receiving_transfer;
+mod source_transfer;
+pub(crate) use receiving_transfer::ReceivingTransitionFailure;
 mod state;
 mod submission;
+pub use source_transfer::{
+    SourceTransferFailure, SourceTransferPersistenceOutcome, SourceTransferPreparation,
+    SourceTransferReleaseAuthorization,
+};
 
 pub use checkpoint_promotion::{
     CheckpointPromotionCompletionOutcome, CheckpointPromotionRecovery,

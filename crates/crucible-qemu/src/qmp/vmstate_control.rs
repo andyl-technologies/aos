@@ -137,6 +137,28 @@ where
             .reset_selectable_under_original(pending, original)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn bind_checkpoint_original(
+        &mut self,
+        original: crate::CheckpointOriginalLoan,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .bind_checkpoint_original(original)
+            .map_err(|source| {
+                QemuNodeChannelError::new("bind checkpoint original", source.to_string())
+            })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn begin_checkpoint_receiving(
+        &mut self,
+        receipt: crate::ram_control::CheckpointArmReceipt,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .begin_checkpoint_receiving(receipt)
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Attaches the independently owned target execution's live class budgets.
     pub fn set_host_operation_supervisor(
         &mut self,
@@ -383,6 +405,15 @@ where
     pub(crate) fn is_paused_for_hot_fork_template(&mut self) -> Result<bool, QemuNodeChannelError> {
         let state = self.client.query_status()?;
         Ok(!state.running && state.status == crate::QmpRunStateKind::Paused)
+    }
+
+    pub(crate) fn is_stopped_for_transfer(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<bool, QemuNodeChannelError> {
+        self.client
+            .is_stopped_for_transfer(original)
+            .map_err(QemuNodeChannelError::from)
     }
 
     /// Stops guest execution for an exact checkpoint transaction.

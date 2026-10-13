@@ -25,7 +25,14 @@ impl RootCache {
         owner_token: u64,
         cleanup: &mut CaptureClose,
     ) -> Result<(RamRootDigest, u64), RamError> {
-        if owner_token == 0 || self.frozen || self.pending.is_some() || self.restore.is_some() {
+        if owner_token == 0
+            || self.frozen
+            || self.ordinary_active
+            || self.held.is_some()
+            || self.held_accepted.is_some()
+            || self.pending.is_some()
+            || self.restore.is_some()
+        {
             return Err(RamError::Invariant(
                 "RAM candidate lacks exclusive observer admission",
             ));

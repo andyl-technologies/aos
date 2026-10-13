@@ -202,7 +202,7 @@ impl PhysicalPlacement<'_> {
         Ok(())
     }
 
-    fn check_policy_generation(&self) -> Result<(), RamError> {
+    pub(super) fn check_policy_generation(&self) -> Result<(), RamError> {
         if self.policy_revision == 0
             || self.owner.requested_policy_revision.load(Ordering::Acquire) != self.policy_revision
             || self.owner.policy_generation.load(Ordering::Acquire) != self.policy_generation
@@ -214,7 +214,7 @@ impl PhysicalPlacement<'_> {
         Ok(())
     }
 
-    fn writer_generation(&self) -> Result<u64, RamError> {
+    pub(super) fn writer_generation(&self) -> Result<u64, RamError> {
         let mut generation = 0;
         let status =
             (self.service.native.write_generation)(self.token, self.generation, &mut generation);

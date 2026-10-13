@@ -51,6 +51,10 @@ impl<G: QemuAttemptProcessResourceGuard> ProductionCheckpointReplayGuard<G> {
         )
         .map_err(model_copy)?;
         Ok(Arc::new(ReplayRegistrationPreparation {
+            issuer: self
+                .native
+                .installed_node_issuer()
+                .map_err(|source| replay_contract(source.to_string()))?,
             registration: self.registration(),
             supervisor: self.supervisor.clone(),
             source: Arc::clone(&self.source),
@@ -76,6 +80,7 @@ impl<G: QemuAttemptProcessResourceGuard> ProductionCheckpointReplayGuard<G> {
 }
 
 struct ReplayRegistrationPreparation {
+    issuer: crucible_qemu::InstalledNodeLaunchIssuer,
     registration: Arc<dyn ProductionHostRamRegistrationFactory>,
     supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
     source: Arc<ScenarioDefForm>,
@@ -84,6 +89,24 @@ struct ReplayRegistrationPreparation {
 }
 
 impl crucible_qemu::QemuReplayValidationRegistrationPreparation for ReplayRegistrationPreparation {
+    fn launch_exact_node(
+        &self,
+        request: crucible_qemu::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu::QemuProductionExactRestoreLaunch,
+        crucible_qemu::QemuLiveNodeStepGateError,
+    > {
+        self.issuer.launch_exact_node(request)
+    }
+
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
+        self.issuer.launch_fresh_node(config, admission)
+    }
+
     fn prepare(
         &self,
         config: &QemuLiveNodeStepGateConfig,
@@ -179,13 +202,29 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProcessResourceGuard
         self.native.native_resource_controller()
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     fn launch_fresh_node(
         &self,
         config: &crucible_qemu::QemuLiveNodeStepGateConfig,
         admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
     ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
         self.native.launch_fresh_node(config, admission)
+    }
+
+    fn installed_node_issuer(
+        &self,
+    ) -> Result<crucible_qemu::InstalledNodeLaunchIssuer, crucible_qemu::QemuLiveNodeStepGateError>
+    {
+        self.native.installed_node_issuer()
+    }
+
+    fn launch_exact_node(
+        &self,
+        request: crucible_qemu::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu::QemuProductionExactRestoreLaunch,
+        crucible_qemu::QemuLiveNodeStepGateError,
+    > {
+        self.native.launch_exact_node(request)
     }
 
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {

@@ -282,7 +282,7 @@ where
             .map_err(|source| {
                 ProductionQemuHotForkExactSourceCaptureError::Start(Box::new(source))
             })?;
-        let source = lifecycle
+        let mut source = lifecycle
             .prepare_hot_fork_source_world()
             .map_err(|source| {
                 ProductionQemuHotForkExactSourceCaptureError::Preparation(Box::new(source))

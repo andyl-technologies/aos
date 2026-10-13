@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::ram_control::{
-    RamControlConvergence, RamControlDisposition, RamControlFrame, RamControlInventoryReport,
-    RamControlMessage, RamControlOwnerInventory, RamControlTarget, decode_ram_control,
-    encode_ram_control,
+    decode_ram_control, encode_ram_control, RamControlConvergence, RamControlDisposition,
+    RamControlFrame, RamControlInventoryReport, RamControlMessage, RamControlOwnerInventory,
+    RamControlTarget,
 };
 
 fn resident_receipt() -> RamControlPlacementReceipt {
@@ -47,6 +47,7 @@ fn frame(receipt: RamControlPlacementReceipt) -> RamControlFrame {
             region_count: 2,
             native_metadata_bytes: 4096,
             native_scratch_bytes: 4096,
+            rust_metadata_required_bytes: 8192,
             owner_resources: RamControlOwnerInventory {
                 existing_tasks: 4,
                 existing_file_descriptors: 10,
@@ -65,6 +66,7 @@ fn frame(receipt: RamControlPlacementReceipt) -> RamControlFrame {
         effective_floor_bytes: 8192,
         limitation_reasons: 0,
         measurements_available: false,
+        resident_observation: None,
         private_resident_bytes: 0,
         shared_resident_bytes_observed: 0,
         preserved_backing_bytes: 0,
@@ -224,7 +226,7 @@ fn strict_receipt_decoder_rejects_truncation_unknown_tags_and_predecessor_schema
         assert!(decode_ram_control(&canonical[..length]).is_err());
     }
 
-    for (offset, value) in [(canonical.len() - 58, 2), (canonical.len() - 57, 0), (3, 3)] {
+    for (offset, value) in [(canonical.len() - 59, 2), (canonical.len() - 58, 0), (3, 3)] {
         let mut malformed = canonical.clone();
         malformed[offset] = value;
         assert!(decode_ram_control(&malformed).is_err());

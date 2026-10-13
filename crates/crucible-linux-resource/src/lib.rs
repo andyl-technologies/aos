@@ -27,6 +27,7 @@
 
 mod linux_project_quota;
 
+pub mod descriptor;
 pub mod host_services;
 pub mod host_supervision;
 #[cfg(feature = "private-measurement-domain")]

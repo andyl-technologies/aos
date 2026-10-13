@@ -595,7 +595,7 @@ fn spawn_unpinned_test_process_with_resources(
         cgroup_procs: contract.cgroup_procs.as_raw_fd(),
         cancellation_event: contract.cancellation_event.as_raw_fd(),
         maximum_file_bytes: contract.maximum_writable_bytes,
-        maximum_file_descriptors: contract.maximum_file_descriptors,
+        maximum_file_descriptors: contract.effective_file_descriptors(),
         maximum_locked_bytes: contract.maximum_locked_bytes,
         credentials: contract.credentials,
     });
@@ -770,6 +770,7 @@ fn guarded_pre_exec_places_child_before_exec() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn guarded_pre_exec_enforces_explicit_descriptor_ceiling() -> Result<(), Box<dyn Error>> {
+    let expected = 24;
     if env::var_os(PROBE_ENV).is_some() {
         let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
         let result = unsafe {
@@ -783,8 +784,8 @@ fn guarded_pre_exec_enforces_explicit_descriptor_ceiling() -> Result<(), Box<dyn
             // SAFETY: The successful syscall initialized both limit fields.
             limit.assume_init()
         };
-        assert_eq!(limit.rlim_cur, 32);
-        assert_eq!(limit.rlim_max, 32);
+        assert_eq!(limit.rlim_cur, expected);
+        assert_eq!(limit.rlim_max, expected);
         let mut opened = Vec::new();
         let refusal = loop {
             match std::fs::File::open("/dev/null") {
@@ -802,6 +803,22 @@ fn guarded_pre_exec_enforces_explicit_descriptor_ceiling() -> Result<(), Box<dyn
     let mut contract =
         QemuChildProcessContract::for_test(cgroup_write, cancellation, current_file_size_limit()?);
     contract.maximum_file_descriptors = Some(32);
+    {
+        // This fixture supplies syscall storage, never a cgroup witness or a
+        // descriptor entitlement. The child must observe the refined value.
+        contract.attempt_binding = Arc::new(AttemptResourceBinding::new(
+            contract.maximum_resident_bytes,
+            Some(32),
+        ));
+        contract.attempt_binding.refine_descriptor_limit(
+            contract.maximum_resident_bytes,
+            32,
+            expected,
+        )?;
+    }
+    let duplicate = contract.try_clone_for_attempt_generation()?;
+    assert_eq!(contract.maximum_file_descriptors, Some(32));
+    assert_eq!(duplicate.effective_file_descriptors(), Some(expected));
     let (_host, child_resources) = create_spawn_resources(4096)?;
     let executable = env::current_exe()?.to_string_lossy().into_owned();
     let args = vec![
@@ -815,7 +832,7 @@ fn guarded_pre_exec_enforces_explicit_descriptor_ceiling() -> Result<(), Box<dyn
         child_resources,
         &[(PROBE_ENV, "1")],
         "spawn guarded descriptor-limit probe",
-        Some(&contract),
+        Some(&duplicate),
     )?;
     assert!(child.wait()?.success());
     let mut placement = [0_u8; 2];

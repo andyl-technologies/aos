@@ -10,7 +10,6 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-#[cfg(feature = "private-measurement-domain")]
 use crucible_linux_resource::host_supervision::{HostOperationGuard, HostSupervisionError};
 
 use thiserror::Error;
@@ -29,6 +28,8 @@ use super::{
 pub(crate) enum LinuxQemuAttemptProcessOwnerStatus {
     /// The watcher joined and the authenticated empty cgroup was removed.
     ReapedAndReleased,
+    /// Physical cleanup succeeded but this family recorded kernel OOM kills.
+    ReleasedAfterMemoryFailure(super::LinuxQemuMemoryLimitFailure),
     /// Detached quarantine still owns cleanup authority.
     QuarantineRunning,
     /// Detached quarantine parked after one caught invariant panic.
@@ -69,7 +70,6 @@ pub(crate) enum LinuxQemuAttemptProcessOwnerError {
     },
 }
 
-#[cfg(feature = "private-measurement-domain")]
 #[derive(Debug, Error)]
 pub(crate) enum OriginalProcessFinishError {
     #[error("original process cleanup refused: {0}")]
@@ -107,7 +107,6 @@ impl LinuxQemuAttemptProcessOwnerStartError {
     }
 
     /// Recovers the same partial owner for original-aware physical cleanup.
-    #[cfg(feature = "private-measurement-domain")]
     pub(crate) fn into_original_owner(mut self) -> Option<LinuxQemuAttemptProcessOwner> {
         self.authority.take().map(|authority| {
             let authority = *authority;
@@ -115,6 +114,7 @@ impl LinuxQemuAttemptProcessOwnerStartError {
                 group: Some(authority._group),
                 watcher: authority._watcher,
                 process_contract: None,
+                memory_limit_failure: None,
                 failed_children: VecDeque::new(),
                 quarantine: None,
             }
@@ -140,6 +140,7 @@ pub(crate) struct LinuxQemuAttemptProcessOwner {
     group: Option<LinuxQemuCgroup>,
     watcher: Option<LinuxQemuCgroupWatcher>,
     process_contract: Option<QemuChildProcessContract>,
+    memory_limit_failure: Option<super::LinuxQemuMemoryLimitFailure>,
     failed_children: VecDeque<QemuNodeChild>,
     quarantine: Option<LinuxQemuAttemptProcessQuarantine>,
 }
@@ -152,6 +153,7 @@ impl LinuxQemuAttemptProcessOwner {
             group: Some(group),
             watcher: None,
             process_contract: None,
+            memory_limit_failure: None,
             failed_children: VecDeque::new(),
             quarantine: None,
         }
@@ -211,24 +213,66 @@ impl LinuxQemuAttemptProcessOwner {
         child_group_id: libc::gid_t,
         exact_checkpoint_root: Option<crucible::ContentHash>,
     ) -> Result<Self, LinuxQemuAttemptProcessOwnerStartError> {
-        let watcher = match group.start_watcher() {
+        let watcher = group.start_watcher().map_err(|source| (None, source));
+        Self::seal_start(
+            group,
+            watcher,
+            crate::spawn::QemuChildFileLimits {
+                writable_bytes: maximum_writable_bytes,
+                descriptors: maximum_file_descriptors,
+                locked_bytes: maximum_locked_bytes,
+            },
+            (child_user_id, child_group_id),
+            exact_checkpoint_root,
+        )
+    }
+
+    /// Borrows the prepaid Main worker for this actual Target cgroup.
+    ///
+    /// # Errors
+    /// Retains the group and staged job if admission, wake or sealing refuses.
+    pub(crate) fn start_with_target_dispatcher(
+        group: LinuxQemuCgroup,
+        file_limits: crate::spawn::QemuChildFileLimits,
+        credentials: (u32, u32),
+        dispatcher: &mut super::target_dispatcher::TargetDispatcher,
+        original: crate::linux_attempt_host::TargetWatcherOriginal,
+    ) -> Result<Self, LinuxQemuAttemptProcessOwnerStartError> {
+        let watcher = match group.control() {
+            Ok(control) => LinuxQemuCgroupWatcher::start_target(control, dispatcher, original),
+            Err(source) => Err((None, source)),
+        };
+        Self::seal_start(group, watcher, file_limits, credentials, None)
+    }
+
+    fn seal_start(
+        group: LinuxQemuCgroup,
+        watcher: Result<
+            LinuxQemuCgroupWatcher,
+            (Option<LinuxQemuCgroupWatcher>, LinuxQemuCgroupError),
+        >,
+        file_limits: crate::spawn::QemuChildFileLimits,
+        credentials: (u32, u32),
+        exact_checkpoint_root: Option<crucible::ContentHash>,
+    ) -> Result<Self, LinuxQemuAttemptProcessOwnerStartError> {
+        let watcher = match watcher {
             Ok(watcher) => watcher,
-            Err(source) => {
+            Err((watcher, source)) => {
                 return Err(LinuxQemuAttemptProcessOwnerStartError {
                     source: source.into(),
                     authority: Some(Box::new(LinuxQemuAttemptProcessOwnerStartAuthority {
                         _group: group,
-                        _watcher: None,
+                        _watcher: watcher,
                     })),
                 });
             }
         };
         let process_contract = match group.child_process_contract(
-            maximum_writable_bytes,
-            maximum_file_descriptors,
-            maximum_locked_bytes,
-            child_user_id,
-            child_group_id,
+            file_limits.writable_bytes,
+            file_limits.descriptors,
+            file_limits.locked_bytes,
+            credentials.0,
+            credentials.1,
             exact_checkpoint_root,
         ) {
             Ok(contract) => contract,
@@ -246,9 +290,34 @@ impl LinuxQemuAttemptProcessOwner {
             group: Some(group),
             watcher: Some(watcher),
             process_contract: Some(process_contract),
+            memory_limit_failure: None,
             failed_children: VecDeque::new(),
             quarantine: None,
         })
+    }
+
+    fn released_outcome(&self) -> LinuxQemuAttemptProcessOwnerStatus {
+        if let Some(failure) = self.memory_limit_failure {
+            return LinuxQemuAttemptProcessOwnerStatus::ReleasedAfterMemoryFailure(failure);
+        }
+        LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased
+    }
+
+    fn record_memory_limit_failure(&mut self) -> Result<(), LinuxQemuCgroupError> {
+        if let Some(group) = self.group.as_mut() {
+            if group.is_populated()? {
+                return Err(LinuxQemuCgroupError::InvalidEvents {
+                    path: group.path.clone(),
+                    message: String::from("cgroup remained populated at memory-event closure"),
+                });
+            }
+            // Publish the counter fact before any original postcheck or group
+            // removal can refuse. This is aggregate evidence, never a reap.
+            if self.memory_limit_failure.is_none() {
+                self.memory_limit_failure = group.memory_limit_failure()?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn memory_control(
@@ -431,7 +500,7 @@ impl LinuxQemuAttemptProcessOwner {
             });
         }
         if self.group.is_none() {
-            return Ok(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased);
+            return Ok(self.released_outcome());
         }
         self.process_contract = None;
         if let Some(watcher) = self.watcher.take() {
@@ -455,6 +524,16 @@ impl LinuxQemuAttemptProcessOwner {
             .map_err(|error| LinuxQemuAttemptProcessOwnerError::Watcher {
                 message: error.to_string(),
             })?;
+        let observation = self.record_memory_limit_failure();
+        if let Err(error) = original.check_original() {
+            setup.cleanup_original_post = Some(error);
+        }
+        observation?;
+        if let Some(error) = &setup.cleanup_original_post {
+            return Err(LinuxQemuAttemptProcessOwnerError::Watcher {
+                message: error.to_string(),
+            });
+        }
         let group =
             self.group
                 .take()
@@ -473,7 +552,7 @@ impl LinuxQemuAttemptProcessOwner {
                 message: error.to_string(),
             });
         }
-        Ok(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased)
+        Ok(self.released_outcome())
     }
 
     /// Completes normal watcher and cgroup cleanup within `timeout`.
@@ -494,7 +573,7 @@ impl LinuxQemuAttemptProcessOwner {
             return self.quarantine();
         }
         if self.group.is_none() {
-            return Ok(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased);
+            return Ok(self.released_outcome());
         }
         self.process_contract = None;
         if let Some(watcher) = self.watcher.take()
@@ -504,6 +583,7 @@ impl LinuxQemuAttemptProcessOwner {
             self.watcher = error.into_watcher();
             return Err(LinuxQemuAttemptProcessOwnerError::Watcher { message });
         }
+        self.record_memory_limit_failure()?;
         let group =
             self.group
                 .take()
@@ -511,7 +591,7 @@ impl LinuxQemuAttemptProcessOwner {
                     authority: "configured cgroup",
                 })?;
         match group.remove_if_empty() {
-            Ok(()) => Ok(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased),
+            Ok(()) => Ok(self.released_outcome()),
             Err(error) => {
                 let message = error.to_string();
                 self.group = Some(error.into_group());
@@ -521,7 +601,6 @@ impl LinuxQemuAttemptProcessOwner {
     }
 
     /// Keeps actual watcher and cgroup cleanup within the same original end.
-    #[cfg(feature = "private-measurement-domain")]
     pub(crate) fn finish_under_original(
         &mut self,
         timeout: Duration,
@@ -539,7 +618,7 @@ impl LinuxQemuAttemptProcessOwner {
             });
         }
         if self.group.is_none() {
-            return Ok(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased);
+            return Ok(self.released_outcome());
         }
         self.process_contract = None;
         if let Some(watcher) = self.watcher.take()
@@ -549,6 +628,15 @@ impl LinuxQemuAttemptProcessOwner {
             return Err(OriginalProcessFinishError::Watcher(source));
         }
 
+        original
+            .wait_slice()
+            .map_err(OriginalProcessFinishError::Original)?;
+        self.record_memory_limit_failure().map_err(|source| {
+            OriginalProcessFinishError::Physical {
+                source: LinuxQemuAttemptProcessOwnerError::Cgroup(source),
+                original_after: original.wait_slice().err(),
+            }
+        })?;
         original
             .wait_slice()
             .map_err(OriginalProcessFinishError::Original)?;
@@ -578,7 +666,7 @@ impl LinuxQemuAttemptProcessOwner {
             });
         }
         after.map_err(OriginalProcessFinishError::Original)?;
-        Ok(LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased)
+        Ok(self.released_outcome())
     }
 }
 
@@ -712,6 +800,8 @@ mod tests {
                 parent_directory,
                 name: String::from(name),
                 limits: LinuxQemuCgroupLimits::new(1, 4096, 4)?,
+                #[cfg(feature = "private-measurement-domain")]
+                memory_oom_kill_baseline: None,
                 control,
             },
         ))
@@ -741,10 +831,72 @@ mod tests {
                 group: Some(group),
                 watcher: Some(watcher),
                 process_contract: Some(test_process_contract()),
+                memory_limit_failure: None,
                 failed_children: VecDeque::new(),
                 quarantine: None,
             },
         ))
+    }
+
+    #[cfg(feature = "private-measurement-domain")]
+    #[test]
+    fn kernel_counter_fact_survives_failed_removal_and_physical_release()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, mut owner) = owner_fixture()?;
+        let group = owner.group.as_mut().unwrap();
+        let path = group.path.clone();
+        group.memory_oom_kill_baseline = Some(0);
+        fs::write(path.join("memory.events"), b"oom_kill 1\n")?;
+
+        // Ordinary files emulate the reader and force ENOTEMPTY; they do not
+        // grant cgroup enforcement or synthesize an actual kernel OOM.
+        assert!(owner.finish(Duration::from_secs(1)).is_err());
+        let failure = owner.memory_limit_failure.unwrap();
+        assert_eq!(failure.baseline(), 0);
+        assert_eq!(failure.observed(), 1);
+        assert!(owner.group.is_some());
+
+        unlink_virtual_controls(&path)?;
+        fs::remove_file(path.join("memory.events"))?;
+        assert_eq!(
+            owner.finish(Duration::from_secs(1))?,
+            LinuxQemuAttemptProcessOwnerStatus::ReleasedAfterMemoryFailure(failure)
+        );
+        assert!(owner.group.is_none());
+        assert_eq!(
+            owner.finish(Duration::from_secs(1))?,
+            LinuxQemuAttemptProcessOwnerStatus::ReleasedAfterMemoryFailure(failure)
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "private-measurement-domain")]
+    #[test]
+    fn unchanged_counter_and_counter_reset_never_mint_oom_evidence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, mut owner) = owner_fixture()?;
+        let group = owner.group.as_mut().unwrap();
+        group.memory_oom_kill_baseline = Some(3);
+        let path = group.path.clone();
+        fs::write(path.join("memory.events"), b"oom_kill 3\n")?;
+        assert!(group.memory_limit_failure()?.is_none());
+
+        fs::write(path.join("memory.events"), b"oom_kill 2\n")?;
+        assert!(matches!(
+            group.memory_limit_failure(),
+            Err(LinuxQemuCgroupError::MemoryEvents { .. })
+        ));
+        assert!(owner.memory_limit_failure.is_none());
+        assert!(owner.group.is_some());
+
+        owner.group.as_mut().unwrap().memory_oom_kill_baseline = None;
+        unlink_virtual_controls(&path)?;
+        fs::remove_file(path.join("memory.events"))?;
+        assert_eq!(
+            owner.finish(Duration::from_secs(1))?,
+            LinuxQemuAttemptProcessOwnerStatus::ReapedAndReleased
+        );
+        Ok(())
     }
 
     fn unlink_virtual_controls(path: &std::path::Path) -> Result<(), std::io::Error> {

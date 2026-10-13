@@ -959,3 +959,170 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
 
 #[path = "tests/retained_continuation.rs"]
 mod retained_continuation;
+
+#[cfg(target_os = "linux")]
+struct LoanAwareSourceLauncher {
+    inner: Box<dyn ProductionVmNodeLauncher>,
+    loan: Arc<std::sync::atomic::AtomicBool>,
+    _custody: Arc<()>,
+}
+
+#[cfg(target_os = "linux")]
+impl ProductionVmNodeLauncher for LoanAwareSourceLauncher {
+    fn fork_target_is_owned(&self) -> bool {
+        self.loan.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        self.inner.begin_execution_quantum()
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        self.inner.check_operational_boundary()
+    }
+
+    fn launch_fresh(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+        qemu_executable: &Path,
+        root_image: &Path,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        self.inner
+            .launch_fresh(request, qemu_executable, root_image)
+    }
+
+    fn launch_restored(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+        admission: ProductionVmExactNodeRestoreAdmission,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        self.inner.launch_restored(request, admission)
+    }
+
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+        self.inner.replay_candidate()
+    }
+
+    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+        self.inner.finish()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn source_world_with_target_loan() -> (
+    ProductionVmHotForkSourceWorld,
+    Arc<std::sync::atomic::AtomicBool>,
+    std::sync::Weak<()>,
+) {
+    let (_, lifecycle) = permanently_failed_loop();
+    let mut source = lifecycle
+        .prepare_hot_fork_source_world()
+        .unwrap_or_else(|error| panic!("prepared loan fixture: {error}"));
+    let lifecycle = source
+        .lifecycle
+        .as_deref_mut()
+        .unwrap_or_else(|| panic!("retained source lifecycle"));
+    let loan = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let custody = Arc::new(());
+    let retained = Arc::downgrade(&custody);
+    let inner = std::mem::replace(
+        &mut lifecycle.node_launcher,
+        Box::new(PackagedProductionVmNodeLauncher),
+    );
+    lifecycle.node_launcher = Box::new(LoanAwareSourceLauncher {
+        inner,
+        loan: Arc::clone(&loan),
+        _custody: custody,
+    });
+    (source, loan, retained)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn target_loan_refuses_source_recovery_and_retains_the_same_lifecycle() {
+    let (source, loan, retained) = source_world_with_target_loan();
+
+    let failure = source
+        .recover()
+        .err()
+        .unwrap_or_else(|| panic!("target loan must refuse recovery"));
+
+    assert!(failure.unreconciled_nodes().is_empty());
+    assert!(failure.rollback_diagnostics().is_empty());
+    assert!(retained.upgrade().is_some());
+    let source = failure
+        .into_retained_source()
+        .unwrap_or_else(|error| panic!("retain same source: {error}"));
+    assert!(source.fork_target_is_owned());
+
+    loan.store(false, std::sync::atomic::Ordering::Release);
+    let lifecycle = source
+        .recover()
+        .unwrap_or_else(|error| panic!("recover after target retirement: {error}"));
+    assert!(retained.upgrade().is_some());
+    drop(lifecycle);
+    assert!(retained.upgrade().is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn target_loan_refuses_source_reuse_until_the_actual_loan_clears() {
+    let (source, loan, retained) = source_world_with_target_loan();
+
+    let failure = source
+        .into_reusable()
+        .err()
+        .unwrap_or_else(|| panic!("target loan must refuse reuse"));
+
+    let source = failure
+        .into_retained_source()
+        .unwrap_or_else(|error| panic!("retain same source: {error}"));
+    assert!(retained.upgrade().is_some());
+    loan.store(false, std::sync::atomic::Ordering::Release);
+    assert!(source.into_reusable().is_ok());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dropping_a_loaned_source_retains_its_actual_launcher_custody() {
+    let (source, _loan, retained) = source_world_with_target_loan();
+
+    drop(source);
+
+    assert!(retained.upgrade().is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn retiring_a_loaned_source_refuses_before_releasing_launcher_custody() {
+    let (mut source, loan, retained) = source_world_with_target_loan();
+
+    let failure = source
+        .retire()
+        .err()
+        .unwrap_or_else(|| panic!("target loan must refuse source retirement"));
+
+    assert!(failure.to_string().contains("same-family target loan"));
+    assert!(retained.upgrade().is_some());
+    assert!(source.fork_target_is_owned());
+
+    loan.store(false, std::sync::atomic::Ordering::Release);
+    source
+        .retire()
+        .unwrap_or_else(|error| panic!("retire after target retirement: {error}"));
+    assert!(retained.upgrade().is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_process_neutral_source_world_cannot_lend_a_physical_target_permit() {
+    let (_, lifecycle) = permanently_failed_loop();
+    let mut source = lifecycle
+        .prepare_hot_fork_source_world()
+        .unwrap_or_else(|error| panic!("prepared loan fixture: {error}"));
+
+    assert!(source.lend_fork_target_permit().is_err());
+
+    assert!(!source.fork_target_is_owned());
+    assert!(source.recover().is_ok());
+}

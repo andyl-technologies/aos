@@ -43,7 +43,7 @@ pub(super) fn publish_prefix(
         )?;
         return Ok(1);
     }
-    let mut selected = [0_usize; 64];
+    let mut selected = batch::PrepaidBatchVec::<usize>::with_capacity(original, objects.len())?;
     let mut count = 0;
     let mut length = pack_fixed_header_length();
     // This selection reads only declared IDs and lengths. Each later physical
@@ -72,7 +72,7 @@ pub(super) fn publish_prefix(
         if candidate > MAX_PACK_BYTES {
             return Err(StoreError::Quota);
         }
-        selected[count] = position;
+        selected.push(position);
         count += 1;
         length = candidate;
     }
@@ -97,7 +97,8 @@ pub(super) fn publish_prefix(
     entries
         .try_reserve_exact(count)
         .map_err(|error| batch::allocation_under(original, error))?;
-    let mut ordered = selected;
+    let mut ordered = batch::PrepaidBatchVec::with_capacity(original, count)?;
+    ordered.extend_from_slice(&selected[..count]);
     ordered[..count].sort_unstable_by_key(|position| objects[*position].0);
     let manifest_length = ordered[..count].iter().try_fold(0_usize, |sum, position| {
         objects[*position]
@@ -150,10 +151,10 @@ pub(super) fn publish_prefix(
                 count = position;
                 break;
             }
-            let entry = entries
-                .iter()
-                .find(|entry| entry.id == *id)
-                .ok_or(StoreError::Incompatible)?;
+            let slot = entries
+                .binary_search_by_key(id, |entry| entry.id)
+                .map_err(|_| StoreError::Incompatible)?;
+            let entry = &entries[slot];
             io::copy(
                 original,
                 *id,
@@ -194,9 +195,9 @@ pub(super) fn publish_prefix(
             checked_reader::check(original, boundary)?;
         }
         io::sync(staging.file(), original, boundary)?;
-        let mut rows = [(objects[0].0, entries[0].to_index_entry(pack)); 64];
-        for (slot, entry) in entries.iter().enumerate() {
-            rows[slot] = (entry.id, entry.to_index_entry(pack));
+        let mut rows = batch::PrepaidBatchVec::with_capacity(original, count)?;
+        for entry in &entries {
+            rows.push((entry.id, entry.to_index_entry(pack)));
         }
         let replacement = super::super::maintenance::replacement(
             backend,

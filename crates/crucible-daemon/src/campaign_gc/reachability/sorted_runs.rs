@@ -1,4 +1,6 @@
-//! Balanced bounded runs feeding one canonical authenticated GC mark tree.
+//! Balanced authenticated runs feeding the production sealed mark copy.
+//!
+//! The canonical Merkle builder remains a test-only differential reference.
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
@@ -157,7 +159,7 @@ impl<'a, 'boundary> SortOwner<'a, 'boundary> {
         Ok(RunRef { node, weight })
     }
 
-    pub(super) fn finish(mut self, marks: &mut Reachability) -> Result<(), StoreError> {
+    fn finish_run(&mut self) -> Result<Option<RunRef>, StoreError> {
         if self.failed {
             return Err(terminal_failure());
         }
@@ -173,6 +175,30 @@ impl<'a, 'boundary> SortOwner<'a, 'boundary> {
                 });
             }
         }
+        Ok(run)
+    }
+
+    // The production mark set becomes a separate immutable copy. Current SQL
+    // reads authenticate each run page before it enters the copy; only its
+    // complete, strictly ordered tail can authorize a sealed mark reader.
+    pub(super) fn finish_sealed(mut self, marks: &mut Reachability) -> Result<(), StoreError> {
+        let run = self.finish_run()?;
+        let sealed = match run {
+            Some(run) => {
+                let cursor = Cursor::new(run.node, self.backend.as_ref(), self.operation)?;
+                super::sealed::SealedMarks::from_entries(run.node.count, cursor, self.operation)?
+            }
+            None => {
+                super::sealed::SealedMarks::from_entries(0, std::iter::empty(), self.operation)?
+            }
+        };
+        marks.sealed = Some(sealed);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn finish(mut self, marks: &mut Reachability) -> Result<(), StoreError> {
+        let run = self.finish_run()?;
         let account = mark_account(&marks.original)?;
         let root = match run {
             Some(run) => {

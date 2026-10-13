@@ -48,6 +48,7 @@ where
                     execution_basis,
                     daemon_epoch,
                     execution,
+                    source_transfer: None,
                     ..
                 }
                 | AttemptRuntimeState::Publishing {
@@ -80,7 +81,11 @@ where
                         && daemon_epoch == self.daemon_epoch
                         && state.origin() == queued.origin
                 }
-                AttemptRuntimeState::CheckpointPromoting { .. } => false,
+                AttemptRuntimeState::Paused {
+                    source_transfer: Some(_),
+                    ..
+                }
+                | AttemptRuntimeState::CheckpointPromoting { .. } => false,
             });
         if !durable_matches {
             return Err(LocalExecutorError::LedgerInvariant {
@@ -283,6 +288,7 @@ where
                 origin,
                 daemon_epoch,
                 execution: current_execution,
+                source_transfer: None,
                 ..
             }
             | AttemptRuntimeState::CheckpointPromoting {
@@ -368,6 +374,7 @@ where
                 origin,
                 daemon_epoch,
                 execution: current_execution,
+                source_transfer: None,
                 ..
             }
             | AttemptRuntimeState::CheckpointPromoting {

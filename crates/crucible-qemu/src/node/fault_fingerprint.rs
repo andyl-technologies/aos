@@ -17,6 +17,10 @@ impl QemuNode {
             OperationPollBudget::Borrowed(original) => self
                 .host_io_runtime
                 .publish_current_execution_fingerprint_under_original(original),
+            OperationPollBudget::BorrowedCheckpoint(_) => Err(QemuAsyncDriverRuntimeError::new(
+                "publish fresh fault fingerprint",
+                "checkpoint-only original cannot authorize execution fingerprint publication",
+            )),
             #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
             OperationPollBudget::BorrowedPair(actor, family) => self
                 .host_io_runtime

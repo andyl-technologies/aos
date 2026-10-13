@@ -10,16 +10,25 @@ use super::*;
 mod operation_error;
 pub(crate) use operation_error::RetainedOperationError;
 mod reproduction;
+mod retirement;
 use crate::executor_pool::{CampaignActorPort, PreparedExecutorActor};
 use crucible_cas::content_store::StorePhysicalQuotaGuard;
 pub(crate) use reproduction::{CompletedReproductionBasis, CompletedReproductionError};
+pub use retirement::GuardedCampaignOwnerRetirementError;
+use retirement::{GuardedFacadeRetirement, GuardedRetirementState};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod continuation;
 mod finding_branch;
 mod finding_midpoint;
 mod imported;
+mod receiving;
 pub use finding_midpoint::{GuardedFindingMidpointError, GuardedImportedFindingMidpoint};
+pub(crate) use receiving::GuardedReceivingReady;
+pub use receiving::{
+    GuardedSourceTransferOffer, GuardedSourceTransferOperation, GuardedTransferError,
+    ReceivingExecutionPreparation, ReceivingExecutionPreparationError,
+};
 
 /// Preserves the original packaged actor across the public listener handoff.
 pub(super) struct PackagedGuardedState {
@@ -45,6 +54,8 @@ pub(crate) struct GuardedOwnerInner {
     imported_guest_assets: Option<Arc<dyn Send + Sync>>,
     _preparation:
         Option<PreparedExecutorActor<DirectoryAssignmentLedger, PackagedAttemptAdmission>>,
+    retirement: GuardedRetirementState,
+    pub(crate) facades: GuardedFacadeRetirement,
 }
 
 impl GuardedOwnerInner {
@@ -63,9 +74,9 @@ impl GuardedOwnerInner {
 /// allocator. Each submitted assignment receives its own original execution
 /// capability and supervision guard. Durable bytes remain charged until their
 /// enclosing catalog is explicitly retired.
-#[derive(Clone)]
 pub struct GuardedCampaignOwner {
     pub(crate) inner: Arc<GuardedOwnerInner>,
+    lifecycle_record: bool,
 }
 
 impl GuardedCampaignOwner {
@@ -85,6 +96,11 @@ impl GuardedCampaignOwner {
     /// ledger or quota ownership, unsupported containment, and unavailable
     /// durable storage or Linux host-resource authority.
     pub fn open(config: PackagedQemuExecutorConfig) -> Result<Self, PackagedQemuExecutorError> {
+        let normal = config
+            .normal_executor
+            .as_ref()
+            .ok_or(PackagedQemuExecutorError::MissingNormalProcessOwner)?
+            .clone();
         let admission = PackagedAttemptAdmission::default();
         let (actor, registry) = preparation::prepare_owner(&config, admission.clone())?;
         ram_catalog::admit_catalog_service(&config, &registry)?;
@@ -110,10 +126,12 @@ impl GuardedCampaignOwner {
             )?
             .with_ram_root_resources(storage.quota.clone()),
         );
-        let host = SharedQemuAttemptHostResourceFactory::new(
-            LinuxQemuAttemptHostResourceFactory::open(config.host.clone())?,
-        );
-        Ok(Self {
+        let host = open_normal_linux_host(
+            &config,
+            #[cfg(feature = "private-measurement-domain")]
+            None,
+        )?;
+        let owner = Self {
             inner: Arc::new(GuardedOwnerInner {
                 actor: actor.campaign_port(),
                 config,
@@ -128,8 +146,18 @@ impl GuardedCampaignOwner {
                 _quota: Some(storage.quota),
                 imported_guest_assets: None,
                 _preparation: Some(actor),
+                retirement: GuardedRetirementState::Active,
+                facades: GuardedFacadeRetirement::new(),
             }),
-        })
+            lifecycle_record: true,
+        };
+        if let Err(source) = normal.complete_preparation() {
+            // Construction has already installed the actual namespaces and
+            // roster. An uncertain original postcut retains the whole owner.
+            std::mem::forget(owner);
+            return Err(PackagedQemuExecutorError::NormalProcessPurpose(source));
+        }
+        Ok(owner)
     }
 
     pub(super) fn from_packaged(
@@ -169,7 +197,10 @@ impl GuardedCampaignOwner {
                 _quota: Some(quota),
                 imported_guest_assets: None,
                 _preparation: None,
+                retirement: GuardedRetirementState::Active,
+                facades: GuardedFacadeRetirement::new(),
             }),
+            lifecycle_record: true,
         })
     }
 

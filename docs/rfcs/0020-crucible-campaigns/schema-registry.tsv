@@ -37,7 +37,7 @@ crucible.guest-selectable.request	1	crucible-protocol::selectable	process-protoc
 crucible.guest-selectable.reply	1	crucible-protocol::selectable	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.catalog-plan	5	crucible-protocol::selectable_catalog_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.guest-selectable.pending-request	2	crucible-protocol::selectable_transport	process-protocol-message	gate:typed-choice,gate:abi-conformance
-crucible.qemu-plugin.setup-plan	2	crucible-protocol::plugin_setup_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
+crucible.qemu-plugin.setup-plan	6	crucible-protocol::plugin_setup_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.qemu.hot-fork.template	29	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
 crucible.qemu.hot-fork.template-resource-stage	13	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation
 crucible.qemu.hot-fork.fork	3	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-equivalence,gate:hot-fork-isolation
@@ -464,7 +464,10 @@ aos.crucible.campaign-gate-matrix-inventory	2	tests::crucible::campaign_gate_mat
 crucible.qemu.hot-fork.source-graph	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.qemu.hot-fork.child-ram	1	crucible-qemu::qmp::hot_fork_ram	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.qemu.paused-cpu	1	crucible-qemu::qmp::paused_cpu	process-protocol-message	gate:abi-conformance
-crucible.ram-control.frame	6	crucible-protocol::ram_control	process-protocol-message	gate:abi-conformance
+crucible.ram-control.frame	11	crucible-protocol::ram_control	process-protocol-message	gate:abi-conformance
 crucible.qemu.kernel-swap.admission	1	crucible-qemu::qmp::kernel_swap_residency	process-protocol-message	gate:abi-conformance
 crucible.qemu.kernel-swap.residency	1	crucible-qemu::qmp::kernel_swap_residency	process-protocol-message	gate:abi-conformance
 crucible.qemu.selectable-reset	1	crucible-qemu::qmp::selectable_reset	process-protocol-message	gate:typed-choice,gate:abi-conformance
+crucible.qemu-plugin.fixed-process-family	1	crucible-protocol::plugin_setup_plan	process-protocol-message	gate:abi-conformance,gate:license-boundary
+crucible.host-operational.frame	4	crucible-api::host_operational::codec	process-protocol-message	gate:ram-runtime-policy
+crucible.host-operational.history	2	crucible-daemon::host_operational_registry::history	operational-record	gate:ram-policy-history

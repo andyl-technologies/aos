@@ -10,6 +10,9 @@
 
 use std::sync::{Mutex, MutexGuard};
 
+mod pause;
+use pause::FaultPause;
+
 use super::*;
 use crucible_ram::{MetadataBudget, MetadataReservation};
 
@@ -115,9 +118,16 @@ impl FaultWork {
     }
 }
 
+// The lock-independent pause gate and locked request share one admitted
+// allocation. Requesting a pause cannot wait behind backing I/O in `work`.
+struct FaultWorkAllocation {
+    pause: FaultPause,
+    work: Mutex<FaultWork>,
+}
+
 /// Keeps the paid body separate from its credit through physical destruction.
 pub(in crate::paged_ram::engine) struct FaultWorkOwner {
-    body: Option<Box<Mutex<FaultWork>>>,
+    body: Option<Box<FaultWorkAllocation>>,
     reservation: Option<MetadataReservation>,
 }
 
@@ -129,11 +139,14 @@ impl FaultWorkOwner {
     pub(in crate::paged_ram::engine) fn prepare(budget: &MetadataBudget) -> Result<Self, RamError> {
         let extent = Self::required_metadata_bytes()?;
         let reservation = budget.reserve_bytes(extent)?;
-        let body = Box::new(Mutex::new(FaultWork {
-            claimed: None,
-            scratch: [0; PAGE_BYTES],
-            failed: false,
-        }));
+        let body = Box::new(FaultWorkAllocation {
+            pause: FaultPause::default(),
+            work: Mutex::new(FaultWork {
+                claimed: None,
+                scratch: [0; PAGE_BYTES],
+                failed: false,
+            }),
+        });
         Ok(Self {
             body: Some(body),
             reservation: Some(reservation),
@@ -145,8 +158,88 @@ impl FaultWorkOwner {
     /// # Errors
     /// Refuses an extent that cannot be represented by the metadata account.
     pub(in crate::paged_ram::engine) fn required_metadata_bytes() -> Result<u64, RamError> {
-        u64::try_from(std::mem::size_of::<Mutex<FaultWork>>())
+        u64::try_from(std::mem::size_of::<FaultWorkAllocation>())
             .map_err(|_| RamError::Invariant("fault work metadata extent overflow"))
+    }
+
+    /// Requests a worker-boundary pause for an already authenticated transaction.
+    ///
+    /// This scalar is never an issuer. The checkpoint-only native callback must
+    /// authenticate and retain its actual context before calling this method.
+    ///
+    /// # Errors
+    /// Refuses zero/reused epochs, a different held pause or uncertain ingress.
+    pub(in crate::paged_ram::engine) fn request_pause(&self, epoch: u64) -> Result<(), RamError> {
+        self.body
+            .as_ref()
+            .ok_or("fault work body absent")?
+            .pause
+            .request(epoch)
+    }
+
+    /// Inspects acknowledgement without borrowing a busy fault request body.
+    ///
+    /// This describes only the fault actor's boundary. Native worker membership,
+    /// source-version fencing, policy/mailbox and original loan checks remain
+    /// necessary before a checkpoint transaction can report readiness.
+    pub(in crate::paged_ram::engine) fn pause_acknowledged(&self, epoch: u64) -> bool {
+        self.body
+            .as_ref()
+            .is_some_and(|body| body.pause.acknowledged(epoch))
+    }
+
+    /// Reopens consumption after authenticated disposition of this held epoch.
+    ///
+    /// # Errors
+    /// Refuses a different epoch or a worker that has not acknowledged its cut.
+    pub(in crate::paged_ram::engine) fn release_pause(&self, epoch: u64) -> Result<(), RamError> {
+        self.body
+            .as_ref()
+            .ok_or("fault work body absent")?
+            .pause
+            .release(epoch)
+    }
+
+    pub(in crate::paged_ram::engine) fn request_ordinary_pause(
+        &self,
+        identity: u64,
+    ) -> Result<(), RamError> {
+        self.body
+            .as_ref()
+            .ok_or("fault work body absent")?
+            .pause
+            .request_ordinary(identity)
+    }
+
+    pub(in crate::paged_ram::engine) fn ordinary_pause_acknowledged(&self, identity: u64) -> bool {
+        self.body
+            .as_ref()
+            .is_some_and(|body| body.pause.ordinary_acknowledged(identity))
+    }
+
+    pub(in crate::paged_ram::engine) fn return_ordinary_pause(
+        &self,
+        identity: u64,
+    ) -> Result<(), RamError> {
+        self.body
+            .as_ref()
+            .ok_or("fault work body absent")?
+            .pause
+            .return_ordinary(identity)
+    }
+
+    /// Acknowledges the actor cut between completion and the next kernel read.
+    ///
+    /// Only the fault actor calls this while holding its actual request body.
+    ///
+    /// # Errors
+    /// Refuses absent body ownership or unresolved consumed-event custody.
+    pub(super) fn acknowledge_pause_at_boundary(&self, work: &FaultWork) -> Result<bool, RamError> {
+        self.body
+            .as_ref()
+            .ok_or("fault work body absent")?
+            .pause
+            .boundary(work.unresolved())
     }
 
     /// Borrows the unique fault actor's body without waiting on another owner.
@@ -157,6 +250,7 @@ impl FaultWorkOwner {
         self.body
             .as_ref()
             .ok_or("fault work body absent")?
+            .work
             .try_lock()
             .map_err(|_| RamError::Invariant("fault work custody unavailable"))
     }
@@ -164,10 +258,9 @@ impl FaultWorkOwner {
 
 impl Drop for FaultWorkOwner {
     fn drop(&mut self) {
-        let unresolved = self
-            .body
-            .as_ref()
-            .is_some_and(|body| body.try_lock().map_or(true, |work| work.unresolved()));
+        let unresolved = self.body.as_ref().is_some_and(|body| {
+            body.pause.held() || body.work.try_lock().map_or(true, |work| work.unresolved())
+        });
         if unresolved {
             // No caller here proves physical process retirement. Preserve the
             // existing allocation and original claim, with its same credit.

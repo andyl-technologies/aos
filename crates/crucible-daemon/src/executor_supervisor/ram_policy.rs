@@ -88,6 +88,24 @@ impl<L, V> LocalExecutorSupervisor<L, V> {
             .ok_or(HostOperationalError::Unavailable)
     }
 
+    /// Checks the actual execution and native-node journals for terminal admission.
+    pub(crate) fn native_ownership_is_quiescent(&self) -> bool {
+        self.active.is_empty()
+            && self.queued.is_empty()
+            && self.pending_completions.is_empty()
+            && self.pending_cancellations.is_empty()
+            && self.host_unpublished_quarantine.is_empty()
+            && self.host_retained_resources.is_empty()
+            && self
+                .host_ram_resources
+                .values()
+                .all(|(_, ledger)| ledger.reserved() == HostResourceVector::default())
+            && self
+                .host_service_resources
+                .values()
+                .all(|(_, ledger)| ledger.reserved() == HostResourceVector::default())
+    }
+
     pub(crate) fn assignment_resource_limits(&self) -> Option<AttemptResourceLimits> {
         self.host_assignment_resources.map(|(_, limits, _)| limits)
     }

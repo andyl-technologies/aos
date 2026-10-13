@@ -73,7 +73,7 @@ const CONTRACTS: &[Contract] = &[
         package: "crucible-qemu-plugin",
         target: "src/paged_ram/controller/tests/admission",
         required: &[
-            ".budgets[0].total_ms=Some(80);",
+            ".budgets[0].total_ns=Some(80_000_000);",
             "fnblocked_native_export_retains_one_original_setup_and_refuses_late_success(",
             "fnnative_export_failure_keeps_original_status_after_setup_expiry(",
             "super::super::admission::export_owner_inventory(&retained,|inventory|{",
@@ -81,11 +81,11 @@ const CONTRACTS: &[Contract] = &[
             "released.recv_timeout(Duration::from_secs(2))",
             "entering.recv_timeout(Duration::from_secs(2))",
             ".inventory.is_none()",
-            "assert_eq!(controller.operations.load(Ordering::Acquire),1);",
+            "assert_eq!(controller.operations.capacity.load(Ordering::Acquire),1);",
             "assert!(matches!(result,Err(RamError::Io(error))iferror.kind()==io::ErrorKind::TimedOut));",
             "-libc::ENOTSUP",
             "ifstatus==-libc::ENOTSUP",
-            "assert_eq!(controller.operations.load(Ordering::Acquire),0);",
+            "assert_eq!(controller.operations.capacity.load(Ordering::Acquire),0);",
         ],
         expressions: &[("std::thread::sleep(Duration::from_millis(120));", 2)],
         companions: &[Companion {
@@ -96,8 +96,13 @@ const CONTRACTS: &[Contract] = &[
                 "letstatus=export(&mutinventory);",
                 "ifstatus!=0{",
                 "}operation.wait_slice()?;Ok((inventory,operation))",
+                "letstatus=(controller.native_grant)(generation,metadata_bytes,&mutallowance);",
+                "ifallowance<rust_metadata_required_bytes{controller.mark_failed();",
+                "}operation.wait_slice()?;Ok(allowance)",
             ],
-            counts: &[("operation.wait_slice()?;", 3)],
+            // Inventory publication and the native grant retain the same
+            // original operation alongside the two export boundaries.
+            counts: &[("operation.wait_slice()?;", 6)],
         }],
     },
     // Production startup observation polls one supplied original Setup receipt before every

@@ -52,7 +52,7 @@ const DATABASE_FILE: &str = "objects.sqlite3";
 const LOCK_FILE: &str = "inventory.lock";
 const METADATA_DOMAIN: &[u8] = b"crucible.content-store.sqlite-metadata.v1";
 const MAX_CHUNK_BYTES: usize = 64 * 1024;
-const MAX_BATCH_OBJECTS: usize = 64;
+const MAX_BATCH_OBJECTS: usize = super::batch::MAX_PUBLICATION_OBJECTS;
 const MAX_BATCH_BYTES: u64 = 4 * 1024 * 1024;
 const READ_STATEMENT_CACHE_CAPACITY: usize = 2;
 
@@ -581,6 +581,10 @@ fn reject_wal_database_header(path: &Path) -> Result<(), StoreError> {
 }
 
 impl ImmutableBlobBackend for SqliteBlobBackend {
+    fn prefers_wide_publication_groups(&self) -> bool {
+        true
+    }
+
     fn read_bounded_with_boundary(
         &self,
         request: &mut crate::ram::BoundedReadRequest<'_, '_>,

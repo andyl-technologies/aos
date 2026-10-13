@@ -262,7 +262,7 @@ fn every_publication_boundary_preserves_exact_visible_effects_on_cancellation() 
                 },
             )
             .unwrap_err();
-        let observed = backend.object_count().unwrap() as u8;
+        let observed = backend.object_count().unwrap() as u16;
         match &error {
             StoreError::MemoryScope { source } => {
                 assert_eq!(

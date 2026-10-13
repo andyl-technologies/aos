@@ -1,9 +1,10 @@
-//! Disk-backed membership for authenticated GC marking.
+//! Authenticated mutable marking and sealed production membership.
 //!
-//! The caller's quota-bound scratch CAS owns the RAM graph's mark tree.
-//! A retained Merkle root authenticates every membership lookup. Planning and
-//! apply use the same authenticated traversal under their ref inventory fence;
-//! storage failure aborts the operation before any deletion is admitted.
+//! The caller's quota-bound scratch CAS authenticates and sorts the RAM graph.
+//! Production completes a separately admitted, kernel-sealed copy before
+//! inventory membership. Generic mutable fixtures retain their current-storage
+//! Merkle lookups. Planning and apply each reconstruct their own mark set under
+//! the same original operation and ref fence; neither trusts a previous pass.
 
 use std::io;
 use std::sync::Arc;
@@ -27,6 +28,10 @@ mod batched_tests;
 
 mod sorted_runs;
 
+mod sealed;
+
+pub(super) use sealed::ClosePurpose;
+
 #[cfg(test)]
 mod membership_tests;
 
@@ -36,6 +41,7 @@ pub(super) struct Reachability {
     #[cfg(test)]
     directory: Option<tempfile::TempDir>,
     original: DecodeBudget,
+    sealed: Option<sealed::SealedMarks>,
 }
 
 impl Reachability {
@@ -66,7 +72,7 @@ impl Reachability {
         }
 
         if closure.ram_roots().is_empty() {
-            pending.finish(&mut marks)?;
+            pending.finish_sealed(&mut marks)?;
             return Ok(marks);
         }
 
@@ -96,7 +102,7 @@ impl Reachability {
                 other => marks.failure("authenticate GC RAM graph", other),
             })?;
         }
-        pending.finish(&mut marks)?;
+        pending.finish_sealed(&mut marks)?;
         Ok(marks)
     }
 
@@ -122,6 +128,7 @@ impl Reachability {
             #[cfg(test)]
             directory: None,
             original: original.clone(),
+            sealed: None,
         })
     }
 
@@ -152,6 +159,7 @@ impl Reachability {
             #[cfg(test)]
             directory: None,
             original: original.clone(),
+            sealed: None,
         })
     }
 
@@ -235,6 +243,9 @@ impl Reachability {
         id: &ContentId,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<bool, StoreError> {
+        if let Some(sealed) = &self.sealed {
+            return sealed.contains(*id, &self.original, boundary);
+        }
         let account = mark_account(&self.original)?;
         let _scope = account.enter();
         let value = self
@@ -254,7 +265,25 @@ impl Reachability {
     }
 
     pub(super) fn len(&self) -> u64 {
-        self.root.entry_count()
+        self.sealed
+            .as_ref()
+            .map_or_else(|| self.root.entry_count(), sealed::SealedMarks::len)
+    }
+
+    pub(super) fn finish<T, E>(
+        mut self,
+        purpose: ClosePurpose<E>,
+        result: Result<T, E>,
+        operation: &CampaignGcOperationContext<'_>,
+        failure: impl FnOnce(StoreError) -> E,
+    ) -> Result<T, E>
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        match self.sealed.take() {
+            Some(sealed) => sealed.finish(purpose, result, operation, failure),
+            None => result,
+        }
     }
 
     fn failure(

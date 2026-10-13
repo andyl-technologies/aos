@@ -37,6 +37,7 @@ fn state() -> RamControlReply {
         inventory_region: None,
         limitation_reasons: RAM_LIMIT_COMPULSORY_FLOOR,
         measurements_available: true,
+        resident_observation: None,
         requested_policy_revision: 2,
         applied_policy_revision: 1,
         reservation_revision: 3,
@@ -61,9 +62,9 @@ fn policy() -> RamControlPolicy {
         maximum_paging_io_in_flight: 2,
         prefetch_on_increase: false,
         budgets: [RamControlBudget {
-            poll_ms: 10,
-            progress_ms: Some(5000),
-            total_ms: Some(60_000),
+            poll_ns: 10_000_000,
+            progress_ns: Some(5_000_000_000),
+            total_ns: Some(60_000_000_000),
         }; RAM_CONTROL_BUDGET_COUNT],
     }
 }
@@ -71,7 +72,7 @@ fn policy() -> RamControlPolicy {
 #[test]
 fn ram_control_golden_hello_and_all_closed_messages_roundtrip() {
     let hello = frame(1, RamControlRequest::Hello);
-    let mut golden = vec![0, 0, 0, 6, 0];
+    let mut golden = vec![0, 0, 0, 11, 0];
     golden.extend_from_slice(&[4; 32]);
     golden.extend_from_slice(&1_u64.to_be_bytes());
     golden.extend_from_slice(&[1; 32]);
@@ -194,7 +195,7 @@ fn ram_control_rejects_invalid_scalars_and_noncanonical_optional_durations() {
         );
     }
     let mut policy = policy();
-    policy.budgets[0].progress_ms = Some(0);
+    policy.budgets[0].progress_ns = Some(0);
     assert!(
         encode_ram_control(&frame(
             1,
@@ -391,6 +392,7 @@ fn ram_control_unavailable_counters_cannot_masquerade_as_zero_measurements() {
     let unavailable = RamControlReply {
         performance: None,
         measurements_available: false,
+        resident_observation: None,
         private_resident_bytes: 0,
         shared_resident_bytes_observed: 0,
         preserved_backing_bytes: 0,
@@ -448,6 +450,7 @@ fn actual_inventory_records_bind_geometry_generation_and_canonical_identity() {
         region_count: 2,
         native_metadata_bytes: 4096,
         native_scratch_bytes: 16384,
+        rust_metadata_required_bytes: 8192,
         owner_resources: RamControlOwnerInventory {
             existing_tasks: 5,
             existing_file_descriptors: 14,
@@ -472,6 +475,36 @@ fn actual_inventory_records_bind_geometry_generation_and_canonical_identity() {
     for length in 0..bytes.len() {
         assert!(decode_ram_control(&bytes[..length]).is_err());
     }
+    for old in [6_u32, 7] {
+        let mut previous = bytes.clone();
+        previous[..4].copy_from_slice(&old.to_be_bytes());
+        assert!(matches!(
+            decode_ram_control(&previous),
+            Err(RamControlError::UnsupportedVersion(_))
+        ));
+    }
+    for invalid_report in [
+        RamControlInventoryReport {
+            rust_metadata_required_bytes: 0,
+            ..report
+        },
+        RamControlInventoryReport {
+            rust_metadata_required_bytes: u64::MAX,
+            ..report
+        },
+        RamControlInventoryReport {
+            topology_generation: 0,
+            ..report
+        },
+        RamControlInventoryReport {
+            region_count: 0,
+            ..report
+        },
+    ] {
+        observation.inventory = Some(invalid_report);
+        assert!(encode_ram_control(&response(observation)).is_err());
+    }
+    observation.inventory = Some(report);
 
     for invalid in [
         RamControlInventoryRegion {
@@ -599,6 +632,7 @@ fn operational_activity_is_independent_of_rss_and_rejects_incomplete_or_unknown_
                 performance: None,
                 activity: Some(activity),
                 measurements_available: false,
+                resident_observation: None,
                 private_resident_bytes: 0,
                 shared_resident_bytes_observed: 0,
                 preserved_backing_bytes: 0,
@@ -617,8 +651,8 @@ fn operational_activity_is_independent_of_rss_and_rejects_incomplete_or_unknown_
         response
     );
 
-    // Activity is followed by absent performance, probe and actor tags.
-    let tail = encoded.len() - 68;
+    // Activity is followed by absent performance, probe, placement and observation tags.
+    let tail = encoded.len() - 69;
     assert_eq!(encoded[tail], 1);
     for (index, value) in [1_u64, 2, 3, 4, 5, 6, 7, u64::MAX].into_iter().enumerate() {
         let start = tail + 1 + index * 8;
@@ -660,7 +694,7 @@ fn native_probe_has_one_bounded_encoding_and_refuses_user_only_or_empty_features
             .unwrap_or_else(|error| panic!("decode authenticated probe facts: {error}")),
         reply
     );
-    let tail = encoded.len() - 19;
+    let tail = encoded.len() - 20;
     assert_eq!(&encoded[tail..tail + 2], &[1, 1]);
     assert_eq!(
         &encoded[tail + 2..tail + 6],
@@ -674,7 +708,7 @@ fn native_probe_has_one_bounded_encoding_and_refuses_user_only_or_empty_features
         &encoded[tail + 10..tail + 18],
         &probe.features.to_be_bytes()
     );
-    assert_eq!(encoded[tail + 18], 0);
+    assert_eq!(&encoded[tail + 18..], &[0, 0]);
     for length in tail..encoded.len() {
         assert!(decode_ram_control(&encoded[..length]).is_err());
     }
@@ -873,5 +907,308 @@ fn performance_actions_and_exact_partial_work_roundtrip() {
             state.performance = Some(report);
         }
         assert!(encode_ram_control(&response).is_err());
+    }
+}
+
+#[test]
+fn partial_residency_cut_roundtrips_without_five_measurement_claim() {
+    let request = frame(1, RamControlRequest::Status);
+    let mut observation = state();
+    observation.measurements_available = false;
+    observation.private_resident_bytes = 0;
+    observation.shared_resident_bytes_observed = 0;
+    observation.preserved_backing_bytes = 0;
+    observation.private_dirty_bytes = 0;
+    observation.writeback_pending_bytes = 0;
+    observation.inventory = Some(RamControlInventoryReport {
+        topology_generation: 9,
+        logical_bytes: 8192,
+        region_count: 2,
+        native_metadata_bytes: 4096,
+        native_scratch_bytes: 16384,
+        rust_metadata_required_bytes: 8192,
+        owner_resources: RamControlOwnerInventory {
+            existing_tasks: 5,
+            existing_file_descriptors: 14,
+            registered_service_tasks: 1,
+            prospective_tasks: 1,
+            prospective_file_descriptors: 4,
+        },
+        granted: false,
+    });
+    observation.resident_observation = Some(RamControlResidentObservation {
+        availability: RAM_OBSERVATION_TOTAL_RESIDENT,
+        topology_generation: 9,
+        policy_revision: 1,
+        policy_generation: 4,
+        worker_generation: 3,
+        writer_generation: 11,
+        covered_bytes: 8192,
+        total_resident_bytes: 4096,
+        effective_target_bytes: 4096,
+        started_ns: 50,
+        completed_ns: 60,
+    });
+    let response = RamControlFrame {
+        message: RamControlMessage::Reply {
+            request_digest: ram_control_request_digest(&request).unwrap_or_else(|e| panic!("{e}")),
+            state: observation,
+        },
+        ..request
+    };
+    let encoded = encode_ram_control(&response).unwrap_or_else(|e| panic!("{e}"));
+    let decoded = decode_ram_control(&encoded).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(decoded, response);
+    for length in 0..encoded.len() {
+        assert!(decode_ram_control(&encoded[..length]).is_err());
+    }
+    let mut old = encoded.clone();
+    old[..4].copy_from_slice(&6_u32.to_be_bytes());
+    assert!(decode_ram_control(&old).is_err());
+    for mutate in [
+        |v: &mut RamControlResidentObservation| v.availability = 2,
+        |v: &mut RamControlResidentObservation| v.topology_generation = 10,
+        |v: &mut RamControlResidentObservation| v.policy_revision = 2,
+        |v: &mut RamControlResidentObservation| v.covered_bytes = 4096,
+        |v: &mut RamControlResidentObservation| v.total_resident_bytes = 8193,
+        |v: &mut RamControlResidentObservation| v.completed_ns = 49,
+        |v: &mut RamControlResidentObservation| v.worker_generation = 0,
+    ] {
+        let mut invalid = observation;
+        mutate(
+            invalid
+                .resident_observation
+                .as_mut()
+                .unwrap_or_else(|| panic!("cut absent")),
+        );
+        let invalid = RamControlFrame {
+            message: RamControlMessage::Reply {
+                request_digest: ram_control_request_digest(&request)
+                    .unwrap_or_else(|e| panic!("{e}")),
+                state: invalid,
+            },
+            ..request
+        };
+        assert!(encode_ram_control(&invalid).is_err());
+    }
+}
+
+fn checkpoint_original() -> [u8; RAM_CONTROL_CHECKPOINT_ORIGINAL_BYTES] {
+    let mut original = [0; RAM_CONTROL_CHECKPOINT_ORIGINAL_BYTES];
+    original[..8].copy_from_slice(b"CRUCPAU1");
+    original[8..12].copy_from_slice(&1_u32.to_be_bytes());
+    original[12..16].copy_from_slice(&80_u32.to_be_bytes());
+    original[16..48].copy_from_slice(&[5; 32]);
+    for (offset, value) in [(48, 7_u64), (56, 100), (64, 1000), (72, 10)] {
+        original[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    original
+}
+
+#[test]
+fn checkpoint_arm_fixed_codec_digest_and_wire_receipt_are_canonical() {
+    let arm = frame(
+        2,
+        RamControlRequest::CheckpointArm {
+            original: checkpoint_original(),
+        },
+    );
+    let mut fixed = [0; RAM_CONTROL_CHECKPOINT_MAX_BYTES];
+    let length = encode_ram_checkpoint_control(&arm, &mut fixed).unwrap();
+    assert_eq!(length, 238);
+    assert_eq!(fixed[4], 9);
+    assert_eq!(encode_ram_control(&arm).unwrap(), fixed[..length]);
+    assert_eq!(decode_ram_control(&fixed[..length]).unwrap(), arm);
+    let mut expected = blake3::Hasher::new();
+    expected.update(b"crucible.ram.control.request.v1\0");
+    expected.update(&fixed[..length]);
+    assert_eq!(
+        ram_control_request_digest(&arm).unwrap(),
+        *expected.finalize().as_bytes()
+    );
+    assert!(matches!(
+        validate_ram_control_request(&arm, arm.session, arm.target, 1).unwrap(),
+        RamControlRequest::CheckpointArm { .. }
+    ));
+}
+
+#[test]
+fn checkpoint_arm_refuses_old_schema_missing_event_reader_and_invalid_original() {
+    let arm = frame(
+        2,
+        RamControlRequest::CheckpointArm {
+            original: checkpoint_original(),
+        },
+    );
+    let mut encoded = encode_ram_control(&arm).unwrap();
+    encoded[..4].copy_from_slice(&8_u32.to_be_bytes());
+    assert!(matches!(
+        decode_ram_control(&encoded),
+        Err(RamControlError::UnsupportedVersion(8))
+    ));
+    let mut wrong = checkpoint_original();
+    wrong[..8].copy_from_slice(b"CRUCSTA1");
+    assert!(
+        encode_ram_control(&frame(
+            2,
+            RamControlRequest::CheckpointArm { original: wrong }
+        ))
+        .is_err()
+    );
+    assert!(validate_ram_control_request(&arm, arm.session, arm.target, 0).is_err());
+    assert!(validate_ram_control_request(&arm, arm.session, arm.target, 2).is_err());
+    let mut stream = Cursor::new(Vec::new());
+    write_ram_control(&mut stream, &arm).unwrap();
+    stream.set_position(0);
+    let mut sequence = 1;
+    let mut dispatched = false;
+    assert!(
+        serve_ram_control_once(
+            &mut stream,
+            arm.session,
+            arm.target,
+            &mut sequence,
+            &mut |_| {
+                dispatched = true;
+                state()
+            }
+        )
+        .is_err()
+    );
+    assert!(!dispatched);
+    assert_eq!(sequence, 1);
+}
+
+#[test]
+fn checkpoint_arm_receipt_preserves_real_generation_on_independent_refusal() {
+    let arm = frame(
+        2,
+        RamControlRequest::CheckpointArm {
+            original: checkpoint_original(),
+        },
+    );
+    let mut receipt = RamControlCheckpointArmReceipt {
+        disposition: RamControlDisposition::Unavailable,
+        request_generation: 7,
+        first_status: -5,
+        post_status: -110,
+    };
+    let make = |receipt| RamControlFrame {
+        message: RamControlMessage::CheckpointArmReply {
+            request_digest: ram_control_request_digest(&arm).unwrap(),
+            receipt,
+        },
+        ..arm
+    };
+    let response = make(receipt);
+    let mut fixed = [0; RAM_CONTROL_CHECKPOINT_MAX_BYTES];
+    let length = encode_ram_checkpoint_control(&response, &mut fixed).unwrap();
+    assert_eq!(length, 207);
+    assert_eq!(fixed[4], 129);
+    assert_eq!(decode_ram_control(&fixed[..length]).unwrap(), response);
+    receipt.disposition = RamControlDisposition::Accepted;
+    assert!(encode_ram_checkpoint_control(&make(receipt), &mut fixed).is_err());
+    receipt.first_status = 0;
+    receipt.post_status = 0;
+    assert!(encode_ram_checkpoint_control(&make(receipt), &mut fixed).is_ok());
+    receipt.request_generation = 0;
+    assert!(encode_ram_checkpoint_control(&make(receipt), &mut fixed).is_err());
+    assert!(ram_control_request_digest(&response).is_err());
+}
+
+mod checkpoint_disposition;
+
+mod fixed_storage;
+
+#[test]
+fn nanosecond_roster_preserves_exact_precision_and_rejects_old_schemas() {
+    for value in [1, 500_000, RAM_CONTROL_MAX_ALLOWANCE_NS] {
+        let budgets = [RamControlBudget {
+            poll_ns: value,
+            progress_ns: Some(value),
+            total_ns: Some(value),
+        }; RAM_CONTROL_BUDGET_COUNT];
+        let encoded = encode_ram_control_budgets(&budgets).unwrap();
+        assert_eq!(&encoded[..4], &11_u32.to_be_bytes());
+        assert_eq!(&encoded[4..12], &value.to_be_bytes());
+        assert_eq!(decode_ram_control_budgets(&encoded).unwrap(), budgets);
+        let mut request_policy = policy();
+        request_policy.budgets = budgets;
+        let request = frame(
+            1,
+            RamControlRequest::Apply {
+                expected_revision: 0,
+                policy_revision: 1,
+                reservation_revision: 0,
+                resources: RamControlResources::default(),
+                policy: request_policy,
+            },
+        );
+        assert_eq!(
+            decode_ram_control(&encode_ram_control(&request).unwrap()).unwrap(),
+            request
+        );
+        for schema in [9_u32, 10] {
+            let mut previous = encoded.clone();
+            previous[..4].copy_from_slice(&schema.to_be_bytes());
+            assert!(matches!(
+                decode_ram_control_budgets(&previous),
+                Err(RamControlError::UnsupportedVersion(observed)) if observed == schema
+            ));
+        }
+    }
+}
+
+#[test]
+fn nanosecond_roster_refuses_zero_overflow_corruption_and_truncation() {
+    let valid = [RamControlBudget {
+        poll_ns: 1,
+        progress_ns: Some(500_000),
+        total_ns: Some(500_000),
+    }; RAM_CONTROL_BUDGET_COUNT];
+    for value in [0, RAM_CONTROL_MAX_ALLOWANCE_NS + 1, u64::MAX] {
+        for field in 0..3 {
+            let mut changed = valid;
+            match field {
+                0 => changed[0].poll_ns = value,
+                1 => changed[0].progress_ns = Some(value),
+                _ => changed[0].total_ns = Some(value),
+            }
+            assert!(encode_ram_control_budgets(&changed).is_err());
+        }
+    }
+    let encoded = encode_ram_control_budgets(&valid).unwrap();
+    for value in [0_u64, RAM_CONTROL_MAX_ALLOWANCE_NS + 1, u64::MAX] {
+        for offset in [4, 13, 22] {
+            let mut changed = encoded.clone();
+            changed[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+            assert!(decode_ram_control_budgets(&changed).is_err());
+        }
+    }
+    for end in 0..encoded.len() {
+        assert!(decode_ram_control_budgets(&encoded[..end]).is_err());
+    }
+    let mut changed = encoded.clone();
+    changed[12] = 2;
+    assert!(decode_ram_control_budgets(&changed).is_err());
+    let mut changed = encoded.clone();
+    changed[13..21].fill(0);
+    assert!(decode_ram_control_budgets(&changed).is_err());
+    let mut changed = encoded;
+    changed.push(0);
+    assert!(decode_ram_control_budgets(&changed).is_err());
+}
+
+#[test]
+fn nanosecond_control_frames_refuse_millisecond_and_intermediate_schemas() {
+    let current = frame(1, RamControlRequest::Hello);
+    let encoded = encode_ram_control(&current).unwrap();
+    for schema in [9_u32, 10] {
+        let mut previous = encoded.clone();
+        previous[..4].copy_from_slice(&schema.to_be_bytes());
+        assert!(matches!(
+            decode_ram_control(&previous),
+            Err(RamControlError::UnsupportedVersion(observed)) if observed == schema
+        ));
     }
 }

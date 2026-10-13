@@ -308,6 +308,32 @@ impl<'owner> AuthenticatedImportedCheckpoint<'owner> {
         self.basis.archive
     }
 
+    /// Keeps the authentication original live through stopped restoration.
+    pub(crate) fn into_maintenance_launch(
+        self,
+    ) -> Result<
+        (
+            ImportedCheckpointBasis,
+            SelectedExactCheckpointRoot,
+            ImportedCheckpointMaintenance<'owner>,
+        ),
+        crucible_linux_resource::host_supervision::HostSupervisionError,
+    > {
+        self.authentication_operation.verify_operation_class(
+            crucible_linux_resource::host_supervision::HostOperationClass::Transfer,
+        )?;
+        let selected = SelectedExactCheckpointRoot::after_authenticated_import(&self);
+        Ok((
+            self.basis,
+            selected,
+            ImportedCheckpointMaintenance {
+                _owner: self.authentication_owner,
+                owner_custody: self.authentication_owner.clone(),
+                operation: self.authentication_operation,
+            },
+        ))
+    }
+
     /// Consumes the sole launch claim while retaining receiver provenance.
     pub(crate) fn into_launch(
         self,
@@ -364,4 +390,106 @@ pub enum ImportedCheckpointError {
     /// Receiver budget policy or original supervision could not be observed.
     #[error(transparent)]
     Supervision(#[from] crucible_linux_resource::host_supervision::HostSupervisionError),
+}
+
+/// Retains the same admitted authentication owner and its running Transfer.
+pub(crate) struct ImportedCheckpointMaintenance<'owner> {
+    _owner: &'owner AttemptExecutionContext,
+    owner_custody: AttemptExecutionContext,
+    operation: crucible_linux_resource::host_supervision::HostOperationGuard,
+}
+
+impl ImportedCheckpointMaintenance<'_> {
+    pub(crate) fn original(
+        &self,
+    ) -> &crucible_linux_resource::host_supervision::HostOperationGuard {
+        &self.operation
+    }
+
+    pub(crate) fn check(
+        &self,
+    ) -> Result<(), crucible_linux_resource::host_supervision::HostSupervisionError> {
+        // The owner borrow outlives every native process and decoded alias.
+        if self.owner_custody.cancellation().is_canceled() {
+            self.owner_custody
+                .host_operation_supervisor()
+                .ok_or(
+                    crucible_linux_resource::host_supervision::HostSupervisionError::Unavailable,
+                )?
+                .cancel()?;
+        }
+        self.operation.wait_slice().map(|_| ())
+    }
+
+    pub(crate) fn complete_after_cleanup(
+        &self,
+    ) -> Result<(), crucible_linux_resource::host_supervision::HostSupervisionError> {
+        self.check()?;
+        self.operation.complete().map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod maintenance_tests {
+    use super::*;
+    use crucible_campaign::{AttemptRetentionPolicyDisposition, ExecutionRetentionIntent};
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationState, HostOperationSupervisor,
+        HostSupervisionError,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn retained_maintenance_original_stays_running_and_refuses_canceled_completion() {
+        // This finite original/field-custody control admits no native World.
+        // The unregistered context cannot pass the public receiving entry.
+        let context = AttemptExecutionContext::new(
+            AttemptResourceLimits::new(1, 2048, 4096, 64)
+                .unwrap_or_else(|error| panic!("existing component profile: {error}")),
+            ExecutionRetentionIntent::Discard,
+            crate::ExecutionCancellation::default(),
+            crate::ExecutionCheckpointRequest::default(),
+            AttemptRetentionPolicyDisposition::Disabled,
+        );
+        let supervisor = HostOperationSupervisor::new(
+            HostOperationBudgets::default(),
+            Some(Duration::from_secs(300)),
+        )
+        .unwrap_or_else(|error| panic!("existing finite original: {error}"));
+        let maintenance = ImportedCheckpointMaintenance {
+            _owner: &context,
+            owner_custody: context.clone(),
+            operation: supervisor
+                .begin(HostOperationClass::Transfer)
+                .unwrap_or_else(|error| panic!("actual Transfer start: {error}")),
+        };
+        maintenance
+            .check()
+            .unwrap_or_else(|error| panic!("same original is live: {error}"));
+        assert_eq!(
+            maintenance
+                .operation
+                .status()
+                .unwrap_or_else(|error| panic!("actual original state: {error}"))
+                .state,
+            HostOperationState::Running
+        );
+        supervisor
+            .cancel()
+            .unwrap_or_else(|error| panic!("actual cancellation: {error}"));
+        assert!(matches!(
+            maintenance.check(),
+            Err(HostSupervisionError::Terminal {
+                state: HostOperationState::Canceled,
+                ..
+            })
+        ));
+        assert!(matches!(
+            maintenance.complete_after_cleanup(),
+            Err(HostSupervisionError::Terminal {
+                state: HostOperationState::Canceled,
+                ..
+            })
+        ));
+    }
 }

@@ -34,6 +34,23 @@ pub(crate) struct RetainedOperationalFailure {
 }
 
 impl PausedPagingOwner {
+    /// Moves the existing observation cause without formatting or new shared custody.
+    pub(in crate::paged_ram) fn retain_observation_failure(
+        &self,
+        error: super::super::source::ObservationOperationError,
+    ) {
+        let mut retained = None;
+        let cause = service::source_read_failure(error.into(), Some(&mut retained));
+        if let Some(retained) = retained {
+            self.retain_operational_source_failure(
+                SourceOperationClass::FingerprintUpdate,
+                retained,
+            );
+        } else {
+            self.retain_operational_failure_owned(SourceOperationClass::FingerprintUpdate, cause);
+        }
+    }
+
     /// Returns the retained typed cause without guest access or backing I/O.
     pub(crate) fn operational_failure(&self) -> Option<&RetainedOperationalFailure> {
         self.first_operational_failure.get()

@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! u32 body_length (big endian, at most 4096)
-//! u32 schema_version = 6
+//! u32 schema_version = 11
 //! u8 message_tag
 //! bytes[32] session
 //! u64 request_sequence (nonzero, strictly increasing)
@@ -31,6 +31,18 @@ pub use admission::{
     RamControlResources,
 };
 
+mod checkpoint_disposition;
+pub use checkpoint_disposition::{
+    RamControlCheckpointBinding, RamControlCheckpointDispositionReceipt,
+    RamControlCheckpointPhysicalState,
+};
+
+mod checkpoint_arm;
+pub use checkpoint_arm::{
+    RAM_CONTROL_CHECKPOINT_MAX_BYTES, RAM_CONTROL_CHECKPOINT_ORIGINAL_BYTES,
+    RamControlCheckpointArmReceipt, validate_checkpoint_original,
+};
+
 mod placement_receipt;
 pub use placement_receipt::RamControlPlacementReceipt;
 
@@ -41,10 +53,19 @@ pub use performance::{
 };
 
 /// Current independent pager control schema.
-pub const RAM_CONTROL_VERSION: u32 = 6;
+pub const RAM_CONTROL_VERSION: u32 = 11;
+
+/// Largest positive allowance representable by the signed native monotonic clock.
+pub const RAM_CONTROL_MAX_ALLOWANCE_NS: u64 = i64::MAX as u64;
+
 /// Maximum framed message body, checked before reading or allocating a body.
 pub const RAM_CONTROL_MAX_BYTES: usize = 4096;
 /// Fixed operation-class roster in canonical supervision order.
+///
+/// The zero-based wire order is Setup, Quantum, PageIn, Writeback,
+/// FingerprintInitialization, FingerprintUpdate, Quiescence, CheckpointCapture,
+/// CheckpointPublication, Restore, ForkRearm, Transfer, Preparation, Cleanup.
+/// Record presence describes timing; it does not authorize an operation.
 pub const RAM_CONTROL_BUDGET_COUNT: usize = 14;
 /// Maximum canonical launch budget roster: schema plus fourteen bounded budgets.
 pub const RAM_CONTROL_BUDGET_ROSTER_MAX_BYTES: usize = 4 + RAM_CONTROL_BUDGET_COUNT * 26;
@@ -66,15 +87,20 @@ pub struct RamControlTarget {
     pub retained_template: bool,
 }
 
-/// One fixed class's monotonic allowances, expressed in whole milliseconds.
+/// One fixed class's monotonic allowances, expressed in exact nanoseconds.
+///
+/// Every present allowance is in `1..=RAM_CONTROL_MAX_ALLOWANCE_NS`. Polling
+/// uses a big-endian `u64`; each optional allowance uses a zero tag for absence
+/// or a one tag followed by a big-endian `u64`. The same record serves initial
+/// launch supervision and live policy updates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RamControlBudget {
     /// Positive bounded polling slice.
-    pub poll_ms: u64,
+    pub poll_ns: u64,
     /// Positive optional allowance since meaningful completion progress.
-    pub progress_ms: Option<u64>,
+    pub progress_ns: Option<u64>,
     /// Positive optional allowance since the original operation start.
-    pub total_ms: Option<u64>,
+    pub total_ns: Option<u64>,
 }
 
 /// Host placement mode, independent of guest memory semantics.
@@ -106,6 +132,65 @@ pub struct RamControlPolicy {
     pub prefetch_on_increase: bool,
     /// Fixed operation roster; index is the public operation-class tag.
     pub budgets: [RamControlBudget; RAM_CONTROL_BUDGET_COUNT],
+}
+
+/// Availability of the total guest-residency observation; no private RSS claim.
+pub const RAM_OBSERVATION_TOTAL_RESIDENT: u32 = 1;
+
+/// Partial physical measurement over an excluded guest mapping interval.
+///
+/// Only total residency is currently available. Bytes include the logical part
+/// of each resident host page and exclude pager metadata and unrelated VMAs.
+/// Kernel reclaim and execution can change residency after `completed_ns`; this
+/// record must not release reservations or establish current `Stable` status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RamControlResidentObservation {
+    /// Closed availability mask; currently `RAM_OBSERVATION_TOTAL_RESIDENT`.
+    pub availability: u32,
+    /// Actual mapping topology incarnation.
+    pub topology_generation: u64,
+    /// Policy revision whose physical placement was sampled.
+    pub policy_revision: u64,
+    /// Same retained engine policy generation.
+    pub policy_generation: u64,
+    /// Actual fault-service incarnation owning the sampled mapping inventory.
+    pub worker_generation: u64,
+    /// Native all-writer generation checked at both ends of the cut.
+    pub writer_generation: u64,
+    /// Complete logical guest mapping coverage, excluding unrelated memory.
+    pub covered_bytes: u64,
+    /// Logical guest bytes whose host pages were resident during the interval.
+    pub total_resident_bytes: u64,
+    /// Effective soft target at this physical placement cut.
+    pub effective_target_bytes: u64,
+    /// Start of the kernel observation in the existing monotonic coordinate.
+    pub started_ns: u64,
+    /// End of the kernel observation in that same coordinate.
+    pub completed_ns: u64,
+}
+
+impl RamControlResidentObservation {
+    /// Validates supported availability, complete coverage and cut identity.
+    ///
+    /// # Errors
+    /// Refuses unknown availability, empty identities, overflowed counts or an
+    /// invalid observation interval. Validation never authenticates ownership.
+    pub fn validate(&self) -> Result<(), RamControlError> {
+        if self.availability != RAM_OBSERVATION_TOTAL_RESIDENT
+            || self.topology_generation == 0
+            || self.policy_revision == 0
+            || self.policy_generation == 0
+            || self.worker_generation == 0
+            || self.writer_generation == 0
+            || self.covered_bytes == 0
+            || self.total_resident_bytes > self.covered_bytes
+            || self.started_ns == 0
+            || self.completed_ns < self.started_ns
+        {
+            return Err(RamControlError::InvalidFrame);
+        }
+        Ok(())
+    }
 }
 
 /// Observed physical transition, separate from acceptance and application.
@@ -213,6 +298,11 @@ pub struct RamControlReply {
     ///
     /// Unavailable counters are canonically zero, never reported as measurements.
     pub measurements_available: bool,
+    /// Partial kernel observation at an admitted physical placement interval.
+    ///
+    /// This historical cut neither supplies the five counters above nor proves
+    /// that placement remains unchanged after native execution resumes.
+    pub resident_observation: Option<RamControlResidentObservation>,
     /// Private resident guest-page bytes.
     pub private_resident_bytes: u64,
     /// Observed shared resident bytes; not a per-child reservation.
@@ -351,6 +441,23 @@ pub struct RamControlActivity {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RamControlRequest {
+    /// Observes the existing checkpoint request's physical terminal journal.
+    ///
+    /// The selectors borrow an actual retained request; they cannot create
+    /// request custody, drive finalization, or authorize a new checkpoint.
+    CheckpointDisposition {
+        /// Exact previously retained ARM and Monitor-connection selectors.
+        binding: RamControlCheckpointBinding,
+    },
+    /// Lends the current checkpoint original with one cancellation descriptor.
+    ///
+    /// The descriptor accompanies the first framing byte. These bytes describe
+    /// an existing operation; only the actual registered native worker can
+    /// retain its request owner. An ordinary descriptor-free reader refuses it.
+    CheckpointArm {
+        /// Immutable basis of the already entered host Quiescence operation.
+        original: [u8; RAM_CONTROL_CHECKPOINT_ORIGINAL_BYTES],
+    },
     /// Controls one charged diagnostic interval without changing placement.
     Performance {
         /// Explicit start, observation or stop; none renews an operational cap.
@@ -473,6 +580,20 @@ pub struct RamControlFrame {
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RamControlMessage {
+    /// Observes physical custody after the actual native terminal producers.
+    CheckpointDispositionReply {
+        /// Exact request selectors repeated from the authenticated observation.
+        binding: RamControlCheckpointBinding,
+        /// Independent physical state and semantic initiating/postcut statuses.
+        receipt: RamControlCheckpointDispositionReceipt,
+    },
+    /// Receipt for a request retained by the actual native checkpoint receiver.
+    CheckpointArmReply {
+        /// Digest of the exact authenticated ARM request frame.
+        request_digest: [u8; 32],
+        /// Bounded native custody observation, without stop or capture authority.
+        receipt: RamControlCheckpointArmReceipt,
+    },
     /// Host request.
     Request(RamControlRequest),
     /// Pager reply bound to the complete canonical request.
@@ -508,9 +629,44 @@ pub enum RamControlError {
 
 mod codec;
 pub use codec::{
-    decode_ram_control, decode_ram_control_budgets, encode_ram_control, encode_ram_control_budgets,
+    decode_ram_control, decode_ram_control_budgets, encode_ram_checkpoint_control,
+    encode_ram_control, encode_ram_control_budgets, encode_ram_control_into,
     ram_control_request_digest, read_ram_control, write_ram_control,
 };
+
+/// Validates a complete request against its existing descriptor-bound session.
+///
+/// This shared check does not advance the cursor or confer descriptor custody.
+/// The receiver advances its sequence only after the corresponding reply has
+/// been written, and a failed record cannot regain authority by resetting it.
+///
+/// # Errors
+/// Refuses mismatched session/target, skipped or duplicate sequences, response
+/// frames, or any request inconsistent with the authenticated Hello boundary.
+pub fn validate_ram_control_request(
+    frame: &RamControlFrame,
+    session: [u8; 32],
+    target: RamControlTarget,
+    last_sequence: u64,
+) -> Result<RamControlRequest, RamControlError> {
+    if session == [0; 32]
+        || frame.session != session
+        || frame.target != target
+        || frame.sequence
+            != last_sequence
+                .checked_add(1)
+                .ok_or(RamControlError::AuthorityMismatch)?
+    {
+        return Err(RamControlError::AuthorityMismatch);
+    }
+    let RamControlMessage::Request(request) = frame.message else {
+        return Err(RamControlError::InvalidFrame);
+    };
+    if (last_sequence == 0) != matches!(request, RamControlRequest::Hello) {
+        return Err(RamControlError::AuthorityMismatch);
+    }
+    Ok(request)
+}
 
 /// Services one authenticated stream until clean EOF or a protocol failure.
 ///
@@ -563,21 +719,14 @@ where
     let Some(frame) = read_ram_control(stream)? else {
         return Ok(false);
     };
-    if session == [0; 32]
-        || frame.session != session
-        || frame.target != target
-        || frame.sequence
-            != last_sequence
-                .checked_add(1)
-                .ok_or(RamControlError::AuthorityMismatch)?
-    {
-        return Err(RamControlError::AuthorityMismatch);
-    }
-    let RamControlMessage::Request(request) = frame.message else {
+    let request = validate_ram_control_request(&frame, session, target, *last_sequence)?;
+    if matches!(
+        request,
+        RamControlRequest::CheckpointArm { .. } | RamControlRequest::CheckpointDisposition { .. }
+    ) {
+        // This generic stream has no descriptor landing or native worker loan.
+        // Never discard ancillary custody and dispatch an ARM as ordinary data.
         return Err(RamControlError::InvalidFrame);
-    };
-    if (*last_sequence == 0) != matches!(request, RamControlRequest::Hello) {
-        return Err(RamControlError::AuthorityMismatch);
     }
     let response = RamControlFrame {
         session,

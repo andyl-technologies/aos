@@ -96,6 +96,8 @@ pub(super) enum OriginalWatcherCause {
     Timeout,
     #[error("watcher terminated outside its guarded body")]
     ThreadPanicked,
+    #[error("Target watcher control return failed: {0}")]
+    TargetJob(#[source] super::LinuxQemuCgroupError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -175,16 +177,23 @@ impl LinuxQemuCgroupWatcher {
             return Err((None, refusal(OriginalWatcherCause::ThreadPanicked, None)));
         };
         let joined = join.join();
-        // A successful join owns the actual watcher control; close it before
-        // recording the original postcheck, including a failed postcheck.
-        let panicked = joined.is_err();
-        drop(joined);
+        let primary = match joined {
+            Ok(control) => {
+                control.close();
+                None
+            }
+            Err(super::WatcherCompletionError::ThreadPanicked) => {
+                Some(OriginalWatcherCause::ThreadPanicked)
+            }
+            Err(super::WatcherCompletionError::Target { job, source }) => {
+                self.join = Some(super::WatcherCompletion::Target(job));
+                Some(OriginalWatcherCause::TargetJob(source))
+            }
+        };
         let after = original.wait_slice();
-        if panicked {
-            return Err((
-                None,
-                refusal(OriginalWatcherCause::ThreadPanicked, after.err()),
-            ));
+        if let Some(primary) = primary {
+            let retained = self.join.is_some().then_some(self);
+            return Err((retained, refusal(primary, after.err())));
         }
         if let Err(source) = after {
             return Err((None, refusal(OriginalWatcherCause::Original(source), None)));

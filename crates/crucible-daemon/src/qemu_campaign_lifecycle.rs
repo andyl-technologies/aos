@@ -694,16 +694,17 @@ pub use campaign_run::{
     GuardedCampaignFindingOracleSourceLoadError, GuardedCampaignFindingProof,
     GuardedCampaignFindingQueryProof, GuardedCampaignFindingTriageReplayProof,
     GuardedCampaignFindingTriageReplaySegmentProof, GuardedCampaignFindingTriageReplaySet,
-    GuardedCampaignOwner, GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
-    GuardedCampaignSupplementalFinding, GuardedCampaignTimeoutEvidence,
-    GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignObservation,
-    GuardedDefaultCampaignObservationSource, GuardedDefaultCampaignProductionRunnerError,
-    GuardedDefaultCampaignResumeProof, GuardedDefaultCampaignRun,
-    GuardedDefaultCampaignRunConfigurationError, GuardedDefaultCampaignRunError,
-    GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
-    GuardedDefaultCampaignSupervisorError, GuardedDefaultCampaignWatchFrame,
-    GuardedFindingBranchError, GuardedFindingMidpointError, GuardedImportedFindingMidpoint,
-    run_guarded_default_campaign, validate_remote_resume_replay_closure,
+    GuardedCampaignOwner, GuardedCampaignOwnerRetirementError, GuardedCampaignReplayClosure,
+    GuardedCampaignReplayClosureError, GuardedCampaignSupplementalFinding,
+    GuardedCampaignTimeoutEvidence, GuardedDefaultCampaignInvariantError,
+    GuardedDefaultCampaignObservation, GuardedDefaultCampaignObservationSource,
+    GuardedDefaultCampaignProductionRunnerError, GuardedDefaultCampaignResumeProof,
+    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunConfigurationError,
+    GuardedDefaultCampaignRunError, GuardedDefaultCampaignRunRequest,
+    GuardedDefaultCampaignSavepoint, GuardedDefaultCampaignSupervisorError,
+    GuardedDefaultCampaignWatchFrame, GuardedFindingBranchError, GuardedFindingMidpointError,
+    GuardedImportedFindingMidpoint, run_guarded_default_campaign,
+    validate_remote_resume_replay_closure,
 };
 pub(crate) use start_replay::materialize_start_from;
 use start_replay::*;
@@ -2147,6 +2148,47 @@ where
         basis: QemuExactResumeBasis<'_>,
         context: &AttemptExecutionContext,
     ) -> Result<ProductionVmLifecycleLoop, QemuAttemptProductionVmLifecycleError> {
+        self.begin_resume_with_builder(
+            checkpoints,
+            checkpoint,
+            basis,
+            context,
+            build_production_vm_exact_resume_lifecycle,
+        )
+    }
+
+    /// Restores the exact World without releasing any live native node.
+    pub(crate) fn begin_stopped_transfer(
+        &mut self,
+        checkpoints: &ExactCheckpointStore,
+        checkpoint: ExactCheckpointId,
+        basis: QemuExactResumeBasis<'_>,
+        context: &AttemptExecutionContext,
+    ) -> Result<crucible_api::ProductionVmStoppedLifecycle, QemuAttemptProductionVmLifecycleError>
+    {
+        self.begin_resume_with_builder(
+            checkpoints,
+            checkpoint,
+            basis,
+            context,
+            crucible_api::build_production_vm_exact_stopped_lifecycle,
+        )
+    }
+
+    fn begin_resume_with_builder<T>(
+        &mut self,
+        checkpoints: &ExactCheckpointStore,
+        checkpoint: ExactCheckpointId,
+        basis: QemuExactResumeBasis<'_>,
+        context: &AttemptExecutionContext,
+        build: impl FnOnce(
+            &ScenarioDef,
+            &ScenarioDefForm,
+            &ProductionVmLifecycleConfig,
+            crucible_api::DecodedProductionExactCheckpoint,
+            QemuAttemptProductionVmNodeLauncher<R::Guard>,
+        ) -> Result<T, LifecycleApiError>,
+    ) -> Result<T, QemuAttemptProductionVmLifecycleError> {
         validate_exact_resume_request(checkpoint, basis, context)?;
         let QemuExactResumeBasis {
             scenario,
@@ -2189,11 +2231,7 @@ where
             maximum_nodes,
             &config,
             park_drain_registration,
-            |launcher| {
-                build_production_vm_exact_resume_lifecycle(
-                    scenario, source, &config, decoded, launcher,
-                )
-            },
+            |launcher| build(scenario, source, &config, decoded, launcher),
         )
     }
 
@@ -2412,7 +2450,6 @@ where
             return Err(QemuAttemptProductionVmLifecycleError::ResourceContractMismatch);
         }
 
-        #[cfg(feature = "private-measurement-domain")]
         if let Some(registry) = context.host_operational_registry() {
             guard
                 .retain_original_native_registry(registry.clone())

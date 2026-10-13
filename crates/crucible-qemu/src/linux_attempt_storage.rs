@@ -918,7 +918,6 @@ impl Drop for ProjectIdLease {
 }
 
 mod filesystem;
-#[cfg(feature = "private-measurement-domain")]
 mod original_cleanup;
 use filesystem::*;
 
@@ -1225,7 +1224,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "private-measurement-domain")]
     #[test]
     fn parent_partial_storage_error_keeps_actual_directory_and_lease_after_unwind() {
         let root = must_succeed(tempfile::tempdir(), "Parent partial storage fixture");

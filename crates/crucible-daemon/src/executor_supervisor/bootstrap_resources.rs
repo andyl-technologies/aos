@@ -46,6 +46,10 @@ struct BootstrapAccount {
     ledger_lease: HostServiceLease,
     quota: Option<LinuxProjectQuotaBinding>,
     quota_lease: HostServiceLease,
+    // Nested allocator amounts are paid by this same original main debit.
+    normal: Option<
+        Arc<crucible_linux_resource::host_services::process_birth::AuthenticatedNativeSlotPurpose>,
+    >,
 }
 
 /// Retains the physical namespace pin before returning its original audit credit.
@@ -76,8 +80,46 @@ impl ExecutorBootstrapResources {
     /// # Errors
     /// Refuses invalid authored partitions, overflow or aggregate exhaustion,
     /// and unavailable original finite preparation supervision.
+    #[cfg(test)]
     pub(crate) fn new(
         configuration: ExecutorBootstrapConfiguration,
+    ) -> Result<Self, HostOperationalError> {
+        Self::build(configuration, None)
+    }
+
+    /// Checks the actual parent debit before creating the nested registry account.
+    ///
+    /// # Errors
+    /// Refuses a missing or expired parent purpose and mismatched authored bounds.
+    pub(crate) fn new_with_normal(
+        configuration: ExecutorBootstrapConfiguration,
+        normal: Option<Arc<crucible_linux_resource::host_services::process_birth::AuthenticatedNativeSlotPurpose>>,
+    ) -> Result<Self, HostOperationalError> {
+        let purpose = normal.as_ref().ok_or(HostOperationalError::Unavailable)?;
+        purpose
+            .check()
+            .map_err(|_| HostOperationalError::Unavailable)?;
+        let bounds = purpose.bounds();
+        if bounds.resident_peak_bytes != configuration.capacity.maximum_resident_bytes()
+            || bounds.backing_peak_bytes != configuration.capacity.maximum_disk_bytes()
+            || bounds.metadata_bytes != configuration.operational_capacity.maximum_metadata_bytes()
+            || bounds.task_slots != configuration.operational_capacity.maximum_task_slots()
+            || bounds.file_descriptors
+                != configuration
+                    .operational_capacity
+                    .maximum_file_descriptors()
+        {
+            return Err(HostOperationalError::Unavailable);
+        }
+        purpose
+            .assign_executor_service(configuration.registry_resources)
+            .map_err(|_| HostOperationalError::Unavailable)?;
+        Self::build(configuration, normal)
+    }
+
+    fn build(
+        configuration: ExecutorBootstrapConfiguration,
+        normal: Option<Arc<crucible_linux_resource::host_services::process_birth::AuthenticatedNativeSlotPurpose>>,
     ) -> Result<Self, HostOperationalError> {
         LinuxProjectQuotaLimits::new(
             configuration.registry_resources.backing_peak_bytes,
@@ -174,6 +216,7 @@ impl ExecutorBootstrapResources {
                 ledger_lease,
                 quota: None,
                 quota_lease,
+                normal,
             })),
             io_started: false,
         })
@@ -237,13 +280,20 @@ impl ExecutorBootstrapResources {
     /// # Errors
     /// Refuses elapsed or canceled original supervision and uncertain ownership.
     pub(crate) fn boundary(&self) -> Result<(), HostOperationalError> {
-        self.account
+        let account = self
+            .account
             .as_ref()
-            .ok_or(HostOperationalError::Unavailable)?
+            .ok_or(HostOperationalError::Unavailable)?;
+        account
             .operation
             .wait_slice()
-            .map(|_| ())
-            .map_err(|_| HostOperationalError::Unavailable)
+            .map_err(|_| HostOperationalError::Unavailable)?;
+        if let Some(normal) = &account.normal {
+            normal
+                .check()
+                .map_err(|_| HostOperationalError::Unavailable)?;
+        }
+        Ok(())
     }
 
     /// Arms durable-effect custody before the first potentially mutating I/O.
@@ -417,6 +467,14 @@ mod tests {
             )
             .expect("authored finite startup supervision"),
         }
+    }
+
+    #[test]
+    fn normal_startup_refuses_missing_owner_before_account_creation() {
+        assert!(matches!(
+            ExecutorBootstrapResources::new_with_normal(configuration(), None),
+            Err(HostOperationalError::Unavailable)
+        ));
     }
 
     #[test]

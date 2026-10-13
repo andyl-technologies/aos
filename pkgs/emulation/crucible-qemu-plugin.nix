@@ -10,10 +10,17 @@
   pkg-config,
   qemu-crucible,
   sqlite,
+  python3,
+  stdenv,
+  buildPackages,
   nativeConformance ? false,
 }: let
   version = "0.1.0";
   conformanceFlags = lib.optionalString nativeConformance " --features native-conformance";
+  buildPython =
+    if stdenv.isCross
+    then buildPackages.python3
+    else python3;
   src = import ../tools/crucible/_source.nix {inherit lib;};
   cargoDeps = patchCiboriumSeedVendor (fetchCargoVendor {
     inherit src;
@@ -125,7 +132,7 @@ in
     installLibs = false;
     doCheck = true;
 
-    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite];
+    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite buildPython];
     runtimeDeps = [glib qemu-crucible sqlite];
 
     preBuild = ''
@@ -277,6 +284,14 @@ in
       SPDX-License-Identifier: GPL-2.0-only
       crucible-protocol and crucible-shmem are used under their MIT option.
       LICENSE_SCOPE
+    '';
+
+    # Publish only after stripping, RPATH shrinking and reference scrubbing:
+    # the digest binds the installed artifact, not its compiler intermediate.
+    postFinalize = ''
+      ${buildPython}/bin/python3 ${./crucible-qemu-plugin/installer-layouts.py} --finalize \
+        "$out/lib/libcrucible_qemu_plugin.so" \
+        "$out/nix-support/crucible-installer-control-layouts"
     '';
 
     meta = {

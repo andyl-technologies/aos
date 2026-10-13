@@ -5,8 +5,9 @@
 //! explicit descriptor role; no pager, later operation or replacement event
 //! supplies startup authority. Native Source and complete allocation-peak
 //! qualification remain separate from this host custody splice. Registered
-//! startup currently refuses before Setup or descriptor effects because the
-//! installed native preconstructor profile and receiver are not yet issued.
+//! startup requires the same issued process-purpose keeper before host Setup.
+//! A matched prequeued native purpose receiver remains a separate pre-spawn
+//! requirement; the existing late setup transport cannot substitute for it.
 
 use std::fmt::{self, Write as _};
 use std::fs::File;
@@ -34,8 +35,9 @@ pub(crate) struct OriginalPluginStartup {
 
 #[derive(Debug)]
 struct PluginStartupState {
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     workspace: Option<super::OriginalDeviceDigestWorkspace>,
+    services: crucible_linux_resource::host_services::HostServiceAllocator,
     original: HostOperationGuard,
     record: StartupOperation,
 }
@@ -44,7 +46,12 @@ struct PluginStartupState {
 pub(crate) enum PluginStartupCause {
     #[error("the installed native preconstructor profile is unavailable")]
     InstalledProfileUnavailable,
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
+    #[error("issued installed process purpose refused: {0}")]
+    Purpose(#[source] crate::linux_attempt_host::InstalledProcessPurposeError),
+    #[error("the matched native preexec purpose receiver is unavailable")]
+    ReceiverPurposeUnavailable,
+    #[cfg(target_os = "linux")]
     #[error("device workspace issuance refused: {0}")]
     Workspace(#[source] super::DeviceDigestWorkspaceIssueError),
     #[error("original startup host-service admission refused: {0}")]
@@ -70,32 +77,71 @@ pub struct PluginStartupError {
 }
 
 impl OriginalPluginStartup {
+    /// Reports this target's hosted startup bodies and cancellation control.
+    ///
+    /// The same original slot reserves this outside-process extent before the
+    /// family ceiling is refined. Actual births still debit the registered
+    /// host-service account; this request neither issues credit nor includes
+    /// native constructors, workers, transport frames or descriptor aliases.
+    ///
+    /// # Errors
+    /// Returns a geometry refusal if a target extent or checked sum overflows.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn host_allocation_extent() -> Result<u64, PluginStartupError> {
+        Self::control_allocation_extent()
+            .and_then(|bytes| {
+                bytes.checked_add(HostOperationGuard::original_setup_cancellation_bytes())
+            })
+            .ok_or(PluginStartupError {
+                source: PluginStartupCause::Geometry,
+                original_after: None,
+                _control: None,
+            })
+    }
+
+    fn control_allocation_extent() -> Option<u64> {
+        std::mem::size_of::<Self>()
+            .checked_add(std::mem::size_of::<Option<PluginStartupState>>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PluginStartupState>()))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PluginStartupError>()))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .and_then(|bytes| bytes.checked_add(HostServiceLease::metadata_bytes()))
+            .and_then(|bytes| bytes.checked_add((FDINFO_BYTES + 1) as u64))
+    }
+
     pub(crate) fn prepare(
         supervisor: &HostOperationSupervisor,
         contract: &QemuChildProcessContract,
         registration: &crate::ram_control::RamControlRegistration,
         process_generation: u64,
+        #[cfg(target_os = "linux")] binding: Option<
+            &crate::linux_attempt_host::OriginalNativeNodeBinding,
+        >,
     ) -> Result<Self, PluginStartupError> {
         let refuse_before = |source| PluginStartupError {
             source,
             original_after: None,
             _control: None,
         };
-        // Installer acquisition occurs after native context allocation and
-        // module constructors. The current installed tuple has no prior issued
-        // namespace purpose, so refuse before this host creates Setup or aliases.
-        require_installed_native_profile().map_err(refuse_before)?;
+        // The node keeper borrows its actual issued family assignment. No
+        // supervisor, configured ceiling or artifact label can mint this loan.
+        #[cfg(target_os = "linux")]
+        binding
+            .ok_or_else(|| refuse_before(PluginStartupCause::InstalledProfileUnavailable))?
+            .verify_installed_process_purpose(
+                contract,
+                supervisor,
+                registration,
+                process_generation,
+            )
+            .map_err(|source| refuse_before(PluginStartupCause::Purpose(source)))?;
+        #[cfg(not(target_os = "linux"))]
+        require_installed_process_purpose().map_err(refuse_before)?;
 
         // These are actual hosted holder/scratch bodies, not a native W floor.
         // The existing supervisor/world must retain its own allocation custody;
         // this loan does not substitute for its transitive Source/control proof.
-        let bytes = std::mem::size_of::<Self>()
-            .checked_add(std::mem::size_of::<Option<PluginStartupState>>())
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PluginStartupState>()))
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PluginStartupError>()))
-            .and_then(|bytes| bytes.checked_add(HostServiceLease::metadata_bytes() as usize))
-            .and_then(|bytes| bytes.checked_add(FDINFO_BYTES + 1))
-            .and_then(|bytes| u64::try_from(bytes).ok())
+        let bytes = Self::control_allocation_extent()
             .ok_or_else(|| refuse_before(PluginStartupCause::Geometry))?;
         let control = registration
             .host_services
@@ -172,7 +218,8 @@ impl OriginalPluginStartup {
         match (observed, after) {
             (Ok(record), None) => {
                 *body = Some(PluginStartupState {
-                    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+                    services: registration.host_services.clone(),
+                    #[cfg(target_os = "linux")]
                     workspace: None,
                     original,
                     record,
@@ -197,7 +244,7 @@ impl OriginalPluginStartup {
 
     // Both owners remain distinct: the native purpose keeps the outer original,
     // while this registered Setup keeps its conserved world/service boundary.
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn retain_workspace(
         &mut self,
         workspace: super::OriginalDeviceDigestWorkspace,
@@ -229,7 +276,7 @@ impl OriginalPluginStartup {
         Ok(())
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn workspace_view(
         &self,
     ) -> Result<Option<std::sync::Arc<super::DeviceDigestWorkspaceBody>>, PluginStartupError> {
@@ -246,7 +293,7 @@ impl OriginalPluginStartup {
             })
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn begin_workspace_handover(&mut self) -> Result<(), PluginStartupError> {
         let state = self.state_mut().map_err(Self::state_refusal)?;
         if let Some(workspace) = state.workspace.as_mut() {
@@ -261,7 +308,7 @@ impl OriginalPluginStartup {
         Ok(())
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn retire_workspace_after_reap(&mut self) {
         let Ok(state) = self.state_mut() else {
             return;
@@ -276,7 +323,7 @@ impl OriginalPluginStartup {
         }
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn workspace_refusal(
         &self,
         source: super::DeviceDigestWorkspaceIssueError,
@@ -291,6 +338,27 @@ impl OriginalPluginStartup {
         }
     }
 
+    /// Refuses native birth until the issued purpose has a matched receiver.
+    ///
+    /// Host preparation is funded by its same-slot outside assignment. It does
+    /// not authorize the old late setup frame to pay earlier native births.
+    ///
+    /// # Errors
+    /// Preserves an initiating original refusal or the unavailable receiver,
+    /// plus the independent same-original postcut, without completing Setup.
+    pub(crate) fn require_preexec_receiver(&self) -> Result<(), PluginStartupError> {
+        let state = self.state().map_err(Self::state_refusal)?;
+        let source = match state.original.check_original_setup_cancellation() {
+            Ok(()) => PluginStartupCause::ReceiverPurposeUnavailable,
+            Err(source) => PluginStartupCause::Original(source),
+        };
+        Err(PluginStartupError {
+            source,
+            original_after: state.original.wait_slice().err(),
+            _control: None,
+        })
+    }
+
     pub(crate) fn record(&self) -> Result<StartupOperation, PluginStartupError> {
         self.state()
             .map(|state| state.record)
@@ -299,6 +367,34 @@ impl OriginalPluginStartup {
 
     pub(crate) fn check(&self) -> Result<(), HostSupervisionError> {
         self.state()?.original.check_original_setup_cancellation()
+    }
+
+    /// Admits the actual encoded-plan and alias owners from the registered account.
+    pub(super) fn reserve_preexec(
+        &self,
+        descriptors: u64,
+        bytes: u64,
+    ) -> Result<HostServiceLease, PluginStartupError> {
+        let state = self.state().map_err(Self::state_refusal)?;
+        state
+            .original
+            .check_original_setup_cancellation()
+            .map_err(Self::state_refusal)?;
+        let result = state.services.reserve_resources(0, descriptors, bytes);
+        let after = state.original.wait_slice().err();
+        match (result, after) {
+            (Ok(control), None) => Ok(control),
+            (Err(source), original_after) => Err(PluginStartupError {
+                source: PluginStartupCause::Account(source),
+                original_after,
+                _control: None,
+            }),
+            (Ok(control), Some(source)) => Err(PluginStartupError {
+                source: PluginStartupCause::Original(source),
+                original_after: None,
+                _control: Some(control),
+            }),
+        }
     }
 
     pub(crate) fn complete(&self) -> Result<(), HostSupervisionError> {
@@ -312,7 +408,7 @@ impl OriginalPluginStartup {
             .ok_or(HostSupervisionError::Unavailable)
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[cfg(target_os = "linux")]
     fn state_mut(&mut self) -> Result<&mut PluginStartupState, HostSupervisionError> {
         self.body
             .as_mut()
@@ -391,10 +487,10 @@ fn event_identity(descriptor: i32) -> io::Result<u64> {
     event_id.ok_or_else(invalid_event)
 }
 
-// This closed refusal is temporary. A positive replacement must consume the
-// actual preissued installed-profile purpose from the same process owner;
-// native TOTAL, a file hash, or installer completion cannot substitute for it.
-fn require_installed_native_profile() -> Result<(), PluginStartupCause> {
+// This build has no genuine private issuer. Keep ordinary registered startup
+// closed rather than treating a selected artifact or supervisor as a purpose.
+#[cfg(not(target_os = "linux"))]
+fn require_installed_process_purpose() -> Result<(), PluginStartupCause> {
     Err(PluginStartupCause::InstalledProfileUnavailable)
 }
 

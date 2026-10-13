@@ -58,6 +58,7 @@ pub(super) fn copy_status(source: &HostRamStatus) -> Result<HostRamStatus, HostO
         effective_floor_bytes: source.effective_floor_bytes,
         limitation_reasons: reasons,
         measurements_available: source.measurements_available,
+        resident_observation: source.resident_observation,
         activity: source.activity,
         private_resident_bytes: source.private_resident_bytes,
         shared_resident_bytes_observed: source.shared_resident_bytes_observed,

@@ -29,6 +29,7 @@ pub struct RamTransferSender {
     root_record: Option<RamObjectRecord>,
     path: Vec<path::PathEntry>,
     state: Option<super::store_boundary::RetainedReadState>,
+    canonical_session: Option<crate::content_store::PackedCanonicalSession>,
     _offer_credit: DecodeScratch,
     _path_credit: DecodeScratch,
     _control_credit: DecodeScratch,
@@ -53,6 +54,14 @@ impl RamTransferSender {
             self.path.is_empty(),
             self.active.is_none(),
         )
+    }
+
+    /// Returns actual manifest authentications in the current source session.
+    #[cfg(test)]
+    pub(super) fn canonical_manifest_reads_for_test(&self) -> u64 {
+        self.canonical_session
+            .as_ref()
+            .map_or(0, |session| session.authenticated_manifests)
     }
 
     /// Serves framed controls on an already authenticated archive channel.
@@ -97,6 +106,7 @@ impl RamTransferSender {
         self.active = None;
         self.root_record = None;
         self.path.clear();
+        self.canonical_session = None;
         match self.state.take() {
             Some(state) => {
                 let mut account =
@@ -189,6 +199,7 @@ impl RamTransferSender {
             root_record: None,
             path,
             state: Some(account.into_retained()),
+            canonical_session: None,
             _offer_credit: offer_credit,
             _path_credit: path_credit,
             _control_credit: control_credit,
@@ -256,6 +267,7 @@ impl RamTransferSender {
             self.active = None;
             self.root_record = None;
             self.path.clear();
+            self.canonical_session = None;
             self.terminal = true;
             return Ok(RamTransferResponse::inline(
                 self.message(RamTransferControl::Canceled),
@@ -268,15 +280,19 @@ impl RamTransferSender {
             .state
             .take()
             .ok_or(RamStoreError::Invalid("missing transfer operation"))?;
+        let mut work = Work::from_retained(
+            self.store.limits,
+            &self.original,
+            boundary,
+            state,
+            self.visits,
+            self.io_bytes,
+        );
+        work.canonical_session_enabled = true;
+        work.canonical_session = self.canonical_session.take();
         let mut turn = Turn {
-            work: Some(Work::from_retained(
-                self.store.limits,
-                &self.original,
-                boundary,
-                state,
-                self.visits,
-                self.io_bytes,
-            )),
+            work: Some(work),
+            canonical_session: &mut self.canonical_session,
             state: &mut self.state,
             visits: &mut self.visits,
             io_bytes: &mut self.io_bytes,
@@ -310,6 +326,7 @@ impl RamTransferSender {
 struct Turn<'sender, 'work> {
     work: Option<Work<'work>>,
     state: &'sender mut Option<super::store_boundary::RetainedReadState>,
+    canonical_session: &'sender mut Option<crate::content_store::PackedCanonicalSession>,
     visits: &'sender mut u64,
     io_bytes: &'sender mut u64,
     active: &'sender mut Option<RamObjectRecord>,
@@ -333,6 +350,10 @@ impl Turn<'_, '_> {
             }
             result => result,
         };
+        if result.is_err() || *self.terminal {
+            work.canonical_session = None;
+        }
+        *self.canonical_session = work.canonical_session.take();
         *self.visits = work.visits;
         *self.io_bytes = work.io_bytes;
         *self.state = Some(work.account.into_retained());
@@ -343,6 +364,7 @@ impl Turn<'_, '_> {
 impl Drop for Turn<'_, '_> {
     fn drop(&mut self) {
         if self.work.is_some() {
+            *self.canonical_session = None;
             *self.terminal = true;
             *self.active = None;
             *self.root_record = None;
@@ -417,6 +439,7 @@ fn respond_inner(
                 return Err(RamStoreError::Invalid("transfer stored root"));
             }
             *turn.active = None;
+            super::bounded_read::canonical_session::close(store, root.object_id(), work)?;
             *turn.terminal = true;
             let credit = original
                 .reserve_scratch_bytes(super::response::frame_peak(ram_root.len() + 49, false)?)

@@ -293,6 +293,8 @@ impl<S: QmpTimeoutStream> QmpClient<S> {
             supervision: None,
             timeout: self.io_timeout_policy.command_timeout,
             shared: None,
+            checkpoint_original: None,
+            checkpoint_loan: None,
             borrowed: Some(actor),
             paired: Some(family),
             _lifetime: std::marker::PhantomData,

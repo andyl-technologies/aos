@@ -348,7 +348,7 @@ where
     {
         let failure = match failure {
             ManagedQemuHotForkAuthenticatedAdmissionFailure::Binding(failure) => {
-                let (source, error) = failure.into_parts();
+                let (mut source, error) = failure.into_parts();
                 if let Err(retirement) = source.retire() {
                     return Err(
                         PackagedDemandedQemuHotForkSourceProviderError::BindingCleanup {
@@ -409,7 +409,7 @@ where
 fn retire_managed_demanded_source(
     candidate: crate::ManagedQemuHotForkSourceWorld,
 ) -> Result<(), PackagedDemandedQemuHotForkSourceProviderError> {
-    let source = candidate.into_source().map_err(|candidate| {
+    let mut source = candidate.into_source().map_err(|candidate| {
         let _retained_for_process_lifetime = Box::leak(candidate);
         PackagedDemandedQemuHotForkSourceProviderError::AdmissionPoisoned
     })?;
@@ -844,7 +844,7 @@ where
     let failure = match failure {
         ManagedQemuHotForkAuthenticatedAdmissionFailure::Admission(failure) => failure,
         ManagedQemuHotForkAuthenticatedAdmissionFailure::Binding(failure) => {
-            let (source_world, error) = failure.into_parts();
+            let (mut source_world, error) = failure.into_parts();
             let source = match source_world.retire() {
                 Ok(()) => PackagedQemuExecutorError::HotForkSourceAdmission {
                     lineage,
@@ -907,7 +907,7 @@ where
         return Err(cleanup_captured_sources(source, pool));
     }
 
-    let source_world = match candidate.into_source() {
+    let mut source_world = match candidate.into_source() {
         Ok(source_world) => source_world,
         Err(candidate) => {
             let _retained_for_process_lifetime = Box::leak(candidate);
@@ -932,7 +932,7 @@ fn cleanup_policy_declined_candidate(
     candidate: crate::ManagedQemuHotForkSourceWorld,
 ) -> (Option<Box<crucible_api::LifecycleApiError>>, bool) {
     match candidate.into_source() {
-        Ok(source_world) => (source_world.retire().err().map(Box::new), false),
+        Ok(mut source_world) => (source_world.retire().err().map(Box::new), false),
         Err(candidate) => {
             let _retained_for_process_lifetime = Box::leak(candidate);
             (None, true)

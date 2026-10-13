@@ -111,6 +111,12 @@ struct CleanupAuthority {
 struct CleanupRecord {
     target: HostRamTarget,
     authority: Mutex<CleanupAuthority>,
+    #[cfg(target_os = "linux")]
+    installed_incarnation: Mutex<Option<crate::linux_attempt_host::InstalledIncarnationRetirement>>,
+    #[cfg(target_os = "linux")]
+    target_binding: Mutex<Option<crate::linux_attempt_host::OriginalNativeNodeBinding>>,
+    #[cfg(target_os = "linux")]
+    target_workspace: Mutex<Option<crate::spawn::OriginalDeviceDigestWorkspace>>,
     child_started: AtomicBool,
     child_reaped: AtomicBool,
     pending_joins: AtomicUsize,
@@ -132,6 +138,13 @@ impl std::fmt::Debug for CleanupRecord {
 }
 
 impl LaunchCleanup {
+    pub(crate) fn retained_control_bytes() -> Option<u64> {
+        let (layout, _) = std::alloc::Layout::new::<(AtomicUsize, AtomicUsize)>()
+            .extend(std::alloc::Layout::new::<CleanupRecord>())
+            .ok()?;
+        u64::try_from(layout.pad_to_align().size()).ok()
+    }
+
     pub(crate) fn new(registration: &RamControlRegistration) -> Self {
         Self {
             inner: Arc::new(CleanupRecord {
@@ -142,6 +155,12 @@ impl LaunchCleanup {
                     published: false,
                     resources: registration.resources,
                 }),
+                #[cfg(target_os = "linux")]
+                installed_incarnation: Mutex::new(None),
+                #[cfg(target_os = "linux")]
+                target_binding: Mutex::new(None),
+                #[cfg(target_os = "linux")]
+                target_workspace: Mutex::new(None),
                 child_started: AtomicBool::new(false),
                 child_reaped: AtomicBool::new(false),
                 pending_joins: AtomicUsize::new(0),
@@ -150,6 +169,98 @@ impl LaunchCleanup {
                 external_basis: Mutex::new(None),
             }),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_installed_incarnation(
+        &self,
+        retirement: crate::linux_attempt_host::InstalledIncarnationRetirement,
+    ) -> Result<(), RamControlError> {
+        let mut held = self
+            .inner
+            .installed_incarnation
+            .lock()
+            .map_err(|_| RamControlError::AuthorityMismatch)?;
+        if held.is_some() || self.inner.child_started.load(Ordering::Acquire) {
+            return Err(RamControlError::AuthorityMismatch);
+        }
+        *held = Some(retirement);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_target_binding(
+        &self,
+        binding: crate::linux_attempt_host::OriginalNativeNodeBinding,
+    ) -> Result<(), RamControlError> {
+        let Ok(mut held) = self.inner.target_binding.lock() else {
+            std::mem::forget(binding);
+            return Err(RamControlError::AuthorityMismatch);
+        };
+        if held.is_some() || self.inner.child_started.load(Ordering::Acquire) {
+            std::mem::forget(binding);
+            return Err(RamControlError::AuthorityMismatch);
+        }
+        *held = Some(binding);
+        held.as_ref()
+            .ok_or(RamControlError::AuthorityMismatch)?
+            .retain_launch_cleanup(self)
+            .map_err(|_| RamControlError::AuthorityMismatch)?;
+        Ok(())
+    }
+
+    /// Publishes the complete Target holder before body or descriptor birth.
+    ///
+    /// # Errors
+    /// Refuses occupied, poisoned or already exposed Target workspace custody.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_target_workspace(
+        &self,
+        purpose: crate::linux_attempt_host::OriginalDeviceDigestWorkspacePurpose,
+    ) -> Result<(), RamControlError> {
+        let Ok(mut held) = self.inner.target_workspace.lock() else {
+            std::mem::forget(purpose);
+            return Err(RamControlError::AuthorityMismatch);
+        };
+        if held.is_some() || self.inner.child_started.load(Ordering::Acquire) {
+            std::mem::forget(purpose);
+            return Err(RamControlError::AuthorityMismatch);
+        }
+        // This inline holder is in the already paid record before its separate
+        // body or memfd can be born. Failure retains the same full purpose.
+        *held = Some(crate::spawn::OriginalDeviceDigestWorkspace::new(purpose));
+        Ok(())
+    }
+
+    /// Constructs only the workspace already retained by this paid record.
+    ///
+    /// # Errors
+    /// Retains the same holder on missing custody, aliasing or kernel refusal.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn create_target_workspace(
+        &self,
+    ) -> Result<(), crate::spawn::DeviceDigestWorkspaceIssueError> {
+        self.inner
+            .target_workspace
+            .lock()
+            .map_err(|_| crate::spawn::DeviceDigestWorkspaceIssueError::Unavailable)?
+            .as_mut()
+            .ok_or(crate::spawn::DeviceDigestWorkspaceIssueError::Unavailable)?
+            .create()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_target_binding_mut<T>(
+        &self,
+        borrow: impl FnOnce(&mut crate::linux_attempt_host::OriginalNativeNodeBinding) -> T,
+    ) -> Result<T, RamControlError> {
+        let mut held = self
+            .inner
+            .target_binding
+            .lock()
+            .map_err(|_| RamControlError::AuthorityMismatch)?;
+        let binding = held.as_mut().ok_or(RamControlError::AuthorityMismatch)?;
+        Ok(borrow(binding))
     }
 
     pub(crate) fn child_started(&self) {
@@ -333,9 +444,29 @@ impl LaunchDescriptorImport {
     }
 }
 
+/// Keeps the complete existing Target holder ahead of implicit field Drop.
+///
+/// A poisoned field still contains its actual owner. Taking that same body
+/// prevents the generic unhanded workspace destructor from substituting local
+/// uniqueness for process/import/join/registrar proof; it allocates no keeper.
+#[cfg(target_os = "linux")]
+fn retain_unproven_target_workspace(
+    workspace: &mut Mutex<Option<crate::spawn::OriginalDeviceDigestWorkspace>>,
+) {
+    let held = match workspace.get_mut() {
+        Ok(held) => held,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(workspace) = held.take() {
+        std::mem::forget(workspace);
+    }
+}
+
 impl Drop for CleanupRecord {
     fn drop(&mut self) {
         let Ok(authority) = self.authority.get_mut() else {
+            #[cfg(target_os = "linux")]
+            retain_unproven_target_workspace(&mut self.target_workspace);
             return;
         };
         let reaped = !self.child_started.load(Ordering::Acquire)
@@ -343,29 +474,57 @@ impl Drop for CleanupRecord {
         let proven = reaped
             && self.pending_joins.load(Ordering::Acquire) == 0
             && self.pending_imports.load(Ordering::Acquire) == 0;
-        if authority.published {
-            if let Some(retirement) = authority.published_retirement.take()
-                && (!proven || retirement.retire_after_cleanup().is_err())
-            {
-                // Uncertain physical cleanup retains the original charge and
-                // authority; destroying the wrapper is never disposition.
-                std::mem::forget(retirement);
+        let mut released = if authority.published {
+            match authority.published_retirement.take() {
+                Some(retirement) if proven => {
+                    if retirement.retire_after_cleanup().is_ok() {
+                        true
+                    } else {
+                        std::mem::forget(retirement);
+                        false
+                    }
+                }
+                Some(retirement) => {
+                    std::mem::forget(retirement);
+                    false
+                }
+                None => false,
             }
-            return;
-        }
-        let Some(registrar) = authority.registrar.take() else {
-            return;
-        };
-        let released = proven
-            && registrar
-                .retire_unpublished_after_cleanup(self.target, authority.resources)
-                .is_ok();
-        if !released {
-            // Refusal conservatively leaves the actor's exact reservation held.
-            // This callback receives no fabricated diagnostics or native receipt.
-            if !authority.published {
+        } else if let Some(registrar) = authority.registrar.take() {
+            let released = proven
+                && registrar
+                    .retire_unpublished_after_cleanup(self.target, authority.resources)
+                    .is_ok();
+            if !released {
                 let _ = registrar.quarantine_unpublished(self.target, authority.resources);
             }
+            released
+        } else {
+            false
+        };
+
+        #[cfg(target_os = "linux")]
+        if released {
+            released = self.target_workspace.get_mut().is_ok_and(|held| {
+                held.as_mut()
+                    .is_none_or(|workspace| workspace.retire_after_reap().is_ok())
+            });
+        }
+
+        #[cfg(target_os = "linux")]
+        if !released {
+            retain_unproven_target_workspace(&mut self.target_workspace);
+        }
+
+        // This is the last cleanup Arc: physical process, source/import aliases
+        // and the actual registry retirement have all closed. A node facade's
+        // Drop alone never reaches this transition or releases its live share.
+        #[cfg(target_os = "linux")]
+        if released
+            && let Ok(held) = self.installed_incarnation.get_mut()
+            && let Some(retirement) = held.take()
+        {
+            retirement.retire_after_physical_cleanup();
         }
     }
 }

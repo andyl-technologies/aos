@@ -14,11 +14,7 @@
 //! concurrently.
 
 use std::ffi::CStr;
-#[cfg(unix)]
-use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 
 use crate::{
     ExactDeadlineError, ExactDeadlineReader, QemuAdvanceTimeTicksFn, QemuArmVirtualTimerWitnessFn,
@@ -1975,26 +1971,6 @@ where
         return Err(QemuPluginAbiError::MultiThreadedTcg);
     }
     Ok(execution_model)
-}
-
-/// Duplicates the inherited control descriptor into an owned Unix stream.
-///
-/// # Errors
-///
-/// Returns the operating-system error from `fcntl(F_DUPFD_CLOEXEC)` when the
-/// inherited descriptor is invalid or cannot be duplicated.
-#[cfg(unix)]
-pub(crate) fn duplicate_control_stream(fd: c_int) -> std::io::Result<UnixStream> {
-    // SAFETY: `fcntl(F_DUPFD_CLOEXEC)` accepts an integer descriptor and either
-    // fails without creating a resource or returns a new live owned descriptor.
-    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
-    if duplicate < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: a successful `F_DUPFD_CLOEXEC` return is a new descriptor whose
-    // ownership is transferred exactly once into `OwnedFd`.
-    let owned = unsafe { OwnedFd::from_raw_fd(duplicate) };
-    Ok(UnixStream::from(owned))
 }
 
 #[cfg(unix)]

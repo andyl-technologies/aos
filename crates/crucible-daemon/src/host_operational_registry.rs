@@ -21,6 +21,8 @@ use crucible_qemu::ram_control::{
 };
 
 mod cancellation;
+#[cfg(target_os = "linux")]
+mod checkpoint;
 mod fault_actor;
 mod history;
 mod mutation;
@@ -1036,6 +1038,17 @@ impl HostOperationalRegistry {
 }
 
 impl RamControlRegistrar for HostOperationalRegistry {
+    #[cfg(target_os = "linux")]
+    fn checkpoint_arm(
+        &self,
+        loan: crucible_qemu::CheckpointArmLoan<'_>,
+    ) -> Result<
+        crucible_qemu::ram_control::CheckpointArmReceipt,
+        crucible_qemu::CheckpointOriginalError,
+    > {
+        self.checkpoint_arm_from_original(loan)
+    }
+
     fn performance(
         &self,
         target: HostRamTarget,
@@ -1099,6 +1112,7 @@ impl RamControlRegistrar for HostOperationalRegistry {
             topology,
             native_metadata_bytes,
             native_scratch_bytes,
+            rust_metadata_required_bytes,
             owner_resources,
         } = admission;
         if declared_ram_bytes == 0
@@ -1137,6 +1151,7 @@ impl RamControlRegistrar for HostOperationalRegistry {
             topology,
             native_metadata_bytes,
             native_scratch_bytes,
+            rust_metadata_required_bytes,
             operations,
         )
         .map_err(|_| RamControlError::InvalidFrame)?;

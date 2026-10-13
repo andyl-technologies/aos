@@ -283,6 +283,7 @@ fn operational_phase_uses_exact_actor_ownership_and_durable_phase() {
         execution,
         checkpoint,
         promotion_basis: None,
+        source_transfer: None,
     };
     assert_eq!(
         operational_phase(paused, epoch, &BTreeMap::new(), &BTreeMap::new()),
@@ -305,4 +306,48 @@ fn actor_status_snapshots_reject_intervening_ownership_changes() {
         ..stable.clone()
     };
     assert!(!successive_actor_snapshots(&stable, &changed));
+}
+
+// crucible-lint: allow lint-attribute-intent -- this genuine lifecycle driver waits for an authenticated normal Main Source fixture, rather than substituting a scripted issuer.
+#[cfg(target_os = "linux")]
+#[allow(
+    dead_code,
+    reason = "The authentic normal Main Source fixture remains unqualified."
+)]
+fn genuine_main_retirement_closes_its_existing_target_dispatcher(
+    mut executor: PackagedQemuExecutor,
+    mut source: crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorld,
+    target_resources: AttemptResourceLimits,
+) {
+    executor
+        .guarded_state
+        .config
+        .normal_executor
+        .as_ref()
+        .expect("actual authenticated normal Main")
+        .check()
+        .expect("unchanged actual Main authority");
+    let permit = source
+        .lend_fork_target_permit()
+        .expect("genuine Source permit");
+    let host = executor
+        .guarded_state
+        .host
+        .as_mut()
+        .expect("same saved factory");
+    let mut target = host
+        .begin_fork_target(permit, target_resources)
+        .expect("actual Main dispatcher and same-family Target host");
+    // No child carrier is fabricated. The genuine host job and dedicated
+    // Target envelope must close before their containing Main can retire.
+    target.finish().expect("physical Target host cleanup");
+    drop(target);
+    source.retire().expect("physical Source cleanup");
+    drop(source);
+
+    let attached =
+        AttachedPackagedQemuExecutor::start(executor).expect("actual packaged owner lifecycle");
+    attached
+        .shutdown_and_join()
+        .expect("same paid dispatcher worker and alias retirement");
 }

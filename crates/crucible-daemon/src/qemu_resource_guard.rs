@@ -64,6 +64,61 @@ pub trait QemuAttemptCancellationSignal: Send + Sync + 'static {
 /// artifact the child can mutate. Normal release is legal only after process
 /// reap; quarantine retains both process and filesystem enforcement.
 pub trait QemuAttemptHostResourceOwner {
+    /// Retains the actual target purpose in its existing RAM cleanup custody.
+    ///
+    /// # Errors
+    /// Refuses missing target ownership, a foreign contract or keeper admission.
+    #[cfg(target_os = "linux")]
+    fn bind_fork_target_ram_custody(
+        &mut self,
+        _contract: &QemuChildProcessContract,
+        _registration: &crucible_qemu::ram_control::RamControlRegistration,
+        _supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        _guest_ram_bytes: u64,
+        _custody: &crucible_qemu::QemuRamLaunchCustody,
+    ) -> Result<(), QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "retain same-family QEMU target RAM purpose",
+            message: String::from("host has no authenticated target RAM keeper"),
+        })
+    }
+
+    /// Reports retained same-family target custody before source cleanup.
+    #[cfg(target_os = "linux")]
+    fn fork_target_is_owned(&self) -> bool {
+        false
+    }
+
+    /// Lends the genuine source owner's single same-family target permit.
+    ///
+    /// # Errors
+    /// Refuses non-source, terminal or already loaned physical ownership.
+    #[cfg(target_os = "linux")]
+    fn lend_fork_target_permit(
+        &mut self,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "lend same-family QEMU target permit",
+            message: String::from("host has no genuine source owner"),
+        })
+    }
+
+    /// Prepares a target generation under this source's existing project quota.
+    ///
+    /// # Errors
+    /// Refuses a foreign target contract, missing source or unavailable storage.
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_run_directory(
+        &mut self,
+        _target_contract: &QemuChildProcessContract,
+        _requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "prepare same-family QEMU target directory",
+            message: String::from("host has no genuine source storage owner"),
+        })
+    }
+
     /// Checks actual Node, host and Preparation custody before publication.
     ///
     /// # Errors
@@ -138,7 +193,6 @@ pub trait QemuAttemptHostResourceOwner {
     ///
     /// # Errors
     /// Refuses incomplete physical or control retirement under the original.
-    #[cfg(feature = "private-measurement-domain")]
     fn finish_with_original_registry(
         &mut self,
         _registry: &crate::HostOperationalRegistry,
@@ -150,6 +204,15 @@ pub trait QemuAttemptHostResourceOwner {
     #[must_use]
     fn resource_limits(&self) -> AttemptResourceLimits;
 
+    /// Validates the installed basis against this owner's actual admission.
+    ///
+    /// Default owners require equality. A concrete owner may report a lower
+    /// authenticated process ceiling while preserving all other obligations.
+    #[must_use]
+    fn matches_admitted_limits(&self, admitted: AttemptResourceLimits) -> bool {
+        self.resource_limits() == admitted
+    }
+
     /// Launches a fresh node through the same retained physical owner.
     ///
     /// Original owners preserve their closed generation witness and typed
@@ -157,13 +220,46 @@ pub trait QemuAttemptHostResourceOwner {
     ///
     /// # Errors
     /// Returns the actual fresh admission or launch refusal.
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     fn launch_fresh_node(
         &self,
         config: &crucible_qemu::QemuLiveNodeStepGateConfig,
         admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
     ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
         crucible_qemu::launch_qemu_production_fresh_node(config, admission)
+    }
+
+    /// Lends the actual installed issuer without duplicating the native owner.
+    ///
+    /// # Errors
+    /// Refuses absent, retired, foreign or uncertain installed original custody.
+    fn installed_node_issuer(
+        &self,
+    ) -> Result<crucible_qemu::InstalledNodeLaunchIssuer, crucible_qemu::QemuLiveNodeStepGateError>
+    {
+        Err(
+            crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                source: crucible_qemu::OriginalActorAccountError::Unavailable,
+            },
+        )
+    }
+
+    /// Restores an exact node through the same retained physical issuer.
+    ///
+    /// # Errors
+    /// Refuses owners without installed original custody, or actual restore and
+    /// independent original checks. The consumed request cannot select an issuer.
+    fn launch_exact_node(
+        &self,
+        _request: crucible_qemu::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu::QemuProductionExactRestoreLaunch,
+        crucible_qemu::QemuLiveNodeStepGateError,
+    > {
+        Err(
+            crucible_qemu::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                source: crucible_qemu::OriginalActorAccountError::Unavailable,
+            },
+        )
     }
 
     /// Returns the sealed child-process launch contract.
@@ -225,6 +321,22 @@ pub trait QemuAttemptHostResourceOwner {
 
 /// Factory installing one indivisible host-resource authority.
 pub trait QemuAttemptHostResourceFactory {
+    /// Consumes a genuine source permit without allocating another project quota.
+    ///
+    /// # Errors
+    /// Refuses a factory without the matching concrete target consumer.
+    #[cfg(target_os = "linux")]
+    fn begin_fork_target(
+        &mut self,
+        _permit: crucible_qemu::LinuxQemuForkTargetPermit,
+        _resources: AttemptResourceLimits,
+    ) -> Result<Self::Owner, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "begin same-family QEMU target host",
+            message: String::from("factory has no genuine target consumer"),
+        })
+    }
+
     /// Exact owner returned for one accepted attempt.
     type Owner: QemuAttemptHostResourceOwner;
 
@@ -283,6 +395,56 @@ impl<H> SharedQemuAttemptHostResourceFactory<H> {
     }
 }
 
+impl SharedQemuAttemptHostResourceFactory<LinuxQemuAttemptHostResourceFactory> {
+    // crucible-lint: allow panic-shortcut -- the causal fixture intentionally poisons the same retained native factory mutex.
+    #[cfg(test)]
+    #[allow(
+        clippy::expect_used,
+        reason = "The causal fixture poisons real factory custody."
+    )]
+    pub(crate) fn poison_custody_for_test(&self) {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.host.lock().expect("actual factory before poison");
+            panic!("poison the actual factory custody mutex");
+        }));
+        assert!(result.is_err());
+    }
+
+    /// Exclusively borrows the same allocator for terminal standalone teardown.
+    ///
+    /// # Errors
+    /// Refuses any strong or weak factory borrower or poisoned native custody.
+    pub(crate) fn exclusive_factory(
+        &mut self,
+    ) -> Result<&mut LinuxQemuAttemptHostResourceFactory, QemuVmRealizationError> {
+        Arc::get_mut(&mut self.host)
+            .ok_or_else(|| QemuVmRealizationError::ExecutorUnavailable {
+                operation: "borrow actual Main factory for terminal retirement",
+                message: String::from("actual factory borrowers remain"),
+            })?
+            .get_mut()
+            .map_err(|_| QemuVmRealizationError::ExecutorUnavailable {
+                operation: "borrow actual Main factory for terminal retirement",
+                message: String::from("actual factory custody is poisoned"),
+            })
+    }
+
+    /// Retires the same concrete factory's permanent Main Target dispatcher.
+    ///
+    /// # Errors
+    /// Refuses unavailable allocator custody or uncertain physical dispatcher
+    /// retirement. The same factory remains retained by this shared facade.
+    pub(crate) fn finish_target_dispatcher(&self) -> Result<(), QemuVmRealizationError> {
+        self.host
+            .try_lock()
+            .map_err(|_| QemuVmRealizationError::ExecutorUnavailable {
+                operation: "retire shared Main Target dispatcher",
+                message: String::from("actual host-resource allocator is unobservable"),
+            })?
+            .finish_target_dispatcher()
+    }
+}
+
 impl<H> Clone for SharedQemuAttemptHostResourceFactory<H> {
     fn clone(&self) -> Self {
         Self {
@@ -296,6 +458,21 @@ where
     H: QemuAttemptHostResourceFactory,
 {
     type Owner = H::Owner;
+
+    #[cfg(target_os = "linux")]
+    fn begin_fork_target(
+        &mut self,
+        permit: crucible_qemu::LinuxQemuForkTargetPermit,
+        resources: AttemptResourceLimits,
+    ) -> Result<Self::Owner, QemuVmRealizationError> {
+        self.host
+            .lock()
+            .map_err(|_| QemuVmRealizationError::ExecutorUnavailable {
+                operation: "allocate shared same-family QEMU target resources",
+                message: String::from("host-resource allocator lock is poisoned"),
+            })?
+            .begin_fork_target(permit, resources)
+    }
 
     fn begin(
         &mut self,
@@ -348,6 +525,30 @@ pub struct LinuxQemuAttemptHostResourceFactory {
 }
 
 impl LinuxQemuAttemptHostResourceFactory {
+    /// Checks actual closed Source/Target roster state without releasing custody.
+    ///
+    /// # Errors
+    /// Refuses absent, foreign, occupied or uncertain authentic normal custody.
+    pub(crate) fn verify_native_quiescent(&self) -> Result<(), QemuVmRealizationError> {
+        self.host.verify_native_quiescent()
+    }
+
+    /// Retires the dispatcher at this actual factory's whole-owner boundary.
+    ///
+    /// # Errors
+    /// Refuses live jobs or uncertain saved-cleanup, worker or alias retirement.
+    pub(crate) fn finish_target_dispatcher(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.host.finish_target_dispatcher()
+    }
+
+    pub(crate) fn bind_normal_accounts(
+        &mut self,
+        roster: crucible_qemu::OriginalNativeAccountRoster,
+        binding: crucible_qemu::OriginalNativeAccountFactoryBinding,
+    ) -> Result<(), crucible_qemu::OriginalActorAccountError> {
+        self.host.bind_normal_accounts(roster, binding)
+    }
+
     /// Opens and exclusively owns the configured cgroup and storage roots.
     ///
     /// # Errors
@@ -406,8 +607,57 @@ impl QemuAttemptCancellationSignal for LinuxQemuAttemptCancellationSignal {
     }
 }
 
+fn effective_linux_limits(
+    admitted: AttemptResourceLimits,
+    effective: (u32, u64, u64),
+) -> Result<AttemptResourceLimits, QemuVmRealizationError> {
+    if effective.0 != admitted.maximum_vcpus()
+        || effective.1 == 0
+        || effective.1 > admitted.maximum_resident_bytes()
+        || effective.2 != admitted.maximum_disk_bytes()
+    {
+        return Err(QemuVmRealizationError::Executor {
+            operation: "authenticate effective Linux QEMU limits",
+            message: String::from("effective owner exceeds or changes its original obligations"),
+        });
+    }
+    AttemptResourceLimits::new(
+        effective.0,
+        effective.1,
+        effective.2,
+        admitted.maximum_execution_quanta(),
+    )
+    .map_err(|source| QemuVmRealizationError::ModelCopy {
+        source: Box::new(source),
+    })
+}
+
 impl QemuAttemptHostResourceFactory for LinuxQemuAttemptHostResourceFactory {
     type Owner = LinuxQemuAttemptHostResourceOwner;
+
+    fn begin_fork_target(
+        &mut self,
+        permit: crucible_qemu::LinuxQemuForkTargetPermit,
+        resources: AttemptResourceLimits,
+    ) -> Result<Self::Owner, QemuVmRealizationError> {
+        let mut host = self.host.begin_fork_target(
+            permit,
+            resources.maximum_vcpus(),
+            resources.maximum_resident_bytes(),
+            resources.maximum_disk_bytes(),
+        )?;
+        let effective = match effective_linux_limits(resources, host.resource_ceiling()) {
+            Ok(effective) => effective,
+            Err(error) => {
+                host.quarantine();
+                return Err(error);
+            }
+        };
+        Ok(LinuxQemuAttemptHostResourceOwner {
+            resources: effective,
+            host,
+        })
+    }
 
     fn begin(
         &mut self,
@@ -418,20 +668,15 @@ impl QemuAttemptHostResourceFactory for LinuxQemuAttemptHostResourceFactory {
             resources.maximum_resident_bytes(),
             resources.maximum_disk_bytes(),
         )?;
-        if host.resource_ceiling()
-            != (
-                resources.maximum_vcpus(),
-                resources.maximum_resident_bytes(),
-                resources.maximum_disk_bytes(),
-            )
-        {
+        let effective = effective_linux_limits(resources, host.resource_ceiling());
+        let Ok(resources) = effective else {
             let mut host = host;
             host.quarantine();
             return Err(QemuVmRealizationError::Executor {
                 operation: "install Linux QEMU host resources",
                 message: String::from("combined Linux owner returned a different resource basis"),
             });
-        }
+        };
         Ok(LinuxQemuAttemptHostResourceOwner { resources, host })
     }
 }
@@ -469,13 +714,8 @@ impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFact
                 );
             }
         };
-        if host.resource_ceiling()
-            != (
-                resources.maximum_vcpus(),
-                resources.maximum_resident_bytes(),
-                resources.maximum_disk_bytes(),
-            )
-        {
+        let effective = effective_linux_limits(resources, host.resource_ceiling());
+        let Ok(resources) = effective else {
             let mut host = host;
             host.quarantine();
             return Err(
@@ -489,7 +729,7 @@ impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFact
                     selected_checkpoint,
                 ),
             );
-        }
+        };
         Ok((
             LinuxQemuAttemptHostResourceOwner { resources, host },
             selected_checkpoint,
@@ -498,6 +738,41 @@ impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFact
 }
 
 impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
+    fn bind_fork_target_ram_custody(
+        &mut self,
+        contract: &QemuChildProcessContract,
+        registration: &crucible_qemu::ram_control::RamControlRegistration,
+        supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        guest_ram_bytes: u64,
+        custody: &crucible_qemu::QemuRamLaunchCustody,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.host.bind_fork_target_ram_custody(
+            contract,
+            registration,
+            supervisor,
+            guest_ram_bytes,
+            custody,
+        )
+    }
+    fn fork_target_is_owned(&self) -> bool {
+        self.host.fork_target_is_owned()
+    }
+
+    fn lend_fork_target_permit(
+        &mut self,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+        self.host.lend_fork_target_permit()
+    }
+
+    fn prepare_fork_target_run_directory(
+        &mut self,
+        target_contract: &QemuChildProcessContract,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        self.host
+            .prepare_fork_target_run_directory(target_contract, requirements)
+    }
+
     /// Checks actual Node, host and Preparation custody before publication.
     ///
     /// # Errors
@@ -552,6 +827,11 @@ impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
         self.resources
     }
 
+    fn matches_admitted_limits(&self, admitted: AttemptResourceLimits) -> bool {
+        effective_linux_limits(admitted, self.host.resource_ceiling())
+            .is_ok_and(|effective| effective == self.resources)
+    }
+
     fn native_resource_controller(
         &mut self,
     ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>
@@ -559,13 +839,29 @@ impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
         self.host.native_resource_controller().map(Some)
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     fn launch_fresh_node(
         &self,
         config: &crucible_qemu::QemuLiveNodeStepGateConfig,
         admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
     ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
         self.host.launch_fresh_node(config, admission)
+    }
+
+    fn installed_node_issuer(
+        &self,
+    ) -> Result<crucible_qemu::InstalledNodeLaunchIssuer, crucible_qemu::QemuLiveNodeStepGateError>
+    {
+        self.host.lend_installed_node_issuer()
+    }
+
+    fn launch_exact_node(
+        &self,
+        request: crucible_qemu::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu::QemuProductionExactRestoreLaunch,
+        crucible_qemu::QemuLiveNodeStepGateError,
+    > {
+        self.host.launch_exact_node(request)
     }
 
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
@@ -591,7 +887,6 @@ impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
         self.host.retain_failed_child(child);
     }
 
-    #[cfg(feature = "private-measurement-domain")]
     fn finish_with_original_registry(
         &mut self,
         registry: &crate::HostOperationalRegistry,
@@ -623,7 +918,7 @@ impl QemuHotForkChildProcessOwner for LinuxQemuAttemptHostResourceOwner {
 }
 
 mod generation_resource;
-#[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) use generation_resource::ProcessStageContractRefusal;
 
 pub use generation_resource::*;
@@ -663,9 +958,7 @@ where
     quantum_counter: QemuExecutionQuantumCounter,
     cancellation_failure: Arc<Mutex<Option<String>>>,
     cancellation_registration: Option<ExecutionCancellationHookRegistration>,
-    #[cfg(feature = "private-measurement-domain")]
     original_native_registry: Option<crate::HostOperationalRegistry>,
-    #[cfg(feature = "private-measurement-domain")]
     original_native_retirement_failed: bool,
     host: H,
     terminal: bool,
@@ -692,15 +985,47 @@ where
 {
     type Guard = ComposedQemuAttemptResourceGuard<H::Owner>;
 
+    #[cfg(target_os = "linux")]
+    fn begin_fork_target(
+        &mut self,
+        permit: crucible_qemu::LinuxQemuForkTargetPermit,
+        resources: AttemptResourceLimits,
+        cancellation: ExecutionCancellation,
+    ) -> Result<Self::Guard, QemuAttemptResourceGuardBeginFailure> {
+        let host = self.host.begin_fork_target(permit, resources)?;
+        ComposedQemuAttemptResourceGuard::from_installed_host(host, resources, cancellation, None)
+    }
+
     fn begin(
         &mut self,
         resources: AttemptResourceLimits,
         cancellation: ExecutionCancellation,
         selected_checkpoint: Option<SelectedExactCheckpointRoot>,
     ) -> Result<Self::Guard, QemuAttemptResourceGuardBeginFailure> {
-        let (mut host, selected_checkpoint) =
+        let (host, selected_checkpoint) =
             self.host.begin_selected(resources, selected_checkpoint)?;
-        if host.resource_limits() != resources {
+        ComposedQemuAttemptResourceGuard::from_installed_host(
+            host,
+            resources,
+            cancellation,
+            selected_checkpoint,
+        )
+    }
+}
+
+impl<H> ComposedQemuAttemptResourceGuard<H>
+where
+    H: QemuAttemptHostResourceOwner,
+{
+    // Both fresh admission and permit consumption retain the same cancellation
+    // and quantum composition; the physical host is already installed here.
+    fn from_installed_host(
+        mut host: H,
+        resources: AttemptResourceLimits,
+        cancellation: ExecutionCancellation,
+        selected_checkpoint: Option<SelectedExactCheckpointRoot>,
+    ) -> Result<Self, QemuAttemptResourceGuardBeginFailure> {
+        if !host.matches_admitted_limits(resources) {
             return Err(release_failed_begin_with_claim(
                 &mut host,
                 QemuVmRealizationError::Executor {
@@ -712,6 +1037,10 @@ where
                 selected_checkpoint,
             ));
         }
+
+        // The owner has authenticated any monotonic refinement. All subsequent
+        // node admission and status use the actual enforced basis.
+        let resources = host.resource_limits();
 
         let signal = match host.cancellation_signal() {
             Ok(signal) => signal,
@@ -748,9 +1077,7 @@ where
             quantum_counter: QemuExecutionQuantumCounter::new(resources),
             cancellation_failure,
             cancellation_registration: Some(cancellation_registration),
-            #[cfg(feature = "private-measurement-domain")]
             original_native_registry: None,
-            #[cfg(feature = "private-measurement-domain")]
             original_native_retirement_failed: false,
             host,
             terminal: false,
@@ -818,7 +1145,6 @@ where
 {
     fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
         if self.terminal {
-            #[cfg(feature = "private-measurement-domain")]
             if self.original_native_retirement_failed {
                 // An uncertain physical/control close stays contained. A
                 // repeated facade call cannot attest slot release or retry it.
@@ -829,13 +1155,10 @@ where
             return Ok(());
         }
         self.cancellation_registration = None;
-        #[cfg(feature = "private-measurement-domain")]
         let result = match self.original_native_registry.as_ref() {
             Some(registry) => self.host.finish_with_original_registry(registry),
             None => self.host.finish(),
         };
-        #[cfg(not(feature = "private-measurement-domain"))]
-        let result = self.host.finish();
         match result {
             Ok(()) => {
                 self.terminal = true;
@@ -844,7 +1167,6 @@ where
             Err(error) => {
                 self.host.quarantine();
                 self.terminal = true;
-                #[cfg(feature = "private-measurement-domain")]
                 if self.original_native_registry.is_some() {
                     self.original_native_retirement_failed = true;
                     // Move the actual first cause and independent original
@@ -873,6 +1195,45 @@ impl<H> QemuAttemptProcessResourceGuard for ComposedQemuAttemptResourceGuard<H>
 where
     H: QemuAttemptHostResourceOwner,
 {
+    #[cfg(target_os = "linux")]
+    fn bind_fork_target_ram_custody(
+        &mut self,
+        contract: &QemuChildProcessContract,
+        registration: &crucible_qemu::ram_control::RamControlRegistration,
+        supervisor: &crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        guest_ram_bytes: u64,
+        custody: &crucible_qemu::QemuRamLaunchCustody,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.host.bind_fork_target_ram_custody(
+            contract,
+            registration,
+            supervisor,
+            guest_ram_bytes,
+            custody,
+        )
+    }
+    #[cfg(target_os = "linux")]
+    fn fork_target_is_owned(&self) -> bool {
+        self.host.fork_target_is_owned()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn lend_fork_target_permit(
+        &mut self,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, QemuVmRealizationError> {
+        self.host.lend_fork_target_permit()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_run_directory(
+        &mut self,
+        target_contract: &QemuChildProcessContract,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        self.host
+            .prepare_fork_target_run_directory(target_contract, requirements)
+    }
+
     /// Checks actual Node, host and Preparation custody before publication.
     ///
     /// # Errors
@@ -924,7 +1285,6 @@ where
             .prepare_parent_park_imports(source, original, decoder, actor, family)
     }
 
-    #[cfg(feature = "private-measurement-domain")]
     fn retain_original_native_registry(
         &mut self,
         registry: crate::HostOperationalRegistry,
@@ -946,13 +1306,29 @@ where
         self.host.native_resource_controller()
     }
 
-    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     fn launch_fresh_node(
         &self,
         config: &crucible_qemu::QemuLiveNodeStepGateConfig,
         admission: crucible_qemu::QemuProductionFreshLaunchAdmission<'_>,
     ) -> Result<crucible_qemu::QemuNode, crucible_qemu::QemuLiveNodeStepGateError> {
         self.host.launch_fresh_node(config, admission)
+    }
+
+    fn installed_node_issuer(
+        &self,
+    ) -> Result<crucible_qemu::InstalledNodeLaunchIssuer, crucible_qemu::QemuLiveNodeStepGateError>
+    {
+        self.host.installed_node_issuer()
+    }
+
+    fn launch_exact_node(
+        &self,
+        request: crucible_qemu::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu::QemuProductionExactRestoreLaunch,
+        crucible_qemu::QemuLiveNodeStepGateError,
+    > {
+        self.host.launch_exact_node(request)
     }
 
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
@@ -1014,6 +1390,10 @@ fn attempt_operational_error(
         QemuVmRealizationError::ExecutorUnavailable { .. }
         | QemuVmRealizationError::ModelCopy { .. } => SchedulerOperationalFailureClass::Retryable,
         QemuVmRealizationError::Canceled { .. } => SchedulerOperationalFailureClass::Canceled,
+        #[cfg(target_os = "linux")]
+        QemuVmRealizationError::HostMemoryLimit { .. } => {
+            SchedulerOperationalFailureClass::Terminal
+        }
         QemuVmRealizationError::ReapQuarantined { .. }
         | QemuVmRealizationError::Store { .. }
         | QemuVmRealizationError::Executor { .. }

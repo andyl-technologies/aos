@@ -727,6 +727,36 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         ))
     }
 
+    /// Binds the retained original before checkpoint transport or physical reads.
+    ///
+    /// # Errors
+    /// Refuses unsupported channels before sending a command.
+    #[cfg(target_os = "linux")]
+    fn bind_checkpoint_original(
+        &mut self,
+        _original: crate::CheckpointOriginalLoan,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "bind checkpoint original",
+            "channel has no original-bound checkpoint transport",
+        ))
+    }
+
+    /// Consumes the retained ARM request on the authenticated QMP connection.
+    ///
+    /// # Errors
+    /// Refuses unsupported channels before checkpoint pause or descriptor import.
+    #[cfg(target_os = "linux")]
+    fn begin_checkpoint_receiving(
+        &mut self,
+        _receipt: crate::ram_control::CheckpointArmReceipt,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "begin checkpoint receiving",
+            "channel has no original-bound native request receiver",
+        ))
+    }
+
     /// Stops guest execution for a checkpoint transaction.
     ///
     /// # Errors
@@ -754,6 +784,20 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         Err(QemuNodeChannelError::new(
             "original reset resume",
             "channel has no original-bound resume",
+        ))
+    }
+
+    /// Checks stopped runstate using the same live Transfer operation.
+    ///
+    /// # Errors
+    /// Refuses unsupported channels without native I/O or a replacement bank.
+    fn is_stopped_for_transfer(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<bool, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "receiving stopped runstate",
+            "channel has no original-bound receiving runstate",
         ))
     }
 

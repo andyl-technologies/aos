@@ -2885,6 +2885,7 @@ fn raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_r
             retention,
             request.retention_policy(),
         )),
+        source_transfer: None,
     };
     let mut ledger = MemoryAssignmentLedger::default();
     assert_eq!(
@@ -3297,6 +3298,7 @@ fn paused_recovery_for_checkpoint(
             request.start_mode(),
             request.retention_policy(),
         )),
+        source_transfer: None,
     };
     let mut ledger = MemoryAssignmentLedger::default();
     assert_eq!(
@@ -3341,6 +3343,7 @@ fn raw_pause_recovery_for_request(
             request.start_mode(),
             request.retention_policy(),
         )),
+        source_transfer: None,
     };
     let mut ledger = MemoryAssignmentLedger::default();
     assert_eq!(

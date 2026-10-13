@@ -61,6 +61,74 @@ pub struct ProductionVmHotForkSourceWorld {
 pub struct ProductionVmHotForkContinuationUnavailable;
 
 impl ProductionVmHotForkSourceWorld {
+    /// Reports whether the actual source owner still retains a target loan.
+    ///
+    /// This predicate only refuses cleanup. It grants no Source or Target role.
+    #[must_use]
+    pub fn fork_target_is_owned(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.lifecycle
+                .as_deref()
+                .is_some_and(|lifecycle| lifecycle.node_launcher.fork_target_is_owned())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
+    /// Lends the genuine source's single same-family target permit.
+    ///
+    /// The complete source lifecycle and its actual launcher remain here. The
+    /// returned opaque permit can only be consumed by its matching host factory.
+    ///
+    /// # Errors
+    /// Refuses changed source ownership, absent live sources or a held target loan.
+    #[cfg(target_os = "linux")]
+    pub fn lend_fork_target_permit(
+        &mut self,
+    ) -> Result<crucible_qemu::LinuxQemuForkTargetPermit, LifecycleApiError> {
+        self.validate_source_ownership().map_err(|error| {
+            loop_factory_error(format!("authenticate same-family source world: {error}"))
+        })?;
+        if self.prepared.is_empty() {
+            return Err(loop_factory_error(
+                "target permit requires a retained live source",
+            ));
+        }
+        self.lifecycle
+            .as_deref_mut()
+            .ok_or_else(|| loop_factory_error("source world lost its actual lifecycle owner"))?
+            .node_launcher
+            .lend_fork_target_permit()
+    }
+
+    /// Prepares a distinct target generation under the retained source quota.
+    ///
+    /// The actual source launcher authenticates the target's installed contract
+    /// before touching storage. The target receives no independent quota owner.
+    ///
+    /// # Errors
+    /// Refuses missing source ownership, a foreign target or storage preparation.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_fork_target_run_directory(
+        &mut self,
+        target_contract: &crucible_qemu::QemuChildProcessContract,
+        requirements: crucible_qemu::QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, LifecycleApiError> {
+        self.require_unparked_source().map_err(|error| {
+            loop_factory_error(format!(
+                "prepare target directory under parked source: {error}"
+            ))
+        })?;
+        self.lifecycle
+            .as_deref_mut()
+            .ok_or_else(|| loop_factory_error("source world lost its actual lifecycle owner"))?
+            .node_launcher
+            .prepare_fork_target_run_directory(target_contract, requirements)
+    }
+
     /// Reports a retained exclusion, including uncertain native disposition.
     ///
     /// This is a refusal predicate only. It does not prove worker drain, native
@@ -158,6 +226,11 @@ impl ProductionVmHotForkSourceWorld {
     /// remains contained under the existing physical source reservation.
     pub fn restore_retained_service_supervisor(&mut self) -> Result<(), SchedulerError> {
         self.require_unparked_source()?;
+        if self.fork_target_is_owned() {
+            return Err(hot_fork_boundary_error(
+                "source supervision retains a same-family target loan",
+            ));
+        }
         let lifecycle = self.lifecycle.as_deref_mut().ok_or_else(|| {
             hot_fork_boundary_error("prepared source world lost its lifecycle owner")
         })?;
@@ -396,6 +469,11 @@ impl ProductionVmHotForkSourceWorld {
     pub fn into_reusable(
         mut self,
     ) -> Result<Self, ProductionVmHotForkSourceWorldPreparationFailure> {
+        if self.fork_target_is_owned() {
+            return Err(
+                ProductionVmHotForkSourceWorldPreparationFailure::retained_fork_target(self),
+            );
+        }
         if self.parent_park_drain_is_owned() {
             return Err(
                 ProductionVmHotForkSourceWorldPreparationFailure::retained_parent_park(self),
@@ -427,6 +505,11 @@ impl ProductionVmHotForkSourceWorld {
     pub fn recover(
         mut self,
     ) -> Result<ProductionVmLifecycleLoop, ProductionVmHotForkSourceWorldPreparationFailure> {
+        if self.fork_target_is_owned() {
+            return Err(
+                ProductionVmHotForkSourceWorldPreparationFailure::retained_fork_target(self),
+            );
+        }
         if self.parent_park_drain_is_owned() {
             return Err(
                 ProductionVmHotForkSourceWorldPreparationFailure::retained_parent_park(self),
@@ -472,16 +555,32 @@ impl ProductionVmHotForkSourceWorld {
     ///
     /// # Errors
     ///
-    /// Returns [`LifecycleApiError`] when source rollback or production
-    /// lifecycle shutdown cannot be authenticated as complete.
-    pub fn retire(self) -> Result<(), LifecycleApiError> {
+    /// Returns [`LifecycleApiError`] while a target loan or parent park retains
+    /// this unchanged source, or when rollback or shutdown cannot be attested.
+    pub fn retire(&mut self) -> Result<(), LifecycleApiError> {
+        if self.fork_target_is_owned() {
+            return Err(loop_factory_error(
+                "source retirement retains a same-family target loan",
+            ));
+        }
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         if self.parent_park_drain_is_owned() {
-            // No legacy rollback, physical cleanup claim or credit refund can
-            // follow an unresolved native disposition.
-            std::mem::forget(self);
             return Err(LifecycleApiError::ParentParkHeld);
         }
+
+        // Move the existing fields only after both cleanup exclusions clear.
+        // Busy retirement keeps this same complete Source available for retry.
+        let source = Self {
+            lifecycle: self.lifecycle.take(),
+            continuation: self.continuation.take(),
+            prepared: std::mem::take(&mut self.prepared),
+            disk_custody: std::mem::take(&mut self.disk_custody),
+            cleanup_observer: self.cleanup_observer.take(),
+        };
+        source.retire_owned()
+    }
+
+    fn retire_owned(self) -> Result<(), LifecycleApiError> {
         let observer = self.cleanup_observer.clone();
         let mut lifecycle = self
             .recover()
@@ -604,7 +703,7 @@ impl ProductionVmHotForkSourceWorld {
 
 impl Drop for ProductionVmHotForkSourceWorld {
     fn drop(&mut self) {
-        if self.parent_park_drain_is_owned() {
+        if self.parent_park_drain_is_owned() || self.fork_target_is_owned() {
             // Keep all future-affecting host state and decode custody together
             // with the retained physical lifecycle, without allocating on Drop.
             if let Some(continuation) = self.continuation.take() {
@@ -643,6 +742,7 @@ impl Drop for ProductionVmHotForkSourceWorld {
 pub struct ProductionVmHotForkSourceWorldPreparationFailure {
     // Reuses the complete source by value; no diagnostic allocation after refusal.
     retained_parent_park: bool,
+    retained_fork_target: Option<ProductionVmHotForkSourceWorld>,
     pub(super) lifecycle: Option<Box<ProductionVmLifecycleLoop>>,
     message: String,
     unreconciled_nodes: Vec<NodeId>,
@@ -650,10 +750,33 @@ pub struct ProductionVmHotForkSourceWorldPreparationFailure {
 }
 
 impl ProductionVmHotForkSourceWorldPreparationFailure {
+    fn retained_fork_target(source: ProductionVmHotForkSourceWorld) -> Self {
+        Self {
+            retained_parent_park: false,
+            retained_fork_target: Some(source),
+            lifecycle: None,
+            message: String::new(),
+            unreconciled_nodes: Vec::new(),
+            rollback_diagnostics: BTreeMap::new(),
+        }
+    }
+
+    /// Returns the same source retained before a target-loan cleanup refusal.
+    ///
+    /// # Errors
+    /// Returns this unchanged failure when it does not retain a complete source.
+    pub fn into_retained_source(mut self) -> Result<ProductionVmHotForkSourceWorld, Self> {
+        match self.retained_fork_target.take() {
+            Some(source) => Ok(source),
+            None => Err(self),
+        }
+    }
+
     fn retained_parent_park(source: ProductionVmHotForkSourceWorld) -> Self {
         std::mem::forget(source);
         Self {
             retained_parent_park: true,
+            retained_fork_target: None,
             lifecycle: None,
             message: String::new(),
             unreconciled_nodes: Vec::new(),
@@ -668,6 +791,7 @@ impl ProductionVmHotForkSourceWorldPreparationFailure {
     ) -> Self {
         Self {
             retained_parent_park: false,
+            retained_fork_target: None,
             lifecycle: Some(Box::new(lifecycle)),
             message: message.into(),
             unreconciled_nodes,
@@ -678,6 +802,7 @@ impl ProductionVmHotForkSourceWorldPreparationFailure {
     fn new_without_lifecycle(message: impl Into<String>) -> Self {
         Self {
             retained_parent_park: false,
+            retained_fork_target: None,
             lifecycle: None,
             message: message.into(),
             unreconciled_nodes: Vec::new(),
@@ -692,6 +817,7 @@ impl ProductionVmHotForkSourceWorldPreparationFailure {
     ) -> Self {
         Self {
             retained_parent_park: false,
+            retained_fork_target: None,
             lifecycle: Some(Box::new(lifecycle)),
             message: message.into(),
             unreconciled_nodes: rollback.nodes,
@@ -718,7 +844,10 @@ impl ProductionVmHotForkSourceWorldPreparationFailure {
     /// Returns the unchanged failure while any source still owns unresolved
     /// retained-template state.
     pub fn into_recovered_lifecycle(mut self) -> Result<ProductionVmLifecycleLoop, Self> {
-        if !self.retained_parent_park && self.unreconciled_nodes.is_empty() {
+        if !self.retained_parent_park
+            && self.retained_fork_target.is_none()
+            && self.unreconciled_nodes.is_empty()
+        {
             match self.lifecycle.take() {
                 Some(lifecycle) => Ok(*lifecycle),
                 None => Err(self),
@@ -734,6 +863,7 @@ impl std::fmt::Debug for ProductionVmHotForkSourceWorldPreparationFailure {
         formatter
             .debug_struct("ProductionVmHotForkSourceWorldPreparationFailure")
             .field("message", &self.message)
+            .field("retained_fork_target", &self.retained_fork_target.is_some())
             .field("unreconciled_nodes", &self.unreconciled_nodes)
             .field("rollback_diagnostics", &self.rollback_diagnostics)
             .finish_non_exhaustive()
@@ -744,6 +874,9 @@ impl std::fmt::Display for ProductionVmHotForkSourceWorldPreparationFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.retained_parent_park {
             return formatter.write_str("complete source retained by unresolved parent park");
+        }
+        if self.retained_fork_target.is_some() {
+            return formatter.write_str("complete source retained by same-family target loan");
         }
         write!(
             formatter,
