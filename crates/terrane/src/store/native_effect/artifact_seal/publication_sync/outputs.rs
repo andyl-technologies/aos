@@ -213,6 +213,9 @@ pub(in super::super) fn synchronize(
 ///
 /// # Errors
 /// Refuses mismatched scope receipts and every ordinary durability failure.
+///
+/// # Panics
+/// Panics in test builds if enabled Raw durability diagnostics cannot write to standard error.
 pub(in super::super) fn synchronize_raw(
     inventory: Inventory<'_>,
     worker: &mut Worker,

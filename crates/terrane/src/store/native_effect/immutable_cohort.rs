@@ -95,6 +95,9 @@ pub(super) fn request_scoped(
 /// # Errors
 /// Preserves primitive or fresh-check refusal, uncertain durability and changed
 /// acknowledged preimages. Earlier installed artifacts remain unselected.
+///
+/// # Panics
+/// Panics in test builds if enabled cohort diagnostics cannot write to standard error.
 pub(super) fn execute(
     worker: &mut PrimitiveWorker,
     mut request: Request,
