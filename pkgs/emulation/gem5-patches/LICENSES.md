@@ -63,3 +63,102 @@ public admission and processor timing require separate qualification.
 | closed-block-native-boundary.patch | src/sim/crucible_output.hh; src/sim/crucible_output.cc; src/sim/simulate.cc; src/python/pybind11/event.cc; src/python/m5/simulate.py | Existing BSD-3-Clause notices retained |
 | closed-block-native-boundary.patch | src/dev/virtio/host_request.hh; src/dev/virtio/host_request.cc; src/dev/virtio/VirtIOHostRequest.py | Existing MIT notices retained |
 | `closed-network-native-boundary.patch` | `src/dev/virtio/net.hh`; `src/dev/virtio/net.cc`; `src/dev/virtio/VirtIONet.py` | Existing MIT source notices retained. Source-owned closed-network mechanism only; no new native files or ordinary node/device/timing authority. |
+
+The source-owned diagnostic Atomic scope preserves the following native notices.
+Ownership inspection is separate from native process, source-cut and restore authority.
+
+| Patch | Native file | Preserved license |
+| --- | --- | --- |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/decoder.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/decoder.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/interrupts.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/interrupts.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/isa.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/isa.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/isa_device.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/linux/process.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/linux/process.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/linux/se_workload.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/linux/se_workload.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/mmu.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/mmu.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/pagetable.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/pagetable.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/self_debug.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/system.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/system.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/table_walker.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/table_walker.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/tlb.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/arch/arm/tlb.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/base/uncontended_mutex.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/cpu/exetrace.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/cpu/exetrace.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/cpu/pc_event.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/cpu/simple/atomic.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/cpu/simple/atomic.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/dev/virtio/CrucibleClosedScriptBlock.py` | New explicit BSD-3-Clause notice |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/dev/virtio/SConscript` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/dev/virtio/base.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/dev/virtio/base.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/dev/virtio/crucible_closed_script_block.cc` | New explicit BSD-3-Clause notice |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/dev/virtio/crucible_closed_script_block.hh` | New explicit BSD-3-Clause notice |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/dev/virtio/host_request.hh` | Existing MIT notice retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/CrucibleAtomicFabric.py` | New explicit BSD-3-Clause notice |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/SConscript` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/backdoor.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/cache/replacement_policies/lru_rp.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/cache/replacement_policies/lru_rp.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/crucible_atomic_fabric.cc` | New explicit BSD-3-Clause notice |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/crucible_atomic_fabric.hh` | New explicit BSD-3-Clause notice |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/packet_queue.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/packet_queue.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/physical.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/physical.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/simple_mem.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/mem/simple_mem.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/python/pybind11/event.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/SConscript` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/clock_domain.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/clock_domain.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/clocked_object.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/crucible_kernel_process.hh` | New explicit BSD-3-Clause notice |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/crucible_native_cut.hh` | New explicit BSD-3-Clause notice |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/crucible_native_scope.cc` | New explicit BSD-3-Clause notice |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/crucible_native_scope.hh` | New explicit BSD-3-Clause notice |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/dvfs_handler.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/dvfs_handler.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/eventq.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/eventq.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/insttracer.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/port.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/power_state.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/power_state.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/probe/probe.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/root.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/root.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/sim_object.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/sim_object.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/system.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/system.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/voltage_domain.cc` | Original upstream per-file notice and copyright holders retained unchanged |
+| `native-original-scope-and-diagnostic-atomic-owners.patch` | `src/sim/voltage_domain.hh` | Original upstream per-file notice and copyright holders retained unchanged |
+
+The independently authored `_gem5/native-original-scope-check.py` and
+`_gem5/native-diagnostic-guest.py` controls are MIT. The fixed two-opcode
+AArch64 guest establishes a diagnostic scope only, not general ISA, Linux
+boot or device parity. The matching source output retains the complete
+patched tree, original source archive, patch inventory, recipes, controls
+and source-built toolchain bindings; native qualification remains separate.
+
+The diagnostic constructor hook observes registry membership after allocation
+and base initialization; it does not fence those prior effects or establish
+complete native backing ownership. Callback member registration alone does
+not establish mutable callable/captured-owner closure. The direct queue
+helper rejects foreign custody before either inherited lock; its independently
+bounded child control claims termination/reaping, not private child state
+preservation after exit or whole-node execution authority.
+
+The public diagnostic queue forwarder retains the original private walker;
+it checks the actual process/thread/UID before phase validation and either
+inherited lock. This is diagnostic access, not a native execution permit.

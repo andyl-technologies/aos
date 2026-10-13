@@ -2658,6 +2658,23 @@ Runtime ACPI resize, complete source seals, guest execution and readiness remain
 separate requirements. No ABI or license-boundary gate result is inferred from
 this source stage.
 
+## Mandatory gem5 diagnostic check packaging
+
+The full ALL gem5 foundation retains its existing platform, terminal, causal
+and closed-block checks. Five native ownership diagnostics now form a separate
+mandatory check derivation, directly required by the Crucible suite. This keeps
+the complete emulator build available for diagnosis if a diagnostic assertion
+fails. The check binds actual process statuses and logs to the installed ELF,
+complete matching source, patches, guest and build recipes.
+
+Independent source review verifies all nine changed or added package inputs.
+The original native ALL compilation and linking succeeded, but its combined
+package check failed. The successor fixes the Python digest boundary by passing
+integer sequences with the same bytes, as required by the native caster. The
+split package has not yet passed ordinary evaluation or realization. Diagnostic
+ownership checks confer no native issuance, restoration or readiness authority;
+those remain production implementation and qualification requirements.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

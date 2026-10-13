@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   stdenv,
+  buildPackages,
   python3-3_12,
   scons,
   pkg-config,
@@ -24,6 +25,16 @@
 }: let
   revision = "f5c5a6e390f55dd5984977815bf9d0bd05da6945";
   version = "25.1.0.1";
+  recipeNames = builtins.filter
+    (name: builtins.match "gem5.*\\.nix" name != null)
+    (builtins.attrNames (builtins.readDir ./.));
+  recipeCopies = builtins.concatStringsSep "\n" (map
+    (name: "cp ${./. + "/${name}"} \"$source/build/recipes/${name}\"")
+    recipeNames);
+  recipeInventory = map (name: {
+    inherit name;
+    sha256 = builtins.hashFile "sha256" (./. + "/${name}");
+  }) recipeNames;
   compilerTargetPatch = ./gem5-patches/compiler-target-query.patch;
   reproducibleBuildPatch = ./gem5-patches/reproducible-build-environment.patch;
   addrRangePredicatePatch = ./gem5-patches/addr-range-predicate-borrow.patch;
@@ -193,6 +204,7 @@ in
 
     pname = "gem5";
     inherit version;
+    outputs = ["out" "source"];
     src = fetchurl {
       urls = ["https://codeload.github.com/gem5/gem5/tar.gz/${revision}"];
       hash = "sha256-WPQcs29vcMMtHDHYEZORRYaaQDny3yT54OTY+AOQMgU=";
@@ -247,6 +259,31 @@ in
         '';
       }
       {
+        name = "corresponding-source";
+        script = ''
+          mkdir -p "$source/build/recipes" "$source/patches" "$source/licenses"
+          cp "$src" "$source/gem5-upstream.tar.gz"
+          cp ${./gem5-patches}/*.patch "$source/patches/"
+          cp ${./gem5-patches/LICENSES.md} "$source/licenses/patch-inventory.md"
+          cp LICENSE "$source/licenses/"
+          ${recipeCopies}
+          cp -R ${./_gem5} "$source/build/controls"
+          # Variant patch hooks run after unpack and before this phase. Retain
+          # their actual source tree before SCons creates build artifacts.
+          tar --sort=name --mtime=@1 --owner=0 --group=0 --numeric-owner \
+            -cf "$source/gem5-patched-source.tar" .
+          cat > "$source/build/toolchain.json" <<'EOF'
+          ${builtins.toJSON {
+            compiler = "${buildPackages.cc}";
+            recipes = recipeInventory;
+            inherit revision python3-3_12 scons pkg-config protobuf abseil-cpp zlib hdf5 capstone gperftools gcc-libs patch grep findutils sed libpng valgrind m4 openssl;
+            sourceSnapshot = "after-variant-patches-before-generated-build-artifacts";
+            nativeNodeQualified = false;
+          }}
+          EOF
+        '';
+      }
+      {
         name = "build";
         script = ''
           # SCons filters the subprocess environment. Propagate AOS's
@@ -298,6 +335,7 @@ in
               cp "$licenseFile" "$out/share/licenses/gem5/$licenseFile"
             done
           cp ${sourceManifest} "$out/share/gem5/source-manifest.json"
+          ln -s "$source" "$out/share/gem5/corresponding-source"
         '';
       }
     ];

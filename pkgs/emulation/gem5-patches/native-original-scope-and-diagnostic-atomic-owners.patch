@@ -1,0 +1,3307 @@
+--- a/src/arch/arm/decoder.cc
++++ b/src/arch/arm/decoder.cc
+@@ -39,6 +39,8 @@
+  */
+ 
+ #include "arch/arm/decoder.hh"
++#include "sim/crucible_native_scope.hh"
++#include <typeinfo>
+ 
+ #include "arch/arm/isa.hh"
+ #include "arch/arm/utility.hh"
+@@ -232,5 +234,14 @@
+     return decode(this_emi, pc.instAddr());
+ }
+ 
++bool
++Decoder::crucibleNativeClosure(crucible::NativeClosureWalk &) const
++{
++    // The source decoder/cache owns private instructions, not host callbacks.
++    // Its byte-fetch destination must remain the original data member.
++    return typeid(*this) == typeid(Decoder) && moreBytesPtr() == &data &&
++        moreBytesSize() == sizeof(data);
++}
++
+ } // namespace ArmISA
+ } // namespace gem5
+--- a/src/arch/arm/decoder.hh
++++ b/src/arch/arm/decoder.hh
+@@ -149,6 +149,8 @@
+ 
+     Decoder(const ArmDecoderParams &params);
+ 
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+     /** Reset the decoders internal state. */
+     void reset() override;
+ 
+--- a/src/arch/arm/interrupts.cc
++++ b/src/arch/arm/interrupts.cc
+@@ -36,6 +36,9 @@
+  */
+ 
+ #include "arch/arm/interrupts.hh"
++#include "sim/crucible_native_scope.hh"
++#include <typeinfo>
++#include "cpu/base.hh"
+ 
+ #include "arch/arm/system.hh"
+ #include "params/ArmInterrupts.hh"
+@@ -415,4 +418,15 @@
+             (mask != INT_MASK_P);
+ }
+ 
++bool
++ArmISA::Interrupts::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    // Pending interrupt bits are preserved in the process image. The actual
++    // target context must still be the one owned by this native CPU.
++    if (typeid(*this) != typeid(ArmISA::Interrupts) || !tc ||
++        !tc->getCpuPtr() || tc->getCpuPtr()->getInterruptController(0) != this)
++        return false;
++    return walk.object(this, tc->getCpuPtr(), 1);
++}
++
+ } // namespace gem5
+--- a/src/arch/arm/interrupts.hh
++++ b/src/arch/arm/interrupts.hh
+@@ -83,6 +83,8 @@
+     using Params = ArmInterruptsParams;
+ 
+     Interrupts(const Params &p);
++
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
+ 
+     void
+     post(int int_num, int index) override
+--- a/src/arch/arm/isa.cc
++++ b/src/arch/arm/isa.cc
+@@ -36,6 +36,9 @@
+  */
+ 
+ #include "arch/arm/isa.hh"
++#include "sim/crucible_native_scope.hh"
++#include <typeinfo>
++#include "cpu/base.hh"
+ 
+ #include "arch/arm/decoder.hh"
+ #include "arch/arm/faults.hh"
+@@ -2014,5 +2017,16 @@
+     xc->setMiscReg(MISCREG_SEV_MAILBOX, true);
+ }
+ 
++bool
++ISA::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    if (typeid(*this) != typeid(ISA) || FullSystem || system || !tc ||
++        tc->getIsaPtr() != this || !tc->getCpuPtr() || !release || !intRegMap ||
++        pmu != &dummyDevice || !dummyDevice.crucibleNativeOwnedBy(this) ||
++        timer || gicv3CpuInterface || !selfDebug || !selfDebug->crucibleNativeOwned())
++        return false;
++    return walk.object(this, tc->getCpuPtr(), 1) && walk.object(this, release, 2);
++}
++
+ } // namespace ArmISA
+ } // namespace gem5
+--- a/src/arch/arm/isa.hh
++++ b/src/arch/arm/isa.hh
+@@ -244,6 +244,8 @@
+ 
+     ISA(const Params &p);
+ 
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+     uint64_t
+     getExecutingAsid() const override
+     {
+--- a/src/arch/arm/isa_device.hh
++++ b/src/arch/arm/isa_device.hh
+@@ -101,6 +101,8 @@
+         : BaseISADevice() {}
+     ~DummyISADevice() {}
+ 
++    bool crucibleNativeOwnedBy(const ISA *owner) const { return isa == owner; }
++
+     void setMiscReg(int misc_reg, RegVal val) override;
+     RegVal readMiscReg(int misc_reg) override;
+ };
+--- a/src/arch/arm/linux/process.cc
++++ b/src/arch/arm/linux/process.cc
+@@ -40,6 +40,9 @@
+  */
+ 
+ #include "arch/arm/linux/process.hh"
++#include "sim/crucible_native_scope.hh"
++#include "sim/se_workload.hh"
++#include <typeinfo>
+ 
+ #include <sys/syscall.h>
+ 
+@@ -115,4 +118,17 @@
+     // The 64 bit equivalent of the comm page would be set up here.
+ }
+ 
++bool
++ArmLinuxProcess64::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    // The selected runtime permits only its source-defined guest loop, not
++    // syscall emulation or driver activity. Private process/page/FD state is
++    // preserved whole and must also pass the native process-resource gate.
++    if (typeid(*this) != typeid(ArmLinuxProcess64) || !system || !seWorkload ||
++        !pTable || !fds || !memState || !objFile || !drivers.empty() ||
++        !vforkContexts.empty() || contextIds.size() != 1)
++        return false;
++    return walk.object(this, system, 1) && walk.object(this, seWorkload, 2);
++}
++
+ } // namespace gem5
+--- a/src/arch/arm/linux/process.hh
++++ b/src/arch/arm/linux/process.hh
+@@ -72,6 +72,8 @@
+         ArmProcess64(params, objFile, _arch)
+     {}
+ 
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+     void initState() override;
+ };
+ 
+--- a/src/arch/arm/linux/se_workload.cc
++++ b/src/arch/arm/linux/se_workload.cc
+@@ -39,6 +39,9 @@
+  */
+ 
+ #include "arch/arm/linux/se_workload.hh"
++#include "sim/crucible_native_scope.hh"
++#include "cpu/base.hh"
++#include <typeinfo>
+ 
+ #include <sys/syscall.h>
+ 
+@@ -896,5 +899,19 @@
+     desc->doSyscall(tc);
+ }
+ 
++bool
++EmuLinux::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    // The closed profile disables the GDB configuration itself (port0), not
++    // only listener activity, and admits one actual source-owned CPU context.
++    if (typeid(*this) != typeid(EmuLinux) || gdb || waitForRemoteGDB || !system ||
++        threads.size() != 1)
++        return false;
++    auto *thread = *threads.begin();
++    if (!thread || thread->getSystemPtr() != system || !thread->getCpuPtr())
++        return false;
++    return walk.object(this, system, 1) && walk.object(this, thread->getCpuPtr(), 2);
++}
++
+ } // namespace ArmISA
+ } // namespace gem5
+--- a/src/arch/arm/linux/se_workload.hh
++++ b/src/arch/arm/linux/se_workload.hh
+@@ -58,6 +58,8 @@
+     {};
+ 
+     void syscall(ThreadContext *tc) override;
++
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
+ };
+ 
+ } // namespace ArmISA
+--- a/src/arch/arm/mmu.cc
++++ b/src/arch/arm/mmu.cc
+@@ -39,6 +39,9 @@
+  */
+ 
+ #include "arch/arm/mmu.hh"
++#include "sim/crucible_native_scope.hh"
++#include "sim/power_state.hh"
++#include <typeinfo>
+ 
+ #include "arch/arm/isa.hh"
+ #include "arch/arm/mpam.hh"
+@@ -1883,4 +1886,28 @@
+ {
+ }
+ 
++bool
++MMU::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    if (typeid(*this) != typeid(MMU) || test || !itb || !dtb ||
++        !itbStage2 || !dtbStage2 || !walker || !release() ||
++        walker->crucibleNativeMmu() != this ||
++        s1State.mmu != this || s2State.mmu != this)
++        return false;
++    if (!walk.object(this, itb, 1) || !walk.object(this, dtb, 2) ||
++        !walk.object(this, itbStage2, 3) || !walk.object(this, dtbStage2, 4) ||
++        !walk.object(this, walker, 5) || !walk.object(this, release(), 6))
++        return false;
++    for (const auto *tlb : instruction) {
++        if (!walk.object(this, tlb, 7)) return false;
++    }
++    for (const auto *tlb : data) {
++        if (!walk.object(this, tlb, 8)) return false;
++    }
++    for (const auto *tlb : unified) {
++        if (!walk.object(this, tlb, 9)) return false;
++    }
++    return true;
++}
++
+ } // namespace gem5
+--- a/src/arch/arm/mmu.hh
++++ b/src/arch/arm/mmu.hh
+@@ -180,6 +180,8 @@
+ 
+     MMU(const ArmMMUParams &p);
+ 
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+     void init() override;
+ 
+     using BaseMMU::translateFunctional;
+--- a/src/arch/arm/pagetable.cc
++++ b/src/arch/arm/pagetable.cc
+@@ -36,6 +36,8 @@
+  */
+ 
+ #include "arch/arm/pagetable.hh"
++#include "sim/crucible_native_scope.hh"
++#include <typeinfo>
+ 
+ #include "base/bitfield.hh"
+ #include "base/logging.hh"
+@@ -499,5 +501,25 @@
+         BaseMMU::Execute : BaseMMU::Read)
+ {}
+ 
++bool
++TLBSetAssociative::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    if (typeid(*this) != typeid(TLBSetAssociative) || !numSets || !assoc ||
++        sets.size() != numSets || setMask != numSets - 1)
++        return false;
++    for (std::size_t set = 0; set < sets.size(); ++set) {
++        const auto &entries = sets[set];
++        if (entries.size() != assoc) return false;
++        for (std::size_t way = 0; way < entries.size(); ++way) {
++            const auto *entry = entries[way];
++            // Establish ownership before inspecting a native indexed pointer.
++            if (!walk.indexedEntry(this, entry) ||
++                entry->getSet() != set || entry->getWay() != way)
++                return false;
++        }
++    }
++    return true;
++}
++
+ } // namespace ArmISA
+ } // namespace gem5
+--- a/src/arch/arm/pagetable.hh
++++ b/src/arch/arm/pagetable.hh
+@@ -211,6 +211,8 @@
+ {
+   public:
+     PARAMS(TLBSetAssociative);
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+     TLBSetAssociative(const Params &p)
+       : TLBIndexingPolicy(p, p.num_entries, 0)
+     {}
+--- a/src/arch/arm/self_debug.hh
++++ b/src/arch/arm/self_debug.hh
+@@ -256,6 +256,20 @@
+     bool to32;
+ 
+   public:
++    bool crucibleNativeOwned() const
++    {
++        if (!softStep || softStep->conf != this || softStep->stateSS < 0 ||
++            softStep->stateSS > 2)
++            return false;
++        for (const auto &breakpoint : arBrkPoints) {
++            if (breakpoint.conf != this) return false;
++        }
++        for (const auto &watchpoint : arWatchPoints) {
++            if (watchpoint.conf != this) return false;
++        }
++        return true;
++    }
++
+     SelfDebug()
+       : softStep(nullptr), enableTdeTge(false),
+         mde(false), sdd(false), kde(false), oslk(false)
+--- a/src/arch/arm/system.cc
++++ b/src/arch/arm/system.cc
+@@ -39,6 +39,8 @@
+  */
+ 
+ #include "arch/arm/system.hh"
++#include "sim/crucible_native_scope.hh"
++#include <typeinfo>
+ 
+ #include <iostream>
+ 
+@@ -227,4 +229,12 @@
+         pwr_ctrl->clearWakeRequest(tc);
+ }
+ 
++bool
++ArmRelease::crucibleNativeClosure(crucible::NativeClosureWalk &) const
++{
++    // This concrete source object contains scalar extension policy only.
++    // Subclasses may introduce other owners and must provide another visitor.
++    return typeid(*this) == typeid(ArmRelease);
++}
++
+ } // namespace gem5
+--- a/src/arch/arm/system.hh
++++ b/src/arch/arm/system.hh
+@@ -73,6 +73,8 @@
+     PARAMS(ArmRelease);
+     ArmRelease(const Params &p);
+ 
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+     bool
+     has(ArmExtension ext) const
+     {
+--- a/src/arch/arm/table_walker.cc
++++ b/src/arch/arm/table_walker.cc
+@@ -35,6 +35,9 @@
+  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  */
+ #include "arch/arm/table_walker.hh"
++#include "sim/crucible_native_scope.hh"
++#include "sim/power_state.hh"
++#include <typeinfo>
+ 
+ #include <cassert>
+ #include <memory>
+@@ -2843,4 +2846,73 @@
+     requestOrigin.ysubname(1,"Inst");
+ }
+ 
++bool
++TableWalker::crucibleNativeOwns(const WalkUnit *unit) const
++{
++    if (!unit) return false;
++    if (unit == walkUnitFunctionalS1 || unit == walkUnitFunctionalS2) return true;
++    for (const auto *original : walkUnits) {
++        if (unit == original) return true;
++    }
++    return false;
++}
++
++bool
++TableWalker::Port::crucibleNativeOwned(crucible::NativeClosureWalk &walk,
++                                      const TableWalker *parent) const
++{
++    if (&owner != parent) return false;
++    return reqQueue.crucibleNativeEmpty(walk, parent, parent, 7) &&
++        snoopRespQueue.crucibleNativeEmpty(walk, parent, parent, 8);
++}
++
++bool
++TableWalker::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    // Atomic SE translation has no pending timing walk. A different profile
++    // must close retained sender/translation state before admitting it.
++    if (typeid(*this) != typeid(TableWalker) || !mmu || !release || !port ||
++        !powerState || pendingReqs || !pendingQueue.empty() ||
++        !inCompletionWalks.empty() || !walkUnitFunctionalS1 || !walkUnitFunctionalS2 ||
++        !port->crucibleNativeOwned(walk, this))
++        return false;
++    if (!walk.object(this, mmu, 1) || !walk.object(this, release, 2) ||
++        !walk.object(this, &crucibleNativeClockDomain(), 3) ||
++        !walk.object(this, powerState, 4) || !walk.port(this, port, 5))
++        return false;
++    for (const auto *unit : walkUnits) {
++        if (!walk.object(this, unit, 6)) return false;
++    }
++    return walk.object(this, walkUnitFunctionalS1, 9) &&
++        walk.object(this, walkUnitFunctionalS2, 10);
++}
++
++bool
++WalkUnit::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    if (typeid(*this) != typeid(WalkUnit) || !available || test || !mmu ||
++        !parent || !port || !powerState || !parent->crucibleNativeOwns(this) ||
++        parent->crucibleNativeMmu() != mmu || parent->crucibleNativePort() != port)
++        return false;
++    for (const auto &queue : stateQueues) {
++        if (!queue.empty()) return false;
++    }
++    if (LongDescEventByLevel[0] != &doL0LongDescEvent ||
++        LongDescEventByLevel[1] != &doL1LongDescEvent ||
++        LongDescEventByLevel[2] != &doL2LongDescEvent ||
++        LongDescEventByLevel[3] != &doL3LongDescEvent)
++        return false;
++    if (tlb && !walk.object(this, tlb, 1)) return false;
++    return walk.object(this, mmu, 2) && walk.object(this, parent, 3) &&
++        walk.object(this, &crucibleNativeClockDomain(), 4) &&
++        walk.object(this, powerState, 5) &&
++        walk.callback(this, &doProcessEvent, 6) &&
++        walk.callback(this, &doL1DescEvent, 7) &&
++        walk.callback(this, &doL2DescEvent, 8) &&
++        walk.callback(this, &doL0LongDescEvent, 9) &&
++        walk.callback(this, &doL1LongDescEvent, 10) &&
++        walk.callback(this, &doL2LongDescEvent, 11) &&
++        walk.callback(this, &doL3LongDescEvent, 12);
++}
++
+ } // namespace gem5
+--- a/src/arch/arm/table_walker.hh
++++ b/src/arch/arm/table_walker.hh
+@@ -1017,6 +1017,9 @@
+       public:
+         Port(TableWalker &_walker, RequestorID id);
+ 
++        bool crucibleNativeOwned(crucible::NativeClosureWalk &walk,
++                                const TableWalker *parent) const;
++
+         void sendFunctionalReq(const RequestPtr &req, uint8_t *data);
+         void sendAtomicReq(const RequestPtr &req, uint8_t *data, Tick delay);
+         void sendTimingReq(const RequestPtr &req, uint8_t *data, Tick delay,
+@@ -1054,8 +1057,14 @@
+     PARAMS(ArmTableWalker);
+     TableWalker(const Params &p);
+ 
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+     gem5::Port &getPort(const std::string &if_name,
+                         PortID idx = InvalidPortID) override;
++
++    const MMU *crucibleNativeMmu() const { return mmu; }
++    bool crucibleNativeOwns(const WalkUnit *unit) const;
++    const Port *crucibleNativePort() const { return port; }
+ 
+     void setMmu(MMU *_mmu);
+     void setTestInterface(TlbTestInterface *ti);
+@@ -1265,6 +1274,8 @@
+   public:
+     PARAMS(ArmWalkUnit);
+     WalkUnit(const Params &p);
++
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
+     virtual ~WalkUnit();
+ 
+     TypeTLB
+--- a/src/arch/arm/tlb.cc
++++ b/src/arch/arm/tlb.cc
+@@ -39,6 +39,10 @@
+  */
+ 
+ #include "arch/arm/tlb.hh"
++#include "sim/crucible_native_scope.hh"
++#include "mem/cache/replacement_policies/lru_rp.hh"
++#include "sim/power_state.hh"
++#include <typeinfo>
+ 
+ #include <memory>
+ #include <string>
+@@ -481,4 +485,33 @@
+     return &tableWalker->getTableWalkerPort();
+ }
+ 
++bool
++TLB::Table::crucibleNativeOwned(crucible::NativeClosureWalk &walk,
++                              const TLB *owner) const
++{
++    const auto *replacement = dynamic_cast<const replacement_policy::LRU *>(replPolicy);
++    if (!replacement || !indexingPolicy) return false;
++    for (const auto &entry : entries) {
++        if (!replacement->crucibleNativeData(entry.replacementData)) return false;
++        if (!walk.tableEntry(owner, indexingPolicy, &entry)) return false;
++    }
++    if (prev) {
++        bool owned = false;
++        for (const auto &entry : entries) {
++            if (&entry == prev) owned = true;
++        }
++        if (!owned) return false;
++    }
++    return walk.object(owner, replPolicy, 1) && walk.object(owner, indexingPolicy, 2);
++}
++
++bool
++TLB::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    if (typeid(*this) != typeid(TLB) || !table.crucibleNativeOwned(walk, this))
++        return false;
++    if (tableWalker && !walk.object(this, tableWalker, 3)) return false;
++    return !_nextLevel || walk.object(this, _nextLevel, 4);
++}
++
+ } // namespace gem5
+--- a/src/arch/arm/tlb.hh
++++ b/src/arch/arm/tlb.hh
+@@ -116,6 +116,9 @@
+         /** Observes indexed entries without exercising the mutable lookup path. */
+         void crucibleState(CrucibleStateWriter &writer) const;
+ 
++        bool crucibleNativeOwned(crucible::NativeClosureWalk &walk,
++                                const TLB *owner) const;
++
+         /**
+          * Invalidate the last matched entry
+          * The method has an optional param, which means: invalidate
+@@ -203,6 +206,8 @@
+     std::map<std::string, std::string> crucibleModeledFields() const override;
+ 
+     TLB(const Params &p);
++
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
+     TLB(const Params &p, int _size, TableWalker *_walker);
+ 
+     /** Lookup an entry in the TLB
+--- a/src/base/uncontended_mutex.hh
++++ b/src/base/uncontended_mutex.hh
+@@ -66,6 +66,10 @@
+   public:
+     UncontendedMutex() : flag(0) {}
+ 
++    // A native stopped-cut walk refuses contention instead of waiting on an
++    // unrelated event owner. Ordinary lock behavior remains unchanged.
++    bool try_lock() { return testAndSet(0, 1); }
++
+     void
+     lock()
+     {
+--- a/src/cpu/exetrace.cc
++++ b/src/cpu/exetrace.cc
+@@ -39,6 +39,8 @@
+  */
+ 
+ #include "cpu/exetrace.hh"
++#include "sim/crucible_native_scope.hh"
++#include <typeinfo>
+ 
+ #include <iomanip>
+ #include <sstream>
+@@ -177,5 +179,25 @@
+     }
+ }
+ 
++bool
++ExeTracer::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    return typeid(*this) == typeid(ExeTracer) && !debug::ExecEnable &&
++        crucibleNativeDisassembler(walk);
++}
++
++bool
++InstDisassembler::crucibleNativeClosure(crucible::NativeClosureWalk &) const
++{
++    // The concrete source disassembler contains no external observers.
++    return typeid(*this) == typeid(InstDisassembler);
++}
++
++bool
++InstTracer::crucibleNativeDisassembler(crucible::NativeClosureWalk &walk) const
++{
++    return disassembler && walk.object(this, disassembler, 1);
++}
++
+ } // namespace trace
+ } // namespace gem5
+--- a/src/cpu/exetrace.hh
++++ b/src/cpu/exetrace.hh
+@@ -81,6 +81,7 @@
+ class ExeTracer : public InstTracer
+ {
+   public:
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
+     typedef ExeTracerParams Params;
+     ExeTracer(const Params &params) : InstTracer(params)
+     {}
+--- a/src/cpu/pc_event.hh
++++ b/src/cpu/pc_event.hh
+@@ -139,6 +139,9 @@
+         }
+     }
+ 
++    // This profile accepts no hidden PC-triggered observers or host effects.
++    bool crucibleNativeEmpty() const { return pcMap.empty(); }
++
+     PCEventQueue();
+     ~PCEventQueue();
+ 
+--- a/src/cpu/simple/atomic.cc
++++ b/src/cpu/simple/atomic.cc
+@@ -53,6 +53,10 @@
+ #include "mem/physical.hh"
+ #include "params/BaseAtomicSimpleCPU.hh"
+ #include "sim/faults.hh"
++#include "sim/crucible_native_scope.hh"
++#include "sim/power_state.hh"
++#include "arch/generic/isa.hh"
++#include <typeinfo>
+ #include "sim/full_system.hh"
+ #include "sim/system.hh"
+ 
+@@ -681,6 +685,8 @@
+ 
+             Tick stall_ticks = 0;
+             if (curStaticInst) {
++                if (auto *scope = crucible::OriginalNodeScope::selected())
++                    scope->beforeInstruction(curStaticInst.get(), thread->pcState());
+                 fault = curStaticInst->execute(&t_info, traceData);
+ 
+                 // keep an instruction count
+@@ -770,4 +776,48 @@
+     dcachePort.printAddr(a);
+ }
+ 
++bool
++AtomicSimpleCPU::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    // Architectural/private C++ state remains in the exact process image.
++    // This guard closes the actual source owners and callback entry points.
++    if (typeid(*this) != typeid(AtomicSimpleCPU) || FullSystem ||
++        width != 1 || locked || _switchedOut || _status != Running ||
++        numThreads != 1 || curThread != 0 || threadInfo.size() != 1 ||
++        threadContexts.size() != 1 || activeThreads.size() != 1 ||
++        activeThreads.front() != 0 || branchPred || checker || traceData ||
++        !system || !system->isAtomicMode() || !powerState || interrupts.size() != 1)
++        return false;
++
++    const auto *execution = threadInfo[0];
++    auto *thread = execution ? execution->thread : nullptr;
++    if (!execution || execution->cpu != this || !thread ||
++        threadContexts[0] != thread || thread->getCpuPtr() != this ||
++        thread->system != system || thread->status() != ThreadContext::Active ||
++        !thread->pcEventQueue.crucibleNativeEmpty() ||
++        !thread->comInstEventQueue.crucibleNativeEmpty())
++        return false;
++
++    if (!walk.object(this, system, 1) ||
++        !walk.object(this, &crucibleNativeClockDomain(), 2) ||
++        !walk.object(this, powerState, 3) ||
++        !walk.object(this, interrupts[0], 4) ||
++        !walk.object(this, thread->getIsaPtr(), 5) ||
++        !walk.object(this, thread->getMMUPtr(), 6) ||
++        !walk.object(this, thread->getDecoderPtr(), 7) ||
++        !walk.object(this, thread->getProcessPtr(), 8))
++        return false;
++    if (tracer && !walk.object(this, tracer, 9)) return false;
++
++    if (!walk.port(this, &icachePort, 10) || !walk.port(this, &dcachePort, 11) ||
++        !walk.port(this, &modelResetPort, 12) ||
++        !walk.callback(this, &tickEvent, 13) ||
++        !walk.callback(this, &enterPwrGatingEvent, 14))
++        return false;
++    for (const auto &pin : cpuIdlePins) {
++        if (!pin || !walk.port(this, pin.get(), 15)) return false;
++    }
++    return true;
++}
++
+ } // namespace gem5
+--- a/src/cpu/simple/atomic.hh
++++ b/src/cpu/simple/atomic.hh
+@@ -59,6 +59,8 @@
+ 
+     void init() override;
+ 
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+   protected:
+     EventFunctionWrapper tickEvent;
+ 
+--- /dev/null
++++ b/src/dev/virtio/CrucibleClosedScriptBlock.py
+@@ -0,0 +1,20 @@
++# SPDX-License-Identifier: BSD-3-Clause
++# Copyright (c) 2026 Andyl, Inc.
++
++from m5.objects.VirtIOHostRequest import VirtIOHostRequest
++from m5.params import Param
++
++
++class CrucibleClosedScriptBlock(VirtIOHostRequest):
++    """Owns deterministic private block reactions inside the native image."""
++
++    type = "CrucibleClosedScriptBlock"
++    cxx_class = "gem5::CrucibleClosedScriptBlock"
++    cxx_header = "dev/virtio/crucible_closed_script_block.hh"
++
++    kind = "block"
++    queue_size = 2
++    request_capacity = 1
++    maximum_payload_bytes = 512
++    capacity_sectors = 8
++    reaction_delay = Param.Tick(9, "Native reaction delay in selected ticks")
+--- a/src/dev/virtio/SConscript
++++ b/src/dev/virtio/SConscript
+@@ -68,3 +68,6 @@
+ DebugFlag('VIOBlock', 'VirtIO block device')
+ DebugFlag('VIO9P', 'General 9p over VirtIO debugging')
+ DebugFlag('VIO9PData', 'Dump data in VirtIO 9p connections')
++
++SimObject("CrucibleClosedScriptBlock.py", sim_objects=["CrucibleClosedScriptBlock"])
++Source("crucible_closed_script_block.cc")
+--- a/src/dev/virtio/base.cc
++++ b/src/dev/virtio/base.cc
+@@ -38,6 +38,8 @@
+ #include "dev/virtio/base.hh"
+ #include "sim/crucible_state.hh"
+ 
++#include <array>
++
+ #include <limits>
+ 
+ #include "base/trace.hh"
+@@ -703,6 +705,65 @@
+     writer.set(prefix + ".buffer_length", desc.len);
+     writer.set(prefix + ".flags", desc.flags);
+     writer.set(prefix + ".next", desc.next);
++}
++
++bool
++VirtQueue::crucibleNativeOwnership(const PortProxy &proxy,
++                                 const AddrRange &privateMemory) const
++{
++    if (&memProxy != &proxy || byteOrder != ByteOrder::little ||
++        _maxSize != 2 || _size != 2 || !_incarnation ||
++        descriptors.size() != _maxSize || privateMemory.interleaved() ||
++        !privateMemory.valid() ||
++        !avail.crucibleNativeOwnership(proxy, byteOrder, _size) ||
++        !used.crucibleNativeOwnership(proxy, byteOrder, _size))
++        return false;
++
++    const auto spanOwned = [&](Addr start, std::uint64_t bytes) {
++        return !bytes || (start >= privateMemory.start() &&
++            start <= privateMemory.end() &&
++            bytes - 1 <= privateMemory.end() - start);
++    };
++    if (_ready) {
++        if (!_address || !_driverAddress || !_deviceAddress ||
++            (_address & 15) || (_driverAddress & 1) || (_deviceAddress & 3) ||
++            avail.baseAddress() != _driverAddress ||
++            used.baseAddress() != _deviceAddress ||
++            !spanOwned(_address, _size * sizeof(vring_desc)) ||
++            !spanOwned(_driverAddress, 4 + _size * sizeof(std::uint16_t)) ||
++            !spanOwned(_deviceAddress, 4 + _size * sizeof(vring_used_elem)) ||
++            std::uint16_t(avail.header.index - _last_avail) > _size ||
++            used.header.index != _last_used)
++            return false;
++    } else if (_address || _driverAddress || _deviceAddress ||
++               avail.baseAddress() || used.baseAddress() || _last_avail ||
++               _last_used || avail.header.index || used.header.index) {
++        // Partially configured transports require their own declared profile.
++        // They cannot borrow this diagnostic private queue's closed geometry.
++        return false;
++    }
++
++    for (std::size_t index = 0; index < descriptors.size(); ++index) {
++        const auto &entry = descriptors[index];
++        if (entry.queue != this || entry.memProxy != &proxy ||
++            entry.byteOrder != byteOrder || entry._index != index ||
++            (entry.desc.flags & ~(VRING_DESC_F_NEXT | VRING_DESC_F_WRITE)) ||
++            !spanOwned(entry.desc.addr, entry.desc.len))
++            return false;
++
++        // Follow existing native links only. This walk never reloads a guest
++        // descriptor, advances a ring cursor or repairs a malformed chain.
++        std::array<bool, 2> seen{};
++        std::size_t cursor = index;
++        for (;;) {
++            if (cursor >= descriptors.size() || seen[cursor]) return false;
++            seen[cursor] = true;
++            const auto &link = descriptors[cursor].desc;
++            if (!(link.flags & VRING_DESC_F_NEXT)) break;
++            cursor = link.next;
++        }
++    }
++    return true;
+ }
+ 
+ void
+--- a/src/dev/virtio/base.hh
++++ b/src/dev/virtio/base.hh
+@@ -116,6 +116,7 @@
+  */
+ class VirtDescriptor
+ {
++    friend class VirtQueue;
+   public:
+     /** Descriptor index in virtqueue */
+     typedef uint16_t Index;
+@@ -363,6 +364,12 @@
+     /** Returns a native reset/reconfiguration fence, never guest authority. */
+     uint64_t incarnation() const { return _incarnation; }
+ 
++    /** Checks native wrapper aliases and cached geometry without guest DMA.
++     * This source visitor grants no process, checkpoint or execution permit.
++     */
++    bool crucibleNativeOwnership(const PortProxy &proxy,
++                                 const AddrRange &privateMemory) const;
++
+     /**
+      * Get the number of descriptors available in this queue.
+      *
+@@ -531,6 +538,12 @@
+          */
+         void setAddress(Addr addr) { _base = addr; }
+         Addr baseAddress() const { return _base; }
++
++        bool crucibleNativeOwnership(const PortProxy &proxy, ByteOrder order,
++                                     std::size_t size) const
++        {
++            return &_proxy == &proxy && byteOrder == order && ring.size() == size;
++        }
+ 
+         void setSize(uint16_t size) { ring.resize(size); }
+ 
+@@ -638,6 +651,7 @@
+  */
+ class VirtIODeviceBase : public SimObject
+ {
++    friend class CrucibleClosedScriptBlock;
+   public:
+     typedef uint16_t QueueID;
+     typedef uint64_t FeatureBits;
+--- /dev/null
++++ b/src/dev/virtio/crucible_closed_script_block.cc
+@@ -0,0 +1,176 @@
++// SPDX-License-Identifier: BSD-3-Clause
++// Copyright (c) 2026 Andyl, Inc.
++#include "dev/virtio/crucible_closed_script_block.hh"
++
++#include <algorithm>
++#include <limits>
++
++#include "base/logging.hh"
++#include "sim/crucible_native_scope.hh"
++#include "sim/system.hh"
++
++namespace gem5
++{
++
++CrucibleClosedScriptBlock::CrucibleClosedScriptBlock(const Params &parameters)
++    : VirtIOHostRequest(parameters), requestEvent(*this), reactionEvent(*this),
++      retirementEvent(*this), reactionDelay(parameters.reaction_delay)
++{
++    fatal_if(!block || requestCapacity != 1 || maximumPayloadBytes != 512 ||
++        capacitySectors != 8 || parameters.queue_size != 2 || !reactionDelay ||
++        reactionDelay == MaxTick,
++        "closed script block requires its exact private native geometry");
++    fatal_if(!bindRequestHandler(&requestEvent), "original native request handler bind failed");
++    registerKickCallback(InterruptDelivery{this});
++}
++
++void
++CrucibleClosedScriptBlock::RequestEvent::process()
++{
++    owner.received();
++}
++
++void
++CrucibleClosedScriptBlock::ReactionEvent::process()
++{
++    owner.react();
++}
++
++void
++CrucibleClosedScriptBlock::InterruptDelivery::operator()() const
++{
++    panic_if(!owner || owner->interruptsDelivered == UINT64_MAX,
++             "native block interrupt lifetime exceeded");
++    ++owner->interruptsDelivered;
++    panic_if(owner->retirementEvent.scheduled(), "native block retirement overlaps");
++    owner->schedule(owner->retirementEvent, curTick());
++}
++
++void
++CrucibleClosedScriptBlock::RetirementEvent::process()
++{
++    owner.retire();
++}
++
++void
++CrucibleClosedScriptBlock::retire()
++{
++    panic_if(requests.size() != 1 || !requests.front().completed ||
++        !requests.front().acknowledged || pendingRequest,
++        "native script retirement lacks the original completed request");
++    panic_if(!retireCompleted(requests.front().id), "native request retirement failed");
++}
++
++void
++CrucibleClosedScriptBlock::received()
++{
++    panic_if(pendingRequest || reactionEvent.scheduled() || requests.size() != 1,
++             "native script received an overlapping block reaction");
++    const auto &request = requests.front();
++    panic_if(request.completed || request.replyStaged || request.acknowledged ||
++        curTick() > MaxTick - reactionDelay - 1,
++        "native script request ownership/tick extent changed");
++    panic_if(!acknowledgeRequest(request.id), "native request acknowledgement failed");
++    pendingRequest = request.id;
++    schedule(reactionEvent, curTick() + reactionDelay);
++}
++
++void
++CrucibleClosedScriptBlock::react()
++{
++    panic_if(!pendingRequest || reactionAttempts == UINT64_MAX || requests.size() != 1,
++             "native script reaction lacks its original request");
++    ++reactionAttempts;
++    const auto &request = requests.front();
++    panic_if(request.id != pendingRequest || !request.acknowledged || request.completed ||
++        request.replyStaged || request.sector > capacitySectors ||
++        request.payloadBytes > maximumPayloadBytes || request.payloadBytes % 512 ||
++        request.payloadBytes / 512 > capacitySectors - request.sector,
++        "native script reaction request changed");
++
++    const auto offset = std::size_t(request.sector) * 512;
++    std::vector<std::uint8_t> reply;
++    if (request.opcode == 0) {
++        reply.assign(disk.begin() + offset, disk.begin() + offset + request.payloadBytes);
++    } else if (request.opcode == 1) {
++        panic_if(request.bytes.size() != request.payloadBytes,
++                 "native script write payload extent changed");
++        std::copy(request.bytes.begin(), request.bytes.end(), disk.begin() + offset);
++    } else {
++        panic_if(request.opcode != 4 || request.payloadBytes,
++                 "native script received an unsupported block command");
++    }
++    panic_if(!stageReply(request.id, curTick(), request.parent, 0, reply),
++             "native script reply staging failed");
++    pendingRequest = 0;
++}
++
++bool
++CrucibleClosedScriptBlock::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    const auto &parameters = params();
++    const auto *interrupt = transKick.target<InterruptDelivery>();
++    if (!parameters.system || &memory != &parameters.system->physProxy ||
++        !block || requestCapacity != 1 || maximumPayloadBytes != 512 || capacitySectors != 8 ||
++        _queues.size() != 1 || _queues[0] != &queue || _queueSelect != 0 ||
++        requestHandler != &requestEvent || !requestEvent.ownedBy(this) ||
++        requestEvent.scheduled() || !reactionEvent.ownedBy(this) ||
++        !retirementEvent.ownedBy(this) ||
++        !interrupt || interrupt->owner != this || reactionDelay != 9 ||
++        requests.size() > requestCapacity ||
++        !queue.crucibleNativeOwnedBy(this) ||
++        !replyEvent.crucibleNativeOwnedBy(this, OwnerEvent::Action::First) ||
++        !creditEvent.crucibleNativeOwnedBy(this, OwnerEvent::Action::Second))
++        return false;
++
++    const auto ranges = parameters.system->getPhysMem().getConfAddrRanges();
++    if (ranges.size() != 1 || !queue.crucibleNativeOwnership(memory, ranges.front()))
++        return false;
++    const auto spanOwned = [&](Addr start, std::uint64_t bytes) {
++        return !bytes || (start >= ranges.front().start() &&
++            start <= ranges.front().end() &&
++            bytes - 1 <= ranges.front().end() - start);
++    };
++    for (const auto &request : requests) {
++        if (!request.id || request.id >= nextRequest || request.id <= retiredThrough ||
++            request.head >= queue.getSize() ||
++            request.queueIncarnation != queue.incarnation() ||
++            request.payloadBytes > maximumPayloadBytes ||
++            request.bytes.size() > maximumPayloadBytes ||
++            request.reply.size() > maximumPayloadBytes ||
++            request.writable.empty() || request.writable.size() > queue.getSize() ||
++            request.birthTick > curTick() ||
++            (request.completed && request.completionTick > curTick()) ||
++            (request.replyStaged && !request.acknowledged))
++            return false;
++
++        std::uint64_t writableBytes = 0;
++        for (const auto &span : request.writable) {
++            if (!spanOwned(span.address, span.length) ||
++                span.length > maximumPayloadBytes + 1 ||
++                writableBytes > maximumPayloadBytes + 1 - span.length)
++                return false;
++            writableBytes += span.length;
++        }
++        if (!writableBytes || request.writtenBytes > writableBytes) return false;
++    }
++    if (pendingRequest) {
++        if (requests.size() != 1 || requests.front().id != pendingRequest ||
++            !requests.front().acknowledged || requests.front().completed ||
++            requests.front().replyStaged || !reactionEvent.scheduled())
++            return false;
++    } else if (reactionEvent.scheduled()) {
++        return false;
++    }
++    if (retirementEvent.scheduled() && (requests.size() != 1 ||
++        !requests.front().completed || !requests.front().acknowledged || pendingRequest))
++        return false;
++    return walk.object(this, parameters.system, 1) &&
++        walk.callback(this, &requestEvent, 2) &&
++        walk.callback(this, &reactionEvent, 3) &&
++        walk.callback(this, &replyEvent, 4) &&
++        walk.callback(this, &creditEvent, 5) &&
++        walk.callback(this, &retirementEvent, 6);
++}
++
++} // namespace gem5
+--- /dev/null
++++ b/src/dev/virtio/crucible_closed_script_block.hh
+@@ -0,0 +1,85 @@
++// SPDX-License-Identifier: BSD-3-Clause
++// Copyright (c) 2026 Andyl, Inc.
++#ifndef GEM5_DEV_VIRTIO_CRUCIBLE_CLOSED_SCRIPT_BLOCK_HH
++#define GEM5_DEV_VIRTIO_CRUCIBLE_CLOSED_SCRIPT_BLOCK_HH
++
++#include <array>
++
++#include "dev/virtio/host_request.hh"
++#include "params/CrucibleClosedScriptBlock.hh"
++
++namespace gem5
++{
++
++/** Owns a source-defined block script and private disk in the native image.
++ *
++ * The request/reply queue keeps its original descriptor bodies and cursors.
++ * This script introduces no Python callback, external worker, host backing
++ * file or unbounded command stream. Its source-owned events and pending state
++ * remain live at the capture boundary; capture never drains them.
++ */
++class CrucibleClosedScriptBlock final : public VirtIOHostRequest
++{
++  private:
++    class RequestEvent final : public Event
++    {
++      public:
++        explicit RequestEvent(CrucibleClosedScriptBlock &block) : owner(block) {}
++        void process() override;
++        bool ownedBy(const CrucibleClosedScriptBlock *block) const { return &owner == block; }
++
++      private:
++        CrucibleClosedScriptBlock &owner;
++    };
++
++    class ReactionEvent final : public Event
++    {
++      public:
++        explicit ReactionEvent(CrucibleClosedScriptBlock &block) : owner(block) {}
++        void process() override;
++        bool ownedBy(const CrucibleClosedScriptBlock *block) const { return &owner == block; }
++
++      private:
++        CrucibleClosedScriptBlock &owner;
++    };
++
++    struct InterruptDelivery
++    {
++        CrucibleClosedScriptBlock *owner;
++        void operator()() const;
++    };
++
++    class RetirementEvent final : public Event
++    {
++      public:
++        explicit RetirementEvent(CrucibleClosedScriptBlock &block) : owner(block) {}
++        void process() override;
++        bool ownedBy(const CrucibleClosedScriptBlock *block) const { return &owner == block; }
++
++      private:
++        CrucibleClosedScriptBlock &owner;
++    };
++
++    RequestEvent requestEvent;
++    ReactionEvent reactionEvent;
++    RetirementEvent retirementEvent;
++    const Tick reactionDelay;
++    std::array<std::uint8_t, 4096> disk{};
++    std::uint64_t pendingRequest = 0;
++    std::uint64_t reactionAttempts = 0;
++    std::uint64_t interruptsDelivered = 0;
++
++    void received();
++    void react();
++    void retire();
++
++  public:
++    PARAMS(CrucibleClosedScriptBlock);
++    explicit CrucibleClosedScriptBlock(const Params &parameters);
++
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++};
++
++} // namespace gem5
++
++#endif
+--- a/src/dev/virtio/host_request.hh
++++ b/src/dev/virtio/host_request.hh
+@@ -39,6 +39,7 @@
+ /** Retains original guest requests until sealed replies and custody retirement. */
+ class VirtIOHostRequest : public VirtIODeviceBase
+ {
++    friend class CrucibleClosedScriptBlock;
+   public:
+     explicit VirtIOHostRequest(const VirtIOHostRequestParams &params);
+     void readConfig(PacketPtr pkt, Addr offset) override;
+@@ -79,6 +80,13 @@
+       private:
+         VirtIOHostRequest &owner;
+         const Action action;
++
++      public:
++        bool crucibleNativeOwnedBy(const VirtIOHostRequest *device,
++                                  Action expected) const
++        {
++            return &owner == device && action == expected;
++        }
+     };
+ 
+     struct Span
+@@ -123,6 +131,12 @@
+         void onNotify() override;
+       private:
+         VirtIOHostRequest &device;
++
++      public:
++        bool crucibleNativeOwnedBy(const VirtIOHostRequest *owner) const
++        {
++            return &device == owner;
++        }
+     };
+ 
+     void collectRequests();
+--- /dev/null
++++ b/src/mem/CrucibleAtomicFabric.py
+@@ -0,0 +1,16 @@
++# SPDX-License-Identifier: BSD-3-Clause
++# Copyright (c) 2026 Andyl, Inc.
++
++from m5.objects.ClockedObject import ClockedObject
++from m5.params import RequestPort, VectorResponsePort
++
++
++class CrucibleAtomicFabric(ClockedObject):
++    """Routes one closed atomic profile without timing or cache machinery."""
++
++    type = "CrucibleAtomicFabric"
++    cxx_class = "gem5::CrucibleAtomicFabric"
++    cxx_header = "mem/crucible_atomic_fabric.hh"
++
++    cpu_side_ports = VectorResponsePort("Instruction, data and system inputs")
++    mem_side_port = RequestPort("Single private atomic memory output")
+--- a/src/mem/SConscript
++++ b/src/mem/SConscript
+@@ -167,3 +167,6 @@
+ DebugFlag("MemChecker")
+ DebugFlag("MemCheckerMonitor")
+ DebugFlag("QOS")
++
++SimObject("CrucibleAtomicFabric.py", sim_objects=["CrucibleAtomicFabric"])
++Source("crucible_atomic_fabric.cc")
+--- a/src/mem/backdoor.hh
++++ b/src/mem/backdoor.hh
+@@ -86,6 +86,10 @@
+             _flags = (Flags)(_flags & ~Writeable);
+     }
+ 
++    // Opaque process capture preserves private data, but not an unverified
++    // observer's external effects. Source profiles must close these callbacks.
++    bool crucibleNativeObserversAbsent() const { return invalidationCallbacks.empty(); }
++
+     Flags flags() const { return _flags; }
+     void flags(Flags f) { _flags = f; }
+ 
+--- a/src/mem/cache/replacement_policies/lru_rp.cc
++++ b/src/mem/cache/replacement_policies/lru_rp.cc
+@@ -27,6 +27,8 @@
+  */
+ 
+ #include "mem/cache/replacement_policies/lru_rp.hh"
++#include "sim/crucible_native_scope.hh"
++#include <typeinfo>
+ 
+ #include <cassert>
+ #include <memory>
+@@ -96,5 +98,23 @@
+     return std::shared_ptr<ReplacementData>(new LRUReplData());
+ }
+ 
++bool
++LRU::crucibleNativeClosure(crucible::NativeClosureWalk &) const
++{
++    // The concrete policy owns no external callback/port. Per-entry private
++    // timestamps are checked from the actual owning native table.
++    return typeid(*this) == typeid(LRU);
++}
++
++bool
++LRU::crucibleNativeData(const std::shared_ptr<ReplacementData> &data) const
++{
++    if (typeid(*this) != typeid(LRU) || !data ||
++        typeid(*data) != typeid(LRUReplData))
++        return false;
++    const auto *original = static_cast<const LRUReplData *>(data.get());
++    return original->lastTouchTick <= curTick();
++}
++
+ } // namespace replacement_policy
+ } // namespace gem5
+--- a/src/mem/cache/replacement_policies/lru_rp.hh
++++ b/src/mem/cache/replacement_policies/lru_rp.hh
+@@ -63,6 +63,9 @@
+   public:
+     typedef LRURPParams Params;
+     LRU(const Params &p);
++
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++    bool crucibleNativeData(const std::shared_ptr<ReplacementData> &data) const;
+     ~LRU() = default;
+ 
+     /**
+--- /dev/null
++++ b/src/mem/crucible_atomic_fabric.cc
+@@ -0,0 +1,96 @@
++// SPDX-License-Identifier: BSD-3-Clause
++// Copyright (c) 2026 Andyl, Inc.
++#include "mem/crucible_atomic_fabric.hh"
++
++#include "base/logging.hh"
++#include "sim/crucible_native_scope.hh"
++#include "sim/power_state.hh"
++
++namespace gem5
++{
++
++CrucibleAtomicFabric::CrucibleAtomicFabric(const Params &parameters)
++    : ClockedObject(parameters),
++      inputs{{InputPort(name() + ".cpu_side_ports[0]", *this, 0),
++              InputPort(name() + ".cpu_side_ports[1]", *this, 1),
++              InputPort(name() + ".cpu_side_ports[2]", *this, 2)}},
++      output(name() + ".mem_side_port", *this)
++{
++    fatal_if(parameters.port_cpu_side_ports_connection_count != inputs.size(),
++             "closed atomic fabric requires exactly three original inputs");
++}
++
++Port &
++CrucibleAtomicFabric::getPort(const std::string &name, PortID id)
++{
++    if (name == "cpu_side_ports" && id >= 0 && std::size_t(id) < inputs.size())
++        return inputs[std::size_t(id)];
++    if (name == "mem_side_port" && id == InvalidPortID) return output;
++    return ClockedObject::getPort(name, id);
++}
++
++Tick
++CrucibleAtomicFabric::InputPort::recvAtomic(PacketPtr packet)
++{
++    return owner.output.sendAtomic(packet);
++}
++
++void
++CrucibleAtomicFabric::InputPort::recvFunctional(PacketPtr packet)
++{
++    owner.output.sendFunctional(packet);
++}
++
++bool
++CrucibleAtomicFabric::InputPort::recvTimingReq(PacketPtr)
++{
++    panic("closed atomic fabric does not own a timing request route");
++}
++
++void
++CrucibleAtomicFabric::InputPort::recvRespRetry()
++{
++    panic("closed atomic fabric does not own a response retry route");
++}
++
++AddrRangeList
++CrucibleAtomicFabric::InputPort::getAddrRanges() const
++{
++    return owner.output.getAddrRanges();
++}
++
++void
++CrucibleAtomicFabric::OutputPort::recvRangeChange()
++{
++    for (auto &input : owner.inputs) {
++        if (input.isConnected()) input.sendRangeChange();
++    }
++}
++
++bool
++CrucibleAtomicFabric::OutputPort::recvTimingResp(PacketPtr)
++{
++    panic("closed atomic fabric does not own a timing response route");
++}
++
++void
++CrucibleAtomicFabric::OutputPort::recvReqRetry()
++{
++    panic("closed atomic fabric does not own a request retry route");
++}
++
++bool
++CrucibleAtomicFabric::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    if (!powerState || !output.ownedBy(this) || !output.isConnected()) return false;
++    if (!walk.object(this, &crucibleNativeClockDomain(), 1) ||
++        !walk.object(this, powerState, 2) || !walk.port(this, &output, 3))
++        return false;
++    for (const auto &input : inputs) {
++        if (!input.ownedBy(this) || !input.isConnected() || !walk.port(this, &input, 4))
++            return false;
++    }
++    return true;
++}
++
++} // namespace gem5
+--- /dev/null
++++ b/src/mem/crucible_atomic_fabric.hh
+@@ -0,0 +1,76 @@
++// SPDX-License-Identifier: BSD-3-Clause
++// Copyright (c) 2026 Andyl, Inc.
++#ifndef GEM5_MEM_CRUCIBLE_ATOMIC_FABRIC_HH
++#define GEM5_MEM_CRUCIBLE_ATOMIC_FABRIC_HH
++
++#include <array>
++
++#include "mem/port.hh"
++#include "params/CrucibleAtomicFabric.hh"
++#include "sim/clocked_object.hh"
++
++namespace gem5
++{
++
++/** Owns a direct atomic route for an explicit private-memory source profile.
++ *
++ * This additional fabric does not change normal crossbar implementations.
++ * It has three original input members and one output, with no cache, timing,
++ * retry, queued packet or arbitrary observer state. Its profile must verify
++ * the actual native peers and private backing store before issuing a cut.
++ */
++class CrucibleAtomicFabric final : public ClockedObject
++{
++  private:
++    class InputPort final : public ResponsePort
++    {
++      public:
++        InputPort(const std::string &name, CrucibleAtomicFabric &fabric, PortID id)
++            : ResponsePort(name, id), owner(fabric)
++        {}
++
++        bool ownedBy(const CrucibleAtomicFabric *fabric) const { return &owner == fabric; }
++
++      protected:
++        Tick recvAtomic(PacketPtr packet) override;
++        void recvFunctional(PacketPtr packet) override;
++        bool recvTimingReq(PacketPtr packet) override;
++        void recvRespRetry() override;
++        AddrRangeList getAddrRanges() const override;
++
++      private:
++        CrucibleAtomicFabric &owner;
++    };
++
++    class OutputPort final : public RequestPort
++    {
++      public:
++        OutputPort(const std::string &name, CrucibleAtomicFabric &fabric)
++            : RequestPort(name), owner(fabric)
++        {}
++
++        bool ownedBy(const CrucibleAtomicFabric *fabric) const { return &owner == fabric; }
++
++      protected:
++        void recvRangeChange() override;
++        bool recvTimingResp(PacketPtr packet) override;
++        void recvReqRetry() override;
++
++      private:
++        CrucibleAtomicFabric &owner;
++    };
++
++    std::array<InputPort, 3> inputs;
++    OutputPort output;
++
++  public:
++    PARAMS(CrucibleAtomicFabric);
++    explicit CrucibleAtomicFabric(const Params &parameters);
++
++    Port &getPort(const std::string &name, PortID id = InvalidPortID) override;
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++};
++
++} // namespace gem5
++
++#endif
+--- a/src/mem/packet_queue.cc
++++ b/src/mem/packet_queue.cc
+@@ -39,6 +39,7 @@
+  */
+ 
+ #include "mem/packet_queue.hh"
++#include "sim/crucible_native_scope.hh"
+ 
+ #include "base/trace.hh"
+ #include "debug/Drain.hh"
+@@ -278,4 +279,15 @@
+     return cpuSidePort.sendTimingResp(pkt);
+ }
+ 
++bool
++PacketQueue::crucibleNativeEmpty(crucible::NativeClosureWalk &walk,
++                                 const SimObject *owner, const EventManager *manager,
++                                 std::uint32_t member) const
++{
++    if (&em != manager || !transmitList.empty() || waitingOnRetry ||
++        sendEvent.scheduled())
++        return false;
++    return walk.callback(owner, &sendEvent, member);
++}
++
+ } // namespace gem5
+--- a/src/mem/packet_queue.hh
++++ b/src/mem/packet_queue.hh
+@@ -58,6 +58,9 @@
+ namespace gem5
+ {
+ 
++class SimObject;
++namespace crucible { class NativeClosureWalk; }
++
+ /**
+  * A packet queue is a class that holds deferred packets and later
+  * sends them using the associated CPU-side port or memory-side port.
+@@ -166,6 +169,10 @@
+      */
+     size_t size() const { return transmitList.size(); }
+ 
++    bool crucibleNativeEmpty(crucible::NativeClosureWalk &walk,
++                            const SimObject *owner, const EventManager *manager,
++                            std::uint32_t member) const;
++
+     /**
+      * Get the next packet ready time.
+      */
+--- a/src/mem/physical.cc
++++ b/src/mem/physical.cc
+@@ -36,6 +36,7 @@
+  */
+ 
+ #include "mem/physical.hh"
++#include "sim/crucible_native_scope.hh"
+ 
+ #include <fcntl.h>
+ #include <sys/mman.h>
+@@ -477,5 +478,26 @@
+               filename);
+ }
+ 
++bool
++PhysicalMemory::crucibleNativePrivateClosure(crucible::NativeClosureWalk &walk,
++                                            const SimObject *owner) const
++{
++    // A shared/file-backed guest store has a separate external lifetime. The
++    // first private-memory profile admits one complete anonymous native span.
++    if (!sharedBackstore.empty() || sharedBackstoreSize != 0 ||
++        memories.size() != 1 || backingStore.size() != 1 || addrMap.size() != 1)
++        return false;
++    const auto *memory = memories[0];
++    const auto &backing = backingStore[0];
++    if (!memory || !backing.pmem || backing.shmFd != -1 || backing.shmOffset != 0 ||
++        backing.range.interleaved() || memory->getAddrRange() != backing.range ||
++        memory->toHostAddr(backing.range.start()) != backing.pmem ||
++        backing.range.size() != size || memory->size() != size)
++        return false;
++    const auto &entry = *addrMap.begin();
++    if (entry.first != backing.range || entry.second != memory) return false;
++    return walk.object(owner, memory, 6);
++}
++
+ } // namespace memory
+ } // namespace gem5
+--- a/src/mem/physical.hh
++++ b/src/mem/physical.hh
+@@ -50,6 +50,9 @@
+ namespace gem5
+ {
+ 
++class SimObject;
++namespace crucible { class NativeClosureWalk; }
++
+ namespace memory
+ {
+ 
+@@ -230,6 +233,9 @@
+      */
+     uint64_t totalSize() const { return size; }
+ 
++    bool crucibleNativePrivateClosure(crucible::NativeClosureWalk &walk,
++                                     const SimObject *owner) const;
++
+      /**
+      * Get the pointers to the backing store for external host
+      * access. Note that memory in the guest should be accessed using
+--- a/src/mem/simple_mem.cc
++++ b/src/mem/simple_mem.cc
+@@ -44,6 +44,10 @@
+ #include "base/trace.hh"
+ #include "debug/Drain.hh"
+ 
++#include <typeinfo>
++#include "sim/crucible_native_scope.hh"
++#include "sim/power_state.hh"
++#include "sim/system.hh"
+ namespace gem5
+ {
+ 
+@@ -320,5 +324,24 @@
+     mem.recvRespRetry();
+ }
+ 
++bool
++SimpleMemory::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    // Timing packets/sender-state and retry channels require another concrete
++    // profile. This source profile owns atomic private memory only.
++    if (typeid(*this) != typeid(SimpleMemory) || !_system || !pmemAddr ||
++        !packetQueue.empty() || isBusy || retryReq || retryResp || pendingDelete ||
++        !lockedAddrList.empty() || !powerState || range.interleaved() ||
++        range.start() != 0 || range.size() != 16 * 1024 * 1024 ||
++        !backdoor.crucibleNativeObserversAbsent())
++        return false;
++    return walk.object(this, _system, 1) &&
++        walk.object(this, &crucibleNativeClockDomain(), 2) &&
++        walk.object(this, powerState, 3) &&
++        walk.port(this, &port, 4) &&
++        walk.callback(this, &releaseEvent, 5) &&
++        walk.callback(this, &dequeueEvent, 6);
++}
++
+ } // namespace memory
+ } // namespace gem5
+--- a/src/mem/simple_mem.hh
++++ b/src/mem/simple_mem.hh
+@@ -186,6 +186,8 @@
+ 
+     SimpleMemory(const SimpleMemoryParams &p);
+ 
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+     DrainState drain() override;
+ 
+     Port &getPort(const std::string &if_name,
+--- a/src/python/pybind11/event.cc
++++ b/src/python/pybind11/event.cc
+@@ -48,6 +48,7 @@
+ #include "sim/async.hh"
+ #include "sim/sim_object.hh"
+ #include "sim/crucible_state.hh"
++#include "sim/crucible_native_scope.hh"
+ #include <algorithm>
+ #include <stdexcept>
+ #include "sim/eventq.hh"
+@@ -125,6 +126,41 @@
+                       py::return_value_policy::reference);
+     m.def("simulateUntilBoundary", &simulateUntilBoundary,
+           py::arg("exclusive_tick"), py::arg("max_events"));
++    m.def("crucibleDiagnosticOriginalProfile", []() {
++        return crucible::OriginalNodeScope::diagnosticProfile();
++    });
++    m.def("crucibleSelectDiagnosticOriginalScope", [](
++            const crucible::Digest &scope, const crucible::Digest &setup,
++            const crucible::Digest &profile, const crucible::Digest &implementation,
++            const crucible::Digest &plan, std::uint64_t epoch,
++            std::uint64_t generation) {
++        crucible::OriginalScopeBinding binding;
++        binding.scope = scope;
++        binding.setup = setup;
++        binding.profile = profile;
++        binding.implementation = implementation;
++        binding.queuePlan = plan;
++        binding.nativeEpoch = epoch;
++        binding.sourceProcessGeneration = generation;
++        return crucible::OriginalNodeScope::select(binding);
++    });
++    m.def("crucibleDiagnosticDirectQueueOwnership", []() {
++        // A diagnostic entry exercises the helper's intrinsic custody guard,
++        // independently of private walk(). It supplies no execution permit.
++        auto *scope = crucible::OriginalNodeScope::selected();
++        if (!scope) throw std::runtime_error("original diagnostic scope absent");
++        return getEventQueue(0)->crucibleDiagnosticDirectQueueOwnership(*scope);
++    });
++    m.def("crucibleInspectDiagnosticOriginalOwnership", []() {
++        auto *scope = crucible::OriginalNodeScope::selected();
++        if (!scope) throw std::runtime_error("original diagnostic scope absent");
++        const bool walked = scope->inspectOriginalOwnership(*getEventQueue(0));
++        return std::array<std::uint64_t, 7>{
++            walked, std::uint64_t(scope->state()), std::uint64_t(scope->refusal()),
++            scope->objectCount(), scope->edgeCount(), scope->callbackCount(),
++            crucible::OriginalNodeScope::storageBytes()};
++    });
++
+     m.def("crucibleConfigureDeviceBoundaries", &crucibleConfigureDeviceBoundaries);
+     m.def("crucibleDeviceBoundaryState", []() {
+         py::dict state;
+--- a/src/sim/SConscript
++++ b/src/sim/SConscript
+@@ -70,6 +70,7 @@
+ Source('core.cc')
+ Source('cur_tick.cc', tags=['gem5 trace'])
+ Source('crucible_output.cc')
++Source('crucible_native_scope.cc')
+ Source('tags.cc')
+ Source('cxx_config.cc')
+ Source('cxx_manager.cc')
+--- a/src/sim/clock_domain.cc
++++ b/src/sim/clock_domain.cc
+@@ -51,6 +51,8 @@
+ #include "sim/serialize.hh"
+ #include "sim/voltage_domain.hh"
+ 
++#include <typeinfo>
++#include "sim/crucible_native_scope.hh"
+ namespace gem5
+ {
+ 
+@@ -227,4 +229,22 @@
+     }
+ }
+ 
++bool
++SrcClockDomain::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    if (typeid(*this) != typeid(SrcClockDomain) || _clockPeriod != 1000 ||
++        !children.empty() || !_voltageDomain || _perfLevel != 0 ||
++        freqOpPoints.size() != 1 || freqOpPoints[0] != _clockPeriod)
++        return false;
++    if (!walk.object(this, _voltageDomain, 1)) return false;
++
++    for (const auto *member : members) {
++        const auto *object = dynamic_cast<const SimObject *>(member);
++        if (!object || &member->crucibleNativeClockDomain() != this ||
++            !walk.object(this, object, 2))
++            return false;
++    }
++    return true;
++}
++
+ } // namespace gem5
+--- a/src/sim/clock_domain.hh
++++ b/src/sim/clock_domain.hh
+@@ -171,6 +171,8 @@
+     typedef SrcClockDomainParams Params;
+     SrcClockDomain(const Params &p);
+ 
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+     /**
+      * Set new clock value
+      * @param clock The new clock period in ticks
+--- a/src/sim/clocked_object.hh
++++ b/src/sim/clocked_object.hh
+@@ -216,6 +216,10 @@
+ 
+     Tick clockPeriod() const { return clockDomain.clockPeriod(); }
+ 
++    // Native closure visitors compare the actual reference, without advancing
++    // or resetting the preserved cycle/tick projection.
++    const ClockDomain &crucibleNativeClockDomain() const { return clockDomain; }
++
+     double voltage() const { return clockDomain.voltage(); }
+ 
+     Cycles
+--- /dev/null
++++ b/src/sim/crucible_kernel_process.hh
+@@ -0,0 +1,138 @@
++// SPDX-License-Identifier: BSD-3-Clause
++// Copyright (c) 2026 Andyl, Inc.
++#ifndef GEM5_SIM_CRUCIBLE_KERNEL_PROCESS_HH
++#define GEM5_SIM_CRUCIBLE_KERNEL_PROCESS_HH
++
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++#include <fcntl.h>
++#include <linux/magic.h>
++#include <sys/syscall.h>
++#include <sys/vfs.h>
++
++namespace gem5::crucible
++{
++
++/** Actual Linux process custody. These observations confer no source permit. */
++struct KernelProcessObservation
++{
++    std::uint64_t process = 0;
++    std::uint64_t uid = 0;
++    std::uint64_t startTicks = 0;
++};
++
++namespace kernel_process_detail
++{
++
++// A process-image provider may virtualize libc syscall/PID entry points. These
++// Linux calls must observe the current kernel process, including early restore
++// before provider wrappers and their logger/plugin owners are operational.
++inline long rawCall(long number, long first = 0, long second = 0,
++                    long third = 0, long fourth = 0)
++{
++#if defined(__x86_64__)
++    register long r10 __asm__("r10") = fourth;
++    long result;
++    __asm__ volatile("syscall" : "=a"(result)
++        : "a"(number), "D"(first), "S"(second), "d"(third), "r"(r10)
++        : "rcx", "r11", "memory");
++    return result;
++#elif defined(__aarch64__)
++    register long x8 __asm__("x8") = number;
++    register long x0 __asm__("x0") = first;
++    register long x1 __asm__("x1") = second;
++    register long x2 __asm__("x2") = third;
++    register long x3 __asm__("x3") = fourth;
++    __asm__ volatile("svc 0" : "+r"(x0)
++        : "r"(x8), "r"(x1), "r"(x2), "r"(x3) : "memory", "cc");
++    return x0;
++#else
++#error Unsupported native Linux host architecture
++#endif
++}
++
++inline bool decimal(const char *first, const char *limit, std::uint64_t &value)
++{
++    if (first == limit) return false;
++    std::uint64_t parsed = 0;
++    for (auto cursor = first; cursor != limit; ++cursor) {
++        if (*cursor < '0' || *cursor > '9') return false;
++        const unsigned digit = unsigned(*cursor - '0');
++        if (parsed > (UINT64_MAX - digit) / 10) return false;
++        parsed = parsed * 10 + digit;
++    }
++    value = parsed;
++    return true;
++}
++
++/** Reads field22 without treating spaces/parentheses in comm as separators. */
++inline bool startTicks(const char *bytes, std::size_t length,
++                       std::uint64_t expectedProcess, std::uint64_t &ticks)
++{
++    if (!bytes || !length || length >= 4096) return false;
++    const auto *limit = bytes + length;
++    const auto *separator = static_cast<const char *>(std::memchr(bytes, ' ', length));
++    std::uint64_t process = 0;
++    if (!separator || separator + 1 == limit || separator[1] != '(' ||
++        !decimal(bytes, separator, process) || process != expectedProcess)
++        return false;
++
++    // comm may include closing parentheses; only the last one ends field2.
++    const char *close = nullptr;
++    for (auto cursor = separator + 2; cursor != limit; ++cursor) {
++        if (*cursor == ')') close = cursor;
++    }
++    if (!close || close + 2 >= limit || close[1] != ' ') return false;
++
++    const char *cursor = close + 2;
++    for (unsigned field = 3; field <= 22; ++field) {
++        const char *end = cursor;
++        while (end != limit && *end != ' ' && *end != '\n') ++end;
++        if (end == cursor) return false;
++        if (field == 22)
++            return decimal(cursor, end, ticks) && ticks != 0;
++        if (end == limit || *end != ' ') return false;
++        cursor = end + 1;
++    }
++    return false;
++}
++
++} // namespace kernel_process_detail
++
++/** Borrows actual PID/UID/start-time through authenticated Linux procfs.
++ *
++ * The single bounded read and all failure paths close the original temporary
++ * descriptor. A failed read or close leaves the caller's output untouched.
++ * The observation remains descriptive; a native verifier must bind it to the
++ * original source account and complete actual closure before issuing a cut.
++ */
++inline bool observeKernelProcess(KernelProcessObservation &output)
++{
++    using namespace kernel_process_detail;
++    const long pid = rawCall(SYS_getpid);
++    const long uid = rawCall(SYS_geteuid);
++    if (pid <= 0 || uid < 0) return false;
++
++    const long fd = rawCall(SYS_openat, AT_FDCWD,
++        reinterpret_cast<long>("/proc/self/stat"), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++    if (fd < 0) return false;
++
++    struct statfs filesystem{};
++    char bytes[4096];
++    const long stat = rawCall(SYS_fstatfs, fd, reinterpret_cast<long>(&filesystem));
++    const long extent = stat == 0 && filesystem.f_type == PROC_SUPER_MAGIC
++        ? rawCall(SYS_read, fd, reinterpret_cast<long>(bytes), sizeof(bytes)) : -1;
++    const long closed = rawCall(SYS_close, fd);
++    std::uint64_t ticks = 0;
++    if (closed != 0 || extent <= 0 || extent >= long(sizeof(bytes)) ||
++        !startTicks(bytes, std::size_t(extent), std::uint64_t(pid), ticks) ||
++        rawCall(SYS_getpid) != pid || rawCall(SYS_geteuid) != uid)
++        return false;
++
++    output = {std::uint64_t(pid), std::uint64_t(uid), ticks};
++    return true;
++}
++
++} // namespace gem5::crucible
++#endif
+--- /dev/null
++++ b/src/sim/crucible_native_cut.hh
+@@ -0,0 +1,308 @@
++// SPDX-License-Identifier: BSD-3-Clause
++// Copyright (c) 2026 Andyl, Inc.
++#ifndef GEM5_SIM_CRUCIBLE_NATIVE_CUT_HH
++#define GEM5_SIM_CRUCIBLE_NATIVE_CUT_HH
++
++#include <array>
++#include <cstddef>
++#include <cstdint>
++
++namespace gem5::crucible
++{
++
++class ArmAtomicClosedScope;
++class SourceCheckpointIssuer;
++class EarlyRestoreAdopter;
++class OriginalCutAccount;
++
++using Digest = std::array<unsigned char, 32>;
++using ReadyBody = std::array<unsigned char, 344>;
++using ReadyAckBody = std::array<unsigned char, 128>;
++
++/** Correlations selected before the original native object graph is realized. */
++struct OriginalScopeBinding
++{
++    Digest scope{};
++    Digest setup{};
++    Digest profile{};
++    Digest implementation{};
++    Digest queuePlan{};
++    std::uint64_t nativeEpoch = 0;
++    std::uint64_t sourceProcessGeneration = 0;
++};
++
++/** An original source cut which cannot be reconstructed from a wire receipt.
++ *
++ * Only the concrete source verifier can seal its owning account. The token is
++ * tied to that exact account address and cut; a byte-identical unrelated
++ * account, parser result or diagnostic census cannot consume it.
++ */
++class NativeCutPermit
++{
++  public:
++    NativeCutPermit(const NativeCutPermit &) = delete;
++    NativeCutPermit &operator=(const NativeCutPermit &) = delete;
++    NativeCutPermit(NativeCutPermit &&) = delete;
++    NativeCutPermit &operator=(NativeCutPermit &&) = delete;
++
++  private:
++    friend class OriginalCutAccount;
++    NativeCutPermit() = default;
++
++    const OriginalCutAccount *owner = nullptr;
++    std::uint64_t cut = 0;
++    bool consumed = false;
++};
++
++/** A branch ordinal born in the original source account, before capture.
++ *
++ * This process-private token is not an on-disk authorization format. An
++ * opaque image's copy of this account is insufficient for fresh-process
++ * adoption: the adopter must retain authentic original issuer custody.
++ */
++class NativeBranchPermit
++{
++  public:
++    NativeBranchPermit(const NativeBranchPermit &) = delete;
++    NativeBranchPermit &operator=(const NativeBranchPermit &) = delete;
++    NativeBranchPermit(NativeBranchPermit &&) = delete;
++    NativeBranchPermit &operator=(NativeBranchPermit &&) = delete;
++
++  private:
++    friend class OriginalCutAccount;
++    NativeBranchPermit() = default;
++
++    const OriginalCutAccount *owner = nullptr;
++    std::uint64_t cut = 0;
++    std::uint64_t ordinal = 0;
++    bool consumed = false;
++};
++
++/** Retains one finite original source-cut and its two branch lifecycles.
++ *
++ * The account owns all permit, Ready, ACK, cursor and attempt storage from
++ * construction. It exposes no public sealing, issuance or adoption method.
++ * The friend owners must perform actual native graph/resource checks and
++ * full original final-account authentication before these private transitions.
++ * Those source implementations, not this component or its model controls,
++ * determine whether a production profile can issue execution authority.
++ */
++class OriginalCutAccount
++{
++  public:
++    static constexpr std::size_t BranchCount = 2;
++
++    enum class CutState : unsigned char {
++        Constructed, Walking, Refused, Sealed, Finalized
++    };
++
++    enum class BranchState : unsigned char {
++        Reserved, Issued, Adopting, Refused, Adopted, ReadyOffered,
++        AckRetained, Consumed, Retired
++    };
++
++    OriginalCutAccount(const OriginalScopeBinding &selected,
++                       std::uint64_t originalProcess,
++                       std::uint64_t originalUid)
++        : binding(selected), sourceProcess(originalProcess), sourceUid(originalUid)
++    {
++        cutPermit.owner = this;
++        for (std::size_t index = 0; index < BranchCount; ++index) {
++            branches[index].permit.owner = this;
++            branches[index].permit.ordinal = index + 1;
++        }
++    }
++
++    OriginalCutAccount(const OriginalCutAccount &) = delete;
++    OriginalCutAccount &operator=(const OriginalCutAccount &) = delete;
++    OriginalCutAccount(OriginalCutAccount &&) = delete;
++    OriginalCutAccount &operator=(OriginalCutAccount &&) = delete;
++
++    /** Reports the complete constructor-owned storage, including all banks. */
++    static constexpr std::size_t storageBytes() { return sizeof(OriginalCutAccount); }
++
++    /** Reads preservation data; it does not confer a source permit. */
++    const OriginalScopeBinding &originalBinding() const { return binding; }
++    CutState state() const { return cutState; }
++    std::uint64_t attempts() const { return cutAttempts; }
++    std::uint64_t originalPid() const { return sourceProcess; }
++    std::uint64_t originalUser() const { return sourceUid; }
++
++  private:
++    friend class ArmAtomicClosedScope;
++    friend class SourceCheckpointIssuer;
++    friend class EarlyRestoreAdopter;
++
++    struct BranchStorage
++    {
++        NativeBranchPermit permit;
++        BranchState state = BranchState::Reserved;
++        std::uint64_t attempts = 0;
++        std::uint64_t operativeProcess = 0;
++        std::uint64_t operativeUid = 0;
++        std::uint64_t operativeGeneration = 0;
++        ReadyBody ready{};
++        ReadyAckBody offeredAck{};
++        ReadyAckBody consumedAck{};
++        std::size_t readyWritten = 0;
++        std::size_t offeredAckRead = 0;
++        std::size_t consumedAckWritten = 0;
++    };
++
++    static bool nonzero(const Digest &digest)
++    {
++        unsigned char value = 0;
++        for (const auto byte : digest) value |= byte;
++        return value != 0;
++    }
++
++    bool selectedBinding() const
++    {
++        return nonzero(binding.scope) && nonzero(binding.setup) &&
++            nonzero(binding.profile) && nonzero(binding.implementation) &&
++            nonzero(binding.queuePlan) && binding.nativeEpoch &&
++            binding.sourceProcessGeneration && sourceProcess;
++    }
++
++    bool beginWalk(std::uint64_t actualProcess, std::uint64_t actualUid,
++                   std::uint64_t actualGeneration, std::uint64_t barrier)
++    {
++        if (cutState != CutState::Constructed) return false;
++
++        // Charge the one source attempt before any potentially failing check.
++        ++cutAttempts;
++        cutState = CutState::Refused;
++        if (!selectedBinding() || actualProcess != sourceProcess ||
++            actualUid != sourceUid ||
++            actualGeneration != binding.sourceProcessGeneration || !barrier)
++            return false;
++
++        barrierGeneration = barrier;
++        cutState = CutState::Walking;
++        return true;
++    }
++
++    const NativeCutPermit *finishWalk(const Digest &actualClosure,
++                                     std::uint64_t actualObjects,
++                                     std::uint64_t actualEdges,
++                                     std::uint64_t actualTick)
++    {
++        if (cutState != CutState::Walking) return nullptr;
++        cutState = CutState::Refused;
++        if (!nonzero(actualClosure) || !actualObjects) return nullptr;
++
++        closure = actualClosure;
++        objects = actualObjects;
++        edges = actualEdges;
++        stoppedTick = actualTick;
++        cutPermit.cut = 1;
++        cutState = CutState::Sealed;
++        return &cutPermit;
++    }
++
++    bool owns(const NativeCutPermit &permit) const
++    {
++        return &permit == &cutPermit && permit.owner == this &&
++            permit.cut == 1 && !permit.consumed && cutState == CutState::Sealed;
++    }
++
++    bool finalize(const NativeCutPermit &permit, const Digest &originalPrefix,
++                  const Digest &fullFinalAccount, const Digest &fullImage,
++                  const Digest &originalFinalDelivery)
++    {
++        if (!owns(permit)) return false;
++
++        // Failure consumes the genuine original cut too; there is no retry
++        // which substitutes another final body or recreates writer credit.
++        cutPermit.consumed = true;
++        cutState = CutState::Refused;
++        if (!nonzero(originalPrefix) || !nonzero(fullFinalAccount) ||
++            !nonzero(fullImage) || !nonzero(originalFinalDelivery))
++            return false;
++
++        prefix = originalPrefix;
++        finalAccount = fullFinalAccount;
++        image = fullImage;
++        finalDelivery = originalFinalDelivery;
++        cutState = CutState::Finalized;
++        return true;
++    }
++
++    NativeBranchPermit *issue(std::size_t index)
++    {
++        if (cutState != CutState::Finalized || index >= BranchCount) return nullptr;
++        auto &branch = branches[index];
++        if (branch.state != BranchState::Reserved) return nullptr;
++
++        branch.permit.cut = cutPermit.cut;
++        branch.state = BranchState::Issued;
++        return &branch.permit;
++    }
++
++    BranchStorage *beginAdoption(NativeBranchPermit &permit)
++    {
++        if (cutState != CutState::Finalized || permit.owner != this ||
++            permit.ordinal == 0 || permit.ordinal > BranchCount ||
++            permit.cut != cutPermit.cut || permit.consumed)
++            return nullptr;
++        auto &branch = branches[permit.ordinal - 1];
++        if (&permit != &branch.permit || branch.state != BranchState::Issued)
++            return nullptr;
++
++        permit.consumed = true;
++        ++branch.attempts;
++        branch.state = BranchState::Adopting;
++        return &branch;
++    }
++
++    bool bindOperative(BranchStorage &branch, std::uint64_t actualProcess,
++                       std::uint64_t actualUid, std::uint64_t actualGeneration)
++    {
++        // An Adopting label alone cannot borrow a different account's slot.
++        // Check the exact constructor-born member before any state mutation.
++        bool owned = false;
++        for (std::size_t index = 0; index < BranchCount; ++index) {
++            if (&branch == &branches[index]) {
++                owned = branch.permit.owner == this &&
++                    branch.permit.ordinal == index + 1 &&
++                    branch.permit.cut == cutPermit.cut && branch.permit.consumed;
++                break;
++            }
++        }
++        if (!owned || branch.state != BranchState::Adopting) return false;
++        branch.state = BranchState::Refused;
++        if (!actualProcess || actualProcess == sourceProcess ||
++            actualUid != sourceUid || !actualGeneration)
++            return false;
++        for (const auto &other : branches) {
++            if (&other != &branch && other.operativeProcess == actualProcess)
++                return false;
++        }
++
++        branch.operativeProcess = actualProcess;
++        branch.operativeUid = actualUid;
++        branch.operativeGeneration = actualGeneration;
++        branch.state = BranchState::Adopted;
++        return true;
++    }
++
++    const OriginalScopeBinding binding;
++    const std::uint64_t sourceProcess;
++    const std::uint64_t sourceUid;
++    CutState cutState = CutState::Constructed;
++    std::uint64_t cutAttempts = 0;
++    std::uint64_t barrierGeneration = 0;
++    std::uint64_t stoppedTick = 0;
++    std::uint64_t objects = 0;
++    std::uint64_t edges = 0;
++    Digest closure{};
++    Digest prefix{};
++    Digest finalAccount{};
++    Digest image{};
++    Digest finalDelivery{};
++    NativeCutPermit cutPermit;
++    std::array<BranchStorage, BranchCount> branches;
++};
++
++} // namespace gem5::crucible
++#endif
+--- /dev/null
++++ b/src/sim/crucible_native_scope.cc
+@@ -0,0 +1,436 @@
++// SPDX-License-Identifier: BSD-3-Clause
++// Copyright (c) 2026 Andyl, Inc.
++#include "sim/crucible_native_scope.hh"
++
++#include <new>
++
++#include "arch/generic/pcstate.hh"
++#include "cpu/static_inst.hh"
++
++#include "sim/core.hh"
++#include "sim/eventq.hh"
++#include "sim/port.hh"
++#include "sim/probe/probe.hh"
++#include "sim/sim_object.hh"
++#include "sim/simulate.hh"
++#include "sim/system.hh"
++
++namespace gem5::crucible
++{
++
++namespace
++{
++
++// The storage and dispatcher outlive OpenSSL/provider and SimObject cleanup.
++// The reservation is never reset, including selection failure or source-gone
++// restore. It is process-private state, not a reusable allocation cache.
++struct ProcessLifetimeScope
++{
++    alignas(OriginalNodeScope) unsigned char storage[sizeof(OriginalNodeScope)];
++    OriginalNodeScope *active = nullptr;
++    bool reserved = false;
++};
++
++ProcessLifetimeScope lifetime;
++
++const Digest diagnosticProfileDigest = {0xcb, 0xf0, 0xf2, 0x00, 0xd6, 0x9a, 0x5c, 0xcc, 0x39, 0x5f, 0x7c, 0xbc, 0x36, 0x7d, 0xe0, 0xbb, 0x2d, 0xf3, 0x03, 0x9c, 0x34, 0xcc, 0x17, 0x7c, 0x1c, 0x39, 0x77, 0xca, 0x67, 0x68, 0xe3, 0x70};
++
++bool
++nonzero(const Digest &bytes)
++{
++    unsigned char value = 0;
++    for (const auto byte : bytes) value |= byte;
++    return value != 0;
++}
++
++} // anonymous namespace
++
++OriginalNodeScope::OriginalNodeScope(const OriginalScopeBinding &binding,
++                                     const KernelProcessObservation &process)
++    : originalProcess(process), account(binding, process.process, process.uid),
++      visitor(*this)
++{
++}
++
++bool
++OriginalNodeScope::select(const OriginalScopeBinding &binding)
++{
++    using kernel_process_detail::rawCall;
++    const long process = rawCall(SYS_getpid);
++    if (process <= 0 || rawCall(SYS_gettid) != process) return false;
++    if (lifetime.reserved) return false;
++    lifetime.reserved = true;
++
++    KernelProcessObservation actual;
++    if (!SimObject::simObjectList.empty() || !observeKernelProcess(actual) ||
++        actual.process != std::uint64_t(process) ||
++        actual.startTicks != binding.sourceProcessGeneration ||
++        !binding.nativeEpoch || !nonzero(binding.scope) ||
++        !nonzero(binding.setup) || !nonzero(binding.profile) ||
++        !nonzero(binding.implementation) || !nonzero(binding.queuePlan) ||
++        binding.profile != diagnosticProfileDigest)
++        return false;
++
++    lifetime.active = new (lifetime.storage) OriginalNodeScope(binding, actual);
++    return true;
++}
++
++const Digest &
++OriginalNodeScope::diagnosticProfile()
++{
++    return diagnosticProfileDigest;
++}
++
++bool
++OriginalNodeScope::inspectOriginalOwnership(EventQueue &queue)
++{
++    // Diagnostic ownership inspection cannot install runtime authority or
++    // seal the original account. The authentic source provider owns those
++    // distinct graph/resource/account/image transitions.
++    return walk(queue);
++}
++
++OriginalNodeScope *
++OriginalNodeScope::selected()
++{
++    return lifetime.active;
++}
++
++std::size_t
++OriginalNodeScope::storageBytes()
++{
++    return sizeof(lifetime);
++}
++
++bool
++OriginalNodeScope::refuse(Refusal failure)
++{
++    // Retain the first causal failure. Neither a later successful observation
++    // nor a fresh public description can restore the original walk attempt.
++    if (phase != State::Refused) reason = failure;
++    phase = State::Refused;
++    return false;
++}
++
++bool
++OriginalNodeScope::current()
++{
++    using kernel_process_detail::rawCall;
++    const auto expectedProcess = operativeProcess.process
++        ? operativeProcess.process : originalProcess.process;
++    if (rawCall(SYS_getpid) != long(expectedProcess) ||
++        rawCall(SYS_gettid) != long(expectedProcess) ||
++        rawCall(SYS_geteuid) != long(originalProcess.uid)) {
++        // The source records belong to the original main thread. A foreign
++        // caller cannot mutate them, enter inherited allocator/logger locks or
++        // return into an unverified callback. Outer custody retains exit125 as
++        // terminal/uncertain; this is not a NoEffects or state-preservation claim.
++        rawCall(SYS_exit_group, 125);
++        __builtin_unreachable();
++    }
++    return phase != State::Refused;
++}
++
++void
++OriginalNodeScope::beforeInstruction(const StaticInst *instruction, const PCStateBase &pc)
++{
++    using kernel_process_detail::rawCall;
++    const bool authorized = current() && runtimeAuthorized && instruction &&
++        !instruction->isSyscall() && !instruction->isPseudo() &&
++        !instruction->isInvalid() && !instruction->isMacroop() &&
++        !instruction->isMicroop();
++    bool fixedLoop = false;
++    if (authorized) {
++        const auto encoded = instruction->getEMI();
++        const auto opcode = std::uint32_t(encoded);
++        // ARM's source decoder records AArch64 at bit34. Fault, illegal,
++        // software-step and Thumb metadata cannot select another execution
++        // path for these two exact source-profile instructions.
++        const bool mode = (encoded & (UINT64_C(1) << 34)) &&
++            !(encoded & ((UINT64_C(15) << 60) | (UINT64_C(3) << 35)));
++        fixedLoop = mode &&
++            ((pc.instAddr() == 0x10000 && opcode == 0xD503201F) ||
++             (pc.instAddr() == 0x10004 && opcode == 0x17FFFFFF));
++    }
++    if (!fixedLoop) {
++        refuse(Refusal::InvalidPhase);
++        // Returning through guest syscall/fault helpers would enter host
++        // effects outside this narrow source profile. Preserve outer actor
++        // custody as terminal/uncertain; do not label the failed step NoEffects.
++        rawCall(SYS_exit_group, 126);
++        __builtin_unreachable();
++    }
++}
++
++std::size_t
++OriginalNodeScope::ordinal(const SimObject *object) const
++{
++    for (std::size_t index = 0; index < objectsUsed; ++index) {
++        if (objects[index].object == object) return index;
++    }
++    return ObjectCapacity;
++}
++
++void
++OriginalNodeScope::born(const SimObject *object)
++{
++    if (!current()) return;
++    if (phase != State::Constructing || !object) {
++        refuse(Refusal::InvalidPhase);
++        return;
++    }
++    if (ordinal(object) != ObjectCapacity) {
++        refuse(Refusal::DuplicateBirth);
++        return;
++    }
++    if (objectsUsed == ObjectCapacity) {
++        refuse(Refusal::ObjectCapacity);
++        return;
++    }
++    objects[objectsUsed++].object = object;
++}
++
++void
++OriginalNodeScope::destroyed(const SimObject *object)
++{
++    if (!current()) return;
++    if (ordinal(object) != ObjectCapacity) refuse(Refusal::ObjectDestroyed);
++}
++
++bool
++OriginalNodeScope::visit(const SimObject *object)
++{
++    if (!current() || phase != State::Walking) return false;
++    const auto index = ordinal(object);
++    if (index == ObjectCapacity) return refuse(Refusal::UnknownObject);
++    auto &birth = objects[index];
++    if (birth.visit != Visit::Unvisited) return true;
++
++    birth.visit = Visit::Visiting;
++    const auto *previous = visiting;
++    visiting = object;
++    const bool complete = object->probeManager &&
++        object->probeManager->crucibleNativeListenersAbsent() &&
++        object->crucibleNativeClosure(visitor);
++    visiting = previous;
++    if (!complete || phase != State::Walking || !tablesComplete(object))
++        return refuse(Refusal::UnknownVisitor);
++    birth.visit = Visit::Complete;
++    return true;
++}
++
++bool
++OriginalNodeScope::objectEdge(const SimObject *owner, const SimObject *target,
++                              std::uint32_t member)
++{
++    if (!current() || phase != State::Walking) return false;
++    const auto ownerIndex = ordinal(owner);
++    const auto targetIndex = ordinal(target);
++    if (owner != visiting || ownerIndex == ObjectCapacity ||
++        targetIndex == ObjectCapacity || !member)
++        return refuse(Refusal::InvalidEdge);
++    if (edgesUsed == EdgeCapacity) return refuse(Refusal::EdgeCapacity);
++
++    edges[edgesUsed++] = {std::uint32_t(ownerIndex + 1),
++                         std::uint32_t(targetIndex + 1), member};
++    return visit(target);
++}
++
++bool
++OriginalNodeScope::callbackOwner(const SimObject *owner, const Event *event,
++                                 std::uint32_t member)
++{
++    if (!current() || phase != State::Walking) return false;
++    const auto ownerIndex = ordinal(owner);
++    if (owner != visiting || ownerIndex == ObjectCapacity || !event || !member)
++        return refuse(Refusal::InvalidCallback);
++
++    for (std::size_t index = 0; index < callbacksUsed; ++index) {
++        if (callbacks[index].event == event)
++            return refuse(Refusal::InvalidCallback);
++    }
++    if (callbacksUsed == CallbackCapacity) return refuse(Refusal::CallbackCapacity);
++    callbacks[callbacksUsed++] = {event, std::uint32_t(ownerIndex + 1), member, false};
++    return true;
++}
++
++bool
++OriginalNodeScope::queued(const Event *event)
++{
++    if (phase != State::Walking || !event) return false;
++    for (std::size_t index = 0; index < callbacksUsed; ++index) {
++        auto &callback = callbacks[index];
++        if (callback.event != event) continue;
++        if (callback.queued) return refuse(Refusal::InvalidCallback);
++        callback.queued = true;
++        return true;
++    }
++    return refuse(Refusal::MissingCallback);
++}
++
++bool
++OriginalNodeScope::portOwner(const SimObject *owner, const Port *port,
++                             std::uint32_t member)
++{
++    if (!current() || phase != State::Walking) return false;
++    const auto ownerIndex = ordinal(owner);
++    if (owner != visiting || ownerIndex == ObjectCapacity || !port || !member)
++        return refuse(Refusal::InvalidPort);
++    for (std::size_t index = 0; index < portsUsed; ++index) {
++        if (ports[index].port == port) return refuse(Refusal::InvalidPort);
++    }
++    if (portsUsed == PortCapacity) return refuse(Refusal::PortCapacity);
++    ports[portsUsed++] = {port, std::uint32_t(ownerIndex + 1), member};
++    return true;
++}
++
++bool
++OriginalNodeScope::portsClosed()
++{
++    for (std::size_t index = 0; index < portsUsed; ++index) {
++        const auto *port = ports[index].port;
++        if (!port->_connected) {
++            if (port->_peer) return refuse(Refusal::InvalidPort);
++            continue;
++        }
++        bool owned = false;
++        for (std::size_t peer = 0; peer < portsUsed; ++peer) {
++            if (ports[peer].port == port->_peer) {
++                owned = true;
++                break;
++            }
++        }
++        if (!owned) return refuse(Refusal::MissingPeer);
++        if (!port->_peer->_connected || port->_peer->_peer != port)
++            return refuse(Refusal::InvalidPort);
++    }
++    return true;
++}
++
++bool
++OriginalNodeScope::tableEntry(const SimObject *owner, const SimObject *index,
++                              const ReplaceableEntry *entry)
++{
++    if (!current() || phase != State::Walking) return false;
++    if (visiting != owner || ordinal(owner) == ObjectCapacity ||
++        ordinal(index) == ObjectCapacity || !entry)
++        return refuse(Refusal::InvalidTable);
++
++    TableOwner *table = nullptr;
++    for (std::size_t slot = 0; slot < tablesUsed; ++slot) {
++        if (tables[slot].index != index) continue;
++        if (tables[slot].owner != owner) return refuse(Refusal::InvalidTable);
++        table = &tables[slot];
++        break;
++    }
++    if (!table) {
++        if (tablesUsed == TableCapacity) return refuse(Refusal::TableCapacity);
++        table = &tables[tablesUsed++];
++        table->owner = owner;
++        table->index = index;
++    }
++    for (std::size_t slot = 0; slot < table->used; ++slot) {
++        if (table->entries[slot].entry == entry) return refuse(Refusal::InvalidTable);
++    }
++    if (table->used == TableEntryCapacity)
++        return refuse(Refusal::TableEntryCapacity);
++    table->entries[table->used++].entry = entry;
++    return true;
++}
++
++bool
++OriginalNodeScope::indexedEntry(const SimObject *index, const ReplaceableEntry *entry)
++{
++    if (!current() || phase != State::Walking) return false;
++    if (visiting != index || !entry) return refuse(Refusal::InvalidTable);
++    for (std::size_t slot = 0; slot < tablesUsed; ++slot) {
++        auto &table = tables[slot];
++        if (table.index != index) continue;
++        for (std::size_t offset = 0; offset < table.used; ++offset) {
++            auto &original = table.entries[offset];
++            if (original.entry != entry) continue;
++            if (original.indexed) return refuse(Refusal::InvalidTable);
++            original.indexed = true;
++            return true;
++        }
++        return refuse(Refusal::InvalidTable);
++    }
++    return refuse(Refusal::InvalidTable);
++}
++
++bool
++OriginalNodeScope::tablesComplete(const SimObject *index)
++{
++    for (std::size_t slot = 0; slot < tablesUsed; ++slot) {
++        const auto &table = tables[slot];
++        if (table.index != index) continue;
++        for (std::size_t offset = 0; offset < table.used; ++offset) {
++            if (!table.entries[offset].indexed) return refuse(Refusal::InvalidTable);
++        }
++    }
++    return true;
++}
++
++bool
++OriginalNodeScope::walk(EventQueue &queue)
++{
++    if (!current()) return false;
++    if (phase != State::Constructing) return refuse(Refusal::InvalidPhase);
++    phase = State::Walking;
++    if (!objectsUsed || numMainEventQueues != 1 || mainEventQueue.size() != 1 ||
++        mainEventQueue[0] != &queue || inParallelMode ||
++        crucibleModelIsExecuting() || sim_clock::Frequency != 1000000000000ULL ||
++        System::systemList.size() != 1 || !System::systemList[0])
++        return refuse(Refusal::QueueOwnership);
++
++    stoppedTick = queue.getCurTick();
++    if (SimObject::simObjectList.size() != objectsUsed)
++        return refuse(Refusal::UnknownObject);
++    for (const auto *object : SimObject::simObjectList) {
++        if (ordinal(object) == ObjectCapacity) return refuse(Refusal::UnknownObject);
++    }
++    if (!queue.crucibleNativeClosure(*this)) return false;
++    if (!current() || queue.getCurTick() != stoppedTick)
++        return refuse(Refusal::ChangedTick);
++
++    // Walked only authenticates these native ownership records. It never
++    // substitutes for the process-resource/image/final-delivery source gate.
++    phase = State::Walked;
++    return true;
++}
++
++bool
++NativeClosureWalk::object(const SimObject *owner, const SimObject *target,
++                          std::uint32_t member)
++{
++    return scope.objectEdge(owner, target, member);
++}
++
++bool
++NativeClosureWalk::callback(const SimObject *owner, const Event *event,
++                            std::uint32_t member)
++{
++    return scope.callbackOwner(owner, event, member);
++}
++
++bool
++NativeClosureWalk::port(const SimObject *owner, const Port *port,
++                        std::uint32_t member)
++{
++    return scope.portOwner(owner, port, member);
++}
++
++bool
++NativeClosureWalk::tableEntry(const SimObject *owner, const SimObject *index,
++                             const ReplaceableEntry *entry)
++{
++    return scope.tableEntry(owner, index, entry);
++}
++
++bool
++NativeClosureWalk::indexedEntry(const SimObject *index, const ReplaceableEntry *entry)
++{
++    return scope.indexedEntry(index, entry);
++}
++
++} // namespace gem5::crucible
+--- /dev/null
++++ b/src/sim/crucible_native_scope.hh
+@@ -0,0 +1,232 @@
++// SPDX-License-Identifier: BSD-3-Clause
++// Copyright (c) 2026 Andyl, Inc.
++#ifndef GEM5_SIM_CRUCIBLE_NATIVE_SCOPE_HH
++#define GEM5_SIM_CRUCIBLE_NATIVE_SCOPE_HH
++
++#include <array>
++#include <cstddef>
++#include <cstdint>
++
++#include "sim/crucible_kernel_process.hh"
++#include "sim/crucible_native_cut.hh"
++
++namespace gem5
++{
++
++class SimObject;
++class Event;
++class EventQueue;
++class Port;
++class ReplaceableEntry;
++class StaticInst;
++class PCStateBase;
++
++namespace crucible
++{
++
++class OriginalNodeScope;
++
++/** Visits actual source-owned objects and callbacks in one original scope.
++ *
++ * This visitor contains private native pointers. It never crosses a process
++ * boundary, supplies a public protocol layout or describes a serialized CPU.
++ * The complete process image preserves private fields; this walk checks their
++ * ownership and the source-controlled entry points which may affect them.
++ */
++class NativeClosureWalk
++{
++  public:
++    /** Checks an actual object edge, including cycles and shared children. */
++    bool object(const SimObject *owner, const SimObject *target,
++                std::uint32_t member);
++
++    /** Registers an exact callback member, rather than an event type name. */
++    bool callback(const SimObject *owner, const Event *event,
++                  std::uint32_t member);
++
++    /** Registers the original native port member for reciprocal edge checks. */
++    bool port(const SimObject *owner, const Port *port, std::uint32_t member);
++
++    /** Binds actual entry members before visiting their native indexing owner. */
++    bool tableEntry(const SimObject *owner, const SimObject *index,
++                    const ReplaceableEntry *entry);
++
++    /** Checks a native indexing slot against the original table member bank. */
++    bool indexedEntry(const SimObject *index, const ReplaceableEntry *entry);
++
++  private:
++    friend class OriginalNodeScope;
++    explicit NativeClosureWalk(OriginalNodeScope &original) : scope(original) {}
++
++    OriginalNodeScope &scope;
++};
++
++/** Owns constructor-born object identities and one finite closure walk.
++ *
++ * Selection and construction grant no cut permit. Every actual object must
++ * run its concrete source visitor, and every queued callback must match an
++ * original owner's exact member. Unknown objects, overflow, destruction,
++ * asynchronous work and changed kernel custody refuse this scope permanently.
++ * SourceCheckpointIssuer must additionally authenticate process resources,
++ * the complete image and final account/delivery before issuing branch permits.
++ */
++class OriginalNodeScope
++{
++  public:
++    static constexpr std::size_t ObjectCapacity = 256;
++    static constexpr std::size_t EdgeCapacity = 4096;
++    static constexpr std::size_t CallbackCapacity = 256;
++    static constexpr std::size_t PortCapacity = 256;
++    static constexpr std::size_t TableCapacity = 16;
++    static constexpr std::size_t TableEntryCapacity = 1024;
++
++    enum class State : unsigned char { Constructing, Walking, Refused, Walked };
++    enum class Refusal : unsigned char {
++        None, ForeignProcess, ObjectCapacity, ObjectDestroyed, DuplicateBirth,
++        UnknownObject, UnknownVisitor, EdgeCapacity, InvalidEdge,
++        CallbackCapacity, InvalidCallback, QueueOwnership, PendingAsync,
++        MissingCallback, ChangedTick, InvalidPhase, PortCapacity,
++        InvalidPort, MissingPeer, InvalidTable, TableCapacity, TableEntryCapacity
++    };
++
++    /** Selects original native storage before any SimObject is constructed.
++     *
++     * The lifetime reservation is consumed before validation. Failed selection
++     * cannot renew storage or create another original scope in this process.
++     */
++    static bool select(const OriginalScopeBinding &binding);
++
++    /** Returns the exact narrow diagnostic profile correlation. */
++    static const Digest &diagnosticProfile();
++
++    /** Runs the original source ownership walk without granting authority.
++     *
++     * The one attempt is retained even on refusal. This diagnostic reports
++     * native graph ownership only; runtime, resources, image/final delivery,
++     * source issuance and early restore adoption remain separate gates.
++     */
++    bool inspectOriginalOwnership(EventQueue &queue);
++    static OriginalNodeScope *selected();
++    static std::size_t storageBytes();
++
++    /** Records births directly from the original SimObject constructor. */
++    void born(const SimObject *object);
++    void destroyed(const SimObject *object);
++
++    /** Enforces the selected fixed ARM loop before a guest instruction effect.
++     *
++     * Runtime authority starts absent. Only the concrete original constructor
++     * gate or authenticated early adopter can install it after complete native
++     * checks. An ownership-only walk or parsed receipt cannot enable execution.
++     */
++    void beforeInstruction(const StaticInst *instruction, const PCStateBase &pc);
++
++    State state() const { return phase; }
++    Refusal refusal() const { return reason; }
++    std::size_t objectCount() const { return objectsUsed; }
++    std::size_t edgeCount() const { return edgesUsed; }
++    std::size_t callbackCount() const { return callbacksUsed; }
++
++    OriginalNodeScope(const OriginalNodeScope &) = delete;
++    OriginalNodeScope &operator=(const OriginalNodeScope &) = delete;
++    OriginalNodeScope(OriginalNodeScope &&) = delete;
++    OriginalNodeScope &operator=(OriginalNodeScope &&) = delete;
++
++  private:
++    friend class NativeClosureWalk;
++    friend class ArmAtomicClosedScope;
++    friend class SourceCheckpointIssuer;
++    friend class EarlyRestoreAdopter;
++    friend class ::gem5::EventQueue;
++
++    enum class Visit : unsigned char { Unvisited, Visiting, Complete };
++
++    struct ObjectBirth
++    {
++        const SimObject *object = nullptr;
++        Visit visit = Visit::Unvisited;
++    };
++
++    struct ObjectEdge
++    {
++        std::uint32_t owner = 0;
++        std::uint32_t target = 0;
++        std::uint32_t member = 0;
++    };
++
++    struct CallbackOwner
++    {
++        const Event *event = nullptr;
++        std::uint32_t owner = 0;
++        std::uint32_t member = 0;
++        bool queued = false;
++    };
++
++    struct PortOwner
++    {
++        const Port *port = nullptr;
++        std::uint32_t owner = 0;
++        std::uint32_t member = 0;
++    };
++
++    struct TableEntry
++    {
++        const ReplaceableEntry *entry = nullptr;
++        bool indexed = false;
++    };
++
++    struct TableOwner
++    {
++        const SimObject *owner = nullptr;
++        const SimObject *index = nullptr;
++        std::array<TableEntry, TableEntryCapacity> entries{};
++        std::size_t used = 0;
++    };
++
++    OriginalNodeScope(const OriginalScopeBinding &binding,
++                      const KernelProcessObservation &process);
++    ~OriginalNodeScope() = default;
++
++    bool current();
++    bool refuse(Refusal failure);
++    std::size_t ordinal(const SimObject *object) const;
++    bool visit(const SimObject *object);
++    bool objectEdge(const SimObject *owner, const SimObject *target,
++                    std::uint32_t member);
++    bool callbackOwner(const SimObject *owner, const Event *event,
++                       std::uint32_t member);
++    bool portOwner(const SimObject *owner, const Port *port,
++                   std::uint32_t member);
++    bool portsClosed();
++    bool tableEntry(const SimObject *owner, const SimObject *index,
++                    const ReplaceableEntry *entry);
++    bool indexedEntry(const SimObject *index, const ReplaceableEntry *entry);
++    bool tablesComplete(const SimObject *index);
++    bool queued(const Event *event);
++    bool walk(EventQueue &queue);
++
++    const KernelProcessObservation originalProcess;
++    KernelProcessObservation operativeProcess{};
++    bool runtimeAuthorized = false;
++    OriginalCutAccount account;
++    NativeClosureWalk visitor;
++    State phase = State::Constructing;
++    Refusal reason = Refusal::None;
++    const SimObject *visiting = nullptr;
++    std::uint64_t stoppedTick = 0;
++    std::array<ObjectBirth, ObjectCapacity> objects{};
++    std::array<ObjectEdge, EdgeCapacity> edges{};
++    std::array<CallbackOwner, CallbackCapacity> callbacks{};
++    std::array<PortOwner, PortCapacity> ports{};
++    std::array<TableOwner, TableCapacity> tables{};
++    std::size_t objectsUsed = 0;
++    std::size_t edgesUsed = 0;
++    std::size_t callbacksUsed = 0;
++    std::size_t portsUsed = 0;
++    std::size_t tablesUsed = 0;
++};
++
++} // namespace crucible
++} // namespace gem5
++
++#endif
+--- a/src/sim/dvfs_handler.cc
++++ b/src/sim/dvfs_handler.cc
+@@ -36,6 +36,8 @@
+  */
+ 
+ #include "sim/dvfs_handler.hh"
++#include "sim/crucible_native_scope.hh"
++#include <typeinfo>
+ 
+ #include <set>
+ #include <utility>
+@@ -253,4 +255,14 @@
+     UpdateEvent::dvfsHandler = this;
+ }
+ 
++bool
++DVFSHandler::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    if (typeid(*this) != typeid(DVFSHandler) || enableHandler ||
++        !domains.empty() || !domainIDList.empty() || !updatePerfLevelEvents.empty() ||
++        !sysClkDomain || UpdateEvent::dvfsHandler != this)
++        return false;
++    return walk.object(this, sysClkDomain, 1);
++}
++
+ } // namespace gem5
+--- a/src/sim/dvfs_handler.hh
++++ b/src/sim/dvfs_handler.hh
+@@ -77,6 +77,8 @@
+     typedef DVFSHandlerParams Params;
+     DVFSHandler(const Params &p);
+ 
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+     typedef SrcClockDomain::DomainID DomainID;
+     typedef SrcClockDomain::PerfLevel PerfLevel;
+ 
+--- a/src/sim/eventq.cc
++++ b/src/sim/eventq.cc
+@@ -44,6 +44,8 @@
+ 
+ #include <stdexcept>
+ #include "sim/crucible_state.hh"
++#include "sim/crucible_native_scope.hh"
++#include "sim/system.hh"
+ #include <typeinfo>
+ 
+ namespace gem5
+@@ -222,6 +224,68 @@
+     // we remove an item, it returns the new top item (which may be
+     // unchanged)
+     prev->nextBin = Event::removeItem(event, curr);
++}
++
++bool
++EventQueue::crucibleNativeEmpty()
++{
++    std::unique_lock<UncontendedMutex> service(service_mutex, std::try_to_lock);
++    if (!service.owns_lock()) return false;
++    std::unique_lock<UncontendedMutex> asynchronous(async_queue_mutex, std::try_to_lock);
++    return asynchronous.owns_lock() && head == nullptr && async_queue.empty();
++}
++
++bool
++EventQueue::crucibleDiagnosticDirectQueueOwnership(
++    crucible::OriginalNodeScope &scope)
++{
++    // Reject inherited foreign custody before checking phase or touching the
++    // original queue. A direct original caller also cannot index an unbuilt
++    // System or manufacture a private ownership walk from diagnostic input.
++    if (!scope.current()) return false;
++    if (scope.phase != crucible::OriginalNodeScope::State::Walking)
++        return scope.refuse(crucible::OriginalNodeScope::Refusal::InvalidPhase);
++    return crucibleNativeClosure(scope);
++}
++
++bool
++EventQueue::crucibleNativeClosure(crucible::OriginalNodeScope &scope)
++{
++    // This helper is callable independently of the guarded scope walk. Reject
++    // foreign custody before touching inherited mutexes or native owner state.
++    if (!scope.current()) return false;
++
++    using Refusal = crucible::OriginalNodeScope::Refusal;
++    std::unique_lock<UncontendedMutex> service(service_mutex, std::try_to_lock);
++    if (!service.owns_lock()) return scope.refuse(Refusal::QueueOwnership);
++    std::unique_lock<UncontendedMutex> asynchronous(async_queue_mutex, std::try_to_lock);
++    if (!asynchronous.owns_lock()) return scope.refuse(Refusal::QueueOwnership);
++    if (!async_queue.empty()) return scope.refuse(Refusal::PendingAsync);
++
++    // Follow the actual constructor-registered system first. Native dependent
++    // objects (for example indexing tables born before their TLB) must be
++    // verified through the owning object's source edges, not registry order.
++    if (!scope.visit(System::systemList[0])) return false;
++    for (std::size_t index = 0; index < scope.objectsUsed; ++index) {
++        if (!scope.visit(scope.objects[index].object)) return false;
++    }
++    if (!scope.portsClosed()) return false;
++
++    // Preserve actual bin/stack order without sorting, draining or servicing
++    // callbacks. Duplicate links and unknown callbacks refuse the finite walk.
++    for (const Event *bin = head; bin; bin = bin->nextBin) {
++        for (const Event *event = bin; event; event = event->nextInBin) {
++            if (!event->initialized() || !event->scheduled() ||
++                event->when() < _curTick || !scope.queued(event))
++                return scope.refuse(Refusal::InvalidCallback);
++        }
++    }
++    for (std::size_t index = 0; index < scope.callbacksUsed; ++index) {
++        const auto &callback = scope.callbacks[index];
++        if (callback.event->scheduled() != callback.queued)
++            return scope.refuse(Refusal::InvalidCallback);
++    }
++    return true;
+ }
+ 
+ std::vector<CrucibleQueuedEvent>
+--- a/src/sim/eventq.hh
++++ b/src/sim/eventq.hh
+@@ -59,6 +59,8 @@
+ 
+ namespace gem5
+ {
++
++namespace crucible { class OriginalNodeScope; }
+ 
+ class EventQueue;       // forward declaration
+ class BaseGlobalEvent;
+@@ -636,6 +638,9 @@
+ {
+   private:
+     friend void curEventQueue(EventQueue *);
++    friend class crucible::OriginalNodeScope;
++
++    bool crucibleNativeClosure(crucible::OriginalNodeScope &scope);
+ 
+     std::string objName;
+     Event *head;
+@@ -682,6 +687,10 @@
+     EventQueue(const EventQueue &);
+ 
+   public:
++    /** Exercises native helper custody without producing an execution permit. */
++    bool crucibleDiagnosticDirectQueueOwnership(
++        crucible::OriginalNodeScope &scope);
++
+     class ScopedMigration
+     {
+       public:
+@@ -873,6 +882,10 @@
+     std::vector<CrucibleQueuedEvent> crucibleEventInventory();
+     Event *getHead() const { return head; }
+ 
++    // A source visitor may require an instruction queue to be empty; neither
++    // servicing nor discarding its original work is an acceptable substitute.
++    bool crucibleNativeEmpty();
++
+     Event *serviceOne();
+ 
+     /**
+--- a/src/sim/insttracer.hh
++++ b/src/sim/insttracer.hh
+@@ -322,6 +322,7 @@
+ class InstDisassembler : public SimObject
+ {
+   public:
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
+     InstDisassembler(const SimObjectParams &params)
+       : SimObject(params)
+     {}
+@@ -368,6 +369,9 @@
+ 
+   private:
+     InstDisassembler *disassembler;
++
++  protected:
++    bool crucibleNativeDisassembler(crucible::NativeClosureWalk &walk) const;
+ };
+ 
+ } // namespace trace
+--- a/src/sim/port.hh
++++ b/src/sim/port.hh
+@@ -55,11 +55,14 @@
+ namespace gem5
+ {
+ 
++namespace crucible { class OriginalNodeScope; }
++
+ /**
+  * Ports are used to interface objects to each other.
+  */
+ class Port
+ {
++    friend class crucible::OriginalNodeScope;
+ 
+   private:
+ 
+--- a/src/sim/power_state.cc
++++ b/src/sim/power_state.cc
+@@ -46,6 +46,8 @@
+ #include "sim/power_domain.hh"
+ #include "sim/serialize.hh"
+ 
++#include <typeinfo>
++#include "sim/crucible_native_scope.hh"
+ namespace gem5
+ {
+ 
+@@ -282,4 +284,11 @@
+     powerState.computeStats();
+ }
+ 
++bool
++PowerState::crucibleNativeClosure(crucible::NativeClosureWalk &) const
++{
++    return typeid(*this) == typeid(PowerState) && controlledDomain == nullptr &&
++        &stats.powerState == this;
++}
++
+ } // namespace gem5
+--- a/src/sim/power_state.hh
++++ b/src/sim/power_state.hh
+@@ -65,6 +65,8 @@
+ {
+   public:
+     PowerState(const PowerStateParams &p);
++
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
+ 
+     /** Parameters of PowerState object */
+     PARAMS(PowerState);
+--- a/src/sim/probe/probe.hh
++++ b/src/sim/probe/probe.hh
+@@ -127,6 +127,9 @@
+     ProbePoint(ProbeManager *manager, const std::string &name);
+     virtual ~ProbePoint() {}
+ 
++    // Unknown probe implementations cannot hide observers behind a base API.
++    virtual bool crucibleNativeListenersAbsent() const { return false; }
++
+     virtual void addListener(ProbeListener *listener) = 0;
+     virtual void removeListener(ProbeListener *listener) = 0;
+     const std::string &getName() const { return name; }
+@@ -168,6 +171,15 @@
+     ProbeManager(const std::string &obj_name) : Named(obj_name) {}
+     virtual ~ProbeManager() {}
+ 
++    bool crucibleNativeListenersAbsent() const
++    {
++        if (typeid(*this) != typeid(ProbeManager)) return false;
++        for (const auto *point : points) {
++            if (!point || !point->crucibleNativeListenersAbsent()) return false;
++        }
++        return true;
++    }
++
+     /**
+      * @brief Add a ProbeListener to the ProbePoint named by pointName.
+      *        If the name doesn't resolve a ProbePoint return false.
+@@ -288,6 +300,11 @@
+      * @return Whether this probe has any listener.
+      */
+     bool hasListeners() const { return listeners.size() > 0; }
++
++    bool crucibleNativeListenersAbsent() const override
++    {
++        return typeid(*this) == typeid(ProbePointArg<Arg>) && listeners.empty();
++    }
+ 
+     /**
+      * @brief adds a ProbeListener to this ProbePoints notify list.
+--- a/src/sim/root.cc
++++ b/src/sim/root.cc
+@@ -49,6 +49,8 @@
+ #include "sim/full_system.hh"
+ #include "sim/root.hh"
+ 
++#include <typeinfo>
++#include "sim/crucible_native_scope.hh"
+ namespace gem5
+ {
+ 
+@@ -235,4 +237,14 @@
+     return new Root(*this, 0);
+ }
+ 
++bool
++Root::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    // A base guard cannot vouch for fields/callbacks introduced by a subclass.
++    if (typeid(*this) != typeid(Root) || _root != this || _enabled ||
++        syncEvent.scheduled())
++        return false;
++    return walk.callback(this, &syncEvent, 1);
++}
++
+ } // namespace gem5
+--- a/src/sim/root.hh
++++ b/src/sim/root.hh
+@@ -144,6 +144,8 @@
+     // create() method.
+     Root(const Params &p, int);
+ 
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+     /** Schedule the timesync event at startup().
+      */
+     void startup() override;
+--- a/src/sim/sim_object.cc
++++ b/src/sim/sim_object.cc
+@@ -28,6 +28,7 @@
+  */
+ 
+ #include "sim/sim_object.hh"
++#include "sim/crucible_native_scope.hh"
+ 
+ #include <cassert>
+ 
+@@ -73,12 +74,15 @@
+       statistics::Group(nullptr), Named(p.name),
+       _params(p)
+ {
++    if (auto *scope = crucible::OriginalNodeScope::selected()) scope->born(this);
+     simObjectList.push_back(this);
+     probeManager = new ProbeManager(name());
+ }
+ 
+ SimObject::~SimObject()
+ {
++    if (auto *scope = crucible::OriginalNodeScope::selected())
++        scope->destroyed(this);
+     delete probeManager;
+ }
+ 
+--- a/src/sim/sim_object.hh
++++ b/src/sim/sim_object.hh
+@@ -62,6 +62,12 @@
+ namespace gem5
+ {
+ 
++namespace crucible
++{
++class OriginalNodeScope;
++class NativeClosureWalk;
++}
++
+ class EventManager;
+ class ProbeManager;
+ class SimObjectResolver;
+@@ -153,6 +159,7 @@
+ 
+     /** List of all instantiated simulation objects. */
+     static SimObjectList simObjectList;
++    friend class crucible::OriginalNodeScope;
+ 
+     /** Helper to resolve an object given its name. */
+     static SimObjectResolver *_objNameResolver;
+@@ -167,6 +174,13 @@
+      * @ingroup api_simobject
+      */
+     const SimObjectParams &_params;
++
++    // Only concrete source visitors can close native dependencies. Inventory
++    // fields, type names and inherited implementations never grant ownership.
++    virtual bool crucibleNativeClosure(crucible::NativeClosureWalk &) const
++    {
++        return false;
++    }
+ 
+   public:
+     typedef SimObjectParams Params;
+--- a/src/sim/system.cc
++++ b/src/sim/system.cc
+@@ -59,6 +59,9 @@
+ #include "mem/physical.hh"
+ #include "params/System.hh"
+ #include "sim/byteswap.hh"
++#include "sim/crucible_native_scope.hh"
++#include "sim/workload.hh"
++#include <typeinfo>
+ #include "sim/debug.hh"
+ #include "sim/redirect_path.hh"
+ #include "sim/serialize_handlers.hh"
+@@ -571,4 +574,32 @@
+     return requestor_info.req_name;
+ }
+ 
++bool
++System::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    if (typeid(*this) != typeid(System) || !isAtomicMode() ||
++        kvmVM || thermalModel || !liveEvents.empty() || !deviceMemMap.empty() ||
++        !externalMemRanges.empty() || !ShadowRomRanges.empty() ||
++        threads.threads.size() != 1 || !redirectPaths.empty() || !workload)
++        return false;
++
++    const auto &thread = threads.threads[0];
++    if (!thread.context || thread.context->getSystemPtr() != this ||
++        !thread.context->getCpuPtr() || !thread.resumeEvent)
++        return false;
++    if (!walk.object(this, thread.context->getCpuPtr(), 1) ||
++        !walk.callback(this, thread.resumeEvent, 2) ||
++        !walk.object(this, workload, 3) ||
++        !walk.port(this, &_systemPort, 4) ||
++        !physmem.crucibleNativePrivateClosure(walk, this))
++        return false;
++
++    // Requests are routed by actual constructor-owned objects; descriptions
++    // and name lookup cannot bind another requester into the source scope.
++    for (const auto &requestor : requestors) {
++        if (!requestor.obj || !walk.object(this, requestor.obj, 5)) return false;
++    }
++    return true;
++}
++
+ } // namespace gem5
+--- a/src/sim/system.hh
++++ b/src/sim/system.hh
+@@ -569,6 +569,8 @@
+     const AddrRange _m5opRange;
+ 
+   public:
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
+     PARAMS(System);
+ 
+     System(const Params &p);
+--- a/src/sim/voltage_domain.cc
++++ b/src/sim/voltage_domain.cc
+@@ -45,6 +45,8 @@
+ #include "params/VoltageDomain.hh"
+ #include "sim/serialize.hh"
+ 
++#include <typeinfo>
++#include "sim/crucible_native_scope.hh"
+ namespace gem5
+ {
+ 
+@@ -148,4 +150,18 @@
+     voltage.method(&vd, &VoltageDomain::voltage);
+ }
+ 
++bool
++VoltageDomain::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    if (typeid(*this) != typeid(VoltageDomain) ||
++        _perfLevel >= voltageOpPoints.size())
++        return false;
++    for (const auto *clock : srcClockChildren) {
++        if (!clock || clock->voltageDomain() != this ||
++            !walk.object(this, clock, 1))
++            return false;
++    }
++    return true;
++}
++
+ } // namespace gem5
+--- a/src/sim/voltage_domain.hh
++++ b/src/sim/voltage_domain.hh
+@@ -59,6 +59,8 @@
+ 
+     typedef VoltageDomainParams Params;
+     VoltageDomain(const Params &p);
++
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
+ 
+     typedef SrcClockDomain::PerfLevel PerfLevel;
+ 
