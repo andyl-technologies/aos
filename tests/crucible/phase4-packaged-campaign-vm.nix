@@ -943,6 +943,10 @@ assert !interruptedTransfer
           ${pkgs.grep}/bin/grep -Fqx "$envoy_selector: test" \
             /tmp/campaign-envoy-network-list.log
           : > "$envoy_log"
+          ${lib.optionalString hostStackSamples ''
+            # Keep every service's complete stderr beside the bounded test log.
+            export CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR=/tmp/campaign-service-stderr
+          ''}
           ${pkgs.coreutils}/bin/timeout -k 5 3600 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             "$envoy_selector" --nocapture > "$envoy_log" 2>&1 &

@@ -1346,6 +1346,7 @@ impl CampaignServiceChild {
 
 impl Drop for CampaignServiceChild {
     fn drop(&mut self) {
+        retain_service_stderr(self.child.id(), &self.stderr);
         if self.kill_on_drop {
             let signal = send_sigterm(&mut self.child);
             let graceful = wait_for_exit(&mut self.child, Duration::from_secs(45));
@@ -1373,6 +1374,21 @@ impl Drop for CampaignServiceChild {
             observer.stop(&reason);
         }
     }
+}
+
+/// Copies a service's complete stderr into an opt-in diagnostic directory.
+///
+/// Failure reports carry only a bounded stderr tail, and the temporary file
+/// disappears with its fixture. A long VM flight sets
+/// `CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR` so the whole service log survives
+/// the test process; the copy is advisory and never affects the result.
+fn retain_service_stderr(service_pid: u32, stderr: &NamedTempFile) {
+    let Some(directory) = std::env::var_os("CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR") else {
+        return;
+    };
+    let directory = std::path::PathBuf::from(directory);
+    let destination = directory.join(format!("campaign-service-{service_pid}.stderr"));
+    let _ = fs::create_dir_all(&directory).and_then(|()| fs::copy(stderr.path(), destination));
 }
 
 fn connected_campaign(fixture: &FlightFixture) -> Command {
