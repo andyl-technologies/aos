@@ -2373,6 +2373,17 @@ installed-product auditing, QEMU integration and guest behavior remain required.
 Sixteen proposed products cover the fourteen existing iPXE blobs and preserve
 the complete original eight-target BIOS set.
 
+The additive GLib variant supplies a native caller-owned GSource storage query
+and constructor. It checks the exact extent, alignment, overflow and callback
+table overlap before touching storage. Final unref runs the original finalizer
+and retains caller backing; ordinary sources keep their original allocator path.
+The variant preserves every existing GLib phase and feature and co-retains its
+patch, recipe and actual-library control source. Source and formatting review
+pass. Full library construction, guard-page and finalization controls, installed
+source auditing and native Aio caller qualification remain unexecuted. The API
+itself grants no process, credit or dispatch authority and does not establish
+complete GLib context, poll, wakeup or thread backing ownership.
+
 ## Selected plugin preparation and process fencing
 
 The selected plugin retains one original Unix socket, setup descriptor journal,
