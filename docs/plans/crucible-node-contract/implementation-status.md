@@ -2169,10 +2169,18 @@ the original registration until the actual unmap completes.
 
 Roster adoption restricts the original ring headers under the same ownership
 guard; invalid or concurrently refused adoption cannot return usable custody.
-All 143 unit tests and seven separately executed fork/socket fixtures pass,
-including replacement while a parent thread holds an ownership lock. Independent
-review verifies the exact source and executed controls. These process-private
-changes preserve the shared-memory layout; they grant no native readiness.
+Original ownership now reserves bounded retention before native observation
+and can fence ordinary aliases before adopting an epoch. Failed observation
+revokes the exact local permit while preserving the mapping and effect history.
+The original retention ticket transfers its same mapping allocation once;
+immutable process tags reject inherited tickets and unfinished initialization
+before a child can wait on a vanished parent thread.
+
+All 152 unit tests and 12 separately executed fork/socket fixtures pass,
+including replacement while a parent holds an ownership lock or initializes
+a retention ticket. Independent review verifies the exact source and executed
+controls. These process-private changes preserve the shared-memory layout;
+they grant no native readiness.
 Actual plugin callback integration, complete ABI/license gates and application
 target compilation remain separate requirements.
 

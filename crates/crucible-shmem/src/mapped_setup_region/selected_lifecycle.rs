@@ -13,6 +13,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError, Weak};
 
+#[path = "selected_lifecycle/retention.rs"]
+mod retention;
+use retention::RetentionSlot;
+
 use super::{MappedSetupRegion, SetupRegionBackingIdentity, SetupRegionMapError};
 
 /// A refusal from the original mapping's retained lifecycle domain.
@@ -549,6 +553,7 @@ pub struct RetainedWholeMapping {
     epoch: u64,
     operation_capacity: u64,
     quarantine_reserved: bool,
+    retention_slot: Option<Arc<RetentionSlot>>,
     status: Result<(), WholeMappingCustodyError>,
 }
 
@@ -734,6 +739,10 @@ impl Drop for RetainedWholeMapping {
         {
             cell.lease_alive.store(false, Ordering::Release);
         }
+        if let Some(slot) = &self.retention_slot {
+            slot.retain(Arc::clone(&self.mapping));
+            return;
+        }
         // Retain the actual mapping owner, not a copied address or receipt.
         // A poisoned quarantine still leaves a strong owner alive forever.
         let mapping = Arc::clone(&self.mapping);
@@ -762,6 +771,7 @@ impl RetainedWholeMapping {
             epoch,
             operation_capacity: 16,
             quarantine_reserved: false,
+            retention_slot: None,
             status: Err(WholeMappingCustodyError::Selected),
         }
     }
@@ -804,8 +814,10 @@ impl RetainedWholeMapping {
                 uncertain: true,
             };
             cell.epoch.store(epoch, Ordering::Release);
-            reserve_quarantine()?;
-            self.quarantine_reserved = true;
+            if self.retention_slot.is_none() {
+                reserve_quarantine()?;
+                self.quarantine_reserved = true;
+            }
             if self.operation_capacity == 0 || self.operation_capacity > 65_536 {
                 return Err(WholeMappingCustodyError::ResourceLimit);
             }

@@ -244,6 +244,18 @@ impl RetainedWholeMapping {
         refuse_selected_admission();
     }
 
+    /// Cancels local paired custody without reading mapped state or retiring it.
+    ///
+    /// The provider invokes this before returning a native getter, body or
+    /// currentness failure. Its exact original mapping permit is revoked before
+    /// any later ring admission. The actual owner, HELD barriers and pending
+    /// completion history remain retained; cancellation grants no authority.
+    pub fn refuse_paired_control(&mut self) {
+        self.status = Err(WholeMappingCustodyError::Selected);
+        self.refuse_active_loan();
+        revoke_owner(Arc::as_ptr(&self.mapping) as usize);
+    }
+
     /// Begins finite paired custody before the native operation's callbacks.
     ///
     /// The native provider first authenticates the original current scope.

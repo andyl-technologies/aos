@@ -4,7 +4,10 @@
 //! selection. It publishes selected custody before validation, retains failed
 //! adoption, and keeps ordinary aliases fenced through the backing domain.
 
-use super::{Arc, Domain, MappedSetupRegion, RetainedWholeMapping, WholeMappingCustodyError};
+use super::{
+    Arc, Domain, MappedSetupRegion, Ordering, RetainedWholeMapping, WholeMappingCustodyError,
+    registered_domain, try_lock,
+};
 
 enum MappingOwner {
     Ordinary(Arc<MappedSetupRegion>),
@@ -17,6 +20,9 @@ enum MappingOwner {
 /// this allocation and all existing typed views; it grants no native authority.
 pub struct OwnedSetupMapping {
     owner: MappingOwner,
+    intent: bool,
+    intent_refused: bool,
+    retention_slot: Arc<super::RetentionSlot>,
 }
 
 impl OwnedSetupMapping {
@@ -25,6 +31,9 @@ impl OwnedSetupMapping {
     pub fn new(mapping: MappedSetupRegion) -> Self {
         Self {
             owner: MappingOwner::Ordinary(Arc::new(mapping)),
+            intent: false,
+            intent_refused: false,
+            retention_slot: Arc::new(super::RetentionSlot::default()),
         }
     }
 
@@ -46,11 +55,111 @@ impl OwnedSetupMapping {
     pub fn ordinary_mapping_mut(
         &mut self,
     ) -> Result<&mut MappedSetupRegion, WholeMappingCustodyError> {
+        if self.intent || self.intent_refused {
+            return Err(WholeMappingCustodyError::Selected);
+        }
         match &mut self.owner {
             MappingOwner::Ordinary(mapping) => {
                 Arc::get_mut(mapping).ok_or(WholeMappingCustodyError::Busy)
             }
             MappingOwner::Selected(_) => Err(WholeMappingCustodyError::Selected),
+        }
+    }
+
+    /// Reserves bounded owning retention before any native source HOLD.
+    ///
+    /// Constructor preparation calls this before native HOLD, registration or
+    /// getter effects. It allocates only process-private retention storage and
+    /// neither fences aliases nor inspects mapped headers. Once successful,
+    /// the same original allocation can remain owned through every failed
+    /// intent and selected adoption without another retention allocation.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign, previously failed, busy, poisoned or exhausted
+    /// retention. Failure must stop construction before native source effects.
+    pub fn prepare_whole_intent_retention(&mut self) -> Result<(), WholeMappingCustodyError> {
+        if self.intent_refused {
+            return Err(WholeMappingCustodyError::Selected);
+        }
+        self.reserve_retention()
+    }
+
+    /// Fences this original owner's ordinary aliases before native observation.
+    ///
+    /// Preparation first reserves retention, then the authentic source
+    /// establishes its real HOLD barrier. This method publishes only a sticky
+    /// lifetime fence and ends its ordinary
+    /// mutation loan before returning; it assigns no epoch or native grant.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign, mismatched, unavailable, busy, poisoned or previously
+    /// failed original ownership. Failure retains the same actual allocation.
+    pub fn begin_whole_intent(&mut self) -> Result<(), WholeMappingCustodyError> {
+        if self.intent_refused {
+            return Err(WholeMappingCustodyError::Selected);
+        }
+        if !self.retention_slot.armed() {
+            self.intent_refused = true;
+            return Err(WholeMappingCustodyError::ResourceLimit);
+        }
+        self.intent = true;
+        let result = (|| {
+            let mapping = self.mapping();
+            let owner = mapping.mapping_owner_key();
+            if owner.process != std::process::id() {
+                return Err(WholeMappingCustodyError::Unregistered);
+            }
+            let registration = mapping
+                .mapping_registration
+                .as_ref()
+                .ok_or(WholeMappingCustodyError::Unregistered)?;
+            if registration.owner.address != owner.address
+                || registration.owner.length != owner.length
+                || registration.owner.identity != owner.identity
+                || registration.owner.process != owner.process
+            {
+                return Err(WholeMappingCustodyError::Unregistered);
+            }
+            registration.domain.selected.store(true, Ordering::Release);
+            let current = registered_domain(owner)?;
+            if !Arc::ptr_eq(&registration.domain, &current) {
+                return Err(WholeMappingCustodyError::Unregistered);
+            }
+            let _ordinary_loan = try_lock(&current.selection)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.intent_refused = true;
+            self.refuse_whole_control();
+        }
+        result
+    }
+
+    /// Refuses original whole custody and revokes its exact local permit.
+    ///
+    /// The provider calls this before returning any native currentness, body
+    /// or stopped-journal failure. It reads only private owner registration,
+    /// and preserves actual mapping ownership and HELD state without inferring
+    /// native retirement, ACK consumption, release or replacement authority.
+    pub fn refuse_whole_control(&mut self) {
+        self.intent |= self.retention_slot.armed();
+        self.intent_refused = true;
+        match &mut self.owner {
+            MappingOwner::Ordinary(mapping) => {
+                if let Some(registration) = &mapping.mapping_registration {
+                    if self.retention_slot.armed() {
+                        registration.domain.selected.store(true, Ordering::Release);
+                    }
+                    registration
+                        .cell
+                        .lease_alive
+                        .store(false, Ordering::Release);
+                    super::paired_service::revoke_cell(&registration.cell);
+                }
+            }
+            MappingOwner::Selected(selected) => selected.refuse_paired_control(),
         }
     }
 
@@ -123,6 +232,11 @@ impl OwnedSetupMapping {
         operation_capacity: u64,
         preselected: Option<&Arc<Domain>>,
     ) -> Result<(), WholeMappingCustodyError> {
+        if self.intent_refused {
+            return Err(WholeMappingCustodyError::Selected);
+        }
+        self.reserve_retention()?;
+        self.intent = true;
         let mut selected = match &self.owner {
             MappingOwner::Ordinary(mapping) => {
                 RetainedWholeMapping::unvalidated(Arc::clone(mapping), epoch)
@@ -130,6 +244,7 @@ impl OwnedSetupMapping {
             MappingOwner::Selected(_) => return Err(WholeMappingCustodyError::Selected),
         };
         selected.operation_capacity = operation_capacity;
+        selected.retention_slot = Some(Arc::clone(&self.retention_slot));
         self.owner = MappingOwner::Selected(selected);
 
         match &mut self.owner {
@@ -141,10 +256,26 @@ impl OwnedSetupMapping {
         }
     }
 
-    /// Retains the original allocation after failed shared-owner adoption.
+    pub(super) fn retention_slot(&self) -> Arc<super::RetentionSlot> {
+        Arc::clone(&self.retention_slot)
+    }
+
+    fn reserve_retention(&mut self) -> Result<(), WholeMappingCustodyError> {
+        let result = if self.mapping().mapping_owner_key().process != std::process::id() {
+            Err(WholeMappingCustodyError::Unregistered)
+        } else {
+            self.retention_slot.reserve()
+        };
+        if result.is_err() {
+            self.intent_refused = true;
+        }
+        result
+    }
+
+    /// Transfers the actual allocation into its already-reserved owning slot.
     pub(super) fn retain_failed_selection_owner(&mut self) {
         if let MappingOwner::Ordinary(mapping) = &self.owner {
-            std::mem::forget(Arc::clone(mapping));
+            self.retention_slot.retain(Arc::clone(mapping));
         }
     }
 
@@ -173,3 +304,13 @@ impl OwnedSetupMapping {
 ))]
 #[path = "owned_setup_tests.rs"]
 mod tests;
+
+impl Drop for OwnedSetupMapping {
+    fn drop(&mut self) {
+        if self.intent {
+            // An intent may fail before constructing retained epoch custody.
+            // Keep the original Arc allocation, rather than only its VMA.
+            self.retain_failed_selection_owner();
+        }
+    }
+}

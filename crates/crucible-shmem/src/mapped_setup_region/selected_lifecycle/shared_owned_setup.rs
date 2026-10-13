@@ -24,8 +24,10 @@ struct OwnerGeneration {
     owner: Mutex<OwnedSetupMapping>,
     domain: Result<Arc<Domain>, WholeMappingCustodyError>,
     cell: Result<Arc<ScopeCell>, WholeMappingCustodyError>,
+    intent: AtomicBool,
     selected: AtomicBool,
     failed: AtomicBool,
+    retention_slot: Arc<super::RetentionSlot>,
 }
 
 impl OwnerGeneration {
@@ -38,12 +40,16 @@ impl OwnerGeneration {
             domain: domain.clone(),
             cell: cell.clone(),
         };
+        let owner = OwnedSetupMapping::new(mapping);
+        let retention_slot = owner.retention_slot();
         Self {
             process: std::process::id(),
             registration,
-            owner: Mutex::new(OwnedSetupMapping::new(mapping)),
+            owner: Mutex::new(owner),
+            retention_slot,
             domain,
             cell,
+            intent: AtomicBool::new(false),
             selected: AtomicBool::new(false),
             failed: AtomicBool::new(false),
         }
@@ -184,7 +190,10 @@ impl SharedOwnedSetupMapping {
         if generation.process != std::process::id() {
             return Err(WholeMappingCustodyError::Unregistered);
         }
-        if generation.selected.load(Ordering::Acquire) {
+        if generation.intent.load(Ordering::Acquire)
+            || generation.selected.load(Ordering::Acquire)
+            || generation.failed.load(Ordering::Acquire)
+        {
             return Err(WholeMappingCustodyError::Selected);
         }
         generation
@@ -192,6 +201,95 @@ impl SharedOwnedSetupMapping {
             .get_mut()
             .map_err(|_| WholeMappingCustodyError::Poisoned)?
             .ordinary_mapping_mut()
+    }
+
+    /// Reserves bounded owning retention before any native source HOLD.
+    ///
+    /// Constructor preparation calls this before native HOLD, registration or
+    /// getter effects. It allocates only process-private retention storage and
+    /// neither fences aliases nor inspects mapped headers. Once successful,
+    /// the same original allocation can remain owned through every failed
+    /// intent and selected adoption without another retention allocation.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign, previously failed, busy, poisoned or exhausted
+    /// retention. Failure must stop construction before native source effects.
+    pub fn prepare_whole_intent_retention(&self) -> Result<(), WholeMappingCustodyError> {
+        let generation = self.generation()?;
+        if generation.failed.load(Ordering::Acquire) {
+            return Err(WholeMappingCustodyError::Selected);
+        }
+        if let Err(error) = generation.retention_slot.reserve() {
+            generation.refuse_control();
+            return Err(error);
+        }
+        if generation.failed.load(Ordering::Acquire) {
+            return Err(WholeMappingCustodyError::Selected);
+        }
+        Ok(())
+    }
+
+    /// Fences ordinary aliases before observing the original native constructor.
+    ///
+    /// Preparation reserves retention before the real HOLD barrier. The
+    /// source invokes this after that barrier and before fallible
+    /// getter or body observation. The backing fence is sticky and reaches
+    /// every alias before waiting on any existing ordinary mutation loan.
+    /// Its short loan ends before native reentry. No epoch, permit, credit,
+    /// native readiness or execution authority is created by this operation.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign, unavailable, busy, poisoned or previously failed
+    /// ownership. A failed intent remains fenced and retains its actual owner.
+    pub fn begin_whole_intent(&self) -> Result<(), WholeMappingCustodyError> {
+        let generation = self.generation()?;
+        if !generation.retention_slot.armed() {
+            generation.refuse_control();
+            return Err(WholeMappingCustodyError::ResourceLimit);
+        }
+        generation.intent.store(true, Ordering::Release);
+        let result = (|| {
+            let domain = generation.domain.as_ref().map_err(|error| *error)?;
+            domain.selected.store(true, Ordering::Release);
+            if generation.failed.load(Ordering::Acquire) {
+                return Err(WholeMappingCustodyError::Selected);
+            }
+            // The fence prevents new loans; existing ordinary work must have
+            // ended before the caller makes any native getter observation.
+            let _ordinary_loan = try_lock(&domain.selection)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            generation.refuse_control();
+        }
+        result
+    }
+
+    /// Cancels the original local scope before any native failure is returned.
+    ///
+    /// The provider calls this on every failure after whole intent, including
+    /// failures before it can borrow selected custody or validate native
+    /// currentness. Cancellation touches only private generation/cell atomics
+    /// and this thread's exact-cell TLS permit. It enters no ownership mutex
+    /// and reads no mapped header, including for a copied foreign-PID owner.
+    ///
+    /// The same allocation remains intent-fenced and failed. No stopped cut,
+    /// native retirement, release, ACK consumption or new credit is inferred.
+    pub fn refuse_whole_control(&self) {
+        let pointer = self.current.load(Ordering::Acquire);
+        // SAFETY: the initialized current generation remains live while this
+        // shared wrapper borrow exists. Refusal needs only immutable private
+        // references, and never enters a potentially inherited mutex.
+        let generation = unsafe { &*pointer };
+        if generation.retention_slot.armed() {
+            generation.intent.store(true, Ordering::Release);
+            if let Ok(domain) = &generation.domain {
+                domain.selected.store(true, Ordering::Release);
+            }
+        }
+        generation.refuse_control();
     }
 
     /// Selects the default sixteen command slots in this same setup field.
@@ -249,6 +347,15 @@ impl SharedOwnedSetupMapping {
         header_offsets: Option<&[u64]>,
     ) -> Result<(), WholeMappingCustodyError> {
         let generation = self.generation()?;
+        if let Err(error) = generation.retention_slot.reserve() {
+            generation.refuse_control();
+            return Err(error);
+        }
+        generation.intent.store(true, Ordering::Release);
+        if generation.failed.load(Ordering::Acquire) {
+            generation.refuse_control();
+            return Err(WholeMappingCustodyError::Selected);
+        }
         let result = (|| {
             generation
                 .selected
@@ -356,7 +463,10 @@ impl SharedOwnedSetupMapping {
             .domain
             .as_ref()
             .map_err(|error| refusal(*error))?;
-        if parent.selected.load(Ordering::Acquire) || domain.selected.load(Ordering::Acquire) {
+        if parent.intent.load(Ordering::Acquire)
+            || parent.selected.load(Ordering::Acquire)
+            || domain.selected.load(Ordering::Acquire)
+        {
             return Err(refusal(WholeMappingCustodyError::Selected));
         }
         let cell = parent
@@ -434,7 +544,8 @@ impl Drop for SharedOwnedSetupMapping {
             return;
         }
         generation.refuse_control();
-        if generation.selected.load(Ordering::Acquire) {
+        if generation.intent.load(Ordering::Acquire) || generation.selected.load(Ordering::Acquire)
+        {
             let owner = match generation.owner.get_mut() {
                 Ok(owner) => owner,
                 Err(poisoned) => poisoned.into_inner(),

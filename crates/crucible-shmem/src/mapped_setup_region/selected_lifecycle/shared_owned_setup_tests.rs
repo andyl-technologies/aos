@@ -763,3 +763,6 @@ fn concurrent_refusal_during_adoption_cannot_return_successful_custody() -> Test
     assert!(alias.hot_fork_ring_io_snapshot()?.quiescent());
     Ok(())
 }
+
+#[path = "intent_cancel_tests.rs"]
+mod intent_cancel;
