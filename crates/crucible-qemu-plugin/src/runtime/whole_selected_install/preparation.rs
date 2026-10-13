@@ -294,6 +294,7 @@ struct EndpointEngine {
     registered_families: u32,
     _original: Arc<SharedCallbackCustody>,
     _birth: NativePreparation,
+    _mapping_roster: crucible_shmem::PreparedDirectedRingRoster,
     _network_tx: crate::PluginNetworkTx,
     _network_rx: crate::PluginNetworkRx,
     _network_rings: LiveDirectedRingPair,
@@ -310,15 +311,37 @@ impl EndpointEngine {
         mapping: &mut crucible_shmem::OrdinaryPreparationView<'_>,
     ) -> Result<Self, c_int> {
         let slot = original.args.slot();
+        let network_peer = crucible_shmem::SLOT_NET_ROUTER as u32;
+        let block_peer = crucible_shmem::SLOT_BLK_IO as u32;
+        let ninep_peer = crucible_shmem::SLOT_9P_IO as u32;
+
+        // The restricted view checks the same six headers and performs actual
+        // DONTFORK while the original owner's retention ticket is already armed.
+        // The owned exclusion/identity proof is retained until a distinct native
+        // HOLD window authorizes its one-shot library transition.
+        let mapping_roster = mapping
+            .prepare_directed_ring_hold_roster(
+                slot,
+                [
+                    (slot, network_peer),
+                    (network_peer, slot),
+                    (slot, block_peer),
+                    (block_peer, slot),
+                    (slot, ninep_peer),
+                    (ninep_peer, slot),
+                ],
+            )
+            .map_err(|_| -libc::ESTALE)?;
+
         let mut pair = |peer| {
             let rings = mapping
                 .node_directed_ring_pair_mut(slot, slot, peer, peer, slot)
                 .map_err(|_| -libc::EPROTO)?;
             LiveDirectedRingPair::new(rings.first, rings.second).map_err(|_| -libc::EPROTO)
         };
-        let network = pair(crucible_shmem::SLOT_NET_ROUTER as u32)?;
-        let block = pair(crucible_shmem::SLOT_BLK_IO as u32)?;
-        let ninep = pair(crucible_shmem::SLOT_9P_IO as u32)?;
+        let network = pair(network_peer)?;
+        let block = pair(block_peer)?;
+        let ninep = pair(ninep_peer)?;
         let (network_out, _) = network.descriptors();
         let (block_out, block_in) = block.descriptors();
         let (ninep_out, ninep_in) = ninep.descriptors();
@@ -327,6 +350,7 @@ impl EndpointEngine {
             registered_families: 0,
             _original: Arc::clone(original),
             _birth: birth,
+            _mapping_roster: mapping_roster,
             _network_tx: crate::PluginNetworkTx::from_directed_ring_with_sequence(
                 slot,
                 network_out,

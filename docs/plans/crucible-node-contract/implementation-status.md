@@ -2944,6 +2944,24 @@ and extension dispatch remain present in the reviewed joins. Full selected
 codec/budget validation, unchanged model-generation proof, incoming native Hello,
 complete native settlement and fresh adoption remain separate unfinished steps.
 
+## Six prepared directed-ring mapping hold
+
+The plugin constructor retains an opaque roster of its six original network,
+block and 9P directed headers before constructing callback handles. The shared
+mapping helper validates exact offsets, layout, backing identity and owner,
+performs actual DONTFORK, and holds these six barriers once under the alias fence.
+Failures keep the original mapping retained and prevent retries or release.
+Foreign-process checks precede inherited locks; the full nine-family adoption
+path retains its separate admission requirements.
+
+Seven mmap, barrier and fork controls pass on the recorded helper revision.
+The coherent plugin join passes strict all-target/all-feature checks and three
+constructor controls exercising original SCM, setup mapping and DONTFORK.
+Native getter/setter peers in those constructor controls are modeled. Independent
+review verifies the helper evidence and the compiled production dependencies.
+The native HOLD call, worker closure, source epoch, complete capture, readiness,
+installed package pair and ABI/license gates remain unfinished.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

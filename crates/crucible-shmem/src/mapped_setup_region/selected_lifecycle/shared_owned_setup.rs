@@ -25,6 +25,7 @@ struct OwnerGeneration {
     domain: Result<Arc<Domain>, WholeMappingCustodyError>,
     cell: Result<Arc<ScopeCell>, WholeMappingCustodyError>,
     intent: AtomicBool,
+    prepared_hold: AtomicBool,
     selected: AtomicBool,
     failed: AtomicBool,
     retention_slot: Arc<super::RetentionSlot>,
@@ -50,6 +51,7 @@ impl OwnerGeneration {
             domain,
             cell,
             intent: AtomicBool::new(false),
+            prepared_hold: AtomicBool::new(false),
             selected: AtomicBool::new(false),
             failed: AtomicBool::new(false),
         }
@@ -288,6 +290,7 @@ impl SharedOwnedSetupMapping {
             return Err(WholeMappingCustodyError::Unregistered);
         }
         if generation.intent.load(Ordering::Acquire)
+            || generation.prepared_hold.load(Ordering::Acquire)
             || generation.selected.load(Ordering::Acquire)
             || generation.failed.load(Ordering::Acquire)
         {
@@ -724,7 +727,14 @@ impl Drop for SharedOwnedSetupMapping {
             return;
         }
         generation.refuse_control();
-        if generation.intent.load(Ordering::Acquire) || generation.selected.load(Ordering::Acquire)
+        if generation.intent.load(Ordering::Acquire)
+            || generation.selected.load(Ordering::Acquire)
+            || generation.prepared_hold.load(Ordering::Acquire)
+            || (generation.retention_slot.armed()
+                && generation
+                    .domain
+                    .as_ref()
+                    .is_ok_and(|domain| domain.selected.load(Ordering::Acquire)))
         {
             let owner = match generation.owner.get_mut() {
                 Ok(owner) => owner,
@@ -758,3 +768,10 @@ mod tests;
 ))]
 #[path = "shared_owned_setup/ordinary_preparation_tests.rs"]
 mod ordinary_preparation_tests;
+
+#[path = "shared_owned_setup/prepared_directed.rs"]
+mod prepared_directed;
+
+pub use prepared_directed::{
+    PreparedDirectedRingHoldError, PreparedDirectedRingHoldSnapshot, PreparedDirectedRingRoster,
+};

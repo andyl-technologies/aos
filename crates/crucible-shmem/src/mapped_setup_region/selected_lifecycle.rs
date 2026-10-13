@@ -917,7 +917,8 @@ pub(super) fn authorize_mutable_view(
 mod shared_owned_setup;
 
 pub use shared_owned_setup::{
-    OrdinaryPreparationView, SharedOwnedSetupMapping, SharedSetupMappingReadGuard,
+    OrdinaryPreparationView, PreparedDirectedRingHoldError, PreparedDirectedRingHoldSnapshot,
+    PreparedDirectedRingRoster, SharedOwnedSetupMapping, SharedSetupMappingReadGuard,
 };
 
 /// Checks exact selected targets before any mutable entry slice is created.

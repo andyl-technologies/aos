@@ -181,10 +181,11 @@ pub use mapped_setup_region::{
     MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut, MappedPluginAcceleratorRingsMut,
     MappedPluginGuestIntrospectionRingsMut, MappedRingIoBarrierSnapshot,
     MappedSelectableReplyRingMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    MappedWhiteboxMarkerRingMut, OrdinaryPreparationView, OwnedSetupMapping, RetainedWholeMapping,
-    SelectedRingAdmissionBudget, SelectedRingCompletion, SetupRegionBackingIdentity,
-    SetupRegionMapError, SharedOwnedSetupMapping, SharedSetupMappingReadGuard,
-    WholeMappingCustodyError, mmap_setup_region,
+    MappedWhiteboxMarkerRingMut, OrdinaryPreparationView, OwnedSetupMapping,
+    PreparedDirectedRingHoldError, PreparedDirectedRingHoldSnapshot, PreparedDirectedRingRoster,
+    RetainedWholeMapping, SelectedRingAdmissionBudget, SelectedRingCompletion,
+    SetupRegionBackingIdentity, SetupRegionMapError, SharedOwnedSetupMapping,
+    SharedSetupMappingReadGuard, WholeMappingCustodyError, mmap_setup_region,
 };
 
 use thiserror::Error;
