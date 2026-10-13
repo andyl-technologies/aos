@@ -133,6 +133,12 @@ history, broker Effects and reserved Observe children retain their own semantics
 | `aos-sandbox-controller-runtime` (**new**) | Concrete Controller session integration, retained operation flights, private Controller signing recipes and runtime startup composition | Generic peer/session mechanics, public client transport, other roles' signers |
 | `aos-sandbox-client` (**new**) | Public API client, credentials and observation/operation handling used by CLI | Controller/effect-owner dependencies and privileged runtime closure |
 
+The unconsumed Source16 client and its exclusive I/O cell are retired. The
+installed signer still refuses that request before context growth, key access
+or native observation. Current-Nix preflight DATA and the native observation
+owner remain in `aos-sandbox`; this removal does not issue a paid receiving
+origin or establish the protected Source Cargo boundary.
+
 The local ownership extraction follows the actual protected owners, not their
 current names: leases and inventory used for local recovery move below the
 coordinator boundary; remote transfer planning does not. An ownership crate

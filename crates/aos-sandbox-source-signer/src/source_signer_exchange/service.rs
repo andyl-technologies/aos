@@ -3,8 +3,8 @@
 //! This private owner retains the startup credential, inherited listener and
 //! complete per-request signing, peer checks, send and shutdown recipes.
 //! The parent owns Root client verification and shared canonical wire framing.
-//! Source16 remains refused before key access or native observation; its
-//! separate retained CurrentNix owner is unchanged.
+//! Source16 remains refused before key access or native observation. The
+//! native CurrentNix observation owner remains in the domain crate.
 //!
 //! This grouping preserves service custody without changing dependency or
 //! production authority boundaries.

@@ -24,8 +24,10 @@
 //! AOSSSR13 | strict full-resource genesis context840; AOSSSP13 | packet1104
 //! AOSSSR14 | strict full-resource Intent1424; AOSSSP14 | observation2960/3136
 //! AOSSSR15 | mixed full-resource Intent1424; AOSSSP15 | observation2960/3136
-//! AOSSSR16 | context280 | intent-slot1424; AOSSSP16 | context + native + signature
 //! ```
+//!
+//! Source16 requests remain explicitly refused before context growth, key
+//! access or native Source observation; no speculative client is exposed.
 
 use std::fs;
 use std::io::{self, Read as _, Write as _};
