@@ -404,6 +404,7 @@ mod tests {
         ));
         drop(busy);
     }
+
     fn modeled_scheduler() -> (Rc<()>, CausalScheduler) {
         // The queue and private allocation are actual. Native readiness and
         // durable publication are explicitly modeled for these slot controls.
