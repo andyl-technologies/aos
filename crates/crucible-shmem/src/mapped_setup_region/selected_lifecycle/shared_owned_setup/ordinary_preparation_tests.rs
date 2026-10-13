@@ -298,3 +298,102 @@ fn in_callback_fork_fixture() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn mutable_preparation_loan_blocks_child_replacement() -> TestResult {
+    let status = std::process::Command::new(std::env::current_exe()?)
+        .args(["--ignored", "--exact", "mapped_setup_region::selected_lifecycle::shared_owned_setup::ordinary_preparation_tests::mutable_loan_replacement_fixture", "--test-threads=1"])
+        .status()?;
+    assert!(status.success());
+    Ok(())
+}
+
+#[test]
+#[ignore = "isolated original mutable loan with actual DONTFORK replacement attempt"]
+fn mutable_loan_replacement_fixture() -> TestResult {
+    use std::io::{Read, Write};
+    use std::os::fd::AsFd;
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicBool, AtomicI32};
+
+    let (_source_file, first, source_alias) = original_aliases()?;
+    let (destination_file, destination, destination_alias) = original_aliases()?;
+    let expected = destination.backing_identity();
+    first.exclude_from_hot_fork_child()?;
+    destination.hold_hot_fork_ring_io()?;
+    drop(source_alias);
+    drop(destination);
+    drop(destination_alias);
+    let owner = SharedOwnedSetupMapping::new(first);
+    owner.prepare_whole_intent_retention()?;
+    let parent = std::process::id();
+    let child_id = AtomicI32::new(-1);
+    let blocked = AtomicBool::new(false);
+    let (mut parent_socket, mut child_socket) = UnixStream::pair()?;
+    parent_socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+    child_socket.set_write_timeout(Some(Duration::from_secs(2)))?;
+
+    let result = owner.with_ordinary_preparation(|mapping| {
+        let wrapper = std::ptr::from_ref(&owner) as usize;
+        assert!(READ_OWNERS.with(|owners| owners.borrow().contains(&wrapper)));
+        let original_address = mapping.mapping_start();
+        // SAFETY: this isolated fixture owns the fork. The child invokes only
+        // the loan-roster rejection before any old header or replacement effect,
+        // then takes raw post-callback refusal and the literal exit path.
+        let child = unsafe { libc::fork() };
+        child_id.store(child, Ordering::SeqCst);
+        if child == 0 {
+            blocked.store(
+                matches!(
+                    owner.install_hot_fork_child_mapping(destination_file.as_fd(), expected),
+                    Err(HotForkChildMappingInstallError::WholeCustody {
+                        source: WholeMappingCustodyError::Busy
+                    })
+                ),
+                Ordering::SeqCst,
+            );
+        }
+        // Keeps the mutable heap-owner loan live without reading DONTFORK pages.
+        std::hint::black_box(mapping.mapping_start() == original_address);
+        Ok::<_, ()>(())
+    });
+    if std::process::id() != parent {
+        let refused = matches!(result, Err(WholeMappingCustodyError::Unregistered));
+        let guarded = blocked.load(Ordering::SeqCst);
+        let sent = child_socket
+            .write_all(&[u8::from(refused && guarded)])
+            .is_ok();
+        // SAFETY: does not destroy copied actor, borrowed view, guard or TLS marker.
+        unsafe { libc::_exit(if refused && guarded && sent { 70 } else { 71 }) };
+    }
+    assert!(result?.is_ok());
+    let child = child_id.load(Ordering::SeqCst);
+    if child < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let mut verdict = [0];
+    let received = parent_socket.read_exact(&mut verdict);
+    if received.is_err() {
+        // SAFETY: contains this exact owned child PID before reaping.
+        unsafe { libc::kill(child, libc::SIGKILL) };
+    }
+    let mut status = 0;
+    // SAFETY: writable status and once-only reap of the exact fixture child.
+    assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+    received?;
+    assert_eq!(verdict, [1]);
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 70);
+    assert_eq!(
+        owner.mapping()?.backing_identity(),
+        owner.generation()?.registration.owner.identity
+    );
+    let wrapper = std::ptr::from_ref(&owner) as usize;
+    assert!(!READ_OWNERS.with(|owners| owners.borrow().contains(&wrapper)));
+    assert!(
+        owner
+            .with_ordinary_preparation(|_| Ok::<_, ()>(()))?
+            .is_ok()
+    );
+    Ok(())
+}

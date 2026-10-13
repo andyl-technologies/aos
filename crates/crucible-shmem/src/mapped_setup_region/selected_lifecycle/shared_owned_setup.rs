@@ -72,8 +72,8 @@ struct ForkRegistration {
 }
 
 thread_local! {
-    // A live read guard in the actual calling thread must not survive a
-    // shared child replacement. Copied guards of vanished threads never run.
+    // A live read guard or mutable construction loan in the calling thread
+    // must not survive child replacement. Vanished threads never drop guards.
     static READ_OWNERS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -118,11 +118,26 @@ pub struct SharedOwnedSetupMapping {
 
 struct SharedPreparationFence<'a> {
     owner: &'a SharedOwnedSetupMapping,
+    process: u32,
+    wrapper: usize,
+    registered: bool,
     succeeded: bool,
 }
 
 impl Drop for SharedPreparationFence<'_> {
     fn drop(&mut self) {
+        if self.process != std::process::id() {
+            return;
+        }
+        if self.registered {
+            READ_OWNERS.with(|owners| {
+                if let Ok(mut owners) = owners.try_borrow_mut()
+                    && let Some(index) = owners.iter().rposition(|owner| *owner == self.wrapper)
+                {
+                    owners.remove(index);
+                }
+            });
+        }
         if !self.succeeded {
             self.owner.refuse_whole_control();
         }
@@ -240,6 +255,9 @@ impl SharedOwnedSetupMapping {
         let generation = self.generation()?;
         let mut fence = SharedPreparationFence {
             owner: self,
+            process: generation.process,
+            wrapper: std::ptr::from_ref(self) as usize,
+            registered: false,
             succeeded: false,
         };
         if !generation.retention_slot.armed() {
@@ -260,6 +278,20 @@ impl SharedOwnedSetupMapping {
             return Err(WholeMappingCustodyError::Selected);
         }
         let mapping = owner.ordinary_mapping_mut()?;
+        // Shared child replacement must see this current-thread mutable loan
+        // just as it sees immutable mapping guards. Admission allocates and
+        // publishes the marker before callback construction or mapped effects.
+        READ_OWNERS.with(|owners| {
+            let mut owners = owners
+                .try_borrow_mut()
+                .map_err(|_| WholeMappingCustodyError::Busy)?;
+            owners
+                .try_reserve(1)
+                .map_err(|_| WholeMappingCustodyError::ResourceLimit)?;
+            owners.push(fence.wrapper);
+            Ok::<_, WholeMappingCustodyError>(())
+        })?;
+        fence.registered = true;
         let result = callback(mapping);
         // A callback which forks cannot return copied ownership or generic
         // destructors through this process-private loan. Only the original

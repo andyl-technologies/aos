@@ -2714,6 +2714,16 @@ These helpers issue no native execution, capture, restoration or readiness
 authority. Current complete application compilation and ABI/license gates
 remain required with the final integrated source.
 
+## Mutable stopped-preparation loan across fork
+
+The ordinary preparation helper now registers its mutable loan before invoking
+construction callbacks. A forked child refuses mapping replacement while that
+loan is live, before reading inherited mapping headers or changing the mapping.
+The parent removes its marker and can borrow the original owner again. A real
+in-callback fork control and its isolated wrapper pass; strict all-target and
+all-feature checks pass for the shared-memory crate. This extends the earlier
+preparation helper checks and grants no native execution or capture authority.
+
 ## Complete workspace vendor staging hash
 
 The workspace dependency hash now matches the exact current Cargo lockfile.
