@@ -27,6 +27,9 @@
   extraConfig ? "",
   # Native controller kernels apply source patches independently of guest fixtures.
   extraPatches ? [],
+  # Selected variants may enforce exact source bytes during their patch phase.
+  # Ordinary kernels retain the existing patch behavior.
+  sourcePatchScript ? null,
   # Fixture kernels may intentionally omit the general system runtime contract.
   enforceRequiredConfig ? true,
 }: let
@@ -193,9 +196,14 @@ in
       }
       {
         name = "patch";
-        script = ''
-          patch -p1 < ${./linux-gawk-array-argument.patch}
-        '' + lib.concatMapStrings (sourcePatch: "patch -p1 < ${sourcePatch}\n") extraPatches;
+        script =
+          if sourcePatchScript == null
+          then
+            ''
+              patch -p1 < ${./linux-gawk-array-argument.patch}
+            ''
+            + lib.concatMapStrings (sourcePatch: "patch -p1 < ${sourcePatch}\n") extraPatches
+          else sourcePatchScript;
       }
       {
         name = "configure";

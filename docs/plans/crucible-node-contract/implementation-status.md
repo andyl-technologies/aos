@@ -2602,6 +2602,25 @@ binary fixture tests framing; its assets and abbreviated arguments represent
 no actual launch. Native constructor issuance, kernel and clock enforcement,
 physical quantum stop, output closure and readiness remain required.
 
+### Complete source-guarded Q35 kernel variant
+
+The selected Q35 constructor kernel applies the complete fourteen-patch chain
+to the pinned Linux archive. Its patch phase checks all 152 native roles before
+and after each stage and refuses fuzz, offsets, changed patch bytes and changed
+source bodies. A separate source-only check extracts the archive directly,
+without requiring an ordinary kernel build. The ordinary kernel configuration,
+features and output layout remain intact.
+
+Independent review checks the complete inventory continuity, current preimages,
+original source bodies and license notices, including 19 added GPL kernel roles.
+The actual source-guard positive case and three corruption/refusal cases pass;
+Nix source formatting passes. Prior configured translation units and modeled
+controls retain their original component scopes. This stage has no complete
+kernel build/link, active clock, physical stop/output or guest execution witness.
+Capability 43 and selected RUN remain unavailable. The source-only check output
+is a verification report; complete corresponding-source distribution remains
+a separate requirement before publishing the patched kernel.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

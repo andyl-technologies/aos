@@ -2025,6 +2025,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         inherit linuxSource;
       };
       # Source component only: no installed kernel or admitted PIC board.
+      linux-controller-q35-cold-kernel = callPackage ./kernel/linux-controller-q35-cold-kernel.nix {
+        inherit linuxSource;
+      };
+      linux-controller-q35-cold-source = callPackage ./kernel/linux-controller-q35-cold-source.nix {
+        inherit linuxSource;
+      };
       linux-controller-pic-source-check = callPackage ./kernel/linux-controller-pic-source-check.nix {
         inherit linuxSource;
         linuxStage7Check = self.linux-controller-response-bytes-stage7-check;
