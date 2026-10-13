@@ -64,7 +64,6 @@ pub use nix_current_preflight::{
     CURRENT_NIX_SOURCE_LEGACY_GENESIS_REPLY_BYTES_V1, CURRENT_NIX_SOURCE_RESOURCE_REPLY_BYTES_V1,
     CurrentNixPreflightContextV1, CurrentNixPreflightDataErrorV1,
     CurrentNixPreflightAttemptV1, CurrentNixPreflightOriginalsV1,
-    CurrentNixSourceIoCellV1,
     VerifiedCurrentNixControllerReceiptV1, VerifiedCurrentNixSourceObservationV1,
 };
 mod owner_pin_transaction;

@@ -54,26 +54,6 @@ pub const CURRENT_NIX_SOURCE_LEGACY_GENESIS_REPLY_BYTES_V1: usize = 3316;
 /// Bounds a resource Source16 observation retaining full-resource genesis.
 pub const CURRENT_NIX_SOURCE_RESOURCE_REPLY_BYTES_V1: usize = 3492;
 
-/// Retains one Source16 syscall's original clock, comparisons and native Results.
-///
-/// This shared representation is DATA only. The Security exchange remains the
-/// sole IO engine; public fields permit it to park original Results without a
-/// dependency cycle or a second layout used solely for pricing.
-pub struct CurrentNixSourceIoCellV1 {
-    /// The independently acquired native pair preceding this syscall.
-    pub clock: Result<RawPairedClockSample, SourceGenesisErrorV1>,
-    /// The comparison with the same signed context and original cutoff.
-    pub pair: Option<Result<(), CurrentNixPreflightDataErrorV1>>,
-    /// The actual per-syscall timeout configuration result, when applicable.
-    pub timeout: Option<std::io::Result<()>>,
-    /// The actual read or write result, without retry or cause reconstruction.
-    pub transferred: Option<std::io::Result<usize>>,
-    /// The bounded trailing-byte observation retained by the EOF attempt.
-    pub eof_byte: [u8; 1],
-    /// The actual selected write-shutdown result under its own original pair.
-    pub shutdown: Option<std::io::Result<()>>,
-}
-
 const CONTEXT_MAGIC: &[u8; 8] = b"AOSNCP01";
 const CONTROLLER_MAGIC: &[u8; 8] = b"AOSNCR01";
 const CONTROLLER_SIGNATURE_DOMAIN: &[u8] =

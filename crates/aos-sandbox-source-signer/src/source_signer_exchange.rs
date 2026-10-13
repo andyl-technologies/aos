@@ -46,11 +46,9 @@ use aos_sandbox::policy_compiler::{
 };
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 
-mod current_nix;
 mod root_client;
 mod service;
 
-pub use current_nix::CurrentNixSourceExchangeAttemptV1;
 pub use root_client::{
     request_root_source_first_successor_readback_v2,
     request_root_source_project_admission_readback_v1,
