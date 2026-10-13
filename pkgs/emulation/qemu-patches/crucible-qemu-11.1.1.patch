@@ -1,6 +1,6 @@
-From d9037e32ec3648d1fc24a35049248190f4b22792 Mon Sep 17 00:00:00 2001
+From c993991088114ff183aeb5aab6127d51d367f838 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 13 Oct 2026 22:17:00 +0000
+Date: Tue, 13 Oct 2026 23:06:15 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -586,6 +586,33 @@ source omissions and mode limitations remain documented. No files
 are created or deleted and all per-file licenses remain intact.
 Full physical closure, complete FW/ROM seals, installed pair,
 SourceReady, guest and release gates remain unqualified.
+
+Retain original constructor MemoryRegion and AddressSpace bodies,
+FlatView bodies and range/index generations in the same finite
+native history arena. Authenticate original membership before
+reference accesses and preserve queued/retired allocation lineage.
+Match the exact selected AS cleanup method, original restored root,
+source-published view and retained full name before cleanup; refuse
+unknown nonempty ioeventfd backing. Ordinary paths remain intact.
+
+Four complete production-configured source units are bound to the
+final source: the final memory TU passes with warnings treated as
+errors; other three retain identical source/header dependencies.
+Original12 storage controls, four method controls and their causal
+erasure remain separate historical cohorts. Final10 cleanup tuple
+controls and two causal check erasures pass; pthread primitives
+and literal native reference/cleanup functions execute, while
+constructor/QOM/BQL/RCU scheduling certificates remain modeled.
+
+Reconstruct the complete signed d9037 tree plus exactly four
+existing-file posts and one GPL2-or-later source fragment. Add its
+source license to the cumulative inventory. Preserve configured
+component export limitations and all scoped parent evidence.
+Dispatch/subpage, QOM/listener/CPUAddressSpace/temporary-name
+backing and complete original graph/RCU dispatch closure remain
+pending; no dispatch work in progress is included here. No whole
+graph/current/seal, BIOS writer, Ready, guest, installed pair,
+package or release qualification follows from this component.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -107625,10 +107652,10 @@ index 0000000000000000000000000000000000000000..7fdbaf05a28166efade32274a1e3845b
 +#endif /* SYSTEM_CRUCIBLE_SIM_PREEMPTION_H */
 diff --git a/include/system/crucible-whole-early.h b/include/system/crucible-whole-early.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e531858d5b3358e6e11178d2aeedfc599dda8ef3
+index 0000000000000000000000000000000000000000..32ad72b5d771fdecbd32ad514b922b3188171d8a
 --- /dev/null
 +++ b/include/system/crucible-whole-early.h
-@@ -0,0 +1,237 @@
+@@ -0,0 +1,244 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Original native setup provenance. No declaration here is a wire layout. */
 +#ifndef SYSTEM_CRUCIBLE_WHOLE_EARLY_H
@@ -107648,6 +107675,7 @@ index 0000000000000000000000000000000000000000..e531858d5b3358e6e11178d2aeedfc59
 +struct ObjectClass;
 +struct ObjectProperty;
 +struct MemoryRegion;
++struct AddressSpace;
 +/* Literal constructor context and borrowed source-owned asset custody. Neither
 + * query opens a runtime effect, a loader callback, or the first-clock hold. */
 +bool crucible_whole_setup_source_current(void);
@@ -107864,6 +107892,12 @@ index 0000000000000000000000000000000000000000..e531858d5b3358e6e11178d2aeedfc59
 +                                    struct MemoryRegion **region,
 +                                    struct RAMBlock **block, uint64_t *offset,
 +                                    void **host);
++
++/* Source-owned constructor storage; no held-graph or effect permission. */
++size_t qemu_memory_whole_storage_bytes(void);
++int qemu_memory_whole_storage_begin(void);
++struct MemoryRegion *qemu_memory_whole_system_region_allocate(unsigned role);
++struct AddressSpace *qemu_memory_whole_cpu_space_allocate(struct CPUState *cpu, int asidx);
 +
 +#endif
 diff --git a/include/system/crucible-whole-ram.h b/include/system/crucible-whole-ram.h
@@ -182922,10 +182956,10 @@ index 0000000000000000000000000000000000000000..cd0157b178d1371b5231e54a6d89ca40
 +}
 diff --git a/system/crucible-whole-early.inc.c b/system/crucible-whole-early.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..d0a653cb909c2cd7d03d1978ff6689be99e66afe
+index 0000000000000000000000000000000000000000..f4cfdd946d89d04e166418a8c7216c61e3138b6e
 --- /dev/null
 +++ b/system/crucible-whole-early.inc.c
-@@ -0,0 +1,1868 @@
+@@ -0,0 +1,1872 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Source-owned sealed setup before subsystem, board and guest construction.
 + * A pinned descriptor is a request and original provenance, never Ready. */
@@ -183178,6 +183212,7 @@ index 0000000000000000000000000000000000000000..d0a653cb909c2cd7d03d1978ff6689be
 +                pc_whole_bios_storage_bytes() : 0,
 +            plugin_crucible_whole_initializers_storage_bytes(),
 +            plugin_crucible_whole_preparation_storage_bytes(),
++            qemu_memory_whole_storage_bytes(),
 +        };
 +
 +        if (!random_bytes || (q35_bytes && !pc_whole_bios_storage_bytes)) {
@@ -184030,7 +184065,10 @@ index 0000000000000000000000000000000000000000..d0a653cb909c2cd7d03d1978ff6689be
 +    }
 +    /* Timer/reset first-birth journals must precede any resource constructor
 +     * that may register a reset handler or create a timer. */
-+    status = crucible_whole_rom_begin();
++    status = qemu_memory_whole_storage_begin();
++    if (!status) {
++        status = crucible_whole_rom_begin();
++    }
 +    if (!status) {
 +        status = crucible_whole_fwcfg_begin();
 +    }
@@ -184794,6 +184832,642 @@ index 0000000000000000000000000000000000000000..d0a653cb909c2cd7d03d1978ff6689be
 +#include "crucible-device-endpoint-walk.inc.c"
 +
 +#include "crucible-whole-control.inc.c"
+diff --git a/system/crucible-whole-memory-storage.inc.c b/system/crucible-whole-memory-storage.inc.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..997b3100a13ee5902f4a0d367d4200ad6a534c80
+--- /dev/null
++++ b/system/crucible-whole-memory-storage.inc.c
+@@ -0,0 +1,630 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#include "qemu/crucible-sha256.h"
++
++/* Included by memory.c. Constructor storage is retained through retirement;
++ * allocation identity alone does not certify the complete memory graph. */
++
++typedef enum WholeMemoryViewPhase {
++    WHOLE_MEMORY_VIEW_BUILDING,
++    WHOLE_MEMORY_VIEW_PUBLISHED,
++    WHOLE_MEMORY_VIEW_QUEUED,
++    WHOLE_MEMORY_VIEW_RETIRED,
++} WholeMemoryViewPhase;
++
++typedef struct WholeMemoryRanges {
++    struct WholeMemoryRanges *previous;
++    FlatRange *body;
++    size_t extent;
++    unsigned capacity;
++} WholeMemoryRanges;
++
++typedef struct WholeMemoryView {
++    struct WholeMemoryView *previous;
++    FlatView *original;
++    MemoryRegion *root;
++    WholeMemoryRanges *ranges;
++    WholeMemoryViewPhase phase;
++    RCUCBFunc *retirement_callback;
++} WholeMemoryView;
++
++typedef struct WholeMemoryIndexEntry {
++    struct WholeMemoryIndexEntry *previous;
++    MemoryRegion *root;
++    FlatView *view;
++} WholeMemoryIndexEntry;
++
++typedef struct WholeMemoryIndex {
++    struct WholeMemoryIndex *previous;
++    WholeMemoryIndexEntry *entries;
++    bool retired;
++    uint64_t entry_count;
++} WholeMemoryIndex;
++
++typedef struct WholeMemorySpace {
++    struct WholeMemorySpace *previous;
++    AddressSpace *original;
++    MemoryRegion *root;
++    char *name;
++    size_t name_extent;
++    uint8_t name_digest[32];
++    FlatView *published_view;
++    CPUState *cpu;
++    int cpu_space_index;
++    bool published;
++    bool queued;
++    bool retired;
++    RCUCBFunc *retirement_callback;
++} WholeMemorySpace;
++
++typedef struct WholeMemoryStorage {
++    uint64_t process;
++    WholeMemoryView *views;
++    WholeMemoryIndex *indices;
++    WholeMemoryIndex *index;
++    WholeMemorySpace *spaces;
++    MemoryRegion *system_regions[2];
++    bool system_region_attempted[2];
++    uint64_t view_count;
++    uint64_t space_count;
++} WholeMemoryStorage;
++
++static WholeMemoryStorage *whole_memory_storage;
++
++static G_NORETURN void whole_memory_storage_refuse(void)
++{
++    /* This must precede logger, BQL and inherited arena accesses. */
++    _exit(125);
++}
++
++static bool whole_memory_storage_selected(void)
++{
++    if (!crucible_whole_setup_selected()) {
++        return false;
++    }
++    if (!crucible_whole_setup_original()) {
++        whole_memory_storage_refuse();
++    }
++    if (!crucible_whole_setup_source_current() || !whole_memory_storage ||
++        !crucible_whole_setup_history_span_current(whole_memory_storage,
++                                                  sizeof(*whole_memory_storage)) ||
++        whole_memory_storage->process != getpid()) {
++        whole_memory_storage_refuse();
++    }
++    return true;
++}
++
++static void *whole_memory_storage_allocate(size_t extent)
++{
++    void *body;
++
++    if (!crucible_whole_setup_constructor_current() || !extent) {
++        whole_memory_storage_refuse();
++    }
++    body = crucible_whole_setup_constructor_history_allocate(extent);
++    if (!body) {
++        whole_memory_storage_refuse();
++    }
++    memset(body, 0, extent);
++    return body;
++}
++
++size_t qemu_memory_whole_storage_bytes(void)
++{
++    /* A pure initial minimum; later original allocations debit the same finite
++     * bank. This does not stand for an unused reservation owning heap storage. */
++    return sizeof(WholeMemoryStorage) + 2 * sizeof(MemoryRegion) +
++        sizeof(WholeMemoryView) + sizeof(FlatView) + sizeof(WholeMemoryIndex);
++}
++
++int qemu_memory_whole_storage_begin(void)
++{
++    if (!crucible_whole_setup_selected()) {
++        return 0;
++    }
++    if (!crucible_whole_setup_original()) {
++        whole_memory_storage_refuse();
++    }
++    if (!crucible_whole_setup_constructor_current() || whole_memory_storage) {
++        return -ESTALE;
++    }
++    whole_memory_storage = whole_memory_storage_allocate(sizeof(*whole_memory_storage));
++    whole_memory_storage->process = getpid();
++    return 0;
++}
++
++MemoryRegion *qemu_memory_whole_system_region_allocate(unsigned role)
++{
++    if (!whole_memory_storage_selected()) {
++        return NULL;
++    }
++    if (role < 1 || role > 2 || whole_memory_storage->system_region_attempted[role - 1]) {
++        whole_memory_storage_refuse();
++    }
++    whole_memory_storage->system_region_attempted[role - 1] = true;
++    MemoryRegion *region = whole_memory_storage_allocate(sizeof(*region));
++
++    whole_memory_storage->system_regions[role - 1] = region;
++    return region;
++}
++
++static WholeMemoryView *whole_memory_view_original(FlatView *view)
++{
++    WholeMemoryView *row = whole_memory_storage->views;
++    uint64_t remaining = whole_memory_storage->view_count;
++
++    while (row && remaining--) {
++        if (!crucible_whole_setup_history_span_current(row, sizeof(*row))) {
++            whole_memory_storage_refuse();
++        }
++        if (row->original == view) {
++            if (!crucible_whole_setup_history_span_current(view, sizeof(*view))) {
++                whole_memory_storage_refuse();
++            }
++            return row;
++        }
++        row = row->previous;
++    }
++    whole_memory_storage_refuse();
++}
++
++static bool whole_memory_region_identity(MemoryRegion *region)
++{
++    if (!region) {
++        return true; /* The permanent empty view has no root. */
++    }
++    if (region == whole_memory_storage->system_regions[0] ||
++        region == whole_memory_storage->system_regions[1]) {
++        return crucible_whole_setup_history_span_current(region, sizeof(*region));
++    }
++    return crucible_whole_setup_q35_instance_span_current(OBJECT(region), region,
++                                                         sizeof(*region));
++}
++
++static FlatView *whole_memory_view_allocate(MemoryRegion *root)
++{
++    WholeMemoryView *row;
++
++    if (!whole_memory_storage_selected()) {
++        return NULL;
++    }
++    if (!whole_memory_region_identity(root) ||
++        whole_memory_storage->view_count == UINT64_MAX) {
++        whole_memory_storage_refuse();
++    }
++    /* The pending row is retained before the original body is allocated. */
++    row = whole_memory_storage_allocate(sizeof(*row));
++    row->previous = whole_memory_storage->views;
++    whole_memory_storage->views = row;
++    whole_memory_storage->view_count++;
++    row->root = root;
++    row->original = whole_memory_storage_allocate(sizeof(*row->original));
++    return row->original;
++}
++
++static void whole_memory_view_access(FlatView *view)
++{
++    WholeMemoryView *row;
++
++    if (!whole_memory_storage_selected()) {
++        return;
++    }
++    row = whole_memory_view_original(view);
++    if (row->phase == WHOLE_MEMORY_VIEW_RETIRED || view->root != row->root) {
++        whole_memory_storage_refuse();
++    }
++    if (row->ranges) {
++        if (!crucible_whole_setup_history_span_current(row->ranges, sizeof(*row->ranges)) ||
++            view->ranges != row->ranges->body ||
++            view->nr_allocated != row->ranges->capacity ||
++            view->nr > row->ranges->capacity ||
++            !crucible_whole_setup_history_span_current(view->ranges, row->ranges->extent)) {
++            whole_memory_storage_refuse();
++        }
++    } else if (view->ranges || view->nr || view->nr_allocated) {
++        whole_memory_storage_refuse();
++    }
++}
++
++static FlatRange *whole_memory_ranges_grow(FlatView *view, unsigned capacity)
++{
++    WholeMemoryRanges *generation;
++    WholeMemoryView *row;
++    size_t extent, used;
++
++    if (!whole_memory_storage_selected()) {
++        return NULL;
++    }
++    whole_memory_view_access(view);
++    row = whole_memory_view_original(view);
++    if (row->phase != WHOLE_MEMORY_VIEW_BUILDING || capacity <= view->nr_allocated ||
++        __builtin_mul_overflow((size_t)capacity, sizeof(FlatRange), &extent) ||
++        __builtin_mul_overflow((size_t)view->nr, sizeof(FlatRange), &used)) {
++        whole_memory_storage_refuse();
++    }
++    generation = whole_memory_storage_allocate(sizeof(*generation));
++    generation->previous = row->ranges;
++    generation->capacity = capacity;
++    generation->extent = extent;
++    generation->body = whole_memory_storage_allocate(extent);
++    if (used) {
++        memcpy(generation->body, view->ranges, used);
++    }
++    row->ranges = generation;
++    return generation->body;
++}
++
++static void whole_memory_view_publish(FlatView *view)
++{
++    if (!whole_memory_storage_selected()) {
++        return;
++    }
++    whole_memory_view_access(view);
++    WholeMemoryView *row = whole_memory_view_original(view);
++
++    if (row->phase != WHOLE_MEMORY_VIEW_BUILDING) {
++        whole_memory_storage_refuse();
++    }
++    row->phase = WHOLE_MEMORY_VIEW_PUBLISHED;
++}
++
++static void whole_memory_view_retirement_select(FlatView *view, RCUCBFunc *method)
++{
++    if (!whole_memory_storage_selected()) {
++        return;
++    }
++    whole_memory_view_access(view);
++    WholeMemoryView *row = whole_memory_view_original(view);
++
++    if (row->phase != WHOLE_MEMORY_VIEW_PUBLISHED || !method || view->ref) {
++        whole_memory_storage_refuse();
++    }
++    row->retirement_callback = method;
++    row->phase = WHOLE_MEMORY_VIEW_QUEUED;
++}
++
++static bool whole_memory_view_retire(FlatView *view, RCUCBFunc *method)
++{
++    if (!whole_memory_storage_selected()) {
++        return false;
++    }
++    whole_memory_view_access(view);
++    WholeMemoryView *row = whole_memory_view_original(view);
++
++    if (row->phase != WHOLE_MEMORY_VIEW_QUEUED ||
++        row->retirement_callback != method || view->ref) {
++        whole_memory_storage_refuse();
++    }
++    row->phase = WHOLE_MEMORY_VIEW_RETIRED;
++    return true;
++}
++
++static bool whole_memory_index_present(void)
++{
++    return whole_memory_storage_selected() ? whole_memory_storage->index != NULL :
++        flat_views != NULL;
++}
++
++static void whole_memory_index_new(void)
++{
++    if (!whole_memory_storage_selected()) {
++        flat_views = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
++                                         (GDestroyNotify)flatview_unref);
++        return;
++    }
++    if (whole_memory_storage->index) {
++        whole_memory_storage_refuse();
++    }
++    WholeMemoryIndex *generation = whole_memory_storage_allocate(sizeof(*generation));
++
++    generation->previous = whole_memory_storage->indices;
++    whole_memory_storage->indices = generation;
++    whole_memory_storage->index = generation;
++}
++
++static FlatView *whole_memory_index_lookup(MemoryRegion *root)
++{
++    if (!whole_memory_storage_selected()) {
++        return g_hash_table_lookup(flat_views, root);
++    }
++    WholeMemoryIndex *generation = whole_memory_storage->index;
++
++    if (!generation ||
++        !crucible_whole_setup_history_span_current(generation, sizeof(*generation)) ||
++        generation->retired) {
++        whole_memory_storage_refuse();
++    }
++    uint64_t remaining = generation->entry_count;
++    for (WholeMemoryIndexEntry *entry = generation->entries; entry; entry = entry->previous) {
++        if (!remaining--) {
++            whole_memory_storage_refuse();
++        }
++        if (!crucible_whole_setup_history_span_current(entry, sizeof(*entry))) {
++            whole_memory_storage_refuse();
++        }
++        if (entry->root == root) {
++            whole_memory_view_access(entry->view);
++            return entry->view;
++        }
++    }
++    return NULL;
++}
++
++static void whole_memory_index_replace(MemoryRegion *root, FlatView *view)
++{
++    if (!whole_memory_storage_selected()) {
++        g_hash_table_replace(flat_views, root, view);
++        return;
++    }
++    whole_memory_view_access(view);
++    WholeMemoryIndex *generation = whole_memory_storage->index;
++
++    if (!generation ||
++        !crucible_whole_setup_history_span_current(generation, sizeof(*generation)) ||
++        generation->retired) {
++        whole_memory_storage_refuse();
++    }
++    uint64_t remaining = generation->entry_count;
++    for (WholeMemoryIndexEntry *entry = generation->entries; entry; entry = entry->previous) {
++        if (!remaining--) {
++            whole_memory_storage_refuse();
++        }
++        if (!crucible_whole_setup_history_span_current(entry, sizeof(*entry))) {
++            whole_memory_storage_refuse();
++        }
++        if (entry->root == root) {
++            FlatView *previous = entry->view;
++
++            entry->view = view;
++            flatview_unref(previous);
++            return;
++        }
++    }
++    if (generation->entry_count == UINT64_MAX) {
++        whole_memory_storage_refuse();
++    }
++    WholeMemoryIndexEntry *entry = whole_memory_storage_allocate(sizeof(*entry));
++
++    entry->previous = generation->entries;
++    entry->root = root;
++    entry->view = view;
++    generation->entries = entry;
++    generation->entry_count++;
++}
++
++static void whole_memory_index_clear(void)
++{
++    if (!whole_memory_storage_selected()) {
++        g_hash_table_unref(flat_views);
++        flat_views = NULL;
++        return;
++    }
++    WholeMemoryIndex *generation = whole_memory_storage->index;
++
++    if (!generation ||
++        !crucible_whole_setup_history_span_current(generation, sizeof(*generation)) ||
++        generation->retired) {
++        whole_memory_storage_refuse();
++    }
++    generation->retired = true;
++    whole_memory_storage->index = NULL;
++    uint64_t remaining = generation->entry_count;
++    for (WholeMemoryIndexEntry *entry = generation->entries; entry; entry = entry->previous) {
++        if (!remaining--) {
++            whole_memory_storage_refuse();
++        }
++        if (!crucible_whole_setup_history_span_current(entry, sizeof(*entry))) {
++            whole_memory_storage_refuse();
++        }
++        flatview_unref(entry->view);
++    }
++}
++
++static WholeMemorySpace *whole_memory_space_original(AddressSpace *as)
++{
++    uint64_t remaining = whole_memory_storage->space_count;
++
++    for (WholeMemorySpace *row = whole_memory_storage->spaces; row && remaining--;
++         row = row->previous) {
++        if (!crucible_whole_setup_history_span_current(row, sizeof(*row))) {
++            whole_memory_storage_refuse();
++        }
++        if (row->original == as) {
++            return row;
++        }
++    }
++    return NULL;
++}
++
++static WholeMemorySpace *whole_memory_space_reserve(AddressSpace *as)
++{
++    if (whole_memory_storage->space_count == UINT64_MAX ||
++        whole_memory_space_original(as)) {
++        whole_memory_storage_refuse();
++    }
++    WholeMemorySpace *row = whole_memory_storage_allocate(sizeof(*row));
++
++    row->original = as;
++    row->previous = whole_memory_storage->spaces;
++    whole_memory_storage->spaces = row;
++    whole_memory_storage->space_count++;
++    return row;
++}
++
++AddressSpace *qemu_memory_whole_cpu_space_allocate(CPUState *cpu, int asidx)
++{
++    if (!whole_memory_storage_selected()) {
++        return NULL;
++    }
++    if (asidx < 0 ||
++        !crucible_whole_setup_q35_instance_span_current(OBJECT(cpu), cpu, sizeof(*cpu))) {
++        whole_memory_storage_refuse();
++    }
++    /* The source constructor supplies this original CPU; the returned AS body
++     * belongs to the bank before address_space_init can publish it. */
++    uint64_t remaining = whole_memory_storage->space_count;
++    for (WholeMemorySpace *old = whole_memory_storage->spaces; old && remaining--;
++         old = old->previous) {
++        if (!crucible_whole_setup_history_span_current(old, sizeof(*old)) ||
++            (old->cpu == cpu && old->cpu_space_index == asidx)) {
++            whole_memory_storage_refuse();
++        }
++    }
++    WholeMemorySpace *row = whole_memory_space_reserve(NULL);
++
++    row->cpu = cpu;
++    row->cpu_space_index = asidx;
++    row->original = whole_memory_storage_allocate(sizeof(*row->original));
++    return row->original;
++}
++
++static void whole_memory_space_name_digest(const char *name, size_t extent,
++                                           uint8_t digest[32])
++{
++    CrucibleSha256 checksum;
++
++    crucible_sha256_init(&checksum);
++    if (crucible_sha256_update(&checksum, (const uint8_t *)name, extent) ||
++        crucible_sha256_finish(&checksum, digest)) {
++        whole_memory_storage_refuse();
++    }
++}
++
++static bool whole_memory_space_name_current(WholeMemorySpace *row)
++{
++    uint8_t digest[32];
++
++    if (!row->name || !row->name_extent ||
++        !crucible_whole_setup_history_span_current(row->name, row->name_extent)) {
++        return false;
++    }
++    whole_memory_space_name_digest(row->name, row->name_extent, digest);
++    return !memcmp(digest, row->name_digest, sizeof(digest));
++}
++
++static char *whole_memory_space_begin(AddressSpace *as, MemoryRegion *root,
++                                     const char *name)
++{
++    if (!whole_memory_storage_selected()) {
++        return NULL;
++    }
++    WholeMemorySpace *row = whole_memory_space_original(as);
++
++    if (!row && (as == &address_space_memory || as == &address_space_io)) {
++        row = whole_memory_space_reserve(as);
++    }
++    if (!row || row->name || !root) {
++        whole_memory_storage_refuse();
++    }
++    name = name ? name : "anonymous";
++    if (__builtin_add_overflow(strlen(name), (size_t)1, &row->name_extent)) {
++        whole_memory_storage_refuse();
++    }
++    row->root = root;
++    row->name = whole_memory_storage_allocate(row->name_extent);
++    memcpy(row->name, name, row->name_extent);
++    whole_memory_space_name_digest(row->name, row->name_extent, row->name_digest);
++    return row->name;
++}
++
++static void whole_memory_space_access(AddressSpace *as)
++{
++    if (!whole_memory_storage_selected()) {
++        return;
++    }
++    WholeMemorySpace *row = whole_memory_space_original(as);
++
++    if (!row || row->retired ||
++        (as != &address_space_memory && as != &address_space_io &&
++         !crucible_whole_setup_history_span_current(as, sizeof(*as))) ||
++        !whole_memory_space_name_current(row) ||
++        as->name != row->name || (!row->queued && as->root != row->root) ||
++        !whole_memory_region_identity(as->root)) {
++        whole_memory_storage_refuse();
++    }
++}
++
++static void whole_memory_space_publish(AddressSpace *as, FlatView *view)
++{
++    if (!whole_memory_storage_selected()) {
++        return;
++    }
++    WholeMemorySpace *row = whole_memory_space_original(as);
++
++    if (!row || !row->name) {
++        whole_memory_storage_refuse();
++    }
++    whole_memory_view_access(view);
++    row->published_view = view;
++    row->published = true;
++}
++
++static void whole_memory_view_destroy_begin(FlatView *view, RCUCBFunc *method)
++{
++    if (!whole_memory_storage_selected()) {
++        return;
++    }
++    whole_memory_view_access(view);
++    WholeMemoryView *row = whole_memory_view_original(view);
++
++    if (row->phase != WHOLE_MEMORY_VIEW_QUEUED ||
++        row->retirement_callback != method || view->ref) {
++        whole_memory_storage_refuse();
++    }
++}
++
++static void whole_memory_space_retirement_select(AddressSpace *as,
++                                                RCUCBFunc *method)
++{
++    if (!whole_memory_storage_selected()) {
++        return;
++    }
++    whole_memory_space_access(as);
++    WholeMemorySpace *row = whole_memory_space_original(as);
++
++    if (!row || !row->published || row->queued || row->retired || !method) {
++        whole_memory_storage_refuse();
++    }
++    row->retirement_callback = method;
++    row->queued = true;
++}
++
++static bool whole_memory_space_destroy_begin(AddressSpace *as, RCUCBFunc *method)
++{
++    if (!whole_memory_storage_selected()) {
++        return false;
++    }
++    WholeMemorySpace *row = whole_memory_space_original(as);
++
++    if (!row || !row->queued || row->retired || row->retirement_callback != method ||
++        (as != &address_space_memory && as != &address_space_io &&
++         !crucible_whole_setup_history_span_current(as, sizeof(*as)))) {
++        whole_memory_storage_refuse();
++    }
++    /* Detach restored the original root before this literal queued method.
++     * Match the source-issued dummy publication and retained name before any
++     * mutex/view/region cleanup. Unknown ioeventfd storage stays unissued. */
++    if (as->root != row->root || as->name != row->name ||
++        as->current_map != row->published_view || as->ioeventfds ||
++        as->ioeventfd_nb || !whole_memory_space_name_current(row)) {
++        whole_memory_storage_refuse();
++    }
++    whole_memory_view_access(as->current_map);
++    if (whole_memory_view_original(as->current_map)->phase != WHOLE_MEMORY_VIEW_PUBLISHED) {
++        whole_memory_storage_refuse();
++    }
++    row->retired = true;
++    return true;
++}
++
++static bool whole_memory_space_retained(AddressSpace *as)
++{
++    if (!whole_memory_storage_selected()) {
++        return false;
++    }
++    WholeMemorySpace *row = whole_memory_space_original(as);
++
++    if (!row || !row->retired) {
++        whole_memory_storage_refuse();
++    }
++    return true;
++}
 diff --git a/system/crucible-whole-q35.inc.c b/system/crucible-whole-q35.inc.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..090737ccf7fa898c85f134ffa0573d5c966df51e
@@ -186856,7 +187530,7 @@ index b8f7157cc346a37095700d51f96b1a353d06b549..101f4d1e946aaec3a750ce9e3117488d
  
      /*
 diff --git a/system/memory.c b/system/memory.c
-index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be0ec20bc3 100644
+index 5fc36708ec349d94605f0503c647d7f9d1475a2d..f6d108bc55da4cad21686886b4c21cc2b735f215 100644
 --- a/system/memory.c
 +++ b/system/memory.c
 @@ -14,6 +14,11 @@
@@ -186871,31 +187545,110 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
  #include "qemu/log.h"
  #include "qapi/error.h"
  #include "system/memory.h"
-@@ -293,6 +298,7 @@ static void flatview_destroy(FlatView *view)
+@@ -53,6 +58,7 @@ static QTAILQ_HEAD(, AddressSpace) address_spaces
+ 
+ static GHashTable *flat_views;
+ 
++
+ typedef struct AddrRange AddrRange;
+ 
+ /*
+@@ -230,6 +236,8 @@ struct FlatRange {
+     bool unmergeable;
+ };
+ 
++#include "crucible-whole-memory-storage.inc.c"
++
+ #define FOR_EACH_FLAT_RANGE(var, view)          \
+     for (var = (view)->ranges; var < (view)->ranges + (view)->nr; ++var)
+ 
+@@ -263,7 +271,10 @@ static FlatView *flatview_new(MemoryRegion *mr_root)
+ {
+     FlatView *view;
+ 
+-    view = g_new0(FlatView, 1);
++    view = whole_memory_view_allocate(mr_root);
++    if (!view) {
++        view = g_new0(FlatView, 1);
++    }
+     view->ref = 1;
+     view->root = mr_root;
+     memory_region_ref(mr_root);
+@@ -277,10 +288,24 @@ static FlatView *flatview_new(MemoryRegion *mr_root)
+  */
+ static void flatview_insert(FlatView *view, unsigned pos, FlatRange *range)
+ {
++    whole_memory_view_access(view);
++    if (whole_memory_storage_selected() && !whole_memory_region_identity(range->mr)) {
++        whole_memory_storage_refuse();
++    }
+     if (view->nr == view->nr_allocated) {
+-        view->nr_allocated = MAX(2 * view->nr, 10);
+-        view->ranges = g_realloc(view->ranges,
+-                                    view->nr_allocated * sizeof(*view->ranges));
++        unsigned capacity;
++        FlatRange *ranges;
++
++        if (__builtin_mul_overflow(view->nr, 2u, &capacity)) {
++            whole_memory_storage_refuse();
++        }
++        capacity = MAX(capacity, 10);
++        ranges = whole_memory_ranges_grow(view, capacity);
++        if (!ranges) {
++            ranges = g_realloc(view->ranges, capacity * sizeof(*view->ranges));
++        }
++        view->ranges = ranges;
++        view->nr_allocated = capacity;
+     }
+     memmove(view->ranges + pos + 1, view->ranges + pos,
+             (view->nr - pos) * sizeof(FlatRange));
+@@ -293,6 +318,10 @@ static void flatview_destroy(FlatView *view)
  {
      int i;
  
++    whole_memory_view_destroy_begin(view, (RCUCBFunc *)flatview_destroy);
++    bool retained = whole_memory_storage_selected();
++
 +    crucible_flatview_retirement_begin(view);
      trace_flatview_destroy(view, view->root);
      if (view->dispatch) {
          address_space_dispatch_free(view->dispatch);
-@@ -302,6 +308,7 @@ static void flatview_destroy(FlatView *view)
+@@ -300,21 +329,32 @@ static void flatview_destroy(FlatView *view)
+     for (i = 0; i < view->nr; i++) {
+         memory_region_unref(view->ranges[i].mr);
      }
-     g_free(view->ranges);
+-    g_free(view->ranges);
++    if (!retained) {
++        g_free(view->ranges);
++    }
      memory_region_unref(view->root);
+-    g_free(view);
 +    crucible_flatview_retirement_end(view);
-     g_free(view);
++    if (retained) {
++        whole_memory_view_retire(view, (RCUCBFunc *)flatview_destroy);
++    } else {
++        g_free(view);
++    }
  }
  
-@@ -315,6 +322,7 @@ void flatview_unref(FlatView *view)
+ static bool flatview_ref(FlatView *view)
+ {
++    whole_memory_view_access(view);
+     return qatomic_fetch_inc_nonzero(&view->ref) > 0;
+ }
+ 
+ void flatview_unref(FlatView *view)
+ {
++    whole_memory_view_access(view);
      if (qatomic_fetch_dec(&view->ref) == 1) {
++        whole_memory_view_retirement_select(view, (RCUCBFunc *)flatview_destroy);
          trace_flatview_destroy_rcu(view, view->root);
          assert(view->root);
 +        crucible_flatview_retirement_select(view, (RCUCBFunc *)flatview_destroy);
          call_rcu(view, flatview_destroy, rcu);
      }
  }
-@@ -700,6 +708,23 @@ void flatview_for_each_range(FlatView *fv, flatview_cb cb , void *opaque)
+@@ -700,6 +740,23 @@ void flatview_for_each_range(FlatView *fv, flatview_cb cb , void *opaque)
      }
  }
  
@@ -186919,7 +187672,95 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
  static MemoryRegion *memory_region_get_flatview_root(MemoryRegion *mr)
  {
      while (mr->enabled) {
-@@ -1139,12 +1164,16 @@ static void address_space_update_topology(AddressSpace *as)
+@@ -766,7 +823,8 @@ static FlatView *generate_memory_topology(MemoryRegion *mr)
+         flatview_add_to_dispatch(view, &mrs);
+     }
+     address_space_dispatch_compact(view->dispatch);
+-    g_hash_table_replace(flat_views, mr, view);
++    whole_memory_view_publish(view);
++    whole_memory_index_replace(mr, view);
+ 
+     return view;
+ }
+@@ -1043,18 +1101,17 @@ static void flatviews_init(void)
+ {
+     static FlatView *empty_view;
+ 
+-    if (flat_views) {
++    if (whole_memory_index_present()) {
+         return;
+     }
+ 
+-    flat_views = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+-                                       (GDestroyNotify) flatview_unref);
++    whole_memory_index_new();
+     if (!empty_view) {
+         empty_view = generate_memory_topology(NULL);
+         /* We keep it alive forever in the global variable.  */
+         flatview_ref(empty_view);
+     } else {
+-        g_hash_table_replace(flat_views, NULL, empty_view);
++        whole_memory_index_replace(NULL, empty_view);
+         flatview_ref(empty_view);
+     }
+ }
+@@ -1063,9 +1120,8 @@ static void flatviews_reset(void)
+ {
+     AddressSpace *as;
+ 
+-    if (flat_views) {
+-        g_hash_table_unref(flat_views);
+-        flat_views = NULL;
++    if (whole_memory_index_present()) {
++        whole_memory_index_clear();
+     }
+     flatviews_init();
+ 
+@@ -1073,7 +1129,7 @@ static void flatviews_reset(void)
+     QTAILQ_FOREACH(as, &address_spaces, address_spaces_link) {
+         MemoryRegion *physmr = memory_region_get_flatview_root(as->root);
+ 
+-        if (g_hash_table_lookup(flat_views, physmr)) {
++        if (whole_memory_index_lookup(physmr)) {
+             continue;
+         }
+ 
+@@ -1083,9 +1139,11 @@ static void flatviews_reset(void)
+ 
+ static void address_space_set_flatview(AddressSpace *as)
+ {
++    whole_memory_space_access(as);
++
+     FlatView *old_view = address_space_to_flatview(as);
+     MemoryRegion *physmr = memory_region_get_flatview_root(as->root);
+-    FlatView *new_view = g_hash_table_lookup(flat_views, physmr);
++    FlatView *new_view = whole_memory_index_lookup(physmr);
+ 
+     assert(new_view);
+ 
+@@ -1110,6 +1168,7 @@ static void address_space_set_flatview(AddressSpace *as)
+     }
+ 
+     /* Writes are protected by the BQL.  */
++    whole_memory_space_publish(as, new_view);
+     qatomic_rcu_set(&as->current_map, new_view);
+     if (old_view) {
+         flatview_unref(old_view);
+@@ -1128,10 +1187,12 @@ static void address_space_set_flatview(AddressSpace *as)
+ 
+ static void address_space_update_topology(AddressSpace *as)
+ {
++    whole_memory_space_access(as);
++
+     MemoryRegion *physmr = memory_region_get_flatview_root(as->root);
+ 
+     flatviews_init();
+-    if (!g_hash_table_lookup(flat_views, physmr)) {
++    if (!whole_memory_index_lookup(physmr)) {
+         generate_memory_topology(physmr);
+     }
+     address_space_set_flatview(as);
+@@ -1139,12 +1200,16 @@ static void address_space_update_topology(AddressSpace *as)
  
  void memory_region_transaction_begin(void)
  {
@@ -186936,7 +187777,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      AddressSpace *as;
  
      assert(memory_region_transaction_depth);
-@@ -1221,11 +1250,16 @@ static void memory_region_do_init(MemoryRegion *mr,
+@@ -1221,11 +1286,16 @@ static void memory_region_do_init(MemoryRegion *mr,
                                    const char *name,
                                    uint64_t size)
  {
@@ -186954,7 +187795,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      mr->owner = owner;
      mr->dev = (DeviceState *) object_dynamic_cast(mr->owner, TYPE_DEVICE);
      mr->ram_block = NULL;
-@@ -1250,6 +1284,8 @@ void memory_region_init(MemoryRegion *mr,
+@@ -1250,6 +1320,8 @@ void memory_region_init(MemoryRegion *mr,
                          const char *name,
                          uint64_t size)
  {
@@ -186963,7 +187804,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      object_initialize(mr, sizeof(*mr), TYPE_MEMORY_REGION);
      memory_region_do_init(mr, owner, name, size);
  }
-@@ -1566,6 +1602,8 @@ static void memory_region_set_ops(MemoryRegion *mr,
+@@ -1566,6 +1638,8 @@ static void memory_region_set_ops(MemoryRegion *mr,
                                    const MemoryRegionOps *ops,
                                    void *opaque)
  {
@@ -186972,7 +187813,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      mr->ops = ops ?: &unassigned_mem_ops;
      mr->opaque = opaque;
      mr->terminates = true;
-@@ -1582,6 +1620,8 @@ void memory_region_init_io(MemoryRegion *mr, Object *owner,
+@@ -1582,6 +1656,8 @@ void memory_region_init_io(MemoryRegion *mr, Object *owner,
  
  static bool memory_region_set_ram_block(MemoryRegion *mr, RAMBlock *rb)
  {
@@ -186981,7 +187822,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      mr->terminates = true;
      mr->destructor = memory_region_destructor_ram;
      mr->ram_block = rb;
-@@ -1673,6 +1713,8 @@ bool memory_region_init_ram_from_fd(MemoryRegion *mr,
+@@ -1673,6 +1749,8 @@ bool memory_region_init_ram_from_fd(MemoryRegion *mr,
  static void memory_region_set_ram_ptr(MemoryRegion *mr, uint64_t size,
                                        void *ptr)
  {
@@ -186990,7 +187831,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      /* qemu_ram_alloc_from_ptr cannot fail with ptr != NULL.  */
      assert(ptr != NULL);
      RAMBlock *rb = qemu_ram_alloc_from_ptr(size, ptr, mr, &error_abort);
-@@ -1714,6 +1756,8 @@ void memory_region_init_iommu(void *_iommu_mr,
+@@ -1714,6 +1792,8 @@ void memory_region_init_iommu(void *_iommu_mr,
                                const char *name,
                                uint64_t size)
  {
@@ -186999,7 +187840,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      struct IOMMUMemoryRegion *iommu_mr;
      struct MemoryRegion *mr;
  
-@@ -1730,6 +1774,8 @@ static void memory_region_finalize(Object *obj)
+@@ -1730,6 +1810,8 @@ static void memory_region_finalize(Object *obj)
  {
      MemoryRegion *mr = MEMORY_REGION(obj);
  
@@ -187008,7 +187849,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      /*
       * Each memory region (that can be freed) must have an owner, and it
       * always has the same lifecycle of its owner.  It means when reaching
-@@ -1769,9 +1815,12 @@ static void memory_region_finalize(Object *obj)
+@@ -1769,9 +1851,12 @@ static void memory_region_finalize(Object *obj)
  
      mr->destructor(mr);
      memory_region_clear_coalescing(mr);
@@ -187022,7 +187863,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
  }
  
  Object *memory_region_owner(const MemoryRegion *mr)
-@@ -1838,6 +1887,8 @@ bool memory_region_skip_iommu_map(const MemoryRegion *mr)
+@@ -1838,6 +1923,8 @@ bool memory_region_skip_iommu_map(const MemoryRegion *mr)
  
  void memory_region_set_skip_iommu_map(MemoryRegion *mr, bool skip)
  {
@@ -187031,7 +187872,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      mr->ram_device_skip_iommu_map = skip;
  }
  
-@@ -1851,9 +1902,13 @@ uint8_t memory_region_get_dirty_log_mask(const MemoryRegion *mr)
+@@ -1851,9 +1938,13 @@ uint8_t memory_region_get_dirty_log_mask(const MemoryRegion *mr)
      uint8_t mask = mr->dirty_log_mask;
      const RAMBlock *rb = mr->ram_block;
  
@@ -187048,7 +187889,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      }
  
      if (tcg_enabled() && rb) {
-@@ -1895,6 +1950,8 @@ static int memory_region_update_iommu_notify_flags(IOMMUMemoryRegion *iommu_mr,
+@@ -1895,6 +1986,8 @@ static int memory_region_update_iommu_notify_flags(IOMMUMemoryRegion *iommu_mr,
  int memory_region_register_iommu_notifier(MemoryRegion *mr,
                                            IOMMUNotifier *n, Error **errp)
  {
@@ -187057,7 +187898,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      IOMMUMemoryRegion *iommu_mr;
      int ret;
  
-@@ -1959,6 +2016,8 @@ void memory_region_iommu_replay(IOMMUMemoryRegion *iommu_mr, IOMMUNotifier *n)
+@@ -1959,6 +2052,8 @@ void memory_region_iommu_replay(IOMMUMemoryRegion *iommu_mr, IOMMUNotifier *n)
  void memory_region_unregister_iommu_notifier(MemoryRegion *mr,
                                               IOMMUNotifier *n)
  {
@@ -187066,7 +187907,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      IOMMUMemoryRegion *iommu_mr;
  
      if (mr->alias) {
-@@ -2073,6 +2132,8 @@ RamDiscardManager *memory_region_get_ram_discard_manager(MemoryRegion *mr)
+@@ -2073,6 +2168,8 @@ RamDiscardManager *memory_region_get_ram_discard_manager(MemoryRegion *mr)
  int memory_region_add_ram_discard_source(MemoryRegion *mr,
                                           RamDiscardSource *source)
  {
@@ -187075,7 +187916,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      g_assert(memory_region_is_ram(mr));
  
      if (!mr->rdm) {
-@@ -2085,6 +2146,8 @@ int memory_region_add_ram_discard_source(MemoryRegion *mr,
+@@ -2085,6 +2182,8 @@ int memory_region_add_ram_discard_source(MemoryRegion *mr,
  int memory_region_del_ram_discard_source(MemoryRegion *mr,
                                            RamDiscardSource *source)
  {
@@ -187084,7 +187925,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      int ret;
      g_assert(mr->rdm);
  
-@@ -2154,6 +2217,8 @@ MemoryRegion *memory_translate_iotlb(IOMMUTLBEntry *iotlb, hwaddr *xlat_p,
+@@ -2154,6 +2253,8 @@ MemoryRegion *memory_translate_iotlb(IOMMUTLBEntry *iotlb, hwaddr *xlat_p,
  
  void memory_region_set_log(MemoryRegion *mr, bool log, unsigned client)
  {
@@ -187093,7 +187934,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      uint8_t mask = 1 << client;
      uint8_t old_logging;
  
-@@ -2293,6 +2358,8 @@ bool memory_region_snapshot_get_dirty(MemoryRegion *mr, DirtyBitmapSnapshot *sna
+@@ -2293,6 +2394,8 @@ bool memory_region_snapshot_get_dirty(MemoryRegion *mr, DirtyBitmapSnapshot *sna
  
  void memory_region_set_readonly(MemoryRegion *mr, bool readonly)
  {
@@ -187102,7 +187943,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      if (mr->readonly != readonly) {
          memory_region_transaction_begin();
          mr->readonly = readonly;
-@@ -2303,6 +2370,8 @@ void memory_region_set_readonly(MemoryRegion *mr, bool readonly)
+@@ -2303,6 +2406,8 @@ void memory_region_set_readonly(MemoryRegion *mr, bool readonly)
  
  void memory_region_set_nonvolatile(MemoryRegion *mr, bool nonvolatile)
  {
@@ -187111,7 +187952,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      if (mr->nonvolatile != nonvolatile) {
          memory_region_transaction_begin();
          mr->nonvolatile = nonvolatile;
-@@ -2313,6 +2382,8 @@ void memory_region_set_nonvolatile(MemoryRegion *mr, bool nonvolatile)
+@@ -2313,6 +2418,8 @@ void memory_region_set_nonvolatile(MemoryRegion *mr, bool nonvolatile)
  
  void memory_region_rom_device_set_romd(MemoryRegion *mr, bool romd_mode)
  {
@@ -187120,7 +187961,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      if (mr->romd_mode != romd_mode) {
          memory_region_transaction_begin();
          mr->romd_mode = romd_mode;
-@@ -2370,6 +2441,8 @@ ram_addr_t memory_region_get_ram_addr(const MemoryRegion *mr)
+@@ -2370,6 +2477,8 @@ ram_addr_t memory_region_get_ram_addr(const MemoryRegion *mr)
  
  void memory_region_ram_resize(MemoryRegion *mr, ram_addr_t newsize, Error **errp)
  {
@@ -187129,7 +187970,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      assert(mr->ram_block);
  
      qemu_ram_resize(mr->ram_block, newsize, errp);
-@@ -2426,6 +2499,8 @@ void memory_region_add_coalescing(MemoryRegion *mr,
+@@ -2426,6 +2535,8 @@ void memory_region_add_coalescing(MemoryRegion *mr,
                                    hwaddr offset,
                                    uint64_t size)
  {
@@ -187138,7 +187979,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      CoalescedMemoryRange *cmr = g_malloc(sizeof(*cmr));
  
      cmr->addr = addrrange_make(int128_make64(offset), int128_make64(size));
-@@ -2436,6 +2511,8 @@ void memory_region_add_coalescing(MemoryRegion *mr,
+@@ -2436,6 +2547,8 @@ void memory_region_add_coalescing(MemoryRegion *mr,
  
  void memory_region_clear_coalescing(MemoryRegion *mr)
  {
@@ -187147,7 +187988,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      CoalescedMemoryRange *cmr;
  
      if (QTAILQ_EMPTY(&mr->coalesced)) {
-@@ -2455,11 +2532,15 @@ void memory_region_clear_coalescing(MemoryRegion *mr)
+@@ -2455,11 +2568,15 @@ void memory_region_clear_coalescing(MemoryRegion *mr)
  
  void memory_region_set_flush_coalesced(MemoryRegion *mr)
  {
@@ -187163,7 +188004,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      qemu_flush_coalesced_mmio_buffer();
      if (QTAILQ_EMPTY(&mr->coalesced)) {
          mr->flush_coalesced_mmio = false;
-@@ -2468,6 +2549,8 @@ void memory_region_clear_flush_coalesced(MemoryRegion *mr)
+@@ -2468,6 +2585,8 @@ void memory_region_clear_flush_coalesced(MemoryRegion *mr)
  
  void memory_region_enable_lockless_io(MemoryRegion *mr)
  {
@@ -187172,7 +188013,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      mr->lockless_io = true;
      /*
       * reentrancy_guard has per device scope, that when enabled
-@@ -2488,6 +2571,8 @@ void memory_region_add_eventfd(MemoryRegion *mr,
+@@ -2488,6 +2607,8 @@ void memory_region_add_eventfd(MemoryRegion *mr,
                                 uint64_t data,
                                 EventNotifier *e)
  {
@@ -187181,7 +188022,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      MemoryRegionIoeventfd mrfd = {
          .addr.start = int128_make64(addr),
          .addr.size = int128_make64(size),
-@@ -2524,6 +2609,8 @@ void memory_region_del_eventfd(MemoryRegion *mr,
+@@ -2524,6 +2645,8 @@ void memory_region_del_eventfd(MemoryRegion *mr,
                                 uint64_t data,
                                 EventNotifier *e)
  {
@@ -187190,7 +188031,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      MemoryRegionIoeventfd mrfd = {
          .addr.start = int128_make64(addr),
          .addr.size = int128_make64(size),
-@@ -2580,6 +2667,8 @@ static void memory_region_add_subregion_common(MemoryRegion *mr,
+@@ -2580,6 +2703,8 @@ static void memory_region_add_subregion_common(MemoryRegion *mr,
                                                 hwaddr offset,
                                                 MemoryRegion *subregion)
  {
@@ -187199,7 +188040,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      MemoryRegion *alias;
  
      assert(!subregion->container);
-@@ -2611,6 +2700,8 @@ void memory_region_add_subregion_overlap(MemoryRegion *mr,
+@@ -2611,6 +2736,8 @@ void memory_region_add_subregion_overlap(MemoryRegion *mr,
  void memory_region_del_subregion(MemoryRegion *mr,
                                   MemoryRegion *subregion)
  {
@@ -187208,7 +188049,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      MemoryRegion *alias;
  
      memory_region_transaction_begin();
-@@ -2632,6 +2723,8 @@ void memory_region_del_subregion(MemoryRegion *mr,
+@@ -2632,6 +2759,8 @@ void memory_region_del_subregion(MemoryRegion *mr,
  
  void memory_region_set_enabled(MemoryRegion *mr, bool enabled)
  {
@@ -187217,7 +188058,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      if (enabled == mr->enabled) {
          return;
      }
-@@ -2643,6 +2736,11 @@ void memory_region_set_enabled(MemoryRegion *mr, bool enabled)
+@@ -2643,6 +2772,11 @@ void memory_region_set_enabled(MemoryRegion *mr, bool enabled)
  
  void memory_region_set_size(MemoryRegion *mr, uint64_t size)
  {
@@ -187229,7 +188070,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      Int128 s = int128_make64(size);
  
      if (size == UINT64_MAX) {
-@@ -2673,6 +2771,8 @@ static void memory_region_readd_subregion(MemoryRegion *mr)
+@@ -2673,6 +2807,8 @@ static void memory_region_readd_subregion(MemoryRegion *mr)
  
  void memory_region_set_address(MemoryRegion *mr, hwaddr addr)
  {
@@ -187238,7 +188079,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      if (addr != mr->addr) {
          mr->addr = addr;
          memory_region_readd_subregion(mr);
-@@ -2681,6 +2781,8 @@ void memory_region_set_address(MemoryRegion *mr, hwaddr addr)
+@@ -2681,6 +2817,8 @@ void memory_region_set_address(MemoryRegion *mr, hwaddr addr)
  
  void memory_region_set_alias_offset(MemoryRegion *mr, hwaddr offset)
  {
@@ -187247,7 +188088,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      assert(mr->alias);
  
      if (offset == mr->alias_offset) {
-@@ -2695,6 +2797,8 @@ void memory_region_set_alias_offset(MemoryRegion *mr, hwaddr offset)
+@@ -2695,6 +2833,8 @@ void memory_region_set_alias_offset(MemoryRegion *mr, hwaddr offset)
  
  void memory_region_set_unmergeable(MemoryRegion *mr, bool unmergeable)
  {
@@ -187256,7 +188097,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      if (unmergeable == mr->unmergeable) {
          return;
      }
-@@ -2782,6 +2886,37 @@ static MemoryRegionSection memory_region_find_rcu(MemoryRegion *mr,
+@@ -2782,6 +2922,37 @@ static MemoryRegionSection memory_region_find_rcu(MemoryRegion *mr,
      return ret;
  }
  
@@ -187294,7 +188135,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
  MemoryRegionSection memory_region_find(MemoryRegion *mr,
                                         hwaddr addr, uint64_t size)
  {
-@@ -2848,6 +2983,19 @@ static unsigned int postponed_stop_flags;
+@@ -2848,6 +3019,19 @@ static unsigned int postponed_stop_flags;
  static VMChangeStateEntry *vmstate_change;
  static void memory_global_dirty_log_stop_postponed_run(void);
  
@@ -187314,7 +188155,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
  static bool memory_global_dirty_log_do_start(Error **errp)
  {
      MemoryListener *listener;
-@@ -2873,7 +3021,10 @@ err:
+@@ -2873,7 +3057,10 @@ err:
  
  bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
  {
@@ -187325,7 +188166,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
  
      assert(flags && !(flags & (~GLOBAL_DIRTY_MASK)));
  
-@@ -2889,6 +3040,7 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
+@@ -2889,6 +3076,7 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
      }
  
      old_flags = global_dirty_tracking;
@@ -187333,7 +188174,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      global_dirty_tracking |= flags;
      trace_global_dirty_changed(global_dirty_tracking);
  
-@@ -2899,6 +3051,9 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
+@@ -2899,6 +3087,9 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
              return false;
          }
  
@@ -187343,7 +188184,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
          memory_region_transaction_begin();
          memory_region_update_pending = true;
          memory_region_transaction_commit();
-@@ -2908,16 +3063,22 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
+@@ -2908,16 +3099,22 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
  
  static void memory_global_dirty_log_do_stop(unsigned int flags)
  {
@@ -187367,7 +188208,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
          MEMORY_LISTENER_CALL_GLOBAL(log_global_stop, Reverse);
      }
  }
-@@ -2951,6 +3112,8 @@ static void memory_vm_change_state_handler(void *opaque, bool running,
+@@ -2951,6 +3148,8 @@ static void memory_vm_change_state_handler(void *opaque, bool running,
  
  void memory_global_dirty_log_stop(unsigned int flags)
  {
@@ -187376,7 +188217,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      if (!runstate_is_running()) {
          /* Postpone the dirty log stop, e.g., to when VM starts again */
          if (vmstate_change) {
-@@ -3085,6 +3248,8 @@ static void listener_del_address_space(MemoryListener *listener,
+@@ -3085,6 +3284,8 @@ static void listener_del_address_space(MemoryListener *listener,
  
  void memory_listener_register(MemoryListener *listener, AddressSpace *as)
  {
@@ -187385,7 +188226,7 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      MemoryListener *other = NULL;
  
      /* Only one of them can be defined for a listener */
-@@ -3124,6 +3289,8 @@ void memory_listener_register(MemoryListener *listener, AddressSpace *as)
+@@ -3124,6 +3325,8 @@ void memory_listener_register(MemoryListener *listener, AddressSpace *as)
  
  void memory_listener_unregister(MemoryListener *listener)
  {
@@ -187394,19 +188235,68 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
      if (!listener->address_space) {
          return;
      }
-@@ -3147,6 +3314,8 @@ void address_space_remove_listeners(const AddressSpace *as)
+@@ -3147,6 +3350,10 @@ void address_space_remove_listeners(const AddressSpace *as)
  
  void address_space_init(AddressSpace *as, MemoryRegion *root, const char *name)
  {
++    char *retained_name = whole_memory_space_begin(as, root, name);
++
 +    qemu_memory_crucible_address_space_born(as);
 +
      memory_region_ref(root);
      as->root = root;
      as->current_map = NULL;
-@@ -3203,12 +3372,16 @@ static void address_space_detach(AddressSpace *as)
+@@ -3158,13 +3365,15 @@ void address_space_init(AddressSpace *as, MemoryRegion *root, const char *name)
+     as->bounce_buffer_size = 0;
+     qemu_mutex_init(&as->map_client_list_lock);
+     QLIST_INIT(&as->map_client_list);
+-    as->name = g_strdup(name ? name : "anonymous");
++    as->name = retained_name ? retained_name : g_strdup(name ? name : "anonymous");
+     address_space_update_topology(as);
+     address_space_update_ioeventfds(as);
+ }
+ 
+-static void do_address_space_destroy(AddressSpace *as)
++static void address_space_destroy_common(AddressSpace *as, RCUCBFunc *method)
+ {
++    bool retained = whole_memory_space_destroy_begin(as, method);
++
+     assert(qatomic_read(&as->bounce_buffer_size) == 0);
+     assert(QLIST_EMPTY(&as->map_client_list));
+     qemu_mutex_destroy(&as->map_client_list_lock);
+@@ -3172,15 +3381,24 @@ static void do_address_space_destroy(AddressSpace *as)
+     assert(QTAILQ_EMPTY(&as->listeners));
+ 
+     flatview_unref(as->current_map);
+-    g_free(as->name);
++    if (!retained) {
++        g_free(as->name);
++    }
+     g_free(as->ioeventfds);
+     memory_region_unref(as->root);
+ }
+ 
++static void do_address_space_destroy(AddressSpace *as)
++{
++    address_space_destroy_common(as, (RCUCBFunc *)do_address_space_destroy);
++}
++
+ static void do_address_space_destroy_free(AddressSpace *as)
+ {
+-    do_address_space_destroy(as);
+-    g_free(as);
++    address_space_destroy_common(as, (RCUCBFunc *)do_address_space_destroy_free);
++    if (!whole_memory_space_retained(as)) {
++        g_free(as);
++    }
+ }
+ 
+ /* Detach address space from global view, notify all listeners */
+@@ -3203,12 +3421,18 @@ static void address_space_detach(AddressSpace *as)
  
  void address_space_destroy(AddressSpace *as)
  {
++    whole_memory_space_retirement_select(as, (RCUCBFunc *)do_address_space_destroy);
 +    qemu_memory_crucible_mapping_writer_guard("address_space_destroy");
 +
      address_space_detach(as);
@@ -187415,12 +188305,13 @@ index 5fc36708ec349d94605f0503c647d7f9d1475a2d..c12f1b8f7c248c29edfa61b114dbc6be
  
  void address_space_destroy_free(AddressSpace *as)
  {
++    whole_memory_space_retirement_select(as, (RCUCBFunc *)do_address_space_destroy_free);
 +    qemu_memory_crucible_mapping_writer_guard("address_space_destroy_free");
 +
      address_space_detach(as);
      call_rcu(as, do_address_space_destroy_free, rcu);
  }
-@@ -3735,3 +3908,7 @@ static void memory_register_types(void)
+@@ -3735,3 +3959,7 @@ static void memory_register_types(void)
  }
  
  type_init(memory_register_types)
@@ -187466,7 +188357,7 @@ index cd3193d170b2b5759cb34e4087a6d0ebfa805287..c9270db4087e6983acedb08d42183332
 +  ))
  endif
 diff --git a/system/physmem.c b/system/physmem.c
-index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0a14a8448 100644
+index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de13d9ca105 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
 @@ -18,7 +18,11 @@
@@ -187652,7 +188543,21 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  #ifdef CONFIG_TCG
  
  typedef struct TCGIOMMUNotifier {
-@@ -929,11 +1069,13 @@ bool physical_memory_get_dirty_flag(ram_addr_t addr, unsigned client)
+@@ -755,9 +895,12 @@ void cpu_address_space_init(CPUState *cpu, int asidx,
+                             const char *prefix, MemoryRegion *mr)
+ {
+     CPUAddressSpace *newas;
+-    AddressSpace *as = g_new0(AddressSpace, 1);
++    AddressSpace *as = qemu_memory_whole_cpu_space_allocate(cpu, asidx);
+     char *as_name;
+ 
++    if (!as) {
++        as = g_new0(AddressSpace, 1);
++    }
+     assert(mr);
+     as_name = g_strdup_printf("%s-%d", prefix, cpu->cpu_index);
+     address_space_init(as, mr, as_name);
+@@ -929,11 +1072,13 @@ bool physical_memory_get_dirty_flag(ram_addr_t addr, unsigned client)
  
  bool physical_memory_is_clean(ram_addr_t addr)
  {
@@ -187671,7 +188576,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  }
  
  static bool physical_memory_all_dirty(ram_addr_t start, ram_addr_t length,
-@@ -1006,6 +1148,10 @@ void physical_memory_set_dirty_flag(ram_addr_t addr, unsigned client)
+@@ -1006,6 +1151,10 @@ void physical_memory_set_dirty_flag(ram_addr_t addr, unsigned client)
      blocks = qatomic_rcu_read(&ram_list.dirty_memory[client]);
  
      set_bit_atomic(offset, blocks->blocks[idx]);
@@ -187682,7 +188587,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  }
  
  void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
-@@ -1016,6 +1162,10 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+@@ -1016,6 +1165,10 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
      unsigned long idx, offset, base;
      int i;
  
@@ -187693,7 +188598,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      if (!mask && !xen_enabled()) {
          return;
      }
-@@ -1046,6 +1196,12 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+@@ -1046,6 +1199,12 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
                  bitmap_set_atomic(blocks[DIRTY_MEMORY_CODE]->blocks[idx],
                                    offset, next - page);
              }
@@ -187706,7 +188611,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  
              page = next;
              idx++;
-@@ -1248,7 +1404,8 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1248,7 +1407,8 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                      nbits = ctpopl(temp);
                      qatomic_or(&blocks[DIRTY_MEMORY_VGA][idx][offset], temp);
  
@@ -187716,7 +188621,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
                          qatomic_or(
                                  &blocks[DIRTY_MEMORY_MIGRATION][idx][offset],
                                  temp);
-@@ -1257,6 +1414,14 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1257,6 +1417,14 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                              total_dirty_pages += nbits;
                          }
                      }
@@ -187731,7 +188636,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  
                      num_dirty += nbits;
  
-@@ -1280,9 +1445,12 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1280,9 +1448,12 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
          uint8_t clients = tcg_enabled() ? DIRTY_CLIENTS_ALL
                                          : DIRTY_CLIENTS_NOCODE;
  
@@ -187745,7 +188650,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  
          /*
           * bitmap-traveling is faster than memory-traveling (for addr...)
-@@ -1329,6 +1497,10 @@ static uint16_t phys_section_add(PhysPageMap *map,
+@@ -1329,6 +1500,10 @@ static uint16_t phys_section_add(PhysPageMap *map,
      return map->sections_nb++;
  }
  
@@ -187756,7 +188661,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  static void phys_section_destroy(MemoryRegion *mr)
  {
      bool have_sub_page = mr->subpage;
-@@ -1337,7 +1509,9 @@ static void phys_section_destroy(MemoryRegion *mr)
+@@ -1337,7 +1512,9 @@ static void phys_section_destroy(MemoryRegion *mr)
  
      if (have_sub_page) {
          subpage_t *subpage = container_of(mr, subpage_t, iomem);
@@ -187766,7 +188671,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
          g_free(subpage);
      }
  }
-@@ -1405,6 +1579,8 @@ static void register_multipage(FlatView *fv,
+@@ -1405,6 +1582,8 @@ static void register_multipage(FlatView *fv,
   */
  void flatview_add_to_dispatch(FlatView *fv, MemoryRegionSection *section)
  {
@@ -187775,7 +188680,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      MemoryRegionSection remain = *section;
      Int128 page_size = int128_make64(TARGET_PAGE_SIZE);
  
-@@ -1901,6 +2077,11 @@ bool qemu_ram_is_uf_zeroable(const RAMBlock *rb)
+@@ -1901,6 +2080,11 @@ bool qemu_ram_is_uf_zeroable(const RAMBlock *rb)
  
  void qemu_ram_set_uf_zeroable(RAMBlock *rb)
  {
@@ -187787,7 +188692,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      rb->flags |= RAM_UF_ZEROPAGE;
  }
  
-@@ -1911,11 +2092,17 @@ bool qemu_ram_is_migratable(const RAMBlock *rb)
+@@ -1911,11 +2095,17 @@ bool qemu_ram_is_migratable(const RAMBlock *rb)
  
  void qemu_ram_set_migratable(RAMBlock *rb)
  {
@@ -187805,7 +188710,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      rb->flags &= ~RAM_MIGRATABLE;
  }
  
-@@ -1932,6 +2119,9 @@ int qemu_ram_get_fd(const RAMBlock *rb)
+@@ -1932,6 +2122,9 @@ int qemu_ram_get_fd(const RAMBlock *rb)
  /* Called with the BQL held.  */
  void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
  {
@@ -187815,7 +188720,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      RAMBlock *block;
  
      assert(new_block);
-@@ -1946,6 +2136,7 @@ void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
+@@ -1946,6 +2139,7 @@ void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
      }
      pstrcat(new_block->idstr, sizeof(new_block->idstr), name);
  
@@ -187823,7 +188728,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      RCU_READ_LOCK_GUARD();
      RAMBLOCK_FOREACH(block) {
          if (block != new_block &&
-@@ -1960,11 +2151,14 @@ void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
+@@ -1960,11 +2154,14 @@ void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
  /* Called with the BQL held.  */
  void qemu_ram_unset_idstr(RAMBlock *block)
  {
@@ -187838,7 +188743,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
          memset(block->idstr, 0, sizeof(block->idstr));
      }
  }
-@@ -2019,6 +2213,11 @@ static int memory_try_enable_merging(void *addr, size_t len)
+@@ -2019,6 +2216,11 @@ static int memory_try_enable_merging(void *addr, size_t len)
   */
  int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
  {
@@ -187850,7 +188755,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      const ram_addr_t oldsize = block->used_length;
      const ram_addr_t unaligned_size = newsize;
  
-@@ -2031,6 +2230,9 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
+@@ -2031,6 +2233,9 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
           * sizes), however, we have to notify if the unaligned size changed.
           */
          if (unaligned_size != memory_region_size(block->mr)) {
@@ -187860,7 +188765,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
              memory_region_set_size(block->mr, unaligned_size);
              if (block->resized) {
                  block->resized(block->idstr, unaligned_size, block->host);
-@@ -2118,6 +2320,10 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
+@@ -2118,6 +2323,10 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
          return;
      }
  
@@ -187871,7 +188776,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      for (i = 0; i < DIRTY_MEMORY_NUM; i++) {
          DirtyMemoryBlocks *old_blocks;
          DirtyMemoryBlocks *new_blocks;
-@@ -2301,6 +2507,11 @@ RAMBlock *qemu_ram_alloc_from_fd(ram_addr_t size, ram_addr_t max_size,
+@@ -2301,6 +2510,11 @@ RAMBlock *qemu_ram_alloc_from_fd(ram_addr_t size, ram_addr_t max_size,
                                   bool grow,
                                   Error **errp)
  {
@@ -187883,7 +188788,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      ERRP_GUARD();
      RAMBlock *new_block;
      Error *local_err = NULL;
-@@ -2461,10 +2672,17 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
+@@ -2461,10 +2675,17 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
                                    void *host, uint32_t ram_flags,
                                    MemoryRegion *mr, Error **errp)
  {
@@ -187901,7 +188806,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      share_flags = ram_flags & (RAM_PRIVATE | RAM_SHARED);
      assert(share_flags != (RAM_SHARED | RAM_PRIVATE));
      ram_flags &= ~RAM_PRIVATE;
-@@ -2524,7 +2742,10 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
+@@ -2524,7 +2745,10 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
      size = ROUND_UP(size, align);
      max_size = ROUND_UP(max_size, align);
  
@@ -187913,7 +188818,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      new_block->mr = mr;
      new_block->resized = resized;
      new_block->used_length = size;
-@@ -2536,10 +2757,14 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
+@@ -2536,10 +2760,14 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
      new_block->flags = ram_flags;
      ram_block_add(new_block, &local_err);
      if (local_err) {
@@ -187928,7 +188833,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      return new_block;
  }
  
-@@ -2568,6 +2793,10 @@ RAMBlock *qemu_ram_alloc_resizeable(ram_addr_t size, ram_addr_t maxsz,
+@@ -2568,6 +2796,10 @@ RAMBlock *qemu_ram_alloc_resizeable(ram_addr_t size, ram_addr_t maxsz,
  
  static void reclaim_ramblock(RAMBlock *block)
  {
@@ -187939,7 +188844,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      if (block->flags & RAM_PREALLOC) {
          ;
      } else if (xen_map_cache_enabled()) {
-@@ -2591,20 +2820,29 @@ static void reclaim_ramblock(RAMBlock *block)
+@@ -2591,20 +2823,29 @@ static void reclaim_ramblock(RAMBlock *block)
  
  void qemu_ram_free(RAMBlock *block)
  {
@@ -187971,7 +188876,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      QLIST_REMOVE_RCU(block, next);
      qatomic_set(&ram_list.mru_block, NULL);
      /* Write list before version */
-@@ -2647,6 +2885,11 @@ static int qemu_ram_remap_mmap(RAMBlock *block, uint64_t start, size_t length)
+@@ -2647,6 +2888,11 @@ static int qemu_ram_remap_mmap(RAMBlock *block, uint64_t start, size_t length)
   */
  void qemu_ram_remap(ram_addr_t addr)
  {
@@ -187983,7 +188888,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      RAMBlock *block;
      uint64_t offset;
      void *vaddr;
-@@ -2688,6 +2931,12 @@ void qemu_ram_remap(ram_addr_t addr)
+@@ -2688,6 +2934,12 @@ void qemu_ram_remap(ram_addr_t addr)
                  qemu_ram_setup_dump(vaddr, page_size);
              }
  
@@ -187996,7 +188901,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
              break;
          }
      }
-@@ -2952,6 +3201,8 @@ static const MemoryRegionOps subpage_ops = {
+@@ -2952,6 +3204,8 @@ static const MemoryRegionOps subpage_ops = {
      .endianness = DEVICE_NATIVE_ENDIAN,
  };
  
@@ -188005,7 +188910,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  static int subpage_register(subpage_t *mmio, uint32_t start, uint32_t end,
                              uint16_t section)
  {
-@@ -2974,12 +3225,14 @@ static subpage_t *subpage_init(FlatView *fv, hwaddr base)
+@@ -2974,12 +3228,14 @@ static subpage_t *subpage_init(FlatView *fv, hwaddr base)
      subpage_t *mmio;
  
      /* mmio->sub_section is set to PHYS_SECTION_UNASSIGNED with g_malloc0 */
@@ -188020,7 +188925,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      trace_subpage_init(mmio, base, TARGET_PAGE_SIZE);
  
      return mmio;
-@@ -3023,6 +3276,8 @@ AddressSpaceDispatch *address_space_dispatch_new(FlatView *fv)
+@@ -3023,6 +3279,8 @@ AddressSpaceDispatch *address_space_dispatch_new(FlatView *fv)
  
  void address_space_dispatch_free(AddressSpaceDispatch *d)
  {
@@ -188029,7 +188934,28 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      phys_sections_free(&d->map);
      g_free(d);
  }
-@@ -3145,6 +3400,26 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
+@@ -3098,12 +3356,18 @@ static void tcg_commit(MemoryListener *listener)
+ 
+ static void memory_map_init(void)
+ {
+-    system_memory = g_malloc(sizeof(*system_memory));
++    system_memory = qemu_memory_whole_system_region_allocate(1);
++    if (!system_memory) {
++        system_memory = g_malloc(sizeof(*system_memory));
++    }
+ 
+     memory_region_init(system_memory, NULL, "system", UINT64_MAX);
+     address_space_init(&address_space_memory, system_memory, "memory");
+ 
+-    system_io = g_malloc(sizeof(*system_io));
++    system_io = qemu_memory_whole_system_region_allocate(2);
++    if (!system_io) {
++        system_io = g_malloc(sizeof(*system_io));
++    }
+     memory_region_init_io(system_io, NULL, &unassigned_io_ops, NULL, "io",
+                           65536);
+     address_space_init(&address_space_io, system_io, "I/O");
+@@ -3145,6 +3409,26 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
      physical_memory_set_dirty_range(addr, length, dirty_log_mask);
  }
  
@@ -188056,7 +188982,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  void memory_region_flush_rom_device(MemoryRegion *mr, hwaddr addr, hwaddr size)
  {
      /*
-@@ -3230,7 +3505,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
+@@ -3230,7 +3514,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
  static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
                                                  const uint8_t *buf,
                                                  hwaddr len, hwaddr mr_addr,
@@ -188066,7 +188992,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3270,8 +3546,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
+@@ -3270,8 +3555,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
          uint8_t *ram_ptr = qemu_ram_ptr_length(mr->ram_block, mr_addr, l,
                                                 false, true);
  
@@ -188104,7 +189030,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  
          return MEMTX_OK;
      }
-@@ -3282,14 +3585,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3282,14 +3594,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
                                             MemTxAttrs attrs,
                                             const void *ptr,
                                             hwaddr len, hwaddr mr_addr,
@@ -188123,7 +189049,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  
          len -= l;
          buf += l;
-@@ -3300,7 +3604,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3300,7 +3613,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -188133,7 +189059,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      }
  
      return result;
-@@ -3312,21 +3617,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
+@@ -3312,21 +3626,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -188161,7 +189087,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3365,6 +3673,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
+@@ -3365,6 +3682,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
  
          memcpy(buf, ram_ptr, *l);
  
@@ -188188,7 +189114,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
          return MEMTX_OK;
      }
  }
-@@ -3377,10 +3705,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3377,10 +3714,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
  {
      MemTxResult result = MEMTX_OK;
      uint8_t *buf = ptr;
@@ -188208,7 +189134,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  
          len -= l;
          buf += l;
-@@ -3391,7 +3727,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3391,7 +3736,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -188218,7 +189144,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      }
  
      return result;
-@@ -3403,10 +3740,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
+@@ -3403,10 +3749,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -188232,7 +189158,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      if (!flatview_access_allowed(mr, attrs, mr_addr, l)) {
          return MEMTX_ACCESS_ERROR;
      }
-@@ -3456,6 +3795,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
+@@ -3456,6 +3804,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
      }
  }
  
@@ -188306,7 +189232,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  MemTxResult address_space_set(const AddressSpace *as, hwaddr addr,
                                uint8_t c, hwaddr len, MemTxAttrs attrs)
  {
-@@ -3487,11 +3893,65 @@ void physical_memory_write(hwaddr addr, const void *buf, hwaddr len)
+@@ -3487,11 +3902,65 @@ void physical_memory_write(hwaddr addr, const void *buf, hwaddr len)
                          MEMTXATTRS_UNSPECIFIED, buf, len);
  }
  
@@ -188372,7 +189298,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      RCU_READ_LOCK_GUARD();
      while (len > 0) {
          hwaddr addr1, l = len;
-@@ -3555,6 +4015,11 @@ typedef struct {
+@@ -3555,6 +4024,11 @@ typedef struct {
      MemoryRegion *mr;
      hwaddr addr;
      size_t len;
@@ -188384,7 +189310,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      uint8_t buffer[];
  } BounceBuffer;
  
-@@ -3578,6 +4043,8 @@ static void address_space_notify_map_clients_locked(const AddressSpace *as)
+@@ -3578,6 +4052,8 @@ static void address_space_notify_map_clients_locked(const AddressSpace *as)
  
  void address_space_register_map_client(AddressSpace *as, QEMUBH *bh)
  {
@@ -188393,7 +189319,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      AddressSpaceMapClient *client = g_malloc(sizeof(*client));
  
      QEMU_LOCK_GUARD(&as->map_client_list_lock);
-@@ -3607,6 +4074,8 @@ void machine_memory_init(void)
+@@ -3607,6 +4083,8 @@ void machine_memory_init(void)
  
  void address_space_unregister_map_client(AddressSpace *as, QEMUBH *bh)
  {
@@ -188402,7 +189328,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      AddressSpaceMapClient *client;
  
      QEMU_LOCK_GUARD(&as->map_client_list_lock);
-@@ -3708,6 +4177,8 @@ void *address_space_map(AddressSpace *as,
+@@ -3708,6 +4186,8 @@ void *address_space_map(AddressSpace *as,
                          bool is_write,
                          MemTxAttrs attrs)
  {
@@ -188411,7 +189337,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      hwaddr len = *plen;
      hwaddr l, xlat;
      MemoryRegion *mr;
-@@ -3724,7 +4195,8 @@ void *address_space_map(AddressSpace *as,
+@@ -3724,7 +4204,8 @@ void *address_space_map(AddressSpace *as,
      fv = address_space_to_flatview(as);
      mr = flatview_translate(fv, addr, &xlat, &l, is_write, attrs);
  
@@ -188421,7 +189347,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
          size_t used = qatomic_read(&as->bounce_buffer_size);
          for (;;) {
              hwaddr alloc = MIN(as->max_bounce_buffer_size - used, l);
-@@ -3749,10 +4221,47 @@ void *address_space_map(AddressSpace *as,
+@@ -3749,10 +4230,47 @@ void *address_space_map(AddressSpace *as,
          bounce->mr = mr;
          bounce->addr = addr;
          bounce->len = l;
@@ -188473,7 +189399,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
          }
  
          *plen = l;
-@@ -3793,8 +4302,43 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3793,8 +4311,43 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
      assert(bounce->magic == BOUNCE_BUFFER_MAGIC);
  
      if (is_write) {
@@ -188519,7 +189445,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      }
  
      qatomic_sub(&as->bounce_buffer_size, bounce->len);
-@@ -3839,6 +4383,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3839,6 +4392,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
  
      assert(len > 0);
  
@@ -188530,7 +189456,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
      l = len;
      cache->fv = address_space_get_flatview(as);
      d = flatview_to_dispatch(cache->fv);
-@@ -3874,6 +4422,66 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3874,6 +4431,66 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
      return l;
  }
  
@@ -188597,7 +189523,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  void address_space_cache_invalidate(const MemoryRegionCache *cache,
                                      hwaddr addr,
                                      hwaddr access_len)
-@@ -3941,8 +4549,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
+@@ -3941,8 +4558,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
      const uint8_t *buf = ptr;
  
      for (;;) {
@@ -188608,7 +189534,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  
          len -= l;
          buf += l;
-@@ -3968,7 +4576,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
+@@ -3968,7 +4585,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
      uint8_t *buf = ptr;
  
      for (;;) {
@@ -188618,7 +189544,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
          len -= l;
          buf += l;
          mr_addr += l;
-@@ -4070,6 +4679,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
+@@ -4070,6 +4688,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
      return 0;
  }
  
@@ -188655,7 +189581,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
  {
      RAMBlock *block;
-@@ -4222,6 +4861,12 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
+@@ -4222,6 +4870,12 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
      if (rb->guest_memfd >= 0) {
          ret = ram_block_discard_guest_memfd_range(rb, offset, length);
      }
@@ -188668,7 +189594,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..67ff5c0f2a5b7f40682afc422b849ff0
  
      return ret;
  }
-@@ -4492,3 +5137,14 @@ void ram_block_del_cpr_blocker(RAMBlock *rb)
+@@ -4492,3 +5146,14 @@ void ram_block_del_cpr_blocker(RAMBlock *rb)
  {
      migrate_del_blocker(&rb->cpr_blocker);
  }

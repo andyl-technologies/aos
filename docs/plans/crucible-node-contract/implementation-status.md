@@ -3082,6 +3082,17 @@ compiler controls pass on that registered output. Nine inherited utility
 interpreter shebangs remain an open policy gap. The failed attempt stays
 retained; neither result qualifies the backend package tuples.
 
+The current native build prerequisites have complete NAR, reference and actual
+producer readbacks. The first bounded package attempt stops after 22.41 seconds
+when its disk monitor sees multiple declared outputs appear during scanning.
+PAM and pixman complete; firmware begins. There is no compiler failure. The
+original client and observed descendants retire, measured root leases close,
+and the existing serialized writer lock is released. The failure remains
+retained. A later complete stable-parent scan counts 110.73 GiB and 2,442,465
+entries in 63.86 seconds. Compilation-operator scan work/time bounds are revised
+separately; scenario/source capture limits and native authority do not change.
+The complete current native package still requires a successful realization.
+
 The direct selected DMTCP source diagnostic configures, builds and installs
 successfully in 4.13, 27.26 and 0.70 seconds. Its first startup fails before port
 publication. Correcting caller-owned console permissions progresses to later
@@ -3213,6 +3224,38 @@ exactly 16 existing files and reproduces final tree
 The license inventory is unchanged. Genuine AddressSpace/FlatView ownership,
 complete physical closure, full firmware/ROM sealing, readiness and current
 package/ABI/license qualification remain required.
+
+## Original constructor memory storage and cleanup
+
+Signed QEMU source `c993991088114ff183aeb5aab6127d51d367f838` preserves the
+complete 78,082-entry ancestor and adds exactly four existing-file changes and
+one GPL memory-storage fragment. Its corresponding license row is retained.
+The final tree is `a546ce30544d964543701bc04c1d6bb3528e2fc4`; independent
+canonical patch/bundle, sole-base and explicit AOS signature checks pass.
+
+Selected constructor MemoryRegion, AddressSpace and FlatView bodies, names,
+ranges and index generations allocate from the same finite native history
+arena. Membership and retained spans are checked before reference access;
+retired generations retain their original storage. Cleanup checks the exact
+selected callback, restored original root, published view and full retained
+name before any native cleanup. Unknown event-fd storage or counts refuse.
+Ordinary memory paths retain their existing allocation and cleanup behavior.
+
+Four complete translation units are bound to the final source. The final
+memory unit compiles with warnings treated as errors; the other three retain
+byte-identical consumed source/header dependencies. Ten actual cleanup controls
+and two causal check-removal controls pass on the final corrected path. Earlier
+12 storage controls and four method controls keep their historical source scope;
+they are not relabeled as final-source executions. Native pthread and literal
+reference/cleanup functions execute, while constructor/QOM/BQL/RCU scheduling
+peers remain modeled. Initial incomplete retirement-method and cleanup-tuple
+findings are preserved alongside their corrections.
+
+Dispatch/subpage, QOM/listener/CPUAddressSpace and temporary-name storage, actual
+RCU dispatch, nonempty event-fd producers and complete held graph equality remain
+open. This source component grants no graph seal, BIOS writer, installed pair,
+package, native guest or Ready qualification. The separately evaluated d903
+package tuple retains its original source identity.
 
 ## Performance evidence
 

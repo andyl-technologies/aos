@@ -287,6 +287,7 @@ The atomic integration patch creates these QEMU source files:
 | `hw/acpi/crucible-whole-storage.inc.c` | GPL-2.0-or-later | Explicit original ACPI builder source notice. |
 | `hw/i386/crucible-whole-acpi.inc.c` | GPL-2.0-or-later | Explicit original ACPI builder source notice. |
 | `include/hw/acpi/crucible-whole-storage.h` | GPL-2.0-or-later | Explicit original ACPI builder source notice. |
+| `system/crucible-whole-memory-storage.inc.c` | GPL-2.0-or-later | Source-local retained constructor MemoryRegion/AddressSpace/FlatView storage and lifetime journal; SPDX notice. |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated
