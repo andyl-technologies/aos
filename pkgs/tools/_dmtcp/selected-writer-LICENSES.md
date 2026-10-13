@@ -127,3 +127,25 @@ These controls and preservation bytes do not issue native whole-node permission,
 operative restored-account adoption, or node readiness. Normal toolkit
 application/checkpoint/two fresh reconstruction checks remain mandatory and
 separate from real selected gem5 capture and continuation qualification.
+
+
+The distinct `selected-source-owners.patch` preserves original notices in
+`src/shareddata.cpp`, `src/crucible_exec_custody.h`, `src/threadlist.cpp`, and
+`src/threadwrappers.cpp`. It adds `src/crucible_original_shared_area.h`,
+`src/crucible_original_thread_owner.h`, and `src/crucible_raw_kernel_call.h`
+under LGPL-3.0-or-later. No native file is removed. The explicit selected
+shared-birth and atomic-loop routes retain source creation/thread effects and
+original finite banks; ordinary routes preserve their existing behavior.
+The complete shared-area preservation extension is an explicit exec-transfer
+edition 2; existing standalone producer/capsule codecs retain edition 1.
+
+`shared-area-controls.cpp`, `thread-owner-controls.cpp`,
+`source-launch-probe.cpp`, `source-launch-controls.cpp`, and
+`source-launch-peer-controls.h` are independently authored LGPL-3.0-or-later
+native mechanism sources co-retained in the corresponding-source output.
+The library diagnostic returns scalar original exec observations, never a
+native cut permit. The separate Apache host neither links nor includes these
+implementation files. Kernel controls, production exec observation and parsed
+preservation data do not qualify a whole native process closure, checkpoint
+issuer, operative restore adopter or SourceReady. Ordinary toolkit
+application/checkpoint/two fresh reconstruction checks remain mandatory.

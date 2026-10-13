@@ -2944,6 +2944,24 @@ and extension dispatch remain present in the reviewed joins. Full selected
 codec/budget validation, unchanged model-generation proof, incoming native Hello,
 complete native settlement and fresh adoption remain separate unfinished steps.
 
+## Selected checkpoint source owners
+
+The selected DMTCP source retains original shared-area creation and thread
+births in finite native banks. Its explicit exec-transfer edition 2 preserves
+the complete shared-area journal; existing standalone codecs retain edition 1.
+Seven native changes and their LGPL notices are co-retained with the component
+controls and package recipe. The Crucible suite now explicitly requires the
+separate source-owner check, including a real installed launcher/library exec
+observation; retaining the check recipe alone would not run it.
+
+Three source consumers compile and focused kernel, exec/remap, thread and
+refusal controls pass on their recorded revisions. Independent review verifies
+the native source, dependencies and corrected package-check extraction. Ordinary
+toolkit application/checkpoint/two-restore checks remain mandatory. The selected
+package and its complete production exec journal have not yet been realized or
+executed. These changes supply no whole-process closure, native cut permit,
+checkpoint issuer, restored-account adoption or readiness result.
+
 ## Bound stopped-RR diagnostic driver
 
 The stopped-initialization example binds the signed native preparation-return

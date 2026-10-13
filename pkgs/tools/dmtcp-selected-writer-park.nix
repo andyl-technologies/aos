@@ -73,6 +73,7 @@ in
           patch --fuzz=0 -p1 < ${./_dmtcp/selected-exec-custody.patch}
           patch --fuzz=0 -p1 < ${./_dmtcp/selected-source-custody.patch}
           patch --fuzz=0 -p1 < ${./_dmtcp/selected-map-envelope.patch}
+          patch --fuzz=0 -p1 < ${./_dmtcp/selected-source-owners.patch}
           ${findutils}/bin/find . -type f -name '*.py' \
             -exec ${sed}/bin/sed -i "1s|^#!.*python.*$|#!${python3}/bin/python3|" {} +
           ${findutils}/bin/find . -type f -name '*.sh' \
@@ -116,6 +117,12 @@ in
           cp ${./_dmtcp/source-capsule-controls.cpp} "$source/build/source-capsule-controls.cpp"
           cp ${./_dmtcp/map-custody-controls.cpp} "$source/build/map-custody-controls.cpp"
           cp ${./_dmtcp/map-capsule-reader.cpp} "$source/build/map-capsule-reader.cpp"
+          cp ${./_dmtcp/shared-area-controls.cpp} "$source/build/shared-area-controls.cpp"
+          cp ${./_dmtcp/thread-owner-controls.cpp} "$source/build/thread-owner-controls.cpp"
+          cp ${./_dmtcp/source-launch-probe.cpp} "$source/build/source-launch-probe.cpp"
+          cp ${./_dmtcp/source-launch-controls.cpp} "$source/build/source-launch-controls.cpp"
+          cp ${./_dmtcp/source-launch-peer-controls.h} "$source/build/source-launch-peer-controls.h"
+          cp ${./dmtcp-source-owners-check.nix} "$source/build/source-owners-check.nix"
           # Retain the actual tree after all patches and hermetic substitutions,
           # before generated build objects or installed binaries enter it.
           tar --sort=name --mtime=@1 --owner=0 --group=0 --numeric-owner \
@@ -134,7 +141,9 @@ in
       {
         name = "configure";
         script = ''
-          $CONFIG_SHELL ./configure --prefix="$out" $configureFlags
+          # Source-owned thread banks require lock-free constexpr assertions.
+          CXXFLAGS="$CXXFLAGS -std=c++17" \
+            $CONFIG_SHELL ./configure --prefix="$out" $configureFlags
           grep -q '^#define ELF_INTERPRETER "/nix/store/' include/config.h
         '';
       }
