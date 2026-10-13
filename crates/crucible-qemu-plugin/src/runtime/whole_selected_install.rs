@@ -11,7 +11,7 @@ use std::ffi::{c_int, c_void};
 use std::os::fd::AsRawFd;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crucible_protocol::whole_control::staged::StagedControlProfile;
 use thiserror::Error;
@@ -85,11 +85,6 @@ struct WaitAttempt {
 struct SelectedCustody {
     shared: Arc<SharedCallbackCustody>,
     initial: RefCell<OriginalWholeInitialSetup>,
-    #[expect(
-        dead_code,
-        reason = "The Preparing-only controller has no positive Ready issuer."
-    )]
-    ready: RefCell<OriginalWholeReadyExchange>,
     waits: RefCell<Box<[WaitAttempt]>>,
     wait_count: RefCell<usize>,
 }
@@ -111,9 +106,18 @@ struct SharedCallbackCustody {
     profile: StagedControlProfile,
     apis: NativeWholeApis,
     original_body: Box<[u8]>,
+    setup_digest: [u8; 32],
     socket: Arc<OriginalWholeSocket>,
     journals: Arc<WholeJournals>,
     setup: OnceLock<PluginSetupCompletion>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The source Ready callback context is not yet implemented."
+        )
+    )]
+    ready: Mutex<OriginalWholeReadyExchange>,
     failed: AtomicBool,
     callback_entry: AtomicBool,
     observed_vcpus: AtomicU8,
@@ -271,9 +275,11 @@ fn install_preowned(
         profile,
         apis,
         original_body: descriptor.body.into(),
+        setup_digest: descriptor.digest,
         socket: Arc::clone(&socket),
         journals,
         setup: OnceLock::new(),
+        ready: Mutex::new(ready),
         failed: AtomicBool::new(false),
         callback_entry: AtomicBool::new(false),
         observed_vcpus: AtomicU8::new(0),
@@ -283,7 +289,6 @@ fn install_preowned(
     let original = Rc::new(SelectedCustody {
         shared,
         initial: RefCell::new(OriginalWholeInitialSetup::new(socket)),
-        ready: RefCell::new(ready),
         waits: RefCell::new(wait_backing.into_boxed_slice()),
         wait_count: RefCell::new(0),
     });
@@ -677,6 +682,107 @@ extern "C" fn observe_preparing_vcpu(cpu: u32, userdata: *mut c_void) {
     original
         .observed_vcpus
         .fetch_or(1u8 << cpu, Ordering::AcqRel);
+}
+
+/// Returns a pointer-free, process-private observation of actual callback custody.
+///
+/// Native qualification invokes this only after the original vCPU-init callback
+/// returns, while its literal family1 origin window is still live. The getter
+/// reauthenticates that window before reading the same retained Arc. Its mask
+/// describes initialization observations and never grants Ready or any effect.
+#[repr(C)]
+pub(crate) struct PreparingCallbackObservation {
+    version: u32,
+    size: u32,
+    status: c_int,
+    cpu_index: u32,
+    process: u64,
+    loader_tid: u64,
+    actual_tid: u64,
+    observed_mask: u32,
+    flags: u32,
+    setup_digest: [u8; 32],
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<PreparingCallbackObservation>() == 80);
+    assert!(std::mem::offset_of!(PreparingCallbackObservation, status) == 8);
+    assert!(std::mem::offset_of!(PreparingCallbackObservation, process) == 16);
+    assert!(std::mem::offset_of!(PreparingCallbackObservation, observed_mask) == 40);
+    assert!(std::mem::offset_of!(PreparingCallbackObservation, setup_digest) == 48);
+};
+
+/// Reads source-authenticated initialization state without changing any owner.
+///
+/// This GPL-local diagnostic ABI returns by value and contains no pointer. It
+/// is not a socket/shared-memory message or a readiness/permission interface.
+/// Failed context queries return their status with all correlation fields zero.
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn crucible_qemu_plugin_preparing_observation_v1(
+    cpu: u32,
+    userdata: *mut c_void,
+) -> PreparingCallbackObservation {
+    let mut observation = PreparingCallbackObservation {
+        version: 1,
+        size: 80,
+        status: -libc::ESTALE,
+        cpu_index: 0,
+        process: 0,
+        loader_tid: 0,
+        actual_tid: 0,
+        observed_mask: 0,
+        flags: 0,
+        setup_digest: [0; 32],
+    };
+    if !callback_process_current() {
+        return observation;
+    }
+    let proof = match ORIGINAL_ORIGIN_API
+        .get()
+        .ok_or(-libc::ESTALE)
+        .and_then(|api| api.capture())
+    {
+        Ok(proof) => proof,
+        Err(status) => {
+            observation.status = status;
+            return observation;
+        }
+    };
+    let Some(original) = ORIGINAL_CALLBACK.get() else {
+        return observation;
+    };
+    if Arc::as_ptr(original).cast_mut().cast::<c_void>() != userdata
+        || proof
+            .validate(CallbackRegistration {
+                cpu_index: cpu,
+                plugin_id: original.plugin_id,
+                process: original.process,
+                loader_tid: original.loader_tid,
+                userdata,
+                callback: observe_preparing_vcpu as *const () as usize,
+            })
+            .is_err()
+        || original.constructor_identity.load(Ordering::Acquire)
+            != proof.original_constructor_identity()
+        || original
+            .cpu_identities
+            .get(cpu as usize)
+            .is_none_or(|identity| identity.load(Ordering::Acquire) != proof.cpu_identity())
+    {
+        return observation;
+    }
+    let Ok(actual_tid) = current_tid() else {
+        return observation;
+    };
+    observation.status = 0;
+    observation.cpu_index = cpu;
+    observation.process = u64::from(original.process);
+    observation.loader_tid = original.loader_tid;
+    observation.actual_tid = actual_tid;
+    observation.observed_mask = u32::from(original.observed_vcpus.load(Ordering::Acquire));
+    observation.flags = u32::from(original.failed.load(Ordering::Acquire));
+    observation.setup_digest = original.setup_digest;
+    observation
 }
 
 /// Refuses the exact selected control path before any legacy publication.
@@ -1085,7 +1191,7 @@ mod tests {
         // Actual fork controls hold the inherited TLS borrow while callbacks
         // receive invalid userdata. The birth-PID fence must terminate before
         // even attempting that borrow, without invoking native peers or logs.
-        for callback_kind in 0..3 {
+        for callback_kind in 0..4 {
             ORIGINAL.with(|slot| {
                 let _borrow = slot.borrow_mut();
                 // SAFETY: The child performs only the selected callback's PID
@@ -1098,7 +1204,10 @@ mod tests {
                     match callback_kind {
                         0 => observe_preparing_vcpu(0, invalid),
                         1 => closed_control_boundary(0, 0, invalid),
-                        _ => refuse(invalid, 1, 1, invalid),
+                        2 => refuse(invalid, 1, 1, invalid),
+                        _ => {
+                            let _ = crucible_qemu_plugin_preparing_observation_v1(0, invalid);
+                        }
                     }
                     // SAFETY: Returning would make the control fail without
                     // running Rust destructors over inherited parent objects.
@@ -1126,7 +1235,19 @@ mod tests {
             std::thread::spawn(move || {
                 assert_ne!(current_tid().unwrap(), loader_tid);
                 for cpu in 1..4 {
-                    modeled_observe(cpu, userdata_identity as *mut c_void);
+                    let userdata = userdata_identity as *mut c_void;
+                    modeled_observe(cpu, userdata);
+                    let readback = crucible_qemu_plugin_preparing_observation_v1(cpu, userdata);
+                    assert_eq!(readback.version, 1);
+                    assert_eq!(readback.size, 80);
+                    assert_eq!(readback.status, 0);
+                    assert_eq!(readback.cpu_index, cpu);
+                    assert_eq!(readback.process, u64::from(std::process::id()));
+                    assert_eq!(readback.loader_tid, loader_tid);
+                    assert_eq!(readback.actual_tid, current_tid().unwrap());
+                    assert_eq!(readback.observed_mask, (1 << (cpu + 1)) - 1);
+                    assert_eq!(readback.flags, 0);
+                    assert_eq!(readback.setup_digest, digest);
                 }
             })
             .join()
@@ -1144,16 +1265,32 @@ mod tests {
             let mapping = setup.mapped_region().unwrap();
             let compute = shared.journals.compute(1).unwrap();
             let _journal_guard = compute.ring_completion.lock().unwrap();
+            let _ready_guard = shared.ready.lock().unwrap();
             let allocation = std::ptr::from_ref(compute).cast_mut().cast::<c_void>();
             let userdata = Arc::as_ptr(&shared).cast_mut().cast();
             assert!(!compute.is_uncertain());
 
             super::super::whole_compute_scope::assert_guarded_input_owner_unchanged(|| {
+                let invalid = crucible_qemu_plugin_preparing_observation_v1(
+                    0,
+                    std::ptr::dangling_mut::<c_void>(),
+                );
+                assert!(invalid.status < 0);
+                assert_eq!(invalid.process, 0);
+                assert_eq!(invalid.observed_mask, 0);
+                assert_eq!(invalid.setup_digest, [0; 32]);
+                assert!(!shared.failed.load(Ordering::Acquire));
                 modeled_observe(0, std::ptr::dangling_mut::<c_void>());
                 assert!(shared.failed.load(Ordering::Acquire));
                 assert!(!compute.is_uncertain());
                 for mode in [1, 2, 3] {
                     MODELED_ORIGIN_MODE.with(|slot| slot.set(mode));
+                    let invalid = crucible_qemu_plugin_preparing_observation_v1(0, userdata);
+                    assert!(invalid.status < 0);
+                    assert_eq!(invalid.process, 0);
+                    assert_eq!(invalid.actual_tid, 0);
+                    assert_eq!(invalid.observed_mask, 0);
+                    assert_eq!(invalid.setup_digest, [0; 32]);
                     modeled_observe(0, userdata);
                     assert!(shared.failed.load(Ordering::Acquire));
                     assert!(!compute.is_uncertain());

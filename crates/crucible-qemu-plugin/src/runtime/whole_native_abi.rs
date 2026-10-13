@@ -283,13 +283,6 @@ pub(crate) type ReadEarlySetup = extern "C" fn(u64, *mut *const u8, *mut usize, 
 /// No pointer escapes onto the public control or shared-memory protocol.
 pub(crate) struct NativeEarlySetup<'a> {
     pub(crate) body: &'a [u8],
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
-        )
-    )]
     pub(crate) digest: [u8; 32],
 }
 

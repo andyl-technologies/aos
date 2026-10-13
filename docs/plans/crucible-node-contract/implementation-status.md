@@ -2400,6 +2400,15 @@ preserve their state. Native dispatch and authentication peers remain modeled.
 These checks do not execute the actual installed RR callback path or qualify
 HOLD/adoption, native effects, readiness, package or boundary gates.
 
+The original preallocated Ready cursor now belongs to that same shared owner
+behind a mutex. A pointer-free, process-private 80-byte observation returns the
+actual initialization mask, failure flag and setup digest after recapturing the
+literal native origin. Invalid origin or userdata returns zero correlations
+without entering mapping, journal, Ready or input guards. The affected installer
+control and strict all-target Clippy pass on a fresh executable; 793 other unit
+controls were filtered rather than rerun. Native peers remain modeled. Actual
+paired stopped-RR participation and readiness require separate qualification.
+
 ## Original host scheduler and exact input collection
 
 The common runtime retains one original scheduler allocation before Arm. Lazy
