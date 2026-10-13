@@ -71,7 +71,9 @@ impl CurrentProviderIngressSessionV1 {
         )?;
         let (old_floor, next_floor) =
             writer.derive_original_floor_transfer_v5(&transaction, acquisition)?;
-        let old_floor = old_floor.to_journal_record()?;
+        let old_floor = old_floor
+            .to_journal_record()
+            .map_err(aos_sandbox::JournalError::from)?;
 
         // This own continuation spends Source5 once and settles the separate
         // status reservation. Canonical union order places every changed-old
@@ -86,7 +88,11 @@ impl CurrentProviderIngressSessionV1 {
 
         let mut records = transaction.records().to_vec();
         records.extend(deleted_floors);
-        records.push(next_floor.to_journal_record()?);
+        records.push(
+            next_floor
+                .to_journal_record()
+                .map_err(aos_sandbox::JournalError::from)?,
+        );
         Ok(aos_sandbox::JournalTransaction::new(*transaction.id(), records)
             .map_err(aos_sandbox::JournalError::from)?)
     }
