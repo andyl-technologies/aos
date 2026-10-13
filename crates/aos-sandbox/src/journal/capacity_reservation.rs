@@ -14,8 +14,10 @@
 //! closed, and no original native admission follows from canonical floor DATA.
 
 use aos_sandbox_protocol::domain_ledger::capacity_family::family::{
-    CanonicalCapacityFamily, accounting_reservation, canonical_reservations,
+    CanonicalCapacityFamily, canonical_reservations,
 };
+#[cfg(test)]
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservation;
 use aos_sandbox_protocol::domain_ledger::capacity_family::{
     decode_capacity_reservation_request_v1, legacy_capacity_ids_for_purpose,
     validate_capacity_snapshot_data_v2, validate_request_with_limits,
@@ -46,9 +48,9 @@ pub(crate) use aos_sandbox_protocol::domain_ledger::capacity::capacity_reservati
 pub(super) use aos_sandbox_protocol::domain_ledger::capacity::{
     decode_reservation, reservation_key,
 };
-use aos_sandbox_protocol::domain_ledger::capacity::{
-    encode_reservation, reservation_id, uses_v2, valid_future_transactions, MAXIMUM_FUTURE_TRANSACTIONS,
-};
+use aos_sandbox_protocol::domain_ledger::capacity::{encode_reservation, reservation_id};
+#[cfg(test)]
+use aos_sandbox_protocol::domain_ledger::capacity::{uses_v2, valid_future_transactions};
 #[cfg(test)]
 use aos_sandbox_protocol::domain_ledger::capacity::{RECORD_DOMAIN, VALUE_BYTES_V1, VALUE_BYTES_V2};
 

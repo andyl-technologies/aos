@@ -21,7 +21,7 @@ use super::{
     NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, binding_bytes, decode_bindings,
     invalid,
 };
-use crate::domain_ledger::transaction::{JournalLimits, JournalRecord};
+use crate::domain_ledger::transaction::JournalRecord;
 use aos_sandbox_core::RecordNamespace;
 
 /// Bounds the original Source floor, including its retained archive and identity.
@@ -214,7 +214,12 @@ impl OriginalSourceCapacityRecordV5 {
         )
     }
 
-    pub(in crate::domain_ledger::capacity_family) fn decode(
+    /// Decodes complete canonical Source5 DATA with its self-bound key.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, bindings, budgets, provenance, key or identity.
+    pub fn decode(
         key: &[u8],
         bytes: &[u8],
     ) -> Result<Self, CapacityDataError> {

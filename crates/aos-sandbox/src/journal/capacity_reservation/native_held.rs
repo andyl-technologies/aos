@@ -8,7 +8,9 @@ use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
     NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
 };
 
-use super::super::{JournalError, JournalRecord, RecordNamespace};
+use super::super::JournalError;
+#[cfg(test)]
+use super::super::{JournalRecord, RecordNamespace};
 
 mod admission;
 mod profile;

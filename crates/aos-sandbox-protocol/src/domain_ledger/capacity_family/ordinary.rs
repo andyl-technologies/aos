@@ -22,7 +22,7 @@ use crate::domain_ledger::capacity_family::CapacityDataError;
 
 use super::fixed300::{FixedCapacityBody, floor_identity as fixed_floor_identity};
 use super::{reservation_key, take};
-use crate::domain_ledger::transaction::{JournalLimits, JournalRecord};
+use crate::domain_ledger::transaction::JournalRecord;
 use aos_sandbox_core::RecordNamespace;
 
 /// Fixes the exact ordinary floor value width.
