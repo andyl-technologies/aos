@@ -149,6 +149,13 @@ maintained-publication witness and before independent accounting completes.
 Its source, compiler inputs and executables remain unchanged. CPU/I/O and
 memory observations are retained; they do not identify the cause. The three
 later populations remain unstarted, and DRV-29 remains unqualified.
+An unchanged-source phase diagnostic also times out in 1,800.052 seconds.
+Maintained admission completes by 491.792 seconds; retained publication begins
+at 491.797 seconds and remains unfinished at timeout. No maintained reopen or
+output-check marker follows. These observations localize the unfinished interval
+but do not identify its cause or qualify the gate. Existing native batch timing
+probes will distinguish physical checks, primitive effects and final durability
+in a separate diagnostic with the original selector and timeout.
 Full SDK and Nix qualification remain pending. Full original task-diff
 review is complete for the 99 core-test, 58 ref-advance, 103 bucket and
 158 collector paths. Isolated presentation corrections add missing panic
