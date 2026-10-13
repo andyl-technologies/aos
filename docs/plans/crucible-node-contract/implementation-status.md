@@ -2301,6 +2301,31 @@ full-system Linux, x86/AArch64 device parity or source-gone full-state
 qualification. Those require the complete owning runtime, original transport,
 conservation account and independently qualified fresh continuations.
 
+## Native QEMU constructor preparation
+
+The signed native source revision `23f599f17f57998b17f560eb4d8e9644acbead10`
+retains 85 changed source roles and 12 new files with matching license inventory,
+patch and source bundle. Original launch/control custody precedes effects;
+constructor QOM, reset, firmware, IRQ, endpoint and runtime allocations retain
+finite original histories. External nonzero-quantum SIM work publishes its
+original wake before the host-selected CPU-exit store. Ordinary construction and
+explicit RR work keep their existing branches.
+
+Forty-eight complete translation units compile with the AOS production source
+configuration and warnings treated as errors. Component controls retain their
+explicitly modeled external authority scopes. The independent signed
+reconstruction verifies the complete tree, source delta, sole upstream base,
+DCO, license additions and matching artifact hashes. These are source preparation
+checks; the selected guest and native readiness gates remain closed.
+
+Complete RAMBlock and firmware aliases, lazy ACPI storage and callbacks, QOM
+property retirement, remaining worker/traffic backing, device start/stop,
+installed-provider execution and exact restoration remain required. ABI and
+license boundary gates and the matching full package are not yet qualified.
+The firmware audit also finds that the existing package installs 55 upstream
+blobs without compiling them; complete source-built firmware providers and their
+source/license closure remain part of package qualification.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

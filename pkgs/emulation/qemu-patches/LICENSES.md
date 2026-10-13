@@ -233,6 +233,19 @@ The atomic integration patch creates these QEMU source files:
 | `accel/tcg/whole-grant-service.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `accel/tcg/whole-service-loop.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 
+| `hw/core/crucible-whole-rom.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `hw/i386/crucible-whole-linux-input.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `hw/nvram/crucible-whole-fwcfg.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/hw/i386/crucible-whole-linux-input.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-sha256.h` | LGPL-2.1-or-later | Audited GLib SHA-256 primitive with original copyright and SPDX notices |
+| `include/system/crucible-whole-early.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/whole-staged-source.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-device-endpoint-walk.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-whole-argv.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-whole-control.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-whole-early.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-whole-q35.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated
 `crucible_shmem_abi.h` process-protocol header is `MIT OR Apache-2.0`; AOS
