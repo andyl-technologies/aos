@@ -105,3 +105,25 @@ coordinator account validation. Exported or parsed preservation data does not
 issue whole guest/device/clock/image source permission, operative restored-account
 adoption, or node readiness. The ordinary toolkit application/checkpoint/two
 fresh reconstruction checks remain mandatory and separate from these controls.
+
+
+The distinct `selected-map-envelope.patch` preserves the original notices in
+`src/coordinatorapi.cpp`, `src/dmtcpworker.cpp`, `src/dmtcp_coordinator.cpp`,
+`src/lookup_service.cpp`, `src/lookup_service.h`, `src/dmtcpmessagetypes.cpp`,
+and `src/dmtcpmessagetypes.h`. It adds `src/crucible_map_envelope.h`,
+`src/crucible_map_transfer.h`, `src/crucible_map_state.h`,
+`src/crucible_map_final.h`, `src/crucible_map_codec.h`,
+`src/crucible_map_source_capsule.h`, `src/crucible_map_source_custody.h`,
+and `src/crucible_map_source_capsule_reader.h` under LGPL-3.0-or-later;
+no native file is removed. All implementation code executes inside native
+checkpoint processes. The separate Apache host neither links this code nor
+includes its headers.
+
+`map-custody-controls.cpp` and `map-capsule-reader.cpp` are independently
+authored LGPL-3.0-or-later component sources retained in the corresponding-source
+output. They check bounded full map bodies, constructor storage and nonrenewing
+charges, the distinct capsule and codec, and borrowed complete-record parsing.
+These controls and preservation bytes do not issue native whole-node permission,
+operative restored-account adoption, or node readiness. Normal toolkit
+application/checkpoint/two fresh reconstruction checks remain mandatory and
+separate from real selected gem5 capture and continuation qualification.

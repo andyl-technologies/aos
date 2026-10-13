@@ -1,0 +1,2025 @@
+diff --git a/src/crucible_map_envelope.h b/src/crucible_map_envelope.h
+--- /dev/null
++++ b/src/crucible_map_envelope.h
+@@ -0,0 +1,159 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Bounded map-only original request/reply account; no native authority.
++ */
++#ifndef DMTCP_CRUCIBLE_MAP_ENVELOPE_H
++#define DMTCP_CRUCIBLE_MAP_ENVELOPE_H
++
++#include <atomic>
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++
++namespace dmtcp_crucible {
++namespace map_envelope {
++
++constexpr size_t OriginalBodyBytes = 1024 * 1024;
++constexpr size_t PrefixBytes = 40;
++constexpr size_t HeaderStorageBytes = 4096;
++constexpr size_t WireBodyBytes = PrefixBytes + OriginalBodyBytes;
++constexpr unsigned OperationLimit = 2;
++constexpr size_t DirectionBytes = HeaderStorageBytes + WireBodyBytes;
++
++struct Cursor {
++    size_t header = 0;
++    size_t body = 0;
++};
++
++struct OriginalOperation {
++    std::atomic<bool> settled{false};
++    bool attempted = false;
++    bool outgoing = false;
++    bool mutated = false;
++    bool acknowledged = false;
++    std::uint64_t process = 0;
++    std::uint64_t uid = 0;
++    std::uint64_t peer = 0;
++    std::uint64_t ordinal = 0;
++    std::uint64_t charged_request = 0;
++    std::uint64_t charged_reply = 0;
++    size_t request_bytes = 0;
++    size_t reply_bytes = 0;
++    Cursor request;
++    Cursor reply;
++    int error = 0;
++    unsigned char request_header[HeaderStorageBytes] = {};
++    unsigned char reply_header[HeaderStorageBytes] = {};
++    unsigned char request_body[WireBodyBytes] = {};
++    unsigned char reply_body[WireBodyBytes] = {};
++};
++
++struct OriginalAccount {
++    std::atomic_flag reservation = ATOMIC_FLAG_INIT;
++    bool admitted = false;
++    std::uint64_t process = 0;
++    std::uint64_t uid = 0;
++    unsigned count = 0;
++    std::uint64_t storage_reserved = 0;
++    std::uint64_t charged_request = 0;
++    std::uint64_t charged_reply = 0;
++    OriginalOperation operations[OperationLimit];
++};
++
++inline bool exact_cstrings(const void *body, size_t extent, unsigned fields)
++{
++    if (body == nullptr || extent == 0 || extent > OriginalBodyBytes || fields == 0) return false;
++    const auto *bytes = static_cast<const unsigned char *>(body);
++    size_t cursor = 0;
++    for (unsigned index = 0; index < fields; ++index) {
++        if (cursor >= extent) return false;
++        const auto *end = static_cast<const unsigned char *>(
++            std::memchr(bytes + cursor, 0, extent - cursor));
++        if (end == nullptr) return false;
++        cursor = static_cast<size_t>(end - bytes) + 1;
++    }
++    return cursor == extent;
++}
++
++inline bool request_geometry(size_t key_bytes, size_t value_bytes, size_t extent)
++{
++    return key_bytes > 0 && value_bytes > 0 && key_bytes <= OriginalBodyBytes &&
++           value_bytes <= OriginalBodyBytes - key_bytes &&
++           extent == PrefixBytes + key_bytes + value_bytes;
++}
++
++inline bool reply_geometry(size_t value_bytes, size_t extent)
++{
++    return value_bytes > 0 && value_bytes <= OriginalBodyBytes &&
++           extent == PrefixBytes + value_bytes;
++}
++
++inline void prefix(unsigned char *body, const unsigned char *cookie, bool response)
++{
++    std::memcpy(body, response ? "DCPMAK01" : "DCPMAP01", 8);
++    std::memcpy(body + 8, cookie, 32);
++}
++
++inline bool prefix_matches(const unsigned char *body, size_t extent,
++                           const unsigned char *cookie, bool response)
++{
++    return body != nullptr && cookie != nullptr && extent >= PrefixBytes &&
++           std::memcmp(body, response ? "DCPMAK01" : "DCPMAP01", 8) == 0 &&
++           std::memcmp(body + 8, cookie, 32) == 0;
++}
++
++// The complete original request and worst-case old-value reply storage is
++// charged before any byte transfer or native map mutation. Short transfers
++// retain the same operation and full charge; no reset/refund operation exists.
++inline OriginalOperation *reserve(OriginalAccount &account, bool outgoing,
++                                   std::uint64_t process, std::uint64_t uid)
++{
++    if (account.reservation.test_and_set(std::memory_order_acquire)) return nullptr;
++    OriginalOperation *operation = nullptr;
++    if (account.admitted && account.storage_reserved == sizeof(account) && process > 0 && process == account.process && uid == account.uid &&
++        account.count < OperationLimit) {
++        operation = &account.operations[account.count++];
++        operation->attempted = true;
++        operation->outgoing = outgoing;
++        operation->process = process;
++        operation->uid = uid;
++        operation->ordinal = account.count;
++        operation->charged_request = DirectionBytes;
++        operation->charged_reply = DirectionBytes;
++        account.charged_request += DirectionBytes;
++        account.charged_reply += DirectionBytes;
++    }
++    account.reservation.clear(std::memory_order_release);
++    return operation;
++}
++
++inline bool consistent(const OriginalAccount &account, size_t native_header_bytes)
++{
++    if (!account.admitted || account.storage_reserved != sizeof(account) || account.process == 0 || account.count > OperationLimit ||
++        native_header_bytes == 0 || native_header_bytes > HeaderStorageBytes ||
++        account.charged_request != static_cast<std::uint64_t>(account.count) * DirectionBytes ||
++        account.charged_reply != static_cast<std::uint64_t>(account.count) * DirectionBytes) {
++        return false;
++    }
++    for (unsigned index = 0; index < account.count; ++index) {
++        const auto &operation = account.operations[index];
++        if (!operation.attempted || !operation.settled.load(std::memory_order_acquire) ||
++            operation.process != account.process || operation.uid != account.uid ||
++            operation.ordinal != index + 1 ||
++            operation.charged_request != DirectionBytes || operation.charged_reply != DirectionBytes ||
++            operation.request_bytes > WireBodyBytes || operation.reply_bytes > WireBodyBytes ||
++            operation.request.header > native_header_bytes || operation.reply.header > native_header_bytes ||
++            operation.request.body > operation.request_bytes || operation.reply.body > operation.reply_bytes ||
++            operation.error < 0 ||
++            (operation.acknowledged && (operation.error != 0 || operation.peer == 0 ||
++                operation.request.header != native_header_bytes ||
++                operation.reply.header != native_header_bytes ||
++                operation.request.body != operation.request_bytes ||
++                operation.reply.body != operation.reply_bytes))) return false;
++    }
++    return true;
++}
++
++} // namespace map_envelope
++} // namespace dmtcp_crucible
++#endif
+diff --git a/src/crucible_map_transfer.h b/src/crucible_map_transfer.h
+--- /dev/null
++++ b/src/crucible_map_transfer.h
+@@ -0,0 +1,288 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Original map-only socket transaction; no source or execution authority.
++ */
++#ifndef DMTCP_CRUCIBLE_MAP_TRANSFER_H
++#define DMTCP_CRUCIBLE_MAP_TRANSFER_H
++
++#include "crucible_map_envelope.h"
++#include "crucible_control_frame.h"
++
++namespace dmtcp_crucible {
++namespace map_transfer {
++
++constexpr std::uint64_t Negotiation = 0x4443504d41503031ULL;
++
++struct OriginalNativeAccount {
++    map_envelope::OriginalAccount bank;
++    std::uint64_t storage_reserved = 0;
++    bool negotiated = false;
++    bool coordinator = false;
++    unsigned char cookie[32] = {};
++    unsigned char hello[ControlHeaderBytes] = {};
++    unsigned char accept[ControlHeaderBytes] = {};
++};
++
++inline OriginalNativeAccount &original()
++{
++    static OriginalNativeAccount account;
++    return account;
++}
++
++inline bool selected()
++{
++    return std::getenv("CRUCIBLE_CAPTURE_MAP_ENVELOPE_POLICY") != nullptr ||
++           original().bank.admitted;
++}
++
++inline bool policy_admitted()
++{
++    const char *policy = std::getenv("CRUCIBLE_CAPTURE_MAP_ENVELOPE_POLICY");
++    return policy && std::strcmp(policy, "map-envelope.v1") == 0 &&
++           writer_cohort_admitted();
++}
++
++// No operation exists at launcher exec. The library constructor reserves its
++// complete new bank before the application can execute; original handshake
++// rows are imported by exec custody and authenticated separately below.
++inline bool admit(bool coordinator)
++{
++    if (!selected()) return true;
++    auto &account = original();
++    const long process = original_process_id();
++    const long uid = _real_syscall(SYS_geteuid);
++    if (!policy_admitted() || account.bank.admitted || process <= 0 || uid < 0 ||
++        control_bank().terminal.load() || control_channels().terminal.load()) return false;
++
++    account.storage_reserved = sizeof(account);
++    account.bank.storage_reserved = sizeof(account.bank);
++    account.coordinator = coordinator;
++    account.bank.process = process;
++    account.bank.uid = uid;
++    if (!load_control_cookie(account.cookie)) return false;
++    account.bank.admitted = true;
++    return true;
++}
++
++// This reads only original native rows, never a host-provided negotiation
++// flag. Each endpoint retains the exact hello and ACCEPT it already exchanged.
++template<class Scalar>
++inline Scalar scalar(const unsigned char *header, size_t offset)
++{
++    Scalar value = {};
++    std::memcpy(&value, header + offset, sizeof(value));
++    return value;
++}
++
++inline bool header_valid(const unsigned char *header)
++{
++    const char magic[16] = DMTCP_MAGIC_STRING;
++    return std::memcmp(header, magic, sizeof(magic)) == 0 &&
++           scalar<std::uint32_t>(header, offsetof(dmtcp::DmtcpMessage, _msgSize)) == ControlHeaderBytes;
++}
++
++inline DmtcpUniqueProcessId peer(const unsigned char *header)
++{
++    static_assert(sizeof(dmtcp::UniquePid) == sizeof(DmtcpUniqueProcessId), "native peer scalar extent");
++    return scalar<DmtcpUniqueProcessId>(header, offsetof(dmtcp::DmtcpMessage, from));
++}
++
++inline bool same_peer(const DmtcpUniqueProcessId &left, const DmtcpUniqueProcessId &right)
++{
++    return left._hostid == right._hostid && left._pid == right._pid &&
++           left._time == right._time &&
++           left._computation_generation == right._computation_generation;
++}
++
++inline bool retain_negotiation()
++{
++    auto &account = original();
++    if (!policy_admitted() || !account.bank.admitted ||
++        account.storage_reserved != sizeof(account) ||
++        account.bank.process != static_cast<std::uint64_t>(original_process_id()) ||
++        !control_cookie_matches(account.cookie)) return false;
++    if (account.negotiated) return true;
++
++    OriginalControlSnapshot snapshot(control_bank());
++    if (!snapshot.acquired) return false;
++    bool hello = false;
++    bool accepted = false;
++    for (size_t index = 0; index < control_bank().count; ++index) {
++        const auto &frame = control_bank().frames[index];
++        if (!frame.attempted.load() || !frame.settled.load() || !frame.complete ||
++            frame.error != 0 || frame.transferred < ControlHeaderBytes) continue;
++        // Copying an original header does not construct a fresh native peer.
++        if (!header_valid(frame.header) ||
++            scalar<std::uint64_t>(frame.header, offsetof(dmtcp::DmtcpMessage, _pad)) != Negotiation) continue;
++        const auto type = scalar<dmtcp::DmtcpMessageType>(frame.header, offsetof(dmtcp::DmtcpMessage, type));
++        if (type == dmtcp::DMT_NEW_WORKER && frame.outgoing != account.coordinator) {
++            if (hello) return false;
++            std::memcpy(account.hello, frame.header, ControlHeaderBytes);
++            hello = true;
++        }
++        if (type == dmtcp::DMT_ACCEPT && frame.outgoing == account.coordinator) {
++            if (accepted) return false;
++            std::memcpy(account.accept, frame.header, ControlHeaderBytes);
++            accepted = true;
++        }
++    }
++    account.negotiated = hello && accepted;
++    return account.negotiated;
++}
++
++struct Settlement {
++    map_envelope::OriginalOperation &operation;
++
++    ~Settlement()
++    {
++        operation.settled.store(true, std::memory_order_release);
++    }
++};
++
++inline bool refused(map_envelope::OriginalOperation &operation, int error)
++{
++    operation.error = error;
++    errno = error;
++    return false;
++}
++
++inline bool request_shape(const dmtcp::DmtcpMessage &message)
++{
++    return bounded_header(message) && message.type == dmtcp::DMT_CRUCIBLE_MAP_SET &&
++           message.uniqueIdOffset == 1 && message.kvdbRequest == dmtcp::kvdb::KVDBRequest::SET &&
++           std::memchr(message.kvdbId, 0, sizeof(message.kvdbId)) != nullptr &&
++           map_envelope::request_geometry(message.keyLen, message.valLen, message.extraBytes);
++}
++
++inline bool request_body(const dmtcp::DmtcpMessage &message,
++                         const unsigned char *body, const unsigned char *cookie)
++{
++    constexpr char key[] = "ProcSelfMaps_Ckpt";
++    return map_envelope::prefix_matches(body, message.extraBytes, cookie, false) &&
++           message.keyLen == sizeof(key) &&
++           std::memcmp(body + map_envelope::PrefixBytes, key, sizeof(key)) == 0 &&
++           map_envelope::exact_cstrings(body + map_envelope::PrefixBytes, message.keyLen + message.valLen, 2);
++}
++
++inline bool send(int fd, const dmtcp::DmtcpMessage &message,
++                 const char *key, size_t key_size, const char *value, size_t value_size,
++                 dmtcp::string *old_value)
++{
++    auto &account = original();
++    if (!retain_negotiation() || account.coordinator || key_size != message.keyLen ||
++        value_size != message.valLen ||
++        !map_envelope::request_geometry(key_size, value_size,
++                                        map_envelope::PrefixBytes + key_size + value_size)) return false;
++    auto *operation = map_envelope::reserve(account.bank, true, original_process_id(),
++                                             _real_syscall(SYS_geteuid));
++    if (operation == nullptr) return false;
++    Settlement settled{*operation};
++    OriginalChannelLease outgoing(fd, true);
++    OriginalChannelLease incoming(fd, false);
++    if (outgoing.channel < 0 || incoming.channel < 0) return refused(*operation, errno);
++
++    dmtcp::DmtcpMessage request = message;
++    request.type = dmtcp::DMT_CRUCIBLE_MAP_SET;
++    request.uniqueIdOffset = 1;
++    request.coordTimeStamp = operation->ordinal;
++    request.extraBytes = map_envelope::PrefixBytes + key_size + value_size;
++    request.realPid = static_cast<pid_t>(operation->process);
++    operation->request_bytes = request.extraBytes;
++    std::memcpy(operation->request_header, &request, sizeof(request));
++    map_envelope::prefix(operation->request_body, account.cookie, false);
++    std::memcpy(operation->request_body + map_envelope::PrefixBytes, key, key_size);
++    std::memcpy(operation->request_body + map_envelope::PrefixBytes + key_size, value, value_size);
++    if (!request_shape(request) || !request_body(request, operation->request_body, account.cookie))
++        return refused(*operation, EPROTO);
++
++    OriginalControlDeadline deadline;
++    if (!original_socket_bytes(fd, operation->request_header, ControlHeaderBytes, true,
++                                deadline, operation->request.header, operation->error) ||
++        !original_socket_bytes(fd, operation->request_body, operation->request_bytes, true,
++                                deadline, operation->request.body, operation->error) ||
++        !original_socket_bytes(fd, operation->reply_header, ControlHeaderBytes, false,
++                                deadline, operation->reply.header, operation->error)) return false;
++
++    const auto *reply = operation->reply_header;
++    const auto value_bytes = scalar<std::uint32_t>(reply, offsetof(dmtcp::DmtcpMessage, valLen));
++    const auto extent = scalar<std::uint32_t>(reply, offsetof(dmtcp::DmtcpMessage, extraBytes));
++    const auto accepted_peer = peer(account.accept);
++    if (!header_valid(reply) ||
++        scalar<dmtcp::DmtcpMessageType>(reply, offsetof(dmtcp::DmtcpMessage, type)) != dmtcp::DMT_CRUCIBLE_MAP_ACK ||
++        scalar<std::uint32_t>(reply, offsetof(dmtcp::DmtcpMessage, uniqueIdOffset)) != 1 ||
++        !same_peer(peer(reply), accepted_peer) ||
++        scalar<pid_t>(reply, offsetof(dmtcp::DmtcpMessage, realPid)) != request.realPid ||
++        scalar<std::uint64_t>(reply, offsetof(dmtcp::DmtcpMessage, coordTimeStamp)) != operation->ordinal ||
++        scalar<dmtcp::kvdb::KVDBResponse>(reply, offsetof(dmtcp::DmtcpMessage, kvdbResponse)) != dmtcp::kvdb::KVDBResponse::SUCCESS ||
++        !map_envelope::reply_geometry(value_bytes, extent)) return refused(*operation, EPROTO);
++    operation->peer = accepted_peer._pid;
++    operation->reply_bytes = extent;
++    if (!original_socket_bytes(fd, operation->reply_body, operation->reply_bytes, false,
++                                deadline, operation->reply.body, operation->error)) return false;
++    if (!map_envelope::prefix_matches(operation->reply_body, operation->reply_bytes, account.cookie, true) ||
++        !map_envelope::exact_cstrings(operation->reply_body + map_envelope::PrefixBytes, value_bytes, 1))
++        return refused(*operation, EPROTO);
++
++    // A complete original prior-value reply is consumed even when the caller
++    // does not request an old value. No charge or finite operation is released.
++    operation->acknowledged = true;
++    if (old_value) old_value->assign(
++        reinterpret_cast<const char *>(operation->reply_body + map_envelope::PrefixBytes),
++        value_bytes - 1);
++    return true;
++}
++
++template<class Mutate>
++inline bool receive_and_reply(int fd, const dmtcp::DmtcpMessage &request,
++                              pid_t actual_worker, OriginalControlFrame &retained_header,
++                              OriginalControlDeadline &deadline, Mutate mutate)
++{
++    auto &account = original();
++    if (!retain_negotiation() || !account.coordinator) return false;
++    auto *operation = map_envelope::reserve(account.bank, false, original_process_id(),
++                                             _real_syscall(SYS_geteuid));
++    if (operation == nullptr) return false;
++    Settlement settled{*operation};
++    OriginalIncomingTransfer incoming(fd, retained_header);
++    OriginalChannelLease outgoing(fd, true);
++    if (incoming.channel < 0 || outgoing.channel < 0) return refused(*operation, errno);
++    std::memcpy(operation->request_header, &request, sizeof(request));
++    operation->request.header = ControlHeaderBytes;
++    if (!request_shape(request) || actual_worker <= 0 || request.realPid != actual_worker ||
++        !same_peer(request.from.upid(), peer(account.hello)) || request.coordTimeStamp != operation->ordinal)
++        return refused(*operation, EPROTO);
++    operation->peer = actual_worker;
++    operation->request_bytes = request.extraBytes;
++    if (!original_socket_bytes(fd, operation->request_body, operation->request_bytes, false,
++                                deadline, operation->request.body, operation->error)) return false;
++    if (!request_body(request, operation->request_body, account.cookie)) return refused(*operation, EPROTO);
++
++    // The source lookup owner preserves SET semantics: copy the full previous
++    // value into this precharged reply storage, then mutate the actual map.
++    size_t old_bytes = 0;
++    if (!mutate(operation->request_body + map_envelope::PrefixBytes,
++                operation->reply_body + map_envelope::PrefixBytes,
++                map_envelope::OriginalBodyBytes, old_bytes, operation->mutated) ||
++        !operation->mutated || old_bytes == 0 || old_bytes > map_envelope::OriginalBodyBytes)
++        return refused(*operation, EPROTO);
++    operation->reply_bytes = map_envelope::PrefixBytes + old_bytes;
++    map_envelope::prefix(operation->reply_body, account.cookie, true);
++    dmtcp::DmtcpMessage reply(dmtcp::DMT_CRUCIBLE_MAP_ACK);
++    reply.uniqueIdOffset = 1;
++    reply.realPid = actual_worker;
++    reply.coordTimeStamp = operation->ordinal;
++    reply.kvdbResponse = dmtcp::kvdb::KVDBResponse::SUCCESS;
++    reply.valLen = old_bytes;
++    reply.extraBytes = operation->reply_bytes;
++    std::memcpy(operation->reply_header, &reply, sizeof(reply));
++    if (!original_socket_bytes(fd, operation->reply_header, ControlHeaderBytes, true,
++                                deadline, operation->reply.header, operation->error) ||
++        !original_socket_bytes(fd, operation->reply_body, operation->reply_bytes, true,
++                                deadline, operation->reply.body, operation->error)) return false;
++    operation->acknowledged = true;
++    return true;
++}
++
++} // namespace map_transfer
++} // namespace dmtcp_crucible
++#endif
+diff --git a/src/crucible_map_state.h b/src/crucible_map_state.h
+--- /dev/null
++++ b/src/crucible_map_state.h
+@@ -0,0 +1,159 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Complete original native map-bank preservation; no execution authority.
++ */
++#ifndef DMTCP_CRUCIBLE_MAP_STATE_H
++#define DMTCP_CRUCIBLE_MAP_STATE_H
++
++#include "crucible_map_transfer.h"
++#include "crucible_exec_state.h"
++
++namespace dmtcp_crucible {
++namespace map_state {
++
++constexpr size_t MaximumBytes = 5 * 1024 * 1024;
++
++template<class Codec>
++inline void fields(Codec &codec, map_transfer::OriginalNativeAccount &original)
++{
++    auto &account = original.bank;
++    codec.boolean(account.admitted);
++    codec.unsigned_value(account.process);
++    codec.unsigned_value(account.uid);
++    codec.unsigned_value(account.count);
++    codec.unsigned_value(account.storage_reserved);
++    codec.unsigned_value(original.storage_reserved);
++    codec.unsigned_value(account.charged_request);
++    codec.unsigned_value(account.charged_reply);
++    codec.boolean(original.negotiated);
++    codec.boolean(original.coordinator);
++    codec.bytes(original.cookie, sizeof(original.cookie));
++    codec.bytes(original.hello, sizeof(original.hello));
++    codec.bytes(original.accept, sizeof(original.accept));
++
++    // Unattempted rows and all unused payload suffixes are retained as well.
++    // A future native adopter must authenticate this whole original account;
++    // this codec never replaces a live bank or establishes a kernel owner.
++    for (auto &operation : account.operations) {
++        exec_state::boolean(codec, operation.settled);
++        codec.boolean(operation.attempted);
++        codec.boolean(operation.outgoing);
++        codec.boolean(operation.mutated);
++        codec.boolean(operation.acknowledged);
++        codec.unsigned_value(operation.process);
++        codec.unsigned_value(operation.uid);
++        codec.unsigned_value(operation.peer);
++        codec.unsigned_value(operation.ordinal);
++        codec.unsigned_value(operation.charged_request);
++        codec.unsigned_value(operation.charged_reply);
++        codec.unsigned_value(operation.request_bytes);
++        codec.unsigned_value(operation.reply_bytes);
++        codec.unsigned_value(operation.request.header);
++        codec.unsigned_value(operation.request.body);
++        codec.unsigned_value(operation.reply.header);
++        codec.unsigned_value(operation.reply.body);
++        codec.signed_value(operation.error);
++        codec.bytes(operation.request_header, sizeof(operation.request_header));
++        codec.bytes(operation.reply_header, sizeof(operation.reply_header));
++        codec.bytes(operation.request_body, sizeof(operation.request_body));
++        codec.bytes(operation.reply_body, sizeof(operation.reply_body));
++    }
++}
++
++inline bool zero(const unsigned char *bytes, size_t extent)
++{
++    for (size_t index = 0; index < extent; ++index) if (bytes[index] != 0) return false;
++    return true;
++}
++
++inline bool unattempted(const map_envelope::OriginalOperation &operation)
++{
++    return !operation.attempted && !operation.settled.load() && !operation.outgoing &&
++           !operation.mutated && !operation.acknowledged && operation.process == 0 &&
++           operation.uid == 0 && operation.peer == 0 && operation.ordinal == 0 &&
++           operation.charged_request == 0 && operation.charged_reply == 0 &&
++           operation.request_bytes == 0 && operation.reply_bytes == 0 &&
++           operation.request.header == 0 && operation.request.body == 0 &&
++           operation.reply.header == 0 && operation.reply.body == 0 && operation.error == 0 &&
++           zero(operation.request_header, sizeof(operation.request_header)) &&
++           zero(operation.reply_header, sizeof(operation.reply_header)) &&
++           zero(operation.request_body, sizeof(operation.request_body)) &&
++           zero(operation.reply_body, sizeof(operation.reply_body));
++}
++
++inline bool consistent(const map_transfer::OriginalNativeAccount &original,
++                        std::uint64_t process, std::uint64_t uid,
++                        const unsigned char *cookie, bool coordinator)
++{
++    const auto &account = original.bank;
++    if (!map_envelope::consistent(account, ControlHeaderBytes) ||
++        original.storage_reserved != sizeof(original) ||
++        !original.negotiated || original.coordinator != coordinator ||
++        account.process != process || account.uid != uid ||
++        std::memcmp(original.cookie, cookie, sizeof(original.cookie)) != 0 ||
++        !map_transfer::header_valid(original.hello) ||
++        !map_transfer::header_valid(original.accept) ||
++        map_transfer::scalar<std::uint64_t>(original.hello, offsetof(dmtcp::DmtcpMessage, _pad)) != map_transfer::Negotiation ||
++        map_transfer::scalar<std::uint64_t>(original.accept, offsetof(dmtcp::DmtcpMessage, _pad)) != map_transfer::Negotiation ||
++        map_transfer::scalar<dmtcp::DmtcpMessageType>(original.hello, offsetof(dmtcp::DmtcpMessage, type)) != dmtcp::DMT_NEW_WORKER ||
++        map_transfer::scalar<dmtcp::DmtcpMessageType>(original.accept, offsetof(dmtcp::DmtcpMessage, type)) != dmtcp::DMT_ACCEPT) return false;
++
++    for (unsigned index = 0; index < account.count; ++index) {
++        const auto &operation = account.operations[index];
++        const auto *request = operation.request_header;
++        const auto *reply = operation.reply_header;
++        if (operation.outgoing == coordinator || !operation.acknowledged ||
++            operation.mutated != coordinator ||
++            !map_transfer::header_valid(request) || !map_transfer::header_valid(reply) ||
++            map_transfer::scalar<dmtcp::DmtcpMessageType>(request, offsetof(dmtcp::DmtcpMessage, type)) != dmtcp::DMT_CRUCIBLE_MAP_SET ||
++            map_transfer::scalar<dmtcp::DmtcpMessageType>(reply, offsetof(dmtcp::DmtcpMessage, type)) != dmtcp::DMT_CRUCIBLE_MAP_ACK ||
++            map_transfer::scalar<std::uint64_t>(request, offsetof(dmtcp::DmtcpMessage, coordTimeStamp)) != operation.ordinal ||
++            map_transfer::scalar<std::uint64_t>(reply, offsetof(dmtcp::DmtcpMessage, coordTimeStamp)) != operation.ordinal ||
++            !map_envelope::prefix_matches(operation.request_body, operation.request_bytes, cookie, false) ||
++            !map_envelope::prefix_matches(operation.reply_body, operation.reply_bytes, cookie, true)) return false;
++
++        const auto key = map_transfer::scalar<std::uint32_t>(request, offsetof(dmtcp::DmtcpMessage, keyLen));
++        const auto value = map_transfer::scalar<std::uint32_t>(request, offsetof(dmtcp::DmtcpMessage, valLen));
++        const auto previous = map_transfer::scalar<std::uint32_t>(reply, offsetof(dmtcp::DmtcpMessage, valLen));
++        const auto worker = map_transfer::peer(original.hello);
++        const auto coordinator_peer = map_transfer::peer(original.accept);
++        constexpr char map_key[] = "ProcSelfMaps_Ckpt";
++        if (worker._pid <= 0 || coordinator_peer._pid <= 0 ||
++            !map_transfer::same_peer(map_transfer::peer(request), worker) ||
++            !map_transfer::same_peer(map_transfer::peer(reply), coordinator_peer) ||
++            map_transfer::scalar<std::uint32_t>(request, offsetof(dmtcp::DmtcpMessage, uniqueIdOffset)) != 1 ||
++            map_transfer::scalar<std::uint32_t>(reply, offsetof(dmtcp::DmtcpMessage, uniqueIdOffset)) != 1 ||
++            map_transfer::scalar<dmtcp::kvdb::KVDBRequest>(request, offsetof(dmtcp::DmtcpMessage, kvdbRequest)) != dmtcp::kvdb::KVDBRequest::SET ||
++            map_transfer::scalar<dmtcp::kvdb::KVDBResponse>(reply, offsetof(dmtcp::DmtcpMessage, kvdbResponse)) != dmtcp::kvdb::KVDBResponse::SUCCESS ||
++            key != sizeof(map_key) ||
++            !map_envelope::request_geometry(key, value, operation.request_bytes) ||
++            !map_envelope::reply_geometry(previous, operation.reply_bytes) ||
++            map_transfer::scalar<std::uint32_t>(request, offsetof(dmtcp::DmtcpMessage, extraBytes)) != operation.request_bytes ||
++            map_transfer::scalar<std::uint32_t>(reply, offsetof(dmtcp::DmtcpMessage, extraBytes)) != operation.reply_bytes ||
++            std::memchr(request + offsetof(dmtcp::DmtcpMessage, kvdbId), 0, 64) == nullptr ||
++            std::memcmp(operation.request_body + map_envelope::PrefixBytes, map_key, sizeof(map_key)) != 0 ||
++            !map_envelope::exact_cstrings(operation.request_body + map_envelope::PrefixBytes, key + value, 2) ||
++            !map_envelope::exact_cstrings(operation.reply_body + map_envelope::PrefixBytes, previous, 1)) return false;
++    }
++    for (unsigned index = account.count; index < map_envelope::OperationLimit; ++index) {
++        if (!unattempted(account.operations[index])) return false;
++    }
++    return true;
++}
++
++inline size_t capture(unsigned char *body, size_t capacity)
++{
++    auto &original = map_transfer::original();
++    if (body == nullptr || capacity > MaximumBytes ||
++        original.bank.reservation.test_and_set(std::memory_order_acquire)) return 0;
++    const bool valid = consistent(original, original_process_id(), _real_syscall(SYS_geteuid),
++                                   original.cookie, original.coordinator);
++    exec_state::Writer writer(body, capacity);
++    if (valid) fields(writer, original);
++    original.bank.reservation.clear(std::memory_order_release);
++    return valid && writer.valid() ? writer.size() : 0;
++}
++
++} // namespace map_state
++} // namespace dmtcp_crucible
++#endif
+diff --git a/src/crucible_map_final.h b/src/crucible_map_final.h
+--- /dev/null
++++ b/src/crucible_map_final.h
+@@ -0,0 +1,307 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Distinct full map/final-history retention exchange; no restore authority.
++ */
++#ifndef DMTCP_CRUCIBLE_MAP_FINAL_H
++#define DMTCP_CRUCIBLE_MAP_FINAL_H
++
++#include "crucible_map_state.h"
++#include "crucible_source_capsule.h"
++#include "crucible_final_frame.h"
++
++namespace dmtcp_crucible {
++namespace map_final {
++
++constexpr size_t PrefixBytes = 32;
++constexpr size_t MaximumBytes = 8 * 1024 * 1024;
++
++struct OriginalExchange {
++    std::atomic_flag reservation = ATOMIC_FLAG_INIT;
++    std::atomic<bool> settled{false};
++    bool attempted = false;
++    bool received = false;
++    bool acknowledged = false;
++    pid_t process = 0;
++    std::uint64_t owner_process = 0;
++    std::uint64_t owner_uid = 0;
++    std::uint64_t storage_reserved = 0;
++    size_t body_length = 0;
++    size_t request_transferred = 0;
++    size_t response_transferred = 0;
++    int error = 0;
++    unsigned char request[ControlHeaderBytes] = {};
++    unsigned char response[ControlHeaderBytes] = {};
++    unsigned char body[MaximumBytes] = {};
++    // Borrowed decoding storage cannot replace either original native bank.
++    map_transfer::OriginalNativeAccount worker_candidate;
++};
++
++inline OriginalExchange &original()
++{
++    static OriginalExchange exchange;
++    return exchange;
++}
++
++// The entire native exchange, borrowed decode candidate and original park
++// storage are reserved before application execution, never on a later retry.
++inline bool admit()
++{
++    if (!map_transfer::selected()) return true;
++    auto &exchange = original();
++    const long process = original_process_id();
++    const long uid = _real_syscall(SYS_geteuid);
++    if (!map_transfer::policy_admitted() || process <= 0 || uid < 0 ||
++        exchange.storage_reserved != 0 || exchange.attempted) return false;
++    exchange.owner_process = process;
++    exchange.owner_uid = uid;
++    exchange.storage_reserved = sizeof(exchange) + sizeof(OriginalTerminalControlPark);
++    return true;
++}
++
++inline bool reserve()
++{
++    auto &exchange = original();
++    if (exchange.reservation.test_and_set(std::memory_order_acquire)) return false;
++    const long process = original_process_id();
++    const bool allowed = map_transfer::policy_admitted() && process > 0 && !exchange.attempted &&
++      exchange.owner_process == static_cast<std::uint64_t>(process) &&
++      exchange.owner_uid == static_cast<std::uint64_t>(_real_syscall(SYS_geteuid)) &&
++      exchange.storage_reserved == sizeof(exchange) + sizeof(OriginalTerminalControlPark);
++    if (allowed) {
++        exchange.attempted = true;
++        exchange.process = process;
++    }
++    exchange.reservation.clear(std::memory_order_release);
++    return allowed;
++}
++
++struct Settlement {
++    OriginalExchange &exchange;
++
++    ~Settlement()
++    {
++        exchange.settled.store(true, std::memory_order_release);
++    }
++};
++
++inline bool body_consistent(OriginalExchange &exchange, pid_t worker,
++                             std::uint64_t uid, const unsigned char *cookie)
++{
++    const auto *body = exchange.body;
++    if (exchange.body_length < PrefixBytes ||
++        std::memcmp(body, "DCPMFI01", 8) != 0 ||
++        source_capsule::number(body + 8) != static_cast<std::uint64_t>(worker)) return false;
++    const auto history = source_capsule::number(body + 16);
++    const auto maps = source_capsule::number(body + 24);
++    if (history < 16 || history > FinalPayloadBytes || maps == 0 ||
++        maps > map_state::MaximumBytes || history > exchange.body_length - PrefixBytes ||
++        maps != exchange.body_length - PrefixBytes - history ||
++        std::memcmp(body + PrefixBytes, "DCPBUD01", 8) != 0 ||
++        source_capsule::number(body + PrefixBytes + 8) != static_cast<std::uint64_t>(worker)) return false;
++
++    exec_state::Reader reader(body + PrefixBytes + history, maps);
++    map_state::fields(reader, exchange.worker_candidate);
++    return reader.complete() && map_state::consistent(exchange.worker_candidate, worker,
++      uid, cookie, false);
++}
++
++inline bool publish(int fd)
++{
++    if (!reserve()) return false;
++    auto &exchange = original();
++    Settlement settlement{exchange};
++    OriginalChannelLease outgoing(fd, true);
++    OriginalChannelLease incoming(fd, false);
++    if (outgoing.channel < 0 || incoming.channel < 0) { exchange.error = errno; return false; }
++    if (!dmtcp_crucible_capture_budget_selected()) { exchange.error = EACCES; return false; }
++
++    const auto history = dmtcp_crucible_finalize_capture_history(
++      exchange.body + PrefixBytes, FinalPayloadBytes);
++    if (history == 0) { exchange.error = errno; return false; }
++    const auto maps = map_state::capture(exchange.body + PrefixBytes + history, map_state::MaximumBytes);
++    if (maps == 0) { exchange.error = EPROTO; return false; }
++    exchange.body_length = PrefixBytes + history + maps;
++    std::memcpy(exchange.body, "DCPMFI01", 8);
++    source_capsule::number(exchange.body + 8, exchange.process);
++    source_capsule::number(exchange.body + 16, history);
++    source_capsule::number(exchange.body + 24, maps);
++
++    dmtcp::DmtcpMessage request;
++    final_header(request, dmtcp::DMT_CRUCIBLE_MAP_FINAL, exchange.process, exchange.body_length);
++    std::memcpy(exchange.request, &request, sizeof(request));
++    OriginalControlDeadline deadline;
++    size_t header = 0;
++    size_t body = 0;
++    if (!original_socket_bytes(fd, exchange.request, ControlHeaderBytes, true,
++                                deadline, header, exchange.error)) {
++        exchange.request_transferred = header;
++        return false;
++    }
++    const bool sent = original_socket_bytes(fd, exchange.body, exchange.body_length, true,
++                                            deadline, body, exchange.error);
++    exchange.request_transferred = ControlHeaderBytes + body;
++    if (!sent) return false;
++    exchange.received = true;
++    if (!original_socket_bytes(fd, exchange.response, ControlHeaderBytes, false,
++                                deadline, exchange.response_transferred, exchange.error)) return false;
++    const auto *response = exchange.response;
++    if (!map_transfer::header_valid(response) ||
++        map_transfer::scalar<dmtcp::DmtcpMessageType>(response, offsetof(dmtcp::DmtcpMessage, type)) != dmtcp::DMT_CRUCIBLE_MAP_FINAL_ACK ||
++        map_transfer::scalar<std::uint32_t>(response, offsetof(dmtcp::DmtcpMessage, extraBytes)) != 0 ||
++        map_transfer::scalar<pid_t>(response, offsetof(dmtcp::DmtcpMessage, realPid)) != exchange.process ||
++        map_transfer::scalar<std::uint64_t>(response, offsetof(dmtcp::DmtcpMessage, coordTimeStamp)) != 1 ||
++        !map_transfer::same_peer(map_transfer::peer(response), map_transfer::peer(map_transfer::original().accept)) ||
++        !control_cookie_matches(response + offsetof(dmtcp::DmtcpMessage, barrier))) {
++        exchange.error = EPROTO;
++        return false;
++    }
++    exchange.acknowledged = true;
++    return true;
++}
++
++inline bool receive(int fd, const dmtcp::DmtcpMessage &request, pid_t worker,
++                     OriginalControlDeadline &deadline, OriginalControlFrame &retained_header)
++{
++    if (!reserve()) return false;
++    auto &exchange = original();
++    Settlement settlement{exchange};
++    OriginalIncomingTransfer incoming(fd, retained_header);
++    OriginalChannelLease outgoing(fd, true);
++    if (incoming.channel < 0 || outgoing.channel < 0) { exchange.error = errno; return false; }
++    std::memcpy(exchange.request, &request, sizeof(request));
++    exchange.request_transferred = ControlHeaderBytes;
++    if (!bounded_header(request) || request.type != dmtcp::DMT_CRUCIBLE_MAP_FINAL ||
++        worker <= 0 || request.realPid != worker || request.coordTimeStamp != 1 ||
++        request.extraBytes < PrefixBytes || request.extraBytes > MaximumBytes ||
++        !control_cookie_matches(reinterpret_cast<const unsigned char *>(request.barrier))) {
++        exchange.error = EPROTO;
++        return false;
++    }
++    exchange.body_length = request.extraBytes;
++    size_t body = 0;
++    const bool received = original_socket_bytes(fd, exchange.body, exchange.body_length, false,
++                                                deadline, body, exchange.error);
++    exchange.request_transferred += body;
++    if (!received) return false;
++    if (!body_consistent(exchange, worker, _real_syscall(SYS_geteuid), map_transfer::original().cookie)) { exchange.error = EPROTO; return false; }
++    exchange.received = true;
++    dmtcp::DmtcpMessage response;
++    final_header(response, dmtcp::DMT_CRUCIBLE_MAP_FINAL_ACK, worker, 0);
++    std::memcpy(exchange.response, &response, sizeof(response));
++    if (!original_socket_bytes(fd, exchange.response, ControlHeaderBytes, true,
++                                deadline, exchange.response_transferred, exchange.error)) return false;
++    exchange.acknowledged = true;
++    return true;
++}
++
++inline OriginalTerminalControlPark &original_park()
++{
++    static OriginalTerminalControlPark retained;
++    return retained;
++}
++
++inline bool prepare_terminal_control_park(int fd)
++{
++    auto &final = original();
++    OriginalTerminalControlPark &park = original_park();
++    const pid_t actual = static_cast<pid_t>(original_process_id());
++    const pid_t thread = static_cast<pid_t>(original_thread_id());
++    const uid_t uid = static_cast<uid_t>(_real_syscall(SYS_geteuid));
++    struct stat identity = {};
++    if (park.ready.load(std::memory_order_acquire) ||
++        !final.settled.load(std::memory_order_acquire) || !final.acknowledged) {
++        errno = EBUSY;
++        return false;
++    }
++    if (!terminal_control_park_admitted() || actual <= 0 || thread <= 0 ||
++        final.process != actual ||
++        !dmtcp_crucible_capture_history_finalized()) {
++        errno = EACCES;
++        return false;
++    }
++    if (!seal_terminal_control_channel(fd, actual, uid, identity)) return false;
++
++    // No identity syscall or fallible copy follows the irreversible seal.
++    park.process = actual;
++    park.thread = thread;
++    park.uid = uid;
++    park.device = identity.st_dev;
++    park.inode = identity.st_ino;
++    park.frames = control_bank().count;
++    park.channels = control_channels().count;
++    park.futex_word = 1;
++    park.ready.store(true, std::memory_order_release);
++    return true;
++}
++
++inline bool wait_terminal_control_park()
++{
++    OriginalTerminalControlPark &park = original_park();
++    if (!park.ready.load(std::memory_order_acquire) ||
++        park.process != static_cast<pid_t>(original_process_id()) ||
++        park.thread != static_cast<pid_t>(original_thread_id())) {
++        errno = EACCES;
++        return false;
++    }
++
++    // No wake/reset API exists. The original thread remains kernel-owned until
++    // the outer holder reclaims the process. Signals do not restart a receive.
++    for (;;) {
++        const long result = _real_syscall(SYS_futex, &park.futex_word,
++                                         FUTEX_WAIT_PRIVATE, 1, nullptr,
++                                         nullptr, 0);
++        if (result == 0 || errno == EINTR) continue;
++        return false;
++    }
++}
++
++inline size_t export_terminal_control_park(void *output, size_t capacity)
++{
++    const OriginalTerminalControlPark &park = original_park();
++    constexpr size_t extent = 8 + 7 * 8;
++    if (!park.ready.load(std::memory_order_acquire) || !output || capacity < extent ||
++        park.process != static_cast<pid_t>(original_process_id()) ||
++        park.uid != static_cast<uid_t>(_real_syscall(SYS_geteuid))) {
++        errno = EBUSY;
++        return 0;
++    }
++    auto *cursor = static_cast<unsigned char *>(output);
++    std::memcpy(cursor, "DCPMPAR1", 8);
++    cursor += 8;
++    for (std::uint64_t field : {static_cast<std::uint64_t>(park.process),
++                               static_cast<std::uint64_t>(park.thread),
++                               static_cast<std::uint64_t>(park.uid),
++                               static_cast<std::uint64_t>(park.device),
++                               static_cast<std::uint64_t>(park.inode),
++                               static_cast<std::uint64_t>(park.frames),
++                               static_cast<std::uint64_t>(park.channels)}) {
++        control_number(cursor, field);
++    }
++    return extent;
++}
++
++// Retains the entire transferred final body; no parsed account is installed.
++inline size_t export_exchange(void *output, size_t capacity)
++{
++    auto &exchange = original();
++    const size_t extent = 64 + 2 * ControlHeaderBytes + exchange.body_length;
++    if (!exchange.settled.load() || !exchange.acknowledged || exchange.error != 0 ||
++        exchange.process != original_process_id() || output == nullptr || capacity < extent) return 0;
++    auto *bytes = static_cast<unsigned char *>(output);
++    std::memcpy(bytes, "DCPMFX01", 8);
++    auto *cursor = bytes + 8;
++    for (std::uint64_t field : {static_cast<std::uint64_t>(exchange.process),
++        exchange.body_length, exchange.request_transferred, exchange.response_transferred,
++        static_cast<std::uint64_t>(exchange.received), static_cast<std::uint64_t>(exchange.acknowledged),
++        static_cast<std::uint64_t>(exchange.error)}) control_number(cursor, field);
++    std::memcpy(cursor, exchange.request, ControlHeaderBytes);
++    cursor += ControlHeaderBytes;
++    std::memcpy(cursor, exchange.response, ControlHeaderBytes);
++    cursor += ControlHeaderBytes;
++    std::memcpy(cursor, exchange.body, exchange.body_length);
++    return extent;
++}
++
++} // namespace map_final
++} // namespace dmtcp_crucible
++#endif
+diff --git a/src/crucible_map_codec.h b/src/crucible_map_codec.h
+--- /dev/null
++++ b/src/crucible_map_codec.h
+@@ -0,0 +1,143 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Separate bounded codec for the complete map final-exchange record.
++ */
++#ifndef DMTCP_CRUCIBLE_MAP_CODEC_H
++#define DMTCP_CRUCIBLE_MAP_CODEC_H
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++#include <limits>
++
++namespace dmtcp_crucible {
++namespace map_codec {
++constexpr size_t MaximumBytes = 8 * 1024 * 1024 + 1024;
++
++class Writer {
++  public:
++    Writer(unsigned char *body, size_t capacity)
++        : body_(body), capacity_(capacity), valid_(body != nullptr && capacity <= MaximumBytes)
++    {}
++
++    template<class Integer>
++    void unsigned_value(Integer &value)
++    {
++        word(static_cast<std::uint64_t>(value));
++    }
++
++    template<class Integer>
++    void signed_value(Integer &value)
++    {
++        word(static_cast<std::uint64_t>(static_cast<std::int64_t>(value)));
++    }
++
++    void boolean(bool &value)
++    {
++        std::uint64_t encoded = value ? 1 : 0;
++        word(encoded);
++    }
++
++    void bytes(void *source, size_t extent)
++    {
++        if (!valid_ || extent > capacity_ - position_) {
++            valid_ = false;
++            return;
++        }
++        std::memcpy(body_ + position_, source, extent);
++        position_ += extent;
++    }
++
++    bool valid() const { return valid_; }
++    size_t size() const { return position_; }
++
++  private:
++    void word(std::uint64_t value)
++    {
++        unsigned char encoded[8];
++        for (unsigned index = 0; index < 8; ++index) {
++            encoded[index] = static_cast<unsigned char>(value >> (8 * index));
++        }
++        bytes(encoded, sizeof(encoded));
++    }
++
++    unsigned char *body_;
++    size_t capacity_;
++    size_t position_ = 0;
++    bool valid_;
++};
++
++class Reader {
++  public:
++    Reader(const unsigned char *body, size_t extent)
++        : body_(body), extent_(extent), valid_(body != nullptr && extent <= MaximumBytes)
++    {}
++
++    template<class Integer>
++    void unsigned_value(Integer &value)
++    {
++        const std::uint64_t decoded = word();
++        if (decoded > static_cast<std::uint64_t>(std::numeric_limits<Integer>::max())) {
++            valid_ = false;
++            return;
++        }
++        value = static_cast<Integer>(decoded);
++    }
++
++    template<class Integer>
++    void signed_value(Integer &value)
++    {
++        const std::uint64_t encoded = word();
++        const std::int64_t decoded = encoded <= INT64_MAX
++            ? static_cast<std::int64_t>(encoded)
++            : -static_cast<std::int64_t>(UINT64_MAX - encoded) - 1;
++        if (decoded < std::numeric_limits<Integer>::min() ||
++            decoded > std::numeric_limits<Integer>::max()) {
++            valid_ = false;
++            return;
++        }
++        value = static_cast<Integer>(decoded);
++    }
++
++    void boolean(bool &value)
++    {
++        const std::uint64_t decoded = word();
++        if (decoded > 1) {
++            valid_ = false;
++            return;
++        }
++        value = decoded == 1;
++    }
++
++    void bytes(void *destination, size_t extent)
++    {
++        if (!valid_ || extent > extent_ - position_) {
++            valid_ = false;
++            return;
++        }
++        std::memcpy(destination, body_ + position_, extent);
++        position_ += extent;
++    }
++
++    bool complete() const { return valid_ && position_ == extent_; }
++
++  private:
++    std::uint64_t word()
++    {
++        unsigned char encoded[8] = {};
++        bytes(encoded, sizeof(encoded));
++        std::uint64_t value = 0;
++        for (unsigned index = 0; index < 8; ++index) {
++            value |= static_cast<std::uint64_t>(encoded[index]) << (8 * index);
++        }
++        return value;
++    }
++
++    const unsigned char *body_;
++    size_t extent_;
++    size_t position_ = 0;
++    bool valid_;
++};
++
++} // namespace map_codec
++} // namespace dmtcp_crucible
++#endif
+diff --git a/src/crucible_map_source_capsule.h b/src/crucible_map_source_capsule.h
+--- /dev/null
++++ b/src/crucible_map_source_capsule.h
+@@ -0,0 +1,151 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Bounded original coordinator preservation capsule; no execution authority.
++ */
++#ifndef DMTCP_CRUCIBLE_MAP_SOURCE_CAPSULE_H
++#define DMTCP_CRUCIBLE_MAP_SOURCE_CAPSULE_H
++
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++
++namespace dmtcp_crucible {
++namespace map_source_capsule {
++
++constexpr size_t HeaderBytes = 192;
++constexpr size_t MaximumBytes = 24 * 1024 * 1024;
++constexpr unsigned SectionCount = 5;
++constexpr size_t SectionLimits[SectionCount] = {
++    6 * 1024 * 1024, 64 * 1024, 8 * 1024 * 1024 + 1024, 128 * 1024, 5 * 1024 * 1024
++};
++
++struct Header {
++    std::uint64_t process = 0;
++    std::uint64_t thread = 0;
++    std::uint64_t uid = 0;
++    std::uint64_t worker = 0;
++    std::uint64_t descriptor = 0;
++    std::uint64_t device = 0;
++    std::uint64_t inode = 0;
++    std::uint64_t section_bytes[SectionCount] = {};
++    unsigned char cookie[32] = {};
++};
++
++inline void number(unsigned char *output, std::uint64_t value)
++{
++    for (unsigned index = 0; index < 8; ++index) {
++        output[index] = static_cast<unsigned char>(value >> (56 - 8 * index));
++    }
++}
++
++inline std::uint64_t number(const unsigned char *input)
++{
++    std::uint64_t value = 0;
++    for (unsigned index = 0; index < 8; ++index) value = (value << 8) | input[index];
++    return value;
++}
++
++inline size_t extent(const Header &header)
++{
++    if (header.process == 0 || header.thread == 0 || header.worker == 0 ||
++        header.process > INT32_MAX || header.thread > INT32_MAX ||
++        header.worker > INT32_MAX || header.uid > UINT32_MAX ||
++        header.process == header.worker || header.descriptor >= 1024 || header.inode == 0) {
++        return 0;
++    }
++
++    size_t size = HeaderBytes;
++    for (unsigned section = 0; section < SectionCount; ++section) {
++        const auto bytes = header.section_bytes[section];
++        if (bytes == 0 || bytes > SectionLimits[section] || bytes > MaximumBytes - size) {
++            return 0;
++        }
++        size += static_cast<size_t>(bytes);
++    }
++    return size;
++}
++
++inline bool encode(const Header &header, unsigned char *output, size_t capacity)
++{
++    const size_t size = extent(header);
++    if (size == 0 || output == nullptr || capacity < HeaderBytes) return false;
++
++    std::memset(output, 0, HeaderBytes);
++    std::memcpy(output, "DCPMCP01", 8);
++    number(output + 8, 1);
++    number(output + 16, size);
++    const std::uint64_t fields[] = {
++        header.process, header.thread, header.uid, header.worker,
++        header.descriptor, header.device, header.inode
++    };
++    for (unsigned index = 0; index < 7; ++index) number(output + 24 + 8 * index, fields[index]);
++    for (unsigned index = 0; index < SectionCount; ++index) {
++        number(output + 80 + 8 * index, header.section_bytes[index]);
++    }
++    std::memcpy(output + 120, header.cookie, sizeof(header.cookie));
++    // The trailing forty bytes are reserved and always zero in edition1.
++    return true;
++}
++
++inline bool decode(const unsigned char *body, size_t size, Header &header)
++{
++    if (body == nullptr || size < HeaderBytes || size > MaximumBytes ||
++        std::memcmp(body, "DCPMCP01", 8) != 0 || number(body + 8) != 1 ||
++        number(body + 16) != size) return false;
++    for (unsigned index = 152; index < HeaderBytes; ++index) {
++        if (body[index] != 0) return false;
++    }
++
++    Header candidate;
++    candidate.process = number(body + 24);
++    candidate.thread = number(body + 32);
++    candidate.uid = number(body + 40);
++    candidate.worker = number(body + 48);
++    candidate.descriptor = number(body + 56);
++    candidate.device = number(body + 64);
++    candidate.inode = number(body + 72);
++    for (unsigned index = 0; index < SectionCount; ++index) {
++        candidate.section_bytes[index] = number(body + 80 + 8 * index);
++    }
++    std::memcpy(candidate.cookie, body + 120, sizeof(candidate.cookie));
++    if (extent(candidate) != size) return false;
++    header = candidate;
++    return true;
++}
++
++// This pre-write account charges the complete one-shot export before the
++// syscall. Its byte record says nothing about completion or permission. The
++// actual native owner retains short-write/error outcome without renewal.
++struct OriginalExport {
++    bool admitted = false;
++    bool attempted = false;
++    bool settled = false;
++    std::uint64_t charged = 0;
++    std::int64_t written = -1;
++    int error = 0;
++
++    bool reserve(size_t size)
++    {
++        if (!admitted || attempted || settled || size < HeaderBytes || size > MaximumBytes) {
++            return false;
++        }
++        attempted = true;
++        charged = size;
++        return true;
++    }
++
++    bool finish(std::int64_t result, int failure)
++    {
++        if (!attempted || settled || result < -1 || failure < 0 ||
++            (result >= 0 && static_cast<std::uint64_t>(result) > charged) ||
++            (result >= 0 && failure != 0) || (result == -1 && failure == 0)) return false;
++        written = result;
++        error = failure;
++        settled = true;
++        return true;
++    }
++};
++
++} // namespace map_source_capsule
++} // namespace dmtcp_crucible
++#endif
+diff --git a/src/crucible_map_source_custody.h b/src/crucible_map_source_custody.h
+--- /dev/null
++++ b/src/crucible_map_source_custody.h
+@@ -0,0 +1,283 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Native original coordinator export and hold; no SourceReady authority.
++ */
++#ifndef DMTCP_CRUCIBLE_MAP_SOURCE_CUSTODY_H
++#define DMTCP_CRUCIBLE_MAP_SOURCE_CUSTODY_H
++
++#include "crucible_map_source_capsule.h"
++#include "crucible_map_final.h"
++#include "crucible_map_codec.h"
++#include "crucible_exec_custody.h"
++#include "crucible_final_frame.h"
++#include "crucible_restart_writer.h"
++
++namespace dmtcp_crucible {
++namespace map_source_custody {
++
++constexpr int Descriptor = 843;
++
++struct OriginalSource {
++    map_source_capsule::OriginalExport output;
++    map_source_capsule::Header header;
++    std::uint64_t reserved_bytes = 0;
++    int descriptor_status = 0;
++    int descriptor_flags = 0;
++    bool selected = false;
++    bool sealed = false;
++    std::uint32_t hold_word = 0;
++    unsigned char body[map_source_capsule::MaximumBytes] = {};
++    exec_state::State state_candidate;
++    exec_custody::Transfer descriptors;
++};
++
++inline OriginalSource &original()
++{
++    static OriginalSource source;
++    return source;
++}
++
++inline bool selected()
++{
++    return std::getenv("CRUCIBLE_CAPTURE_SOURCE_CUSTODY_POLICY") != nullptr ||
++           original().selected;
++}
++
++// Runs before logger initialization. No descriptor is born here. The outer
++// original owner supplied one private disk file; this native account reserves
++// its complete storage and sole attempted write before observing that role.
++inline bool admit()
++{
++    if (!selected()) return true;
++    OriginalSource &source = original();
++    if (source.selected || source.reserved_bytes != 0) return false;
++    source.selected = true;
++    source.reserved_bytes = sizeof(source);
++
++    const char *policy = std::getenv("CRUCIBLE_CAPTURE_SOURCE_CUSTODY_POLICY");
++    if (policy == nullptr || std::strcmp(policy, "map-custody.v1") != 0 ||
++        !writer_cohort_admitted() || !terminal_control_park_admitted() ||
++        !restart_writer::admitted() || !load_control_cookie(source.header.cookie)) return false;
++
++    // Admission inspects the actual kernel namespace; lowering RLIMIT cannot
++    // hide an inherited descriptor outside the source capsule's finite table.
++    exec_custody::DescriptorOperations operations;
++    if (!descriptor_scope::bounded_namespace(operations)) return false;
++
++    struct stat identity = {};
++    const long process = kernel_identity::read(SYS_getpid);
++    const long thread = kernel_identity::read(SYS_gettid);
++    const long uid = exec_custody::syscall(SYS_geteuid);
++    const long status = exec_custody::syscall(SYS_fcntl, Descriptor, F_GETFL);
++    const long flags = exec_custody::syscall(SYS_fcntl, Descriptor, F_GETFD);
++    if (process <= 0 || thread != process || uid < 0 || status < 0 ||
++        flags < 0 ||
++        (status & O_ACCMODE) != O_WRONLY ||
++        (status & (O_APPEND | O_NONBLOCK)) != 0 ||
++        exec_custody::syscall(SYS_fstat, Descriptor, exec_custody::pointer(&identity)) != 0 ||
++        !S_ISREG(identity.st_mode) || identity.st_uid != static_cast<uid_t>(uid) ||
++        (identity.st_mode & 0777) != 0600 || identity.st_nlink != 1 || identity.st_size != 0 ||
++        exec_custody::syscall(SYS_lseek, Descriptor, 0, SEEK_CUR) != 0) return false;
++
++    source.header.process = process;
++    source.header.thread = thread;
++    source.header.uid = uid;
++    source.header.descriptor = Descriptor;
++    source.header.device = identity.st_dev;
++    source.header.inode = identity.st_ino;
++    source.descriptor_status = static_cast<int>(status);
++    source.descriptor_flags = static_cast<int>(flags);
++    source.output.admitted = true;
++    return true;
++}
++
++template<class Codec>
++inline void restart_fields(Codec &codec, restart_writer::OriginalAccount &account)
++{
++    codec.boolean(account.initialized);
++    codec.signed_value(account.process);
++    codec.unsigned_value(account.uid);
++    codec.signed_value(account.root_descriptor);
++    codec.unsigned_value(account.device);
++    codec.unsigned_value(account.root_inode);
++    codec.bytes(account.root, sizeof(account.root));
++    codec.unsigned_value(account.count);
++    codec.unsigned_value(account.attempted_links);
++    codec.unsigned_value(account.charged);
++
++    for (auto &file : account.files) {
++        codec.bytes(file.leaf, sizeof(file.leaf));
++        codec.signed_value(file.descriptor);
++        codec.unsigned_value(file.device);
++        codec.unsigned_value(file.inode);
++        codec.unsigned_value(file.charged);
++        codec.boolean(file.adopted);
++        codec.boolean(file.close_attempted);
++        codec.boolean(file.closed);
++    }
++    for (auto &link : account.links) {
++        codec.bytes(link.alias, sizeof(link.alias));
++        codec.unsigned_value(link.file_index);
++        codec.unsigned_value(link.charged);
++        codec.boolean(link.unlink_attempted);
++        codec.boolean(link.unlinked);
++        codec.boolean(link.create_attempted);
++        codec.boolean(link.created);
++    }
++}
++
++template<class Codec>
++inline void final_fields(Codec &codec, map_final::OriginalExchange &exchange)
++{
++    exec_state::boolean(codec, exchange.settled);
++    codec.boolean(exchange.attempted);
++    codec.boolean(exchange.received);
++    codec.boolean(exchange.acknowledged);
++    codec.signed_value(exchange.process);
++    codec.unsigned_value(exchange.owner_process);
++    codec.unsigned_value(exchange.owner_uid);
++    codec.unsigned_value(exchange.storage_reserved);
++    codec.unsigned_value(exchange.body_length);
++    codec.unsigned_value(exchange.request_transferred);
++    codec.unsigned_value(exchange.response_transferred);
++    codec.signed_value(exchange.error);
++    codec.bytes(exchange.request, sizeof(exchange.request));
++    codec.bytes(exchange.response, sizeof(exchange.response));
++    // Retain the complete source storage, not just its transferred prefix.
++    codec.bytes(exchange.body, sizeof(exchange.body));
++}
++
++inline bool capture_accounts(OriginalSource &source, unsigned char *body, size_t &extent)
++{
++    auto &log = log_writer::account();
++    if (log.lock.test_and_set(std::memory_order_acquire)) return false;
++    OriginalControlSnapshot control(control_bank());
++    auto &channels = control_channels();
++    const bool acquired_channels = !channels.reservation.test_and_set(std::memory_order_acquire);
++
++    unsigned requests = original_control_requests().load();
++    unsigned probes = original_probe_reservations().load();
++    unsigned exec_attempts = exec_custody::attempts();
++    exec_state::Writer writer(body, map_source_capsule::SectionLimits[0]);
++    if (control.acquired && acquired_channels) {
++        exec_state::fields(writer, log, control_bank(), channels,
++                           requests, probes, exec_attempts);
++    }
++    if (acquired_channels) channels.reservation.clear(std::memory_order_release);
++    log.lock.clear(std::memory_order_release);
++    if (!control.acquired || !acquired_channels || !writer.valid()) return false;
++
++    extent = writer.size();
++    exec_state::Reader check(body, extent);
++    auto &candidate = source.state_candidate;
++    exec_state::fields(check, candidate.log, candidate.control, candidate.channels,
++                       candidate.requests, candidate.probes, candidate.exec_attempts);
++    return check.complete() && exec_state::consistent_attempts(candidate, 0) &&
++           candidate.log.process == static_cast<pid_t>(source.header.process) &&
++           candidate.control.terminal.load() && candidate.channels.terminal.load();
++}
++
++// Called once after the original final-copy ACK has completed. Every emitted
++// section is custody data. Whole guest/clock/image closure and source-issued
++// permission remain separate and cannot be inferred from this function.
++inline bool publish_and_hold(int fd, pid_t worker)
++{
++    if (!selected()) return true;
++    OriginalSource &source = original();
++    auto &exchange = map_final::original();
++    const char *policy = std::getenv("CRUCIBLE_CAPTURE_SOURCE_CUSTODY_POLICY");
++    if (!source.output.admitted || source.output.attempted || source.sealed ||
++        source.reserved_bytes != sizeof(source) ||
++        policy == nullptr || std::strcmp(policy, "map-custody.v1") != 0 ||
++        !control_cookie_matches(source.header.cookie) ||
++        kernel_identity::read(SYS_getpid) != static_cast<long>(source.header.process) ||
++        kernel_identity::read(SYS_gettid) != static_cast<long>(source.header.thread) ||
++        worker <= 0 || worker == static_cast<pid_t>(source.header.process) ||
++        !exchange.settled.load() || !exchange.attempted || !exchange.received ||
++        !exchange.acknowledged || exchange.error != 0 || exchange.body_length == 0 ||
++        exchange.body_length > map_final::MaximumBytes) return false;
++
++    struct stat channel = {};
++    if (!seal_terminal_control_channel(fd, source.header.process, source.header.uid, channel)) {
++        return false;
++    }
++    source.sealed = true;
++    source.header.worker = worker;
++    size_t offset = map_source_capsule::HeaderBytes;
++    size_t bytes = 0;
++    if (!capture_accounts(source, source.body + offset, bytes)) return false;
++    source.header.section_bytes[0] = bytes;
++    offset += bytes;
++
++    auto &restart = restart_writer::account();
++    if (restart.lock.test_and_set(std::memory_order_acquire)) return false;
++    exec_state::Writer scripts(source.body + offset, map_source_capsule::SectionLimits[1]);
++    const bool owns_scripts = restart_writer::owns_root() && restart.count <= restart_writer::FileLimit &&
++                              restart.attempted_links <= restart_writer::LinkLimit;
++    if (owns_scripts) restart_fields(scripts, restart);
++    restart.lock.clear(std::memory_order_release);
++    if (!owns_scripts || !scripts.valid()) return false;
++    source.header.section_bytes[1] = scripts.size();
++    offset += scripts.size();
++
++    map_codec::Writer final(source.body + offset, map_source_capsule::SectionLimits[2]);
++    final_fields(final, exchange);
++    if (!final.valid()) return false;
++    source.header.section_bytes[2] = final.size();
++    offset += final.size();
++
++    const dmtcp::UniquePid *peers[] = {&dmtcp::UniquePid::ThisProcess(true),
++                                     &dmtcp::UniquePid::ParentProcess()};
++    exec_custody::PeerIdentity *retained[] = {&source.descriptors.process,
++                                            &source.descriptors.parent};
++    for (unsigned index = 0; index < 2; ++index) {
++        retained[index]->host = peers[index]->hostid();
++        retained[index]->process = peers[index]->pid();
++        retained[index]->time = peers[index]->time();
++        retained[index]->generation = peers[index]->upid()._computation_generation;
++    }
++    std::memcpy(source.descriptors.cookie, source.header.cookie, sizeof(source.header.cookie));
++    exec_custody::require_bounded_namespace();
++    exec_custody::census(source.descriptors);
++    exec_state::Writer descriptors(source.body + offset, map_source_capsule::SectionLimits[3]);
++    exec_custody::descriptor_fields(descriptors, source.descriptors);
++    if (!descriptors.valid()) return false;
++    source.header.section_bytes[3] = descriptors.size();
++    offset += descriptors.size();
++    const auto map_bytes = map_state::capture(source.body + offset, map_state::MaximumBytes);
++    if (map_bytes == 0) return false;
++    source.header.section_bytes[4] = map_bytes;
++    offset += map_bytes;
++    if (map_source_capsule::extent(source.header) != offset ||
++        !map_source_capsule::encode(source.header, source.body, sizeof(source.body)) ||
++        !source.output.reserve(offset)) return false;
++
++    struct stat output = {};
++    if (exec_custody::syscall(SYS_fstat, Descriptor, exec_custody::pointer(&output)) != 0 ||
++        !S_ISREG(output.st_mode) || output.st_uid != source.header.uid ||
++        (output.st_mode & 0777) != 0600 || output.st_nlink != 1 || output.st_size != 0 ||
++        output.st_dev != source.header.device || output.st_ino != source.header.inode ||
++        exec_custody::syscall(SYS_lseek, Descriptor, 0, SEEK_CUR) != 0 ||
++        exec_custody::syscall(SYS_fcntl, Descriptor, F_GETFL) != source.descriptor_status ||
++        exec_custody::syscall(SYS_fcntl, Descriptor, F_GETFD) != source.descriptor_flags) return false;
++
++    // One whole bounded attempt; a short/error write retains its full debit.
++    // This capsule contains the original accounts before its own output write.
++    // Completion stays in the held native account and is not predeclared.
++    const long written = exec_custody::syscall(SYS_write, Descriptor,
++                                              exec_custody::pointer(source.body), offset);
++    const int failure = written < 0 ? errno : 0;
++    if (!source.output.finish(written, failure) || written != static_cast<long>(offset)) return false;
++
++    source.hold_word = 1;
++    for (;;) {
++        const long result = _real_syscall(SYS_futex, &source.hold_word,
++                                          FUTEX_WAIT_PRIVATE, 1, nullptr, nullptr, 0);
++        if (result == 0 || errno == EINTR) continue;
++        return false;
++    }
++}
++
++} // namespace map_source_custody
++} // namespace dmtcp_crucible
++#endif
+diff --git a/src/crucible_map_source_capsule_reader.h b/src/crucible_map_source_capsule_reader.h
+--- /dev/null
++++ b/src/crucible_map_source_capsule_reader.h
+@@ -0,0 +1,201 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Borrowed native capsule validation; never source or execution authority.
++ */
++#ifndef DMTCP_CRUCIBLE_MAP_SOURCE_CAPSULE_READER_H
++#define DMTCP_CRUCIBLE_MAP_SOURCE_CAPSULE_READER_H
++
++#include "crucible_map_source_custody.h"
++
++namespace dmtcp_crucible {
++namespace map_source_capsule {
++
++struct Candidate {
++    Header header;
++    exec_state::State accounts;
++    restart_writer::OriginalAccount scripts;
++    map_final::OriginalExchange exchange;
++    map_transfer::OriginalNativeAccount maps;
++    exec_custody::Transfer descriptors;
++};
++
++inline bool scripts_consistent(const Candidate &candidate)
++{
++    const auto &account = candidate.scripts;
++    if (!account.initialized || account.process != static_cast<pid_t>(candidate.header.process) ||
++        account.uid != candidate.header.uid || account.root_descriptor < 0 ||
++        account.root_descriptor >= 1024 || account.root_inode == 0 ||
++        std::memchr(account.root, 0, sizeof(account.root)) == nullptr ||
++        account.count > restart_writer::FileLimit ||
++        account.attempted_links > restart_writer::LinkLimit ||
++        account.charged > restart_writer::AttemptedBytes) return false;
++
++    std::uint64_t charged = 0;
++    for (unsigned index = 0; index < account.count; ++index) {
++        const auto &file = account.files[index];
++        const void *end = std::memchr(file.leaf, 0, sizeof(file.leaf));
++        if (end == nullptr || end == file.leaf || file.descriptor < 0 || file.descriptor >= 1024 ||
++            !file.adopted || !file.close_attempted || !file.closed ||
++            file.device != account.device || file.inode == 0 ||
++            file.charged > restart_writer::FileBytes ||
++            file.charged > restart_writer::AttemptedBytes - charged) return false;
++        const size_t length = static_cast<const char *>(end) - file.leaf;
++        if (std::memchr(file.leaf, '/', length) != nullptr ||
++            std::strcmp(file.leaf, ".") == 0 || std::strcmp(file.leaf, "..") == 0) return false;
++        for (unsigned earlier = 0; earlier < index; ++earlier) {
++            if (std::strcmp(account.files[earlier].leaf, file.leaf) == 0) return false;
++        }
++        charged += file.charged;
++    }
++    for (unsigned index = 0; index < account.attempted_links; ++index) {
++        const auto &link = account.links[index];
++        const void *end = std::memchr(link.alias, 0, sizeof(link.alias));
++        if (end == nullptr || end == link.alias || link.file_index >= account.count ||
++            !link.unlink_attempted || !link.unlinked || !link.create_attempted || !link.created ||
++            link.charged != std::strlen(account.files[link.file_index].leaf) + 1 ||
++            link.charged > restart_writer::AttemptedBytes - charged) return false;
++        const size_t length = static_cast<const char *>(end) - link.alias;
++        if (std::memchr(link.alias, '/', length) != nullptr ||
++            std::strcmp(link.alias, ".") == 0 || std::strcmp(link.alias, "..") == 0) return false;
++        charged += link.charged;
++    }
++    return charged == account.charged;
++}
++
++template<class Integer>
++inline Integer native_integer(const unsigned char *body, size_t offset)
++{
++    static_assert(std::is_integral<Integer>::value, "only scalar native fields are inspected");
++    Integer value = 0;
++    std::memcpy(&value, body + offset, sizeof(value));
++    return value;
++}
++
++inline bool final_header_consistent(const unsigned char *body, dmtcp::DmtcpMessageType type,
++                                    std::uint64_t worker, size_t extent,
++                                    const unsigned char *cookie, bool response)
++{
++    using Native = dmtcp::DmtcpMessage;
++    using Kind = std::underlying_type<dmtcp::DmtcpMessageType>::type;
++    static_assert(std::is_standard_layout<Native>::value, "native field offsets require standard layout");
++    const char magic[16] = DMTCP_MAGIC_STRING;
++    return std::memcmp(body + offsetof(Native, _magicBits), magic, sizeof(magic)) == 0 &&
++           native_integer<std::uint32_t>(body, offsetof(Native, _msgSize)) == ControlHeaderBytes &&
++           native_integer<Kind>(body, offsetof(Native, type)) == static_cast<Kind>(type) &&
++           native_integer<pid_t>(body, offsetof(Native, realPid)) == static_cast<pid_t>(worker) &&
++           native_integer<std::uint32_t>(body, offsetof(Native, extraBytes)) == extent &&
++           native_integer<std::uint64_t>(body, offsetof(Native, coordTimeStamp)) == 1 &&
++           (!response || native_integer<std::int32_t>(body, offsetof(Native, coordCmdStatus)) == 0) &&
++           std::memcmp(body + offsetof(Native, barrier), cookie, 32) == 0;
++}
++
++inline bool final_consistent(Candidate &candidate)
++{
++    auto &original = candidate.exchange;
++    if (!original.settled.load() || !original.attempted || !original.received ||
++        !original.acknowledged || original.process != static_cast<pid_t>(candidate.header.process) ||
++        original.owner_process != candidate.header.process || original.owner_uid != candidate.header.uid ||
++        original.storage_reserved != sizeof(original) + sizeof(OriginalTerminalControlPark) ||
++        original.body_length < map_final::PrefixBytes || original.body_length > map_final::MaximumBytes ||
++        original.request_transferred != ControlHeaderBytes + original.body_length ||
++        original.response_transferred != ControlHeaderBytes || original.error != 0 ||
++        std::memcmp(original.body, "DCPMFI01", 8) != 0 ||
++        number(original.body + 8) != candidate.header.worker) return false;
++
++    // Inspect scalar fields without running a native message constructor,
++    // which would create a fresh peer identity while parsing borrowed bytes.
++    return final_header_consistent(original.request, dmtcp::DMT_CRUCIBLE_MAP_FINAL,
++                                   candidate.header.worker, original.body_length,
++                                   candidate.header.cookie, false) &&
++           final_header_consistent(original.response, dmtcp::DMT_CRUCIBLE_MAP_FINAL_ACK,
++                                   candidate.header.worker, 0,
++                                   candidate.header.cookie, true) &&
++           map_final::body_consistent(original, candidate.header.worker,
++                                     candidate.header.uid, candidate.header.cookie);
++}
++
++inline bool descriptor_consistent(const Candidate &candidate)
++{
++    const auto &descriptors = candidate.descriptors;
++    if (descriptors.process.process != static_cast<pid_t>(candidate.header.process) ||
++        std::memcmp(descriptors.cookie, candidate.header.cookie, 32) != 0) return false;
++    for (const auto &descriptor : descriptors.descriptors) {
++        if (descriptor.present && (descriptor.flags < 0 || descriptor.status < 0 ||
++            descriptor.offset < -1 || descriptor.inode == 0)) return false;
++    }
++
++    const auto &output = descriptors.descriptors[candidate.header.descriptor];
++    const auto &log = candidate.accounts.log;
++    const auto &scripts = candidate.scripts;
++    const auto &log_root = descriptors.descriptors[log.root_descriptor];
++    const auto &script_root = descriptors.descriptors[scripts.root_descriptor];
++    return output.present && S_ISREG(output.mode) && output.uid == candidate.header.uid &&
++           output.device == candidate.header.device && output.inode == candidate.header.inode &&
++           (output.status & O_ACCMODE) == O_WRONLY && output.offset == 0 &&
++           log_root.present && S_ISDIR(log_root.mode) && log_root.uid == log.uid &&
++           log_root.device == log.root_device && log_root.inode == log.root_inode &&
++           script_root.present && S_ISDIR(script_root.mode) && script_root.uid == scripts.uid &&
++           script_root.device == scripts.device && script_root.inode == scripts.root_inode;
++}
++
++// Decodes only into a caller-owned candidate. No original account, descriptor,
++// kernel peer, activation or readiness transition is changed by parsing.
++inline bool decode_preservation(const unsigned char *body, size_t extent, Candidate &candidate)
++{
++    if (!decode(body, extent, candidate.header)) return false;
++    size_t position = HeaderBytes;
++    auto section = [&](unsigned index) {
++        const size_t bytes = static_cast<size_t>(candidate.header.section_bytes[index]);
++        const unsigned char *start = body + position;
++        position += bytes;
++        return exec_state::Reader(start, bytes);
++    };
++
++    auto accounts = section(0);
++    auto &state = candidate.accounts;
++    exec_state::fields(accounts, state.log, state.control, state.channels,
++                       state.requests, state.probes, state.exec_attempts);
++    if (!accounts.complete() || !exec_state::consistent_attempts(state, 0) ||
++        state.log.process != static_cast<pid_t>(candidate.header.process) ||
++        state.log.uid != candidate.header.uid || state.log.root_descriptor < 0 ||
++        state.log.root_descriptor >= 1024 || !state.control.terminal.load() ||
++        !state.channels.terminal.load()) return false;
++
++    auto scripts = section(1);
++    map_source_custody::restart_fields(scripts, candidate.scripts);
++    if (!scripts.complete() || !scripts_consistent(candidate)) return false;
++
++    const auto final_bytes = static_cast<size_t>(candidate.header.section_bytes[2]);
++    map_codec::Reader final(body + position, final_bytes);
++    position += final_bytes;
++    map_source_custody::final_fields(final, candidate.exchange);
++    if (!final.complete() || !final_consistent(candidate)) return false;
++
++    auto descriptors = section(3);
++    exec_custody::descriptor_fields(descriptors, candidate.descriptors);
++    if (!descriptors.complete() || !descriptor_consistent(candidate)) return false;
++    auto maps = section(4);
++    map_state::fields(maps, candidate.maps);
++    if (!maps.complete() || position != extent ||
++        !map_state::consistent(candidate.maps, candidate.header.process, candidate.header.uid,
++                               candidate.header.cookie, true)) return false;
++
++    const auto &coordinator = candidate.maps.bank;
++    const auto &worker = candidate.exchange.worker_candidate.bank;
++    if (coordinator.count != worker.count || coordinator.charged_request != worker.charged_request ||
++        coordinator.charged_reply != worker.charged_reply) return false;
++    for (unsigned index = 0; index < coordinator.count; ++index) {
++        const auto &left = coordinator.operations[index];
++        const auto &right = worker.operations[index];
++        if (left.request_bytes != right.request_bytes || left.reply_bytes != right.reply_bytes ||
++            std::memcmp(left.request_header, right.request_header, sizeof(left.request_header)) != 0 ||
++            std::memcmp(left.reply_header, right.reply_header, sizeof(left.reply_header)) != 0 ||
++            std::memcmp(left.request_body, right.request_body, sizeof(left.request_body)) != 0 ||
++            std::memcmp(left.reply_body, right.reply_body, sizeof(left.reply_body)) != 0) return false;
++    }
++    return true;
++}
++
++} // namespace map_source_capsule
++} // namespace dmtcp_crucible
++#endif
+diff --git a/src/coordinatorapi.cpp b/src/coordinatorapi.cpp
+--- a/src/coordinatorapi.cpp
++++ b/src/coordinatorapi.cpp
+@@ -24,6 +24,9 @@
+ 
+ #include "crucible_single_worker.h"
+ #include "crucible_control_frame.h"
++#include "crucible_map_transfer.h"
++#include "crucible_map_state.h"
++#include "crucible_map_final.h"
+ #include "crucible_final_frame.h"
+ #include "coordinatorapi.h"
+ #include <arpa/inet.h>
+@@ -742,11 +745,17 @@
+   JTRACE("sending coordinator handshake")(UniquePid::ThisProcess());
+   DmtcpMessage hello_local(DMT_NEW_WORKER);
+   hello_local.virtualPid = -1;
++  if (dmtcp_crucible::map_transfer::selected()) {
++    if (!dmtcp_crucible::map_transfer::policy_admitted()) _exit(86);
++    hello_local._pad = dmtcp_crucible::map_transfer::Negotiation;
++  }
+ 
+   DmtcpMessage hello_remote = sendRecvHandshake(coordinatorSocket,
+                                                 hello_local,
+                                                 progname);
+ 
++  if (dmtcp_crucible::map_transfer::selected() &&
++      hello_remote._pad != dmtcp_crucible::map_transfer::Negotiation) _exit(86);
+   JASSERT(hello_remote.virtualPid != -1);
+   JTRACE("Got virtual pid from coordinator") (hello_remote.virtualPid);
+ 
+@@ -800,6 +809,10 @@
+   JTRACE("sending coordinator handshake")(UniquePid::ThisProcess());
+   DmtcpMessage hello_local(DMT_RESTART_WORKER);
+   hello_local.virtualPid = -1;
++  if (dmtcp_crucible::map_transfer::selected()) {
++    if (!dmtcp_crucible::map_transfer::policy_admitted()) _exit(86);
++    hello_local._pad = dmtcp_crucible::map_transfer::Negotiation;
++  }
+   hello_local.numPeers = np;
+   hello_local.compGroup = compGroup;
+ 
+@@ -827,6 +840,8 @@
+ bool
+ publishFinalWriterHistory()
+ {
++  if (dmtcp_crucible::map_transfer::selected())
++    return dmtcp_crucible::map_final::publish(coordinatorSocket);
+   return !dmtcp_crucible::selected_writer_cohort() ||
+          dmtcp_crucible::selected_publish_final(coordinatorSocket);
+ }
+@@ -834,6 +849,8 @@
+ bool
+ prepareFinalWriterPark()
+ {
++  if (dmtcp_crucible::map_transfer::selected())
++    return dmtcp_crucible::map_final::prepare_terminal_control_park(coordinatorSocket);
+   return !dmtcp_crucible::selected_terminal_control_park() ||
+          dmtcp_crucible::prepare_terminal_control_park(coordinatorSocket);
+ }
+@@ -841,6 +858,8 @@
+ bool
+ waitFinalWriterPark()
+ {
++  if (dmtcp_crucible::map_transfer::selected())
++    return dmtcp_crucible::map_final::wait_terminal_control_park();
+   return !dmtcp_crucible::selected_terminal_control_park() ||
+          dmtcp_crucible::wait_terminal_control_park();
+ }
+@@ -907,6 +926,13 @@
+   }
+ 
+   if (dmtcp_crucible::selected_writer_cohort()) {
++    if (dmtcp_crucible::map_transfer::selected() && key == "ProcSelfMaps_Ckpt") {
++      if (msg.kvdbRequest != kvdb::KVDBRequest::SET || msg.keyLen != key.size() + 1 ||
++          msg.valLen != val.size() + 1 || msg.extraBytes != msg.keyLen + msg.valLen ||
++          !dmtcp_crucible::map_transfer::send(sock, msg, key.c_str(), msg.keyLen,
++                                             val.c_str(), msg.valLen, oldVal)) _exit(86);
++      return kvdb::KVDBResponse::SUCCESS;
++    }
+     // The original key/value bodies and both full control frames are reserved
+     // before the first send. This creates no extra namespace socket.
+     if (msg.keyLen == 0 || msg.valLen == 0 ||
+@@ -968,7 +994,11 @@
+   return sizeof(dmtcp_crucible::OriginalControlBank) +
+          sizeof(dmtcp_crucible::OriginalControlChannels) +
+          sizeof(dmtcp_crucible::OriginalFinalExchange) +
+-         sizeof(dmtcp_crucible::OriginalTerminalControlPark);
++         sizeof(dmtcp_crucible::OriginalTerminalControlPark) +
++         (dmtcp_crucible::map_transfer::selected() ?
++           sizeof(dmtcp_crucible::map_transfer::OriginalNativeAccount) +
++           sizeof(dmtcp_crucible::map_final::OriginalExchange) +
++           sizeof(dmtcp_crucible::OriginalTerminalControlPark) : 0);
+ }
+ 
+ extern "C" size_t dmtcp_crucible_export_selected_control_history(void *output, size_t capacity)
+@@ -985,3 +1015,20 @@
+ {
+   return dmtcp_crucible::export_terminal_control_park(output, capacity);
+ }
++
++// Borrowed original native map records only. Export grants no execution right.
++extern "C" size_t dmtcp_crucible_export_selected_map_state(void *output, size_t capacity)
++{
++  if (!dmtcp_crucible::map_transfer::retain_negotiation()) return 0;
++  return dmtcp_crucible::map_state::capture(static_cast<unsigned char *>(output), capacity);
++}
++
++extern "C" size_t dmtcp_crucible_export_selected_map_final(void *output, size_t capacity)
++{
++  return dmtcp_crucible::map_final::export_exchange(output, capacity);
++}
++
++extern "C" size_t dmtcp_crucible_export_selected_map_park(void *output, size_t capacity)
++{
++  return dmtcp_crucible::map_final::export_terminal_control_park(output, capacity);
++}
+diff --git a/src/dmtcpworker.cpp b/src/dmtcpworker.cpp
+--- a/src/dmtcpworker.cpp
++++ b/src/dmtcpworker.cpp
+@@ -20,6 +20,8 @@
+  ****************************************************************************/
+ 
+ #include "dmtcpworker.h"
++#include "crucible_map_transfer.h"
++#include "crucible_map_final.h"
+ #include <stdlib.h>
+ #include <sys/resource.h>
+ #include <sys/time.h>
+@@ -230,6 +232,8 @@
+   dmtcp_initialize();
+ 
+   initializeJalib();
++  if (!dmtcp_crucible::map_transfer::admit(false) ||
++      !dmtcp_crucible::map_final::admit()) _exit(86);
+   dmtcp_prepare_atfork();
+ 
+   WorkerState::setCurrentState(WorkerState::RUNNING);
+diff --git a/src/dmtcp_coordinator.cpp b/src/dmtcp_coordinator.cpp
+--- a/src/dmtcp_coordinator.cpp
++++ b/src/dmtcp_coordinator.cpp
+@@ -61,6 +61,8 @@
+ #include "crucible_control_frame.h"
+ #include "crucible_final_frame.h"
+ #include "crucible_source_custody.h"
++#include "crucible_map_transfer.h"
++#include "crucible_map_source_custody.h"
+ #include <arpa/inet.h>
+ #include <fcntl.h>
+ #include <limits.h>  // for HOST_NAME_MAX
+@@ -646,7 +648,22 @@
+     if (!selectedOriginal ||
+         !dmtcp_crucible::selected_read_header(client->sock().sockfd(), msg,
+                                              *selectedOriginal, selectedDeadline)) _exit(86);
++    if (msg.type == DMT_CRUCIBLE_MAP_SET) {
++      if (clients.size() != 1 || msg.from != client->identity() ||
++          !lookupService.processLargeMapSet(client->sock(), msg, client->realPid(),
++                                            *selectedOriginal, selectedDeadline)) _exit(86);
++      return;
++    }
++    if (msg.type == DMT_CRUCIBLE_MAP_FINAL) {
++      if (clients.size() != 1 || msg.from != client->identity() ||
++          !dmtcp_crucible::map_final::receive(client->sock().sockfd(), msg,
++                                             client->realPid(), selectedDeadline, *selectedOriginal) ||
++          !dmtcp_crucible::map_source_custody::publish_and_hold(
++            client->sock().sockfd(), client->realPid())) _exit(86);
++      return;
++    }
+     if (msg.type == DMT_CRUCIBLE_WRITER_FINAL) {
++      if (dmtcp_crucible::map_transfer::selected()) _exit(86);
+       // The generic row retains just this original header. The distinct final
+       // bank owns the bounded two-MiB body and its separate copy ACK.
+       if (clients.size() != 1 || msg.from != client->identity() ||
+@@ -967,6 +984,8 @@
+     } else {
+       bool worker = hello_remote.type == DMT_NEW_WORKER ||
+                     hello_remote.type == DMT_RESTART_WORKER;
++      if (worker && selectedCohort && dmtcp_crucible::map_transfer::selected() &&
++          hello_remote._pad != dmtcp_crucible::map_transfer::Negotiation) _exit(86);
+       int peers = hello_remote.type == DMT_RESTART_WORKER ?
+                   hello_remote.numPeers : 1;
+       JASSERT(dmtcp_crucible::coordinator_worker_admitted(clients.size(),
+@@ -1123,6 +1142,9 @@
+   const struct sockaddr_in *sin = (const struct sockaddr_in *)remoteAddr;
+   string remoteIP = inet_ntoa(sin->sin_addr);
+   DmtcpMessage hello_local(DMT_ACCEPT);
++  if (dmtcp_crucible::map_transfer::selected()) {
++    hello_local._pad = dmtcp_crucible::map_transfer::Negotiation;
++  }
+ 
+   if (compId == UniquePid(0, 0, 0)) {
+     lookupService.reset();
+@@ -1257,6 +1279,9 @@
+   const struct sockaddr_in *sin = (const struct sockaddr_in *)remoteAddr;
+   string remoteIP = inet_ntoa(sin->sin_addr);
+   DmtcpMessage hello_local(DMT_ACCEPT);
++  if (dmtcp_crucible::map_transfer::selected()) {
++    hello_local._pad = dmtcp_crucible::map_transfer::Negotiation;
++  }
+ 
+   client->virtualPid(getNewVirtualPid());
+ 
+@@ -1789,7 +1814,11 @@
+ int
+ main(int argc, char **argv)
+ {
+-  if (!dmtcp_crucible::source_custody::admit()) _exit(86);
++  if (!dmtcp_crucible::map_transfer::admit(true) ||
++      !dmtcp_crucible::map_final::admit()) _exit(86);
++  const bool sourceAdmitted = dmtcp_crucible::map_transfer::selected()
++    ? dmtcp_crucible::map_source_custody::admit() : dmtcp_crucible::source_custody::admit();
++  if (!sourceAdmitted) _exit(86);
+   initializeJalib();
+ 
+   flags.progName = argv[0];
+diff --git a/src/lookup_service.cpp b/src/lookup_service.cpp
+--- a/src/lookup_service.cpp
++++ b/src/lookup_service.cpp
+@@ -100,6 +100,30 @@
+   }
+ }
+ 
++bool
++LookupService::processLargeMapSet(jalib::JSocket &remote, const DmtcpMessage &message,
++                                 pid_t actualWorker,
++                                 dmtcp_crucible::OriginalControlFrame &retainedHeader,
++                                 dmtcp_crucible::OriginalControlDeadline &deadline)
++{
++  return dmtcp_crucible::map_transfer::receive_and_reply(
++    remote.sockfd(), message, actualWorker, retainedHeader, deadline,
++    [&](const unsigned char *request, unsigned char *reply, size_t capacity,
++        size_t &oldBytes, bool &mutated) {
++      const char *key = reinterpret_cast<const char *>(request);
++      const char *value = key + message.keyLen;
++      string oldValue("0");
++      get(message.kvdbId, key, &oldValue);
++      if (oldValue.size() >= capacity) return false;
++
++      oldBytes = oldValue.size() + 1;
++      memcpy(reply, oldValue.c_str(), oldBytes);
++      _maps[message.kvdbId][key] = value;
++      mutated = true;
++      return true;
++    });
++}
++
+ void
+ LookupService::processRequest(jalib::JSocket &remote,
+                          const DmtcpMessage &msg,
+diff --git a/src/lookup_service.h b/src/lookup_service.h
+--- a/src/lookup_service.h
++++ b/src/lookup_service.h
+@@ -26,6 +26,7 @@
+ #include <map>
+ #include "../jalib/jsocket.h"
+ #include "dmtcpmessagetypes.h"
++#include "crucible_map_transfer.h"
+ #include "kvdb.h"
+ 
+ namespace dmtcp
+@@ -43,6 +44,11 @@
+ 
+     void set(string const& id, string const& key, string const& val);
+     kvdb::KVDBResponse get(string const &id, string const &key, string *val);
++
++    bool processLargeMapSet(jalib::JSocket &remote, const DmtcpMessage &message,
++                            pid_t actualWorker,
++                            dmtcp_crucible::OriginalControlFrame &retainedHeader,
++                            dmtcp_crucible::OriginalControlDeadline &deadline);
+ 
+     void processRequest(jalib::JSocket &remote,
+                         const DmtcpMessage &msg,
+diff --git a/src/dmtcpmessagetypes.cpp b/src/dmtcpmessagetypes.cpp
+--- a/src/dmtcpmessagetypes.cpp
++++ b/src/dmtcpmessagetypes.cpp
+@@ -126,6 +126,10 @@
+ 
+     OSHIFTPRINTF(DMT_CRUCIBLE_WRITER_FINAL)
+     OSHIFTPRINTF(DMT_CRUCIBLE_WRITER_FINAL_ACK)
++    OSHIFTPRINTF(DMT_CRUCIBLE_MAP_SET)
++    OSHIFTPRINTF(DMT_CRUCIBLE_MAP_ACK)
++    OSHIFTPRINTF(DMT_CRUCIBLE_MAP_FINAL)
++    OSHIFTPRINTF(DMT_CRUCIBLE_MAP_FINAL_ACK)
+ 
+   default:
+     JASSERT(false) (s).Text("Invalid Message Type");
+diff --git a/src/dmtcpmessagetypes.h b/src/dmtcpmessagetypes.h
+--- a/src/dmtcpmessagetypes.h
++++ b/src/dmtcpmessagetypes.h
+@@ -88,7 +88,11 @@
+ 
+   // Appended values preserve every original/default message discriminant.
+   DMT_CRUCIBLE_WRITER_FINAL,
+-  DMT_CRUCIBLE_WRITER_FINAL_ACK
++  DMT_CRUCIBLE_WRITER_FINAL_ACK,
++  DMT_CRUCIBLE_MAP_SET,
++  DMT_CRUCIBLE_MAP_ACK,
++  DMT_CRUCIBLE_MAP_FINAL,
++  DMT_CRUCIBLE_MAP_FINAL_ACK
+ };
+ 
+ namespace CoordCmdStatus

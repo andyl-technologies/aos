@@ -72,6 +72,7 @@ in
           patch --fuzz=0 -p1 < ${./_dmtcp/selected-writer-terminal-park.patch}
           patch --fuzz=0 -p1 < ${./_dmtcp/selected-exec-custody.patch}
           patch --fuzz=0 -p1 < ${./_dmtcp/selected-source-custody.patch}
+          patch --fuzz=0 -p1 < ${./_dmtcp/selected-map-envelope.patch}
           ${findutils}/bin/find . -type f -name '*.py' \
             -exec ${sed}/bin/sed -i "1s|^#!.*python.*$|#!${python3}/bin/python3|" {} +
           ${findutils}/bin/find . -type f -name '*.sh' \
@@ -113,6 +114,8 @@ in
           cp ${./_dmtcp/continuation-check.c} "$source/build/continuation-check.c"
           cp ${./_dmtcp/exec-custody-controls.cpp} "$source/build/exec-custody-controls.cpp"
           cp ${./_dmtcp/source-capsule-controls.cpp} "$source/build/source-capsule-controls.cpp"
+          cp ${./_dmtcp/map-custody-controls.cpp} "$source/build/map-custody-controls.cpp"
+          cp ${./_dmtcp/map-capsule-reader.cpp} "$source/build/map-capsule-reader.cpp"
           # Retain the actual tree after all patches and hermetic substitutions,
           # before generated build objects or installed binaries enter it.
           tar --sort=name --mtime=@1 --owner=0 --group=0 --numeric-owner \
