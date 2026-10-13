@@ -312,6 +312,10 @@ impl PluginSetupCompletion {
     ///
     /// Refuses foreign or unavailable ownership and existing ordinary loans.
     /// Refusal keeps the same original mapping intent-fenced.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     pub(crate) fn begin_whole_mapping_intent(&self) -> Result<(), WholeMappingCustodyError> {
         self.mapped_region.begin_whole_intent()
     }
@@ -336,6 +340,10 @@ impl PluginSetupCompletion {
     /// # Errors
     ///
     /// Returns sticky selection or exact original-header roster refusal.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     pub(crate) fn select_whole_mapping_roster_bounded(
         &self,
         epoch: u64,
@@ -356,6 +364,10 @@ impl PluginSetupCompletion {
     ///
     /// Refuses foreign or unavailable selected custody, or retains the
     /// callback's original error without inferring native retirement.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     pub(crate) fn with_selected_whole_mapping<T, E>(
         &self,
         callback: impl FnOnce(&mut RetainedWholeMapping) -> Result<T, E>,

@@ -100,7 +100,7 @@ impl SemanticPrefixOwner {
         if runtime
             .setup
             .with_mapped_region(|mapping| mapping.header().shutdown_requested())
-            .map_or(true, |requested| requested)
+            .unwrap_or(true)
             || crate::native_node_control::registered_owner()
                 .is_none_or(|owner| owner.semantic_administration_failed())
         {
@@ -216,7 +216,7 @@ impl SemanticPrefixOwner {
         if runtime
             .setup
             .with_mapped_region(|mapping| mapping.header().shutdown_requested())
-            .map_or(true, |requested| requested)
+            .unwrap_or(true)
             || crate::native_node_control::registered_owner()
                 .is_none_or(|owner| owner.semantic_administration_failed())
         {

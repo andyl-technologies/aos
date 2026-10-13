@@ -77,6 +77,10 @@ struct WaitAttempt {
 
 struct SelectedCustody {
     process: u32,
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     plugin_id: QemuPluginId,
     args: PluginArgs,
     profile: StagedControlProfile,
@@ -85,6 +89,10 @@ struct SelectedCustody {
     socket: Arc<OriginalWholeSocket>,
     initial: RefCell<OriginalWholeInitialSetup>,
     journals: Arc<WholeJournals>,
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     ready: RefCell<OriginalWholeReadyExchange>,
     setup: OnceLock<PluginSetupCompletion>,
     waits: RefCell<Box<[WaitAttempt]>>,
@@ -107,7 +115,7 @@ impl Drop for SelectedCustody {
 }
 
 /// Owns installed-held preparation without boot release or a Ready proof.
-pub(super) struct SelectedRuntimeOwner {
+pub(crate) struct SelectedRuntimeOwner {
     original: Rc<SelectedCustody>,
 }
 
@@ -813,8 +821,8 @@ mod tests {
 
     #[test]
     fn closed_selected_table_never_acknowledges_an_effect_from_metadata_or_foreign_pointers() {
-        let foreign = 1usize as *mut c_void;
-        let untouched = 1usize as *mut u8;
+        let foreign = std::ptr::dangling_mut::<c_void>();
+        let untouched = std::ptr::dangling_mut::<u8>();
         assert_eq!(
             (CLOSED_OPS.history.service.retained.adopt_held)(foreign, 1, 1, 1),
             -libc::ENOTSUP
@@ -824,7 +832,7 @@ mod tests {
                 foreign,
                 untouched,
                 65536,
-                1usize as *mut usize
+                std::ptr::dangling_mut::<usize>()
             ),
             -libc::ENOTSUP
         );
@@ -985,7 +993,7 @@ mod tests {
         observe_preparing_vcpu(1, userdata);
         observe_preparing_vcpu(2, userdata);
         observe_preparing_vcpu(3, userdata);
-        observe_preparing_vcpu(0, 1usize as *mut c_void);
+        observe_preparing_vcpu(0, std::ptr::dangling_mut::<c_void>());
         ORIGINAL.with(|slot| {
             let slot = slot.borrow();
             let original = slot.as_ref().unwrap();

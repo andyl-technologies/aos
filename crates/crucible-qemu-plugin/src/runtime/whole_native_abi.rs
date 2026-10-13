@@ -283,16 +283,39 @@ pub(crate) type ReadEarlySetup = extern "C" fn(u64, *mut *const u8, *mut usize, 
 /// No pointer escapes onto the public control or shared-memory protocol.
 pub(crate) struct NativeEarlySetup<'a> {
     pub(crate) body: &'a [u8],
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        )
+    )]
     pub(crate) digest: [u8; 32],
 }
 
 pub(crate) struct NativeWholeApis {
     pub(crate) claim_control: ClaimControl,
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     pub(crate) read_early_setup: ReadEarlySetup,
     pub(crate) authenticate_setup: AuthenticateSetup,
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     pub(crate) read_native_binding: ReadNativeBinding,
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     pub(crate) retirement: super::whole_native_retirement::NativeRetirementApi,
     pub(crate) register: RegisterWholeController,
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     pub(crate) offer_stage: OfferStage,
 }
 
@@ -331,6 +354,10 @@ impl NativeWholeApis {
     /// # Errors
     /// Refuses another native call context, stale selection, malformed extent
     /// or a digest that does not name the complete retained source body.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     pub(crate) fn read_setup_body(
         &self,
         plugin: u64,

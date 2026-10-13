@@ -309,6 +309,13 @@ impl OriginalWholeInitialSetup {
     }
 
     /// Borrows the same actor for mapped setup and subsequent staged custody.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        )
+    )]
     pub(crate) fn socket(&self) -> &Arc<OriginalWholeSocket> {
         &self.socket
     }

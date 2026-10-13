@@ -55,6 +55,10 @@ type ReadNativeRetirement = extern "C" fn(*mut NativeRetirementTuple) -> c_int;
 
 /// Resolves the exact native getter without exposing a replaceable function field.
 pub(crate) struct NativeRetirementApi {
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     getter: ReadNativeRetirement,
 }
 
@@ -86,17 +90,35 @@ impl NativeRetirementApi {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     pub(crate) fn read_proof(&self) -> Result<NativeRetirementProof, c_int> {
         NativeRetirementProof::read(self.getter)
     }
 }
 
 /// Retains one getter-authenticated native publication tuple without cloning it.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 pub(crate) struct NativeRetirementProof {
     original: NativeRetirementTuple,
     process: u32,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 impl NativeRetirementProof {
     /// Reads only the literal source-owned post-retirement publication context.
     ///

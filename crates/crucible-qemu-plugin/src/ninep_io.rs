@@ -2474,6 +2474,10 @@ mod tests {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "Positive token controls intentionally panic if original successful setup or submission fails."
+)]
 mod whole_original_token_tests {
     use super::*;
     use crucible_shmem::KIND_VM;

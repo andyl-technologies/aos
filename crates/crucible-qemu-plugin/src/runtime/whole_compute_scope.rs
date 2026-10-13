@@ -49,6 +49,13 @@ impl Drop for NativeComputeInputScope {
 /// This is a private producer operation, called after paired begin succeeds.
 /// Portable request correlation is an additional check; the native callback
 /// and original constructor retain source admission authority.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 pub(super) fn begin_native_compute_input_scope(
     journals: Arc<WholeJournals>,
     epoch: u64,
@@ -105,6 +112,13 @@ pub(super) fn begin_native_compute_input_scope(
 /// The producer calls this with the source's actual service boundary before
 /// servicing due records. Future staged completions cannot pass the device poll
 /// gate merely because they occur somewhere in the original grant interval.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 pub(super) fn advance_native_compute_input_boundary(
     epoch: u64,
     sequence: u64,
@@ -139,6 +153,13 @@ pub(super) fn advance_native_compute_input_boundary(
 }
 
 /// Revokes input permission before any fallible scope-end observation.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 pub(super) fn revoke_native_compute_input_scope() {
     ACTIVE.with(|active| {
         if let Ok(mut active) = active.try_borrow_mut()

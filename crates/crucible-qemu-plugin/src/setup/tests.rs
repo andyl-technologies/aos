@@ -55,7 +55,7 @@ fn prepare_setup_maps_validates_and_arms_wake_fd_before_ready_ack() {
     assert_eq!(
         completion
             .mapped_region()
-            .expect("current original setup mapping")
+            .unwrap_or_else(|error| panic!("current original setup mapping: {error}"))
             .region_len(),
         layout.region_size
     );

@@ -33,6 +33,13 @@ pub(crate) enum WholeSocketError {
 
 #[derive(Clone, Copy, Default)]
 struct PhysicalAttempt {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        )
+    )]
     first_byte: usize,
     prepared: usize,
     offered: usize,
@@ -157,6 +164,13 @@ impl OriginalWholeSocket {
         Ok(owner)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        )
+    )]
     pub(crate) const fn owned_storage_bytes(&self) -> u64 {
         self.owned_storage_bytes
     }
@@ -387,6 +401,13 @@ impl OriginalWholeSocket {
     ///
     /// Failed offers stay in the original journal with zero physical debit;
     /// partial writes retain their entire prepared suffix and charged offer.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        )
+    )]
     pub(crate) fn counters(&self) -> Result<AdministrativeIoCounters, WholeSocketError> {
         self.check_process()?;
         let journal = self

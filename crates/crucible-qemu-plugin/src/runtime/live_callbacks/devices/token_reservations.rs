@@ -185,6 +185,10 @@ impl OriginalTokenReservations {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "Reservation controls intentionally panic when their expected successful setup or operation fails."
+)]
 mod tests {
     use super::*;
 

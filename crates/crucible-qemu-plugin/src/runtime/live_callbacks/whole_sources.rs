@@ -29,12 +29,20 @@ use super::{LiveVcpuTimeCallbackState, Ordering, StableDirectedRingHandle};
 pub(crate) enum WholeSourceError {
     /// The literal native getter refused the current callback context.
     #[error("native whole source getter refused with {0}")]
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     Native(i32),
     /// The same original callback, mapping, clock or token no longer matches.
     #[error("original whole source mismatch: {0}")]
     Mismatch(&'static str),
     /// Another callback owns the device state, or its lock is poisoned.
     #[error("original whole device state is unavailable")]
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     DeviceGuard,
 }
 
@@ -69,6 +77,10 @@ impl From<NativeWholeEndpoint> for EndpointIdentity {
 /// Its constructor is private. It contains no borrowed mapping or device guard.
 /// Pointer-bearing native POD exists only during capture; saved addresses are
 /// scalar identities which are compared, never reconstructed as pointers.
+#[expect(
+    dead_code,
+    reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+)]
 pub(crate) struct NativeSourceObservation {
     pub(super) live_state: usize,
     pub(super) clock: NativeWholeClock,
@@ -83,11 +95,22 @@ impl NativeSourceObservation {
     ///
     /// This reads the original native observation without querying the clock
     /// again or converting a portable delivery coordinate.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The Preparing table refuses lifecycle effects; actual captured-cut controls use this accessor only under cfg(test) until the genuine native scope caller is installed."
+        )
+    )]
     pub(crate) fn observed_cut(&self) -> (u64, u64) {
         (self.clock.semantic_ps, self.clock.raw)
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+)]
 pub(super) struct EndpointObservation {
     pub(super) identity: EndpointIdentity,
     pub(super) pending: usize,
@@ -114,6 +137,10 @@ impl From<NativeWholeEndpoint> for EndpointObservation {
 ///
 /// These correlation integers are checked against the authenticated callback by
 /// its owner before invoking the observer. They are not independent authority.
+#[expect(
+    dead_code,
+    reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+)]
 pub(crate) struct WholeSourceIncarnation {
     pub(crate) epoch: u64,
     pub(crate) process_generation: u64,
@@ -125,6 +152,10 @@ pub(crate) struct WholeSourceIncarnation {
 /// The mapping owner and pinned callback state must outlive this record. Reuse
 /// requires another native capture and a current mapping guard. No saved native
 /// address is dereferenced, and no token is recreated from a public identity.
+#[expect(
+    dead_code,
+    reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+)]
 pub(crate) struct OriginalWholeSources {
     live_state: usize,
     mapping_start: usize,
@@ -196,6 +227,10 @@ impl OriginalWholeSources {
     ///
     /// # Errors
     /// Refuses an empty or incomplete retained original roster.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(crate) fn header_offsets_into<'a>(
         &self,
         destination: &'a mut [u64; 6],
@@ -221,6 +256,10 @@ struct RingIdentity {
 /// Retains local stage facts until the owner checks its exact reservation again.
 ///
 /// This contains observations, not a token or permission to mutate a ring.
+#[expect(
+    dead_code,
+    reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+)]
 pub(crate) struct ActualQueueReservationFacts {
     pub(crate) ring_index: u32,
     pub(crate) read_index: u64,
@@ -242,6 +281,10 @@ impl LiveVcpuTimeCallbackState {
     /// Refuses foreign original owners, changed mapping or ring generations,
     /// mismatched current transport frontiers, uncertain network delivery, an
     /// incomplete role roster, or unavailable device ownership.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(crate) fn validate_whole_scope_observation(
         &self,
         original: &OriginalWholeSources,
@@ -322,6 +365,10 @@ impl LiveVcpuTimeCallbackState {
     /// # Errors
     /// Refuses repeated initialization, overflowing or unbudgeted capacity,
     /// unavailable original device ownership, or allocation failure.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(crate) fn initialize_whole_device_reservations(
         &self,
         selection: &WholeConstructorSelection,
@@ -350,6 +397,10 @@ impl LiveVcpuTimeCallbackState {
     /// Refuses unavailable device ownership, a foreign original source record,
     /// absent preparation, or repeated activation. A table activation failure
     /// is sticky and cannot recreate backing, reservations, or poll permission.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(crate) fn activate_whole_device_reservations(
         &self,
         original: &OriginalWholeSources,
@@ -367,6 +418,10 @@ impl LiveVcpuTimeCallbackState {
     ///
     /// # Errors
     /// Refuses an unavailable original device owner or overflowing allocation.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(crate) fn whole_device_reservation_storage_bytes(&self) -> SourceResult<u64> {
         let devices = self
             .devices
@@ -386,6 +441,14 @@ impl LiveVcpuTimeCallbackState {
     /// # Errors
     /// Refuses stale original sources, absent/foreign tokens, exhausted backing,
     /// or a token already retained by a different original stage record.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The original source, fresh observation, guarded mapping, immutable selection and record, plus original stage allocation and record index are independent custody inputs checked together before reserving the same native token."
+    )]
     pub(crate) fn reserve_whole_device_record(
         &self,
         original: &OriginalWholeSources,
@@ -419,6 +482,10 @@ impl LiveVcpuTimeCallbackState {
     /// Rejects a denied native callback window, mismatched live userdata,
     /// unsupported clock mode, inconsistent original clock projection, or an
     /// endpoint whose actual callback registrations differ from this live state.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(crate) fn capture_native_whole_sources(
         &self,
         apis: &NativeWholeApis,
@@ -465,6 +532,10 @@ impl LiveVcpuTimeCallbackState {
     /// # Errors
     /// Rejects absent/foreign native endpoints, stale original handles, changed
     /// mapping geometry, missing callback-owned roles, or inexact output backing.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(crate) fn join_whole_sources(
         &self,
         observation: NativeSourceObservation,
@@ -594,6 +665,10 @@ impl LiveVcpuTimeCallbackState {
     /// Rejects stale callback or mapping ownership, changed ring shape/frontiers,
     /// mismatched complete output heads, nonempty input reservation frontiers,
     /// or absent/foreign original pending block and read-only 9p tokens.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(crate) fn validate_whole_stage_record(
         &self,
         original: &OriginalWholeSources,
@@ -728,6 +803,10 @@ impl LiveVcpuTimeCallbackState {
         })
     }
 
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     fn check_live_observation(&self, observation: &NativeSourceObservation) -> SourceResult<()> {
         if observation.live_state != self as *const Self as usize {
             return Err(WholeSourceError::Mismatch(
@@ -748,6 +827,10 @@ fn validate_scope_frontier(read: u64, write: u64, capacity: u32) -> SourceResult
     Ok(())
 }
 
+#[expect(
+    dead_code,
+    reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+)]
 fn observe_ring(
     handle: &StableDirectedRingHandle,
     mapping: &MappedSetupRegion,
@@ -863,6 +946,13 @@ fn validate_clock(
     Ok(())
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The native getter source join is closed in Preparing; authored endpoint controls exercise this validation only under cfg(test)."
+    )
+)]
 fn validate_endpoints(binding: &NativeWholeBinding, live: usize) -> SourceResult<()> {
     use super::devices::*;
     let packet = binding.packet;
@@ -948,14 +1038,26 @@ fn validate_endpoint(
     Ok(())
 }
 
+#[expect(
+    dead_code,
+    reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+)]
 fn put32(body: &mut [u8], offset: usize, value: u32) {
     body[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
 }
+#[expect(
+    dead_code,
+    reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+)]
 fn put64(body: &mut [u8], offset: usize, value: u64) {
     body[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "Positive source geometry and inline-roster controls intentionally panic if their expected successful observation fails."
+)]
 mod tests {
     use super::*;
 

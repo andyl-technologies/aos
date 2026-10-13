@@ -30,12 +30,26 @@ pub(crate) enum WholeJournalError {
 }
 
 /// Retains all preallocated bytes before publishing their immutable original body.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 struct OriginalBody {
     private: Mutex<Option<Box<[u8]>>>,
     retained: OnceLock<Box<[u8]>>,
     extent: AtomicUsize,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 impl OriginalBody {
     fn new(capacity: usize) -> Result<Self, WholeJournalError> {
         let mut body = Vec::new();
@@ -86,6 +100,13 @@ impl OriginalBody {
 }
 
 /// Owns the same stage body, original native receipt and both commit bodies.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 pub(crate) struct OriginalStageJournal {
     body: OriginalBody,
     receipt: OriginalBody,
@@ -93,6 +114,13 @@ pub(crate) struct OriginalStageJournal {
     consumed_commit: OriginalBody,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 impl OriginalStageJournal {
     pub(crate) fn retain_body(&self, body: &[u8]) -> Result<(), WholeJournalError> {
         StageInventory::decode(body).map_err(|_| WholeJournalError::Correlation)?;
@@ -152,15 +180,36 @@ impl OriginalStageJournal {
 }
 
 /// Owns the complete original native compute bodies and local ring completion.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 pub(crate) struct OriginalComputeJournal {
     request: OriginalBody,
     result: OriginalBody,
     acknowledgement: OriginalBody,
     consumed_acknowledgement: OriginalBody,
+    #[cfg_attr(
+        test,
+        expect(
+            dead_code,
+            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        )
+    )]
     pub(crate) ring_completion: Mutex<Option<SelectedRingCompletion>>,
     uncertain: AtomicBool,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 impl OriginalComputeJournal {
     pub(crate) fn refuse(&self) {
         self.uncertain.store(true, Ordering::Release);
@@ -325,6 +374,10 @@ impl WholeJournals {
         self.computes.get(index).ok_or(WholeJournalError::Missing)
     }
 
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
     pub(crate) fn stage_allocation(
         &self,
         sequence: u64,

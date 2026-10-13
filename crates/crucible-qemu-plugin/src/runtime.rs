@@ -364,6 +364,13 @@ pub(crate) struct OwnedCallbackRuntimeState {
     #[cfg(not(test))]
     installed_endpoint:
         std::sync::OnceLock<Arc<installed_endpoint_owner::InstalledEndpointCustody>>,
+    #[cfg_attr(
+        test,
+        expect(
+            dead_code,
+            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        )
+    )]
     original_run_control: std::sync::OnceLock<Arc<native_run_control::NativeRunControlCustody>>,
     quiescence: Arc<LiveCallbackQuiescence>,
     workers: Arc<LiveWorkerQuiescence>,
@@ -431,6 +438,13 @@ impl OwnedCallbackRuntimeState {
     ///
     /// Publication precedes preparation errors and worker startup. A duplicate
     /// leaves the first actor attached and refuses the newly offered owner.
+    #[cfg_attr(
+        test,
+        expect(
+            dead_code,
+            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        )
+    )]
     fn prepare_original_run_control(
         &self,
         control: ControlLifecycleStream<UnixStream>,
@@ -2346,6 +2360,10 @@ impl PluginRuntimeOwner {
 }
 
 /// Distinguishes ordinary RUN ownership from selected held preparation.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The ordinary owner keeps its established inline custody; selected preparation uses an already-accounted Rc."
+)]
 pub(crate) enum RuntimeInstallation {
     Ordinary(PluginRuntimeOwner),
     Selected(whole_selected_install::SelectedRuntimeOwner),

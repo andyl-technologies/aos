@@ -14,6 +14,10 @@ use crate::runtime::live_callbacks::{
 use crate::{BlockRequestIdentity, BlockResponse, BlockResponseStatus, NinePWireMessage};
 
 impl LiveDeviceCallbackState {
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(in crate::runtime::live_callbacks) fn initialize_whole_reservations(
         &mut self,
         capacity: usize,
@@ -22,6 +26,10 @@ impl LiveDeviceCallbackState {
         self.whole_reservations.initialize(capacity, byte_limit)
     }
 
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(in crate::runtime::live_callbacks) fn activate_whole_reservations(
         &mut self,
         original_source_matches: bool,
@@ -29,12 +37,20 @@ impl LiveDeviceCallbackState {
         self.whole_reservations.activate(original_source_matches)
     }
 
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(in crate::runtime::live_callbacks) fn whole_reservation_storage_bytes(
         &self,
     ) -> SourceResult<u64> {
         self.whole_reservations.storage_bytes()
     }
 
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(in crate::runtime::live_callbacks) fn reserve_whole_original_token(
         &mut self,
         observation: &NativeSourceObservation,
@@ -71,6 +87,10 @@ impl LiveDeviceCallbackState {
         )
     }
 
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(in crate::runtime::live_callbacks) fn whole_source_ring(
         &self,
         role: WholeQueueRole,
@@ -119,6 +139,10 @@ impl LiveDeviceCallbackState {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only native table refuses effects; the original source observation and reservation seam remains closed until the genuine SourceHOLD/service caller is installed."
+    )]
     pub(in crate::runtime::live_callbacks) fn validate_whole_pending(
         &self,
         role: WholeQueueRole,

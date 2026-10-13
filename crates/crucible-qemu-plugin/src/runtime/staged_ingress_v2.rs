@@ -57,7 +57,21 @@ struct CollectionState {
 
 /// Correlates a physically collected complete original or exact repetition.
 pub(crate) struct CollectedStagedFrame {
+    #[cfg_attr(
+        test,
+        expect(
+            dead_code,
+            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        )
+    )]
     pub(crate) kind: StagedFrameKind,
+    #[cfg_attr(
+        test,
+        expect(
+            dead_code,
+            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        )
+    )]
     pub(crate) sequence: u64,
     pub(crate) repeated: bool,
 }
@@ -387,6 +401,13 @@ impl SelectedStagedIngress {
         Ok(body.len())
     }
 
+    #[cfg_attr(
+        test,
+        expect(
+            dead_code,
+            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        )
+    )]
     pub(crate) fn retained_byte_count(&self) -> Result<u64, WholeIngressError> {
         if std::process::id() != self.process {
             return Err(WholeIngressError::Selection);

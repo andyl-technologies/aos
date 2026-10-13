@@ -1043,7 +1043,7 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
             ._callbacks
             .setup()
             .mapped_region()
-            .expect("current original setup mapping")
+            .unwrap_or_else(|error| panic!("current original setup mapping: {error}"))
             .mapping_start(),
     )
     .unwrap_or_else(|error| panic!("mapping start should fit the fixed ABI: {error}"));

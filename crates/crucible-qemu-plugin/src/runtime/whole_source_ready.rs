@@ -28,10 +28,24 @@ pub(crate) enum WholeSourceReadyError {
     #[error("original source readiness correlation was refused")]
     Correlation,
     #[error("original source readiness peer closed")]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+        )
+    )]
     Closed,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 enum ReadyPhase {
     Empty,
     Offering,
@@ -44,6 +58,13 @@ enum ReadyPhase {
 }
 
 /// Retains one original native receipt exchange with no renewable backing.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 pub(crate) struct OriginalWholeReadyExchange {
     process: u32,
     socket: Arc<OriginalWholeSocket>,
@@ -62,6 +83,13 @@ pub(crate) struct OriginalWholeReadyExchange {
     consumed_written: usize,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )
+)]
 impl OriginalWholeReadyExchange {
     /// Prepares fixed transport storage before any native HOLD or socket claim.
     ///

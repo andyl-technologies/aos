@@ -378,7 +378,21 @@ pub(super) fn run_reader(
 mod tests;
 
 #[path = "whole_ingress.rs"]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The legacy post-RUN component collector is not the selected original constructor actor."
+    )
+)]
 pub(crate) mod whole_ingress;
 
 #[path = "staged_ingress_v2.rs"]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The legacy post-RUN component collector is not the selected original constructor actor."
+    )
+)]
 pub(crate) mod staged_ingress;
