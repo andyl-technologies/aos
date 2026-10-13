@@ -526,7 +526,11 @@ impl SemanticPrefixOwner {
         if root.is_null() || (self.api.validate_root)(root, &self.policy) != 0 {
             return Err(-libc::ESTALE);
         }
-        if runtime.setup.mapped_region().header().shutdown_requested() {
+        if runtime
+            .setup
+            .with_mapped_region(|mapping| mapping.header().shutdown_requested())
+            .map_or(true, |requested| requested)
+        {
             return Err(-libc::ECANCELED);
         }
         let mut state = self.state.try_lock().map_err(|error| match error {
@@ -545,7 +549,10 @@ impl SemanticPrefixOwner {
             let control = crate::native_node_control::registered_owner().ok_or(-libc::ESTALE)?;
             state.transport = control
                 .prepare_runtime_epoch_transport(
-                    runtime.setup.mapped_region(),
+                    &*runtime
+                        .setup
+                        .mapped_region()
+                        .map_err(|_| -libc::ENOTRECOVERABLE)?,
                     Arc::clone(&runtime.quiescence),
                     Arc::clone(&runtime.workers),
                 )
@@ -553,7 +560,12 @@ impl SemanticPrefixOwner {
         }
         let transport = state.transport.as_mut().ok_or(-libc::EAGAIN)?;
         if !transport
-            .try_retain(runtime.setup.mapped_region())
+            .try_retain(
+                &*runtime
+                    .setup
+                    .mapped_region()
+                    .map_err(|_| -libc::ENOTRECOVERABLE)?,
+            )
             .map_err(|_| -libc::ENOTRECOVERABLE)?
         {
             return Err(-libc::EAGAIN);
@@ -591,7 +603,10 @@ impl SemanticPrefixOwner {
             Ok(runtime) => runtime,
             Err(error) => return error,
         };
-        if runtime.setup.mapped_region().header().shutdown_requested()
+        if runtime
+            .setup
+            .with_mapped_region(|mapping| mapping.header().shutdown_requested())
+            .map_or(true, |requested| requested)
             || crate::native_node_control::registered_owner()
                 .is_none_or(|owner| owner.semantic_administration_failed())
         {
@@ -749,7 +764,11 @@ impl SemanticPrefixOwner {
         {
             return Err(-libc::ENOTRECOVERABLE);
         }
-        if runtime.setup.mapped_region().header().shutdown_requested() {
+        if runtime
+            .setup
+            .with_mapped_region(|mapping| mapping.header().shutdown_requested())
+            .map_or(true, |requested| requested)
+        {
             return Err(-libc::ECANCELED);
         }
         let staged = SCOPED_CONTEXT.with(Cell::get).ok_or(-libc::ESTALE)?;

@@ -6,6 +6,12 @@ use thiserror::Error;
 /// An error in live production callback setup or dispatch.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LiveVcpuTimeCallbackError {
+    /// The original mapping cannot admit ordinary callback view construction.
+    #[error("original setup mapping custody refused callback construction: {source}")]
+    MappingCustody {
+        /// Original local ownership refusal.
+        source: crucible_shmem::WholeMappingCustodyError,
+    },
     /// A required QEMU callback registration symbol is absent.
     #[error("required live callback capability `{symbol}` is unavailable")]
     CapabilityUnavailable {

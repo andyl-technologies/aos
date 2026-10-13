@@ -226,12 +226,16 @@ impl InstalledEndpointCustody {
             Err(std::sync::TryLockError::WouldBlock) => return -libc::EAGAIN,
             Err(std::sync::TryLockError::Poisoned(_)) => return -libc::EOWNERDEAD,
         };
+        let mapping = match runtime.setup.mapped_region() {
+            Ok(mapping) => mapping,
+            Err(_) => return -libc::ENOTRECOVERABLE,
+        };
         if transport.is_none() {
             let Some(control) = crate::native_node_control::registered_owner() else {
                 return -libc::ESTALE;
             };
             match control.prepare_runtime_epoch_transport(
-                runtime.setup.mapped_region(),
+                &mapping,
                 Arc::clone(&runtime.quiescence),
                 Arc::clone(&runtime.workers),
             ) {
@@ -246,7 +250,7 @@ impl InstalledEndpointCustody {
         let Some(original) = transport.as_mut() else {
             return -libc::ESTALE;
         };
-        match original.try_retain(runtime.setup.mapped_region()) {
+        match original.try_retain(&mapping) {
             Ok(true) => {
                 // A historical retained image cannot prove current admission.
                 // Observe the actual same held gates on every native validation.

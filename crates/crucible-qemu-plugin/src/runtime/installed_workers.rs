@@ -63,7 +63,11 @@ pub(super) fn start<F: PostRegistrationFatalPolicy>(
     let control_owner = if let Some(owner) = crate::native_node_control::registered_owner()
         && owner.registered_root_commitment().is_some()
     {
-        let preparation = native_run_control::NativeRunControlCustody::prepare(control_stream);
+        let preparation = callbacks_registered
+            .state
+            .as_ref()
+            .get_ref()
+            .prepare_original_run_control(control_stream);
         if owner
             .install_root_run_control(Arc::clone(&preparation.owner), &control_workers)
             .is_err()

@@ -1038,9 +1038,15 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
             ..exact_endpoint_plan
         }
     ));
-    let source_mapping_start =
-        u64::try_from(runtime._callbacks.setup().mapped_region().mapping_start())
-            .unwrap_or_else(|error| panic!("mapping start should fit the fixed ABI: {error}"));
+    let source_mapping_start = u64::try_from(
+        runtime
+            ._callbacks
+            .setup()
+            .mapped_region()
+            .expect("current original setup mapping")
+            .mapping_start(),
+    )
+    .unwrap_or_else(|error| panic!("mapping start should fit the fixed ABI: {error}"));
     let exact_mapping_plan = crate::QemuPluginHotForkChildPlan {
         shmem_length: length,
         source_mapping_start,

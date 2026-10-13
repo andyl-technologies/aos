@@ -46,6 +46,7 @@ struct StoredControl {
     received: usize,
     expected: Option<usize>,
     terminal: Option<StoredTerminal>,
+    whole_selected: bool,
 }
 
 #[derive(Clone)]
@@ -140,6 +141,7 @@ impl NativeRunControlCustody {
                 received: 0,
                 expected: None,
                 terminal: None,
+                whole_selected: false,
             }));
             (
                 OriginalReadCursor {
@@ -189,6 +191,9 @@ impl NativeRunControlCustody {
             .original
             .try_lock()
             .map_err(|_| NativeRunControlError::Ownership)?;
+        if original.whole_selected {
+            return Err(NativeRunControlError::Ownership);
+        }
         if original.terminal.is_none()
             && lifecycle.state() != ControlLifecycleState::RunningViaSharedMemory
         {
@@ -371,3 +376,9 @@ pub(super) fn run_reader(
 #[cfg(test)]
 #[path = "native_run_control_tests.rs"]
 mod tests;
+
+#[path = "whole_ingress.rs"]
+pub(crate) mod whole_ingress;
+
+#[path = "staged_ingress_v2.rs"]
+pub(crate) mod staged_ingress;

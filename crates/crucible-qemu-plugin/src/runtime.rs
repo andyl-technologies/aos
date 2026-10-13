@@ -24,6 +24,14 @@ mod run_workers;
 pub(crate) mod semantic_effect;
 pub(crate) mod semantic_prefix;
 mod teardown_channel;
+pub(crate) mod whole_compute_scope;
+pub(crate) mod whole_initial_setup;
+pub(crate) mod whole_journals;
+pub(crate) mod whole_native_abi;
+pub(crate) mod whole_native_retirement;
+pub(crate) mod whole_original_socket;
+mod whole_selected_install;
+pub(crate) mod whole_source_ready;
 pub(crate) mod worker_quiescence;
 
 use callback_quiescence::LiveCallbackQuiescence;
@@ -86,6 +94,25 @@ pub(super) enum LiveRuntimeTeardownTrigger {
 struct HotForkChildWorkerOwner {
     _control_reader: std::thread::JoinHandle<()>,
     _teardown_worker: std::thread::JoinHandle<()>,
+}
+
+/// Refuses unavailable original mapped-runtime access before reading its bytes.
+#[derive(Debug, Error)]
+pub enum PluginMappedRuntimeAccessError {
+    /// The same original mapping owner refused the current process or loan.
+    #[error("original setup mapping custody failed: {source}")]
+    Custody {
+        /// Underlying owner, PID or selected-scope refusal.
+        #[from]
+        source: crucible_shmem::WholeMappingCustodyError,
+    },
+    /// The authenticated original mapping has no requested typed slot.
+    #[error("original setup mapped access failed: {source}")]
+    Access {
+        /// Underlying mapped-region bounds or layout failure.
+        #[from]
+        source: crucible_shmem::MappedSetupRegionAccessError,
+    },
 }
 
 /// Exact QEMU-staged resource basis installed into one fork child.
@@ -183,7 +210,7 @@ enum HotForkChildRuntimeError {
     #[error("fork-child teardown slot is unavailable")]
     TeardownSlot {
         /// Underlying mapped-region access failure.
-        source: crucible_shmem::MappedSetupRegionAccessError,
+        source: PluginMappedRuntimeAccessError,
     },
     /// A required replacement worker thread could not be created.
     #[error("fork-child {worker} thread creation failed")]
@@ -211,6 +238,7 @@ const RUNTIME_VACANT: u8 = 0;
 const RUNTIME_INSTALLING: u8 = 1;
 const RUNTIME_ACTIVE: u8 = 2;
 const RUNTIME_FAILED: u8 = 3;
+const RUNTIME_PREPARING: u8 = 4;
 const CHILD_RUNTIME_TEMPLATE: u8 = 0;
 const CHILD_RUNTIME_INITIALIZING: u8 = 1;
 const CHILD_RUNTIME_WORKERS_HELD: u8 = 2;
@@ -336,6 +364,7 @@ pub(crate) struct OwnedCallbackRuntimeState {
     #[cfg(not(test))]
     installed_endpoint:
         std::sync::OnceLock<Arc<installed_endpoint_owner::InstalledEndpointCustody>>,
+    original_run_control: std::sync::OnceLock<Arc<native_run_control::NativeRunControlCustody>>,
     quiescence: Arc<LiveCallbackQuiescence>,
     workers: Arc<LiveWorkerQuiescence>,
     teardown_router: Arc<LiveRuntimeTeardownRouter>,
@@ -372,6 +401,7 @@ impl OwnedCallbackRuntimeState {
             callback_roster: live_callbacks::callback_roster::RetainedCallbackRoster::default(),
             #[cfg(not(test))]
             installed_endpoint: std::sync::OnceLock::new(),
+            original_run_control: std::sync::OnceLock::new(),
             quiescence: Arc::new(LiveCallbackQuiescence::new()),
             workers: crate::native_node_control::registered_owner()
                 .and_then(|owner| owner.administrative_modeled_workers())
@@ -397,21 +427,41 @@ impl OwnedCallbackRuntimeState {
         })
     }
 
+    /// Retains the original socket and parser in the same pinned runtime.
+    ///
+    /// Publication precedes preparation errors and worker startup. A duplicate
+    /// leaves the first actor attached and refuses the newly offered owner.
+    fn prepare_original_run_control(
+        &self,
+        control: ControlLifecycleStream<UnixStream>,
+    ) -> native_run_control::NativeRunControlPreparation {
+        let mut preparation = native_run_control::NativeRunControlCustody::prepare(control);
+        if self
+            .original_run_control
+            .set(Arc::clone(&preparation.owner))
+            .is_err()
+        {
+            preparation.status = Err(native_run_control::NativeRunControlError::Ownership);
+        }
+        preparation
+    }
+
     fn control_teardown_handle(
         &self,
         process_generation: u64,
-    ) -> Result<LiveControlTeardownHandle, crucible_shmem::MappedSetupRegionAccessError> {
-        let slot = self.setup.mapped_region().node_slot(self.slot_index)?;
+    ) -> Result<LiveControlTeardownHandle, PluginMappedRuntimeAccessError> {
+        let mapping = self.setup.mapped_region()?;
+        let slot = mapping.node_slot(self.slot_index)?;
         Ok(LiveControlTeardownHandle {
             quiescence: Arc::clone(&self.quiescence),
-            header_address: std::ptr::from_ref(self.setup.mapped_region().header()) as usize,
+            header_address: std::ptr::from_ref(mapping.header()) as usize,
             slot_address: std::ptr::from_ref(slot) as usize,
             wake_fd: self.setup.wake_fd().as_raw_fd(),
             control_callback_witness: self
                 .live_vcpu_time
                 .as_ref()
                 .map(|live| Arc::clone(&live.control_callback_witness)),
-            region_identity: self.setup.mapped_region().backing_identity(),
+            region_identity: mapping.backing_identity(),
             slot_index: self.slot_index,
             process_generation,
         })
@@ -503,6 +553,7 @@ impl OwnedCallbackRuntimeState {
         let rings = self
             .setup
             .mapped_region()
+            .map_err(|_source| HotForkChildRuntimeError::RingBarrier)?
             .hot_fork_ring_io_snapshot()
             .map_err(|_source| HotForkChildRuntimeError::TemplateNotQuiescent)?;
         if !rings.quiescent() {
@@ -640,6 +691,7 @@ impl OwnedCallbackRuntimeState {
         let rings = self
             .setup
             .mapped_region()
+            .map_err(|_source| HotForkChildRuntimeError::RingBarrier)?
             .hot_fork_ring_io_snapshot()
             .map_err(|_source| HotForkChildRuntimeError::RingBarrier)?;
         if !rings.quiescent() {
@@ -648,6 +700,7 @@ impl OwnedCallbackRuntimeState {
 
         self.setup
             .mapped_region()
+            .map_err(|_source| HotForkChildRuntimeError::RingBarrier)?
             .release_hot_fork_ring_io()
             .map_err(|_source| HotForkChildRuntimeError::RingBarrier)?;
         let callbacks = self.quiescence.release_hot_fork();
@@ -715,12 +768,23 @@ impl OwnedCallbackRuntimeState {
         // independently pinned callback allocation. The new allocation is
         // installed before its address becomes observable to QEMU.
         let state = unsafe { self.get_unchecked_mut() };
-        let stop_backing_identity = state.setup.mapped_region().backing_identity();
-        let header = std::ptr::NonNull::from(state.setup.mapped_region().header());
+        let (stop_backing_identity, header) = {
+            let mapping = state
+                .setup
+                .mapped_region()
+                .map_err(|source| LiveVcpuTimeCallbackError::MappingCustody { source })?;
+            (
+                mapping.backing_identity(),
+                std::ptr::NonNull::from(mapping.header()),
+            )
+        };
         let fault_commands = crate::fault_command::FaultCommandBridge::new(
             fault_command_apis,
             fault_node_hash,
-            state.setup.mapped_region_mut(),
+            state
+                .setup
+                .mapped_region_mut()
+                .map_err(|source| LiveVcpuTimeCallbackError::MappingCustody { source })?,
             slot_index,
         )
         .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?;
@@ -728,6 +792,7 @@ impl OwnedCallbackRuntimeState {
         let mapped = state
             .setup
             .mapped_region_mut()
+            .map_err(|source| LiveVcpuTimeCallbackError::MappingCustody { source })?
             .node_directed_ring_pair_mut(
                 slot_index,
                 slot_index,
@@ -768,6 +833,7 @@ impl OwnedCallbackRuntimeState {
         let mapped = state
             .setup
             .mapped_region_mut()
+            .map_err(|source| LiveVcpuTimeCallbackError::MappingCustody { source })?
             .node_directed_ring_pair_mut(slot_index, slot_index, block_slot, block_slot, slot_index)
             .map_err(|source| LiveVcpuTimeCallbackError::MappedNodeSlot { source })?;
         let block_rings = live_callbacks::LiveDirectedRingPair::new(mapped.first, mapped.second)?;
@@ -775,12 +841,14 @@ impl OwnedCallbackRuntimeState {
         let mapped = state
             .setup
             .mapped_region_mut()
+            .map_err(|source| LiveVcpuTimeCallbackError::MappingCustody { source })?
             .node_directed_ring_pair_mut(slot_index, slot_index, ninep_slot, ninep_slot, slot_index)
             .map_err(|source| LiveVcpuTimeCallbackError::MappedNodeSlot { source })?;
         let ninep_rings = live_callbacks::LiveDirectedRingPair::new(mapped.first, mapped.second)?;
         let accelerator_rings = state
             .setup
             .mapped_region_mut()
+            .map_err(|source| LiveVcpuTimeCallbackError::MappingCustody { source })?
             .plugin_accelerator_rings_mut(slot_index)
             .map_err(|source| LiveVcpuTimeCallbackError::MappedNodeSlot { source })?;
         // SAFETY: the pinned runtime retains this unique plugin role and its
@@ -796,19 +864,22 @@ impl OwnedCallbackRuntimeState {
         )?;
         let callback_state = match fingerprint {
             Some(sampling) => {
-                let slot = state
+                let mapping = state
                     .setup
                     .mapped_region()
-                    .fingerprint_sample(slot_index)
-                    .map_err(|source| LiveVcpuTimeCallbackError::MappedFingerprintSlot {
-                        source,
-                    })?;
+                    .map_err(|source| LiveVcpuTimeCallbackError::MappingCustody { source })?;
+                let slot = mapping.fingerprint_sample(slot_index).map_err(|source| {
+                    LiveVcpuTimeCallbackError::MappedFingerprintSlot { source }
+                })?;
                 callback_state.attach_fingerprint(sampling, slot, Arc::clone(&state.workers))?
             }
             None => callback_state,
         };
         let callback_state = callback_state.attach_control_stage_identity(
-            state.setup.mapped_region().backing_identity(),
+            state
+                .setup
+                .current_backing_identity()
+                .map_err(|source| LiveVcpuTimeCallbackError::MappingCustody { source })?,
             slot_index,
             process_generation,
         );
@@ -844,6 +915,7 @@ impl OwnedCallbackRuntimeState {
         let marker_ring = state
             .setup
             .mapped_region_mut()
+            .map_err(|source| live_whitebox::LiveWhiteboxError::MappingCustody { source })?
             .whitebox_marker_ring_mut(args.slot())
             .map_err(|source| live_whitebox::LiveWhiteboxError::MappedMarkerQueue { source })?;
         // SAFETY: `state.setup` owns the mapping for at least as long as the
@@ -859,6 +931,7 @@ impl OwnedCallbackRuntimeState {
         let selectable_reply_ring = state
             .setup
             .mapped_region_mut()
+            .map_err(|source| live_whitebox::LiveWhiteboxError::MappingCustody { source })?
             .selectable_reply_ring_mut(args.slot())
             .map_err(
                 |source| live_whitebox::LiveWhiteboxError::MappedSelectableReplyQueue { source },
@@ -876,6 +949,7 @@ impl OwnedCallbackRuntimeState {
         let guest_introspection_rings = state
             .setup
             .mapped_region_mut()
+            .map_err(|source| live_whitebox::LiveWhiteboxError::MappingCustody { source })?
             .plugin_guest_introspection_rings_mut(args.slot())
             .map_err(
                 |source| live_whitebox::LiveWhiteboxError::MappedGuestIntrospectionRings { source },
@@ -936,6 +1010,9 @@ impl OwnedCallbackRuntimeState {
         let coverage_ring = state
             .setup
             .mapped_region_mut()
+            .map_err(|source| CoverageError::MappedCoverageQueue {
+                source: crucible_shmem::MappedSetupRegionAccessError::WholeCustody { source },
+            })?
             .coverage_ring_mut(slot_index)
             .map_err(|source| CoverageError::MappedCoverageQueue { source })?;
         // SAFETY: `state.setup` owns the mapping for at least as long as the
@@ -1436,7 +1513,11 @@ fn plugin_resource_manifest(
             .map_err(|source| PluginRuntimeInstallError::NativeControlWorkerSpawn { source })?;
     }
     let setup = callbacks.setup();
-    let node_count = setup.mapped_region().header_snapshot().node_count;
+    let (node_count, shmem_length) = setup
+        .with_mapped_region(|mapping| (mapping.header_snapshot().node_count, mapping.region_len()))
+        .map_err(|source| PluginRuntimeInstallError::TeardownSlot {
+            source: source.into(),
+        })?;
     let wake_fd = setup
         .registered_wake_fd()
         .ok_or(PluginRuntimeInstallError::ResourceManifestShape)?
@@ -1472,7 +1553,7 @@ fn plugin_resource_manifest(
         worker_mask,
         shmem_device: setup.shared_memory_device(),
         shmem_inode: setup.shared_memory_inode(),
-        shmem_length: setup.mapped_region().region_len(),
+        shmem_length,
         slot_index: args.slot(),
         node_count,
         control_fd: args.sim_fd(),
@@ -1591,21 +1672,22 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
             .map(|live| live.as_ref().get_ref()),
         action,
         || {
+            let mapping = state
+                .setup
+                .mapped_region()
+                .map_err(|_source| -libc::EPROTO)?;
             let snapshot = match action {
                 crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD => {
                     let snapshot = state.quiescence.hold_hot_fork();
-                    let Ok(rings) = state.setup.mapped_region().hold_hot_fork_ring_io() else {
+                    let Ok(rings) = mapping.hold_hot_fork_ring_io() else {
                         state.quiescence.release_hot_fork();
                         return Err(-libc::EPROTO);
                     };
                     let workers = state.workers.hold();
                     if !state.mapping_excluded_from_child.load(Ordering::Acquire) {
-                        if let Err(error) =
-                            state.setup.mapped_region().exclude_from_hot_fork_child()
-                        {
+                        if let Err(error) = mapping.exclude_from_hot_fork_child() {
                             state.workers.release();
-                            let _released_rings =
-                                state.setup.mapped_region().release_hot_fork_ring_io();
+                            let _released_rings = mapping.release_hot_fork_ring_io();
                             state.quiescence.release_hot_fork();
                             return Err(hot_fork_mapping_disposition_status(error));
                         }
@@ -1617,7 +1699,7 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
                 }
                 crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY => {
                     let snapshot = state.quiescence.snapshot();
-                    let Ok(rings) = state.setup.mapped_region().hot_fork_ring_io_snapshot() else {
+                    let Ok(rings) = mapping.hot_fork_ring_io_snapshot() else {
                         return Err(-libc::EPROTO);
                     };
                     let workers = state.workers.snapshot();
@@ -1625,18 +1707,14 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
                 }
                 crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE => {
                     if state.mapping_excluded_from_child.load(Ordering::Acquire) {
-                        if let Err(error) = state
-                            .setup
-                            .mapped_region()
-                            .restore_hot_fork_parent_inheritance()
-                        {
+                        if let Err(error) = mapping.restore_hot_fork_parent_inheritance() {
                             return Err(hot_fork_mapping_disposition_status(error));
                         }
                         state
                             .mapping_excluded_from_child
                             .store(false, Ordering::Release);
                     }
-                    let Ok(rings) = state.setup.mapped_region().release_hot_fork_ring_io() else {
+                    let Ok(rings) = mapping.release_hot_fork_ring_io() else {
                         return Err(-libc::EPROTO);
                     };
                     let snapshot = state.quiescence.release_hot_fork();
@@ -1887,8 +1965,9 @@ fn hot_fork_child_mapping_basis_matches(
     plan: &crate::QemuPluginHotForkChildPlan,
     setup: &crate::setup::PluginSetupCompletion,
 ) -> bool {
-    usize::try_from(plan.source_mapping_start).ok() == Some(setup.mapped_region().mapping_start())
-        && plan.source_mapping_length == host_mapping_extent(setup.mapped_region().region_len())
+    let (original_start, original_length) = setup.original_mapping_geometry();
+    usize::try_from(plan.source_mapping_start).ok() == Some(original_start)
+        && plan.source_mapping_length == host_mapping_extent(original_length)
         && plan.source_mapping_length == host_mapping_extent(plan.shmem_length)
         && plan.source_mapping_offset == 0
         && plan
@@ -2012,6 +2091,7 @@ fn hot_fork_mapping_disposition_status(
 ) -> std::os::raw::c_int {
     match error {
         crucible_shmem::HotForkMappingDispositionError::Unsupported => -libc::ENOTSUP,
+        crucible_shmem::HotForkMappingDispositionError::WholeCustody { .. } => -libc::EPERM,
         crucible_shmem::HotForkMappingDispositionError::Madvise { source, .. } => source
             .raw_os_error()
             .filter(|errno| *errno > 0)
@@ -2265,6 +2345,41 @@ impl PluginRuntimeOwner {
     }
 }
 
+/// Distinguishes ordinary RUN ownership from selected held preparation.
+pub(crate) enum RuntimeInstallation {
+    Ordinary(PluginRuntimeOwner),
+    Selected(whole_selected_install::SelectedRuntimeOwner),
+}
+
+/// Selects the original native constructor before ordinary control duplication.
+///
+/// A selected preparation returns after original Setup/SetupACK and native
+/// controller registration. It has no boot release, RUN reader or Ready proof;
+/// MachineInitDone must later resume its same original actor.
+pub(crate) fn install_runtime_entry<R: OwnedCallbackRegistrar>(
+    plugin_id: QemuPluginId,
+    args: PluginArgs,
+    capabilities: LiveInstallCapabilities,
+    callback_registrar: &R,
+    reservation: &mut PluginRuntimeReservation,
+) -> Result<RuntimeInstallation, PluginRuntimeInstallError> {
+    match whole_native_abi::NativeWholeApis::probe_early_selection(plugin_id) {
+        Ok(Some(original)) => {
+            whole_selected_install::install(plugin_id, args, original, capabilities, reservation)
+                .map(RuntimeInstallation::Selected)
+        }
+        Ok(None) => install_live_runtime(
+            plugin_id,
+            args,
+            capabilities,
+            callback_registrar,
+            reservation,
+        )
+        .map(RuntimeInstallation::Ordinary),
+        Err(status) => Err(PluginRuntimeInstallError::SelectedSourceInspection { status }),
+    }
+}
+
 /// Returns whether a fully active runtime has been retained for process lifetime.
 #[must_use]
 pub fn active_runtime_is_published() -> bool {
@@ -2285,6 +2400,18 @@ pub(crate) struct PluginRuntimeReservation {
 impl PluginRuntimeReservation {
     pub(crate) const fn mark_irreversible(&mut self) {
         self.irreversible = true;
+    }
+
+    /// Retains selected preparation without publishing execution readiness.
+    pub(crate) fn publish_installation(mut self, installation: RuntimeInstallation) {
+        match installation {
+            RuntimeInstallation::Ordinary(runtime) => self.publish(runtime),
+            RuntimeInstallation::Selected(runtime) => {
+                runtime.retain_preparing();
+                RUNTIME_STATE.store(RUNTIME_PREPARING, Ordering::Release);
+                self.finished = true;
+            }
+        }
     }
 
     /// Retains the completed runtime and publishes the active state infallibly.
@@ -2381,6 +2508,7 @@ where
     sequence
         .record_step(PluginRegistrationStep::ParseArguments)
         .map_err(registration_error)?;
+
     callback_registrar
         .preflight(&args)
         .map_err(|source| PluginRuntimeInstallError::OwnedCallbacks { source })?;
@@ -2833,6 +2961,28 @@ pub(crate) enum PluginLiveBoundaryError {
 /// An error produced while building or publishing the live plugin runtime.
 #[derive(Debug, Error)]
 pub enum PluginRuntimeInstallError {
+    /// The original selected source lacks an installed whole-operation producer.
+    #[error(
+        "selected original setup ({original_setup_bytes} bytes) requires the source-owned whole producer"
+    )]
+    SelectedSourceUnavailable {
+        /// Counts the complete authentic original setup body retained by C.
+        original_setup_bytes: usize,
+    },
+    /// The native source refused literal early constructor inspection.
+    #[error("selected source constructor inspection was refused with status {status}")]
+    SelectedSourceInspection {
+        /// Retains the original negative native status without fallback.
+        status: i32,
+    },
+
+    /// The same original selected installer retained a preparation refusal.
+    #[error("selected original preparation failed: {source}")]
+    SelectedPreparation {
+        /// Identifies the fixed constructor, socket or setup refusal.
+        source: whole_selected_install::SelectedInstallError,
+    },
+
     /// The native datagram reader could not bind the actual runtime worker gate.
     #[error("starting plugin native-control worker failed: {source}")]
     NativeControlWorkerSpawn {
@@ -2857,7 +3007,7 @@ pub enum PluginRuntimeInstallError {
     #[error("binding plugin teardown slot failed: {source}")]
     TeardownSlot {
         /// Underlying mapped-region access error.
-        source: crucible_shmem::MappedSetupRegionAccessError,
+        source: PluginMappedRuntimeAccessError,
     },
     /// The original fixed-root RUN socket could not be retained in installed custody.
     #[error("retaining original fixed-root run-control failed: {source}")]

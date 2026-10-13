@@ -32,6 +32,8 @@ use super::{
 };
 
 mod attachment;
+mod token_reservations;
+mod whole_sources;
 
 const QEMU_PLUGIN_BLOCK_POLL_PENDING: i64 = -2;
 const QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID: i64 = -3;
@@ -45,6 +47,7 @@ const QEMU_PLUGIN_ACCELERATOR_POLL_PENDING: i64 = -2;
 
 pub(super) struct LiveDeviceCallbackState {
     freeze: PluginDeviceIoFreeze,
+    whole_reservations: token_reservations::OriginalTokenReservations,
     block: PluginBlockIo,
     block_rings: LiveDirectedRingPair,
     block_tokens: BTreeMap<BlockRequestIdentity, BlockRequestToken>,
@@ -484,6 +487,16 @@ impl LiveDeviceCallbackState {
         output: &mut [u8],
     ) -> Result<i64, LiveDeviceCallbackError> {
         let identity = BlockRequestIdentity::new(epoch, request_id);
+        if !self
+            .whole_reservations
+            .poll_current(token_reservations::OriginalRequestKey {
+                family: token_reservations::OriginalRequestFamily::Block,
+                epoch,
+                id: request_id,
+            })
+        {
+            return Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING);
+        }
         if self
             .block
             .pending_delivery_len(identity)
@@ -744,6 +757,16 @@ impl LiveDeviceCallbackState {
         request_id: u32,
         output: &mut [u8],
     ) -> Result<i64, LiveDeviceCallbackError> {
+        if !self
+            .whole_reservations
+            .poll_current(token_reservations::OriginalRequestKey {
+                family: token_reservations::OriginalRequestFamily::ReadonlyNineP,
+                epoch: 0,
+                id: request_id,
+            })
+        {
+            return Ok(QEMU_PLUGIN_NINEP_POLL_PENDING);
+        }
         let registered_capacity = self
             .ninep_tokens
             .get(&request_id)

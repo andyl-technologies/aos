@@ -36,24 +36,6 @@ pub(super) fn start<F: PostRegistrationFatalPolicy>(
         Err(error) => fatal_policy.terminate(error),
     };
     let teardown_workers = callbacks_registered.worker_quiescence();
-    let teardown_worker = match std::thread::Builder::new()
-        .name(String::from("crucible-teardown"))
-        .spawn(move || {
-            run_runtime_thread_fail_loud("teardown worker", || {
-                run_teardown_worker(
-                    teardown_receiver,
-                    teardown_handle,
-                    request_shutdown,
-                    teardown_workers,
-                );
-            });
-        }) {
-        Ok(worker) => worker,
-        Err(source) => {
-            fatal_policy.terminate(PluginRuntimeInstallError::TeardownWorkerSpawn { source })
-        }
-    };
-
     let reader_sender = teardown_sender.clone();
     let control_workers = callbacks_registered.worker_quiescence();
     enum RunControlOwner {
@@ -64,7 +46,11 @@ pub(super) fn start<F: PostRegistrationFatalPolicy>(
     let control_owner = if let Some(owner) = crate::native_node_control::registered_owner()
         && owner.registered_root_commitment().is_some()
     {
-        let preparation = native_run_control::NativeRunControlCustody::prepare(control_stream);
+        let preparation = callbacks_registered
+            .state
+            .as_ref()
+            .get_ref()
+            .prepare_original_run_control(control_stream);
         if owner
             .install_root_run_control(Arc::clone(&preparation.owner), &control_workers)
             .is_err()
@@ -81,6 +67,24 @@ pub(super) fn start<F: PostRegistrationFatalPolicy>(
         RunControlOwner::FixedRoot(preparation.owner)
     } else {
         RunControlOwner::Legacy(control_stream)
+    };
+
+    let teardown_worker = match std::thread::Builder::new()
+        .name(String::from("crucible-teardown"))
+        .spawn(move || {
+            run_runtime_thread_fail_loud("teardown worker", || {
+                run_teardown_worker(
+                    teardown_receiver,
+                    teardown_handle,
+                    request_shutdown,
+                    teardown_workers,
+                );
+            });
+        }) {
+        Ok(worker) => worker,
+        Err(source) => {
+            fatal_policy.terminate(PluginRuntimeInstallError::TeardownWorkerSpawn { source })
+        }
     };
 
     let control_reader = match std::thread::Builder::new()

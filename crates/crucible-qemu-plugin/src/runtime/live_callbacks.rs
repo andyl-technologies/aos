@@ -60,6 +60,7 @@ mod control_callback_stage;
 mod control_callback_witness;
 pub(super) use control_callback_witness::ControlCallbackWitness;
 mod devices;
+pub(crate) mod whole_sources;
 mod error;
 mod fingerprint_worker;
 mod logical_restore;

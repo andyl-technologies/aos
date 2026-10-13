@@ -2025,7 +2025,7 @@ fn install_owned_boundary(
     plugin_id: QemuPluginId,
     boundary: OwnedInstallBoundary,
     reservation: &mut crate::runtime::PluginRuntimeReservation,
-) -> Result<crate::PluginRuntimeOwner, crate::runtime::PluginLiveBoundaryError> {
+) -> Result<crate::runtime::RuntimeInstallation, crate::runtime::PluginLiveBoundaryError> {
     let clock_deadline_ps = resolve_qemu_clock_deadline_symbol();
     let advance_time_ticks = resolve_qemu_advance_time_ticks_symbol();
     let register_time_advance_cb = resolve_qemu_register_time_advance_cb_symbol();
@@ -2141,7 +2141,7 @@ fn install_owned_boundary(
         boundary.target_architecture,
         &capabilities,
     );
-    crate::runtime::install_live_runtime(
+    crate::runtime::install_runtime_entry(
         plugin_id,
         boundary.args,
         capabilities,
@@ -2194,7 +2194,7 @@ pub unsafe extern "C" fn qemu_plugin_install(
             // QEMU info and argv allocations remain live for this call.
             let boundary = unsafe { copy_install_boundary(info, argc, argv) }?;
             let runtime = install_owned_boundary(id, boundary, &mut reservation)?;
-            reservation.publish(runtime);
+            reservation.publish_installation(runtime);
             Ok(())
         })
     }

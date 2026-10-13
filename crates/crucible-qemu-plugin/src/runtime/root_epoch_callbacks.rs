@@ -121,12 +121,16 @@ impl NativeRuntimeRootEpoch {
             Err(std::sync::TryLockError::WouldBlock) => return -libc::EAGAIN,
             Err(std::sync::TryLockError::Poisoned(_)) => return -libc::EOWNERDEAD,
         };
+        let mapping = match runtime.setup.mapped_region() {
+            Ok(mapping) => mapping,
+            Err(_) => return -libc::ENOTRECOVERABLE,
+        };
         if custody.is_none() {
             let Some(owner) = crate::native_node_control::registered_owner() else {
                 return -libc::ENOTRECOVERABLE;
             };
             match owner.prepare_runtime_epoch_transport(
-                runtime.setup.mapped_region(),
+                &mapping,
                 std::sync::Arc::clone(&runtime.quiescence),
                 std::sync::Arc::clone(&runtime.workers),
             ) {
@@ -138,7 +142,7 @@ impl NativeRuntimeRootEpoch {
         let Some(original) = custody.as_mut() else {
             return -libc::ENOTRECOVERABLE;
         };
-        match original.try_retain(runtime.setup.mapped_region()) {
+        match original.try_retain(&mapping) {
             Ok(_) => -libc::EAGAIN,
             Err(_) => -libc::ENOTRECOVERABLE,
         }

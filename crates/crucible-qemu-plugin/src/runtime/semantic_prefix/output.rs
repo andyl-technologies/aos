@@ -97,7 +97,10 @@ impl SemanticPrefixOwner {
         cut: *const SourcePrefixEffectCut,
     ) -> Result<*mut c_void, c_int> {
         let runtime = self.runtime()?;
-        if runtime.setup.mapped_region().header().shutdown_requested()
+        if runtime
+            .setup
+            .with_mapped_region(|mapping| mapping.header().shutdown_requested())
+            .map_or(true, |requested| requested)
             || crate::native_node_control::registered_owner()
                 .is_none_or(|owner| owner.semantic_administration_failed())
         {
@@ -210,7 +213,10 @@ impl SemanticPrefixOwner {
         finish_original: bool,
     ) -> Result<(), c_int> {
         let runtime = self.runtime()?;
-        if runtime.setup.mapped_region().header().shutdown_requested()
+        if runtime
+            .setup
+            .with_mapped_region(|mapping| mapping.header().shutdown_requested())
+            .map_or(true, |requested| requested)
             || crate::native_node_control::registered_owner()
                 .is_none_or(|owner| owner.semantic_administration_failed())
         {
