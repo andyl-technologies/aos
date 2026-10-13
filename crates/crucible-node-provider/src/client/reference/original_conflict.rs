@@ -7,6 +7,7 @@
 use super::super::session::original_conflict::{OriginalConflictProposal, OriginalConflictScope};
 use super::conflict_transmissions::{
     OriginalConflictLimits, OriginalConflictObservationHandle, OriginalConflictRecorder,
+    OriginalConflictReservation,
 };
 use super::*;
 use crate::envelope::RequestOrigin;
@@ -36,6 +37,34 @@ impl ReferenceController {
         )?;
         self.conflicts = Some(recorder);
         Ok(handle)
+    }
+
+    /// Transfers a pre-Child archive into its exact original live connection.
+    ///
+    /// The caller retains the reservation on every refusal. Transfer performs
+    /// no wire operation and cannot replace an installed or attempted archive.
+    ///
+    /// # Errors
+    /// Refuses late/repeated installation, absent reservation, foreign live
+    /// connection/token or any already used original archive.
+    pub fn install_original_conflict_reservation(
+        &mut self,
+        reservation: &mut Option<OriginalConflictReservation>,
+    ) -> Result<OriginalConflictObservationHandle, ProviderError> {
+        if self.conflicts.is_some() || self.custody.originals().next().is_some() {
+            return Err(ProviderError::Correlation(
+                "conflict reservation must precede original controls",
+            ));
+        }
+        let original = reservation.as_ref().ok_or(ProviderError::Correlation(
+            "original conflict reservation absent",
+        ))?;
+        original.authenticate(self.session.authority(), &self.bootstrap.admission_token)?;
+        let original = reservation.take().ok_or(ProviderError::Correlation(
+            "original conflict reservation disappeared",
+        ))?;
+        self.conflicts = Some(original.recorder);
+        Ok(original.observer)
     }
 
     /// Transmits changed material under a retained discovery or not-started ID.

@@ -30,6 +30,7 @@ pub(super) struct NativeService {
     pub(super) profile: ReferenceProfile,
     pub(super) bootstrap: ReferenceServiceBootstrap,
     pub(super) private_bindings: BTreeMap<String, Value>,
+    retain_private_verification: bool,
 }
 
 impl NativeService {
@@ -231,6 +232,10 @@ impl NativeService {
             profile,
             bootstrap,
             private_bindings,
+            retain_private_verification: std::env::var_os(
+                "CRUCIBLE_REFERENCE_COMPONENT_RETAIN_FAILURES",
+            )
+            .is_some_and(|value| value == "1"),
         };
         let private_launch = if let Some(launch) = installed_launch {
             serde_json::to_value(launch).unwrap()
@@ -245,6 +250,14 @@ impl NativeService {
                 None => serde_json::to_value(&service.bootstrap).unwrap(),
             }
         };
+        if service.retain_private_verification {
+            service.private_file("original-private-launch.json", &private_launch);
+            let birth = std::fs::read_to_string(format!("/proc/{}/stat", service.process.id()));
+            service.private_file("original-child-birth.json", &json!({
+                "pid":service.process.id(),"controller":std::process::id(),
+                "stat":birth.as_deref().ok(),"stat_error":birth.err().map(|error|error.to_string()),
+            }));
+        }
         crucible_node_provider::transport::write_frame(
             &mut service.process.stdin.take().unwrap(),
             &private_launch,
@@ -257,9 +270,19 @@ impl NativeService {
                 ready = true;
                 break;
             }
+            let exit = service.process.try_wait().unwrap();
+            if service.retain_private_verification && exit.is_some() {
+                service.private_file(
+                    "original-pre-endpoint-exit.json",
+                    &json!({
+                        "pid":service.process.id(),"exit":exit.map(|status|status.to_string()),
+                        "socket_opened":false,"semantic_release":false,
+                    }),
+                );
+            }
             assert!(
-                service.process.try_wait().unwrap().is_none(),
-                "source-built provider exited before accepting connections"
+                exit.is_none(),
+                "source-built provider exited before accepting connections: {exit:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -268,6 +291,15 @@ impl NativeService {
             "source-built provider did not open its endpoint under the bounded launch allowance"
         );
         service
+    }
+
+    // Physical cleanup still reaps the fixture child. Selected verification
+    // records stay private on disk and never imply semantic release.
+    // Shared fixture is also compiled by conformance targets that do not retain
+    // selected component verification records.
+    #[allow(dead_code, reason = "Only the client original-history target retains private records.")]
+    pub(super) fn retain_private_verification(&mut self) {
+        self.retain_private_verification = true;
     }
 
     pub(super) fn socket(&self) -> PathBuf {
@@ -294,7 +326,9 @@ impl Drop for NativeService {
     fn drop(&mut self) {
         let _ = self.process.kill();
         let _ = self.process.wait();
-        let _ = std::fs::remove_dir_all(&self.directory);
+        if !self.retain_private_verification {
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
     }
 }
 

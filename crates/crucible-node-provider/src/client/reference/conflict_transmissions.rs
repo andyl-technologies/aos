@@ -17,6 +17,9 @@ use crate::{
     handshake::ConnectionAuthority,
 };
 
+#[path = "conflict_retirement.rs"]
+mod retirement;
+
 const MAXIMUM_TRANSMISSIONS: usize = 16;
 const MAXIMUM_BYTES: usize = 64 * 1024 * 1024;
 
@@ -39,6 +42,71 @@ pub struct OriginalConflictObservationHandle {
 pub(crate) struct OriginalConflictRecorder {
     private_token: Bytes,
     archive: Arc<Mutex<Archive>>,
+}
+
+/// Owns a finite conflict archive before the original native child exists.
+///
+/// Preselected scope is data only. Installation authenticates the exact live
+/// connection and private token before transferring this same archive into its
+/// controller; neither reservation nor an observer grants native authority.
+pub struct OriginalConflictReservation {
+    pub(crate) recorder: OriginalConflictRecorder,
+    pub(crate) observer: OriginalConflictObservationHandle,
+}
+
+impl OriginalConflictReservation {
+    /// Reserves all lifetime slots and bytes for one original source connection.
+    ///
+    /// # Errors
+    /// Refuses invalid finite credit or unavailable metadata/byte allocation.
+    pub fn reserve(
+        session: Id,
+        incarnation: Id,
+        connection: Id,
+        limits: OriginalConflictLimits,
+        private_token: &Bytes,
+    ) -> Result<Self, ProviderError> {
+        if private_token.as_slice().len() != 32 {
+            return Err(refused(
+                "original conflict reservation token length differs",
+            ));
+        }
+        let (recorder, observer) = OriginalConflictRecorder::reserve_scope(
+            Scope {
+                session,
+                incarnation,
+                connection,
+            },
+            limits,
+            private_token,
+        )?;
+        Ok(Self { recorder, observer })
+    }
+
+    pub(crate) fn authenticate(
+        &self,
+        authority: &ConnectionAuthority,
+        private_token: &Bytes,
+    ) -> Result<(), ProviderError> {
+        authority.ensure_live()?;
+        let archive = self
+            .recorder
+            .archive
+            .lock()
+            .map_err(|_| refused("reserved conflict archive poisoned"))?;
+        if archive.scope.session != *authority.session_id()
+            || archive.scope.incarnation != *authority.incarnation_id()
+            || archive.scope.connection != *authority.connection_id()
+            || self.recorder.private_token != *private_token
+            || !archive.rows.is_empty()
+            || !archive.bytes.is_empty()
+            || archive.incomplete
+            || archive.reserved_bytes != 0
+        {
+            return Err(refused("original conflict reservation scope differs"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -123,6 +191,22 @@ impl OriginalConflictRecorder {
         private_token: &Bytes,
     ) -> Result<(Self, OriginalConflictObservationHandle), ProviderError> {
         authority.ensure_live()?;
+        Self::reserve_scope(
+            Scope {
+                session: authority.session_id().clone(),
+                incarnation: authority.incarnation_id().clone(),
+                connection: authority.connection_id().clone(),
+            },
+            limits,
+            private_token,
+        )
+    }
+
+    fn reserve_scope(
+        scope: Scope,
+        limits: OriginalConflictLimits,
+        private_token: &Bytes,
+    ) -> Result<(Self, OriginalConflictObservationHandle), ProviderError> {
         if limits.maximum_transmissions == 0
             || limits.maximum_transmissions > MAXIMUM_TRANSMISSIONS
             || limits.maximum_bytes == 0
@@ -138,11 +222,7 @@ impl OriginalConflictRecorder {
             .try_reserve_exact(limits.maximum_bytes)
             .map_err(|_| exhausted("transmission byte reservation"))?;
         let archive = Arc::new(Mutex::new(Archive {
-            scope: Scope {
-                session: authority.session_id().clone(),
-                incarnation: authority.incarnation_id().clone(),
-                connection: authority.connection_id().clone(),
-            },
+            scope,
             rows,
             bytes,
             maximum_transmissions: limits.maximum_transmissions,

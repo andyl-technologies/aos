@@ -3,14 +3,14 @@
 //! This reader interprets only the closed transport observation DTO. It does
 //! not infer evidence dependencies from payload JSON or confer source authority.
 
-use crucible_node_contract::{Bytes, HashRef, Id, U64, canonical};
+use crucible_node_contract::{Bytes, ContentRef, HashRef, Id, U64, canonical};
 use crucible_node_provider::{
     ProviderError,
     bodies::{EffectCertainty, OperationState, ResponseShape, decode_request, decode_response},
     envelope::{Envelope, RequestOrigin},
 };
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::source_original_conflict_policy::OriginalConflictPremise;
 
@@ -58,9 +58,46 @@ struct Row {
     received: Option<(usize, usize)>,
 }
 
+/// Borrows the exact original data needed by the shared wire oracle.
+///
+/// Native before/after custody remains owned and authenticated by the caller;
+/// this data contract cannot stand in for a source-native enrollment.
+pub(super) struct WireOriginal<'a> {
+    pub(super) request: &'a Id,
+    pub(super) original_request: &'a ContentRef,
+    pub(super) original_response: &'a ContentRef,
+    pub(super) connection: &'a Id,
+    pub(super) changed_body: &'a Map<String, Value>,
+}
+
 pub(super) fn verify(
     value: &Value,
     originals: &[OriginalConflictPremise],
+) -> Result<(), ProviderError> {
+    if originals.len() != 3 {
+        return Err(changed());
+    }
+    let borrowed = originals
+        .iter()
+        .map(|original| WireOriginal {
+            request: &original.request,
+            original_request: &original.original_request,
+            original_response: &original.original_response,
+            connection: &original.connection,
+            changed_body: &original.changed_body,
+        })
+        .collect::<Vec<_>>();
+    verify_borrowed(value, &borrowed)
+}
+
+/// Checks complete actual frame bytes against exactly three borrowed originals.
+///
+/// # Errors
+/// Refuses changed identities/bodies, incomplete writes/replies, altered scope,
+/// chronology, response certainty or byte ranges. No verdict is issued.
+pub(super) fn verify_borrowed(
+    value: &Value,
+    originals: &[WireOriginal<'_>],
 ) -> Result<(), ProviderError> {
     let wire: Wire = serde_json::from_value(value.clone())
         .map_err(crucible_node_contract::ContractError::from)?;
@@ -78,8 +115,8 @@ pub(super) fn verify(
     for (index, (row, premise)) in wire.rows.iter().zip(originals).enumerate() {
         if row.transmission != U64::new(index as u64 + 1)
             || row.origin != WireOrigin::Controller
-            || row.request_id != premise.request
-            || wire.scope.connection != premise.connection
+            || &row.request_id != premise.request
+            || &wire.scope.connection != premise.connection
             || !row.write_completed
             || !row.conflict_refusal_verified
             || row.sent_sequence <= sequence
@@ -111,10 +148,10 @@ pub(super) fn verify(
         }
         if sent.sequence != row.sent_sequence
             || sent.sequence <= original.sequence
-            || sent.request_id.0.as_ref() != Some(&premise.request)
+            || sent.request_id.0.as_ref() != Some(premise.request)
             || sent.session_id.0.as_ref() != Some(&wire.scope.session)
             || sent.incarnation_id.0.as_ref() != Some(&wire.scope.incarnation)
-            || sent.body != premise.changed_body
+            || &sent.body != premise.changed_body
             || original.request_hash(RequestOrigin::Controller)? != row.original_identity
             || sent.request_hash(RequestOrigin::Controller)? != row.attempted_identity
             || row.original_identity == row.attempted_identity

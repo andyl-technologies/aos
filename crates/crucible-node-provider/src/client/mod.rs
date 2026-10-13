@@ -19,9 +19,9 @@ pub use deadline::{DeadlineStream, ExchangeDeadline};
 pub use reference::{
     LineageWindowRequests, ObservationHandle, ObservationLimits, ObservationScope, ObservedContent,
     ObservedRequest, ObservedRequestKey, OriginalConflictLimits, OriginalConflictObservation,
-    OriginalConflictObservationHandle, OriginalLineageAcknowledgement, OriginalLineageEvidence,
-    OriginalLineageObject, OriginalLineageRealization, OriginalLineageWindow,
-    OriginalResponseLossObservation, OriginalResponseLossObservationHandle,
+    OriginalConflictObservationHandle, OriginalConflictReservation, OriginalLineageAcknowledgement,
+    OriginalLineageEvidence, OriginalLineageObject, OriginalLineageRealization,
+    OriginalLineageWindow, OriginalResponseLossObservation, OriginalResponseLossObservationHandle,
     OriginalResponseLossQualification, RecordedReferenceObservation, ReferenceController,
     ReferenceControllerPreparationFailure, ReferenceObservationSnapshot, TransmissionLimits,
     TransmissionObservation, TransmissionObservationHandle,

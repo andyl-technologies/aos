@@ -33,7 +33,7 @@ impl ReferenceController {
                 "original history credit geometry",
             ));
         }
-        if self.transmissions.is_some() || self.conflicts.is_some() {
+        if self.transmissions.is_some() {
             return Err(ProviderError::Correlation(
                 "original probe archives need their own resolver",
             ));
@@ -46,6 +46,11 @@ impl ReferenceController {
                     .private_original_credit(maximum_bytes)
                     .map(ByteCredit)
             })
+            .transpose()?;
+        let conflicts = self
+            .conflicts
+            .as_ref()
+            .map(|recorder| recorder.private_original_history())
             .transpose()?;
         let objects = self.custody.content().retirement_object_credit()?;
         let body = (
@@ -64,8 +69,20 @@ impl ReferenceController {
             observation,
         );
         let mut credit = Count::new(maximum_bytes);
-        serde_json::to_writer(&mut credit, &body)
+        if let Some(conflicts) = conflicts {
+            serde_json::to_writer(
+                &mut credit,
+                &(
+                    "crucible.private-reference-controller-conflict-history.v1",
+                    &body,
+                    conflicts,
+                ),
+            )
             .map_err(crucible_node_contract::ContractError::from)?;
+        } else {
+            serde_json::to_writer(&mut credit, &body)
+                .map_err(crucible_node_contract::ContractError::from)?;
+        }
         Ok(credit.used())
     }
 
@@ -82,11 +99,16 @@ impl ReferenceController {
         &self,
         output: &mut impl Write,
     ) -> Result<(), ProviderError> {
-        if self.transmissions.is_some() || self.conflicts.is_some() {
+        if self.transmissions.is_some() {
             return Err(ProviderError::Correlation(
                 "original probe archives need their own resolver",
             ));
         }
+        let conflicts = self
+            .conflicts
+            .as_ref()
+            .map(|recorder| recorder.private_original_history())
+            .transpose()?;
         let observation = self
             .observer
             .as_ref()
@@ -101,28 +123,38 @@ impl ReferenceController {
             ));
         }
         let objects = self.custody.content().retirement_objects()?;
-        serde_json::to_writer(
-            output,
-            &(
-                "crucible.private-reference-controller-history.v1",
-                &self.bootstrap,
-                self.profile
-                    .content_objects()
-                    .iter()
-                    .map(|object| (&object.reference, &object.bytes))
-                    .collect::<Vec<_>>(),
-                &self.qualifications,
-                self.custody
-                    .originals_by_origin(RequestOrigin::Controller)
-                    .collect::<Vec<_>>(),
-                self.custody
-                    .originals_by_origin(RequestOrigin::Provider)
-                    .collect::<Vec<_>>(),
-                objects,
-                observation,
-            ),
-        )
-        .map_err(crucible_node_contract::ContractError::from)?;
+        let body = (
+            "crucible.private-reference-controller-history.v1",
+            &self.bootstrap,
+            self.profile
+                .content_objects()
+                .iter()
+                .map(|object| (&object.reference, &object.bytes))
+                .collect::<Vec<_>>(),
+            &self.qualifications,
+            self.custody
+                .originals_by_origin(RequestOrigin::Controller)
+                .collect::<Vec<_>>(),
+            self.custody
+                .originals_by_origin(RequestOrigin::Provider)
+                .collect::<Vec<_>>(),
+            objects,
+            observation,
+        );
+        if let Some(conflicts) = conflicts {
+            serde_json::to_writer(
+                output,
+                &(
+                    "crucible.private-reference-controller-conflict-history.v1",
+                    &body,
+                    conflicts,
+                ),
+            )
+            .map_err(crucible_node_contract::ContractError::from)?;
+        } else {
+            serde_json::to_writer(output, &body)
+                .map_err(crucible_node_contract::ContractError::from)?;
+        }
         Ok(())
     }
 

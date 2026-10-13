@@ -182,6 +182,9 @@ pub(in crate::node_observed_executor::factory::reference_public) fn prepare(
         ordinary_negotiation: None,
         collecting_negotiation: Some(originals.clone()),
     })?;
+    if let Some(adverse) = &request.adverse {
+        adverse.reserve_conflicts(installed, &request.connection_id)?;
+    }
     // Authenticate the same retained source descriptors after the final source
     // callback and before mkdir/Child; this grants no behavioral birth lease.
     source.write_originals(&mut std::io::sink())?;

@@ -2770,6 +2770,19 @@ it does not reclassify that failed build or establish package acceptance.
 Future offline builds still require explicit local source admission, since
 Nix's offline flag does not isolate fixed-output builders from networking.
 
+## Singleton original conflict custody
+
+The singleton collector reserves its conflict archive before native child
+construction and transfers it only to the same authenticated live controller.
+Each changed-body send checks the original journal and provider-only custody.
+A completed refusal requires NotStarted, no retry and empty extension layers;
+partial or ambiguous exchanges retain the original attempt. Private history
+export borrows the complete contiguous archive without changing it. Seven
+focused SDK controls, four actual source-built provider controls and strict
+all-target checks pass. Independent review verifies all 18 changed source
+roles and retained evidence. The installed singleton collector, remaining
+adverse cases and complete 382-obligation acceptance are still unfinished.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

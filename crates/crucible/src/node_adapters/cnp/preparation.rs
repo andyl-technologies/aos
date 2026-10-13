@@ -113,6 +113,25 @@ pub trait CnpReferenceQualification {
         })
     }
 
+    /// Authenticates exact changed bodies under retained pre-realization IDs.
+    ///
+    /// Installed policy checks the full original request/response journal and
+    /// actual provider-only custody before every possible wire transmission.
+    ///
+    /// # Errors
+    /// Refuses by default, unplanned identities/material, incomplete original
+    /// refusals or changed source/native custody. This grants no progress.
+    fn authenticate_pre_realization_conflicts(
+        &self,
+        _: &CnpLaunchGuard,
+        _: &[super::CnpPreRealizationConflictRequest],
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: EffectKnowledge::None,
+            reason: "source-qualified original body conflicts are not installed".into(),
+        })
+    }
+
     /// Authenticates the genuinely realized companion beneath its original closed gate.
     ///
     /// # Errors

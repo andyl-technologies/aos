@@ -310,3 +310,85 @@ fn actual_provider_loss_fences_conflict_retry_and_retains_both_originals() {
     drop(service);
     assert_eq!(snapshot(&conflicts), failed);
 }
+
+#[test]
+fn actual_completed_conflict_private_history_preserves_same_original_on_sink_failure() {
+    let (mut service, handshake, mut controller, original_observer) = observed_controller(256);
+    service.retain_private_verification();
+    service.private_file("original-native-birth.json", &json!({
+        "controller_process":std::process::id(),"provider_process":service.process.id(),
+        "provider_stat":std::fs::read_to_string(format!("/proc/{}/stat",service.process.id())).unwrap(),
+        "scope":"Original Child and authenticated socket peer; data record only, no retirement authority",
+    }));
+    service.private_file(
+        "private-bootstrap.json",
+        &serde_json::to_value(&controller.bootstrap).unwrap(),
+    );
+    let conflicts = controller.observe_original_conflicts(limits(1)).unwrap();
+    let native_children = children(service.process.id());
+    discover(&mut controller, "private-conflict-history-original");
+    let names = ["private-conflict-history-original"];
+    let originals_before = originals(&original_observer, &names)
+        .encode(8 * 1024 * 1024)
+        .unwrap();
+    service.private_file(
+        "originals-before.json",
+        &serde_json::to_value(originals(&original_observer, &names)).unwrap(),
+    );
+    let altered = body(DiscoverRequest {
+        profile_ids: vec![fixture::id("source-declared-unavailable-profile")],
+        cursor: None,
+        extensions: Extensions::new(),
+    });
+    let returned = controller.probe_original_body_conflict(&fixture::id(names[0]), &altered);
+    service.private_file("original-conflict-attempt.json", &snapshot(&conflicts));
+    returned.unwrap();
+    let wire_before = snapshot(&conflicts);
+    let credit = controller
+        .private_original_history_credit(64 * 1024 * 1024)
+        .unwrap();
+    assert!(credit > 1);
+    assert!(controller.private_original_history_credit(1).is_err());
+
+    let mut storage = [0u8; 1];
+    let mut partial_sink = storage.as_mut_slice();
+    assert!(
+        controller
+            .write_owned_completed_originals(&mut partial_sink)
+            .is_err()
+    );
+    let mut first = Vec::new();
+    controller
+        .write_owned_completed_originals(&mut first)
+        .unwrap();
+    assert!(first.len() <= credit);
+    let mut second = Vec::new();
+    controller
+        .write_owned_completed_originals(&mut second)
+        .unwrap();
+    assert_eq!(first, second);
+    let exported: Value = serde_json::from_slice(&first).unwrap();
+    service.private_file("private-controller-history.json", &exported);
+    assert_eq!(
+        exported[0],
+        "crucible.private-reference-controller-conflict-history.v1"
+    );
+    assert_eq!(exported[2]["rows"].as_array().unwrap().len(), 1);
+    assert!(!exported[2]["bytes"].as_array().unwrap().is_empty());
+    assert_eq!(snapshot(&conflicts), wire_before);
+    assert_eq!(
+        originals(&original_observer, &names)
+            .encode(8 * 1024 * 1024)
+            .unwrap(),
+        originals_before
+    );
+    assert_eq!(children(service.process.id()), native_children);
+
+    // This export is data only. The component fixture still owns its native
+    // process and physical cleanup; no semantic retirement is inferred here.
+    controller.fence();
+    drop(controller);
+    drop(handshake);
+    drop(service);
+    assert_eq!(snapshot(&conflicts), wire_before);
+}

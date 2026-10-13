@@ -123,10 +123,7 @@ impl ClientSession {
             }
             request.matches_response(&frame.envelope)?;
             let returned = decode_response(&typed_attempt, &frame.envelope.body)?;
-            if !matches!(returned.shape,
-                ResponseShape::Error { operation_state: OperationState::NotStarted, ref error, .. }
-                    if error.code == "CONFLICT" && error.effect == EffectCertainty::NotStarted)
-            {
+            if !terminal_conflict(&returned.shape, &frame.envelope.extensions) {
                 return Err(ProviderError::Conflict(
                     "provider did not refuse changed material as not-started conflict",
                 ));
@@ -146,5 +143,76 @@ impl ClientSession {
                 std::panic::resume_unwind(payload)
             }
         }
+    }
+}
+
+// Completion belongs to the actual immutable wire response, including its
+// refusal certainty and both extension layers. A retryable/error-context reply
+// remains an unfinished original attempt, so its archive cannot retire.
+fn terminal_conflict(
+    response: &ResponseShape,
+    envelope_extensions: &crucible_node_contract::Extensions,
+) -> bool {
+    envelope_extensions.is_empty()
+        && matches!(response,
+        ResponseShape::Error {
+            operation_state: OperationState::NotStarted, error, extensions,
+        } if error.code == "CONFLICT" && error.effect == EffectCertainty::NotStarted
+            && !error.retryable && extensions.is_empty())
+}
+
+#[cfg(test)]
+mod terminal_conflict_tests {
+    use super::*;
+    use crate::bodies::ErrorRecord;
+    use crucible_node_contract::Extensions;
+
+    #[test]
+    fn conflict_completion_refuses_retryable_unknown_and_extended_original_replies() {
+        let original = ResponseShape::Error {
+            operation_state: OperationState::NotStarted,
+            error: ErrorRecord {
+                code: "CONFLICT".into(),
+                message: "original source refusal".into(),
+                effect: EffectCertainty::NotStarted,
+                retryable: false,
+                details: Default::default(),
+            },
+            extensions: Extensions::new(),
+        };
+        assert!(terminal_conflict(&original, &Extensions::new()));
+
+        let mut retryable = original.clone();
+        if let ResponseShape::Error { error, .. } = &mut retryable {
+            error.retryable = true;
+        }
+        assert!(!terminal_conflict(&retryable, &Extensions::new()));
+        let mut uncertain = original.clone();
+        if let ResponseShape::Error { error, .. } = &mut uncertain {
+            error.effect = EffectCertainty::Unknown;
+        }
+        assert!(!terminal_conflict(&uncertain, &Extensions::new()));
+        let mut running = original.clone();
+        if let ResponseShape::Error {
+            operation_state, ..
+        } = &mut running
+        {
+            *operation_state = OperationState::Running;
+        }
+        assert!(!terminal_conflict(&running, &Extensions::new()));
+        let mut unknown = original.clone();
+        if let ResponseShape::Error { error, .. } = &mut unknown {
+            error.code = "unknown-source-code".into();
+        }
+        assert!(!terminal_conflict(&unknown, &Extensions::new()));
+
+        let mut body_context = original.clone();
+        if let ResponseShape::Error { extensions, .. } = &mut body_context {
+            extensions.insert("unexpected".into(), Value::Null);
+        }
+        assert!(!terminal_conflict(&body_context, &Extensions::new()));
+        let mut envelope_context = Extensions::new();
+        envelope_context.insert("unexpected".into(), Value::Null);
+        assert!(!terminal_conflict(&original, &envelope_context));
     }
 }

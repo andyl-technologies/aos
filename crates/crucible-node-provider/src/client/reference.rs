@@ -48,6 +48,7 @@ mod original_conflict;
 pub(crate) mod transmissions;
 pub use conflict_transmissions::{
     OriginalConflictLimits, OriginalConflictObservation, OriginalConflictObservationHandle,
+    OriginalConflictReservation,
 };
 pub use transmissions::{
     TransmissionLimits, TransmissionObservation, TransmissionObservationHandle,

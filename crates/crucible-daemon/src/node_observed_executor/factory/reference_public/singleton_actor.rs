@@ -555,7 +555,7 @@ fn source_context(
     let harness = canonical::canonical_json(&serde_json::json!({
         "schema":"crucible.reference.singleton-harness-source.v1", "actual_executable":canonical::content_ref(&bytes,"application/vnd.crucible.executable")?,
         "actor":include_str!("singleton_actor.rs"),"interface":include_str!("singleton.rs"),
-        "adverse":include_str!("singleton_adverse.rs"),"clause_verifier":include_str!("singleton_clause.rs"),
+        "adverse":include_str!("singleton_adverse.rs"),"conflict_collector":include_str!("singleton_conflict.rs"),"conflict_wire":include_str!("source_original_conflict_wire.rs"),"clause_verifier":include_str!("singleton_clause.rs"),
         "launch":include_str!("vendor_bridge/collecting_launch.rs"),"shared_original_transport":include_str!("vendor_bridge/negotiation.rs"),
         "source_package":package.identity()
     }))?;
