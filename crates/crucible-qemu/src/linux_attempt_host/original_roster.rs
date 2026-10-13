@@ -1242,7 +1242,7 @@ impl OriginalNativeAccountFactoryBinding {
             .credit
             .as_ref()
             .ok_or(OriginalActorAccountError::Unavailable)?;
-        credit.require_original()?;
+        credit.require_vcpu_ceiling(vcpus)?;
         if vcpus != 1
             || resident == 0
             || resident > credit.full_resident_bytes()

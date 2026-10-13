@@ -254,6 +254,7 @@ impl OriginalActorAccountCustody {
             full_resident_bytes: native.resident_bytes(),
             full_backing_bytes: native.backing_bytes(),
             total_metadata_bytes: native.metadata_bytes(),
+            cpu_ceiling: native.cpu_slots(),
             task_ceiling: native.tasks(),
             descriptor_ceiling: native.descriptors(),
             normal_controls_bytes: 0,
@@ -340,14 +341,17 @@ mod tests {
                 .unwrap();
             let credit = OriginalNativeAccountCredit {
                 original: Some(RetainedNativeCredit {
-                    _pair: HostServiceLeasePair::new(resident_lease, metadata_lease),
+                    _pair: Some(HostServiceLeasePair::new(resident_lease, metadata_lease)),
+                    normal: None,
                     preparation,
                 }),
                 full_resident_bytes: 1536 << 20,
                 full_backing_bytes: 4 << 30,
                 total_metadata_bytes: 512 << 20,
+                cpu_ceiling: 1,
                 task_ceiling: 69,
                 descriptor_ceiling: 1056,
+                normal_controls_bytes: 0,
                 actor_family: None,
             };
 

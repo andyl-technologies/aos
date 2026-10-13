@@ -102,6 +102,7 @@ pub(in crate::linux_attempt_host) struct OriginalNativeAccountCredit {
     pub(in crate::linux_attempt_host) full_resident_bytes: u64,
     pub(in crate::linux_attempt_host) full_backing_bytes: u64,
     pub(in crate::linux_attempt_host) total_metadata_bytes: u64,
+    pub(in crate::linux_attempt_host) cpu_ceiling: u64,
     pub(in crate::linux_attempt_host) task_ceiling: u64,
     pub(in crate::linux_attempt_host) descriptor_ceiling: u64,
     pub(in crate::linux_attempt_host) normal_controls_bytes: u64,
@@ -123,7 +124,7 @@ impl OriginalNativeAccountCredit {
     ) -> Result<Self, OriginalActorAccountError> {
         purpose.verify_native_preparation(preparation)?;
         let bounds = purpose.bounds();
-        if controls > bounds.metadata_bytes {
+        if bounds.cpu_slots == 0 || controls > bounds.metadata_bytes {
             return Err(OriginalActorAccountError::Unavailable);
         }
         Ok(Self {
@@ -135,6 +136,7 @@ impl OriginalNativeAccountCredit {
             full_resident_bytes: bounds.resident_peak_bytes,
             full_backing_bytes: bounds.backing_peak_bytes,
             total_metadata_bytes: bounds.metadata_bytes,
+            cpu_ceiling: bounds.cpu_slots,
             task_ceiling: bounds.task_slots,
             descriptor_ceiling: bounds.file_descriptors,
             normal_controls_bytes: controls,
@@ -203,6 +205,7 @@ impl OriginalNativeAccountCredit {
                 full_resident_bytes: 1536 << 20,
                 full_backing_bytes: 4 << 30,
                 total_metadata_bytes: 512 << 20,
+                cpu_ceiling: 1,
                 task_ceiling: 69,
                 descriptor_ceiling: 1056,
                 normal_controls_bytes: 0,
@@ -350,6 +353,39 @@ impl OriginalNativeAccountCredit {
         self.task_ceiling
     }
 
+    /// Observes the CPU allowance retained by this same original issuer.
+    ///
+    /// This preserves the existing coupled CPU/vCPU admission contract. The
+    /// observation allocates nothing and cannot issue another subdivision.
+    ///
+    /// # Errors
+    /// Refuses missing or failed original custody and a zero retained ceiling.
+    pub(super) fn cpu_ceiling(&self) -> Result<u64, OriginalActorAccountError> {
+        self.require_original()?;
+        if self.cpu_ceiling == 0 {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        Ok(self.cpu_ceiling)
+    }
+
+    /// Checks a requested vCPU ceiling against this original's CPU allowance.
+    ///
+    /// This check does not establish configured CPU or thread allocation floors.
+    ///
+    /// # Errors
+    /// Preserves the same original refusal before rejecting a zero request or
+    /// a ceiling above its retained allowance.
+    pub(super) fn require_vcpu_ceiling(
+        &self,
+        requested: u32,
+    ) -> Result<(), OriginalActorAccountError> {
+        let ceiling = self.cpu_ceiling()?;
+        if requested == 0 || u64::from(requested) > ceiling {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        Ok(())
+    }
+
     pub(super) fn local_descriptor_ceiling(&self) -> Result<u64, OriginalActorAccountError> {
         self.require_original()?;
         self.original
@@ -371,3 +407,6 @@ impl Drop for OriginalNativeAccountCredit {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
