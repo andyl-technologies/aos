@@ -54,8 +54,11 @@ pub(super) fn refresh(
         .map_err(|_| denied(reference, verb))
 }
 
+/// Translates retained-clock I/O failures while preserving their original source.
+///
+/// Unsupported operations remain Unsupported; other I/O failures become Unavailable.
 #[cfg(feature = "std")]
-pub(super) fn retention_failure(error: std::io::Error) -> StoreFailure {
+pub(crate) fn retention_failure(error: std::io::Error) -> StoreFailure {
     let kind = if error.kind() == std::io::ErrorKind::Unsupported {
         crate::store::StoreErrorKind::Unsupported
     } else {

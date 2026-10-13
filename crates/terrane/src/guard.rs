@@ -72,6 +72,10 @@ mod staged;
 mod tag;
 mod time;
 
+/// Preserves native clock I/O error kinds and their original sources.
+#[cfg(all(feature = "std", feature = "tokio", unix))]
+pub(crate) use time::retention_failure as retained_clock_failure;
+
 #[cfg(all(test, feature = "tokio", feature = "surface-sdk", unix))]
 mod index_contract_tests;
 
