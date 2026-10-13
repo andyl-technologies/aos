@@ -124,18 +124,59 @@ async fn issue(
         .begin(REFERENCE, destination.authority.token(), "sdk")
         .await
         .unwrap();
+    let previous = if target.record().is_some() {
+        Some(
+            destination
+                .coordinator()
+                .guard()
+                .read_snapshot(REFERENCE, destination.authority.token(), b"/", "sdk")
+                .await
+                .unwrap(),
+        )
+    } else {
+        None
+    };
+    // Carry the authenticated old entry, including its original-introducer
+    // attributes. Recreating equal plaintext would replace the certified entry
+    // and cannot preserve its historical disclosure boundary under PROV-28.
+    let mut entries = names
+        .iter()
+        .map(|name| {
+            let entry = if *name == destination_name {
+                file(PLAINTEXT)
+            } else {
+                let previous = previous.as_ref().unwrap();
+                assert_eq!(
+                    Some(previous.commit.identity()),
+                    target.record().map(|head| head.commit)
+                );
+                let (location, _) = previous
+                    .history
+                    .locate(previous.commit.identity(), name)
+                    .unwrap();
+                previous.history.entry(&location).unwrap()
+            };
+            LeafItem {
+                key: name.to_vec(),
+                entry,
+            }
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.key.cmp(&right.key));
+    let candidate = Tree::build(
+        entries,
+        materialization::properties(false),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
     destination
         .coordinator()
         .advance_disclosure(
             source.coordinator().guard(),
             &mut target,
             DisclosureCommitRequest {
-                proposal: proposal(
-                    &destination.authority,
-                    parents,
-                    &tree(names, false),
-                    &[PLAINTEXT],
-                ),
+                proposal: proposal(&destination.authority, parents, &candidate, &[PLAINTEXT]),
                 selections: vec![DisclosureCommitSelection {
                     source_reference: source_reference.into(),
                     source_commit,
