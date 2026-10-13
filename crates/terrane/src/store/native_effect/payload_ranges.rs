@@ -332,6 +332,17 @@ impl NativePayloadRangeRead {
         }
     }
 
+    /// Borrows the actual pathname of a native descriptor-capture request.
+    ///
+    /// Probes, range reads and closing recipes supply no capture pathname.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn capture_path_for_test(&self) -> Option<&Path> {
+        match &self.recipe {
+            Recipe::Capture { path } => Some(path),
+            _ => None,
+        }
+    }
+
     /// Borrows the exact data request for forwarding test bindings.
     #[cfg(all(test, feature = "tokio", unix))]
     pub(crate) fn read_data_range(&self) -> Option<(&Path, ByteRange)> {
