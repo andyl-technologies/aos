@@ -290,10 +290,12 @@ impl PhysicalPlacement<'_> {
                                 valid as usize,
                             )
                         };
-                    } else if self
-                        .service
-                        .read_cold(arena, page, coordinate, true, &mut scratch)?
-                        != valid
+                    } else if self.service.read_cold_for_observation(
+                        arena,
+                        page,
+                        coordinate,
+                        &mut scratch,
+                    )? != valid
                     {
                         return Err(RamError::Invariant("disk cut source length changed"));
                     }

@@ -10,6 +10,7 @@ pub(in crate::paged_ram::engine) mod capture_work;
 use capture_work::FaultWorkOwner;
 
 mod actor_lifetime;
+mod page_read;
 pub(super) use actor_lifetime::ActorLifetime;
 
 /// Borrows the native hasher and callback-local failure destination together.
@@ -282,22 +283,14 @@ impl FaultService {
         Ok(())
     }
 
-    pub(super) fn read_cold(
+    pub(super) fn read_cold_for_observation(
         &self,
         arena: &Arena,
         page_index: u64,
         coordinate: usize,
-        observation: bool,
         scratch: &mut [u8; PAGE_BYTES],
     ) -> Result<u32, RamError> {
-        self.read_cold_with_hasher::<false>(
-            arena,
-            page_index,
-            coordinate,
-            observation,
-            scratch,
-            None,
-        )
+        self.read_cold_with_hasher::<false>(arena, page_index, coordinate, scratch, None)
     }
 
     fn read_cold_with_hasher<const BORROWED: bool>(
@@ -305,7 +298,6 @@ impl FaultService {
         arena: &Arena,
         page_index: u64,
         coordinate: usize,
-        observation: bool,
         scratch: &mut [u8; PAGE_BYTES],
         root: Option<BorrowedRootRead<'_>>,
     ) -> Result<u32, RamError> {
@@ -342,12 +334,9 @@ impl FaultService {
                 .map_err(|error| source_read_failure(error, root_failure))?;
                 return Ok(record.valid_length());
             }
-            let class = if observation {
-                SourceOperationClass::FingerprintUpdate
-            } else {
-                SourceOperationClass::PageIn
-            };
-            let operation = self.operations.begin(class)?;
+            let operation = self
+                .operations
+                .begin(SourceOperationClass::FingerprintUpdate)?;
             let spill = self
                 .spill
                 .try_lock()
@@ -373,10 +362,8 @@ impl FaultService {
                 // conversion boundary. Root causes stay owned until their caller
                 // records the same first-failure cut.
                 .map_err(|error| source_read_failure(error, root_failure))?
-        } else if observation {
-            source.fetch_for_observation(arena.native.region_index, page_index, scratch)?
         } else {
-            source.fetch(arena.native.region_index, page_index, scratch)?
+            source.fetch_for_observation(arena.native.region_index, page_index, scratch)?
         };
         Ok(valid)
     }
@@ -463,7 +450,10 @@ impl FaultService {
                 self.registration.wake(address).map_err(RamError::from)?;
                 return Ok(());
             }
-            let valid = self.read_cold(arena, page_index, coordinate, false, scratch)?;
+            // The consumed fault already owns its PageIn Original. The backing
+            // exchange reports one authenticated unit without completing it;
+            // ioctl, page publication and wake still belong to the same fault.
+            let valid = self.read_page_source(arena, page_index, coordinate, operation, scratch)?;
             // A terminal request accepted while backing I/O was pending refuses
             // installation after the original read returns, retaining UFFD.
             self.lifetime
@@ -713,7 +703,6 @@ fn read_operational_page<const ROOT_SCRATCH: bool>(
                             arena,
                             page_index,
                             coordinate,
-                            true,
                             bytes,
                             Some(BorrowedRootRead {
                                 hasher,

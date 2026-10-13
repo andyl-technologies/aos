@@ -574,13 +574,18 @@ impl PhysicalPlacement<'_> {
                     .service
                     .operations
                     .begin(SourceOperationClass::PageIn)?;
-                let valid = self
-                    .service
-                    .read_cold(arena, page, coordinate, false, scratch)?;
+                let valid = self.service.read_page_source(
+                    arena,
+                    page,
+                    coordinate,
+                    operation.as_ref(),
+                    scratch,
+                )?;
                 if valid as usize != PAGE_BYTES {
                     return Err(RamError::Invariant("prefetch source length changed"));
                 }
                 operation.wait_slice()?;
+                self.check_budget()?;
                 let address = arena.native.host_address + page * PAGE_BYTES as u64;
                 self.service.registration.populate(address, scratch)?;
                 self.service
@@ -591,6 +596,8 @@ impl PhysicalPlacement<'_> {
                     .ok_or("prefetch coordinate absent")?
                     .resident = true;
                 count_completed(&self.service.counters.prefetched_pages)?;
+                operation.wait_slice()?;
+                self.check_budget()?;
                 self.service.registration.wake(address)?;
                 operation.complete()?;
                 *resident += PAGE_BYTES as u64;
