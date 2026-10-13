@@ -252,9 +252,16 @@ The renewed 1,024-entry ordinary and adversarial populations pass once in
 766.455 and 722.203 seconds under their original 1,800-second bounds. The
 2,048-entry ordinary and adversarial populations also pass once in 1,375.060
 and 1,380.228 seconds under their original bounds, with unchanged source,
-inputs and executables. The two 4,096-entry populations, full SDK, owning Nix
-gates, application targets and the complete current T1 floor remain pending;
-scoped success advances no task.
+inputs and executables. The 4,096-entry ordinary population times out once
+in 1,800.061 seconds at its unchanged 1,800-second limit, after the maintained
+publication marker. Its log does not establish the unfinished call or cause.
+The 4,096-entry adversarial population remains unstarted. Independent review
+verifies the complete failure packet, unchanged source, compiler inputs and
+executables, archived temporary files and terminated owned processes.
+DRV-29 remains blocked; the full SDK, owning Nix gates, application targets
+and complete current T1 floor remain pending. Scoped success advances no task.
+Bounded test diagnostics are being prepared in a separate worktree to measure
+the unfinished publication, preserving its assertions and original deadline.
 The unfiltered SDK qualification must retain all 1,121 actual cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
 cases. Application test-target compilation and strict Clippy/private rustdoc for

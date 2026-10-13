@@ -14,6 +14,8 @@ pub mod codec;
 pub mod config;
 #[cfg(feature = "std")]
 pub mod derivation;
+#[cfg(all(test, feature = "std", feature = "tokio"))]
+mod diagnostic_clock;
 pub mod derived;
 pub mod domain;
 pub mod gc;
