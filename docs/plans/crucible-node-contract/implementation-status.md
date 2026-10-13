@@ -2767,6 +2767,14 @@ in-callback fork control and its isolated wrapper pass; strict all-target and
 all-feature checks pass for the shared-memory crate. This extends the earlier
 preparation helper checks and grants no native execution or capture authority.
 
+The construction callback now receives `OrdinaryPreparationView`, which
+provides gated ring-pair construction and read-only identity instead of mutable
+ownership of the entire mapped resource. Safe resource replacement and nested
+loan swapping fail to compile. Six controls and three isolated fork fixtures
+pass; the plugin caller is compiled and checked against this exact view. The
+joined current-source strict checks, fresh ELF and two affected plugin controls
+pass. No generic result-leak retention mechanism is needed.
+
 ## Complete workspace vendor staging hash
 
 The workspace dependency hash now matches the exact current Cargo lockfile.

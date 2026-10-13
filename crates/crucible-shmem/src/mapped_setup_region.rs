@@ -46,8 +46,9 @@ pub use hot_fork::{
     MappedRingIoBarrierSnapshot,
 };
 pub use selected_lifecycle::{
-    OwnedSetupMapping, RetainedWholeMapping, SelectedRingAdmissionBudget, SelectedRingCompletion,
-    SharedOwnedSetupMapping, SharedSetupMappingReadGuard, WholeMappingCustodyError,
+    OrdinaryPreparationView, OwnedSetupMapping, RetainedWholeMapping, SelectedRingAdmissionBudget,
+    SelectedRingCompletion, SharedOwnedSetupMapping, SharedSetupMappingReadGuard,
+    WholeMappingCustodyError,
 };
 
 impl Drop for MappedSetupRegion {

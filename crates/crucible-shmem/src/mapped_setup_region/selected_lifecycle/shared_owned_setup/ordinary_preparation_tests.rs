@@ -28,7 +28,10 @@ fn prepared_ticket_keeps_unique_same_map_and_ordinary_ring_gates() -> TestResult
         // The backing loan is not held across construction. Each actual
         // mutation below acquires its own ordinary protocol gate.
         assert!(domain.selection.try_lock().is_ok());
-        assert_eq!(std::ptr::from_ref(mapping) as usize, allocation);
+        assert_eq!(
+            std::ptr::from_ref::<MappedSetupRegion>(mapping.mapping) as usize,
+            allocation
+        );
         let pair = mapping.node_directed_ring_pair_mut(
             0,
             0,

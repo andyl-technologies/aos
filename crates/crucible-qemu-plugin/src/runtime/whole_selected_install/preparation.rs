@@ -287,7 +287,7 @@ impl EndpointEngine {
     fn new(
         original: &Arc<SharedCallbackCustody>,
         birth: NativePreparation,
-        mapping: &mut crucible_shmem::MappedSetupRegion,
+        mapping: &mut crucible_shmem::OrdinaryPreparationView<'_>,
     ) -> Result<Self, c_int> {
         let slot = original.args.slot();
         let mut pair = |peer| {

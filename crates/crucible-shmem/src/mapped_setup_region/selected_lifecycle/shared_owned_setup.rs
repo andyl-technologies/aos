@@ -106,6 +106,75 @@ impl Drop for SharedSetupMappingReadGuard<'_> {
     }
 }
 
+/// Lends original queue construction without transferring mapped-resource ownership.
+///
+/// The view has no constructor, mutable-map accessor or `DerefMut` implementation.
+/// Queue references borrow this view and retain the mapped region's existing
+/// validation and ordinary gates. This Rust borrow grants no native permission.
+///
+/// Replacing the mapped resource through a safe callback is unavailable:
+///
+/// ```compile_fail
+/// use crucible_shmem::{MappedSetupRegion, OrdinaryPreparationView};
+/// fn replace_original(view: &mut OrdinaryPreparationView<'_>, replacement: MappedSetupRegion) {
+///     std::mem::replace(view, replacement);
+/// }
+/// ```
+/// Distinct callback loans also cannot exchange their private map borrows:
+///
+/// ```compile_fail
+/// use crucible_shmem::SharedOwnedSetupMapping;
+/// fn swap_originals(first: &SharedOwnedSetupMapping, second: &SharedOwnedSetupMapping) {
+///     let _ = first.with_ordinary_preparation(|first_view| {
+///         let _ = second.with_ordinary_preparation(|second_view| {
+///             std::mem::swap(first_view, second_view);
+///             Ok::<_, ()>(())
+///         });
+///         Ok::<_, ()>(())
+///     });
+/// }
+/// ```
+pub struct OrdinaryPreparationView<'mapping> {
+    mapping: &'mapping mut MappedSetupRegion,
+}
+
+impl OrdinaryPreparationView<'_> {
+    /// Returns the original process-private VMA address without reading its pages.
+    pub fn mapping_start(&self) -> usize {
+        self.mapping.mapping_start()
+    }
+
+    /// Returns the original retained backing identity without inspecting headers.
+    pub fn backing_identity(&self) -> SetupRegionBackingIdentity {
+        self.mapping.backing_identity()
+    }
+
+    /// Borrows two original directed rings for construction of queue adapters.
+    ///
+    /// Both ring references end with this view's borrow. This method preserves
+    /// the original region's checked geometry and ordinary mutation gates.
+    ///
+    /// # Errors
+    /// Refuses invalid headers, absent nodes or rings, duplicate rings, foreign
+    /// ownership, selected custody or out-of-bounds typed segments.
+    pub fn node_directed_ring_pair_mut(
+        &mut self,
+        node_slot: u32,
+        first_src_slot: u32,
+        first_dst_slot: u32,
+        second_src_slot: u32,
+        second_dst_slot: u32,
+    ) -> Result<crate::MappedNodeRingPairMut<'_>, crate::MappedSetupRegionAccessError> {
+        self.mapping.node_directed_ring_pair_mut(
+            node_slot,
+            first_src_slot,
+            first_dst_slot,
+            second_src_slot,
+            second_dst_slot,
+        )
+    }
+}
+
 /// Owns the original setup field through process-private callback generations.
 ///
 /// Native callbacks borrow this field through shared userdata. Short ownership
@@ -250,7 +319,7 @@ impl SharedOwnedSetupMapping {
     /// callback itself succeeds.
     pub fn with_ordinary_preparation<T, E>(
         &self,
-        callback: impl FnOnce(&mut MappedSetupRegion) -> Result<T, E>,
+        callback: impl FnOnce(&mut OrdinaryPreparationView<'_>) -> Result<T, E>,
     ) -> Result<Result<T, E>, WholeMappingCustodyError> {
         let generation = self.generation()?;
         let mut fence = SharedPreparationFence {
@@ -292,7 +361,8 @@ impl SharedOwnedSetupMapping {
             Ok::<_, WholeMappingCustodyError>(())
         })?;
         fence.registered = true;
-        let result = callback(mapping);
+        let mut construction = OrdinaryPreparationView { mapping };
+        let result = callback(&mut construction);
         // A callback which forks cannot return copied ownership or generic
         // destructors through this process-private loan. Only the original
         // parent may unlock its guard or publish its construction result.

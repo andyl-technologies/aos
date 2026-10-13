@@ -916,7 +916,9 @@ pub(super) fn authorize_mutable_view(
 #[path = "selected_lifecycle/shared_owned_setup.rs"]
 mod shared_owned_setup;
 
-pub use shared_owned_setup::{SharedOwnedSetupMapping, SharedSetupMappingReadGuard};
+pub use shared_owned_setup::{
+    OrdinaryPreparationView, SharedOwnedSetupMapping, SharedSetupMappingReadGuard,
+};
 
 /// Checks exact selected targets before any mutable entry slice is created.
 ///

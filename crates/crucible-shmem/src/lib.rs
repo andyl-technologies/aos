@@ -181,7 +181,7 @@ pub use mapped_setup_region::{
     MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut, MappedPluginAcceleratorRingsMut,
     MappedPluginGuestIntrospectionRingsMut, MappedRingIoBarrierSnapshot,
     MappedSelectableReplyRingMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    MappedWhiteboxMarkerRingMut, OwnedSetupMapping, RetainedWholeMapping,
+    MappedWhiteboxMarkerRingMut, OrdinaryPreparationView, OwnedSetupMapping, RetainedWholeMapping,
     SelectedRingAdmissionBudget, SelectedRingCompletion, SetupRegionBackingIdentity,
     SetupRegionMapError, SharedOwnedSetupMapping, SharedSetupMappingReadGuard,
     WholeMappingCustodyError, mmap_setup_region,

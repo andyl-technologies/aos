@@ -302,11 +302,12 @@ impl PluginSetupCompletion {
         self.mapped_region.prepare_whole_intent_retention()
     }
 
-    /// Lends the same original mapping for authenticated stopped-RR construction.
+    /// Lends restricted original ring construction for authenticated stopped RR.
     ///
     /// Native permission must be captured before calling this method. The
     /// closure performs only Rust construction; no borrow or guard may cross a
-    /// native setter, binding, HOLD or service callback.
+    /// native setter, binding, HOLD or service callback. The view never exposes
+    /// mutable ownership of the mapping itself or permits its replacement.
     ///
     /// # Errors
     ///
@@ -314,7 +315,7 @@ impl PluginSetupCompletion {
     /// Current-generation refusal retains the same prepared mapping ticket.
     pub(crate) fn with_whole_ordinary_preparation<T, E>(
         &self,
-        construct: impl FnOnce(&mut MappedSetupRegion) -> Result<T, E>,
+        construct: impl FnOnce(&mut crucible_shmem::OrdinaryPreparationView<'_>) -> Result<T, E>,
     ) -> Result<Result<T, E>, WholeMappingCustodyError> {
         self.mapped_region.with_ordinary_preparation(construct)
     }
