@@ -231,8 +231,18 @@ effect boundary. The narrow correction captures genuine effect-compatible
 original selected recipes under the existing read-only source holder; it
 performs no source repair and leaves ordinary history DATA reads unchanged.
 Its observed runtime failure location is not established by that source
-finding. Fresh compiler and runtime qualification and acceptance remain
-pending; these compiler results qualify no owning gate.
+finding. Corrected frozen `dc51714cebb4` (tree `da5a85111673`) passes all nine
+compiler and inventory phases, then the Recorded positive and all four held
+cases pass once at their original limits. The occupied-recovery case fails
+physical snapshot equality after the expected ordinary Guard-factory refusal;
+eighteen cases remain unstarted. Actual differences are the capability-probe
+successor, portable snapshot and affected directory metadata. BKT-10/12 require
+the backend open's probes before Guard installation. The reviewed fixture
+correction stages that genuine open before its full physical refusal baseline,
+checks unchanged Guard, ref, session and Original controls across setup, and
+adds complete selected state, slot and logical-byte equality across the actual
+Guard-factory refusal. All paired retry oracles remain unchanged. Fresh
+qualification of that fixture and owning-gate acceptance remain pending.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
 Growing populations, full SDK and owning Nix qualification remain pending.
