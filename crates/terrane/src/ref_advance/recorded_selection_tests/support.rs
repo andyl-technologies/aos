@@ -28,6 +28,10 @@ impl Location {
     ///
     /// # Errors
     /// Preserves missing Original context and unavailable physical metadata failures.
+    ///
+    /// # Panics
+    /// Panics if the Original authority names another bucket root or the selected
+    /// current Guard snapshot contradicts the fixture profile.
     pub(super) async fn capture(repository: &Native, view: Digest) -> Result<Self> {
         let guard = repository.coordinator().guard();
         let original = guard.original_commit(&view)?;
@@ -53,6 +57,10 @@ impl Location {
     ///
     /// # Errors
     /// Rejects unsupported or conflicting configured selections and unsafe or absent native records.
+    ///
+    /// # Panics
+    /// Panics if the reopened current Guard snapshot contradicts the fixture
+    /// profile or differs from the captured snapshot.
     pub(super) async fn reopen(
         &self,
         revision: u64,

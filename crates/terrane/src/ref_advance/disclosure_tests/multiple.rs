@@ -210,6 +210,12 @@ fn manifest_request(plaintext: &[u8]) -> (super::super::CommitRequest, ContentRe
     (proposal, content)
 }
 
+/// Checks two independently published manifests through certified disclosure and destination reads.
+///
+/// # Panics
+/// Panics if native setup, manifest construction, publication or reads fail, or
+/// if distinct authorities, certificates, retained histories or file contents
+/// contradict the fixture assertions.
 pub(super) async fn publish_independent_manifests() {
     use super::super::{DisclosureCommitRequest, DisclosureCommitSelection};
 
