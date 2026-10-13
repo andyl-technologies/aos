@@ -355,6 +355,7 @@ extern "C" fn closed_network(_: *const u8, _: usize, _: u64, _: *mut c_void) -> 
     refuse_endpoint();
     -libc::ENOTSUP
 }
+
 extern "C" fn closed_block_submit(
     _: u64,
     _: u32,
@@ -367,32 +368,40 @@ extern "C" fn closed_block_submit(
     refuse_endpoint();
     -libc::ENOTSUP
 }
+
 extern "C" fn closed_block_poll(_: u64, _: u32, _: *mut u8, _: usize, _: *mut c_void) -> i64 {
     refuse_endpoint();
     -i64::from(libc::ENOTSUP)
 }
+
 extern "C" fn closed_event_poll(_: *mut u8, _: usize, _: *mut c_void) -> i64 {
     refuse_endpoint();
     -i64::from(libc::ENOTSUP)
 }
+
 extern "C" fn closed_event_commit(_: *mut c_void) -> c_int {
     refuse_endpoint();
     -libc::ENOTSUP
 }
+
 extern "C" fn closed_save(_: *mut u8, _: usize, _: *mut c_void) -> i64 {
     refuse_endpoint();
     -i64::from(libc::ENOTSUP)
 }
+
 extern "C" fn closed_restore(_: *const u8, _: usize, _: u64, _: u32, _: *mut c_void) -> c_int {
     refuse_endpoint();
     -libc::ENOTSUP
 }
+
 extern "C" fn closed_wait(_: u32, _: *mut c_void) {
     refuse_endpoint();
 }
+
 extern "C" fn closed_burst(_: *mut c_void) {
     refuse_endpoint();
 }
+
 extern "C" fn closed_ninep_submit(
     _: u32,
     _: *const u8,
@@ -403,6 +412,7 @@ extern "C" fn closed_ninep_submit(
     refuse_endpoint();
     -libc::ENOTSUP
 }
+
 extern "C" fn closed_ninep_poll(_: u32, _: *mut u8, _: usize, _: *mut c_void) -> i64 {
     refuse_endpoint();
     -i64::from(libc::ENOTSUP)
