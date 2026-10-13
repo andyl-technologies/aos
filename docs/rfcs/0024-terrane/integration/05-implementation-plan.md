@@ -259,6 +259,13 @@ library cases, one attribute SDK integration case and five local SDK integration
 cases. Application test-target compilation and strict Clippy/private rustdoc for
 the default, std-send and native profiles remain separate required checks;
 the current Terrane aggregate does not include those checks.
+Review of the branch graph confirms that the frozen composition includes all
+twelve original scoped worklines and their later corrections. The original
+task versions alone differ from it on seventy-four paths outside this plan.
+A partial task merge would omit implementations and exact selectors required
+by the current floor; qualification must cover the actual proposed trunk tree
+with those owners and corrections present. Composition success cannot qualify
+a different partial trunk tree or advance its task checkboxes.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
 Growing populations, full SDK and owning Nix qualification remain pending.
