@@ -371,12 +371,15 @@ impl LocalFs for ReadFs {
     async fn read_range(&self, path: &Path, range: ByteRange) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.read_range(path, range).await
     }
+
     async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.random_bytes(length).await
     }
+
     async fn lock_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
         TokioLocalFs.lock_exclusive(path).await
     }
+
     async fn lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
         TokioLocalFs.lock_existing_exclusive(path).await
     }
@@ -392,36 +395,45 @@ impl LocalFs for ReadFs {
     async fn symlink_metadata(&self, path: &Path) -> std::io::Result<std::fs::Metadata> {
         TokioLocalFs.symlink_metadata(path).await
     }
+
     async fn metadata(&self, path: &Path) -> std::io::Result<std::fs::Metadata> {
         TokioLocalFs.metadata(path).await
     }
+
     async fn write_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         self.0.effects.fetch_add(1, Ordering::SeqCst);
         TokioLocalFs.write_new(path, bytes).await
     }
+
     async fn create_dir_all(&self, path: &Path) -> std::io::Result<()> {
         self.0.effects.fetch_add(1, Ordering::SeqCst);
         TokioLocalFs.create_dir_all(path).await
     }
+
     async fn read_dir(&self, path: &Path) -> std::io::Result<Vec<PathBuf>> {
         panic!("copy acquisition must not list {}", path.display());
     }
+
     async fn remove_file(&self, path: &Path) -> std::io::Result<()> {
         self.0.effects.fetch_add(1, Ordering::SeqCst);
         TokioLocalFs.remove_file(path).await
     }
+
     async fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         self.0.effects.fetch_add(1, Ordering::SeqCst);
         TokioLocalFs.rename(from, to).await
     }
+
     async fn rename_no_replace(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         self.0.effects.fetch_add(1, Ordering::SeqCst);
         TokioLocalFs.rename_no_replace(from, to).await
     }
+
     async fn sync_file(&self, path: &Path) -> std::io::Result<()> {
         self.0.effects.fetch_add(1, Ordering::SeqCst);
         TokioLocalFs.sync_file(path).await
     }
+
     async fn sync_directory(&self, path: &Path) -> std::io::Result<()> {
         self.0.effects.fetch_add(1, Ordering::SeqCst);
         TokioLocalFs.sync_directory(path).await
