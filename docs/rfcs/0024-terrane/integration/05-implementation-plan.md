@@ -193,7 +193,12 @@ three remain unstarted. Source review identifies a surviving source adapter
 that retains a namespace exclusion duplicate across fresh authorization.
 The reviewed test-only correction releases that adapter while preserving
 every assertion and genuine first-control acquisition. The timeout log does
-not identify its unfinished await; renewed runtime qualification is pending.
+not identify its unfinished await. Frozen `848dd4ec43eb` (tree `1db520d66f54`)
+passes the complete scoped compiler pipeline and all four exact held-history
+cases once, with unchanged source, compiler inputs, executables and original
+120-second limits. The one-case summaries are 6.396, 11.956, 39.157 and 6.703
+seconds. Fifteen independently reviewed owning regressions are next; growing
+populations, full SDK and owning Nix qualification remain pending.
 The submitted-closing cancellation regression now drops every caller hold
 and independently tests both exclusions while the actual native worker is
 paused before its unchanged physical checks. These source preparations and
