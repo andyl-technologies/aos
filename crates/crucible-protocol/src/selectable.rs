@@ -206,6 +206,15 @@ impl SelectableRegister {
         )
     }
 
+    /// Counts the complete canonical registration without allocating a body.
+    ///
+    /// # Errors
+    /// Rejects invalid identifiers, fields, tags or aggregate encoded bounds.
+    pub fn encoded_len(&self) -> Result<usize, SelectableProtocolError> {
+        self.validate()?;
+        self.encode_len()
+    }
+
     /// Encodes this registration into its canonical v1 byte representation.
     ///
     /// # Errors
@@ -411,6 +420,15 @@ impl SelectionRequest {
             narrowed_domain,
             header.total_len,
         )
+    }
+
+    /// Counts the complete canonical request and its original reply reservation.
+    ///
+    /// # Errors
+    /// Rejects invalid fields or a reply reservation outside its byte profile.
+    pub fn encoded_len(&self) -> Result<usize, SelectableProtocolError> {
+        self.validate()?;
+        Ok(self.reply_capacity)
     }
 
     /// Encodes this request and its complete zero-filled reply reservation.

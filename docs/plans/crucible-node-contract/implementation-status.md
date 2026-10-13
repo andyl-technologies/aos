@@ -2152,6 +2152,15 @@ for launch and 1,004 bytes for complete setup; the incomplete 876-byte setup
 remains a negative fixture. Native component tests use modeled board peers and
 do not qualify actual constructors, installed producers or Linux execution.
 
+Complete setup sizing now uses checked nested lengths before allocating an
+encoding buffer. Pending requests retain their entire original reply capacity
+in that count. All 213 portable tests pass with one existing ignored test,
+strict compilation and Clippy. Actual allocator controls report zero sizing
+allocations for the complete 1,004-byte Launch2 setup and a 4,479-byte restored
+setup containing a 4,096-byte reply reservation; both counts match the encoded
+bytes. This helper supplies pre-effect resource admission and preserves the
+wire format. It does not qualify an installed producer or readiness.
+
 The runtime now requires an authenticated consumer commitment before releasing
 input ownership or issuing execution grants. Both new adapter hooks refuse by
 default. Host-owned adapters explicitly validate their retained original input;

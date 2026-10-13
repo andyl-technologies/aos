@@ -125,6 +125,41 @@ impl PluginSetupPlan {
         )
     }
 
+    /// Counts the full original setup body before any encoding allocation.
+    ///
+    /// This checked count includes both independently versioned nested plans
+    /// and the complete selected constructor body when present.
+    ///
+    /// # Errors
+    /// Rejects invalid nested message lengths, overflow or an oversized body.
+    pub fn encoded_len(&self) -> Result<usize, PluginSetupPlanError> {
+        let app = self
+            .app_random_branch_plan
+            .encoded_len()
+            .map_err(|source| PluginSetupPlanError::AppRandom { source })?;
+        let catalog = self
+            .selectable_catalog_plan
+            .encoded_len()
+            .map_err(|source| PluginSetupPlanError::Selectable { source })?;
+        let total = checked_total_len(app, catalog)?
+            .checked_add(
+                self.whole_constructor
+                    .as_ref()
+                    .map_or(0, |selection| 8 + selection.body().len()),
+            )
+            .ok_or(PluginSetupPlanError::PlanTooLarge {
+                bytes: usize::MAX,
+                maximum: PLUGIN_SETUP_PLAN_MAX_BYTES,
+            })?;
+        if total > PLUGIN_SETUP_PLAN_MAX_BYTES {
+            return Err(PluginSetupPlanError::PlanTooLarge {
+                bytes: total,
+                maximum: PLUGIN_SETUP_PLAN_MAX_BYTES,
+            });
+        }
+        Ok(total)
+    }
+
     /// Encodes this plan in the canonical composite descriptor-body format.
     ///
     /// # Errors
@@ -132,6 +167,7 @@ impl PluginSetupPlan {
     /// Returns [`PluginSetupPlanError`] if the selectable plan cannot be
     /// encoded or the aggregate canonical length cannot be represented.
     pub fn encode(&self) -> Result<Vec<u8>, PluginSetupPlanError> {
+        let total_len = self.encoded_len()?;
         let app_random_bytes = self.app_random_branch_plan.encode();
         let selectable_bytes = self
             .selectable_catalog_plan
@@ -141,18 +177,6 @@ impl PluginSetupPlan {
             .whole_constructor
             .as_ref()
             .map(WholeConstructorSelection::body);
-        let total_len = checked_total_len(app_random_bytes.len(), selectable_bytes.len())?
-            .checked_add(whole_bytes.map_or(0, |body| 8 + body.len()))
-            .ok_or(PluginSetupPlanError::PlanTooLarge {
-                bytes: usize::MAX,
-                maximum: PLUGIN_SETUP_PLAN_MAX_BYTES,
-            })?;
-        if total_len > PLUGIN_SETUP_PLAN_MAX_BYTES {
-            return Err(PluginSetupPlanError::PlanTooLarge {
-                bytes: total_len,
-                maximum: PLUGIN_SETUP_PLAN_MAX_BYTES,
-            });
-        }
         let total_len_u32 =
             u32::try_from(total_len).map_err(|_error| PluginSetupPlanError::PlanTooLarge {
                 bytes: total_len,
