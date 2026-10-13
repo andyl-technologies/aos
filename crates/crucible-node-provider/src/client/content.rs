@@ -7,6 +7,13 @@ use crucible_node_contract::{ContentRef, Id, U64, Validate};
 
 use crate::{ProviderError, bodies::*};
 
+fn serialize_shared_bytes<S: serde::Serializer>(
+    bytes: &Rc<Vec<u8>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(bytes.as_slice(), serializer)
+}
+
 #[cfg(test)]
 #[path = "content_installation_tests.rs"]
 mod installation_tests;
@@ -401,11 +408,4 @@ mod tests {
         content.chunk(&chunk(0, b"abc")).unwrap();
         assert_eq!(content.get(&reference).unwrap(), b"abc");
     }
-}
-
-fn serialize_shared_bytes<S: serde::Serializer>(
-    bytes: &Rc<Vec<u8>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serde::Serialize::serialize(bytes.as_slice(), serializer)
 }

@@ -1,4 +1,6 @@
 //! Checks original deadline transfer without renewing physical allowance.
+// crucible-lint: allow panic-shortcut -- These deadline regressions deliberately panic when expected framing or timeout failures are absent.
+#![allow(clippy::unwrap_used)]
 
 use super::*;
 
