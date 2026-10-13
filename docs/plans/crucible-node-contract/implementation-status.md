@@ -2749,6 +2749,14 @@ guest was reaped with no remaining process group. The next attempt requires
 genuine realized package paths and their runtime closures; this failure
 supplies no evidence about the outstanding timer split or ABI conformance.
 
+The patched Linux QEMU recipe now retains the source-built x86 firmware
+provider and its corresponding source in a distinct selected-profile data
+directory. Installation verifies all 16 products and the two native builtin
+pins; the ordinary firmware directory and boot arguments are unchanged.
+Actual installer/readback and changed-builtin refusal controls pass, with
+independent source review. Its native resolver and ordinary package realization
+remain pending; this does not complete the other firmware families.
+
 ## Mutable stopped-preparation loan across fork
 
 The ordinary preparation helper now registers its mutable loan before invoking

@@ -55,6 +55,7 @@
   fullUpstreamTestSuiteOnly ? false,
   focusedUpstreamTest ? null,
   qemuTestRunner ? null,
+  qemu-firmware-x86 ? null,
   atomicPatch ? import ./qemu-patches/_atomic-patch.nix,
 }: let
   _testArtifactPolicy =
@@ -101,6 +102,15 @@
     then throw "the full patched-QEMU test suite requires an explicit generic QEMU runner"
     else null;
   version = atomicPatch.qemuVersion;
+  selectedX86Firmware =
+    if applyCruciblePatch && stdenv.hostPlatform.isLinux
+    then qemu-firmware-x86
+    else null;
+  selectedFirmwareInstaller = ./_install-selected-qemu-firmware.py;
+  _selectedFirmwarePolicy =
+    if applyCruciblePatch && stdenv.hostPlatform.isLinux && selectedX86Firmware == null
+    then throw "Patched Linux QEMU requires its source-built selected x86 firmware provider"
+    else null;
   nativeCostsBaseline = import ./qemu-patches/_native-costs-baseline.nix;
   nativeCostsBaselineManifest = builtins.toFile "native-costs-baseline.json" (
     builtins.toJSON (builtins.removeAttrs nativeCostsBaseline ["patch"])
@@ -507,6 +517,11 @@
     qemu_shmem_abi=${shmemAbi}
     qemu_shmem_header=${shmemHeaderInstallPath}
     qemu_shmem_header_hash=${shmemHeaderHash}
+    ${lib.optionalString (selectedX86Firmware != null) ''
+      qemu_selected_x86_firmware=${selectedX86Firmware}
+      qemu_selected_x86_firmware_source=${selectedX86Firmware.source}
+      qemu_selected_x86_installer_hash=${builtins.hashFile "sha256" selectedFirmwareInstaller}
+    ''}
   '';
   qemuBuildIdentity = builtins.hashString "sha256" qemuBuildIdentityMaterial;
   patchPhase =
@@ -518,6 +533,7 @@ in
   assert _testArtifactPolicy == null;
   assert _fullTestSuitePolicy == null;
   assert _fullTestVmPolicy == null;
+  assert _selectedFirmwarePolicy == null;
     mkDerivation {
       platformSupport =
         if pname == "qemu"
@@ -688,7 +704,11 @@ in
               qemuTestRunner
             ]
           );
-      runtimeDeps = qemuRuntimeDeps ++ lib.optional enableLinuxUser bash;
+      runtimeDeps =
+        qemuRuntimeDeps
+        ++ lib.optional enableLinuxUser bash
+        ++ lib.optionals (selectedX86Firmware != null)
+        [selectedX86Firmware selectedX86Firmware.source];
       propagatedDeps = [];
       exportReferencesGraph =
         if fullUpstreamTestSuiteOnly
@@ -4570,6 +4590,13 @@ in
                 test -f "$out/share/qemu/$firmware"
                 chmod a-x "$out/share/qemu/$firmware"
               done
+            ''}
+
+            ${lib.optionalString (selectedX86Firmware != null) ''
+              # Selected constructors consume a distinct source-built profile.
+              # Keep legacy firmware and deterministic ordinary boots intact.
+              ${buildPython}/bin/python3 ${selectedFirmwareInstaller} \
+                ${selectedX86Firmware} ${selectedX86Firmware.source} "$out"
             ''}
 
             ${lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
