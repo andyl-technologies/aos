@@ -132,6 +132,45 @@ impl Native5CodecOwner {
         }
     }
 
+    /// Compares durable grammar from two actual installed controller policies.
+    ///
+    /// Live admissions and the full coordinator mapping are retained separately
+    /// for the source factory's target-context authentication. This necessary
+    /// compatibility check cannot authorize installing captured state.
+    pub(crate) fn authenticate_durable_controller_grammar(
+        &self,
+        fresh: &Self,
+    ) -> Result<(), ProviderError> {
+        let (Self::ControllerPacket(original), Self::ControllerPacket(target)) = (self, fresh)
+        else {
+            return Err(ProviderError::Correlation(
+                "fresh controller mapping requires two actual controller codecs",
+            ));
+        };
+        if original.definition != target.definition
+            || !same_durable_selection(&original.selection, &target.selection)
+            || original.connected.schema != target.connected.schema
+            || original.connected.participants.len() != target.connected.participants.len()
+            || !original
+                .connected
+                .participants
+                .iter()
+                .zip(&target.connected.participants)
+                .all(|(original, target)| same_durable_selection(original, target))
+            || original.connected.host.descriptor != target.connected.host.descriptor
+            || original.connected.host.binding.compatibility
+                != target.connected.host.binding.compatibility
+            || original.connected.host.binding.extensions
+                != target.connected.host.binding.extensions
+            || original.connected.host.owner != target.connected.host.owner
+        {
+            return Err(ProviderError::Correlation(
+                "fresh native5 durable controller grammar changed",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn protocol_view(&self) -> impl serde::Serialize + '_ {
         struct View<'a>(&'a Native5CodecOwner);
         impl serde::Serialize for View<'_> {
@@ -168,6 +207,10 @@ impl BodySchemaVerifier for Native5CodecOwner {
 }
 
 impl<S: ProviderStream> Connection<S> {
+    pub(crate) fn retained_native5_codec_owner(&self) -> Option<&Rc<Native5CodecOwner>> {
+        self.native5_codec.as_ref()
+    }
+
     /// Rechecks the original actor, registration and exact installed verifier Rc.
     ///
     /// Immutable policy was fully validated at one-shot installation. This
@@ -279,4 +322,35 @@ impl<S: ProviderStream> Connection<S> {
             Ok(())
         })
     }
+}
+
+// Live authority, realization/admission IDs and coordinator initialization are
+// deliberately not projected into compatibility. The full actual policies stay
+// retained for the source's separate authenticated target-association check.
+fn same_durable_selection(
+    original: &PacketControlSelection,
+    target: &PacketControlSelection,
+) -> bool {
+    original.provider == target.provider
+        && original.realization.schema_version == target.realization.schema_version
+        && original.realization.provider_manifest == target.realization.provider_manifest
+        && original.realization.descriptors == target.realization.descriptors
+        && original.realization.owners == target.realization.owners
+        && original.realization.owner_bindings == target.realization.owner_bindings
+        && original.realization.extensions == target.realization.extensions
+        && original.realization.bindings.len() == target.realization.bindings.len()
+        && original
+            .realization
+            .bindings
+            .iter()
+            .zip(&target.realization.bindings)
+            .all(|(original, target)| {
+                original.compatibility == target.compatibility
+                    && original.extensions == target.extensions
+            })
+        && original.realize.configuration == target.realize.configuration
+        && original.realize.requested_node_ids == target.realize.requested_node_ids
+        && original.realize.resource_limits == target.realize.resource_limits
+        && original.realize.extensions == target.realize.extensions
+        && original.world == target.world
 }

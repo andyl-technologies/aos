@@ -222,6 +222,43 @@ impl From<ExchangeDeadline> for InitialDeadline {
 }
 
 impl ClientSession {
+    pub(super) fn prepare_fresh_native5_protocol_mapping(
+        &mut self,
+        original: &crate::protocol_snapshot::OriginalProtocolSnapshot,
+        owner: &Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+    ) -> Result<crate::protocol_snapshot::PreparedFreshProtocolMapping, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        if self.sequence.get() != 2 {
+            return Err(ProviderError::Correlation(
+                "fresh native5 session already used",
+            ));
+        }
+        self.connection
+            .prepare_fresh_protocol_mapping_for_owner(original, owner)
+    }
+
+    pub(super) fn authenticate_fresh_native5_protocol_mapping(
+        &self,
+        original: &crate::protocol_snapshot::OriginalProtocolSnapshot,
+        mapping: &crate::protocol_snapshot::PreparedFreshProtocolMapping,
+        owner: &Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        if self.sequence.get() != 2 {
+            return Err(ProviderError::Correlation(
+                "fresh native5 mapped session already used",
+            ));
+        }
+        self.connection
+            .authenticate_fresh_native5_mapping_for_owner(original, mapping, owner)
+    }
+
+    pub(super) fn original_native5_codec_owner(
+        &self,
+    ) -> Option<&Rc<crate::connection::Native5CodecOwner>> {
+        self.connection.retained_native5_codec_owner()
+    }
+
     pub(super) fn protocol_original_deadline(
         &self,
     ) -> crate::operational_time::OperationalDeadline {

@@ -72,8 +72,64 @@ fn scope(
     PacketControlSelection,
     InstalledContent,
 ) {
-    let coordinator = five();
-    let selection = coordinator.participants[0].clone();
+    scope_named(feature, None, 0)
+}
+
+fn scope_named(
+    feature: bool,
+    suffix: Option<&str>,
+    participant: usize,
+) -> (
+    Handshake,
+    ConnectionAuthority,
+    PacketControlSelection,
+    InstalledContent,
+) {
+    let mut coordinator = five();
+    if let Some(suffix) = suffix {
+        let identities: Vec<_> = coordinator
+            .participants
+            .iter()
+            .map(|peer| &peer.realization.bindings[0].authority)
+            .chain(std::iter::once(&coordinator.host.binding.authority))
+            .flat_map(|authority| {
+                [
+                    authority.session_id.as_str().to_owned(),
+                    authority.incarnation_id.as_str().to_owned(),
+                ]
+            })
+            .collect();
+        fn map_template(value: &mut Value, identities: &[String], suffix: &str) {
+            match value {
+                Value::String(id) if identities.contains(id) => *id = format!("{id}-{suffix}"),
+                Value::Array(rows) => rows
+                    .iter_mut()
+                    .for_each(|row| map_template(row, identities, suffix)),
+                Value::Object(fields) => fields
+                    .values_mut()
+                    .for_each(|field| map_template(field, identities, suffix)),
+                _ => {}
+            }
+        }
+        map_template(&mut coordinator.template, &identities, suffix);
+        map_template(&mut coordinator.host.initial_node, &identities, suffix);
+        for (index, peer) in coordinator.participants.iter_mut().enumerate() {
+            let binding = &mut peer.realization.bindings[0];
+            binding.authority.session_id =
+                id(&format!("{}-{suffix}", binding.authority.session_id));
+            binding.authority.incarnation_id =
+                id(&format!("{}-{suffix}", binding.authority.incarnation_id));
+            coordinator.template["nodes"][index]["binding"] =
+                serde_json::to_value(binding).unwrap();
+        }
+        let binding = &mut coordinator.host.binding;
+        binding.authority.session_id = id(&format!("{}-{suffix}", binding.authority.session_id));
+        binding.authority.incarnation_id =
+            id(&format!("{}-{suffix}", binding.authority.incarnation_id));
+        coordinator.host.initial_node["binding"] = serde_json::to_value(&*binding).unwrap();
+        coordinator.template["nodes"][3]["binding"] = serde_json::to_value(binding).unwrap();
+    }
+    let selection = coordinator.participants[participant].clone();
     let binding = &selection.realization.bindings[0];
     let session = binding.authority.session_id.clone();
     let incarnation = binding.authority.incarnation_id.clone();
@@ -140,7 +196,10 @@ fn scope(
         .admit_exchange(
             &request,
             &response,
-            id("codec-fixture-connection"),
+            id(&format!(
+                "codec-fixture-connection-{}",
+                suffix.unwrap_or("original")
+            )),
             &mut ModelVerifier,
         )
         .unwrap();
@@ -295,4 +354,132 @@ fn native5_original_immutable_codec_refusal_keeps_original_bank() {
     );
     assert_eq!(bank.as_ref().unwrap().allocated_bytes(), allocation);
     assert_eq!(bank.as_ref().unwrap().frames().count(), 0);
+}
+
+#[test]
+fn native5_original_fresh_codec_mapping_keeps_actual_policies_and_refuses_other_source() {
+    use std::io::Write;
+
+    let (_original_handshake, authority, selection, coordinator) = scope(true);
+    let (stream, mut peer) = UnixStream::pair().unwrap();
+    let mut original = Connection::new(
+        stream,
+        authority.clone(),
+        Rc::new(Supervisor),
+        Rc::new(Uninstalled),
+        EndpointRole::Controller,
+    )
+    .unwrap();
+    let mut bank = Some(OriginalFrameReservation::reserve(262144, 8).unwrap());
+    original
+        .install_native5_controller_codec(&mut bank, selection, coordinator)
+        .unwrap();
+
+    let mut request = crate::envelope::tests::request();
+    request.session_id = Nullable(Some(authority.session_id().clone()));
+    request.incarnation_id = Nullable(Some(authority.incarnation_id().clone()));
+    request.sequence = U64::new(2);
+    original.send(request.clone()).unwrap();
+    let mut response = request;
+    response.message = MessageKind::Response;
+    response.body =
+        serde_json::json!({"status":"completed", "operation_state":"completed", "extensions":{},
+        "result":{"operation_id":"operation-1", "operation_state":"running", "outcome":null,
+        "observations":[], "next_observation_sequence":"0"}})
+        .as_object()
+        .unwrap()
+        .clone();
+    let raw = serde_json::to_vec(&response).unwrap();
+    peer.write_all(&(raw.len() as u32).to_be_bytes()).unwrap();
+    peer.write_all(&raw).unwrap();
+    original.receive().unwrap().unwrap();
+    let deadline =
+        crate::client::ExchangeDeadline::start(std::time::Duration::from_secs(2)).unwrap();
+    let mut reservation =
+        ProtocolSnapshotReservation::reserve_complete(4 * 1024 * 1024, 262144, 8).unwrap();
+    original
+        .capture_native_protocol_state(&mut reservation, ProtocolCaptureCut::HostSettled, &deadline)
+        .unwrap();
+    let snapshot = original
+        .take_native_protocol_snapshot(&mut Some(reservation), ProtocolCaptureCut::HostSettled)
+        .unwrap();
+    assert_eq!(snapshot.literal_frames().unwrap().count(), 2);
+
+    let (_target_handshake, target_authority, target_selection, target_coordinator) =
+        scope_named(true, Some("fresh"), 0);
+    let (stream, _target_peer) = UnixStream::pair().unwrap();
+    let mut target = Connection::new(
+        stream,
+        target_authority,
+        Rc::new(Supervisor),
+        Rc::new(Uninstalled),
+        EndpointRole::Controller,
+    )
+    .unwrap();
+    let mut target_bank = Some(OriginalFrameReservation::reserve(262144, 8).unwrap());
+    target
+        .install_native5_controller_codec(&mut target_bank, target_selection, target_coordinator)
+        .unwrap();
+    let before = target.original_native5_storage_facts().unwrap();
+    let mapping = target.prepare_fresh_protocol_mapping(&snapshot).unwrap();
+    mapping.validate_original(&snapshot).unwrap();
+    target
+        .authenticate_fresh_native5_protocol_mapping(&snapshot, &mapping)
+        .unwrap();
+    let (_copy_handshake, copy_authority, copy_selection, copy_coordinator) =
+        scope_named(true, Some("fresh"), 0);
+    let (copy_stream, _copy_peer) = UnixStream::pair().unwrap();
+    let mut copy = Connection::new(
+        copy_stream,
+        copy_authority,
+        Rc::new(Supervisor),
+        Rc::new(Uninstalled),
+        EndpointRole::Controller,
+    )
+    .unwrap();
+    let mut copy_bank = Some(OriginalFrameReservation::reserve(262144, 8).unwrap());
+    copy.install_native5_controller_codec(&mut copy_bank, copy_selection, copy_coordinator)
+        .unwrap();
+    assert!(
+        copy.authenticate_fresh_native5_protocol_mapping(&snapshot, &mapping)
+            .is_err()
+    );
+    copy.authenticate_native5_source_codec().unwrap();
+    assert_eq!(
+        copy.original_native5_storage_facts()
+            .unwrap()
+            .retained_bytes,
+        0
+    );
+    let policies = serde_json::to_value(mapping.original_native5_codec_views().unwrap()).unwrap();
+    assert_eq!(policies[0][0], "controller-packet/5");
+    assert_eq!(policies[1][0], "controller-packet/5");
+    assert_ne!(
+        policies[0][1][0]["realization"]["bindings"][0]["authority"]["session_id"],
+        policies[1][1][0]["realization"]["bindings"][0]["authority"]["session_id"]
+    );
+    assert_eq!(target.original_native5_storage_facts().unwrap(), before);
+
+    let (_other_handshake, other_authority, other_selection, other_coordinator) =
+        scope_named(true, Some("other"), 1);
+    let (stream, _other_peer) = UnixStream::pair().unwrap();
+    let mut other = Connection::new(
+        stream,
+        other_authority,
+        Rc::new(Supervisor),
+        Rc::new(Uninstalled),
+        EndpointRole::Controller,
+    )
+    .unwrap();
+    let mut other_bank = Some(OriginalFrameReservation::reserve(262144, 8).unwrap());
+    other
+        .install_native5_controller_codec(&mut other_bank, other_selection, other_coordinator)
+        .unwrap();
+    let other_before = other.original_native5_storage_facts().unwrap();
+    assert!(other.prepare_fresh_protocol_mapping(&snapshot).is_err());
+    assert_eq!(
+        other.original_native5_storage_facts().unwrap(),
+        other_before
+    );
+    assert_eq!(snapshot.literal_frames().unwrap().count(), 2);
 }

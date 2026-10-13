@@ -79,6 +79,7 @@ impl<S: ProviderStream> Connection<S> {
             cut,
             deadline.original_cut(),
         )?;
+        reservation.retain_native5_codec(self.native5_codec.as_ref())?;
         reservation.encode(&self.protocol_view())?;
         self.retain_frozen_protocol_frames(reservation)
     }
@@ -140,6 +141,7 @@ impl<S: ProviderStream> Connection<S> {
             cut,
             deadline.original_cut(),
         )?;
+        reservation.retain_native5_codec(self.native5_codec.as_ref())?;
         reservation.encode(&(
             "source-private.native-cnp/5",
             self.protocol_view(),
@@ -182,9 +184,22 @@ impl<S: ProviderStream> Connection<S> {
         &mut self,
         original: &crate::protocol_snapshot::OriginalProtocolSnapshot,
     ) -> Result<crate::protocol_snapshot::PreparedFreshProtocolMapping, ProviderError> {
+        let owner = self.protocol_owner.clone();
+        self.prepare_fresh_protocol_mapping_for_owner(original, &owner)
+    }
+
+    pub(crate) fn prepare_fresh_protocol_mapping_for_owner(
+        &mut self,
+        original: &crate::protocol_snapshot::OriginalProtocolSnapshot,
+        owner: &Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+    ) -> Result<crate::protocol_snapshot::PreparedFreshProtocolMapping, ProviderError> {
+        owner.ensure_current()?;
         self.check_authority()?;
+        if self.native5_codec.is_some() {
+            self.authenticate_native5_source_codec()?;
+        }
         if !self.guard.unused()
-            || !self.packet_schema
+            || (!self.packet_schema && self.native5_codec.is_none())
             || self
                 .original_frames
                 .as_ref()
@@ -194,11 +209,53 @@ impl<S: ProviderStream> Connection<S> {
                 "fresh mapping requires original unused immutable archived connection",
             ));
         }
-        crate::protocol_snapshot::PreparedFreshProtocolMapping::prepare(
+        crate::protocol_snapshot::PreparedFreshProtocolMapping::prepare_with_codec(
             original,
             &self.authority,
-            &self.protocol_owner,
+            owner,
+            self.native5_codec.as_ref(),
         )
+    }
+
+    /// Rechecks the actual unused target that prepared a native-five codec mapping.
+    ///
+    /// This authenticates only SDK owner correspondence. The source factory
+    /// separately authenticates the signed native and semantic target context;
+    /// no captured bytes, counters or Ready permission are installed here.
+    ///
+    /// # Errors
+    /// Refuses another original actor, target registration or immutable codec,
+    /// a used target, unavailable source snapshot, or revoked authority.
+    pub fn authenticate_fresh_native5_protocol_mapping(
+        &self,
+        original: &crate::protocol_snapshot::OriginalProtocolSnapshot,
+        mapping: &crate::protocol_snapshot::PreparedFreshProtocolMapping,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_fresh_native5_mapping_for_owner(original, mapping, &self.protocol_owner)
+    }
+
+    pub(crate) fn authenticate_fresh_native5_mapping_for_owner(
+        &self,
+        original: &crate::protocol_snapshot::OriginalProtocolSnapshot,
+        mapping: &crate::protocol_snapshot::PreparedFreshProtocolMapping,
+        owner: &Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        if !self.guard.unused()
+            || self
+                .original_frames
+                .as_ref()
+                .is_none_or(|bank| match bank.try_borrow() {
+                    Ok(bank) => bank.frames().next().is_some(),
+                    Err(_) => true,
+                })
+        {
+            return Err(ProviderError::Correlation(
+                "fresh native5 mapped connection already used",
+            ));
+        }
+        mapping.validate_original(original)?;
+        mapping.validate_target(&self.authority, owner, self.native5_codec.as_ref())
     }
 
     pub(crate) fn original_native5_storage_facts(

@@ -77,6 +77,7 @@ pub struct ProtocolSnapshotReservation {
     maximum: usize,
     complete: bool,
     literal: Option<crate::transport::original_frames::OriginalFrameReservation>,
+    codec: Option<Rc<crate::connection::Native5CodecOwner>>,
     issuer: Option<(
         ConnectionAuthority,
         Rc<ProtocolCaptureOwner>,
@@ -106,6 +107,7 @@ impl ProtocolSnapshotReservation {
             complete: false,
             literal: None,
             issuer: None,
+            codec: None,
         })
     }
 
@@ -242,6 +244,19 @@ impl ProtocolSnapshotReservation {
         Ok(())
     }
 
+    pub(crate) fn retain_native5_codec(
+        &mut self,
+        codec: Option<&Rc<crate::connection::Native5CodecOwner>>,
+    ) -> Result<(), ProviderError> {
+        if self.issuer.is_none() || self.codec.is_some() || !self.bytes.is_empty() {
+            return Err(ProviderError::Conflict(
+                "original snapshot codec binding already used",
+            ));
+        }
+        self.codec = codec.cloned();
+        Ok(())
+    }
+
     pub(crate) fn validate_issuer(
         &self,
         authority: &ConnectionAuthority,
@@ -294,6 +309,7 @@ impl ProtocolSnapshotReservation {
             cut,
             deadline,
             literal: self.literal,
+            codec: self.codec,
         })
     }
 }
@@ -304,6 +320,7 @@ impl ProtocolSnapshotReservation {
 /// data. It grants no native adoption or readiness; the source must authenticate
 /// its complete semantic and process custody and literal Hello originals.
 pub struct OriginalProtocolSnapshot {
+    codec: Option<Rc<crate::connection::Native5CodecOwner>>,
     bytes: Vec<u8>,
     authority: ConnectionAuthority,
     owner: Rc<ProtocolCaptureOwner>,
@@ -385,17 +402,50 @@ pub struct PreparedFreshProtocolMapping {
     fresh: ConnectionAuthority,
     fresh_owner: Rc<ProtocolCaptureOwner>,
     cut: ProtocolCaptureCut,
+    original_codec: Option<Rc<crate::connection::Native5CodecOwner>>,
+    fresh_codec: Option<Rc<crate::connection::Native5CodecOwner>>,
 }
 
 impl PreparedFreshProtocolMapping {
+    #[cfg(test)]
     pub(crate) fn prepare(
         original: &OriginalProtocolSnapshot,
         fresh: &ConnectionAuthority,
         fresh_owner: &Rc<ProtocolCaptureOwner>,
     ) -> Result<Self, ProviderError> {
+        Self::prepare_with_codec(original, fresh, fresh_owner, None)
+    }
+
+    pub(crate) fn prepare_with_codec(
+        original: &OriginalProtocolSnapshot,
+        fresh: &ConnectionAuthority,
+        fresh_owner: &Rc<ProtocolCaptureOwner>,
+        fresh_codec: Option<&Rc<crate::connection::Native5CodecOwner>>,
+    ) -> Result<Self, ProviderError> {
         original.owner.ensure_current()?;
         fresh_owner.ensure_current()?;
         fresh.ensure_live()?;
+        match (original.codec.as_ref(), fresh_codec) {
+            (None, None) => {}
+            (Some(original), Some(fresh)) => {
+                original.authenticate_durable_controller_grammar(fresh)?;
+            }
+            _ => {
+                return Err(ProviderError::Correlation(
+                    "fresh protocol codec family changed",
+                ));
+            }
+        }
+        if original.codec.is_some()
+            && (original.authority.limits() != fresh.limits()
+                || original.authority.selected_features() != fresh.selected_features()
+                || original.authority.selected_extensions() != fresh.selected_extensions()
+                || original.authority.envelope_extensions() != fresh.envelope_extensions())
+        {
+            return Err(ProviderError::Correlation(
+                "fresh protocol negotiation changed",
+            ));
+        }
         if original.authority.same_registration(fresh)
             || original.authority.connection_id() == fresh.connection_id()
             || original.authority.session_id() == fresh.session_id()
@@ -413,14 +463,63 @@ impl PreparedFreshProtocolMapping {
             fresh: fresh.clone(),
             fresh_owner: fresh_owner.clone(),
             cut: original.cut,
+            original_codec: original.codec.clone(),
+            fresh_codec: fresh_codec.cloned(),
         })
+    }
+
+    pub(crate) fn validate_target(
+        &self,
+        authority: &ConnectionAuthority,
+        owner: &Rc<ProtocolCaptureOwner>,
+        codec: Option<&Rc<crate::connection::Native5CodecOwner>>,
+    ) -> Result<(), ProviderError> {
+        owner.ensure_current()?;
+        self.fresh_owner.ensure_current()?;
+        self.fresh.ensure_live()?;
+        authority.ensure_live()?;
+        if !self.fresh.same_registration(authority)
+            || !Rc::ptr_eq(&self.fresh_owner, owner)
+            || !same_codec_owner(self.fresh_codec.as_ref(), codec)
+        {
+            return Err(ProviderError::Correlation(
+                "fresh protocol mapping target owner changed",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Borrows both complete actual immutable source-five policies.
+    ///
+    /// The source factory authenticates their full live admission, coordinator
+    /// and target association against its opaque restoration context. These
+    /// retained policy views are data and grant no state installation or Ready.
+    ///
+    /// # Errors
+    /// Refuses another actor, revoked target registration or legacy codecs.
+    pub fn original_native5_codec_views(&self) -> Result<impl Serialize + '_, ProviderError> {
+        self.original_owner.ensure_current()?;
+        self.fresh_owner.ensure_current()?;
+        self.fresh.ensure_live()?;
+        let original = self
+            .original_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation("original native5 codec absent"))?;
+        let target = self
+            .fresh_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation("target native5 codec absent"))?;
+        Ok((original.protocol_view(), target.protocol_view()))
     }
 
     /// Rechecks the same retained actual actors and fresh registration.
     ///
     /// # Errors
     /// Refuses process/thread drift, revoked fresh Hello or substituted original
-    /// snapshot. This check supplies no semantic settlement or native permission.
+    /// issuer/cut/codec. This identifies the original actor, not one particular
+    /// snapshot body: the source's signed restoration context separately binds
+    /// the exact captured bytes, reference and ticket before any installation.
+    /// This check supplies no semantic settlement or native permission.
     pub fn validate_original(
         &self,
         original: &OriginalProtocolSnapshot,
@@ -431,12 +530,24 @@ impl PreparedFreshProtocolMapping {
         if !self.original.same_registration(&original.authority)
             || !Rc::ptr_eq(&self.original_owner, &original.owner)
             || self.cut != original.cut
+            || !same_codec_owner(self.original_codec.as_ref(), original.codec.as_ref())
         {
             return Err(ProviderError::Correlation(
                 "fresh mapping original owner changed",
             ));
         }
         Ok(())
+    }
+}
+
+fn same_codec_owner(
+    original: Option<&Rc<crate::connection::Native5CodecOwner>>,
+    retained: Option<&Rc<crate::connection::Native5CodecOwner>>,
+) -> bool {
+    match (original, retained) {
+        (None, None) => true,
+        (Some(original), Some(retained)) => Rc::ptr_eq(original, retained),
+        _ => false,
     }
 }
 

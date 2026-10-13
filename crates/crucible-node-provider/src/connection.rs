@@ -20,6 +20,7 @@ use crate::transport::{FrameReader, write_frame_with_limits};
 mod capture_prefix;
 mod exchange;
 mod native5_codec;
+pub(crate) use native5_codec::Native5CodecOwner;
 mod original_frames;
 mod packet_schema;
 

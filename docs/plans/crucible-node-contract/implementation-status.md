@@ -3149,6 +3149,33 @@ refuses until a genuine complete-capacity consumer is joined. Actual native
 child Capture, blob settlement, fresh installation, two independent world
 restorations and Ready remain unfinished.
 
+## Fresh controller codec correspondence
+
+An original protocol snapshot retains its actual immutable Native5 codec owner
+alongside the literal captured bytes. A genuinely installed unused fresh
+controller compares durable participant/host grammar, descriptor and ownership
+selections, configuration, extensions and negotiated bounds. The prepared
+association retains both complete policies and rechecks the same controller,
+connection registration and codec owners immediately before its consumer runs.
+A same-data replacement connection refuses without changing either journal.
+
+This SDK association installs no archived counters, content, frames or native
+state. Its original check identifies the retained issuer, cut and codec; it
+does not bind a particular snapshot body or ticket. The signed Source5 target
+context must independently authenticate the exact captured bytes and live
+semantic/native association before installation. That production association
+and native pending-state adoption remain unimplemented and refuse safely.
+
+An independent materialization of the current committed source plus only the
+seven SDK changes passes 36 focused controls, all 356 enabled provider unit
+tests and strict all-target/all-feature checks; 13 unit cases remain explicitly
+ignored. Unix transport is actual, while fixture supervisor/authority peers
+remain modeled. Independent review verifies the complete 9,506-file source,
+changed dependencies, emitted test binary and original process retirement.
+Held Capture/storage/refusal changes are absent from this cohort. Full
+transitive binary-closure qualification, native capture, two fresh world
+restorations and readiness are not inferred.
+
 ## Exact current workspace vendor staging
 
 The fixed-output staging helper copies the workspace lockfile verbatim, so

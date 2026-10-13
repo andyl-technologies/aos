@@ -72,6 +72,61 @@ impl CnpController {
         self.session.authenticate_native5_source_codec()
     }
 
+    /// Retains original and genuinely installed fresh native-five codec correspondence.
+    ///
+    /// This checks durable selected grammar and unchanged negotiated bounds on
+    /// an unused fresh controller. It retains both complete immutable policies
+    /// for the source factory's separate signed target-context check. It installs
+    /// no captured counters, content, frames, native state or Ready permission.
+    /// The factory must borrow and authenticate this same live controller again
+    /// immediately before any subsequent installation or native effect.
+    ///
+    /// # Errors
+    /// Refuses copied actors, used or fenced journals, absent sealed codecs,
+    /// changed durable grammar or bounds, unchanged scope IDs, or an unsettled
+    /// original native Capture. Arbitrary decoded snapshots cannot enter.
+    pub fn prepare_fresh_native5_protocol_mapping(
+        &mut self,
+        original: &crate::protocol_snapshot::OriginalProtocolSnapshot,
+    ) -> Result<crate::protocol_snapshot::PreparedFreshProtocolMapping, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        if self.custody.originals().next().is_some() {
+            return Err(ProviderError::Correlation(
+                "fresh native5 controller journal already used",
+            ));
+        }
+        self.session
+            .prepare_fresh_native5_protocol_mapping(original, &self.protocol_owner)
+    }
+
+    /// Rechecks a prepared mapping against this same unused fresh controller.
+    ///
+    /// The source factory performs this borrowed SDK check immediately before
+    /// joining its separate authenticated native and semantic target context.
+    /// A prior mapping or portable policy view cannot substitute another actor.
+    /// This method installs no state and supplies no fresh-adoption permission.
+    ///
+    /// # Errors
+    /// Refuses a used, fenced, revoked or substituted target/controller/codec,
+    /// a foreign original snapshot, or copied process and thread custody.
+    pub fn authenticate_fresh_native5_protocol_mapping(
+        &self,
+        original: &crate::protocol_snapshot::OriginalProtocolSnapshot,
+        mapping: &crate::protocol_snapshot::PreparedFreshProtocolMapping,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        if self.custody.originals().next().is_some() {
+            return Err(ProviderError::Correlation(
+                "fresh native5 mapped controller journal already used",
+            ));
+        }
+        self.session.authenticate_fresh_native5_protocol_mapping(
+            original,
+            mapping,
+            &self.protocol_owner,
+        )
+    }
+
     /// Reports actual retained storage of this controller's sealed native-five codec.
     ///
     /// This origin-guarded getter allocates nothing and retains the same bank.
@@ -118,6 +173,7 @@ impl CnpController {
             cut,
             self.session.protocol_original_deadline(),
         )?;
+        reservation.retain_native5_codec(self.session.original_native5_codec_owner())?;
         let state = (
             "source-private.cnp-protocol/5",
             &self.route.node,
