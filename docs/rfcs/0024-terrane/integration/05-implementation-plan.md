@@ -139,8 +139,10 @@ compilation and default native build pass. Its actual inventory contains
 1,116 tests across three AOS executables, with none ignored. All 28 focused
 cases pass once each with unchanged source, compiler inputs and executables.
 Authorized-only cancellation passes in 96.184 seconds under its unchanged
-120-second limit. Core renewal, all six growth populations, full SDK and Nix
-qualification remain pending. Full
+120-second limit. Core renewal passes library build, all-target no-default
+compilation, strict all-target Clippy and all 770 tests across eleven AOS
+executables, with none skipped or ignored. All six growth populations, full
+SDK and Nix qualification remain pending. Full
 original task-diff review is complete for the 99 core-test, 58 ref-advance
 and 103 bucket paths. Two isolated bucket presentation corrections add a
 missing panic contract and method separation, with unchanged test bodies.
