@@ -2925,6 +2925,25 @@ leases refuse permanently. Six original guard controls retain their separate
 scope. Native5 capture, full vendor acceptance and final Linux performance
 qualification remain unfinished.
 
+## Precharged original protocol state
+
+The provider SDK can reserve optional literal framing banks before Child,
+retaining planned outgoing bytes and actual partial I/O progress without slot
+refunds. The separate Hello journal can retain its actual framing as well.
+Same-process/thread, original registration and issuer checks precede capture
+and I/O. Borrowed protocol snapshots preserve correlations, complete literal
+history and the exact pre-bound blob ledger, including chunks, pins, quarantine,
+retirement and lifetime credits. Private owner results cannot be reconstructed
+from decoded data and grant no native adoption or readiness.
+
+Eleven focused controls pass, including real Unix partial writes, response and
+Hello framing. Strict all-target/all-feature checks pass on the clean connected
+packet composition; independent review verifies the original seventeen source
+paths and actual compiled dependencies. Existing connected codec installation
+and extension dispatch remain present in the reviewed joins. Full selected
+codec/budget validation, unchanged model-generation proof, incoming native Hello,
+complete native settlement and fresh adoption remain separate unfinished steps.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

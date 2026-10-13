@@ -37,6 +37,41 @@ pub struct ClientContent {
 }
 
 impl ClientContent {
+    pub(super) fn protocol_view(&self) -> impl serde::Serialize + '_ {
+        // Alias indices are deterministic local graph edges, never pointers.
+        let transfers = super::super::protocol_snapshot::Sequence(move || {
+            self.transfers.iter().map(move |(id, transfer)| {
+                (
+                    id,
+                    &transfer.reference,
+                    transfer.bytes.as_slice(),
+                    transfer.bytes.capacity(),
+                    transfer.complete,
+                    super::super::protocol_snapshot::Sequence(move || {
+                        self.objects.iter().enumerate().filter_map(
+                            move |(index, (_, (_, bytes)))| {
+                                Rc::ptr_eq(bytes, &transfer.bytes).then_some(index)
+                            },
+                        )
+                    }),
+                )
+            })
+        });
+        let objects = super::super::protocol_snapshot::Sequence(move || {
+            self.objects.iter().map(|(key, (reference, bytes))| {
+                (key, reference, bytes.as_slice(), bytes.capacity())
+            })
+        });
+        (
+            self.maximum_bytes,
+            self.maximum_objects,
+            self.maximum_chunk,
+            self.reserved,
+            transfers,
+            objects,
+        )
+    }
+
     pub(super) fn retirement_objects(&self) -> Result<impl serde::Serialize + '_, ProviderError> {
         if self.transfers.values().any(|transfer| !transfer.complete) {
             return Err(ProviderError::Correlation(

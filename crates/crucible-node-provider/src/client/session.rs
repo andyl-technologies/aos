@@ -63,6 +63,17 @@ pub struct ClientCustody {
 }
 
 impl ClientCustody {
+    pub(super) fn protocol_view(&self) -> impl serde::Serialize + '_ {
+        (
+            self.maximum_requests,
+            self.maximum_bytes,
+            self.retained_bytes,
+            &self.controller,
+            &self.provider,
+            self.content.protocol_view(),
+        )
+    }
+
     pub(super) fn preflight_response(
         &self,
         controller_requests: usize,
@@ -211,6 +222,47 @@ impl From<ExchangeDeadline> for InitialDeadline {
 }
 
 impl ClientSession {
+    pub(super) fn protocol_original_deadline(
+        &self,
+    ) -> crate::operational_time::OperationalDeadline {
+        self.deadline.original_cut()
+    }
+
+    pub(super) fn protocol_capture_preflight(
+        &mut self,
+        cut: crate::protocol_snapshot::ProtocolCaptureCut,
+    ) -> Result<(), ProviderError> {
+        if self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "mutable response-loss callback cannot be captured",
+            ));
+        }
+        self.authority.ensure_live()?;
+        self.connection.protocol_capture_preflight(cut)
+    }
+
+    pub(super) fn protocol_view(&self) -> impl serde::Serialize + '_ {
+        (
+            self.connection.protocol_view(),
+            &self.sequence,
+            self.peer_pid,
+            &self.peer_executable,
+            "original-physical-cut-retained-by-source-not-portable-time",
+        )
+    }
+
+    pub(super) fn install_native5_frame_bank(
+        &mut self,
+        reservation: crate::transport::original_frames::OriginalFrameReservation,
+    ) -> Result<(), ProviderError> {
+        if self.sequence.get() != 2 || self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "native5 bank requires original unused session without callbacks",
+            ));
+        }
+        self.connection.install_native5_frame_bank(reservation)
+    }
+
     pub(super) fn install_packet_schema(&mut self) -> Result<(), ProviderError> {
         // The original Hello is sequence 1. No schema replacement is permitted
         // after any control or blob frame has entered this connection.
@@ -485,23 +537,27 @@ impl ClientSession {
         };
         let mut reader =
             FrameReader::with_limits(writer.try_clone()?, maximum_bytes, maximum_nesting)?;
-        let prepared_hello;
-        let original_hello = match journal.as_ref() {
-            Some(original) => original.request_value(),
-            None => {
-                prepared_hello = serde_json::to_value(hello)
-                    .map_err(crucible_node_contract::ContractError::from)?;
-                &prepared_hello
-            }
-        };
-        write_frame_with_limits(&mut writer, original_hello, maximum_bytes, maximum_nesting)?;
         let value = if let Some(original) = journal {
+            if let Some(bank) = original.literal_bank() {
+                reader.install_originals(bank);
+            }
+            if !original.publish_literal(&mut writer)? {
+                write_frame_with_limits(
+                    &mut writer,
+                    original.request_value(),
+                    maximum_bytes,
+                    maximum_nesting,
+                )?;
+            }
             let frame = reader
                 .read_retained()?
                 .ok_or(ProviderError::Correlation("CNP hello response unavailable"))?;
             original.retain_response(&frame.bytes)?;
             frame.value
         } else {
+            let prepared_hello =
+                serde_json::to_value(hello).map_err(crucible_node_contract::ContractError::from)?;
+            write_frame_with_limits(&mut writer, &prepared_hello, maximum_bytes, maximum_nesting)?;
             reader
                 .read()?
                 .ok_or(ProviderError::Correlation("CNP hello response unavailable"))?

@@ -23,6 +23,7 @@ pub struct PreparedSend<'a, S: ProviderStream> {
     original: Envelope,
     bytes: Vec<u8>,
     completed: bool,
+    original_slot: Option<usize>,
 }
 
 impl<S: ProviderStream> Connection<S> {
@@ -52,6 +53,8 @@ impl<S: ProviderStream> Connection<S> {
             serde_json::to_value(&original).map_err(crucible_node_contract::ContractError::from)?;
         let bytes = canonical::canonical_json(&value)?;
         canonical::parse_json_with_depth(&bytes, maximum_bytes, maximum_nesting)?;
+        let original_slot = self.prepare_original_send(&bytes)?;
+        self.retain_original_request_id(&original, original_slot)?;
         self.authority
             .with_live(|| self.guard.register_outgoing(original.clone()))?;
         Ok(PreparedSend {
@@ -59,6 +62,7 @@ impl<S: ProviderStream> Connection<S> {
             original,
             bytes,
             completed: false,
+            original_slot,
         })
     }
 }
@@ -76,15 +80,21 @@ impl<S: ProviderStream> PreparedSend<'_, S> {
     /// correlation. Native effects must remain owned independently on error.
     pub fn publish(mut self) -> Result<(), ProviderError> {
         self.connection.check_authority()?;
-        let length = u32::try_from(self.bytes.len())
-            .map_err(|_| ProviderError::Frame("prepared frame length is unrepresentable"))?;
-        let stream = self.connection.reader.stream_mut();
-        if let Err(error) = stream
-            .write_all(&length.to_be_bytes())
-            .and_then(|()| stream.write_all(&self.bytes))
-        {
+        let result = if self.connection.original_frames.is_some() {
+            self.connection
+                .publish_original_send(&self.bytes, self.original_slot)
+        } else {
+            let length = u32::try_from(self.bytes.len())
+                .map_err(|_| ProviderError::Frame("prepared frame length is unrepresentable"))?;
+            let stream = self.connection.reader.stream_mut();
+            stream
+                .write_all(&length.to_be_bytes())
+                .and_then(|()| stream.write_all(&self.bytes))
+                .map_err(ProviderError::from)
+        };
+        if let Err(error) = result {
             self.connection.contain(ConnectionFailure::Write);
-            return Err(error.into());
+            return Err(error);
         }
         if self.original.message == MessageKind::Response
             && let Err(error) = self.connection.guard.confirm_response_sent(&self.original)

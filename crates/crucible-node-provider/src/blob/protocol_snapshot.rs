@@ -1,0 +1,219 @@
+//! Borrows every original blob transfer, tombstone and pin without draining it.
+
+use super::*;
+use crate::protocol_snapshot::Sequence;
+use serde::{Serialize, Serializer, ser::SerializeStruct};
+use std::cell::Ref;
+
+pub(crate) struct BlobProtocolOwner(Rc<RefCell<ReceiverState>>);
+
+impl BlobReceiver {
+    pub(crate) fn protocol_owner(&self) -> BlobProtocolOwner {
+        BlobProtocolOwner(self.state.clone())
+    }
+    pub(crate) fn same_protocol_owner(&self, owner: &BlobProtocolOwner) -> bool {
+        Rc::ptr_eq(&self.state, &owner.0)
+    }
+}
+
+pub(crate) struct BlobProtocolView<'a> {
+    receiver: &'a BlobReceiver,
+    original: Ref<'a, ReceiverState>,
+}
+
+impl BlobReceiver {
+    pub(crate) fn original_protocol_view(
+        &self,
+        authority: &crate::handshake::ConnectionAuthority,
+    ) -> Result<BlobProtocolView<'_>, ProviderError> {
+        authority.ensure_live()?;
+        if authority.session_id() != &self.session
+            || authority.incarnation_id() != &self.incarnation
+        {
+            return Err(ProviderError::Correlation(
+                "blob snapshot belongs to another original connection scope",
+            ));
+        }
+        let original = self.state.try_borrow().map_err(|_| {
+            ProviderError::Correlation("original blob ledger is already mutably borrowed")
+        })?;
+        Ok(BlobProtocolView {
+            receiver: self,
+            original,
+        })
+    }
+}
+
+impl Serialize for BlobProtocolView<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let receiver = self.receiver;
+        let state = &*self.original;
+        let limits = receiver.limits;
+        let mut snapshot = serializer.serialize_struct("Native5BlobReceiver", 8)?;
+        snapshot.serialize_field("session", &receiver.session)?;
+        snapshot.serialize_field("incarnation", &receiver.incarnation)?;
+        snapshot.serialize_field(
+            "limits",
+            &(
+                limits.reserved_bytes,
+                limits.content_bytes,
+                limits.chunk_bytes,
+                limits.transfers_per_origin,
+                limits.tombstones_per_origin,
+                limits.chunks_per_transfer,
+                limits.operation_pins,
+            ),
+        )?;
+        snapshot.serialize_field("reserved", &state.reserved)?;
+        snapshot.serialize_field("next_pin", &U64::new(state.next_pin))?;
+        snapshot.serialize_field("pins_created", &state.pins_created)?;
+        snapshot.serialize_field(
+            "records",
+            &Sequence(|| {
+                state.records.iter().map(|(key, record)| {
+                    let retirement = match &record.retirement {
+                        None => ("none", None, None),
+                        Some(BlobRetirement::AbandonInert) => ("abandon-inert", None, None),
+                        Some(BlobRetirement::Operation { owner, receipt }) => {
+                            ("operation", Some(owner), Some(receipt))
+                        }
+                        Some(BlobRetirement::DurableStore { receipt }) => {
+                            ("durable-store", None, Some(receipt))
+                        }
+                    };
+                    let pins = Sequence(move || {
+                        record.pins.iter().map(|(id, pin)| {
+                            (
+                                U64::new(*id),
+                                &pin.owner,
+                                &pin.schema,
+                                match pin.state {
+                                    PinState::Held => "held",
+                                    PinState::Quarantined => "quarantined",
+                                    PinState::Settled => "settled",
+                                },
+                                &pin.receipt,
+                            )
+                        })
+                    });
+                    (
+                        (&key.origin, &key.session, &key.incarnation, &key.transfer),
+                        &record.content,
+                        record.length,
+                        &record.bytes,
+                        record.bytes.capacity(),
+                        &record.chunks,
+                        record.verified,
+                        record.quarantined,
+                        record.exposed,
+                        retirement,
+                        pins,
+                        record.charged,
+                    )
+                })
+            }),
+        )?;
+        snapshot.serialize_field("codec", &"source-private.blob-receiver/5")?;
+        snapshot.end()
+    }
+}
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These blob ledger snapshot controls deliberately panic on invalid fixtures.
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::handshake::ConnectionAuthority;
+    use crucible_node_contract::canonical;
+
+    #[derive(Default)]
+    struct Supervisor(RefCell<Vec<BlobQuarantine>>);
+    impl BlobSupervisor for Supervisor {
+        fn quarantine(&self, custody: BlobQuarantine) {
+            self.0.borrow_mut().push(custody);
+        }
+    }
+    struct Schema;
+    impl BlobSchemaVerifier for Schema {
+        fn verify_schema(
+            &self,
+            _: &ContentRef,
+            content: &ContentRef,
+            bytes: &[u8],
+        ) -> Result<(), ProviderError> {
+            content.verify(bytes)?;
+            Ok(())
+        }
+    }
+    fn receiver(authority: &ConnectionAuthority) -> BlobReceiver {
+        BlobReceiver::new(
+            authority.session_id().clone(),
+            authority.incarnation_id().clone(),
+            BlobLimits {
+                reserved_bytes: 1024,
+                content_bytes: 512,
+                chunk_bytes: 64,
+                transfers_per_origin: 4,
+                tombstones_per_origin: 4,
+                chunks_per_transfer: 8,
+                operation_pins: 4,
+            },
+            Rc::new(Supervisor::default()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn native5_original_blob_snapshot_preserves_actual_bytes_pin_quarantine_and_lifetime_credit() {
+        let (_handshake, authority) = crate::handshake::tests::authority();
+        let mut blob = receiver(&authority);
+        let key = TransferKey {
+            origin: RequestOrigin::Controller,
+            session: authority.session_id().clone(),
+            incarnation: authority.incarnation_id().clone(),
+            transfer: Id::new("original-transfer").unwrap(),
+        };
+        let content = canonical::content_ref(b"abc", "application/octet-stream").unwrap();
+        blob.begin(key.clone(), content.clone()).unwrap();
+        blob.chunk(&key, U64::new(0), &Bytes::new(b"abc".to_vec()))
+            .unwrap();
+        let verified = blob.finish(&key).unwrap();
+        let pin = blob
+            .pin_operation(
+                &verified,
+                Id::new("original-operation").unwrap(),
+                content,
+                &Schema,
+            )
+            .unwrap();
+        drop(pin);
+        let view = blob.original_protocol_view(&authority).unwrap();
+        let snapshot = serde_json::to_value(&view).unwrap();
+        assert_eq!(snapshot["reserved"], 3);
+        assert_eq!(snapshot["next_pin"], "2");
+        assert_eq!(snapshot["pins_created"], 1);
+        let row = &snapshot["records"][0];
+        assert_eq!(row[3], serde_json::json!([97, 98, 99]));
+        assert_eq!(row[6], true);
+        assert_eq!(row[8], true);
+        assert_eq!(row[10][0][0], "1");
+        assert_eq!(row[10][0][3], "quarantined");
+        assert!(blob.state.try_borrow_mut().is_err());
+        drop(view);
+        assert_eq!(blob.reserved_bytes().unwrap(), 3);
+    }
+
+    #[test]
+    fn native5_original_blob_snapshot_refuses_foreign_owner_even_with_same_labels() {
+        let (_handshake, authority) = crate::handshake::tests::authority();
+        let original = receiver(&authority);
+        let foreign = receiver(&authority);
+        let owner = original.protocol_owner();
+        assert!(original.same_protocol_owner(&owner));
+        assert!(!foreign.same_protocol_owner(&owner));
+        let lock = original.state.borrow_mut();
+        assert!(original.original_protocol_view(&authority).is_err());
+        drop(lock);
+        original.original_protocol_view(&authority).unwrap();
+    }
+}

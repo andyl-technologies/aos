@@ -20,6 +20,10 @@ mod original_deadline_tests;
 pub struct ExchangeDeadline(Rc<Cell<OperationalDeadline>>);
 
 impl ExchangeDeadline {
+    pub(crate) fn original_cut(&self) -> OperationalDeadline {
+        self.0.get()
+    }
+
     /// Starts an original whole-exchange budget without exposing host coordinates.
     ///
     /// This budget covers physical preparation and transport only; it is never

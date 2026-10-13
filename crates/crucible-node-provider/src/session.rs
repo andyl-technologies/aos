@@ -29,6 +29,52 @@ pub struct CorrelationGuard {
 }
 
 impl CorrelationGuard {
+    pub(crate) fn protocol_cut(
+        &self,
+        cut: crate::protocol_snapshot::ProtocolCaptureCut,
+    ) -> Result<(), ProviderError> {
+        if self.failed || !self.pending.is_empty() || !self.writing_responses.is_empty() {
+            return Err(ProviderError::Correlation(
+                "protocol capture unresolved outgoing correlation",
+            ));
+        }
+        match cut {
+            crate::protocol_snapshot::ProtocolCaptureCut::HostSettled
+                if self.received_requests.is_empty() =>
+            {
+                Ok(())
+            }
+            crate::protocol_snapshot::ProtocolCaptureCut::NativeIncomingCapture
+                if self.received_requests.len() == 1
+                    && self.received_requests.values().all(|r| {
+                        r.method == Method::Begin
+                            && r.body.get("kind").and_then(serde_json::Value::as_str)
+                                == Some("capture")
+                    }) =>
+            {
+                Ok(())
+            }
+            _ => Err(ProviderError::Correlation(
+                "protocol capture cut does not match original incoming requests",
+            )),
+        }
+    }
+
+    pub(crate) fn protocol_view(&self) -> impl serde::Serialize + '_ {
+        (
+            &self.session,
+            &self.incarnation,
+            crucible_node_contract::U64::new(self.next_received),
+            crucible_node_contract::U64::new(self.next_sent),
+            self.maximum_requests,
+            &self.pending,
+            &self.received_requests,
+            &self.writing_responses,
+            &self.extensions,
+            self.failed,
+        )
+    }
+
     /// Checks initial sequencing, including frames whose transport credit retired.
     pub(crate) fn unused(&self) -> bool {
         !self.failed

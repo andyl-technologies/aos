@@ -14,6 +14,7 @@ pub struct ExchangeRecord {
     canonical: Vec<Vec<u8>>,
     acknowledgements: Vec<ReceivedFrame>,
     sent: usize,
+    original_slots: Vec<Option<usize>>,
 }
 
 impl ExchangeRecord {
@@ -125,6 +126,7 @@ impl<S: ProviderStream> Connection<S> {
                 canonical: Vec::new(),
                 acknowledgements: Vec::new(),
                 sent: 0,
+                original_slots: Vec::new(),
             },
             phase: Phase::Unprepared,
         }
@@ -203,6 +205,16 @@ impl<S: ProviderStream> PreparedExchange<S> {
                 allowance(limits.nesting.get())?,
             )?;
             self.record.canonical.push(bytes);
+        }
+        self.record
+            .original_slots
+            .try_reserve_exact(count)
+            .map_err(|_| ProviderError::ResourceExhausted("original exchange archive slots"))?;
+        for (index, bytes) in self.record.canonical.iter().enumerate() {
+            let slot = self.connection.prepare_original_send(bytes)?;
+            self.connection
+                .retain_original_request_id(&self.record.originals[index], slot)?;
+            self.record.original_slots.push(slot);
         }
         for original in &self.record.originals {
             self.connection
@@ -307,15 +319,20 @@ fn publish<S: ProviderStream>(
     for index in 0..record.originals.len() {
         connection.check_authority()?;
         let bytes = &record.canonical[index];
-        let length = u32::try_from(bytes.len())
-            .map_err(|_| ProviderError::Frame("prepared exchange frame length"))?;
-        let stream = connection.reader.stream_mut();
-        if let Err(error) = stream
-            .write_all(&length.to_be_bytes())
-            .and_then(|()| stream.write_all(bytes))
-        {
+        let result = if connection.original_frames.is_some() {
+            connection.publish_original_send(bytes, record.original_slots[index])
+        } else {
+            let length = u32::try_from(bytes.len())
+                .map_err(|_| ProviderError::Frame("prepared exchange frame length"))?;
+            let stream = connection.reader.stream_mut();
+            stream
+                .write_all(&length.to_be_bytes())
+                .and_then(|()| stream.write_all(bytes))
+                .map_err(ProviderError::from)
+        };
+        if let Err(error) = result {
             connection.contain(ConnectionFailure::Write);
-            return Err(error.into());
+            return Err(error);
         }
         record.sent += 1;
         let original = &record.originals[index];

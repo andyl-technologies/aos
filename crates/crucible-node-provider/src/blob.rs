@@ -17,6 +17,9 @@ use crucible_node_contract::{Bytes, ContentRef, Id, U64, Validate};
 
 use crate::{ProviderError, envelope::RequestOrigin};
 
+mod protocol_snapshot;
+pub(crate) use protocol_snapshot::BlobProtocolOwner;
+
 /// Selects finite storage, metadata, and chunk allowances for one receiver.
 #[derive(Clone, Copy, Debug)]
 pub struct BlobLimits {

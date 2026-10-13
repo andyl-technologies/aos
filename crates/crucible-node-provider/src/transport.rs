@@ -7,7 +7,12 @@
 //! A framing or parsing failure permanently poisons the reader. Its owner must
 //! close the connection and retain any unresolved operation obligations.
 
+use std::cell::RefCell;
 use std::io::{Read, Write};
+use std::rc::Rc;
+
+pub mod original_frames;
+use original_frames::{FrameDirection, OriginalFrameReservation};
 
 use crucible_node_contract::canonical;
 use serde_json::Value;
@@ -26,6 +31,8 @@ pub struct FrameReader<R> {
     maximum_bytes: usize,
     maximum_nesting: usize,
     failed: bool,
+    originals: Option<Rc<RefCell<OriginalFrameReservation>>>,
+    last_original_slot: Option<usize>,
 }
 
 impl<R: Read> FrameReader<R> {
@@ -56,6 +63,8 @@ impl<R: Read> FrameReader<R> {
             maximum_bytes,
             maximum_nesting,
             failed: false,
+            originals: None,
+            last_original_slot: None,
         })
     }
 
@@ -86,7 +95,18 @@ impl<R: Read> FrameReader<R> {
         &mut self.stream
     }
 
+    pub(crate) fn original_slot(&self) -> Option<usize> {
+        self.last_original_slot
+    }
+
+    pub(crate) fn install_originals(&mut self, originals: Rc<RefCell<OriginalFrameReservation>>) {
+        self.originals = Some(originals);
+    }
+
     fn read_frame(&mut self) -> Result<Option<RetainedFrame>, ProviderError> {
+        if self.originals.is_some() {
+            return self.read_original_frame();
+        }
         let mut header = [0_u8; 4];
         let first = loop {
             match self.stream.read(&mut header[..1]) {
@@ -106,6 +126,56 @@ impl<R: Read> FrameReader<R> {
 
         let mut body = vec![0_u8; length];
         self.stream.read_exact(&mut body)?;
+        let value =
+            canonical::parse_json_with_depth(&body, self.maximum_bytes, self.maximum_nesting)?;
+        Ok(Some(RetainedFrame { value, bytes: body }))
+    }
+    fn read_original_frame(&mut self) -> Result<Option<RetainedFrame>, ProviderError> {
+        let bank = self
+            .originals
+            .as_ref()
+            .ok_or(ProviderError::Frame("original bank absent"))?
+            .clone();
+        // The maximum possible frame is admitted before reading its first byte.
+        let slot = bank
+            .borrow_mut()
+            .begin(FrameDirection::Incoming, self.maximum_bytes + 4)?;
+        self.last_original_slot = Some(slot);
+        let mut header = [0_u8; 4];
+        let mut used = 0;
+        while used < header.len() {
+            let count = match self.stream.read(&mut header[used..]) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
+            if count == 0 {
+                if used == 0 {
+                    return Ok(None);
+                }
+                return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+            }
+            bank.borrow_mut()
+                .append(slot, &header[used..used + count])?;
+            used += count;
+        }
+        let length = u32::from_be_bytes(header) as usize;
+        if length == 0 || length > self.maximum_bytes {
+            return Err(ProviderError::Frame("length outside admitted allowance"));
+        }
+        let mut body = vec![0_u8; length];
+        used = 0;
+        while used < length {
+            let count = match self.stream.read(&mut body[used..]) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
+            if count == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+            }
+            bank.borrow_mut().append(slot, &body[used..used + count])?;
+            used += count;
+        }
+        bank.borrow_mut().finish(slot)?;
         let value =
             canonical::parse_json_with_depth(&body, self.maximum_bytes, self.maximum_nesting)?;
         Ok(Some(RetainedFrame { value, bytes: body }))

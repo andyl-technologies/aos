@@ -27,6 +27,16 @@ pub struct OriginalHelloJournal {
     maximum_nesting: usize,
     attempted: bool,
     received: bool,
+    literal: Option<LiteralHello>,
+}
+
+struct LiteralHello {
+    bank: std::rc::Rc<
+        std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>,
+    >,
+    outgoing: usize,
+    write_started: bool,
+    original_cut: crate::protocol_snapshot::ProtocolCaptureOwner,
 }
 
 impl OriginalHelloJournal {
@@ -71,7 +81,146 @@ impl OriginalHelloJournal {
             maximum_nesting,
             attempted: false,
             received: false,
+            literal: None,
         })
+    }
+
+    /// Reserves literal Hello framing before a Native5 child exists.
+    ///
+    /// The ordinary journal-absent and baseline reservation paths keep their
+    /// existing behavior. This opt-in retains the actual planned request frame,
+    /// its write cursor and complete or partial incoming framing bytes.
+    ///
+    /// # Errors
+    /// Refuses baseline credit errors, unavailable literal storage or a request
+    /// outside the original frame allowance. No native I/O occurs here.
+    pub fn reserve_native5(
+        request: &Envelope,
+        maximum_bytes: usize,
+        maximum_nesting: usize,
+    ) -> Result<Self, ProviderError> {
+        use crate::transport::original_frames::{FrameDirection, OriginalFrameReservation};
+        let mut original = Self::reserve(request, maximum_bytes, maximum_nesting)?;
+        let mut count = Counter {
+            bytes: 0,
+            limit: maximum_bytes,
+        };
+        crucible_node_contract::canonical::canonical_json_to_writer(
+            &original.request_value,
+            &mut count,
+        )?;
+        let mut bank = OriginalFrameReservation::reserve((maximum_bytes + 4) * 2, 1)?;
+        let outgoing = bank.begin(FrameDirection::Outgoing, count.bytes + 4)?;
+        let length = u32::try_from(count.bytes)
+            .map_err(|_| ProviderError::Frame("literal Hello frame length"))?;
+        bank.append(outgoing, &length.to_be_bytes())?;
+        struct OriginalWriter<'a> {
+            bank: &'a mut OriginalFrameReservation,
+            slot: usize,
+        }
+        impl Write for OriginalWriter<'_> {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.bank
+                    .append(self.slot, bytes)
+                    .map_err(io::Error::other)?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        crucible_node_contract::canonical::canonical_json_to_writer(
+            &original.request_value,
+            &mut OriginalWriter {
+                bank: &mut bank,
+                slot: outgoing,
+            },
+        )?;
+        original.literal = Some(LiteralHello {
+            bank: std::rc::Rc::new(std::cell::RefCell::new(bank)),
+            outgoing,
+            write_started: false,
+            original_cut: crate::protocol_snapshot::ProtocolCaptureOwner::new(),
+        });
+        Ok(original)
+    }
+
+    /// Reports the additional actual literal byte/descriptor reservation.
+    ///
+    /// Baseline Envelope/Value/response capacity and temporary encoding remain
+    /// separate charges in the source's pre-Child complete resource profile.
+    pub fn literal_allocated_bytes(&self) -> usize {
+        self.literal
+            .as_ref()
+            .map_or(0, |literal| literal.bank.borrow().allocated_bytes())
+    }
+
+    /// Borrows literal Hello frames and partial progress without reencoding them.
+    pub fn original_frames(
+        &self,
+    ) -> Option<std::cell::Ref<'_, crate::transport::original_frames::OriginalFrameReservation>>
+    {
+        self.literal.as_ref().map(|literal| literal.bank.borrow())
+    }
+
+    pub(super) fn literal_bank(
+        &self,
+    ) -> Option<
+        std::rc::Rc<
+            std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>,
+        >,
+    > {
+        self.literal.as_ref().map(|literal| literal.bank.clone())
+    }
+
+    pub(super) fn publish_literal(
+        &mut self,
+        stream: &mut impl Write,
+    ) -> Result<bool, ProviderError> {
+        let Some(literal) = &mut self.literal else {
+            return Ok(false);
+        };
+        literal.original_cut.ensure_current()?;
+        if !self.attempted {
+            return Err(ProviderError::Correlation(
+                "literal Hello not reserved for its original attempt",
+            ));
+        }
+        if literal.write_started {
+            return Err(ProviderError::Conflict(
+                "literal Hello write already attempted",
+            ));
+        }
+        literal.write_started = true;
+        let mut bank = literal.bank.borrow_mut();
+        let frame = bank
+            .frames()
+            .next()
+            .ok_or(ProviderError::Frame("literal Hello request absent"))?;
+        if frame.transferred != 0 || frame.complete {
+            return Err(ProviderError::Conflict("literal Hello already attempted"));
+        }
+        let length = frame.bytes.len();
+        let mut transferred = 0;
+        while transferred < length {
+            let count = {
+                let frame = bank
+                    .frames()
+                    .next()
+                    .ok_or(ProviderError::Frame("literal Hello request absent"))?;
+                match stream.write(&frame.bytes[transferred..]) {
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    result => result?,
+                }
+            };
+            if count == 0 {
+                return Err(io::Error::from(io::ErrorKind::WriteZero).into());
+            }
+            bank.advance(literal.outgoing, count)?;
+            transferred += count;
+        }
+        bank.finish(literal.outgoing)?;
+        Ok(true)
     }
 
     /// Borrows the complete private original request, including secret material.
@@ -99,6 +248,9 @@ impl OriginalHelloJournal {
         maximum_bytes: usize,
         maximum_nesting: usize,
     ) -> Result<(), ProviderError> {
+        if let Some(literal) = &self.literal {
+            literal.original_cut.ensure_current()?;
+        }
         if self.attempted
             || &self.request != request
             || self.maximum_bytes != maximum_bytes
@@ -162,3 +314,47 @@ impl Write for Counter {
 #[cfg(test)]
 #[path = "hello_journal/tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+// crucible-lint: allow panic-shortcut -- These original Hello framing controls deliberately panic on invalid fixtures.
+#[allow(clippy::unwrap_used)]
+mod literal_tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn native5_original_hello_keeps_literal_request_and_partial_incoming_header() {
+        let request = crate::handshake::tests::original_hello_envelope();
+        let mut original = OriginalHelloJournal::reserve_native5(&request, 16384, 64).unwrap();
+        assert!(original.literal_allocated_bytes() >= 32776);
+        let planned = original
+            .original_frames()
+            .unwrap()
+            .frames()
+            .next()
+            .unwrap()
+            .bytes
+            .to_vec();
+        original.begin(&request, 16384, 64).unwrap();
+        let (mut stream, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        original.publish_literal(&mut stream).unwrap();
+        let mut received = vec![0; planned.len()];
+        peer.read_exact(&mut received).unwrap();
+        assert_eq!(received, planned);
+        assert!(original.publish_literal(&mut stream).is_err());
+        peer.write_all(&[0, 0, 0]).unwrap();
+        peer.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut reader = crate::transport::FrameReader::new(stream, 16384).unwrap();
+        reader.install_originals(original.literal_bank().unwrap());
+        assert!(reader.read_retained().is_err());
+        let bank = original.original_frames().unwrap();
+        let frames: Vec<_> = bank.frames().collect();
+        assert!(frames[0].complete);
+        assert_eq!(frames[0].transferred, planned.len());
+        assert_eq!(frames[1].bytes, [0, 0, 0]);
+        assert_eq!(frames[1].transferred, 3);
+        assert!(!frames[1].complete);
+        assert!(original.response().is_none());
+        assert!(original.attempted());
+    }
+}

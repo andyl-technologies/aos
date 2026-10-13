@@ -30,6 +30,7 @@ pub mod reference_packet;
 pub mod reference_service;
 pub mod session;
 pub mod transport;
+pub mod protocol_snapshot;
 
 /// Reports transport, portable schema, or correlation failure.
 #[derive(Debug, thiserror::Error)]

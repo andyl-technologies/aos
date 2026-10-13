@@ -18,6 +18,7 @@ use crate::session::CorrelationGuard;
 use crate::transport::{FrameReader, write_frame_with_limits};
 
 mod exchange;
+mod original_frames;
 mod packet_schema;
 mod prepared;
 pub(crate) use prepared::serialized_credit;
@@ -147,7 +148,14 @@ pub struct Connection<S: ProviderStream> {
     guard: CorrelationGuard,
     supervisor: Rc<dyn ConnectionSupervisor>,
     schemas: Rc<dyn BodySchemaVerifier>,
+    protocol_owner: Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+    native5_blobs: Option<crate::blob::BlobProtocolOwner>,
     packet_schema: bool,
+    original_frames: Option<
+        std::rc::Rc<
+            std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>,
+        >,
+    >,
     connected_packet_schema: bool,
     fenced: bool,
     role: EndpointRole,
@@ -252,7 +260,10 @@ impl<S: ProviderStream> Connection<S> {
             guard,
             supervisor,
             schemas,
+            protocol_owner: Rc::new(crate::protocol_snapshot::ProtocolCaptureOwner::new()),
+            native5_blobs: None,
             packet_schema: false,
+            original_frames: None,
             connected_packet_schema: false,
             fenced: false,
             role,
@@ -296,14 +307,20 @@ impl<S: ProviderStream> Connection<S> {
         let bytes = canonical::canonical_json(&value)?;
         canonical::parse_json_with_depth(&bytes, maximum_bytes, maximum_nesting)?;
 
+        let original_slot = self.prepare_original_send(&bytes)?;
+        self.retain_original_request_id(&envelope, original_slot)?;
         self.authority
             .with_live(|| self.guard.register_outgoing(envelope.clone()))?;
-        let result = write_frame_with_limits(
-            self.reader.stream_mut(),
-            &value,
-            maximum_bytes,
-            maximum_nesting,
-        );
+        let result = if self.original_frames.is_some() {
+            self.publish_original_send(&bytes, original_slot)
+        } else {
+            write_frame_with_limits(
+                self.reader.stream_mut(),
+                &value,
+                maximum_bytes,
+                maximum_nesting,
+            )
+        };
         if result.is_err() {
             self.contain(ConnectionFailure::Write);
         } else if envelope.message == MessageKind::Response
@@ -327,6 +344,7 @@ impl<S: ProviderStream> Connection<S> {
         let envelope: Envelope =
             serde_json::from_value(value).map_err(crucible_node_contract::ContractError::from)?;
         let body = self.validate_body(&envelope, true)?;
+        self.retain_original_request_id(&envelope, self.reader.original_slot())?;
         self.authority.with_live(|| self.guard.receive(&envelope))?;
         Ok(Some(ReceivedFrame { envelope, body }))
     }
@@ -402,6 +420,9 @@ impl<S: ProviderStream> Connection<S> {
     }
 
     fn check_authority(&mut self) -> Result<(), ProviderError> {
+        if self.original_frames.is_some() {
+            self.protocol_owner.ensure_current()?;
+        }
         if self.fenced {
             return Err(ProviderError::Correlation("connection is fenced"));
         }

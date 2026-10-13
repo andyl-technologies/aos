@@ -45,9 +45,97 @@ pub struct CnpController {
     route: ControllerRoute,
     budget: Duration,
     fenced: bool,
+    protocol_owner: std::rc::Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
 }
 
 impl CnpController {
+    /// Captures complete actual controller, correlation, content and literal frames.
+    ///
+    /// The caller supplies snapshot capacity charged before child construction.
+    /// Literal Hello originals and the actual native/semantic owners remain under
+    /// the source's separate custody. This result confers no fresh-adoption right.
+    ///
+    /// # Errors
+    /// Refuses callback codecs, partial/missing history, outstanding correlations,
+    /// a fenced controller, or insufficient whole borrowed snapshot credit.
+    pub fn capture_original_protocol_state(
+        &mut self,
+        reservation: &mut crate::protocol_snapshot::ProtocolSnapshotReservation,
+        cut: crate::protocol_snapshot::ProtocolCaptureCut,
+    ) -> Result<(), ProviderError> {
+        if self.fenced {
+            return Err(ProviderError::Correlation("captured controller fenced"));
+        }
+        self.session.protocol_capture_preflight(cut)?;
+        reservation.bind(
+            self.session.authority(),
+            &self.protocol_owner,
+            cut,
+            self.session.protocol_original_deadline(),
+        )?;
+        let state = (
+            "source-private.cnp-protocol/5",
+            &self.route.node,
+            &self.route.execution_owner,
+            crucible_node_contract::U64::new(self.budget.as_secs()),
+            self.budget.subsec_nanos(),
+            self.fenced,
+            self.session.protocol_view(),
+            self.custody.protocol_view(),
+        );
+        reservation.encode(&state)
+    }
+
+    /// Moves a completed original snapshot buffer into this actual owner's result.
+    ///
+    /// # Errors
+    /// Refuses a missing completed snapshot, changed original authority or a cut
+    /// that no longer matches the current controller. Decoded data cannot enter.
+    pub fn take_original_protocol_snapshot(
+        &mut self,
+        reservation: &mut Option<crate::protocol_snapshot::ProtocolSnapshotReservation>,
+        cut: crate::protocol_snapshot::ProtocolCaptureCut,
+    ) -> Result<crate::protocol_snapshot::OriginalProtocolSnapshot, ProviderError> {
+        self.session.protocol_capture_preflight(cut)?;
+        reservation
+            .as_ref()
+            .ok_or(ProviderError::Correlation("original snapshot slot absent"))?
+            .validate_issuer(self.session.authority(), &self.protocol_owner, cut)?;
+        let original = reservation
+            .take()
+            .ok_or(ProviderError::Correlation("original snapshot slot absent"))?;
+        original.finish(self.session.authority(), &self.protocol_owner, cut)
+    }
+
+    /// Compares actual source-issued owner and original registration identities.
+    pub fn owns_original_protocol_snapshot(
+        &self,
+        snapshot: &crate::protocol_snapshot::OriginalProtocolSnapshot,
+    ) -> bool {
+        snapshot.same_owner(&self.protocol_owner, self.session.authority())
+    }
+
+    /// Installs a precharged literal frame bank with the immutable packet codec.
+    ///
+    /// The reservation must be owned and charged before child construction.
+    /// This selects only exact transport retention; it authenticates no source,
+    /// world, captured state, process or fresh-adoption permission.
+    ///
+    /// # Errors
+    /// Refuses an already used or fenced controller and mutable loss callbacks.
+    /// Native5 source-specific schema and capture admission remain separate.
+    pub fn install_native5_frame_bank(
+        &mut self,
+        reservation: crate::transport::original_frames::OriginalFrameReservation,
+    ) -> Result<(), ProviderError> {
+        if self.fenced || self.custody.originals().next().is_some() {
+            return Err(ProviderError::Correlation(
+                "native5 bank requires original unused controller",
+            ));
+        }
+        self.session.install_native5_frame_bank(reservation)
+    }
+
     /// Installs the immutable packet codec before any original control request.
     ///
     /// This selects source-owned no-extension transport validation only. It
@@ -188,6 +276,7 @@ impl CnpController {
             route,
             budget,
             fenced: false,
+            protocol_owner: std::rc::Rc::new(crate::protocol_snapshot::ProtocolCaptureOwner::new()),
         })
     }
 
@@ -241,6 +330,9 @@ impl CnpController {
                 route,
                 budget,
                 fenced: false,
+                protocol_owner: std::rc::Rc::new(
+                    crate::protocol_snapshot::ProtocolCaptureOwner::new(),
+                ),
             }),
             (original_session, original_custody, original_route) => {
                 *session = original_session;

@@ -173,11 +173,19 @@ fn resumed(request: &HelloRequest, response: &HelloResult) -> (HelloRequest, Hel
     (request, response)
 }
 
+pub(crate) fn original_hello_envelope() -> crate::envelope::Envelope {
+    envelopes(&hello(), &result(), "hello-original/5").0
+}
+
 pub(crate) fn authority() -> (Handshake, ConnectionAuthority) {
+    authority_with_frame_limit(4096)
+}
+
+pub(crate) fn authority_with_frame_limit(frame_bytes: u64) -> (Handshake, ConnectionAuthority) {
     let mut request = hello();
     let mut result = result();
     let negotiated = Limits {
-        frame_bytes: U64::new(4096),
+        frame_bytes: U64::new(frame_bytes),
         nesting: U64::new(64),
         requests: U64::new(2),
         journal_entries: U64::new(64),
