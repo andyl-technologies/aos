@@ -3288,6 +3288,45 @@ independent review is
 These component results grant no complete allocator qualification, native
 Capture, prefix settlement, fresh-world adoption or Ready permission.
 
+## Original dispatch storage and section membership
+
+Selected native dispatch/map bodies, node and section growth banks, and subpage
+bodies now use the same finite constructor history arena. Retired generations
+remain retained. Section insertion authenticates the original destination map,
+building view and local MemoryRegion membership before growth, copy or native
+reference effects. Published subpages retain their exact class, operations,
+opaque pointer, destructor, base and map/view association. Cleanup distinguishes
+attempted retirement from completed retirement.
+
+Four complete production-configured translation units compile with warnings as
+errors. Twenty-two literal storage, lifetime and membership controls and two
+causal erasures pass; protected owner-read and allocation/reference counters
+check refusal before effects. The earlier seventeen-control cohort retains its
+original scope. Constructor/source/QOM/ref-owner/BQL/RCU/page certificates in
+these controls remain modeled.
+
+The matching signed native commit is
+`b41b01f985f51107ffafa60e670d10608cdd8f8e`, with complete tree
+`80a67c3dc92d48380b495cf4e727792f70a7d3bb`. Reconstruction preserves all
+78,084 entries, adds exactly one GPL source fragment, changes only the four
+reviewed native roles, and replays the complete cumulative patch against the
+sole signed base. Patch, bundle, descriptor and license inventory agree;
+independent canonical review is
+`72038e0211eca4b31371e7e0246eba63a7231c953bc15e15ca7b134b452f5eec`.
+
+QOM, listener, CPUAddressSpace and name storage, complete original graph/RCU
+closure, ROM sealing and BIOS writer permission remain pending. This stage
+grants no native Capture, Ready, installed-pair or package qualification.
+
+A subsequent actual build of the earlier `d9037e32ec` package source reaches
+QEMU compilation but fails linking qemu-io, qemu-nbd and qemu-storage-daemon:
+the ordinary utility route lacks `crucible_whole_setup_source_current`. Its
+supervisor separately retains a process-binding failure whose historical
+post-binding observation was not recorded. Neither failure is a successful
+package result. The operator's failed record remains unchanged; all observed
+build generations are now terminal. A strong refusing non-system stub and
+terminal-only operator reclamation are separate follow-up work.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

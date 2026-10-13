@@ -1,6 +1,6 @@
-From c993991088114ff183aeb5aab6127d51d367f838 Mon Sep 17 00:00:00 2001
+From b41b01f985f51107ffafa60e670d10608cdd8f8e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 13 Oct 2026 23:06:15 +0000
+Date: Tue, 13 Oct 2026 23:50:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -613,6 +613,28 @@ backing and complete original graph/RCU dispatch closure remain
 pending; no dispatch work in progress is included here. No whole
 graph/current/seal, BIOS writer, Ready, guest, installed pair,
 package or release qualification follows from this component.
+
+Retain each original constructor dispatch body, node/section growth bank
+and subpage body in the same finite native history arena. Authenticate
+original section MR membership before growth/copy/ref; match published
+subpage class/operations/opaque/destructor/base and same map/view owner.
+Keep attempt and completion separate and retain all retired generations.
+Ordinary allocation/free paths remain unchanged.
+
+Four complete production-configured source units pass with warnings as
+errors. Twenty-two literal storage/lifetime/insertion controls and two
+causal check erasures pass, including protected MR owner-read and actual
+shared no-effect counters. Constructor/source-current/history admission,
+QOM/ref-owner/BQL/RCU/page certificates remain explicitly modeled.
+The earlier seventeen-control cohort remains separately scoped.
+
+Reconstruct the complete signed c993 tree plus exactly three existing
+source posts and one GPL2-or-later fragment; preserve all original source
+inventory and add its license row. Configured export limitations remain.
+No QOM/listener/CPUAddressSpace/name-storage work in progress is included.
+Complete native MR/AS/FlatView/range/dispatch graph and RCU dispatch remain
+pending. Local membership provides no BIOS copy certificate, full seal,
+Capture/Ready, guest, installed-pair, package or release qualification.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -107652,10 +107674,10 @@ index 0000000000000000000000000000000000000000..7fdbaf05a28166efade32274a1e3845b
 +#endif /* SYSTEM_CRUCIBLE_SIM_PREEMPTION_H */
 diff --git a/include/system/crucible-whole-early.h b/include/system/crucible-whole-early.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..32ad72b5d771fdecbd32ad514b922b3188171d8a
+index 0000000000000000000000000000000000000000..390102bd4838be4e0fde6a1d5b55d7ab1424530f
 --- /dev/null
 +++ b/include/system/crucible-whole-early.h
-@@ -0,0 +1,244 @@
+@@ -0,0 +1,250 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Original native setup provenance. No declaration here is a wire layout. */
 +#ifndef SYSTEM_CRUCIBLE_WHOLE_EARLY_H
@@ -107676,6 +107698,7 @@ index 0000000000000000000000000000000000000000..32ad72b5d771fdecbd32ad514b922b31
 +struct ObjectProperty;
 +struct MemoryRegion;
 +struct AddressSpace;
++struct FlatView;
 +/* Literal constructor context and borrowed source-owned asset custody. Neither
 + * query opens a runtime effect, a loader callback, or the first-clock hold. */
 +bool crucible_whole_setup_source_current(void);
@@ -107880,6 +107903,7 @@ index 0000000000000000000000000000000000000000..32ad72b5d771fdecbd32ad514b922b31
 +                                   void **backing);
 +
 +struct AddressSpace;
++struct FlatView;
 +struct RAMBlock;
 +int pc_whole_bios_copy_readback(uint64_t address, uint64_t extent,
 +                                struct MemoryRegion **region, struct RAMBlock **block,
@@ -107898,6 +107922,10 @@ index 0000000000000000000000000000000000000000..32ad72b5d771fdecbd32ad514b922b31
 +int qemu_memory_whole_storage_begin(void);
 +struct MemoryRegion *qemu_memory_whole_system_region_allocate(unsigned role);
 +struct AddressSpace *qemu_memory_whole_cpu_space_allocate(struct CPUState *cpu, int asidx);
++
++/* Original literal constructor/retirement view scope, not graph/guest authority. */
++bool qemu_memory_whole_view_building_current(struct FlatView *view);
++bool qemu_memory_whole_view_retirement_current(struct FlatView *view);
 +
 +#endif
 diff --git a/include/system/crucible-whole-ram.h b/include/system/crucible-whole-ram.h
@@ -182954,6 +182982,447 @@ index 0000000000000000000000000000000000000000..cd0157b178d1371b5231e54a6d89ca40
 +    return false;
 +#endif
 +}
+diff --git a/system/crucible-whole-dispatch-storage.inc.c b/system/crucible-whole-dispatch-storage.inc.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e51a7f10318fcaf6484bda4b162afa87b50ae82
+--- /dev/null
++++ b/system/crucible-whole-dispatch-storage.inc.c
+@@ -0,0 +1,435 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Included after the native dispatch/map/subpage types in physmem.c. */
++
++typedef struct WholeDispatchGeneration {
++    struct WholeDispatchGeneration *previous;
++    void *body;
++    size_t extent;
++    unsigned capacity;
++} WholeDispatchGeneration;
++
++typedef struct WholeDispatchSubpage {
++    struct WholeDispatchSubpage *previous;
++    subpage_t *original;
++    size_t extent;
++    bool published;
++    bool retirement_attempted;
++    bool retired;
++    ObjectClass *klass;
++    const MemoryRegionOps *operations;
++    void *opaque;
++    void (*destructor)(MemoryRegion *);
++    hwaddr base;
++} WholeDispatchSubpage;
++
++typedef struct WholeDispatchOwner {
++    struct WholeDispatchOwner *previous;
++    AddressSpaceDispatch *original;
++    FlatView *view;
++    WholeDispatchGeneration *nodes;
++    WholeDispatchGeneration *sections;
++    WholeDispatchSubpage *subpages;
++    uint64_t subpage_count;
++    bool retired;
++} WholeDispatchOwner;
++
++static WholeDispatchOwner *whole_dispatch_owners;
++static uint64_t whole_dispatch_count;
++
++static G_NORETURN void whole_dispatch_refuse(void)
++{
++    _exit(125);
++}
++
++static bool whole_dispatch_selected(void)
++{
++    if (!crucible_whole_setup_selected()) {
++        return false;
++    }
++    if (!crucible_whole_setup_original() || !crucible_whole_setup_source_current()) {
++        whole_dispatch_refuse();
++    }
++    return true;
++}
++
++static void *whole_dispatch_allocate(size_t extent)
++{
++    if (!crucible_whole_setup_constructor_current() || !extent) {
++        whole_dispatch_refuse();
++    }
++    void *body = crucible_whole_setup_constructor_history_allocate(extent);
++
++    if (!body) {
++        whole_dispatch_refuse();
++    }
++    memset(body, 0, extent);
++    return body;
++}
++
++static WholeDispatchOwner *whole_dispatch_original(const void *body, bool map)
++{
++    uint64_t remaining = whole_dispatch_count;
++
++    for (WholeDispatchOwner *row = whole_dispatch_owners; row && remaining--;
++         row = row->previous) {
++        if (!crucible_whole_setup_history_span_current(row, sizeof(*row))) {
++            whole_dispatch_refuse();
++        }
++        if (!row->original ||
++            !crucible_whole_setup_history_span_current(row->original, sizeof(*row->original))) {
++            whole_dispatch_refuse();
++        }
++        const void *original = map ? (const void *)&row->original->map :
++            (const void *)row->original;
++
++        if (original == body) {
++            if (row->retired) {
++                whole_dispatch_refuse();
++            }
++            return row;
++        }
++    }
++    whole_dispatch_refuse();
++}
++
++static AddressSpaceDispatch *whole_dispatch_new(FlatView *view)
++{
++    if (!whole_dispatch_selected()) {
++        return NULL;
++    }
++    if (!qemu_memory_whole_view_building_current(view) || whole_dispatch_count == UINT64_MAX) {
++        whole_dispatch_refuse();
++    }
++    uint64_t remaining = whole_dispatch_count;
++    for (WholeDispatchOwner *previous = whole_dispatch_owners; previous && remaining--;
++         previous = previous->previous) {
++        if (!crucible_whole_setup_history_span_current(previous, sizeof(*previous)) ||
++            previous->view == view) {
++            whole_dispatch_refuse();
++        }
++    }
++    WholeDispatchOwner *row = whole_dispatch_allocate(sizeof(*row));
++
++    row->view = view;
++    row->previous = whole_dispatch_owners;
++    whole_dispatch_owners = row;
++    whole_dispatch_count++;
++    row->original = whole_dispatch_allocate(sizeof(*row->original));
++    return row->original;
++}
++
++static void whole_dispatch_map_access(PhysPageMap *map)
++{
++    if (!whole_dispatch_selected()) {
++        return;
++    }
++    WholeDispatchOwner *row = whole_dispatch_original(map, true);
++    WholeDispatchGeneration *generations[] = { row->nodes, row->sections };
++    const void *bodies[] = { map->nodes, map->sections };
++    unsigned capacities[] = { map->nodes_nb_alloc, map->sections_nb_alloc };
++    unsigned used[] = { map->nodes_nb, map->sections_nb };
++
++    for (unsigned kind = 0; kind < ARRAY_SIZE(generations); kind++) {
++        WholeDispatchGeneration *generation = generations[kind];
++
++        if (!generation) {
++            if (bodies[kind] || capacities[kind] || used[kind]) {
++                whole_dispatch_refuse();
++            }
++            continue;
++        }
++        if (!crucible_whole_setup_history_span_current(generation, sizeof(*generation)) ||
++            bodies[kind] != generation->body || capacities[kind] != generation->capacity ||
++            used[kind] > generation->capacity ||
++            !crucible_whole_setup_history_span_current(generation->body, generation->extent)) {
++            whole_dispatch_refuse();
++        }
++    }
++}
++
++static void *whole_dispatch_grow(PhysPageMap *map, bool nodes, unsigned capacity)
++{
++    if (!whole_dispatch_selected()) {
++        return NULL;
++    }
++    whole_dispatch_map_access(map);
++    WholeDispatchOwner *row = whole_dispatch_original(map, true);
++    WholeDispatchGeneration **slot = nodes ? &row->nodes : &row->sections;
++    unsigned used = nodes ? map->nodes_nb : map->sections_nb;
++    unsigned old_capacity = nodes ? map->nodes_nb_alloc : map->sections_nb_alloc;
++    size_t item_size = nodes ? sizeof(Node) : sizeof(MemoryRegionSection);
++    size_t extent, copy_extent;
++
++    if (!qemu_memory_whole_view_building_current(row->view) || capacity <= old_capacity ||
++        __builtin_mul_overflow((size_t)capacity, item_size, &extent) ||
++        __builtin_mul_overflow((size_t)used, item_size, &copy_extent)) {
++        whole_dispatch_refuse();
++    }
++    WholeDispatchGeneration *generation = whole_dispatch_allocate(sizeof(*generation));
++
++    generation->previous = *slot;
++    generation->extent = extent;
++    generation->capacity = capacity;
++    generation->body = whole_dispatch_allocate(extent);
++    if (copy_extent) {
++        memcpy(generation->body, (*slot)->body, copy_extent);
++    }
++    *slot = generation;
++    return generation->body;
++}
++
++static bool whole_dispatch_map_retained(PhysPageMap *map)
++{
++    if (!whole_dispatch_selected()) {
++        return false;
++    }
++    whole_dispatch_map_access(map);
++    WholeDispatchOwner *row = whole_dispatch_original(map, true);
++
++    if (!qemu_memory_whole_view_retirement_current(row->view)) {
++        whole_dispatch_refuse();
++    }
++    return true;
++}
++
++static bool whole_dispatch_retire(AddressSpaceDispatch *dispatch)
++{
++    if (!whole_dispatch_selected()) {
++        return false;
++    }
++    WholeDispatchOwner *row = whole_dispatch_original(dispatch, false);
++
++    if (!qemu_memory_whole_view_retirement_current(row->view) ||
++        dispatch->map.sections_nb) {
++        whole_dispatch_refuse();
++    }
++    uint64_t remaining = row->subpage_count;
++    for (WholeDispatchSubpage *page = row->subpages; page && remaining--;
++         page = page->previous) {
++        if (!crucible_whole_setup_history_span_current(page, sizeof(*page)) ||
++            !page->published || !page->retirement_attempted || !page->retired) {
++            whole_dispatch_refuse();
++        }
++    }
++    row->retired = true;
++    return true;
++}
++
++static WholeDispatchOwner *whole_dispatch_view_original(FlatView *view)
++{
++    uint64_t remaining = whole_dispatch_count;
++
++    for (WholeDispatchOwner *row = whole_dispatch_owners; row && remaining--;
++         row = row->previous) {
++        if (!crucible_whole_setup_history_span_current(row, sizeof(*row))) {
++            whole_dispatch_refuse();
++        }
++        if (row->view == view && !row->retired) {
++            return row;
++        }
++    }
++    whole_dispatch_refuse();
++}
++
++static subpage_t *whole_dispatch_subpage_new(FlatView *view, hwaddr base)
++{
++    if (!whole_dispatch_selected()) {
++        return NULL;
++    }
++    WholeDispatchOwner *owner = whole_dispatch_view_original(view);
++    size_t bytes, extent;
++
++    if (!qemu_memory_whole_view_building_current(view) ||
++        owner->subpage_count == UINT64_MAX ||
++        __builtin_mul_overflow((size_t)TARGET_PAGE_SIZE, sizeof(uint16_t), &bytes) ||
++        __builtin_add_overflow(sizeof(subpage_t), bytes, &extent)) {
++        whole_dispatch_refuse();
++    }
++    uint64_t remaining = owner->subpage_count;
++    for (WholeDispatchSubpage *previous = owner->subpages; previous && remaining--;
++         previous = previous->previous) {
++        if (!crucible_whole_setup_history_span_current(previous, sizeof(*previous)) ||
++            previous->base == base) {
++            whole_dispatch_refuse();
++        }
++    }
++    WholeDispatchSubpage *row = whole_dispatch_allocate(sizeof(*row));
++
++    row->base = base;
++    row->previous = owner->subpages;
++    row->extent = extent;
++    owner->subpages = row;
++    owner->subpage_count++;
++    row->original = whole_dispatch_allocate(extent);
++    return row->original;
++}
++
++static WholeDispatchSubpage *whole_dispatch_subpage_original(MemoryRegion *region,
++                                                            WholeDispatchOwner **owner)
++{
++    uint64_t remaining = whole_dispatch_count;
++
++    for (WholeDispatchOwner *view = whole_dispatch_owners; view && remaining--;
++         view = view->previous) {
++        if (!crucible_whole_setup_history_span_current(view, sizeof(*view))) {
++            whole_dispatch_refuse();
++        }
++        uint64_t pages = view->subpage_count;
++
++        for (WholeDispatchSubpage *row = view->subpages; row && pages--;
++             row = row->previous) {
++            if (!crucible_whole_setup_history_span_current(row, sizeof(*row)) ||
++                !row->original ||
++                !crucible_whole_setup_history_span_current(row->original, row->extent)) {
++                whole_dispatch_refuse();
++            }
++            if (&row->original->iomem == region) {
++                *owner = view;
++                return row;
++            }
++        }
++    }
++    return NULL;
++}
++
++static void whole_dispatch_subpage_publish(subpage_t *subpage)
++{
++    if (!whole_dispatch_selected()) {
++        return;
++    }
++    WholeDispatchOwner *owner;
++    WholeDispatchSubpage *row = whole_dispatch_subpage_original(&subpage->iomem, &owner);
++
++    if (!row || row->published || row->retired || owner->retired ||
++        !qemu_memory_whole_view_building_current(owner->view) ||
++        subpage->fv != owner->view || subpage->base != row->base ||
++        subpage->iomem.opaque != subpage ||
++        !subpage->iomem.subpage || subpage->iomem.owner || subpage->iomem.container) {
++        whole_dispatch_refuse();
++    }
++    row->klass = OBJECT(subpage)->class;
++    row->operations = subpage->iomem.ops;
++    row->opaque = subpage->iomem.opaque;
++    row->destructor = subpage->iomem.destructor;
++    row->base = subpage->base;
++    row->published = true;
++}
++
++static bool whole_dispatch_subpage_retained(MemoryRegion *region)
++{
++    if (!whole_dispatch_selected()) {
++        return false;
++    }
++    WholeDispatchOwner *owner;
++    WholeDispatchSubpage *row = whole_dispatch_subpage_original(region, &owner);
++
++    if (!row) {
++        return false;
++    }
++    if (!row->published || row->retirement_attempted || row->retired || owner->retired ||
++        !qemu_memory_whole_view_retirement_current(owner->view)) {
++        whole_dispatch_refuse();
++    }
++    subpage_t *subpage = row->original;
++    if (OBJECT(subpage)->class != row->klass || subpage->fv != owner->view ||
++        subpage->base != row->base || region->ops != row->operations ||
++        region->opaque != row->opaque || region->destructor != row->destructor ||
++        !region->subpage || region->owner || region->container || region->alias ||
++        region->ram || !QTAILQ_EMPTY(&region->subregions)) {
++        whole_dispatch_refuse();
++    }
++    row->retirement_attempted = true;
++    return true;
++}
++
++static void whole_dispatch_subpage_retirement_complete(MemoryRegion *region)
++{
++    if (!whole_dispatch_selected()) {
++        return;
++    }
++    WholeDispatchOwner *owner;
++    WholeDispatchSubpage *row = whole_dispatch_subpage_original(region, &owner);
++
++    if (!row || !row->retirement_attempted || row->retired || owner->retired ||
++        !qemu_memory_whole_view_retirement_current(owner->view)) {
++        whole_dispatch_refuse();
++    }
++    row->retired = true;
++}
++
++static ObjectClass *whole_dispatch_unassigned_class;
++static const MemoryRegionOps *whole_dispatch_unassigned_ops;
++static void *whole_dispatch_unassigned_opaque;
++
++static void whole_dispatch_unassigned_publish(void)
++{
++    if (!whole_dispatch_selected()) {
++        return;
++    }
++    if (!crucible_whole_setup_constructor_current() || whole_dispatch_unassigned_class ||
++        io_mem_unassigned.owner || io_mem_unassigned.subpage) {
++        whole_dispatch_refuse();
++    }
++    whole_dispatch_unassigned_class = OBJECT(&io_mem_unassigned)->class;
++    whole_dispatch_unassigned_ops = io_mem_unassigned.ops;
++    whole_dispatch_unassigned_opaque = io_mem_unassigned.opaque;
++    if (!whole_dispatch_unassigned_class || !whole_dispatch_unassigned_ops) {
++        whole_dispatch_refuse();
++    }
++}
++
++static void whole_dispatch_region_access(MemoryRegion *region, bool subpage)
++{
++    if (!whole_dispatch_selected() || subpage) {
++        return;
++    }
++    if (region == &io_mem_unassigned) {
++        if (!whole_dispatch_unassigned_class ||
++            OBJECT(region)->class != whole_dispatch_unassigned_class ||
++            region->ops != whole_dispatch_unassigned_ops ||
++            region->opaque != whole_dispatch_unassigned_opaque ||
++            region->owner || region->subpage) {
++            whole_dispatch_refuse();
++        }
++        return;
++    }
++    if (!crucible_whole_setup_q35_instance_span_current(OBJECT(region), region,
++                                                        sizeof(*region))) {
++        whole_dispatch_refuse();
++    }
++}
++
++/* Section insertion borrows an original MR before native ref() follows owner.
++ * This validates local membership, not the complete memory topology. */
++static void whole_dispatch_section_region_access(PhysPageMap *map,
++                                                  MemoryRegion *region)
++{
++    if (!whole_dispatch_selected()) {
++        return;
++    }
++    WholeDispatchOwner *map_owner = whole_dispatch_original(map, true);
++
++    if (!qemu_memory_whole_view_building_current(map_owner->view)) {
++        whole_dispatch_refuse();
++    }
++    WholeDispatchOwner *owner;
++    WholeDispatchSubpage *row = whole_dispatch_subpage_original(region, &owner);
++
++    if (!row) {
++        whole_dispatch_region_access(region, false);
++        return;
++    }
++    if (owner != map_owner || !row->published || row->retirement_attempted ||
++        row->retired || owner->retired) {
++        whole_dispatch_refuse();
++    }
++    subpage_t *subpage = row->original;
++
++    if (OBJECT(subpage)->class != row->klass || subpage->fv != owner->view ||
++        subpage->base != row->base || region->ops != row->operations ||
++        region->opaque != row->opaque || region->destructor != row->destructor ||
++        !region->subpage || region->owner || region->container || region->alias ||
++        region->ram || !QTAILQ_EMPTY(&region->subregions)) {
++        whole_dispatch_refuse();
++    }
++}
 diff --git a/system/crucible-whole-early.inc.c b/system/crucible-whole-early.inc.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..f4cfdd946d89d04e166418a8c7216c61e3138b6e
@@ -184834,10 +185303,10 @@ index 0000000000000000000000000000000000000000..f4cfdd946d89d04e166418a8c7216c61
 +#include "crucible-whole-control.inc.c"
 diff --git a/system/crucible-whole-memory-storage.inc.c b/system/crucible-whole-memory-storage.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..997b3100a13ee5902f4a0d367d4200ad6a534c80
+index 0000000000000000000000000000000000000000..7c54ea68e4bfe905889b2c6b99cdc198960fa953
 --- /dev/null
 +++ b/system/crucible-whole-memory-storage.inc.c
-@@ -0,0 +1,630 @@
+@@ -0,0 +1,658 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#include "qemu/crucible-sha256.h"
 +
@@ -184909,6 +185378,7 @@ index 0000000000000000000000000000000000000000..997b3100a13ee5902f4a0d367d4200ad
 +} WholeMemoryStorage;
 +
 +static WholeMemoryStorage *whole_memory_storage;
++static __thread WholeMemoryView *whole_memory_retiring_view;
 +
 +static G_NORETURN void whole_memory_storage_refuse(void)
 +{
@@ -185134,7 +185604,11 @@ index 0000000000000000000000000000000000000000..997b3100a13ee5902f4a0d367d4200ad
 +        row->retirement_callback != method || view->ref) {
 +        whole_memory_storage_refuse();
 +    }
++    if (whole_memory_retiring_view != row) {
++        whole_memory_storage_refuse();
++    }
 +    row->phase = WHOLE_MEMORY_VIEW_RETIRED;
++    whole_memory_retiring_view = NULL;
 +    return true;
 +}
 +
@@ -185407,9 +185881,10 @@ index 0000000000000000000000000000000000000000..997b3100a13ee5902f4a0d367d4200ad
 +    WholeMemoryView *row = whole_memory_view_original(view);
 +
 +    if (row->phase != WHOLE_MEMORY_VIEW_QUEUED ||
-+        row->retirement_callback != method || view->ref) {
++        row->retirement_callback != method || view->ref || whole_memory_retiring_view) {
 +        whole_memory_storage_refuse();
 +    }
++    whole_memory_retiring_view = row;
 +}
 +
 +static void whole_memory_space_retirement_select(AddressSpace *as,
@@ -185467,6 +185942,28 @@ index 0000000000000000000000000000000000000000..997b3100a13ee5902f4a0d367d4200ad
 +        whole_memory_storage_refuse();
 +    }
 +    return true;
++}
++
++bool qemu_memory_whole_view_building_current(FlatView *view)
++{
++    if (!whole_memory_storage_selected()) {
++        return false;
++    }
++    whole_memory_view_access(view);
++    return whole_memory_view_original(view)->phase == WHOLE_MEMORY_VIEW_BUILDING &&
++        crucible_whole_setup_constructor_current();
++}
++
++bool qemu_memory_whole_view_retirement_current(FlatView *view)
++{
++    if (!whole_memory_storage_selected() || !whole_memory_retiring_view ||
++        !crucible_whole_setup_history_span_current(whole_memory_retiring_view,
++                                                  sizeof(*whole_memory_retiring_view)) ||
++        whole_memory_retiring_view->original != view) {
++        return false;
++    }
++    whole_memory_view_access(view);
++    return whole_memory_retiring_view->phase == WHOLE_MEMORY_VIEW_QUEUED && !view->ref;
 +}
 diff --git a/system/crucible-whole-q35.inc.c b/system/crucible-whole-q35.inc.c
 new file mode 100644
@@ -188357,7 +188854,7 @@ index cd3193d170b2b5759cb34e4087a6d0ebfa805287..c9270db4087e6983acedb08d42183332
 +  ))
  endif
 diff --git a/system/physmem.c b/system/physmem.c
-index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de13d9ca105 100644
+index c21ea929153e5b67efa47432b1db0993e2690f9c..a6abf6b0cf2006557ad986fec9ce7b10416a381e 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
 @@ -18,7 +18,11 @@
@@ -188475,7 +188972,47 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  static MemoryRegion *system_memory;
  static MemoryRegion *system_io;
  
-@@ -302,6 +388,8 @@ static void phys_page_compact(PhysPageEntry *lp, Node *nodes)
+@@ -156,6 +242,8 @@ typedef struct subpage_t {
+ 
+ #define PHYS_SECTION_UNASSIGNED 0
+ 
++#include "crucible-whole-dispatch-storage.inc.c"
++
+ static void io_mem_init(void);
+ static void memory_map_init(void);
+ static void tcg_log_global_after_sync(MemoryListener *listener);
+@@ -183,10 +271,26 @@ struct DirtyBitmapSnapshot {
+ static void phys_map_node_reserve(PhysPageMap *map, unsigned nodes)
+ {
+     static unsigned alloc_hint = 16;
+-    if (map->nodes_nb + nodes > map->nodes_nb_alloc) {
+-        map->nodes_nb_alloc = MAX(alloc_hint, map->nodes_nb + nodes);
+-        map->nodes = g_renew(Node, map->nodes, map->nodes_nb_alloc);
+-        alloc_hint = map->nodes_nb_alloc;
++    whole_dispatch_map_access(map);
++    unsigned required;
++
++    if (whole_dispatch_selected()) {
++        if (__builtin_add_overflow(map->nodes_nb, nodes, &required)) {
++            whole_dispatch_refuse();
++        }
++    } else {
++        required = map->nodes_nb + nodes;
++    }
++    if (required > map->nodes_nb_alloc) {
++        unsigned capacity = MAX(alloc_hint, required);
++        Node *body = whole_dispatch_grow(map, true, capacity);
++
++        if (!body) {
++            body = g_renew(Node, map->nodes, capacity);
++        }
++        map->nodes = body;
++        map->nodes_nb_alloc = capacity;
++        alloc_hint = capacity;
+     }
+ }
+ 
+@@ -302,6 +406,8 @@ static void phys_page_compact(PhysPageEntry *lp, Node *nodes)
  
  void address_space_dispatch_compact(AddressSpaceDispatch *d)
  {
@@ -188484,7 +189021,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      if (d->phys_map.skip) {
          phys_page_compact(&d->phys_map, d->map.nodes);
      }
-@@ -588,6 +676,58 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
+@@ -588,6 +694,58 @@ MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat,
      return mr;
  }
  
@@ -188543,7 +189080,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  #ifdef CONFIG_TCG
  
  typedef struct TCGIOMMUNotifier {
-@@ -755,9 +895,12 @@ void cpu_address_space_init(CPUState *cpu, int asidx,
+@@ -755,9 +913,12 @@ void cpu_address_space_init(CPUState *cpu, int asidx,
                              const char *prefix, MemoryRegion *mr)
  {
      CPUAddressSpace *newas;
@@ -188557,7 +189094,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      assert(mr);
      as_name = g_strdup_printf("%s-%d", prefix, cpu->cpu_index);
      address_space_init(as, mr, as_name);
-@@ -929,11 +1072,13 @@ bool physical_memory_get_dirty_flag(ram_addr_t addr, unsigned client)
+@@ -929,11 +1090,13 @@ bool physical_memory_get_dirty_flag(ram_addr_t addr, unsigned client)
  
  bool physical_memory_is_clean(ram_addr_t addr)
  {
@@ -188576,7 +189113,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  }
  
  static bool physical_memory_all_dirty(ram_addr_t start, ram_addr_t length,
-@@ -1006,6 +1151,10 @@ void physical_memory_set_dirty_flag(ram_addr_t addr, unsigned client)
+@@ -1006,6 +1169,10 @@ void physical_memory_set_dirty_flag(ram_addr_t addr, unsigned client)
      blocks = qatomic_rcu_read(&ram_list.dirty_memory[client]);
  
      set_bit_atomic(offset, blocks->blocks[idx]);
@@ -188587,7 +189124,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  }
  
  void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
-@@ -1016,6 +1165,10 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+@@ -1016,6 +1183,10 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
      unsigned long idx, offset, base;
      int i;
  
@@ -188598,7 +189135,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      if (!mask && !xen_enabled()) {
          return;
      }
-@@ -1046,6 +1199,12 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
+@@ -1046,6 +1217,12 @@ void physical_memory_set_dirty_range(ram_addr_t start, ram_addr_t length,
                  bitmap_set_atomic(blocks[DIRTY_MEMORY_CODE]->blocks[idx],
                                    offset, next - page);
              }
@@ -188611,7 +189148,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  
              page = next;
              idx++;
-@@ -1248,7 +1407,8 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1248,7 +1425,8 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                      nbits = ctpopl(temp);
                      qatomic_or(&blocks[DIRTY_MEMORY_VGA][idx][offset], temp);
  
@@ -188621,7 +189158,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
                          qatomic_or(
                                  &blocks[DIRTY_MEMORY_MIGRATION][idx][offset],
                                  temp);
-@@ -1257,6 +1417,14 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1257,6 +1435,14 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
                              total_dirty_pages += nbits;
                          }
                      }
@@ -188636,7 +189173,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  
                      num_dirty += nbits;
  
-@@ -1280,9 +1448,12 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
+@@ -1280,9 +1466,12 @@ uint64_t physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
          uint8_t clients = tcg_enabled() ? DIRTY_CLIENTS_ALL
                                          : DIRTY_CLIENTS_NOCODE;
  
@@ -188650,7 +189187,36 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  
          /*
           * bitmap-traveling is faster than memory-traveling (for addr...)
-@@ -1329,6 +1500,10 @@ static uint16_t phys_section_add(PhysPageMap *map,
+@@ -1319,37 +1508,70 @@ static subpage_t *subpage_init(FlatView *fv, hwaddr base);
+ static uint16_t phys_section_add(PhysPageMap *map,
+                                  MemoryRegionSection *section)
+ {
++    whole_dispatch_map_access(map);
++    whole_dispatch_section_region_access(map, section->mr);
+     if (map->sections_nb == map->sections_nb_alloc) {
+-        map->sections_nb_alloc = MAX(map->sections_nb_alloc * 2, 16);
+-        map->sections = g_renew(MemoryRegionSection, map->sections,
+-                                map->sections_nb_alloc);
++        unsigned capacity;
++
++        if (whole_dispatch_selected()) {
++            if (__builtin_mul_overflow(map->sections_nb_alloc, 2u, &capacity)) {
++                whole_dispatch_refuse();
++            }
++        } else {
++            capacity = map->sections_nb_alloc * 2;
++        }
++        capacity = MAX(capacity, 16);
++        MemoryRegionSection *body = whole_dispatch_grow(map, false, capacity);
++
++        if (!body) {
++            body = g_renew(MemoryRegionSection, map->sections, capacity);
++        }
++        map->sections = body;
++        map->sections_nb_alloc = capacity;
+     }
+     map->sections[map->sections_nb] = *section;
+     memory_region_ref(section->mr);
      return map->sections_nb++;
  }
  
@@ -188660,18 +189226,45 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
 +
  static void phys_section_destroy(MemoryRegion *mr)
  {
++    bool retained_subpage = whole_dispatch_subpage_retained(mr);
++    whole_dispatch_region_access(mr, retained_subpage);
      bool have_sub_page = mr->subpage;
-@@ -1337,7 +1512,9 @@ static void phys_section_destroy(MemoryRegion *mr)
+ 
+     memory_region_unref(mr);
  
      if (have_sub_page) {
          subpage_t *subpage = container_of(mr, subpage_t, iomem);
 +        constructor_subpage_retirement_begin(subpage);
          object_unref(OBJECT(&subpage->iomem));
+-        g_free(subpage);
 +        constructor_subpage_retirement_end(subpage);
-         g_free(subpage);
++        if (retained_subpage) {
++            whole_dispatch_subpage_retirement_complete(&subpage->iomem);
++        }
++        if (!retained_subpage) {
++            g_free(subpage);
++        }
      }
  }
-@@ -1405,6 +1582,8 @@ static void register_multipage(FlatView *fv,
+ 
+ static void phys_sections_free(PhysPageMap *map)
+ {
++    bool retained = whole_dispatch_map_retained(map);
++
+     while (map->sections_nb > 0) {
+         MemoryRegionSection *section = &map->sections[--map->sections_nb];
+         phys_section_destroy(section->mr);
+     }
+-    g_free(map->sections);
+-    g_free(map->nodes);
++    if (!retained) {
++        g_free(map->sections);
++        g_free(map->nodes);
++    }
+ }
+ 
+ static void register_subpage(FlatView *fv, MemoryRegionSection *section)
+@@ -1405,6 +1627,8 @@ static void register_multipage(FlatView *fv,
   */
  void flatview_add_to_dispatch(FlatView *fv, MemoryRegionSection *section)
  {
@@ -188680,7 +189273,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      MemoryRegionSection remain = *section;
      Int128 page_size = int128_make64(TARGET_PAGE_SIZE);
  
-@@ -1901,6 +2080,11 @@ bool qemu_ram_is_uf_zeroable(const RAMBlock *rb)
+@@ -1901,6 +2125,11 @@ bool qemu_ram_is_uf_zeroable(const RAMBlock *rb)
  
  void qemu_ram_set_uf_zeroable(RAMBlock *rb)
  {
@@ -188692,7 +189285,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      rb->flags |= RAM_UF_ZEROPAGE;
  }
  
-@@ -1911,11 +2095,17 @@ bool qemu_ram_is_migratable(const RAMBlock *rb)
+@@ -1911,11 +2140,17 @@ bool qemu_ram_is_migratable(const RAMBlock *rb)
  
  void qemu_ram_set_migratable(RAMBlock *rb)
  {
@@ -188710,7 +189303,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      rb->flags &= ~RAM_MIGRATABLE;
  }
  
-@@ -1932,6 +2122,9 @@ int qemu_ram_get_fd(const RAMBlock *rb)
+@@ -1932,6 +2167,9 @@ int qemu_ram_get_fd(const RAMBlock *rb)
  /* Called with the BQL held.  */
  void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
  {
@@ -188720,7 +189313,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      RAMBlock *block;
  
      assert(new_block);
-@@ -1946,6 +2139,7 @@ void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
+@@ -1946,6 +2184,7 @@ void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
      }
      pstrcat(new_block->idstr, sizeof(new_block->idstr), name);
  
@@ -188728,7 +189321,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      RCU_READ_LOCK_GUARD();
      RAMBLOCK_FOREACH(block) {
          if (block != new_block &&
-@@ -1960,11 +2154,14 @@ void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
+@@ -1960,11 +2199,14 @@ void qemu_ram_set_idstr(RAMBlock *new_block, const char *name, DeviceState *dev)
  /* Called with the BQL held.  */
  void qemu_ram_unset_idstr(RAMBlock *block)
  {
@@ -188743,7 +189336,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
          memset(block->idstr, 0, sizeof(block->idstr));
      }
  }
-@@ -2019,6 +2216,11 @@ static int memory_try_enable_merging(void *addr, size_t len)
+@@ -2019,6 +2261,11 @@ static int memory_try_enable_merging(void *addr, size_t len)
   */
  int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
  {
@@ -188755,7 +189348,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      const ram_addr_t oldsize = block->used_length;
      const ram_addr_t unaligned_size = newsize;
  
-@@ -2031,6 +2233,9 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
+@@ -2031,6 +2278,9 @@ int qemu_ram_resize(RAMBlock *block, ram_addr_t newsize, Error **errp)
           * sizes), however, we have to notify if the unaligned size changed.
           */
          if (unaligned_size != memory_region_size(block->mr)) {
@@ -188765,7 +189358,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
              memory_region_set_size(block->mr, unaligned_size);
              if (block->resized) {
                  block->resized(block->idstr, unaligned_size, block->host);
-@@ -2118,6 +2323,10 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
+@@ -2118,6 +2368,10 @@ static void dirty_memory_extend(ram_addr_t new_ram_size)
          return;
      }
  
@@ -188776,7 +189369,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      for (i = 0; i < DIRTY_MEMORY_NUM; i++) {
          DirtyMemoryBlocks *old_blocks;
          DirtyMemoryBlocks *new_blocks;
-@@ -2301,6 +2510,11 @@ RAMBlock *qemu_ram_alloc_from_fd(ram_addr_t size, ram_addr_t max_size,
+@@ -2301,6 +2555,11 @@ RAMBlock *qemu_ram_alloc_from_fd(ram_addr_t size, ram_addr_t max_size,
                                   bool grow,
                                   Error **errp)
  {
@@ -188788,7 +189381,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      ERRP_GUARD();
      RAMBlock *new_block;
      Error *local_err = NULL;
-@@ -2461,10 +2675,17 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
+@@ -2461,10 +2720,17 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
                                    void *host, uint32_t ram_flags,
                                    MemoryRegion *mr, Error **errp)
  {
@@ -188806,7 +189399,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      share_flags = ram_flags & (RAM_PRIVATE | RAM_SHARED);
      assert(share_flags != (RAM_SHARED | RAM_PRIVATE));
      ram_flags &= ~RAM_PRIVATE;
-@@ -2524,7 +2745,10 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
+@@ -2524,7 +2790,10 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
      size = ROUND_UP(size, align);
      max_size = ROUND_UP(max_size, align);
  
@@ -188818,7 +189411,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      new_block->mr = mr;
      new_block->resized = resized;
      new_block->used_length = size;
-@@ -2536,10 +2760,14 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
+@@ -2536,10 +2805,14 @@ RAMBlock *qemu_ram_alloc_internal(ram_addr_t size, ram_addr_t max_size,
      new_block->flags = ram_flags;
      ram_block_add(new_block, &local_err);
      if (local_err) {
@@ -188833,7 +189426,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      return new_block;
  }
  
-@@ -2568,6 +2796,10 @@ RAMBlock *qemu_ram_alloc_resizeable(ram_addr_t size, ram_addr_t maxsz,
+@@ -2568,6 +2841,10 @@ RAMBlock *qemu_ram_alloc_resizeable(ram_addr_t size, ram_addr_t maxsz,
  
  static void reclaim_ramblock(RAMBlock *block)
  {
@@ -188844,7 +189437,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      if (block->flags & RAM_PREALLOC) {
          ;
      } else if (xen_map_cache_enabled()) {
-@@ -2591,20 +2823,29 @@ static void reclaim_ramblock(RAMBlock *block)
+@@ -2591,20 +2868,29 @@ static void reclaim_ramblock(RAMBlock *block)
  
  void qemu_ram_free(RAMBlock *block)
  {
@@ -188876,7 +189469,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      QLIST_REMOVE_RCU(block, next);
      qatomic_set(&ram_list.mru_block, NULL);
      /* Write list before version */
-@@ -2647,6 +2888,11 @@ static int qemu_ram_remap_mmap(RAMBlock *block, uint64_t start, size_t length)
+@@ -2647,6 +2933,11 @@ static int qemu_ram_remap_mmap(RAMBlock *block, uint64_t start, size_t length)
   */
  void qemu_ram_remap(ram_addr_t addr)
  {
@@ -188888,7 +189481,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      RAMBlock *block;
      uint64_t offset;
      void *vaddr;
-@@ -2688,6 +2934,12 @@ void qemu_ram_remap(ram_addr_t addr)
+@@ -2688,6 +2979,12 @@ void qemu_ram_remap(ram_addr_t addr)
                  qemu_ram_setup_dump(vaddr, page_size);
              }
  
@@ -188901,7 +189494,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
              break;
          }
      }
-@@ -2952,6 +3204,8 @@ static const MemoryRegionOps subpage_ops = {
+@@ -2952,6 +3249,8 @@ static const MemoryRegionOps subpage_ops = {
      .endianness = DEVICE_NATIVE_ENDIAN,
  };
  
@@ -188910,31 +189503,61 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  static int subpage_register(subpage_t *mmio, uint32_t start, uint32_t end,
                              uint16_t section)
  {
-@@ -2974,12 +3228,14 @@ static subpage_t *subpage_init(FlatView *fv, hwaddr base)
+@@ -2974,12 +3273,18 @@ static subpage_t *subpage_init(FlatView *fv, hwaddr base)
      subpage_t *mmio;
  
      /* mmio->sub_section is set to PHYS_SECTION_UNASSIGNED with g_malloc0 */
+-    mmio = g_malloc0(sizeof(subpage_t) + TARGET_PAGE_SIZE * sizeof(uint16_t));
 +    constructor_subpage_preflight();
-     mmio = g_malloc0(sizeof(subpage_t) + TARGET_PAGE_SIZE * sizeof(uint16_t));
++    mmio = whole_dispatch_subpage_new(fv, base);
++    if (!mmio) {
++        mmio = g_malloc0(sizeof(subpage_t) + TARGET_PAGE_SIZE * sizeof(uint16_t));
++    }
      mmio->fv = fv;
      mmio->base = base;
      memory_region_init_io(&mmio->iomem, NULL, &subpage_ops, mmio,
                            NULL, TARGET_PAGE_SIZE);
      mmio->iomem.subpage = true;
++    whole_dispatch_subpage_publish(mmio);
 +    constructor_subpage_register(mmio);
      trace_subpage_init(mmio, base, TARGET_PAGE_SIZE);
  
      return mmio;
-@@ -3023,6 +3279,8 @@ AddressSpaceDispatch *address_space_dispatch_new(FlatView *fv)
+@@ -3006,11 +3311,15 @@ static void io_mem_init(void)
+ 
+     /* Trivially thread-safe since memory accesses are rejected */
+     memory_region_enable_lockless_io(&io_mem_unassigned);
++    whole_dispatch_unassigned_publish();
+ }
+ 
+ AddressSpaceDispatch *address_space_dispatch_new(FlatView *fv)
+ {
+-    AddressSpaceDispatch *d = g_new0(AddressSpaceDispatch, 1);
++    AddressSpaceDispatch *d = whole_dispatch_new(fv);
++    if (!d) {
++        d = g_new0(AddressSpaceDispatch, 1);
++    }
+     uint16_t n;
+ 
+     n = dummy_section(&d->map, fv, &io_mem_unassigned);
+@@ -3023,8 +3332,15 @@ AddressSpaceDispatch *address_space_dispatch_new(FlatView *fv)
  
  void address_space_dispatch_free(AddressSpaceDispatch *d)
  {
++    if (whole_dispatch_selected()) {
++        whole_dispatch_original(d, false);
++    }
 +    qemu_memory_crucible_dispatch_release_guard(d);
 +
      phys_sections_free(&d->map);
-     g_free(d);
+-    g_free(d);
++    if (!whole_dispatch_retire(d)) {
++        g_free(d);
++    }
  }
-@@ -3098,12 +3356,18 @@ static void tcg_commit(MemoryListener *listener)
+ 
+ static void do_nothing(CPUState *cpu, run_on_cpu_data d)
+@@ -3098,12 +3414,18 @@ static void tcg_commit(MemoryListener *listener)
  
  static void memory_map_init(void)
  {
@@ -188955,7 +189578,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      memory_region_init_io(system_io, NULL, &unassigned_io_ops, NULL, "io",
                            65536);
      address_space_init(&address_space_io, system_io, "I/O");
-@@ -3145,6 +3409,26 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
+@@ -3145,6 +3467,26 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
      physical_memory_set_dirty_range(addr, length, dirty_log_mask);
  }
  
@@ -188982,7 +189605,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  void memory_region_flush_rom_device(MemoryRegion *mr, hwaddr addr, hwaddr size)
  {
      /*
-@@ -3230,7 +3514,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
+@@ -3230,7 +3572,8 @@ static bool flatview_access_allowed(MemoryRegion *mr, MemTxAttrs attrs,
  static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
                                                  const uint8_t *buf,
                                                  hwaddr len, hwaddr mr_addr,
@@ -188992,7 +189615,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3270,8 +3555,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
+@@ -3270,8 +3613,35 @@ static MemTxResult flatview_write_continue_step(MemTxAttrs attrs,
          uint8_t *ram_ptr = qemu_ram_ptr_length(mr->ram_block, mr_addr, l,
                                                 false, true);
  
@@ -189030,7 +189653,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  
          return MEMTX_OK;
      }
-@@ -3282,14 +3594,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3282,14 +3652,15 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
                                             MemTxAttrs attrs,
                                             const void *ptr,
                                             hwaddr len, hwaddr mr_addr,
@@ -189049,7 +189672,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  
          len -= l;
          buf += l;
-@@ -3300,7 +3613,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
+@@ -3300,7 +3671,8 @@ static MemTxResult flatview_write_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -189059,7 +189682,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      }
  
      return result;
-@@ -3312,21 +3626,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
+@@ -3312,21 +3684,24 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -189087,7 +189710,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  {
      if (!flatview_access_allowed(mr, attrs, mr_addr, *l)) {
          return MEMTX_ACCESS_ERROR;
-@@ -3365,6 +3682,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
+@@ -3365,6 +3740,26 @@ static MemTxResult flatview_read_continue_step(MemTxAttrs attrs, uint8_t *buf,
  
          memcpy(buf, ram_ptr, *l);
  
@@ -189114,7 +189737,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
          return MEMTX_OK;
      }
  }
-@@ -3377,10 +3714,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3377,10 +3772,18 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
  {
      MemTxResult result = MEMTX_OK;
      uint8_t *buf = ptr;
@@ -189134,7 +189757,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  
          len -= l;
          buf += l;
-@@ -3391,7 +3736,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
+@@ -3391,7 +3794,8 @@ MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr,
          }
  
          l = len;
@@ -189144,7 +189767,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      }
  
      return result;
-@@ -3403,10 +3749,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
+@@ -3403,10 +3807,12 @@ static MemTxResult flatview_read(FlatView *fv, hwaddr addr,
  {
      hwaddr l;
      hwaddr mr_addr;
@@ -189158,7 +189781,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      if (!flatview_access_allowed(mr, attrs, mr_addr, l)) {
          return MEMTX_ACCESS_ERROR;
      }
-@@ -3456,6 +3804,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
+@@ -3456,6 +3862,73 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
      }
  }
  
@@ -189232,7 +189855,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  MemTxResult address_space_set(const AddressSpace *as, hwaddr addr,
                                uint8_t c, hwaddr len, MemTxAttrs attrs)
  {
-@@ -3487,11 +3902,65 @@ void physical_memory_write(hwaddr addr, const void *buf, hwaddr len)
+@@ -3487,11 +3960,65 @@ void physical_memory_write(hwaddr addr, const void *buf, hwaddr len)
                          MEMTXATTRS_UNSPECIFIED, buf, len);
  }
  
@@ -189298,7 +189921,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      RCU_READ_LOCK_GUARD();
      while (len > 0) {
          hwaddr addr1, l = len;
-@@ -3555,6 +4024,11 @@ typedef struct {
+@@ -3555,6 +4082,11 @@ typedef struct {
      MemoryRegion *mr;
      hwaddr addr;
      size_t len;
@@ -189310,7 +189933,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      uint8_t buffer[];
  } BounceBuffer;
  
-@@ -3578,6 +4052,8 @@ static void address_space_notify_map_clients_locked(const AddressSpace *as)
+@@ -3578,6 +4110,8 @@ static void address_space_notify_map_clients_locked(const AddressSpace *as)
  
  void address_space_register_map_client(AddressSpace *as, QEMUBH *bh)
  {
@@ -189319,7 +189942,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      AddressSpaceMapClient *client = g_malloc(sizeof(*client));
  
      QEMU_LOCK_GUARD(&as->map_client_list_lock);
-@@ -3607,6 +4083,8 @@ void machine_memory_init(void)
+@@ -3607,6 +4141,8 @@ void machine_memory_init(void)
  
  void address_space_unregister_map_client(AddressSpace *as, QEMUBH *bh)
  {
@@ -189328,7 +189951,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      AddressSpaceMapClient *client;
  
      QEMU_LOCK_GUARD(&as->map_client_list_lock);
-@@ -3708,6 +4186,8 @@ void *address_space_map(AddressSpace *as,
+@@ -3708,6 +4244,8 @@ void *address_space_map(AddressSpace *as,
                          bool is_write,
                          MemTxAttrs attrs)
  {
@@ -189337,7 +189960,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      hwaddr len = *plen;
      hwaddr l, xlat;
      MemoryRegion *mr;
-@@ -3724,7 +4204,8 @@ void *address_space_map(AddressSpace *as,
+@@ -3724,7 +4262,8 @@ void *address_space_map(AddressSpace *as,
      fv = address_space_to_flatview(as);
      mr = flatview_translate(fv, addr, &xlat, &l, is_write, attrs);
  
@@ -189347,7 +189970,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
          size_t used = qatomic_read(&as->bounce_buffer_size);
          for (;;) {
              hwaddr alloc = MIN(as->max_bounce_buffer_size - used, l);
-@@ -3749,10 +4230,47 @@ void *address_space_map(AddressSpace *as,
+@@ -3749,10 +4288,47 @@ void *address_space_map(AddressSpace *as,
          bounce->mr = mr;
          bounce->addr = addr;
          bounce->len = l;
@@ -189399,7 +190022,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
          }
  
          *plen = l;
-@@ -3793,8 +4311,43 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
+@@ -3793,8 +4369,43 @@ void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len,
      assert(bounce->magic == BOUNCE_BUFFER_MAGIC);
  
      if (is_write) {
@@ -189445,7 +190068,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      }
  
      qatomic_sub(&as->bounce_buffer_size, bounce->len);
-@@ -3839,6 +4392,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3839,6 +4450,10 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
  
      assert(len > 0);
  
@@ -189456,7 +190079,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
      l = len;
      cache->fv = address_space_get_flatview(as);
      d = flatview_to_dispatch(cache->fv);
-@@ -3874,6 +4431,66 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
+@@ -3874,6 +4489,66 @@ int64_t address_space_cache_init(MemoryRegionCache *cache,
      return l;
  }
  
@@ -189523,7 +190146,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  void address_space_cache_invalidate(const MemoryRegionCache *cache,
                                      hwaddr addr,
                                      hwaddr access_len)
-@@ -3941,8 +4558,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
+@@ -3941,8 +4616,8 @@ static MemTxResult address_space_write_continue_cached(MemTxAttrs attrs,
      const uint8_t *buf = ptr;
  
      for (;;) {
@@ -189534,7 +190157,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  
          len -= l;
          buf += l;
-@@ -3968,7 +4585,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
+@@ -3968,7 +4643,8 @@ static MemTxResult address_space_read_continue_cached(MemTxAttrs attrs,
      uint8_t *buf = ptr;
  
      for (;;) {
@@ -189544,7 +190167,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
          len -= l;
          buf += l;
          mr_addr += l;
-@@ -4070,6 +4688,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
+@@ -4070,6 +4746,36 @@ int cpu_memory_rw_debug(CPUState *cpu, vaddr addr,
      return 0;
  }
  
@@ -189581,7 +190204,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  int qemu_ram_foreach_block(RAMBlockIterFunc func, void *opaque)
  {
      RAMBlock *block;
-@@ -4222,6 +4870,12 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
+@@ -4222,6 +4928,12 @@ int ram_block_discard_range(RAMBlock *rb, uint64_t offset, size_t length)
      if (rb->guest_memfd >= 0) {
          ret = ram_block_discard_guest_memfd_range(rb, offset, length);
      }
@@ -189594,7 +190217,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..6c606a84fd5df6bfdb154fc9fd132de1
  
      return ret;
  }
-@@ -4492,3 +5146,14 @@ void ram_block_del_cpr_blocker(RAMBlock *rb)
+@@ -4492,3 +5204,14 @@ void ram_block_del_cpr_blocker(RAMBlock *rb)
  {
      migrate_del_blocker(&rb->cpr_blocker);
  }
