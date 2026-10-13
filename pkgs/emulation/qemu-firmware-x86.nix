@@ -92,7 +92,7 @@ in
         script = ''
           ${gnumake}/bin/make -C firmware-optionrom-build -j"$NIX_BUILD_CORES" \
             SHELL=${bash}/bin/bash V=1 all
-    
+
           # These are the original upstream BIOS configurations and all VGA
           # variants; source-built output replaces each corresponding input blob.
           ${gnumake}/bin/make -C roms -j"$NIX_BUILD_CORES" \
@@ -118,7 +118,7 @@ in
             vgabios-ramfb.bin vgabios-ati.bin; do
             cp "pc-bios/$name" "$out/share/qemu/$name"
           done
-    
+
           # Complete source retains the original archive, source edits, generated
           # configurations and exact build recipe. No prebuilt ROM is used above.
           cp "$src" "$source/share/qemu-firmware-source/qemu-${version}.tar.xz"
