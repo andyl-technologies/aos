@@ -2714,6 +2714,32 @@ These helpers issue no native execution, capture, restoration or readiness
 authority. Current complete application compilation and ABI/license gates
 remain required with the final integrated source.
 
+## Original stopped RR preparation source
+
+Signed QEMU source `2d578074117056de32caecc9c72cf2fd21b1a955` joins
+the original stopped-RR callback preparation, its literal initialization caller,
+source-built builtin ROM identities and non-system tool stubs. Its patch, bundle,
+descriptor and license inventory match all 21 changed source roles, including
+the two new GPL files. A fresh configuration and 2,482 direct AOS Bash command
+dispatches compile both CPU targets and qemu-img; nine changed complete source
+units pass with warnings treated as errors, and three actual qcow2 tool checks
+pass. Independent review verifies all source, command, object and linked-output
+pins. These compiler records do not establish original process-group cleanup
+custody. The installed plugin pair, native HOLD, complete source seals, guest
+release, capture and restoration remain separate unfinished requirements.
+
+The corrected ordinary Ninja package and matching complete source build pass
+in 24.40 seconds. Installed audits verify all 185 original and patched files,
+the sole launcher content change, exact source-built Bash argument, normal
+umask permission reduction, executable bits, NARs, references and actual
+deriver. This resolves the command-shell package prerequisite.
+
+A manual four-CPU diagnostic guest attempt fails before launching inner QEMU:
+the production API rejects its staging paths outside the AOS store. The outer
+guest was reaped with no remaining process group. The next attempt requires
+genuine realized package paths and their runtime closures; this failure
+supplies no evidence about the outstanding timer split or ABI conformance.
+
 ## Mutable stopped-preparation loan across fork
 
 The ordinary preparation helper now registers its mutable loan before invoking

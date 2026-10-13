@@ -11,6 +11,8 @@ The atomic integration patch creates these QEMU source files:
 | Created file | License | Basis |
 | --- | --- | --- |
 | `accel/tcg/tcg-accel-ops-sim.c` | GPL-2.0-or-later | QEMU default |
+| `plugins/whole-preparation.inc.c` | GPL-2.0-or-later | Explicit SPDX notice; original bounded stopped RR preparation. |
+| `stubs/crucible-whole-early.c` | GPL-2.0-or-later | Explicit SPDX notice; refusing non-system arena/constructor providers. |
 | `accel/tcg/crucible-node-preparation.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/system/crucible-plugin-wake.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `block/crucible-shmem.c` | GPL-2.0-or-later | Explicit file notice |
