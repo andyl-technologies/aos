@@ -337,7 +337,9 @@ pub(crate) use spawn::spawn_prepared_qemu_child_with_fds_in_directory_guarded;
 pub use spawn::{
     QemuChildProcessContract, QemuOriginalWholeLaunch, QemuPreparedRunDirectory, QemuSpawnError,
     QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild, QemuWholeLaunchCustody,
-    QemuWholeLaunchCustodySlot, spawn_selected_qemu_child_in_directory_guarded,
+    QemuWholeLaunchCustodySlot, spawn_selected_qemu_child_for_stopped_initialization,
+    spawn_selected_qemu_child_for_stopped_rr_preparation,
+    spawn_selected_qemu_child_in_directory_guarded,
 };
 pub use storage_array::{
     StorageArrayError, StorageArrayMemberWrite, StorageArrayWritePlan, plan_storage_array_write,

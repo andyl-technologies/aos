@@ -1272,6 +1272,7 @@ fn pinned_pre_exec_rejects_vmstate_replacement() -> Result<(), Box<dyn Error>> {
         ChildLaunchBindings {
             process_contract: None,
             whole_setup: None,
+            diagnostic_stdout: None,
         },
     ) {
         Err(error) => error,
@@ -1336,6 +1337,7 @@ fn pinned_run_directory_survives_diagnostic_path_replacement() -> Result<(), Box
         ChildLaunchBindings {
             process_contract: None,
             whole_setup: None,
+            diagnostic_stdout: None,
         },
     )?;
 
@@ -1454,6 +1456,7 @@ fn inherited_block_roots_survive_names_replaced_after_exec() -> Result<(), Box<d
         ChildLaunchBindings {
             process_contract: None,
             whole_setup: None,
+            diagnostic_stdout: None,
         },
     )?;
 

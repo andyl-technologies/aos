@@ -26,6 +26,7 @@ impl SelectedStorage {
         run_directory: &QemuPreparedRunDirectory,
         region_bytes: u64,
         contract: &QemuChildProcessContract,
+        additional_provider_history_bytes: u64,
     ) -> Result<Self, QemuSpawnError> {
         let plan = command.plugin_setup_plan();
         let selection = plan
@@ -57,6 +58,7 @@ impl SelectedStorage {
         // full extents cover that peak without charging FD aliases again.
         let provider_history_bytes = setup_bytes
             .checked_mul(3)
+            .and_then(|bytes| bytes.checked_add(additional_provider_history_bytes))
             .and_then(|bytes| bytes.checked_add(actor_bytes))
             .and_then(|bytes| bytes.checked_add(argument_storage_bytes))
             .and_then(|bytes| bytes.checked_add(metadata as u64))

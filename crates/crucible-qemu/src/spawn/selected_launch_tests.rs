@@ -123,6 +123,7 @@ fn dropping_partial_original_launch_transfers_same_child_mapping_descriptor_and_
         image_pins: None,
         launch_arguments: Vec::new().into_boxed_slice(),
         storage: None,
+        stopped_output: None,
         refused: false,
     });
     let original_address = std::ptr::from_ref(original.as_ref());
@@ -225,6 +226,7 @@ fn inherited_launch_drop_skips_parent_locked_mailbox_and_dontfork_mapping() {
             image_pins: None,
             launch_arguments: Vec::new().into_boxed_slice(),
             storage: None,
+            stopped_output: None,
             refused: false,
         })),
         retention: Some(Box::new(LockedMailbox {

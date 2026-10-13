@@ -37,6 +37,8 @@ mod whole_mapping;
 mod whole_setup;
 pub use selected_launch::{
     QemuOriginalWholeLaunch, QemuWholeLaunchCustody, QemuWholeLaunchCustodySlot,
+    spawn_selected_qemu_child_for_stopped_initialization,
+    spawn_selected_qemu_child_for_stopped_rr_preparation,
     spawn_selected_qemu_child_in_directory_guarded,
 };
 pub(crate) use whole_setup::QemuEarlyWholeSetup;
@@ -224,6 +226,16 @@ fn current_supplementary_groups() -> Result<Vec<libc::gid_t>, QemuSpawnError> {
 }
 
 impl QemuChildProcessContract {
+    /// Reports whether both contracts retain the same original attempt owner.
+    ///
+    /// This observes the private in-process binding shared only by legitimate
+    /// generation clones. Descriptor numbers, paths or serialized IDs cannot
+    /// replace it, and the observation grants no execution or readiness.
+    #[must_use]
+    pub fn retains_same_attempt(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.attempt_binding, &other.attempt_binding)
+    }
+
     /// Duplicates the sticky cancellation event for one bounded QMP operation.
     ///
     /// The returned descriptor observes the same eventfd counter as the child
@@ -990,6 +1002,7 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
         ChildLaunchBindings {
             process_contract: Some(contract),
             whole_setup: whole_setup.as_ref(),
+            diagnostic_stdout: None,
         },
     )?;
     resources.whole_setup = whole_setup;
@@ -1078,6 +1091,7 @@ pub(crate) fn create_test_spawn_resource_pair(
 struct ChildLaunchBindings<'a> {
     process_contract: Option<&'a QemuChildProcessContract>,
     whole_setup: Option<&'a whole_setup::QemuEarlyWholeSetup>,
+    diagnostic_stdout: Option<std::os::fd::BorrowedFd<'a>>,
 }
 
 fn spawn_process_with_resources(
@@ -1092,6 +1106,7 @@ fn spawn_process_with_resources(
     let ChildLaunchBindings {
         process_contract,
         whole_setup,
+        diagnostic_stdout,
     } = bindings;
     let whole_descriptors =
         whole_setup.map(whole_setup::QemuEarlyWholeSetup::child_descriptor_pins);
@@ -1120,6 +1135,15 @@ fn spawn_process_with_resources(
         .map(|overlay| (overlay.read.as_raw_fd(), overlay.write.as_raw_fd()));
 
     let mut command = guarded_qemu_process_command(executable, args, envs);
+    if let Some(stdout) = diagnostic_stdout {
+        let child_stdout = stdout
+            .try_clone_to_owned()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "lend original stopped-initialization stdout pipe",
+                source,
+            })?;
+        command.stdout(Stdio::from(child_stdout));
+    }
 
     // SAFETY: the closure only calls async-signal-safe syscalls between fork
     // and exec: `write`, `poll`, `setrlimit`, `openat`, `fstat`, `fchdir`, raw

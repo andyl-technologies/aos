@@ -661,6 +661,43 @@ impl QemuLaunchCommandBuilder {
         }
     }
 
+    /// Builds a selected Preparing command without asserting a World manifest.
+    ///
+    /// Native source installation must still authenticate the original sealed
+    /// Launch2 inputs. This entry exposes no execution or readiness authority;
+    /// guarded spawn refuses this command through the ordinary launch route.
+    ///
+    /// # Errors
+    /// Refuses an absent whole constructor or an unsupported selected launch.
+    pub fn new_for_whole_preparing(
+        profile: DeterministicLaunchProfile,
+        vm: QemuVmLaunchConfig,
+        executable: impl Into<String>,
+        plugin: QemuLaunchPluginConfig,
+    ) -> Result<Self, QemuLaunchCommandError> {
+        let setup = plugin.plugin_setup_plan();
+        let selection = setup
+            .whole_constructor()
+            .ok_or(QemuLaunchCommandError::InvalidPluginSetupPlan)?;
+        let launch = selection
+            .launch2()
+            .map_err(|_| QemuLaunchCommandError::InvalidPluginSetupPlan)?;
+        if launch.architecture
+            != crucible_protocol::whole_control::staged::launch::LaunchArchitecture::X86_64
+            || profile.smp_vcpus != 4
+            || vm.crucible_accelerator.is_some()
+        {
+            return Err(QemuLaunchCommandError::InvalidPluginSetupPlan);
+        }
+        Ok(Self::new_for_live_gate(
+            profile,
+            vm,
+            executable,
+            plugin,
+            LivePluginGuestArchitecture::X86_64,
+        ))
+    }
+
     /// Builds an internal loaded-backend gate command that discovers the live manifest.
     #[must_use]
     pub(crate) fn new_for_live_gate(
@@ -1138,7 +1175,7 @@ impl QemuVmLaunchConfig {
     /// virtio-blk root disk during boot never issues block I/O that a runner
     /// without a host block-I/O runtime cannot service.
     #[must_use]
-    pub(crate) fn new_diskless(
+    pub fn new_diskless(
         node_id: impl Into<String>,
         kernel: QemuLaunchArtifact,
         firmware: QemuLaunchArtifact,
@@ -1180,6 +1217,16 @@ impl QemuVmLaunchConfig {
             crucible_shmem_network: None,
             crucible_accelerator: None,
         }
+    }
+
+    /// Retains an explicit firmware artifact for the original direct-kernel launch.
+    ///
+    /// The artifact is authenticated and sealed by selected guarded spawn before
+    /// the native board constructor can load it; naming it grants no readiness.
+    #[must_use]
+    pub fn with_firmware(mut self, firmware: QemuLaunchArtifact) -> Self {
+        self.firmware = Some(firmware);
+        self
     }
 
     /// Returns a config with a content-addressed initrd.

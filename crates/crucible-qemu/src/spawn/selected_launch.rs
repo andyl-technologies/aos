@@ -5,7 +5,7 @@
 //! native source closure and exact consumed readiness acknowledgement.
 
 use std::io;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostHandshakeConfig};
@@ -25,6 +25,10 @@ use crate::{QemuLaunchCommand, QemuNodeChild};
 mod selected_storage;
 
 use selected_storage::SelectedStorage;
+
+#[path = "stopped_initialization.rs"]
+mod stopped_initialization;
+use stopped_initialization::{StoppedConstructorOutput, StoppedInitializationOutput};
 
 /// Owns original selected launch resources while native source readiness is pending.
 ///
@@ -57,6 +61,7 @@ pub struct QemuWholeLaunchCustody {
     image_pins: Option<GuardedLaunchImagePins>,
     launch_arguments: Box<[String]>,
     storage: Option<SelectedStorage>,
+    stopped_output: Option<StoppedConstructorOutput>,
     refused: bool,
 }
 
@@ -81,6 +86,70 @@ pub trait QemuWholeLaunchCustodySlot {
 }
 
 impl QemuOriginalWholeLaunch {
+    /// Polls the original stopped-INIT pipe and unique direct-child wait once.
+    ///
+    /// Exact output is returned only after successful natural child reap. This
+    /// diagnostic record supplies neither native retirement nor source readiness;
+    /// the original mapping, inputs and initial socket journals remain retained.
+    ///
+    /// # Errors
+    /// Refuses a foreign host process, failed child, missing diagnostic owner,
+    /// output overflow or exhausted finite read attempts, preserving the capsule.
+    pub fn poll_stopped_initialization_record(
+        &mut self,
+    ) -> Result<Option<[u8; 128]>, QemuSpawnError> {
+        let (output, child) = self.stopped_resources()?;
+        let StoppedConstructorOutput::Initialization(output) = output else {
+            return Err(super::whole_setup::protocol_error(io::Error::other(
+                "original diagnostic profile is not stopped initialization",
+            )));
+        };
+        output.poll(child)
+    }
+
+    /// Polls the separately selected original stopped-RR preparation record.
+    ///
+    /// The 192-byte record is returned only after successful natural reap and
+    /// complete pipe drainage. It grants no HOLD, first clock or readiness.
+    /// Polling never reinterprets a stopped-INIT record as RR preparation.
+    ///
+    /// # Errors
+    /// Refuses a foreign process, different diagnostic profile, failed child,
+    /// partial or excessive output and exhausted attempts, retaining custody.
+    pub fn poll_stopped_rr_preparation_record(
+        &mut self,
+    ) -> Result<Option<[u8; 192]>, QemuSpawnError> {
+        let (output, child) = self.stopped_resources()?;
+        let StoppedConstructorOutput::RoundRobinPreparation(output) = output else {
+            return Err(super::whole_setup::protocol_error(io::Error::other(
+                "original diagnostic profile is not stopped RR preparation",
+            )));
+        };
+        output.poll(child)
+    }
+
+    fn stopped_resources(
+        &mut self,
+    ) -> Result<(&mut StoppedConstructorOutput, &mut QemuNodeChild), QemuSpawnError> {
+        if self.birth_process != std::process::id() {
+            return Err(super::whole_setup::protocol_error(io::Error::other(
+                "foreign original launch",
+            )));
+        }
+        let original = self.original.as_mut().ok_or_else(|| {
+            super::whole_setup::protocol_error(io::Error::other("original custody is absent"))
+        })?;
+        let output = original.stopped_output.as_mut().ok_or_else(|| {
+            super::whole_setup::protocol_error(io::Error::other(
+                "original diagnostic pipe is absent",
+            ))
+        })?;
+        let child = original.child.as_mut().ok_or_else(|| {
+            super::whole_setup::protocol_error(io::Error::other("original child is absent"))
+        })?;
+        Ok((output, child))
+    }
+
     /// Returns the original native child process identity.
     #[must_use]
     pub fn process_id(&self) -> u32 {
@@ -280,6 +349,9 @@ impl Drop for QemuWholeLaunchCustody {
         if let Some(images) = self.image_pins.take() {
             std::mem::forget(images);
         }
+        if let Some(output) = self.stopped_output.take() {
+            std::mem::forget(output);
+        }
         std::mem::forget(std::mem::take(&mut self.launch_arguments));
     }
 }
@@ -305,6 +377,92 @@ pub fn spawn_selected_qemu_child_in_directory_guarded(
     contract: QemuChildProcessContract,
     retention: Box<dyn QemuWholeLaunchCustodySlot>,
 ) -> Result<QemuOriginalWholeLaunch, QemuSpawnError> {
+    spawn_selected_original(
+        command,
+        run_directory,
+        config,
+        slot_index,
+        contract,
+        retention,
+        None,
+    )
+}
+
+/// Spawns a Preparing-only constructor with its original nonblocking output pipe.
+///
+/// This qualification route retains both original pipe ends and every partial
+/// diagnostic byte in the same launch capsule. It provides no RUN or readiness
+/// operation. Ordinary selected spawn keeps its existing standard-output policy.
+///
+/// # Errors
+/// Refuses nonmatching, blocking or non-FIFO pipe descriptors before child
+/// creation, as well as every ordinary guarded constructor admission failure.
+// crucible-lint: allow rust-allow -- the explicit original owners cannot be combined into untyped descriptor metadata.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_selected_qemu_child_for_stopped_initialization(
+    command: &QemuLaunchCommand,
+    run_directory: QemuPreparedRunDirectory,
+    config: RegionConfig,
+    slot_index: u32,
+    contract: QemuChildProcessContract,
+    retention: Box<dyn QemuWholeLaunchCustodySlot>,
+    original_pipe: [OwnedFd; 2],
+) -> Result<QemuOriginalWholeLaunch, QemuSpawnError> {
+    let output = StoppedInitializationOutput::new(original_pipe)?;
+    spawn_selected_original(
+        command,
+        run_directory,
+        config,
+        slot_index,
+        contract,
+        retention,
+        Some(StoppedConstructorOutput::Initialization(output)),
+    )
+}
+
+/// Spawns a separately selected stopped-RR preparation diagnostic constructor.
+///
+/// The original FIFO capacity and 193-byte capture bank are admitted before
+/// allocation or Child. This route retains the same originals and socket
+/// journals; it supplies no RUN, source-ready or native retirement operation.
+///
+/// # Errors
+/// Refuses a foreign, blocking or non-FIFO pair, unavailable capture credit,
+/// or any ordinary guarded constructor admission failure before Child.
+// crucible-lint: allow rust-allow -- preserves explicit original ownership and the separately selected diagnostic profile.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_selected_qemu_child_for_stopped_rr_preparation(
+    command: &QemuLaunchCommand,
+    run_directory: QemuPreparedRunDirectory,
+    config: RegionConfig,
+    slot_index: u32,
+    contract: QemuChildProcessContract,
+    retention: Box<dyn QemuWholeLaunchCustodySlot>,
+    original_pipe: [OwnedFd; 2],
+) -> Result<QemuOriginalWholeLaunch, QemuSpawnError> {
+    let output = StoppedInitializationOutput::<192>::new(original_pipe)?;
+    spawn_selected_original(
+        command,
+        run_directory,
+        config,
+        slot_index,
+        contract,
+        retention,
+        Some(StoppedConstructorOutput::RoundRobinPreparation(output)),
+    )
+}
+
+// crucible-lint: allow rust-allow -- preserves the individually owned launch resources and optional diagnostic custody.
+#[allow(clippy::too_many_arguments)]
+fn spawn_selected_original(
+    command: &QemuLaunchCommand,
+    run_directory: QemuPreparedRunDirectory,
+    config: RegionConfig,
+    slot_index: u32,
+    contract: QemuChildProcessContract,
+    retention: Box<dyn QemuWholeLaunchCustodySlot>,
+    mut stopped_output: Option<StoppedConstructorOutput>,
+) -> Result<QemuOriginalWholeLaunch, QemuSpawnError> {
     retention.validate_constructor(command, &contract)?;
     let selection = command
         .plugin_setup_plan()
@@ -321,7 +479,13 @@ pub fn spawn_selected_qemu_child_in_directory_guarded(
         &run_directory,
         allocation.layout().region_size,
         &contract,
+        stopped_output
+            .as_ref()
+            .map_or(0, StoppedConstructorOutput::required_backing_bytes),
     )?;
+    if let Some(output) = &mut stopped_output {
+        output.prepare_capture()?;
+    }
     let image_pins = GuardedLaunchImagePins::new(&run_directory)?;
     let launch_arguments = guarded_launch_args(
         command.args(),
@@ -377,6 +541,7 @@ pub fn spawn_selected_qemu_child_in_directory_guarded(
         image_pins: Some(image_pins),
         launch_arguments,
         storage: Some(storage),
+        stopped_output,
         refused: false,
     });
     let child = match spawn_process_with_resources(
@@ -397,6 +562,10 @@ pub fn spawn_selected_qemu_child_in_directory_guarded(
         ChildLaunchBindings {
             process_contract: original.process_contract.as_ref(),
             whole_setup: original.constructor.as_ref(),
+            diagnostic_stdout: original
+                .stopped_output
+                .as_ref()
+                .map(|output| output.writer()),
         },
     ) {
         Ok(child) => QemuNodeChild::new(child),

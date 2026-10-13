@@ -2836,6 +2836,25 @@ before claiming the setup descriptor; the preceding canonical native source
 lacks it and correctly refuses. A matching native successor and genuine
 installed pair qualification remain required.
 
+## Original stopped-constructor diagnostic output
+
+Selected guarded spawn can retain a preexisting nonblocking FIFO pair in the
+same original launch capsule. Its capture buffer and pipe capacity are charged
+before Child. Partial bytes, the original descriptors, initial socket journals
+and setup custody remain retained through refusal. Successful natural child
+reap and a final drain precede exact fixed-length output; this is diagnostic
+correlation, not complete native retirement or execution authority.
+
+Separate 128-byte INIT and 192-byte RR preparation profiles refuse truncation,
+overflow and reinterpretation. Strict checks, fresh library/example test and
+normal example builds, and eleven focused controls pass: nine actual FIFO or
+capsule ownership controls and two portable parser controls. Independent review
+verifies the ten source paths, compiler bindings and three executables. The
+example's frozen source literals describe a precursor tuple; the RR hook is
+absent and explicitly refuses. Current native/plugin realization, a distinct
+source-bound RR operator, actual stopped-pair execution and readiness remain
+unfinished.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
