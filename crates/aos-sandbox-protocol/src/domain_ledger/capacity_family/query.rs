@@ -34,16 +34,16 @@ use crate::mount_source_acquisition_state::{
     acquisition_key, provider_attempt_key, provider_head_key,
 };
 
-use aos_sandbox_core::RecordNamespace;
-use crate::domain_ledger::transaction::{
-    JournalLimits, JournalRecord, JournalTransaction, encode_record, encoded_transaction_append_bytes,
-};
 use super::CapacityDataError;
 use super::fixed300::{FixedCapacityBody, VALUE_BYTES, floor_identity};
 use super::{reservation_key, take};
+use crate::domain_ledger::transaction::{
+    JournalLimits, JournalRecord, JournalTransaction, encode_record,
+    encoded_transaction_append_bytes,
+};
+use aos_sandbox_core::RecordNamespace;
 
-const IDENTITY_DOMAIN: &[u8] =
-    b"aos.journal.root-recovery-query-capacity.v6.floor-identity\0";
+const IDENTITY_DOMAIN: &[u8] = b"aos.journal.root-recovery-query-capacity.v6.floor-identity\0";
 const ORIGINAL_ROOT_INVENTORY_KIND: u8 = 7;
 
 /// Selects a closed conservative future suffix without admitting a producer.
@@ -134,7 +134,10 @@ impl QueryCapacityProfileV6 {
         if self == Self::StatusOrComplete {
             validate_envelope_limits(
                 &status_envelope()?,
-                &[MAXIMUM_PROVIDER_ATTEMPT_VALUE_BYTES, MAXIMUM_PROVIDER_HEAD_VALUE_BYTES],
+                &[
+                    MAXIMUM_PROVIDER_ATTEMPT_VALUE_BYTES,
+                    MAXIMUM_PROVIDER_HEAD_VALUE_BYTES,
+                ],
                 limits,
             )?;
         }
@@ -212,7 +215,12 @@ impl QueryCapacityDataV6 {
         let mut bytes = b"AOSJCR01".to_vec();
         bytes.extend_from_slice(&6_u16.to_be_bytes());
         bytes.extend_from_slice(&[
-            40, 10, ORIGINAL_ROOT_INVENTORY_KIND, self.profile as u8, 0, 0,
+            40,
+            10,
+            ORIGINAL_ROOT_INVENTORY_KIND,
+            self.profile as u8,
+            0,
+            0,
         ]);
         FixedCapacityBody {
             owner_id: self.owner_id,
@@ -293,15 +301,15 @@ impl QueryCapacityRecordV6 {
     /// Rejects a foreign namespace, DELETE, wrong header/width/reserved bytes,
     /// unknown kind/profile, zero binding, noncanonical geometry, or substituted
     /// key/domain/identity. Does not validate owner or request preimages.
-    pub fn from_journal_record(
-        record: &JournalRecord,
-    ) -> Result<Self, CapacityDataError> {
+    pub fn from_journal_record(record: &JournalRecord) -> Result<Self, CapacityDataError> {
         if record.namespace() != RecordNamespace::GlobalCapacityReservation {
             return Err(CapacityDataError::ForeignAuthorityNamespace);
         }
         Self::decode(
             record.key(),
-            record.value().ok_or(CapacityDataError::InvalidTransaction)?,
+            record
+                .value()
+                .ok_or(CapacityDataError::InvalidTransaction)?,
         )
     }
 
@@ -363,7 +371,9 @@ fn framed_envelope_bytes(
         encoded_transaction_append_bytes(transaction)?,
         |total, bound| {
             let bytes = u64::try_from(*bound).map_err(|_| CapacityDataError::JournalTooLarge)?;
-            total.checked_add(bytes).ok_or(CapacityDataError::JournalTooLarge)
+            total
+                .checked_add(bytes)
+                .ok_or(CapacityDataError::JournalTooLarge)
         },
     )
 }
@@ -374,25 +384,37 @@ fn validate_envelope_limits(
     limits: JournalLimits,
 ) -> Result<(), CapacityDataError> {
     if transaction.records().len() > limits.maximum_records_per_transaction {
-        return Err(CapacityDataError::LimitExceeded("query promised records per transaction"));
+        return Err(CapacityDataError::LimitExceeded(
+            "query promised records per transaction",
+        ));
     }
     let mut bounds = owner_bounds.iter();
     let mut total = 0_usize;
     for record in transaction.records() {
         let bound = if record.namespace() == RecordNamespace::MountSourceAcquisition {
-            *bounds.next().ok_or_else(|| invalid("query envelope owner bounds"))?
+            *bounds
+                .next()
+                .ok_or_else(|| invalid("query envelope owner bounds"))?
         } else {
             0
         };
-        let bytes = encode_record(record)?.len().checked_add(bound)
+        let bytes = encode_record(record)?
+            .len()
+            .checked_add(bound)
             .ok_or(CapacityDataError::JournalTooLarge)?;
         if record.key().len() > limits.maximum_key_bytes || bytes > limits.maximum_record_bytes {
-            return Err(CapacityDataError::LimitExceeded("query promised record geometry"));
+            return Err(CapacityDataError::LimitExceeded(
+                "query promised record geometry",
+            ));
         }
-        total = total.checked_add(bytes).ok_or(CapacityDataError::JournalTooLarge)?;
+        total = total
+            .checked_add(bytes)
+            .ok_or(CapacityDataError::JournalTooLarge)?;
     }
     if bounds.next().is_some() || total > limits.maximum_transaction_bytes {
-        return Err(CapacityDataError::LimitExceeded("query promised transaction geometry"));
+        return Err(CapacityDataError::LimitExceeded(
+            "query promised transaction geometry",
+        ));
     }
     Ok(())
 }
@@ -416,7 +438,8 @@ fn status_envelope() -> Result<JournalTransaction, CapacityDataError> {
                 vec![0; VALUE_BYTES],
             ),
         ],
-    ).map_err(CapacityDataError::from)
+    )
+    .map_err(CapacityDataError::from)
 }
 
 fn retained_envelope() -> Result<JournalTransaction, CapacityDataError> {
@@ -432,7 +455,8 @@ fn retained_envelope() -> Result<JournalTransaction, CapacityDataError> {
                 reservation_key([5; 32]),
             ),
         ],
-    ).map_err(CapacityDataError::from)
+    )
+    .map_err(CapacityDataError::from)
 }
 
 fn owner_put(key: Vec<u8>) -> JournalRecord {

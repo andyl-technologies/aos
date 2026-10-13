@@ -2,8 +2,10 @@
 
 use crate::journal::JournalError;
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::{decode_capacity_reservation_request_v1};
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+use aos_sandbox_protocol::domain_ledger::capacity_family::decode_capacity_reservation_request_v1;
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+};
 
 use super::super::super::{
     GlobalCapacityReservationRequestV1, encode_reservation, reservation_id, reservation_key,
@@ -95,7 +97,8 @@ fn capacity(
             poison_bytes: 12_000_000,
         },
         [18; 16],
-    ).map_err(JournalError::from)
+    )
+    .map_err(JournalError::from)
     .unwrap();
     (old_record, new)
 }
@@ -130,14 +133,23 @@ fn atomic_provider_data_shape_preserves_original_floor_and_is_not_a_permit() {
             ),
         ]
     );
-    assert!(aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(&Default::default(), &transaction).map_err(JournalError::from).is_err());
+    assert!(
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(
+            &Default::default(),
+            &transaction
+        )
+        .map_err(JournalError::from)
+        .is_err()
+    );
 }
 
 #[test]
 fn no_dispatch_five_row_floor_cannot_upgrade_even_with_recomputed_identity() {
     let data = data();
     let (old, new) = capacity(&data);
-    let (mut request, admission, _) = decode_capacity_reservation_request_v1(&old).map_err(JournalError::from).unwrap();
+    let (mut request, admission, _) = decode_capacity_reservation_request_v1(&old)
+        .map_err(JournalError::from)
+        .unwrap();
     request.terminal_records = 5;
     request.poison_records = 5;
     let id = reservation_id(&request, admission);
@@ -200,7 +212,9 @@ fn changed_original_binding_or_late_smaller_native_floor_is_rejected() {
 
     let mut request = new.request();
     request.future_transactions = 18;
-    let smaller = NativeHeldCapacityRecordV3::new(request, [18; 16]).map_err(JournalError::from).unwrap();
+    let smaller = NativeHeldCapacityRecordV3::new(request, [18; 16])
+        .map_err(JournalError::from)
+        .unwrap();
     assert!(
         provider_native_capacity_admission_v3(
             &data,

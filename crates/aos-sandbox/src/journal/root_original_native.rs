@@ -5,9 +5,13 @@
 //! custody or Mount's actual table installation; those owners must compare the
 //! same retained originals before private signing or carrier IO.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, canonical_reservations};
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{OriginalRootCapacityRecordV5};
-use aos_sandbox_protocol::domain_ledger::capacity_family::ordinary::{OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4, OrdinaryCapacityRecordV4};
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::{
+    CanonicalCapacityFamily, canonical_reservations,
+};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::OriginalRootCapacityRecordV5;
+use aos_sandbox_protocol::domain_ledger::capacity_family::ordinary::{
+    OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4, OrdinaryCapacityRecordV4,
+};
 
 use crate::journal::PreflightTransactionViewV1;
 use crate::journal::semantic_append::PreflightScope;
@@ -211,7 +215,9 @@ fn validate_original_release_edge(
     let floors = transaction.records().iter()
         .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
         .filter(|record| !pending || record.value().is_some())
-        .map(|record| OrdinaryCapacityRecordV4::from_journal_record(record).map_err(JournalError::from))
+        .map(|record| {
+            OrdinaryCapacityRecordV4::from_journal_record(record).map_err(JournalError::from)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let [floor] = floors.as_slice() else { return Err(invalid()) };
     if floor.data().kind != OrdinaryCapacityKindV4::ReleaseRequest {
@@ -714,7 +720,9 @@ pub(super) fn validate_edge(
         .records()
         .iter()
         .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
-        .map(|record| OriginalRootCapacityRecordV5::from_journal_record(record).map_err(JournalError::from))
+        .map(|record| {
+            OriginalRootCapacityRecordV5::from_journal_record(record).map_err(JournalError::from)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let [floor] = floor.as_slice() else {
         return Err(invalid());

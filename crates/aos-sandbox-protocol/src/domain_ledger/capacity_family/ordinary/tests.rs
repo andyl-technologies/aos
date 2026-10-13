@@ -5,16 +5,31 @@
 //! Tiny owner values in framing fixtures are deliberately opaque DATA, not
 //! maximal valid owner graphs or protected producer/settlement evidence.
 
-use crate::domain_ledger::capacity_family::{all_reservations_owned_by, capacity_record_has_legacy_purpose, decode_capacity_reservation_request_v1, validate_capacity_snapshot_data_v2};
-use crate::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, accounting_reservation, require_legacy_owner, require_legacy_reservations, require_legacy_transaction};
-use crate::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
-use crate::domain_ledger::capacity_family::ordinary::{OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4, OrdinaryCapacityRecordV4};
+use crate::domain_ledger::capacity_family::family::{
+    CanonicalCapacityFamily, accounting_reservation, require_legacy_owner,
+    require_legacy_reservations, require_legacy_transaction,
+};
+use crate::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+};
+use crate::domain_ledger::capacity_family::ordinary::{
+    OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4,
+    OrdinaryCapacityRecordV4,
+};
+use crate::domain_ledger::capacity_family::{
+    all_reservations_owned_by, capacity_record_has_legacy_purpose,
+    decode_capacity_reservation_request_v1, validate_capacity_snapshot_data_v2,
+};
 
 use std::collections::BTreeMap;
 
 use sha2::{Digest as _, Sha256};
 
-use crate::domain_ledger::capacity::{GlobalCapacityReservationPurposeV1 as LegacyPurpose, GlobalCapacityReservationRequestV1 as LegacyRequest, decode_reservation, encode_reservation, reservation_id};
+use crate::domain_ledger::capacity::{
+    GlobalCapacityReservationPurposeV1 as LegacyPurpose,
+    GlobalCapacityReservationRequestV1 as LegacyRequest, decode_reservation, encode_reservation,
+    reservation_id,
+};
 
 use super::*;
 use crate::domain_ledger::transaction::{
@@ -169,11 +184,15 @@ fn shared_scalar_extraction_preserves_ordinary_error_precedence() {
     value[13] = 0;
     assert!(matches!(
         OrdinaryCapacityRecordV4::decode(&[], &value),
-        Err(CapacityDataError::MalformedRecord("unknown ordinary capacity kind"))
+        Err(CapacityDataError::MalformedRecord(
+            "unknown ordinary capacity kind"
+        ))
     ));
     assert!(matches!(
         floor_identity(&[0; 267]),
-        Err(CapacityDataError::MalformedRecord("ordinary identity payload width"))
+        Err(CapacityDataError::MalformedRecord(
+            "ordinary identity payload width"
+        ))
     ));
 }
 
@@ -211,7 +230,10 @@ fn every_closed_kind_profile_and_count_is_checked() {
     for byte in [0, 11, 12, 255] {
         assert!(LegacyPurpose::from_byte(byte).is_err());
     }
-    assert_eq!(crate::domain_ledger::capacity::MAXIMUM_FUTURE_TRANSACTIONS, 3);
+    assert_eq!(
+        crate::domain_ledger::capacity::MAXIMUM_FUTURE_TRANSACTIONS,
+        3
+    );
 }
 
 #[test]

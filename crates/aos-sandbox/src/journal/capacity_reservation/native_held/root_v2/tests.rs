@@ -7,7 +7,9 @@
 
 use crate::journal::JournalError;
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+};
 
 use std::collections::BTreeMap;
 
@@ -273,7 +275,8 @@ impl Original {
                 poison_bytes: 10_000_000,
             },
             binding.admission,
-        ).map_err(JournalError::from)
+        )
+        .map_err(JournalError::from)
         .unwrap()
     }
 }
@@ -292,8 +295,9 @@ fn actual_prepared_store_rederives_all_fields_and_preserves_old_wire_floor() {
     next_request.poison_records = 90;
     next_request.terminal_bytes = 9_000_000;
     next_request.poison_bytes = 9_000_000;
-    let next =
-        NativeHeldCapacityRecordV3::new(next_request, old.admission_transaction_id()).map_err(JournalError::from).unwrap();
+    let next = NativeHeldCapacityRecordV3::new(next_request, old.admission_transaction_id())
+        .map_err(JournalError::from)
+        .unwrap();
 
     let append = root_native_capacity_append_v2(
         &proposal,
@@ -324,7 +328,9 @@ fn actual_prepared_store_rederives_all_fields_and_preserves_old_wire_floor() {
     assert_eq!(transaction.records()[2], next.to_journal_record());
     assert_eq!(&next.to_journal_record().value().unwrap()[8..10], &[0, 3]);
     assert_eq!(
-        NativeHeldCapacityRecordV3::from_journal_record(&next.to_journal_record()).map_err(JournalError::from).unwrap(),
+        NativeHeldCapacityRecordV3::from_journal_record(&next.to_journal_record())
+            .map_err(JournalError::from)
+            .unwrap(),
         next
     );
 
@@ -369,7 +375,9 @@ fn actual_prepared_store_rederives_all_fields_and_preserves_old_wire_floor() {
     let mut enlarged_request = old.request();
     enlarged_request.future_transactions = 6;
     let enlarged =
-        NativeHeldCapacityRecordV3::new(enlarged_request, old.admission_transaction_id()).map_err(JournalError::from).unwrap();
+        NativeHeldCapacityRecordV3::new(enlarged_request, old.admission_transaction_id())
+            .map_err(JournalError::from)
+            .unwrap();
     assert!(
         root_native_capacity_transition_v2(
             &proposal,
@@ -463,7 +471,9 @@ fn actual_phase0_closed_can_discard_root1_but_needs_the_original_context() {
 
     let mut wrong = old.request();
     wrong.checkpoint_digest = [199; 32];
-    let wrong = NativeHeldCapacityRecordV3::new(wrong, old.admission_transaction_id()).map_err(JournalError::from).unwrap();
+    let wrong = NativeHeldCapacityRecordV3::new(wrong, old.admission_transaction_id())
+        .map_err(JournalError::from)
+        .unwrap();
     assert!(
         root_native_capacity_transition_v2(
             &proposal,
@@ -478,7 +488,9 @@ fn actual_phase0_closed_can_discard_root1_but_needs_the_original_context() {
         )
         .is_err()
     );
-    let wrong_admission = NativeHeldCapacityRecordV3::new(old.request(), [199; 16]).map_err(JournalError::from).unwrap();
+    let wrong_admission = NativeHeldCapacityRecordV3::new(old.request(), [199; 16])
+        .map_err(JournalError::from)
+        .unwrap();
     assert!(
         root_native_capacity_transition_v2(
             &proposal,

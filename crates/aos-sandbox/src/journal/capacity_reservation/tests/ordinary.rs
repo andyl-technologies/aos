@@ -2,18 +2,31 @@
 
 use crate::journal::JournalError;
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::{all_reservations_owned_by, capacity_record_has_legacy_purpose, decode_capacity_reservation_request_v1, validate_capacity_snapshot_data_v2};
-use aos_sandbox_protocol::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, accounting_reservation, require_legacy_owner, require_legacy_reservations, require_legacy_transaction};
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
-use aos_sandbox_protocol::domain_ledger::capacity_family::ordinary::{OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4, OrdinaryCapacityRecordV4};
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::{
+    CanonicalCapacityFamily, accounting_reservation, require_legacy_owner,
+    require_legacy_reservations, require_legacy_transaction,
+};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+};
+use aos_sandbox_protocol::domain_ledger::capacity_family::ordinary::{
+    OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4,
+    OrdinaryCapacityRecordV4,
+};
+use aos_sandbox_protocol::domain_ledger::capacity_family::{
+    all_reservations_owned_by, capacity_record_has_legacy_purpose,
+    decode_capacity_reservation_request_v1, validate_capacity_snapshot_data_v2,
+};
 
 use std::collections::BTreeMap;
 
-use super::{GlobalCapacityReservationPurposeV1 as LegacyPurpose, GlobalCapacityReservationRequestV1 as LegacyRequest, decode_reservation, encode_reservation, reservation_id};
 use super::*;
-use crate::journal::{
-    JournalLimits, JournalTransaction,
+use super::{
+    GlobalCapacityReservationPurposeV1 as LegacyPurpose,
+    GlobalCapacityReservationRequestV1 as LegacyRequest, decode_reservation, encode_reservation,
+    reservation_id,
 };
+use crate::journal::{JournalLimits, JournalTransaction};
 
 fn local_data() -> OrdinaryCapacityDataV4 {
     OrdinaryCapacityDataV4 {
@@ -76,7 +89,8 @@ fn native(purpose: NativeHeldCapacityPurposeV3, count: u32) -> JournalRecord {
             poison_bytes: 2048,
         },
         [7; 16],
-    ).map_err(JournalError::from)
+    )
+    .map_err(JournalError::from)
     .unwrap()
     .to_journal_record()
 }
@@ -95,7 +109,8 @@ fn state(records: &[JournalRecord]) -> BTreeMap<(RecordNamespace, Vec<u8>), Vec<
 
 #[test]
 fn mixed_families_account_without_becoming_legacy_grants() {
-    let ordinary = OrdinaryCapacityRecordV4::new(local_data()).map_err(JournalError::from)
+    let ordinary = OrdinaryCapacityRecordV4::new(local_data())
+        .map_err(JournalError::from)
         .unwrap()
         .to_journal_record();
     let rows = vec![
@@ -106,13 +121,29 @@ fn mixed_families_account_without_becoming_legacy_grants() {
         ordinary.clone(),
     ];
     let state = state(&rows);
-    assert!(validate_capacity_snapshot_data_v2(&state).map_err(JournalError::from).is_ok());
-    assert!(!all_reservations_owned_by(&state, RecordNamespace::MountSourceAcquisition).map_err(JournalError::from).unwrap());
-    assert!(require_legacy_reservations(&state).map_err(JournalError::from).is_err());
+    assert!(
+        validate_capacity_snapshot_data_v2(&state)
+            .map_err(JournalError::from)
+            .is_ok()
+    );
+    assert!(
+        !all_reservations_owned_by(&state, RecordNamespace::MountSourceAcquisition)
+            .map_err(JournalError::from)
+            .unwrap()
+    );
+    assert!(
+        require_legacy_reservations(&state)
+            .map_err(JournalError::from)
+            .is_err()
+    );
 
     let totals = rows
         .iter()
-        .map(|row| accounting_reservation(row.key(), row.value().unwrap()).map_err(JournalError::from).unwrap())
+        .map(|row| {
+            accounting_reservation(row.key(), row.value().unwrap())
+                .map_err(JournalError::from)
+                .unwrap()
+        })
         .fold((0, 0, 0), |(records, bytes, transactions), row| {
             (
                 records + row.maximum_records,
@@ -124,25 +155,35 @@ fn mixed_families_account_without_becoming_legacy_grants() {
 
     for row in &rows[2..] {
         assert!(decode_reservation(row.value().unwrap()).is_err());
-        assert!(decode_capacity_reservation_request_v1(row).map_err(JournalError::from).is_err());
         assert!(
-            !capacity_record_has_legacy_purpose(row, LegacyPurpose::ControllerConsumerResource).map_err(JournalError::from)
+            decode_capacity_reservation_request_v1(row)
+                .map_err(JournalError::from)
+                .is_err()
+        );
+        assert!(
+            !capacity_record_has_legacy_purpose(row, LegacyPurpose::ControllerConsumerResource)
+                .map_err(JournalError::from)
                 .unwrap()
         );
     }
     assert!(matches!(
-        CanonicalCapacityFamily::decode(rows[0].key(), rows[0].value().unwrap()).map_err(JournalError::from).unwrap(),
+        CanonicalCapacityFamily::decode(rows[0].key(), rows[0].value().unwrap())
+            .map_err(JournalError::from)
+            .unwrap(),
         CanonicalCapacityFamily::Legacy1(_)
     ));
     assert!(matches!(
-        CanonicalCapacityFamily::decode(rows[1].key(), rows[1].value().unwrap()).map_err(JournalError::from).unwrap(),
+        CanonicalCapacityFamily::decode(rows[1].key(), rows[1].value().unwrap())
+            .map_err(JournalError::from)
+            .unwrap(),
         CanonicalCapacityFamily::Legacy2(_)
     ));
     assert_eq!(
         aos_sandbox_protocol::domain_ledger::capacity_family::legacy_capacity_ids_for_purpose(
             &state,
             LegacyPurpose::ControllerProjectAdmission
-        ).map_err(JournalError::from)
+        )
+        .map_err(JournalError::from)
         .unwrap(),
         vec![reservation_id(
             &decode_reservation(rows[1].value().unwrap()).unwrap().0,
@@ -153,7 +194,8 @@ fn mixed_families_account_without_becoming_legacy_grants() {
         aos_sandbox_protocol::domain_ledger::capacity_family::legacy_capacity_ids_for_purpose(
             &state,
             LegacyPurpose::RootSourceGenesisAnchor
-        ).map_err(JournalError::from)
+        )
+        .map_err(JournalError::from)
         .unwrap()
         .is_empty()
     );

@@ -1,6 +1,6 @@
 //! Retains complete upper suffix and geometry tests with private Native profiles.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::NativeHeldCapacityPurposeV3;
 
 use super::*;
 use crate::journal::{JournalLimits, JournalTransaction, encoded_transaction_append_bytes};

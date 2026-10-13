@@ -10,25 +10,26 @@
 //! bytes. Retention provides replay provenance, not a physical-origin, current
 //! signer, hot-custody or append grant. Only the named held writer may admit it.
 
-use crate::domain_ledger::capacity_family::{CapacityDataError};
+use crate::domain_ledger::capacity_family::CapacityDataError;
 
 use crate::mount_source_acquisition_state::native_held_completion::{
     MAXIMUM_ROOT_NATIVE_CUT_BYTES_V1, MAXIMUM_ROOT_NATIVE_HELD_SIDECAR_BYTES_V2,
-    RootNativeCutKindV1, RootNativeCutV1, RootNativeHeldGraphV2, original_root_remaining_v5,
-    has_original_pending_closed_cut_v5, validate_original_root_preparation_v5,
+    RootNativeCutKindV1, RootNativeCutV1, RootNativeHeldGraphV2,
+    has_original_pending_closed_cut_v5, original_root_remaining_v5,
+    validate_original_root_preparation_v5,
 };
 use aos_sandbox_source_provider_protocol::native_held_completion::{
     NativeHeldControlKindV1, frame::PreparedNativeHeldControlV1,
 };
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_core::RecordNamespace;
-use crate::domain_ledger::transaction::{JournalLimits, JournalRecord};
 use super::super::{reservation_key, take};
 use super::{
     NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, binding_bytes, decode_bindings,
     invalid,
 };
+use crate::domain_ledger::transaction::{JournalLimits, JournalRecord};
+use aos_sandbox_core::RecordNamespace;
 
 /// Fixes the exact original unsigned Root1 width, including its original signer.
 pub const ORIGINAL_ROOT_PREPARED_BYTES_V5: usize = 1_066;
@@ -79,9 +80,14 @@ impl OriginalRootCapacityRecordV5 {
                 before, after, root_attempt, release_attempt, transaction,
             )
             .map_err(|_| invalid("original Release canonical owner edge"))?;
-        let query = after.legacy().provider_attempts.get(&release_attempt)
+        let query = after
+            .legacy()
+            .provider_attempts
+            .get(&release_attempt)
             .ok_or(invalid("original Release attempt absent"))?;
-        let sidecar = before.sidecars().get(&root_attempt)
+        let sidecar = before
+            .sidecars()
+            .get(&root_attempt)
             .ok_or(invalid("original Release terminal archive absent"))?;
 
         // Profile3 reserves both the three-owner outcome and the distinct
@@ -90,15 +96,16 @@ impl OriginalRootCapacityRecordV5 {
         // not a claim that either physical cleanup or allocator funding exists.
         let frames = 7_u32;
         let owner_bytes = 4 * (7 + 75 + LEGACY_VALUE_BYTES);
-        let append_bytes = 2 * 184 + u64::from(frames) * 72
-            + owner_bytes + 2 * (7 + 75) + 300;
+        let append_bytes = 2 * 184 + u64::from(frames) * 72 + owner_bytes + 2 * (7 + 75) + 300;
         let maximum_transaction = 3 * (7 + 75 + LEGACY_VALUE_BYTES) + 2 * (7 + 75) + 300;
         if limits.maximum_key_bytes < 75
             || limits.maximum_record_bytes < 7 + 75 + LEGACY_VALUE_BYTES as usize
             || limits.maximum_records_per_transaction < 5
             || (limits.maximum_transaction_bytes as u64) < maximum_transaction
         {
-            return Err(CapacityDataError::LimitExceeded("original Release complete suffix"));
+            return Err(CapacityDataError::LimitExceeded(
+                "original Release complete suffix",
+            ));
         }
 
         let mut before_hash = Sha256::new();
@@ -115,8 +122,12 @@ impl OriginalRootCapacityRecordV5 {
                 hash_release_bytes(&mut union_hash, value)?;
             }
         }
-        hash_release_bytes(&mut union_hash, &sidecar.to_canonical_bytes()
-            .map_err(|_| invalid("original Release archive encoding"))?)?;
+        hash_release_bytes(
+            &mut union_hash,
+            &sidecar
+                .to_canonical_bytes()
+                .map_err(|_| invalid("original Release archive encoding"))?,
+        )?;
 
         let mut profile_hash = Sha256::new();
         profile_hash.update(b"aos.mount.original-release.profile3.v1\0");
@@ -172,11 +183,12 @@ impl OriginalRootCapacityRecordV5 {
             || (limits.maximum_transaction_bytes as u64)
                 < 3 * (7 + 75 + LEGACY_VALUE_BYTES) + 2 * (7 + 75) + 300
         {
-            return Err(CapacityDataError::LimitExceeded("original Release Pending complete suffix"));
+            return Err(CapacityDataError::LimitExceeded(
+                "original Release Pending complete suffix",
+            ));
         }
         let frames = 2_u32;
-        let append_bytes = 184 + u64::from(frames) * 72
-            + (7 + 75 + LEGACY_VALUE_BYTES) + (7 + 75);
+        let append_bytes = 184 + u64::from(frames) * 72 + (7 + 75 + LEGACY_VALUE_BYTES) + (7 + 75);
         let mut profile = Sha256::new();
         profile.update(b"aos.mount.original-release.profile4.v1\0");
         profile.update(root);
@@ -425,7 +437,9 @@ impl OriginalRootCapacityRecordV5 {
         }
         Self::decode(
             record.key(),
-            record.value().ok_or(CapacityDataError::InvalidTransaction)?,
+            record
+                .value()
+                .ok_or(CapacityDataError::InvalidTransaction)?,
         )
     }
 
@@ -434,7 +448,10 @@ impl OriginalRootCapacityRecordV5 {
     /// # Errors
     ///
     /// Rejects malformed framing, bindings, geometry, key or identity.
-    pub(in crate::domain_ledger::capacity_family) fn decode(key: &[u8], bytes: &[u8]) -> Result<Self, CapacityDataError> {
+    pub(in crate::domain_ledger::capacity_family) fn decode(
+        key: &[u8],
+        bytes: &[u8],
+    ) -> Result<Self, CapacityDataError> {
         if !(274 + ORIGINAL_ROOT_PREPARED_BYTES_V5..=ORIGINAL_ROOT_CAPACITY_MAXIMUM_VALUE_BYTES_V5)
             .contains(&bytes.len())
             || &bytes[..8] != b"AOSJCR01"
@@ -616,9 +633,10 @@ mod tests {
 
     #[test]
     fn maximal_closed_store_encodes_three_records_and_transfers_the_full_native_two_debt() {
-        use crate::domain_ledger::transaction::{JournalTransaction, encoded_transaction_append_bytes};
-        use crate::mount_source_acquisition_state::native_held_completion::
-            native_root_sidecar_key_v2;
+        use crate::domain_ledger::transaction::{
+            JournalTransaction, encoded_transaction_append_bytes,
+        };
+        use crate::mount_source_acquisition_state::native_held_completion::native_root_sidecar_key_v2;
 
         let limits = JournalLimits::default();
         let p = ORIGINAL_ROOT_PREPARED_BYTES_V5;
@@ -661,10 +679,12 @@ mod tests {
 
     #[test]
     fn maximal_pending_transaction_encodes_real_six_record_frames_without_double_reserve() {
-        use crate::domain_ledger::transaction::{JournalTransaction, encoded_transaction_append_bytes};
+        use crate::domain_ledger::transaction::{
+            JournalTransaction, encoded_transaction_append_bytes,
+        };
         use crate::mount_source_acquisition_state::{
-            acquisition_key, provider_attempt_key, provider_head_key,
-            native_held_completion::native_root_sidecar_key_v2,
+            acquisition_key, native_held_completion::native_root_sidecar_key_v2,
+            provider_attempt_key, provider_head_key,
         };
 
         let limits = JournalLimits::default();

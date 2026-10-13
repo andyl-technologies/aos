@@ -6,8 +6,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox_core::RecordNamespace;
-use crate::domain_ledger::transaction::JournalTransaction;
 use super::CapacityDataError;
 use super::native_held::{
     NativeHeldCapacityRecordV3, OriginalRootCapacityRecordV5, OriginalSourceCapacityRecordV5,
@@ -18,6 +16,8 @@ use super::{
     DecodedCapacityReservationV1, GlobalCapacityReservationRequestV1, decode_reservation,
     reservation_id, reservation_key,
 };
+use crate::domain_ledger::transaction::JournalTransaction;
+use aos_sandbox_core::RecordNamespace;
 
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 type LegacyData = (GlobalCapacityReservationRequestV1, [u8; 16], [u8; 32]);
@@ -186,8 +186,10 @@ impl CanonicalCapacityFamily {
             Self::Query6(record) => {
                 let data = record.data();
                 (
-                    data.remaining_record_frames.max(data.maximum_retained_growth_entries),
-                    data.remaining_append_bytes.max(data.maximum_retained_growth_bytes),
+                    data.remaining_record_frames
+                        .max(data.maximum_retained_growth_entries),
+                    data.remaining_append_bytes
+                        .max(data.maximum_retained_growth_bytes),
                     data.remaining_transactions,
                 )
             }

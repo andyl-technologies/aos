@@ -18,12 +18,12 @@
 //! retained references, installation, settlement, signer, or effect authority.
 //! There is no ordinary producer or append exception in this module.
 
-use crate::domain_ledger::capacity_family::{CapacityDataError};
+use crate::domain_ledger::capacity_family::CapacityDataError;
 
-use aos_sandbox_core::RecordNamespace;
-use crate::domain_ledger::transaction::{JournalLimits, JournalRecord};
 use super::fixed300::{FixedCapacityBody, floor_identity as fixed_floor_identity};
 use super::{reservation_key, take};
+use crate::domain_ledger::transaction::{JournalLimits, JournalRecord};
+use aos_sandbox_core::RecordNamespace;
 
 /// Fixes the exact ordinary floor value width.
 pub const ORDINARY_CAPACITY_VALUE_BYTES_V4: usize = 300;
@@ -315,7 +315,9 @@ impl OrdinaryCapacityRecordV4 {
         }
         Self::decode(
             record.key(),
-            record.value().ok_or(CapacityDataError::InvalidTransaction)?,
+            record
+                .value()
+                .ok_or(CapacityDataError::InvalidTransaction)?,
         )
     }
 

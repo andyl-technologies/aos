@@ -5,8 +5,10 @@
 
 use crate::journal::JournalError;
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::{validate_capacity_snapshot_data_v2};
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+};
+use aos_sandbox_protocol::domain_ledger::capacity_family::validate_capacity_snapshot_data_v2;
 
 use super::super::super::{NativeHeldCapacityAppendV3, NativeHeldCapacitySuffixV3};
 use super::*;
@@ -73,7 +75,9 @@ fn slot18_pending_retirement_shape_frames_seven_records_and_preserves_cleanup_cr
     .unwrap();
     let normal = suffix(NativeHeldCapacityPathV3::Normal, vec![final_append.clone()]);
     let cold = suffix(NativeHeldCapacityPathV3::ColdClosed, vec![final_append]);
-    let old = NativeHeldCapacityRecordV3::new(request(2), [3; 16]).map_err(JournalError::from).unwrap();
+    let old = NativeHeldCapacityRecordV3::new(request(2), [3; 16])
+        .map_err(JournalError::from)
+        .unwrap();
 
     let (transaction, next) = provider_native_capacity_transition_v2(
         &append,
@@ -138,7 +142,9 @@ fn completed_slot18_uses_three_records_and_v3_measurement_is_unchanged() {
     );
     let normal = suffix(NativeHeldCapacityPathV3::Normal, vec![cleanup.clone()]);
     let cold = suffix(NativeHeldCapacityPathV3::ColdClosed, vec![cleanup]);
-    let old = NativeHeldCapacityRecordV3::new(request(2), [3; 16]).map_err(JournalError::from).unwrap();
+    let old = NativeHeldCapacityRecordV3::new(request(2), [3; 16])
+        .map_err(JournalError::from)
+        .unwrap();
 
     let (transaction, _) = provider_native_capacity_transition_v2(
         &append,
@@ -171,7 +177,9 @@ fn actual_release_key95_is_v2_cleanup_syntax_only_not_a_legacy_grant() {
         changes,
     )
     .unwrap();
-    let old = NativeHeldCapacityRecordV3::new(request(1), [3; 16]).map_err(JournalError::from).unwrap();
+    let old = NativeHeldCapacityRecordV3::new(request(1), [3; 16])
+        .map_err(JournalError::from)
+        .unwrap();
     let (transaction, next) =
         provider_native_capacity_transition_v2(&cleanup, &old, None, JournalLimits::default())
             .unwrap();
@@ -182,7 +190,14 @@ fn actual_release_key95_is_v2_cleanup_syntax_only_not_a_legacy_grant() {
         (record.namespace(), record.key().to_vec()),
         record.value().unwrap().to_vec(),
     )]);
-    assert!(aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(&state, &transaction).map_err(JournalError::from).is_err());
+    assert!(
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(
+            &state,
+            &transaction
+        )
+        .map_err(JournalError::from)
+        .is_err()
+    );
 }
 
 #[test]
@@ -242,7 +257,9 @@ fn suffix_rejects_wrong_slots_duplicate_ids_missing_retirement_and_short_old_bud
     let mut short = request(2);
     short.terminal_bytes = 1;
     short.poison_bytes = 1;
-    let old = NativeHeldCapacityRecordV3::new(short, [3; 16]).map_err(JournalError::from).unwrap();
+    let old = NativeHeldCapacityRecordV3::new(short, [3; 16])
+        .map_err(JournalError::from)
+        .unwrap();
     assert!(
         provider_native_capacity_transition_v2(
             &append,
@@ -259,7 +276,9 @@ fn suffix_rejects_wrong_slots_duplicate_ids_missing_retirement_and_short_old_bud
     assert!(
         provider_native_capacity_transition_v2(
             &append,
-            &NativeHeldCapacityRecordV3::new(request(2), [3; 16]).map_err(JournalError::from).unwrap(),
+            &NativeHeldCapacityRecordV3::new(request(2), [3; 16])
+                .map_err(JournalError::from)
+                .unwrap(),
             Some((&normal, &cold)),
             limits
         )
@@ -269,18 +288,32 @@ fn suffix_rejects_wrong_slots_duplicate_ids_missing_retirement_and_short_old_bud
 
 #[test]
 fn complete_snapshot_validation_never_short_circuits_on_a_selected_native_floor() {
-    let floor = NativeHeldCapacityRecordV3::new(request(1), [3; 16]).map_err(JournalError::from).unwrap();
+    let floor = NativeHeldCapacityRecordV3::new(request(1), [3; 16])
+        .map_err(JournalError::from)
+        .unwrap();
     let record = floor.to_journal_record();
     let mut state = std::collections::BTreeMap::from([(
         (record.namespace(), record.key().to_vec()),
         record.value().unwrap().to_vec(),
     )]);
-    validate_capacity_snapshot_data_v2(&state).map_err(JournalError::from).unwrap();
-    NativeHeldCapacityRecordV3::from_journal_record(&record).map_err(JournalError::from).unwrap();
+    validate_capacity_snapshot_data_v2(&state)
+        .map_err(JournalError::from)
+        .unwrap();
+    NativeHeldCapacityRecordV3::from_journal_record(&record)
+        .map_err(JournalError::from)
+        .unwrap();
     state.insert(
         (RecordNamespace::GlobalCapacityReservation, vec![255; 75]),
         vec![0; 300],
     );
-    assert!(validate_capacity_snapshot_data_v2(&state).map_err(JournalError::from).is_err());
-    assert!(NativeHeldCapacityRecordV3::from_journal_record(&record).map_err(JournalError::from).is_ok());
+    assert!(
+        validate_capacity_snapshot_data_v2(&state)
+            .map_err(JournalError::from)
+            .is_err()
+    );
+    assert!(
+        NativeHeldCapacityRecordV3::from_journal_record(&record)
+            .map_err(JournalError::from)
+            .is_ok()
+    );
 }

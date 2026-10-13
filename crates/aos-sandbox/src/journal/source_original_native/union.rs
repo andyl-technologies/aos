@@ -3,8 +3,12 @@
 //! Ledger owns real owner eligibility. This adapter owns Journal family codecs,
 //! framing and exact complete-union accounting; no request DATA grants custody.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, accounting_reservations, canonical_reservations};
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, OriginalSourceCapacityRecordV5};
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::{
+    CanonicalCapacityFamily, accounting_reservations, canonical_reservations,
+};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, OriginalSourceCapacityRecordV5,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

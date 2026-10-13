@@ -5,7 +5,9 @@
 
 use crate::journal::JournalError;
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, OriginalSourceCapacityRecordV5};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, OriginalSourceCapacityRecordV5,
+};
 
 use super::*;
 use aos_sandbox_core::{RawClockProvenance, RawPairedClockSample};
@@ -746,18 +748,16 @@ pub(super) fn fixture() -> Fixture {
         )
         .unwrap()
     });
-    let provenance = OriginalSourceProvenanceV5::new_untrusted(
-        OriginalSourceProvenanceClaimsV5 {
-            root_prepared: root_prepared.clone(),
-            claims: signed_native.request().claims().clone(),
-            initial: anchor.initial(),
-            original_deadline: 600_000_000_000,
-            narrowed_deadline: 60_000_000_000,
-            journal_sequence: 1,
-            configuration: digest(102),
-            records: witnesses,
-        },
-    )
+    let provenance = OriginalSourceProvenanceV5::new_untrusted(OriginalSourceProvenanceClaimsV5 {
+        root_prepared: root_prepared.clone(),
+        claims: signed_native.request().claims().clone(),
+        initial: anchor.initial(),
+        original_deadline: 600_000_000_000,
+        narrowed_deadline: 60_000_000_000,
+        journal_sequence: 1,
+        configuration: digest(102),
+        records: witnesses,
+    })
     .unwrap();
     let request = aos_sandbox_protocol::domain_ledger::capacity_family::native_held::NativeHeldCapacityRequestV3 {
         purpose: NativeHeldCapacityPurposeV3::Provider,
@@ -832,7 +832,8 @@ pub(super) fn fixture() -> Fixture {
         [30; 16],
         initial_floor.origin_budgets(),
         initial_floor.original_provenance().clone(),
-    ).map_err(JournalError::from)
+    )
+    .map_err(JournalError::from)
     .unwrap();
     let requested = JournalTransaction::new(
         [31; 16],

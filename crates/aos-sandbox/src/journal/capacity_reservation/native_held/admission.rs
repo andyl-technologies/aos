@@ -5,8 +5,10 @@
 //! original bindings with the exact old namespace-46 record; it cannot replace
 //! the Source graph validator or supply original protected admission provenance.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::{decode_capacity_reservation_request_v1};
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3};
+use aos_sandbox_protocol::domain_ledger::capacity_family::decode_capacity_reservation_request_v1;
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3,
+};
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{

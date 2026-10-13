@@ -12,8 +12,10 @@
 
 use crate::journal::JournalError;
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::family::{canonical_reservations};
-use aos_sandbox_protocol::domain_ledger::capacity_family::query::{QueryCapacityDataV6, QueryCapacityProfileV6, QueryCapacityRecordV6};
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::canonical_reservations;
+use aos_sandbox_protocol::domain_ledger::capacity_family::query::{
+    QueryCapacityDataV6, QueryCapacityProfileV6, QueryCapacityRecordV6,
+};
 
 use aos_sandbox_protocol::mount_source_acquisition_state::{
     MutationTagV2, OwnerPredecessorWitnessV2, ProviderHeadPredecessorWitnessV2, ProviderIntentV2,
@@ -328,9 +330,8 @@ pub(super) fn admission_floor(
         admission_transaction: proposal.transaction_id,
         remaining_profile_digest: [0; 32],
     };
-    data.remaining_profile_digest = profile_digest(
-        state, after, proposal.root_attempt, data, &references,
-    )?;
+    data.remaining_profile_digest =
+        profile_digest(state, after, proposal.root_attempt, data, &references)?;
     QueryCapacityRecordV6::new(data).map_err(JournalError::from)
 }
 

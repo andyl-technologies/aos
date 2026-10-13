@@ -5,7 +5,9 @@
 //! longer retains it. Current graphs are independently checked by Protocol;
 //! exact original cut/scope joins never substitute historical rows for them.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+};
 
 use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::{
     RootNativeDataClassV2, RootNativeHeldGraphV2, RootNativeHeldTransitionV2,
@@ -19,7 +21,9 @@ use super::super::super::{
     validate_transaction,
 };
 use super::super::digest_bytes;
-use super::{NativeHeldCapacityAppendV2, NativeHeldCapacityChangeV3, NativeHeldCapacitySuffixV2, invalid};
+use super::{
+    NativeHeldCapacityAppendV2, NativeHeldCapacityChangeV3, NativeHeldCapacitySuffixV2, invalid,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RootCapacityBindingV2 {

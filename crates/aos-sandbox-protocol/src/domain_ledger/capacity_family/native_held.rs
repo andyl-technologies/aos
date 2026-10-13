@@ -15,9 +15,9 @@
 
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_core::RecordNamespace;
-use super::{CapacityDataError, reservation_key, take};
 use super::super::transaction::JournalRecord;
+use super::{CapacityDataError, reservation_key, take};
+use aos_sandbox_core::RecordNamespace;
 
 mod original;
 mod original_source;
@@ -139,7 +139,6 @@ pub struct NativeHeldCapacityRecordV3 {
 }
 
 impl NativeHeldCapacityRecordV3 {
-
     /// Constructs canonical data after checking the closed native bindings.
     ///
     /// # Errors
@@ -210,7 +209,9 @@ impl NativeHeldCapacityRecordV3 {
         if record.namespace() != RecordNamespace::GlobalCapacityReservation {
             return Err(CapacityDataError::ForeignAuthorityNamespace);
         }
-        let value = record.value().ok_or(CapacityDataError::InvalidTransaction)?;
+        let value = record
+            .value()
+            .ok_or(CapacityDataError::InvalidTransaction)?;
         Self::decode(record.key(), value)
     }
 

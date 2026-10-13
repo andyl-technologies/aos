@@ -6,15 +6,15 @@
 //! These records and conservative budgets confer no protected writer scope,
 //! capacity grant, currentness, signer custody or installed-owner authority.
 
-use aos_sandbox_core::RecordNamespace;
-use super::transaction::{JournalLimits, JournalRecord};
 use super::JournalTransactionDataError;
+use super::capacity::take;
 use super::capacity::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1,
     MAXIMUM_FUTURE_TRANSACTIONS, decode_reservation, reservation_id, reservation_key,
     valid_future_transactions,
 };
-use super::capacity::take;
+use super::transaction::{JournalLimits, JournalRecord};
+use aos_sandbox_core::RecordNamespace;
 
 pub mod family;
 mod fixed300;
@@ -23,8 +23,10 @@ pub mod ordinary;
 pub mod query;
 
 use family::{CanonicalCapacityFamily, canonical_reservations};
-use ordinary::{OrdinaryCapacityDataV4, OrdinaryCapacityKindV4,
-    OrdinaryCapacityProfileV4, OrdinaryCapacityRecordV4};
+use ordinary::{
+    OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4,
+    OrdinaryCapacityRecordV4,
+};
 
 /// Reports canonical capacity DATA failures without any Native journal cause.
 #[derive(Debug, thiserror::Error)]
@@ -83,7 +85,9 @@ pub fn decode_capacity_reservation_request_v1(
     if record.namespace() != RecordNamespace::GlobalCapacityReservation {
         return Err(CapacityDataError::ForeignAuthorityNamespace);
     }
-    let value = record.value().ok_or(CapacityDataError::InvalidTransaction)?;
+    let value = record
+        .value()
+        .ok_or(CapacityDataError::InvalidTransaction)?;
     CanonicalCapacityFamily::decode(record.key(), value)?.require_legacy()
 }
 
@@ -100,7 +104,9 @@ pub fn capacity_record_has_legacy_purpose(
     if record.namespace() != RecordNamespace::GlobalCapacityReservation {
         return Err(CapacityDataError::ForeignAuthorityNamespace);
     }
-    let value = record.value().ok_or(CapacityDataError::InvalidTransaction)?;
+    let value = record
+        .value()
+        .ok_or(CapacityDataError::InvalidTransaction)?;
     let family = CanonicalCapacityFamily::decode(record.key(), value)?;
     Ok(family
         .legacy()
@@ -198,4 +204,3 @@ pub fn validate_capacity_snapshot_data_v2(
     family::canonical_reservations(records)?;
     Ok(())
 }
-

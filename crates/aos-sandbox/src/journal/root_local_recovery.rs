@@ -16,7 +16,10 @@
 //!           || postimage reads || retained reference map || local DELETE budget
 //! ```
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::ordinary::{OrdinaryCapacityDataV4, OrdinaryCapacityKindV4 as Kind, OrdinaryCapacityProfileV4 as Profile, OrdinaryCapacityRecordV4};
+use aos_sandbox_protocol::domain_ledger::capacity_family::ordinary::{
+    OrdinaryCapacityDataV4, OrdinaryCapacityKindV4 as Kind, OrdinaryCapacityProfileV4 as Profile,
+    OrdinaryCapacityRecordV4,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -566,8 +566,12 @@ impl From<aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1> for 
     }
 }
 
-impl From<aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError> for JournalError {
-    fn from(error: aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError) -> Self {
+impl From<aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError>
+    for JournalError
+{
+    fn from(
+        error: aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError,
+    ) -> Self {
         use aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError;
 
         match error {
@@ -1167,18 +1171,29 @@ impl Journal {
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(self.native.state()).map_err(JournalError::from)?;
-        let has_foreign_history = self.native.committed_namespaces().iter().any(|committed_namespace| {
-            *committed_namespace != namespace
-                && *committed_namespace != RecordNamespace::GlobalCapacityReservation
-        });
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(
+            self.native.state(),
+        )
+        .map_err(JournalError::from)?;
+        let has_foreign_history =
+            self.native
+                .committed_namespaces()
+                .iter()
+                .any(|committed_namespace| {
+                    *committed_namespace != namespace
+                        && *committed_namespace != RecordNamespace::GlobalCapacityReservation
+                });
         let has_foreign_state = self.native.state().keys().any(|(record_namespace, _)| {
             *record_namespace != namespace
                 && *record_namespace != RecordNamespace::GlobalCapacityReservation
         });
         if has_foreign_history
             || has_foreign_state
-            || !aos_sandbox_protocol::domain_ledger::capacity_family::all_reservations_owned_by(self.native.state(), namespace).map_err(JournalError::from)?
+            || !aos_sandbox_protocol::domain_ledger::capacity_family::all_reservations_owned_by(
+                self.native.state(),
+                namespace,
+            )
+            .map_err(JournalError::from)?
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
@@ -1194,7 +1209,11 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_owner(self.native.state(), RecordNamespace::MountSourceAcquisition).map_err(JournalError::from)?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_owner(
+            self.native.state(),
+            RecordNamespace::MountSourceAcquisition,
+        )
+        .map_err(JournalError::from)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
@@ -1218,7 +1237,11 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_owner(self.native.state(), RecordNamespace::MountSourceAcquisition).map_err(JournalError::from)?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_owner(
+            self.native.state(),
+            RecordNamespace::MountSourceAcquisition,
+        )
+        .map_err(JournalError::from)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
@@ -1242,7 +1265,11 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_owner(self.native.state(), RecordNamespace::MountSourceAcquisition).map_err(JournalError::from)?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_owner(
+            self.native.state(),
+            RecordNamespace::MountSourceAcquisition,
+        )
+        .map_err(JournalError::from)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountManagerStartupAuthority,
@@ -1270,7 +1297,10 @@ impl Journal {
         if purpose.is_first_source_successor() {
             return Err(JournalError::ProtectedBoundary);
         }
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(self.native.state()).map_err(JournalError::from)?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(
+            self.native.state(),
+        )
+        .map_err(JournalError::from)?;
 
         Ok(ProtectedJournalAuthority {
             journal: self,
@@ -1292,12 +1322,19 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(self.native.state()).map_err(JournalError::from)?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(
+            self.native.state(),
+        )
+        .map_err(JournalError::from)?;
         let namespace = RecordNamespace::SourceProviderAuthority;
-        let has_foreign_history = self.native.committed_namespaces().iter().any(|committed_namespace| {
-            *committed_namespace != namespace
-                && *committed_namespace != RecordNamespace::GlobalCapacityReservation
-        });
+        let has_foreign_history =
+            self.native
+                .committed_namespaces()
+                .iter()
+                .any(|committed_namespace| {
+                    *committed_namespace != namespace
+                        && *committed_namespace != RecordNamespace::GlobalCapacityReservation
+                });
         let has_foreign_state = self.native.state().keys().any(|(record_namespace, _)| {
             *record_namespace != namespace
                 && *record_namespace != RecordNamespace::GlobalCapacityReservation
@@ -1305,7 +1342,11 @@ impl Journal {
         // Deleted foreign rows still taint this generation until compaction.
         if has_foreign_history
             || has_foreign_state
-            || !aos_sandbox_protocol::domain_ledger::capacity_family::all_reservations_owned_by(self.native.state(), namespace).map_err(JournalError::from)?
+            || !aos_sandbox_protocol::domain_ledger::capacity_family::all_reservations_owned_by(
+                self.native.state(),
+                namespace,
+            )
+            .map_err(JournalError::from)?
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
@@ -2972,7 +3013,10 @@ impl ProtectedJournalAuthority<'_> {
         expected: &BTreeSet<[u8; 32]>,
     ) -> Result<(), JournalError> {
         let purpose = self.validate_capacity_authority()?;
-        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(self.journal.native.state()).map_err(JournalError::from)?;
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_reservations(
+            self.journal.native.state(),
+        )
+        .map_err(JournalError::from)?;
         let mut retained = BTreeSet::new();
         for (key, value) in self
             .journal
@@ -4564,7 +4608,11 @@ fn validate_reserved_capacity(
     limits: JournalLimits,
     root_local_edge: Option<RootOwnerEdge>,
 ) -> Result<(), JournalError> {
-    let mut reservations = aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservations(state).map_err(JournalError::from)?;
+    let mut reservations =
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservations(
+            state,
+        )
+        .map_err(JournalError::from)?;
     for record in records {
         if record.namespace() != RecordNamespace::GlobalCapacityReservation {
             continue;
@@ -4587,7 +4635,8 @@ fn validate_reserved_capacity(
             }
             None => {
                 let identifier = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
-                    let value = state.get(&(record.namespace(), record.key().to_vec()))
+                    let value = state
+                        .get(&(record.namespace(), record.key().to_vec()))
                         .ok_or(JournalError::ProtectedBoundary)?;
                     aos_sandbox_protocol::domain_ledger::capacity_family::family::accounting_reservation(record.key(), value).map_err(JournalError::from)?
                         .reservation_id

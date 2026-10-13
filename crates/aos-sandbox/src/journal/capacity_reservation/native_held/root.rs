@@ -4,7 +4,9 @@
 //! reimplementing its canonical graph. Protected origin, hot cuts, signing and
 //! actual commit/readback remain unavailable in this pure adapter.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+};
 
 use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::{
     RootNativeHeldTransitionV1, RootNativeTransitionKindV1 as Kind,
@@ -14,7 +16,10 @@ use super::super::super::{
     JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
     validate_transaction,
 };
-use super::{NativeHeldCapacityAppendV3, NativeHeldCapacityChangeV3, NativeHeldCapacityStepV3 as Step, invalid};
+use super::{
+    NativeHeldCapacityAppendV3, NativeHeldCapacityChangeV3, NativeHeldCapacityStepV3 as Step,
+    invalid,
+};
 
 /// Frames the complete original Root reservation and native8 row in one append.
 ///

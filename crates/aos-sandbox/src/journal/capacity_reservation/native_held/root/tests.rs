@@ -2,7 +2,9 @@
 
 use crate::journal::JournalError;
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+};
 
 use std::collections::BTreeMap;
 
@@ -69,7 +71,9 @@ fn original_root_admission_is_one_six_or_seven_record_transaction() {
             provider_acquisition: [11; 32],
             flight: ObjectDigest::from_bytes([12; 32]),
         });
-        let capacity = NativeHeldCapacityRecordV3::new(request(7, 100_000, 64), [7; 16]).map_err(JournalError::from).unwrap();
+        let capacity = NativeHeldCapacityRecordV3::new(request(7, 100_000, 64), [7; 16])
+            .map_err(JournalError::from)
+            .unwrap();
         let transaction =
             root_native_capacity_admission_v3(&proposal, &capacity, JournalLimits::default())
                 .unwrap();
@@ -87,7 +91,9 @@ fn original_root_admission_is_one_six_or_seven_record_transaction() {
 #[test]
 fn root_admission_rejects_late_sidecar_wrong_operation_and_checkpoint() {
     let mut late = proposal(Kind::PreparedAssertionRecorded, 7, &[68]);
-    let capacity = NativeHeldCapacityRecordV3::new(request(7, 100_000, 64), [7; 16]).map_err(JournalError::from).unwrap();
+    let capacity = NativeHeldCapacityRecordV3::new(request(7, 100_000, 64), [7; 16])
+        .map_err(JournalError::from)
+        .unwrap();
     assert!(root_native_capacity_admission_v3(&late, &capacity, JournalLimits::default()).is_err());
     late.kind = Kind::PreparedStored;
     assert!(root_native_capacity_append_v3(&late).is_ok());
@@ -109,19 +115,27 @@ fn root_admission_rejects_late_sidecar_wrong_operation_and_checkpoint() {
     });
     let mut bad = request(7, 100_000, 64);
     bad.operation_id = [13; 16];
-    let changed = NativeHeldCapacityRecordV3::new(bad, [7; 16]).map_err(JournalError::from).unwrap();
+    let changed = NativeHeldCapacityRecordV3::new(bad, [7; 16])
+        .map_err(JournalError::from)
+        .unwrap();
     assert!(root_native_capacity_admission_v3(&valid, &changed, JournalLimits::default()).is_err());
     bad = request(7, 100_000, 64);
     bad.checkpoint_digest = [14; 32];
-    let changed = NativeHeldCapacityRecordV3::new(bad, [7; 16]).map_err(JournalError::from).unwrap();
+    let changed = NativeHeldCapacityRecordV3::new(bad, [7; 16])
+        .map_err(JournalError::from)
+        .unwrap();
     assert!(root_native_capacity_admission_v3(&valid, &changed, JournalLimits::default()).is_err());
 }
 
 #[test]
 fn continuation_preserves_original_admission_and_accounts_exact_full_append() {
     let proposal = proposal(Kind::PreparedStored, 6, &[68]);
-    let old = NativeHeldCapacityRecordV3::new(request(7, 100_000, 64), [8; 16]).map_err(JournalError::from).unwrap();
-    let next = NativeHeldCapacityRecordV3::new(request(6, 90_000, 60), [8; 16]).map_err(JournalError::from).unwrap();
+    let old = NativeHeldCapacityRecordV3::new(request(7, 100_000, 64), [8; 16])
+        .map_err(JournalError::from)
+        .unwrap();
+    let next = NativeHeldCapacityRecordV3::new(request(6, 90_000, 60), [8; 16])
+        .map_err(JournalError::from)
+        .unwrap();
     let transaction =
         root_native_capacity_transition_v3(&proposal, &old, Some(&next), JournalLimits::default())
             .unwrap();
@@ -130,7 +144,9 @@ fn continuation_preserves_original_admission_and_accounts_exact_full_append() {
     assert_eq!(transaction.records()[2], next.to_journal_record());
     assert!(encoded_transaction_append_bytes(&transaction).unwrap() > 266);
 
-    let changed = NativeHeldCapacityRecordV3::new(next.request(), [9; 16]).map_err(JournalError::from).unwrap();
+    let changed = NativeHeldCapacityRecordV3::new(next.request(), [9; 16])
+        .map_err(JournalError::from)
+        .unwrap();
     assert!(
         root_native_capacity_transition_v3(
             &proposal,
@@ -140,7 +156,9 @@ fn continuation_preserves_original_admission_and_accounts_exact_full_append() {
         )
         .is_err()
     );
-    let enlarged = NativeHeldCapacityRecordV3::new(request(6, 100_000, 64), [8; 16]).map_err(JournalError::from).unwrap();
+    let enlarged = NativeHeldCapacityRecordV3::new(request(6, 100_000, 64), [8; 16])
+        .map_err(JournalError::from)
+        .unwrap();
     assert!(
         root_native_capacity_transition_v3(
             &proposal,
@@ -158,7 +176,9 @@ fn continuation_preserves_original_admission_and_accounts_exact_full_append() {
 
 #[test]
 fn native_floor_deletion_requires_actual_terminal_ack_not_settled_or_cas() {
-    let old = NativeHeldCapacityRecordV3::new(request(1, 100_000, 64), [8; 16]).map_err(JournalError::from).unwrap();
+    let old = NativeHeldCapacityRecordV3::new(request(1, 100_000, 64), [8; 16])
+        .map_err(JournalError::from)
+        .unwrap();
     let settled = proposal(Kind::TerminalRecorded, 0, &[68]);
     assert!(
         root_native_capacity_transition_v3(&settled, &old, None, JournalLimits::default()).is_err()
@@ -168,7 +188,14 @@ fn native_floor_deletion_requires_actual_terminal_ack_not_settled_or_cas() {
         root_native_capacity_transition_v3(&ack, &old, None, JournalLimits::default()).unwrap();
     assert_eq!(transaction.records().len(), 2);
     assert_eq!(transaction.records()[1].value(), None);
-    assert!(aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(&Default::default(), &transaction).map_err(JournalError::from).is_ok());
+    assert!(
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(
+            &Default::default(),
+            &transaction
+        )
+        .map_err(JournalError::from)
+        .is_ok()
+    );
     // This plain deletion has no retained-state origin. With its actual old
     // native row, every legacy protected route remains explicitly closed.
     let record = old.to_journal_record();
@@ -176,5 +203,12 @@ fn native_floor_deletion_requires_actual_terminal_ack_not_settled_or_cas() {
         (record.namespace(), record.key().to_vec()),
         record.value().unwrap().to_vec(),
     )]);
-    assert!(aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(&state, &transaction).map_err(JournalError::from).is_err());
+    assert!(
+        aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(
+            &state,
+            &transaction
+        )
+        .map_err(JournalError::from)
+        .is_err()
+    );
 }

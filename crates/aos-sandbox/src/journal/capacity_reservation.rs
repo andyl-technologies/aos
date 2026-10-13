@@ -13,8 +13,13 @@
 //! other kinds remain opaque to protected producers. Generic append gates stay
 //! closed, and no original native admission follows from canonical floor DATA.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::{decode_capacity_reservation_request_v1, legacy_capacity_ids_for_purpose, validate_capacity_snapshot_data_v2, validate_request_with_limits};
-use aos_sandbox_protocol::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, accounting_reservation, canonical_reservations};
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::{
+    CanonicalCapacityFamily, accounting_reservation, canonical_reservations,
+};
+use aos_sandbox_protocol::domain_ledger::capacity_family::{
+    decode_capacity_reservation_request_v1, legacy_capacity_ids_for_purpose,
+    validate_capacity_snapshot_data_v2, validate_request_with_limits,
+};
 
 use crate::journal::CacheMutationGateV1;
 use crate::journal::semantic_append::AppendScope;
@@ -167,7 +172,8 @@ impl Journal {
         legacy_capacity_ids_for_purpose(
             self.native.state(),
             GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor,
-        ).map_err(JournalError::from)
+        )
+        .map_err(JournalError::from)
     }
 
     /// Lists only canonical Controller-history capacity identities for replay.
@@ -176,7 +182,8 @@ impl Journal {
         legacy_capacity_ids_for_purpose(
             self.native.state(),
             GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
-        ).map_err(JournalError::from)
+        )
+        .map_err(JournalError::from)
     }
 
     /// Transfers Root's two-slot intent to its exact one-slot history suffix.
@@ -832,7 +839,11 @@ mod purpose_tests {
             decode_reservation(&value).unwrap(),
             (request, admission, id)
         );
-        assert!(accounting_reservation(&reservation_key(id), &value).map_err(JournalError::from).is_ok());
+        assert!(
+            accounting_reservation(&reservation_key(id), &value)
+                .map_err(JournalError::from)
+                .is_ok()
+        );
         assert!(request.purpose.permits(RecordNamespace::DesiredState));
         assert!(
             !request
@@ -856,7 +867,11 @@ mod purpose_tests {
         assert_eq!(value[11], 3);
         assert_ne!(id, reservation_id(&root, admission));
         assert_eq!(decode_reservation(&value).unwrap(), (source, admission, id));
-        assert!(accounting_reservation(&reservation_key(id), &value).map_err(JournalError::from).is_ok());
+        assert!(
+            accounting_reservation(&reservation_key(id), &value)
+                .map_err(JournalError::from)
+                .is_ok()
+        );
         assert!(
             source
                 .purpose
@@ -882,7 +897,11 @@ mod purpose_tests {
         ] {
             let id = reservation_id(&foreign, admission);
             let value = encode_reservation(&foreign, admission, id);
-            assert!(accounting_reservation(&reservation_key(id), &value).map_err(JournalError::from).is_err());
+            assert!(
+                accounting_reservation(&reservation_key(id), &value)
+                    .map_err(JournalError::from)
+                    .is_err()
+            );
         }
     }
 
@@ -903,7 +922,11 @@ mod purpose_tests {
         let id: [u8; 32] = digest.finalize().into();
         value[VALUE_BYTES_V1 - 32..].copy_from_slice(&id);
 
-        assert!(accounting_reservation(&reservation_key(id), &value).map_err(JournalError::from).is_err());
+        assert!(
+            accounting_reservation(&reservation_key(id), &value)
+                .map_err(JournalError::from)
+                .is_err()
+        );
     }
 
     #[test]
@@ -934,7 +957,11 @@ mod purpose_tests {
             record_digest: digest_bytes(&value),
         };
 
-        assert!(accounting_reservation(&reservation_key(id), &value).map_err(JournalError::from).is_ok());
+        assert!(
+            accounting_reservation(&reservation_key(id), &value)
+                .map_err(JournalError::from)
+                .is_ok()
+        );
         assert!(!reservation.matches_recovery_binding(&binding));
     }
 
@@ -967,7 +994,11 @@ mod purpose_tests {
                     decode_reservation(&bytes).unwrap(),
                     (request, admission, identifier)
                 );
-                assert!(accounting_reservation(&reservation_key(identifier), &bytes).map_err(JournalError::from).is_ok());
+                assert!(
+                    accounting_reservation(&reservation_key(identifier), &bytes)
+                        .map_err(JournalError::from)
+                        .is_ok()
+                );
                 assert_eq!(
                     bytes.len(),
                     if uses_v2(&request) {
@@ -1052,7 +1083,11 @@ mod purpose_tests {
         assert_eq!(bytes.len(), VALUE_BYTES_V1);
         assert_eq!(bytes[11], 7);
         assert_eq!(decode_reservation(&bytes).unwrap().0, request);
-        assert!(accounting_reservation(&reservation_key(identifier), &bytes).map_err(JournalError::from).is_ok());
+        assert!(
+            accounting_reservation(&reservation_key(identifier), &bytes)
+                .map_err(JournalError::from)
+                .is_ok()
+        );
         assert!(
             request
                 .purpose

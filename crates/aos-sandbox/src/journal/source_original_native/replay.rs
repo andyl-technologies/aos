@@ -4,7 +4,7 @@
 //! reruns existing Ledger owner comparisons and the sole Sandbox union fold.
 //! Current markers, inverse floor identities and caller DATA never create history.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::family::{CanonicalCapacityFamily};
+use aos_sandbox_protocol::domain_ledger::capacity_family::family::CanonicalCapacityFamily;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

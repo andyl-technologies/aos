@@ -4,10 +4,18 @@
 //! Review their offsets and domain preimage before changing the wire format;
 //! these opaque DATA fixtures are not valid owner graphs or writer authority.
 
-use crate::domain_ledger::capacity_family::{validate_capacity_snapshot_data_v2};
-use crate::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, accounting_reservation, accounting_reservations, require_legacy_transaction};
-use crate::domain_ledger::capacity_family::ordinary::{OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4, OrdinaryCapacityRecordV4};
-use crate::domain_ledger::capacity_family::query::{QueryCapacityDataV6, QueryCapacityProfileV6, QueryCapacityRecordV6};
+use crate::domain_ledger::capacity_family::family::{
+    CanonicalCapacityFamily, accounting_reservation, accounting_reservations,
+    require_legacy_transaction,
+};
+use crate::domain_ledger::capacity_family::ordinary::{
+    OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4,
+    OrdinaryCapacityRecordV4,
+};
+use crate::domain_ledger::capacity_family::query::{
+    QueryCapacityDataV6, QueryCapacityProfileV6, QueryCapacityRecordV6,
+};
+use crate::domain_ledger::capacity_family::validate_capacity_snapshot_data_v2;
 
 use std::collections::BTreeMap;
 
@@ -15,8 +23,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::*;
 
-const QUERY_DOMAIN: &[u8] =
-    b"aos.journal.root-recovery-query-capacity.v6.floor-identity\0";
+const QUERY_DOMAIN: &[u8] = b"aos.journal.root-recovery-query-capacity.v6.floor-identity\0";
 const ORDINARY_DOMAIN: &[u8] = b"aos.journal.root-ordinary-capacity.v4.r1.floor-identity\0";
 
 fn literal_geometry(profile: QueryCapacityProfileV6) -> (u32, u32, u64) {
@@ -164,7 +171,10 @@ fn conservative_profiles_use_real_framing_keys_and_existing_value_bounds() {
     let mut admission = owners();
     admission.push(floor.clone());
     let mut complete = owners();
-    complete.push(JournalRecord::delete(floor.namespace(), floor.key().to_vec()));
+    complete.push(JournalRecord::delete(
+        floor.namespace(),
+        floor.key().to_vec(),
+    ));
 
     assert_eq!(
         encoded_transaction_append_bytes(&JournalTransaction::new([9; 16], admission).unwrap())
@@ -364,4 +374,3 @@ fn ordinary_kind7_bytes_domain_and_version_are_preserved_and_not_interchangeable
     retagged[9] = 6;
     assert!(QueryCapacityRecordV6::decode(ordinary.key(), &retagged).is_err());
 }
-

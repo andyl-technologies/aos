@@ -1,6 +1,6 @@
 //! Named kind2/kind5 physical writers sharing one private append/readback core.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::ordinary::{OrdinaryCapacityRecordV4};
+use aos_sandbox_protocol::domain_ledger::capacity_family::ordinary::OrdinaryCapacityRecordV4;
 
 use crate::journal::PreflightTransactionViewV1;
 use crate::journal::semantic_append::{AppendScope, PreflightScope};

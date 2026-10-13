@@ -16,8 +16,10 @@
 
 use aos_sandbox::journal::JournalError;
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::{validate_capacity_snapshot_data_v2};
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5, OriginalSourceCapacityRecordV5};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5, OriginalSourceCapacityRecordV5,
+};
+use aos_sandbox_protocol::domain_ledger::capacity_family::validate_capacity_snapshot_data_v2;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -317,7 +319,8 @@ fn validate_original_admission(
     validate_capacity_snapshot_data_v2(before).map_err(JournalError::from)?;
     bound_transaction(transaction, 5)?;
     let records = transaction.records();
-    let floor = OriginalSourceCapacityRecordV5::from_journal_record(&records[4]).map_err(JournalError::from)?;
+    let floor = OriginalSourceCapacityRecordV5::from_journal_record(&records[4])
+        .map_err(JournalError::from)?;
     if floor.request().future_transactions != 20
         || floor.admission_transaction_id() != *transaction.id()
         || floor.origin_reservation_id().map_err(JournalError::from)? != floor.reservation_id()
@@ -371,7 +374,10 @@ fn validate_edge(
         require_retained_floor(old, floor)?;
         let expected = JournalRecord::delete(
             RecordNamespace::GlobalCapacityReservation,
-            old.to_journal_record().map_err(JournalError::from)?.key().to_vec(),
+            old.to_journal_record()
+                .map_err(JournalError::from)?
+                .key()
+                .to_vec(),
         );
         if records[owner_count] != expected {
             return Err(corrupt("original Source ordered floor DELETE"));
@@ -657,7 +663,10 @@ fn require_retained_floor(
         || current.admission_transaction_id() != original.admission_transaction_id()
         || current.origin_budgets() != original.origin_budgets()
         || current.original_provenance() != original.original_provenance()
-        || current.origin_reservation_id().map_err(JournalError::from)? != original.reservation_id()
+        || current
+            .origin_reservation_id()
+            .map_err(JournalError::from)?
+            != original.reservation_id()
     {
         return Err(corrupt("original Source retained floor bindings"));
     }

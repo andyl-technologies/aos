@@ -5,7 +5,9 @@
 //! readback. Source independently authenticates archived/current configurations
 //! and every retained signature before calling these private-owner operations.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, OriginalSourceCapacityRecordV5};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, OriginalSourceCapacityRecordV5,
+};
 
 use crate::journal::PreflightTransactionViewV1;
 use crate::journal::semantic_append::{AppendScope, PreflightScope};
@@ -846,7 +848,11 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             .find(|origin| origin.admission_comparison().original().acquisition_id == acquisition)
             .ok_or(invalid("original Source completion origin missing"))?;
         let mut selected = None;
-        for family in aos_sandbox_protocol::domain_ledger::capacity_family::family::canonical_reservations(journal.native.state())? {
+        for family in
+            aos_sandbox_protocol::domain_ledger::capacity_family::family::canonical_reservations(
+                journal.native.state(),
+            )?
+        {
             if let aos_sandbox_protocol::domain_ledger::capacity_family::family::CanonicalCapacityFamily::OriginalSource5(floor) = family
                 && floor.original_provenance().claims().claims.provider_acquisition().1 == acquisition
                 && selected.replace(floor).is_some()
@@ -1045,7 +1051,11 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             .find(|origin| origin.admission_comparison().original().acquisition_id == acquisition)
             .ok_or(invalid("original Source transfer origin missing"))?;
         let mut selected = None;
-        for family in aos_sandbox_protocol::domain_ledger::capacity_family::family::canonical_reservations(journal.native.state())? {
+        for family in
+            aos_sandbox_protocol::domain_ledger::capacity_family::family::canonical_reservations(
+                journal.native.state(),
+            )?
+        {
             if let aos_sandbox_protocol::domain_ledger::capacity_family::family::CanonicalCapacityFamily::OriginalSource5(floor)
                 = family
                 && floor.original_provenance().claims().claims.provider_acquisition().1 == acquisition

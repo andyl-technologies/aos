@@ -9,20 +9,20 @@
 //! writer must validate actual original rows, transaction membership, the whole
 //! current owner graph and every branch's opened-limit geometry independently.
 
-use crate::domain_ledger::capacity_family::{CapacityDataError};
+use crate::domain_ledger::capacity_family::CapacityDataError;
 
 use aos_sandbox_source_provider_ledger::ledger::native_completion::{
     MAXIMUM_ORIGINAL_SOURCE_PROVENANCE_BYTES_V5, OriginalSourceProvenanceV5,
 };
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_core::RecordNamespace;
-use crate::domain_ledger::transaction::{JournalLimits, JournalRecord};
 use super::super::{reservation_key, take};
 use super::{
     NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, binding_bytes, decode_bindings,
     invalid,
 };
+use crate::domain_ledger::transaction::{JournalLimits, JournalRecord};
+use aos_sandbox_core::RecordNamespace;
 
 /// Bounds the original Source floor, including its retained archive and identity.
 pub const ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5: usize =
@@ -110,7 +110,11 @@ impl OriginalSourceCapacityRecordV5 {
             || request.owner_id != owner
             || request.artifact_digest != *claims.claims.attempt().1.as_bytes()
             || request.checkpoint_digest
-                != *claims.root_prepared.scope().original_root_request.as_bytes()
+                != *claims
+                    .root_prepared
+                    .scope()
+                    .original_root_request
+                    .as_bytes()
             || request.chain_head_digest != *claims.claims.holder_session().1.as_bytes()
         {
             return Err(invalid("original Source capacity bindings or budgets"));
@@ -204,11 +208,16 @@ impl OriginalSourceCapacityRecordV5 {
         }
         Self::decode(
             record.key(),
-            record.value().ok_or(CapacityDataError::InvalidTransaction)?,
+            record
+                .value()
+                .ok_or(CapacityDataError::InvalidTransaction)?,
         )
     }
 
-    pub(in crate::domain_ledger::capacity_family) fn decode(key: &[u8], bytes: &[u8]) -> Result<Self, CapacityDataError> {
+    pub(in crate::domain_ledger::capacity_family) fn decode(
+        key: &[u8],
+        bytes: &[u8],
+    ) -> Result<Self, CapacityDataError> {
         // The lower bound protects the shared fixed 204 decoder and origin words.
         if !(907..=ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5).contains(&bytes.len())
             || &bytes[..8] != b"AOSJCR01"
@@ -236,7 +245,9 @@ impl OriginalSourceCapacityRecordV5 {
             || key != reservation_key(candidate).as_slice()
             || decoded.to_journal_record()?.value() != Some(bytes)
         {
-            return Err(invalid("original Source capacity key or canonical identity"));
+            return Err(invalid(
+                "original Source capacity key or canonical identity",
+            ));
         }
         Ok(decoded)
     }

@@ -4,7 +4,9 @@
 //! `domain_ledger::capacity_family`. These upper adapters measure exact owner
 //! continuations; actual protected Journal admission and custody stay Native.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+};
 
 use super::super::{JournalError, JournalRecord, RecordNamespace};
 

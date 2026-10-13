@@ -3,8 +3,15 @@
 //! Synthetic signatures and witness claims are format fixtures only. No test
 //! creates a protected admission, authenticated clock, Source writer, or route.
 
-use crate::domain_ledger::capacity_family::family::{CanonicalCapacityFamily, canonical_reservations, require_legacy_owner, require_legacy_reservations};
-use crate::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3, ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5, OriginalRootCapacityRecordV5, OriginalSourceCapacityBudgetsV5, OriginalSourceCapacityRecordV5};
+use crate::domain_ledger::capacity_family::family::{
+    CanonicalCapacityFamily, canonical_reservations, require_legacy_owner,
+    require_legacy_reservations,
+};
+use crate::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+    ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5, OriginalRootCapacityRecordV5,
+    OriginalSourceCapacityBudgetsV5, OriginalSourceCapacityRecordV5,
+};
 
 use std::collections::BTreeMap;
 
@@ -100,13 +107,15 @@ fn fixture_claims() -> OriginalSourceProvenanceClaimsV5 {
         NativeHeldControlKindV1::RootPrepared,
         scope,
         digest(0),
-        vec![NativeHeldSectionV1::new(
-            NativeHeldSectionTagV1::Witness,
-            NativeHeldOwnerWitnessV1::Root(root_witness)
-                .to_canonical_bytes()
-                .unwrap(),
-        )
-        .unwrap()],
+        vec![
+            NativeHeldSectionV1::new(
+                NativeHeldSectionTagV1::Witness,
+                NativeHeldOwnerWitnessV1::Root(root_witness)
+                    .to_canonical_bytes()
+                    .unwrap(),
+            )
+            .unwrap(),
+        ],
         NativeHeldSignerV1::SourceProvider(signer),
     )
     .unwrap()
@@ -342,7 +351,10 @@ fn successor_retains_origin_without_widening_general_v3() {
         NativeHeldCapacityPurposeV3::Provider.maximum_future_transactions(),
         19,
     );
-    assert_eq!(NativeHeldCapacityPurposeV3::Root.maximum_future_transactions(), 7);
+    assert_eq!(
+        NativeHeldCapacityPurposeV3::Root.maximum_future_transactions(),
+        7
+    );
     for count in [0, 21] {
         request.future_transactions = count;
         assert!(
@@ -431,7 +443,8 @@ fn archived_subject_and_cutoff_substitution_is_rejected_before_floor_selection()
     );
     assert_eq!(
         bytes.len(),
-        617 + data.root_prepared.to_canonical_bytes().len() + data.claims.to_canonical_bytes().len(),
+        617 + data.root_prepared.to_canonical_bytes().len()
+            + data.claims.to_canonical_bytes().len(),
     );
     for index in 0..4 {
         let mut changed = data.clone();

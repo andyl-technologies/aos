@@ -6,7 +6,7 @@
 //! publication form one ordered recipe. Opening, replay, selector DATA and
 //! domain authority admission remain in the parent and their existing owners.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::{capacity_record_has_legacy_purpose};
+use aos_sandbox_protocol::domain_ledger::capacity_family::capacity_record_has_legacy_purpose;
 
 use std::collections::BTreeMap;
 
@@ -1001,7 +1001,9 @@ impl Journal {
             root_local_recovery::require_fences(self.native.state(), transaction)?;
             root_original_native::require_generic_transaction(self.native.state(), transaction)?;
             root_original_inventory::require_generic_transaction(
-                self.native.state(), transaction, self.native.limits(),
+                self.native.state(),
+                transaction,
+                self.native.limits(),
             )?;
             aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(self.native.state(), transaction)?;
             settling_reservation
@@ -1457,7 +1459,9 @@ impl Journal {
                 root_local_recovery::require_fences(&state, transaction)?;
                 root_original_native::require_generic_transaction(&state, transaction)?;
                 root_original_inventory::require_generic_transaction(
-                    &state, transaction, self.native.limits(),
+                    &state,
+                    transaction,
+                    self.native.limits(),
                 )?;
                 aos_sandbox_protocol::domain_ledger::capacity_family::family::require_legacy_transaction(&state, transaction)?;
                 settling_reservation

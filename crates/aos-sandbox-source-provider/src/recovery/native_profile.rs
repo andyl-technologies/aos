@@ -6,12 +6,20 @@
 
 use aos_sandbox::journal::JournalError;
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::{decode_capacity_reservation_request_v1, validate_capacity_snapshot_data_v2};
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3, OriginalSourceCapacityRecordV5};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+    OriginalSourceCapacityRecordV5,
+};
+use aos_sandbox_protocol::domain_ledger::capacity_family::{
+    decode_capacity_reservation_request_v1, validate_capacity_snapshot_data_v2,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox::{GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, JournalRecord, SourceProviderHeldReadOnlyJournalAuthorityV1};
+use aos_sandbox::{
+    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, JournalRecord,
+    SourceProviderHeldReadOnlyJournalAuthorityV1,
+};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::{
     collect_bounded_records,
@@ -374,7 +382,8 @@ mod tests {
                 poison_bytes: 4096,
             },
             [17; 16],
-        ).map_err(JournalError::from)
+        )
+        .map_err(JournalError::from)
         .unwrap()
         .to_journal_record()
     }

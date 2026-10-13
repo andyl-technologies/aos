@@ -5,7 +5,7 @@
 //! partial capture as a protected readback. Drop only fails custody and poisons
 //! a Journal if this invocation actually entered its append.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{OriginalRootCapacityRecordV5};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::OriginalRootCapacityRecordV5;
 
 use crate::journal::semantic_append::AppendScope;
 

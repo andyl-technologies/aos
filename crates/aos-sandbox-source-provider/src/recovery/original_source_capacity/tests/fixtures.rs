@@ -6,7 +6,10 @@
 
 use aos_sandbox::journal::JournalError;
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, OriginalSourceCapacityBudgetsV5, OriginalSourceCapacityRecordV5};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, OriginalSourceCapacityBudgetsV5,
+    OriginalSourceCapacityRecordV5,
+};
 
 use super::*;
 
@@ -139,16 +142,22 @@ pub(super) fn floor() -> OriginalSourceCapacityRecordV5 {
             poison_bytes: request.poison_bytes,
         },
         provenance,
-    ).map_err(JournalError::from).unwrap()
+    )
+    .map_err(JournalError::from)
+    .unwrap()
 }
 
 pub(super) fn successor(original: &OriginalSourceCapacityRecordV5, count: u32) -> OriginalSourceCapacityRecordV5 {
     let mut request = original.request();
     request.future_transactions = count;
     OriginalSourceCapacityRecordV5::new(
-        request, original.admission_transaction_id(), original.origin_budgets(),
+        request,
+        original.admission_transaction_id(),
+        original.origin_budgets(),
         original.original_provenance().clone(),
-    ).map_err(JournalError::from).unwrap()
+    )
+    .map_err(JournalError::from)
+    .unwrap()
 }
 
 /// Returns floor-only canonical DATA, explicitly not a complete owner fixture.

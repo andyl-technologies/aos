@@ -2,14 +2,19 @@
 
 use crate::journal::JournalError;
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{OriginalSourceCapacityRecordV5};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::OriginalSourceCapacityRecordV5;
 
 use super::*;
 use aos_sandbox_source_provider_ledger::ledger::native_held_completion::
     derive_original_source_continuations_v5;
 use crate::journal::capacity_reservation::native_held::OriginalSourceGeometryDataV5;
 
-fn canonical_admission() -> (State, JournalTransaction, JournalTransaction, SourceOriginalAdmissionDataV5) {
+fn canonical_admission() -> (
+    State,
+    JournalTransaction,
+    JournalTransaction,
+    SourceOriginalAdmissionDataV5,
+) {
     let (before, applying, requested) = super::super::tests::original_replay_fixture_v5();
     let limits = JournalLimits::default();
     let generous = compare_source_original_admission_data_v5(
@@ -34,9 +39,10 @@ fn canonical_admission() -> (State, JournalTransaction, JournalTransaction, Sour
     initial.terminal_bytes = budgets.terminal_bytes;
     initial.poison_records = budgets.poison_records;
     initial.poison_bytes = budgets.poison_bytes;
-    let floor = OriginalSourceCapacityRecordV5::new(
-        initial, *applying.id(), budgets, provenance.clone(),
-    ).map_err(JournalError::from).unwrap();
+    let floor =
+        OriginalSourceCapacityRecordV5::new(initial, *applying.id(), budgets, provenance.clone())
+            .map_err(JournalError::from)
+            .unwrap();
     let floor_record = floor.to_journal_record().unwrap();
     let mut applying_records = applying.records().to_vec();
     applying_records[4] = floor_record.clone();
@@ -65,16 +71,25 @@ fn canonical_admission() -> (State, JournalTransaction, JournalTransaction, Sour
         &floor, &continuation, limits,
     ).unwrap();
     let successor = OriginalSourceCapacityRecordV5::new(
-        geometry.remaining_request().unwrap(), *applying.id(), budgets,
+        geometry.remaining_request().unwrap(),
+        *applying.id(),
+        budgets,
         floor.original_provenance().clone(),
-    ).map_err(JournalError::from).unwrap();
-    let requested = JournalTransaction::new(*requested.id(), vec![
-        requested.records()[0].clone(),
-        crate::journal::JournalRecord::delete(
-            RecordNamespace::GlobalCapacityReservation, floor_record.key().to_vec(),
-        ),
-        successor.to_journal_record().unwrap(),
-    ]).unwrap();
+    )
+    .map_err(JournalError::from)
+    .unwrap();
+    let requested = JournalTransaction::new(
+        *requested.id(),
+        vec![
+            requested.records()[0].clone(),
+            crate::journal::JournalRecord::delete(
+                RecordNamespace::GlobalCapacityReservation,
+                floor_record.key().to_vec(),
+            ),
+            successor.to_journal_record().unwrap(),
+        ],
+    )
+    .unwrap();
 
     (before, applying, requested, admission)
 }

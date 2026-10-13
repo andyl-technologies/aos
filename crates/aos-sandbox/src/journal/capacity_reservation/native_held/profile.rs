@@ -4,7 +4,9 @@
 //! closed step names bound the native append schedule; no measurement proves
 //! that a writer cut, original descriptor, or protected claim is retained.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NATIVE_HELD_CAPACITY_VALUE_BYTES_V3, NativeHeldCapacityPurposeV3};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NATIVE_HELD_CAPACITY_VALUE_BYTES_V3, NativeHeldCapacityPurposeV3,
+};
 
 use aos_sandbox_journal::native_suffix::{
     NativeBeforeAfterRef, NativeRecordExtentRef, NativeSuffixError, NativeSuffixMeasurement,

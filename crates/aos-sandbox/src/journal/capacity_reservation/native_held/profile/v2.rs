@@ -4,7 +4,9 @@
 //! Provider edges remain syntactic until the Source owner validates its sealed
 //! proposal. Both profiles measure the unchanged version3 namespace46 format.
 
-use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+use aos_sandbox_protocol::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+};
 
 use std::collections::BTreeSet;
 
@@ -14,7 +16,12 @@ use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion
 
 use super::super::invalid;
 use super::super::root_v2::RootCapacityEdgeV2;
-use super::{JournalError, JournalLimits, JournalRecord, JournalTransaction, MeasurementAppend, NativeHeldCapacityChangeV3, NativeHeldCapacityGeometryV3, NativeHeldCapacityPathV3, NativeHeldCapacityStepV3, closed_path_shape, measure_appends, normal_successor, require_changes, require_owner_shape};
+use super::{
+    JournalError, JournalLimits, JournalRecord, JournalTransaction, MeasurementAppend,
+    NativeHeldCapacityChangeV3, NativeHeldCapacityGeometryV3, NativeHeldCapacityPathV3,
+    NativeHeldCapacityStepV3, closed_path_shape, measure_appends, normal_successor,
+    require_changes, require_owner_shape,
+};
 
 /// Names an actual Root V2 edge or the existing Provider append schedule as DATA.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

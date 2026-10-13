@@ -6,13 +6,23 @@
 //! A new golden must be reviewed against that preimage, never regenerated from
 //! `reservation_id` or the native codec being tested.
 
-use crate::domain_ledger::capacity_family::family::{require_legacy_owner, require_legacy_transaction};
-use crate::domain_ledger::capacity_family::native_held::{NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
+use crate::domain_ledger::capacity_family::family::{
+    require_legacy_owner, require_legacy_transaction,
+};
+use crate::domain_ledger::capacity_family::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3,
+};
 
-use crate::domain_ledger::capacity::{GlobalCapacityReservationPurposeV1 as LegacyPurpose, GlobalCapacityReservationRequestV1 as LegacyRequest, MAXIMUM_FUTURE_TRANSACTIONS, decode_reservation, encode_reservation, reservation_id};
+use crate::domain_ledger::capacity::{
+    GlobalCapacityReservationPurposeV1 as LegacyPurpose,
+    GlobalCapacityReservationRequestV1 as LegacyRequest, MAXIMUM_FUTURE_TRANSACTIONS,
+    decode_reservation, encode_reservation, reservation_id,
+};
 
 use super::*;
-use crate::domain_ledger::transaction::{JournalLimits, JournalTransaction, encoded_transaction_append_bytes};
+use crate::domain_ledger::transaction::{
+    JournalLimits, JournalTransaction, encoded_transaction_append_bytes,
+};
 
 fn request(purpose: NativeHeldCapacityPurposeV3, count: u32) -> NativeHeldCapacityRequestV3 {
     NativeHeldCapacityRequestV3 {
@@ -199,7 +209,10 @@ fn native_count_one_is_always_version_three_and_has_separate_domain_goldens() {
             record
         );
         assert!(decode_reservation(actual.value().unwrap()).is_err());
-        assert!(crate::domain_ledger::capacity_family::decode_capacity_reservation_request_v1(&actual).is_err());
+        assert!(
+            crate::domain_ledger::capacity_family::decode_capacity_reservation_request_v1(&actual)
+                .is_err()
+        );
     }
 }
 
@@ -271,9 +284,11 @@ fn native_counts_have_distinct_closed_ranges_without_changing_old_counts() {
                 NativeHeldCapacityRecordV3::from_journal_record(&encoded).unwrap(),
                 record
             );
-            let decoded =
-                crate::domain_ledger::capacity_family::family::accounting_reservation(encoded.key(), encoded.value().unwrap())
-                    .unwrap();
+            let decoded = crate::domain_ledger::capacity_family::family::accounting_reservation(
+                encoded.key(),
+                encoded.value().unwrap(),
+            )
+            .unwrap();
             assert_eq!(decoded.maximum_transactions, count as usize);
         }
         for count in [0, purpose.maximum_future_transactions() + 1, u32::MAX] {
@@ -337,13 +352,26 @@ fn native_rows_are_canonical_accounting_data_but_reject_legacy_authority() {
         (native.namespace(), native.key().to_vec()),
         native.value().unwrap().to_vec(),
     )]);
-    assert!(crate::domain_ledger::capacity_family::family::accounting_reservation(native.key(), native.value().unwrap()).is_ok());
-    assert!(crate::domain_ledger::capacity_family::validate_capacity_snapshot_data_v2(&state).is_ok());
     assert!(
-        crate::domain_ledger::capacity_family::all_reservations_owned_by(&state, RecordNamespace::MountSourceAcquisition)
-            .unwrap()
+        crate::domain_ledger::capacity_family::family::accounting_reservation(
+            native.key(),
+            native.value().unwrap()
+        )
+        .is_ok()
     );
-    assert!(crate::domain_ledger::capacity_family::family::require_legacy_reservations(&state).is_err());
+    assert!(
+        crate::domain_ledger::capacity_family::validate_capacity_snapshot_data_v2(&state).is_ok()
+    );
+    assert!(
+        crate::domain_ledger::capacity_family::all_reservations_owned_by(
+            &state,
+            RecordNamespace::MountSourceAcquisition
+        )
+        .unwrap()
+    );
+    assert!(
+        crate::domain_ledger::capacity_family::family::require_legacy_reservations(&state).is_err()
+    );
     assert!(require_legacy_owner(&state, RecordNamespace::MountSourceAcquisition).is_err());
 
     for record in [
@@ -365,4 +393,3 @@ fn native_rows_are_canonical_accounting_data_but_reject_legacy_authority() {
     .unwrap();
     assert!(require_legacy_transaction(&state, &unrelated).is_ok());
 }
-
