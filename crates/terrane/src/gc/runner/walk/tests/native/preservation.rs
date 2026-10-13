@@ -305,12 +305,15 @@ pub(super) async fn recorded_preservation_keeps_inert_index_bindings() {
             .commit_request(&mut writer, request)
             .await
             .assert_failure();
-        assert!(
-            matches!(failure,
-                crate::repository::Error::Advance(crate::ref_advance::AdvanceError::Store(ref failure))
-                    if matches!(failure.kind(), StoreErrorKind::Invalid(_) | StoreErrorKind::Denied { .. })
-            ),
-            "{name}: {failure:?}"
+        let crate::repository::Error::Advance(crate::ref_advance::AdvanceError::Store(failure)) =
+            failure
+        else {
+            panic!("{name}: expected an actual Store failure, observed {failure:?}");
+        };
+        assert_eq!(
+            failure.kind(),
+            &StoreErrorKind::Invalid(InvalidReason::MalformedRequest),
+            "{name}"
         );
         assert_eq!(
             guard.store().ref_get(REFERENCE).await.assert_success(),
