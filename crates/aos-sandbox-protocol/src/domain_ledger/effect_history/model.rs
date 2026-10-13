@@ -8,7 +8,7 @@ use super::{MAXIMUM_REQUEST_BYTES, MAXIMUM_RECEIPT_BYTES};
 use super::codec::validate_broker_method_domain;
 use crate::domain_ledger::project_admission_metadata::ProjectAdmissionMetadataV1 as ProjectAdmissionMetadata;
 
-/// Selects the sole fixed-function boundary allowed to execute an effect.
+/// Identifies the fixed-function domain recorded for an effect.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum EffectDomain {
@@ -42,6 +42,11 @@ impl EffectDomain {
         }
     }
 
+    /// Selects the generic broker effect domain for a retained audience.
+    ///
+    /// # Errors
+    ///
+    /// Rejects Guardian and Nix audiences, which have separate execution paths.
     pub const fn from_audience(audience: BrokerAudience) -> Result<Self, EffectHistoryDataError> {
         match audience {
             BrokerAudience::Host => Ok(Self::Host),
@@ -58,7 +63,7 @@ impl EffectDomain {
     }
 }
 
-/// Defines one ordered, idempotent request to a fixed effect boundary.
+/// Retains request bytes and method tags for one ordered effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectPlan {
     pub(super) domain: EffectDomain,
@@ -81,6 +86,7 @@ impl EffectPlan {
         }
     }
 
+    /// Reports whether the complete plan retains a decodable Observe reservation.
     pub fn is_reserved_observe(&self) -> bool {
         self.domain == EffectDomain::Controller
             && self.method.is_none()
@@ -91,7 +97,10 @@ impl EffectPlan {
             })
     }
 
-    /// Constructs a bounded generic broker effect from validated request bytes.
+    /// Constructs a generic broker effect from bounded bytes and a closed method.
+    ///
+    /// This checks request length and method-domain identity. Consumers validate
+    /// the broker body and establish Native dispatch eligibility.
     ///
     /// # Errors
     ///
@@ -119,6 +128,12 @@ impl EffectPlan {
     }
 
     // Construction and recovery use the same context-bearing request validator.
+    /// Constructs a historical Controller plan from its retained context bytes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty or oversized request, malformed context, or a public method
+    /// that does not match the validated request.
     pub fn from_public_mutation_bytes(
         method: crate::public_api::PublicOperationMethodV1,
         request: Vec<u8>,
@@ -190,15 +205,16 @@ impl EffectPlan {
         self.controller_method
     }
 
-    /// Decodes authenticated admission context for a controller mutation.
+    /// Decodes recorded admission context for a Controller mutation.
     ///
     /// Controller mutations retain a context. Broker effects and reserved
     /// Observe children return `None`.
     ///
     /// # Errors
     ///
-    /// Returns [`EffectHistoryDataError::InvalidPlan`] when an authenticated envelope
-    /// has malformed lengths, reserved bytes, identities, time, or digest.
+    /// Returns [`EffectHistoryDataError::InvalidPlan`] for malformed recognized
+    /// context, including invalid lengths, reserved bytes, identities, time or
+    /// digest. Decoding does not authenticate the recorded admission facts.
     pub fn public_mutation_context(
         &self,
     ) -> Result<Option<PublicMutationEffectHistoryV1>, EffectHistoryDataError> {
@@ -208,17 +224,19 @@ impl EffectPlan {
         PublicMutationEffectHistoryV1::decode(&self.request)
     }
 
-    /// Returns the exact idempotent request bytes sent to the executor.
+    /// Borrows the recorded effect request bytes.
     #[must_use]
     pub fn request(&self) -> &[u8] {
         &self.request
     }
 
+    /// Borrows the retained operation and template binding, when present.
     pub fn authority(&self) -> Option<&AuthorityEffectBindingV1> {
         self.authority.as_ref()
     }
 }
 
+/// Retains the operation coordinates and template commitments attached to an effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorityEffectBindingV1 {
     pub(super) operation_id: OperationId,
@@ -233,23 +251,35 @@ pub struct AuthorityEffectBindingV1 {
     pub(super) digest: ObjectDigest,
 }
 
+/// Retains progress, diagnostic history and completion bytes for one effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EffectState {
+    /// Records a planned effect awaiting a durable dispatch intent.
     Planned,
+    /// Retains the durable intent for an attempted or ambiguous dispatch.
     Applying {
+        /// Counts the retained attempt associated with this state.
         attempt: u32,
+        /// Carries the last bounded UTF-8 diagnostic.
         diagnostic: String,
     },
+    /// Retains an applied outcome and its exact executor receipt bytes.
     Applied {
+        /// Counts the attempt associated with the retained completion.
         attempt: u32,
+        /// Owns the exact completion bytes for later owner validation.
         receipt: EffectReceipt,
     },
+    /// Retains an effect that cannot be retried automatically.
     PermanentlyBlocked {
+        /// Counts the retained attempt associated with this state.
         attempt: u32,
+        /// Carries the last bounded UTF-8 diagnostic.
         diagnostic: String,
     },
 }
 
+/// Owns a complete historical plan, state, optional dispatch and project metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectLedgerRecord {
     pub(super) plan: EffectPlan,
@@ -258,7 +288,7 @@ pub struct EffectLedgerRecord {
     pub(super) project_admission: Option<ProjectAdmissionMetadata>,
 }
 
-/// Carries bounded executor evidence for one applied effect.
+/// Owns retained executor-receipt bytes for later owner validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectReceipt(Vec<u8>);
 
@@ -287,8 +317,9 @@ impl EffectReceipt {
         &self.0
     }
 
-    /// Constructs controller evidence that an operation was canceled before
-    /// its semantic commit point.
+    /// Encodes a historical cancellation marker with a caller-supplied digest.
+    ///
+    /// This neither validates the digest nor establishes that cancellation occurred.
     #[must_use]
     pub fn canceled_before_commit(evidence: ObjectDigest) -> Self {
         let mut bytes = Vec::with_capacity(CANCELED_BEFORE_COMMIT_RECEIPT_BYTES);
@@ -297,6 +328,12 @@ impl EffectReceipt {
         Self(bytes)
     }
 
+    /// Reads the recorded digest from a recognized cancellation marker.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a recognized cancellation marker with the wrong length or a zero
+    /// evidence digest; unrecognized receipts return None.
     pub fn canceled_before_commit_evidence(&self) -> Result<Option<ObjectDigest>, ()> {
         if !self.0.starts_with(CANCELED_BEFORE_COMMIT_RECEIPT_MAGIC) {
             return Ok(None);
@@ -319,7 +356,8 @@ impl EffectReceipt {
 
 impl EffectReceipt {
     /// Owns historical bytes without validating them or issuing a Native receipt.
-    /// Existing codec state checks and Native success validation precede this assembly.
+    /// Length and content are not checked here. Encoding and Native owner
+    /// validation enforce their respective contracts before accepting this history.
     #[must_use]
     pub fn from_bytes_unchecked(bytes: Vec<u8>) -> Self {
         Self(bytes)

@@ -1,4 +1,4 @@
-//! Original pure Effect codec regressions against the complete temporary DATA owner.
+//! Original pure Effect codec regressions against the canonical historical DATA owner.
 
 use super::*;
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
@@ -411,4 +411,3 @@ use sha2::{Digest as _, Sha256};
             }),
         }
     }
-

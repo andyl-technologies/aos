@@ -1,5 +1,10 @@
-//! Owns complete nonauthorizing Effect V2--V6 historical DATA.
-//! Native admission, publication/currentness, Journal and executor/session custody stay upper.
+//! Owns the complete versioned historical effect record and its commitments.
+//!
+//! The model contains plans, progress, receipts and retained dispatch data. The
+//! context and dispatch modules hold public-mutation and lease-attempt history;
+//! the codec reads and writes the closed V2 through V6 record grammar.
+//! Native owners retain admission, publication, currentness and executor custody.
+//! Historical values alone do not authorize execution or authenticate a receipt.
 
 mod codec;
 mod context;
@@ -13,12 +18,17 @@ pub use context::PublicMutationEffectHistoryV1;
 pub use dispatch::{BrokerDispatchAttemptHistoryV1, PreparedAuthorityEffectHistoryV1};
 pub use model::{AuthorityEffectBindingV1, EffectDomain, EffectPlan, EffectReceipt, EffectState, EffectLedgerRecord};
 
+/// Bounds the complete encoded effect request to one MiB.
 pub const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
+/// Bounds executor receipt bytes to 64 KiB.
 pub const MAXIMUM_RECEIPT_BYTES: usize = 64 * 1024;
+/// Bounds retained UTF-8 diagnostic bytes to 4096 bytes.
 pub const MAXIMUM_DIAGNOSTIC_BYTES: usize = 4096;
 const EFFECT_VERSION: u8 = 2;
 const CONTROLLER_EFFECT_VERSION: u8 = 3;
+/// Identifies the record version retaining an Observe child reservation.
 pub const RESERVED_OBSERVE_EFFECT_VERSION: u8 = 4;
+/// Identifies the record version retaining Controller project-admission metadata.
 pub const CONTROLLER_PROJECT_EFFECT_VERSION: u8 = 5;
 const CONTROLLER_Q04_EFFECT_VERSION: u8 = 6;
 const AUTHORITY_BOUND_FLAG: u8 = 1;

@@ -13,6 +13,11 @@ use super::model::*;
 use crate::domain_ledger::project_admission_metadata::{MAXIMUM_RECORD_BYTES, ProjectAdmissionMetadataV1 as ProjectAdmissionMetadata};
 
 
+/// Checks the closed broker method against its fixed effect domain.
+///
+/// # Errors
+///
+/// Rejects an unknown method or one that belongs to another domain.
 pub fn validate_broker_method_domain(
     domain: EffectDomain,
     method: BrokerMethod,
@@ -81,6 +86,16 @@ const fn broker_method_from_code(value: i32) -> Option<BrokerMethod> {
     })
 }
 
+/// Encodes the record using the historical version selected by its fields.
+///
+/// Encoding checks bounds, method/context identity, dispatch presence, supported
+/// audience codes, nonzero preparation boot and retained metadata constraints.
+/// It does not repeat every decoder check, including attempt counts and all
+/// binding commitments, or authenticate Native dispatch eligibility.
+///
+/// # Errors
+///
+/// Rejects violations of those encoding checks or a missing required method.
 pub fn encode_effect(
     record: &EffectLedgerRecord,
 ) -> Result<Vec<u8>, EffectHistoryDataError> {
@@ -88,6 +103,15 @@ pub fn encode_effect(
 }
 
 #[cfg(target_os = "linux")]
+/// Encodes a Controller record with the supplied validated Q04 subgate.
+///
+/// The subgate's constructors and decoder establish its structural validation;
+/// this function copies its bytes after checking the record's Q04 shape.
+///
+/// # Errors
+///
+/// Rejects an incompatible Create effect shape or an ordinary record encoding
+/// refusal described by [`encode_effect`].
 pub fn encode_q04_effect(
     record: &EffectLedgerRecord,
     gate: &crate::domain_ledger::create_q04_history::Q04EffectSubgateV1,
@@ -316,6 +340,12 @@ fn encode_effect_with_q04(
     Ok(bytes)
 }
 
+/// Decodes and validates the complete historical record and any retained extensions.
+///
+/// # Errors
+///
+/// Rejects unknown versions or flags, malformed or unbounded fields, inconsistent
+/// commitments, invalid metadata or extensions, and trailing bytes.
 pub fn decode_effect(
     bytes: &[u8],
 ) -> Result<EffectLedgerRecord, EffectHistoryDataError> {
@@ -329,6 +359,11 @@ struct DecodedEffectWithExtensions {
 }
 
 #[cfg(target_os = "linux")]
+/// Decodes the whole record together with its optional retained Q04 subgate.
+///
+/// # Errors
+///
+/// Rejects the same complete-record grammar violations as decode_effect.
 pub fn decode_effect_with_q04(
     bytes: &[u8],
 ) -> Result<
@@ -719,6 +754,12 @@ fn decode_effect_with_extensions(
 // needing Q04 history must read this companion from the SAME complete row;
 // decoding either value is not held-owner or publication authority.
 #[cfg(target_os = "linux")]
+/// Reads Q04 history from the same complete version-six record.
+///
+/// # Errors
+///
+/// Rejects malformed recognized version-six records; other versions return None without
+/// decoding them.
 pub fn q04_effect_subgate(
     bytes: &[u8],
 ) -> Result<Option<crate::domain_ledger::create_q04_history::Q04EffectSubgateV1>, EffectHistoryDataError> {
@@ -869,6 +910,7 @@ fn take_vec(bytes: &[u8], cursor: &mut usize, length: usize) -> Result<Vec<u8>, 
     Ok(value)
 }
 
+/// Computes the versioned commitment to the complete effect body.
 pub fn effect_body_digest(body: &[u8]) -> ObjectDigest {
     let mut digest = Sha256::new();
     digest.update(BODY_DIGEST_DOMAIN);
@@ -878,6 +920,11 @@ pub fn effect_body_digest(body: &[u8]) -> ObjectDigest {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Computes the versioned operation, method and template binding commitment.
+///
+/// # Errors
+///
+/// Rejects audiences outside the generic broker effect grammar.
 pub fn effect_binding_digest(
     operation_id: OperationId,
     step: u32,
@@ -901,6 +948,7 @@ pub fn effect_binding_digest(
     Ok(ObjectDigest::from_bytes(digest.finalize().into()))
 }
 
+/// Computes the versioned commitment to the exact retained dispatch packet.
 pub fn attempt_token_digest(attempt: &BrokerDispatchAttemptHistoryV1) -> ObjectDigest {
     let mut digest = Sha256::new();
     digest.update(ATTEMPT_TOKEN_DIGEST_DOMAIN);
@@ -913,6 +961,11 @@ pub fn attempt_token_digest(attempt: &BrokerDispatchAttemptHistoryV1) -> ObjectD
     ObjectDigest::from_bytes(digest.finalize().into())
 }
 
+/// Returns the closed historical encoding for a generic broker audience.
+///
+/// # Errors
+///
+/// Rejects Guardian and Nix audiences.
 pub const fn audience_code(audience: BrokerAudience) -> Result<u8, EffectHistoryDataError> {
     match audience {
         BrokerAudience::Host => Ok(1),
@@ -928,6 +981,11 @@ pub const fn audience_code(audience: BrokerAudience) -> Result<u8, EffectHistory
     }
 }
 
+/// Decodes a closed historical generic broker audience code.
+///
+/// # Errors
+///
+/// Rejects every code other than the four supported generic broker audiences.
 pub fn audience_from_code(value: u8) -> Result<BrokerAudience, EffectHistoryDataError> {
     match value {
         1 => Ok(BrokerAudience::Host),

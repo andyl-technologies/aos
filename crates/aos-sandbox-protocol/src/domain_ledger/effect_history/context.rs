@@ -4,14 +4,13 @@ use aos_sandbox_core::{PrincipalId, ProjectId};
 use crate::public_api::public_mutation_context::{InvalidPublicMutationContext, PublicMutationContextV1};
 use super::EffectHistoryDataError;
 
-/// Carries authenticated admission identity with one exact public mutation.
+/// Retains recorded admission identity beside an exact public mutation envelope.
 ///
-/// The public envelope does not contain the mutually authenticated caller or
-/// its project authority. Production lowering therefore persists those facts
-/// beside the exact envelope instead of attempting to reconstruct them from a
-/// target resource after admission.
-/// Protocol owns its plain historical DATA and codec; this native wrapper
-/// retains the original FUSE/Nix carrier selection and admission recipes.
+/// Native admission persists caller, project and accepted time beside the request.
+/// Decoding or assembling this historical value does not authenticate those facts
+/// or establish project authority, protected custody or currentness.
+/// Linux also retains the selected historical FUSE or Nix carrier; other targets
+/// retain plain history only.
 #[derive(Clone, Eq, PartialEq)]
 pub struct PublicMutationEffectHistoryV1 {
     plain: PublicMutationContextV1,
@@ -42,25 +41,25 @@ fn invalid_public_mutation_context(error: InvalidPublicMutationContext) -> Effec
 }
 
 impl PublicMutationEffectHistoryV1 {
-    /// Returns the authenticated caller fixed at admission.
+    /// Returns the recorded caller identity.
     #[must_use]
     pub const fn caller(&self) -> PrincipalId {
         self.plain.caller()
     }
 
-    /// Returns the authenticated project fixed at admission.
+    /// Returns the recorded project identity.
     #[must_use]
     pub const fn project(&self) -> ProjectId {
         self.plain.project()
     }
 
-    /// Returns the protected admission clock in Unix seconds.
+    /// Returns the recorded accepted time in Unix seconds.
     #[must_use]
     pub const fn accepted_wall_seconds(&self) -> i64 {
         self.plain.accepted_wall_seconds()
     }
 
-    /// Returns the exact canonical public mutation envelope.
+    /// Borrows the recorded canonical public mutation envelope.
     #[must_use]
     pub fn canonical_request(&self) -> &[u8] {
         self.plain.canonical_request()
@@ -68,10 +67,9 @@ impl PublicMutationEffectHistoryV1 {
 
     /// Decodes the exact public request through the established mutation validator.
     ///
-    /// This preserves the authenticated caller and project carried by this
-    /// effect while reusing the same canonical protobuf and field validation as
-    /// initial public admission. Lowering code must not decode the retained body
-    /// through a second, weaker request path.
+    /// This preserves the recorded caller and project while reusing the canonical
+    /// protobuf and field validation used at admission. It does not authenticate
+    /// those identities or establish a live admission grant.
     ///
     /// # Errors
     ///
@@ -86,6 +84,15 @@ impl PublicMutationEffectHistoryV1 {
             .map_err(invalid_public_mutation_context)
     }
 
+    /// Decodes recognized historical context using the target's supported formats.
+    ///
+    /// Linux selects plain, FUSE or Nix history through the complete selector.
+    /// Other targets decode plain history only. Unrecognized formats return `None`.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed recognized context. Linux additionally rejects malformed
+    /// recognized carrier history and inconsistent carrier/context joins.
     pub fn decode(bytes: &[u8]) -> Result<Option<Self>, EffectHistoryDataError> {
         #[cfg(target_os = "linux")]
         return crate::public_api::mutation_history::decode_history(bytes)
@@ -117,6 +124,11 @@ impl PublicMutationEffectHistoryV1 {
         self.nix_start.is_some()
     }
 
+    /// Decodes recognized plain history without selecting a FUSE or Nix carrier.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed recognized plain history; unrelated formats return None.
     pub fn decode_plain(bytes: &[u8]) -> Result<Option<Self>, EffectHistoryDataError> {
         PublicMutationContextV1::decode(bytes)
             .map(|context| {
@@ -134,7 +146,7 @@ impl PublicMutationEffectHistoryV1 {
 
 
 impl PublicMutationEffectHistoryV1 {
-    /// Assembles already checked plain history without decoding or issuing authority.
+    /// Owns the supplied plain history without further validation or authority.
     #[must_use]
     pub fn from_plain(plain: PublicMutationContextV1) -> Self {
         Self {

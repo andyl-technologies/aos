@@ -2,7 +2,7 @@
 
 use aos_sandbox_core::ObjectDigest;
 
-/// Owns one exact, non-authorizing packet attenuated to a lease and deadline.
+/// Owns a recorded packet, body, lease commitment and deadline as passive history.
 #[derive(Clone, Eq, PartialEq)]
 pub struct BrokerDispatchAttemptHistoryV1 {
     pub(super) template_digest: ObjectDigest,
@@ -15,42 +15,45 @@ pub struct BrokerDispatchAttemptHistoryV1 {
 
 
 impl BrokerDispatchAttemptHistoryV1 {
-    /// Returns the immutable template digest used for this attempt.
+    /// Returns the recorded template digest.
     #[must_use]
     pub const fn template_digest(&self) -> ObjectDigest {
         self.template_digest
     }
 
-    /// Returns the exact signed lease digest used for this attempt.
+    /// Returns the recorded lease digest without verifying a signature.
     #[must_use]
     pub const fn lease_digest(&self) -> ObjectDigest {
         self.lease_digest
     }
 
-    /// Returns the issuer-chosen lease generation used for this attempt.
+    /// Returns the recorded lease generation.
     #[must_use]
     pub const fn lease_generation(&self) -> u64 {
         self.lease_generation
     }
 
-    /// Returns the conservative attempt-local BOOTTIME deadline.
+    /// Returns the recorded attempt-local BOOTTIME deadline.
     #[must_use]
     pub const fn deadline_boottime_nanoseconds(&self) -> u64 {
         self.deadline_boottime_nanoseconds
     }
 
-    /// Returns the exact protobuf body with the attempt deadline injected.
+    /// Borrows the recorded body bytes without validating their deadline or fields.
     #[must_use]
     pub fn body(&self) -> &[u8] {
         &self.body
     }
 
-    /// Returns the exact non-authorizing broker packet ready for transport.
+    /// Borrows recorded packet bytes without establishing transport eligibility.
     #[must_use]
     pub fn packet(&self) -> &[u8] {
         &self.packet
     }
 
+    /// Owns the supplied template, lease, deadline, body and packet fields.
+    ///
+    /// This performs no bounds, signature, field-coherence or currentness checks.
     pub fn from_durable_parts(
         template_digest: ObjectDigest,
         lease_digest: ObjectDigest,
@@ -72,7 +75,7 @@ impl BrokerDispatchAttemptHistoryV1 {
 
 
 
-/// Carries the exact broker request made durable before external I/O.
+/// Owns retained dispatch commitments and preparation timing for an effect.
 #[derive(Clone, Eq, PartialEq)]
 pub struct PreparedAuthorityEffectHistoryV1 {
     pub(super) binding_digest: ObjectDigest,
@@ -85,6 +88,10 @@ pub struct PreparedAuthorityEffectHistoryV1 {
 
 
 impl PreparedAuthorityEffectHistoryV1 {
+    /// Owns supplied binding, publication, preparation timing and attempt history.
+    ///
+    /// This does not establish a durable write, authenticate commitments or verify
+    /// the preparation clock and attempt fields.
     pub const fn from_durable_parts(
         binding_digest: ObjectDigest,
         publication_digest: ObjectDigest,
