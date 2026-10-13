@@ -23,7 +23,7 @@ use aos_sandbox_core::{
     ProtocolVersion, RawPairedClockSample, SandboxId,
 };
 use crate::{
-    AuthorityBoundEffectPlanV1, BrokerDispatchAttemptError, BrokerDispatchAttemptV1,
+    BrokerDispatchAttemptError, BrokerDispatchAttemptV1,
     GuardianPlanRequestV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
     JournalRecord, JournalTransaction, RecordNamespace, SignedOwnershipLease,
 };
@@ -884,6 +884,7 @@ impl From<PublicationHistoryError> for AuthorityPublicationError {
             PublicationHistoryError::GenerationRollback => Self::GenerationRollback,
             PublicationHistoryError::GenerationEquivocation => Self::GenerationEquivocation,
             PublicationHistoryError::CorruptCurrent => Self::CorruptCurrent,
+            PublicationHistoryError::TemplateAbsent => Self::TemplateAbsent,
         }
     }
 }
@@ -928,38 +929,6 @@ pub fn bind_authority_publication_lease(
         .bind_lease(claim, lease)
         .map_err(AuthorityPublicationError::from)?;
     Ok(PreparedAuthorityPublicationV1 { history })
-}
-
-/// Binds an effect to one exact template selected from a checked publication draft.
-///
-/// The audience, broker method, deadline-free body, and semantic identity
-/// are derived from the selected template and cannot be substituted by the
-/// caller.
-///
-/// # Errors
-///
-/// Returns [`AuthorityPublicationError::TemplateAbsent`] when the digest
-/// is not present, or [`AuthorityPublicationError::InvalidDraft`] if a
-/// recovered template cannot produce a bounded effect binding.
-pub fn bind_authority_publication_effect(
-    draft: &AuthorityPublicationDraftV1,
-    template_digest: ObjectDigest,
-) -> Result<AuthorityBoundEffectPlanV1, AuthorityPublicationError> {
-    let template = draft
-        .templates()
-        .iter()
-        .find(|template| template.digest() == template_digest)
-        .ok_or(AuthorityPublicationError::TemplateAbsent)?;
-    AuthorityBoundEffectPlanV1::from_template(
-        draft.digest(),
-        template.audience(),
-        template.method(),
-        template.digest(),
-        template.body_without_deadline(),
-        template.semantics(),
-        template.descriptor_roles().is_empty(),
-    )
-    .map_err(|_| AuthorityPublicationError::InvalidDraft)
 }
 
 #[cfg(test)]

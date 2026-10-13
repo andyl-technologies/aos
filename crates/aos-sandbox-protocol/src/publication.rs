@@ -43,8 +43,12 @@ use aos_sandbox_ownership_protocol::{
     OwnershipClaimAction, OwnershipClaimV1, OwnershipTransactionReceiptV1, SignedOwnershipLease,
 };
 
+mod bound_effect;
 mod draft;
 mod format;
+
+pub use bound_effect::{AuthorityBoundEffectPlanV1, bind_authority_publication_effect};
+
 use draft::{
     decode_draft, draft_digest, encode_bound_draft, encode_draft, encode_proposal,
     encode_recovered_draft, encode_target, validate_draft, validate_encoded_size,
@@ -825,6 +829,9 @@ pub enum PublicationHistoryError {
     /// A durable current record is malformed or internally inconsistent.
     #[error("durable authority publication is corrupt")]
     CorruptCurrent,
+    /// The selected template digest is absent from the checked draft.
+    #[error("dispatch template is absent from the current publication")]
+    TemplateAbsent,
 }
 
 #[cfg(test)]

@@ -32,12 +32,12 @@ use sha2::{Digest as _, Sha256};
 
 use super::ReconcilerError;
 use crate::controller_execution_observe_reservation::ControllerExecutionObserveReservationV1;
-use crate::{BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1};
+use crate::BrokerDispatchAttemptV1;
 
 mod history;
 
 use aos_sandbox_protocol::domain_ledger::effect_history::{
-    AuthorityEffectBindingV1, BrokerDispatchAttemptHistoryV1, EffectDomain, EffectPlan,
+    BrokerDispatchAttemptHistoryV1, EffectDomain, EffectPlan,
     EffectReceipt, PreparedAuthorityEffectHistoryV1, PublicMutationEffectHistoryV1,
     MAXIMUM_REQUEST_BYTES, MAXIMUM_RECEIPT_BYTES, attempt_token_digest, effect_body_digest,
 };
@@ -215,117 +215,6 @@ impl PublicMutationEffectV1 {
     ) -> Result<EffectPlan, ReconcilerError> {
         EffectPlan::from_public_mutation_context(method, self.history)
             .map_err(ReconcilerError::from)
-    }
-}
-
-/// Freezes one exact draft-derived broker effect for gated admission.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthorityBoundEffectPlanV1 {
-    plan: EffectPlan,
-    source_draft_digest: ObjectDigest,
-    audience: BrokerAudience,
-    template_digest: ObjectDigest,
-    descriptor_free: bool,
-}
-
-impl AuthorityBoundEffectPlanV1 {
-    pub(crate) fn from_template(
-        source_draft_digest: ObjectDigest,
-        audience: BrokerAudience,
-        method: BrokerMethod,
-        template_digest: ObjectDigest,
-        body: &[u8],
-        semantics: BrokerDispatchSemanticIdentityV1,
-        descriptor_free: bool,
-    ) -> Result<Self, ReconcilerError> {
-        if body.is_empty() || body.len() > MAXIMUM_REQUEST_BYTES {
-            return Err(ReconcilerError::InvalidPlan(
-                "invalid authority effect body",
-            ));
-        }
-        let domain = EffectDomain::from_audience(audience).map_err(ReconcilerError::from)?;
-        let body_digest = effect_body_digest(body);
-        let semantic_digest = crate::dispatch::semantic_identity_digest(semantics);
-        Ok(Self {
-            plan: EffectPlan::from_parts((
-                domain,
-                Some(method),
-                None,
-                body.to_vec(),
-                Some(AuthorityEffectBindingV1::from_parts((
-                    OperationId::from_bytes([0; 16]),
-                    0,
-                    source_draft_digest,
-                    audience,
-                    method,
-                    template_digest,
-                    body_digest,
-                    semantic_digest,
-                    descriptor_free,
-                    ObjectDigest::from_bytes([0; 32]),
-                ))),
-            )),
-            source_draft_digest,
-            audience,
-            template_digest,
-            descriptor_free,
-        })
-    }
-
-    /// Returns the publication draft that supplied the exact template.
-    #[must_use]
-    pub fn source_draft_digest(&self) -> ObjectDigest {
-        self.source_draft_digest
-    }
-
-    /// Returns the exact selected dispatch-template digest.
-    #[must_use]
-    pub fn template_digest(&self) -> ObjectDigest {
-        self.template_digest
-    }
-
-    /// Returns the broker audience derived from the selected template.
-    #[must_use]
-    pub fn audience(&self) -> BrokerAudience {
-        self.audience
-    }
-
-    /// Returns the exact deadline-free request body committed by the template.
-    #[must_use]
-    pub fn body_without_deadline(&self) -> &[u8] {
-        self.plan.request()
-    }
-
-    pub(super) fn is_supported_authority_apply(&self) -> bool {
-        let method_matches_audience = matches!(
-            (self.audience, self.plan.method()),
-            (
-                BrokerAudience::Host,
-                Some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME)
-            ) | (
-                BrokerAudience::Storage,
-                Some(BrokerMethod::BROKER_METHOD_STORAGE_APPLY)
-            ) | (
-                BrokerAudience::Mount,
-                Some(BrokerMethod::BROKER_METHOD_MOUNT_APPLY)
-            ) | (
-                BrokerAudience::Network,
-                Some(BrokerMethod::BROKER_METHOD_NETWORK_APPLY)
-            )
-        );
-
-        method_matches_audience && self.descriptor_free
-    }
-
-    pub(super) fn into_inner(
-        mut self,
-        operation_id: OperationId,
-        step: u32,
-    ) -> Result<EffectPlan, ReconcilerError> {
-        self.plan
-            .bind_operation(operation_id, step)
-            .map_err(ReconcilerError::from)?;
-        Ok(self.plan)
     }
 }
 
@@ -1026,69 +915,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn guardian_audience_cannot_enter_the_generic_broker_effect_path() {
-        let semantics = BrokerDispatchSemanticIdentityV1::new(
-            BrokerVerb::GuardianArm,
-            BrokerGrantTarget::Assignment,
-            BrokerArgumentCommitment::for_canonical_bytes(b"guardian"),
-        );
-
-        assert!(matches!(
-            AuthorityBoundEffectPlanV1::from_template(
-                ObjectDigest::from_bytes([1; 32]),
-                BrokerAudience::Guardian,
-                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-                ObjectDigest::from_bytes([2; 32]),
-                b"guardian",
-                semantics,
-                true,
-            ),
-            Err(ReconcilerError::InvalidPlan(
-                "guardian authority cannot use the generic broker effect path"
-            ))
-        ));
-
-        let invalid_record = EffectLedgerRecord::from_parts((
-            EffectPlan::from_parts((
-                EffectDomain::Host,
-                Some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME),
-                None,
-                b"guardian".to_vec(),
-                Some(AuthorityEffectBindingV1::from_parts((
-                    OperationId::from_bytes([3; 16]),
-                    0,
-                    ObjectDigest::from_bytes([1; 32]),
-                    BrokerAudience::Guardian,
-                    BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-                    ObjectDigest::from_bytes([2; 32]),
-                    ObjectDigest::from_bytes([4; 32]),
-                    ObjectDigest::from_bytes([5; 32]),
-                    true,
-                    ObjectDigest::from_bytes([6; 32]),
-                ))),
-            )),
-            EffectState::Planned,
-            None,
-            None,
-        ));
-        assert!(matches!(
-            encode_effect(&invalid_record).map_err(ReconcilerError::from),
-            Err(ReconcilerError::InvalidPlan(
-                "guardian authority cannot use the generic broker effect path"
-            ))
-        ));
-
-        for reserved in [0, 5] {
-            assert!(matches!(
-                aos_sandbox_protocol::domain_ledger::effect_history::audience_from_code(reserved)
-                    .map_err(ReconcilerError::from),
-                Err(ReconcilerError::CorruptLedger(
-                    "unknown authority effect audience"
-                ))
-            ));
-        }
-    }
 }
 
 impl From<aos_sandbox_protocol::domain_ledger::effect_history::EffectHistoryDataError>

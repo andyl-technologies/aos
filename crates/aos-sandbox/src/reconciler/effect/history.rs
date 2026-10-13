@@ -110,11 +110,11 @@ pub(crate) fn validate_delete_effect_record(
         let Some(DeleteGateHistoryV1(OwnershipGateStatusV1::Pending(gate))) = gate.as_ref() else {
             return Err(invalid());
         };
-        if crate::bind_authority_publication_effect(
+        if aos_sandbox_protocol::publication::bind_authority_publication_effect(
             gate.publication_draft(),
             binding.template_digest(),
-        )?
-        .into_inner(operation_id, step)?
+        ).map_err(crate::publication::AuthorityPublicationError::from)?
+        .into_inner(operation_id, step).map_err(ReconcilerError::from)?
             != *effect.plan()
         {
             return Err(invalid());

@@ -88,7 +88,7 @@ fn activate_prepared(
         holder: PrincipalId::from_bytes([0x91; 16]),
     };
     let effect =
-        crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
+        aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from).unwrap();
     let _activation_plan = runtime_activation_support::activate(
         reconciler,
         generation,

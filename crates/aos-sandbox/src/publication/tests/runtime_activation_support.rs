@@ -12,13 +12,14 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 
 use aos_sandbox_core::OperationId;
+use aos_sandbox_protocol::publication::AuthorityBoundEffectPlanV1;
 
 use crate::publication::{
     AuthorityPublicationDraftV1, AuthorityPublicationStore, PreparedAuthorityPublicationV1,
 };
 use crate::runtime_authority::RuntimeAuthorityIntentV1;
 use crate::{
-    AuthorityBoundEffectPlanV1, EffectFailure, EffectObservation, IdempotencyKey, Journal,
+    EffectFailure, EffectObservation, IdempotencyKey, Journal,
     JournalLimits, OperationPlan, Reconciler, SingleNodeEffectExecutor,
 };
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};

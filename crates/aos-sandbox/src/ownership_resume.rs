@@ -488,7 +488,7 @@ mod tests {
         let (draft, _) = descriptor_free_activation_fixture(1);
         let claim = activation_claim(&draft, 1);
         let effect =
-            crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest())
+            aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
                 .unwrap();
         let plan = OperationPlan::ownership_gated(
             OperationId::from_bytes([0x71; 16]),

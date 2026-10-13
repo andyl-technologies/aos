@@ -355,13 +355,13 @@ pub use ownership_service::{
 };
 pub use publication::{
     prepare_authority_publication, bind_authority_publication_lease,
-    bind_authority_publication_effect, AuthorityPublicationDraftV1, AuthorityPublicationError,
+    AuthorityPublicationDraftV1, AuthorityPublicationError,
     AuthorityPublicationOutcome, AuthorityPublicationProposalV1, AuthorityPublicationStore,
     CurrentAuthorityPublicationV1, PreparedAuthorityPublicationV1,
     RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1,
 };
 pub use reconciler::{
-    AcceptOutcome, AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1,
+    AcceptOutcome, AuthorityEffectAttemptTimingV1,
     AuthorityEffectObservationV1, EffectFailure, EffectObservation, OperationPlan,
     OperatorStorageRepairReconcileV1, OwnershipGateActivationOutcome,
     PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1, PublicMutationEffectV1,

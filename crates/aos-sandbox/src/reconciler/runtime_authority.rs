@@ -92,8 +92,8 @@ pub(super) fn validate_intent_effects(
         || template.method()
             != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
         || !template.descriptor_roles().is_empty()
-        || crate::bind_authority_publication_effect(&draft, template.digest())?
-            .into_inner(operation, 0)?
+        || aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, template.digest()).map_err(crate::publication::AuthorityPublicationError::from)?
+            .into_inner(operation, 0).map_err(ReconcilerError::from)?
             != *effect
     {
         return Err(invalid());

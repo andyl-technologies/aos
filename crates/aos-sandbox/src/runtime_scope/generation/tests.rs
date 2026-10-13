@@ -41,7 +41,7 @@ fn activate(
         crate::publication::tests::runtime_scope_activation_fixture(u64::from(generation));
     let sandbox = draft.manifest().manifest().sandbox();
     let effect =
-        crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).unwrap();
+        aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from).unwrap();
     let _activation_plan = runtime_activation_support::activate(
         reconciler,
         generation,

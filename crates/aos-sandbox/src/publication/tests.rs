@@ -1396,10 +1396,10 @@ fn draft_roundtrips_multiple_templates_for_one_audience() {
     .unwrap_or_else(|error| panic!("test draft failed: {error}"));
     assert_eq!(draft.templates().len(), 2);
     let first_binding =
-        crate::bind_authority_publication_effect(&draft, draft.templates()[0].digest())
+        aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[0].digest()).map_err(crate::publication::AuthorityPublicationError::from)
             .unwrap_or_else(|error| panic!("first effect binding failed: {error}"));
     let second_binding =
-        crate::bind_authority_publication_effect(&draft, draft.templates()[1].digest())
+        aos_sandbox_protocol::publication::bind_authority_publication_effect(&draft, draft.templates()[1].digest()).map_err(crate::publication::AuthorityPublicationError::from)
             .unwrap_or_else(|error| panic!("second effect binding failed: {error}"));
     assert_eq!(first_binding.audience(), BrokerAudience::Mount);
     assert_ne!(
