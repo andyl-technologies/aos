@@ -25,16 +25,19 @@
 }: let
   revision = "f5c5a6e390f55dd5984977815bf9d0bd05da6945";
   version = "25.1.0.1";
-  recipeNames = builtins.filter
+  recipeNames =
+    builtins.filter
     (name: builtins.match "gem5.*\\.nix" name != null)
     (builtins.attrNames (builtins.readDir ./.));
   recipeCopies = builtins.concatStringsSep "\n" (map
     (name: "cp ${./. + "/${name}"} \"$source/build/recipes/${name}\"")
     recipeNames);
-  recipeInventory = map (name: {
-    inherit name;
-    sha256 = builtins.hashFile "sha256" (./. + "/${name}");
-  }) recipeNames;
+  recipeInventory =
+    map (name: {
+      inherit name;
+      sha256 = builtins.hashFile "sha256" (./. + "/${name}");
+    })
+    recipeNames;
   compilerTargetPatch = ./gem5-patches/compiler-target-query.patch;
   reproducibleBuildPatch = ./gem5-patches/reproducible-build-environment.patch;
   addrRangePredicatePatch = ./gem5-patches/addr-range-predicate-borrow.patch;
