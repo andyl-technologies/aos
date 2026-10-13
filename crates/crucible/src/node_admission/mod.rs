@@ -413,6 +413,14 @@ pub(crate) fn test_fixture_host_model(
     tests::host_model_fixture_with_content(role, initialization)
 }
 
+/// Seals the actual rational-clock definition in the trusted component graph.
+#[cfg(test)]
+pub(crate) fn test_fixture_host_rate_alarm_clock(
+    initialization: Vec<u8>,
+) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
+    tests::host_rate_alarm_clock_fixture_with_content(initialization)
+}
+
 #[cfg(test)]
 pub(crate) fn test_fixture_host_initial_queue(
     role: &str,

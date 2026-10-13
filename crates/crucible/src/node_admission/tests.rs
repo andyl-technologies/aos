@@ -89,9 +89,12 @@ impl AdmissionEvidence for Evidence {
             && schema.definition
                 == canonical::content_ref(HOST_NATIVE_SCHEMA, "text/plain").unwrap()
             && schema.extensions.is_empty();
+        let installed_rate_clock_codec =
+            *schema == crate::node_adapters::host_rate_alarm_clock_schema().unwrap();
         if self.reject_schema
             || !([id("test.bytes"), id("crucible/block-request-v1")].contains(&schema.id)
-                || installed_host_codec)
+                || installed_host_codec
+                || installed_rate_clock_codec)
             || schema.version != 1
         {
             return Err(EvidenceError {
@@ -333,7 +336,7 @@ fn host_model_fixture(
     initialization: Vec<u8>,
     restored: bool,
 ) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
-    host_model_fixture_parameters(role, initialization, restored, false, 2)
+    host_model_fixture_parameters(role, initialization, restored, false, 2, None)
 }
 
 #[cfg(test)]
@@ -343,7 +346,26 @@ pub(super) fn host_initial_queue_fixture_with_content(
     generation: u64,
 ) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
     assert!(generation > 0);
-    host_model_fixture_parameters(role, initialization, generation > 1, true, generation)
+    host_model_fixture_parameters(role, initialization, generation > 1, true, generation, None)
+}
+
+#[cfg(test)]
+pub(super) fn host_rate_alarm_clock_fixture_with_content(
+    initialization: Vec<u8>,
+) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
+    host_model_fixture_parameters(
+        "rate_alarm_clock",
+        initialization,
+        false,
+        false,
+        2,
+        Some((
+            crate::node_adapters::host_rate_alarm_clock_schema().unwrap(),
+            crate::node_adapters::RATE_ALARM_CLOCK_SPECIFICATION
+                .as_bytes()
+                .to_vec(),
+        )),
+    )
 }
 
 #[cfg(test)]
@@ -353,6 +375,7 @@ fn host_model_fixture_parameters(
     restored: bool,
     initial_queue: bool,
     generation: u64,
+    original_native_schema: Option<(SchemaRef, Vec<u8>)>,
 ) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
     let mut fixture = execution_fixture(false, false);
     fixture.world.connections.clear();
@@ -431,6 +454,22 @@ fn host_model_fixture_parameters(
         definition: native_definition,
         extensions: Extensions::new(),
     };
+    if let Some((schema, definition)) = original_native_schema {
+        assert_eq!(
+            canonical::content_ref(&definition, "text/plain").unwrap(),
+            schema.definition
+        );
+        fixture
+            .evidence
+            .blobs
+            .insert(schema.definition.hash.digest.clone(), definition);
+        fixture.bindings[0]
+            .compatibility
+            .implementation
+            .formats
+            .push(schema);
+    }
+
     for binding in &mut fixture.bindings {
         binding
             .compatibility

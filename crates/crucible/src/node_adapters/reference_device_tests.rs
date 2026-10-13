@@ -270,3 +270,6 @@ fn actual_child_runs_two_admitted_quantums_with_original_input_and_publication_c
 
 #[path = "reference_device/input_commit_tests.rs"]
 mod input_commit_tests;
+
+#[path = "reference_device/role_integration_tests.rs"]
+mod role_integration_tests;

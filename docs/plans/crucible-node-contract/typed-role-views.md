@@ -22,7 +22,16 @@ models, plus definition drift and absent-role refusal. Six existing host
 initialization, restoration, and clock controls pass from the same frozen
 component executable. All-target strict Clippy passes on a separate current
 source join containing the identical role changes and a narrow packet lint fix.
-The external child getter and positive rational alarm view compile but are not
-newly executed by these controls. These checks do not qualify an installed
-backend or a complete multi-role vendor implementation. Raw evidence remains
-local.
+Those eleven controls retain their original source scope. A separate focused
+successor executes the external getter against a real source-built reference
+child and the rational getter against its exactly enrolled schema and native
+definition. Cached process/thread, descriptor, and facet failures precede child
+hooks. The rational clock retains its pending alarm and original definition
+through response movement and native restoration. Both controls and strict
+all-target checks pass; their test executable uses an explicit unoptimized
+diagnostic profile. The child executable's unchanged compiled inputs are
+verified separately. Injected cached identity drift does not claim actual fork
+or cross-thread execution.
+
+These checks do not qualify an installed backend or a complete multi-role
+vendor implementation. Raw evidence remains local.

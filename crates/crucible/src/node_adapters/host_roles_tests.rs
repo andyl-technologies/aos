@@ -290,3 +290,109 @@ fn role_roster_release_and_unenrolled_alarm_extension_refuse_without_mutation() 
     assert!(node.link_description().is_err());
     assert!(node.readiness.is_none());
 }
+
+#[test]
+fn actual_enrolled_role_getter_keeps_original_rational_clock_and_pending_alarm() {
+    use crate::node_adapters::{RateAlarmClock, RateAlarmClockDefinition, RateAlarmClockRequest};
+
+    let definition = RateAlarmClockDefinition {
+        numerator: 3.into(),
+        denominator: 2.into(),
+        epoch_ps: 0.into(),
+        epoch_counter: 7.into(),
+        drift_ppb: -500_000_000,
+    };
+    let mut clock = RateAlarmClock::new(definition.clone()).unwrap();
+    let request = canonical::canonical_json(
+        &serde_json::to_value(RateAlarmClockRequest::Arm {
+            correlation: Id::new("original-alarm").unwrap(),
+            target: 13.into(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    clock
+        .consume(Position::new(0.into(), 2.into(), Phase::Reaction), &request)
+        .unwrap();
+    let model = HostModel::RateAlarmClock(Box::new(clock));
+    let initial = model.initialization_bytes(1 << 20).unwrap();
+    let (graph, evidence) = crate::node_admission::test_fixture_host_rate_alarm_clock(initial);
+    let schema = crate::node_adapters::host_rate_alarm_clock_schema().unwrap();
+    assert_eq!(
+        evidence[&schema.definition.hash.digest],
+        crate::node_adapters::RATE_ALARM_CLOCK_SPECIFICATION.as_bytes()
+    );
+    let mut node = HostModelNode::new(
+        &graph,
+        &Id::new("a").unwrap(),
+        model,
+        &ActualModelQualification,
+        HostModelResources::default(),
+    )
+    .unwrap();
+    let before = node.capture().unwrap();
+    let Some(HostModel::RateAlarmClock(clock)) = node.model.as_ref() else {
+        panic!("original enrolled clock absent")
+    };
+    let original_native = clock.capture().unwrap();
+    let original_alarm = clock.earliest_alarm().unwrap();
+    assert_eq!(original_alarm.time_ps.get(), 8);
+
+    let interface: &dyn ClockNode = &node;
+    let view = interface.clock_description().unwrap();
+    assert_eq!(view.declaration.role.as_str(), "rate_alarm_clock");
+    assert!(
+        view.declaration
+            .binding
+            .implementation
+            .formats
+            .contains(&schema)
+    );
+    assert!(std::ptr::eq(
+        view.role_profile(),
+        &node.binding.compatibility.profile_ref
+    ));
+    assert_eq!(
+        view.mapping,
+        ClockMapping::RationalCounter {
+            numerator: 3,
+            denominator: 2,
+            epoch_ps: 0,
+            epoch_counter: 7,
+            drift_ppb: -500_000_000,
+        }
+    );
+    assert_eq!(
+        view.alarms,
+        ClockAlarms::OriginalRationalRequests {
+            maximum_requests: 64
+        }
+    );
+    assert!(view.refuses_overflow);
+    assert_eq!(node.capture().unwrap(), before);
+    assert_eq!(clock.earliest_alarm(), Some(original_alarm));
+    assert_eq!(clock.definition(), &definition);
+    assert!(node.readiness.is_none());
+    assert!(node.completed.is_empty());
+
+    let Some(HostModel::RateAlarmClock(clock)) = node.model.as_mut() else {
+        panic!("original enrolled clock absent")
+    };
+    assert_eq!(
+        clock
+            .publish(Position::new(0.into(), 2.into(), Phase::Reaction))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(clock.earliest_alarm(), Some(original_alarm));
+    // Native response movement and restoration never replace the retained
+    // source-qualified rate definition in the same owning host node.
+    assert!(node.clock_description().is_ok());
+    let Some(HostModel::RateAlarmClock(clock)) = node.model.as_mut() else {
+        panic!("original enrolled clock absent")
+    };
+    clock.restore(&original_native).unwrap();
+    assert!(node.clock_description().is_ok());
+    assert_eq!(node.capture().unwrap(), before);
+}

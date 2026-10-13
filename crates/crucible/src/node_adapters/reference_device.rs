@@ -487,17 +487,14 @@ impl<C: ControlledReference> ExternalDeviceNode for ControlledReferenceNode<C> {
                 reason: "external role belongs to another original process".into(),
             });
         }
-        if self.quarantined
-            || std::thread::current().id() != self.thread
-            || matches!(
-                self.child.status(),
-                DeviceStatus::Quarantined | DeviceStatus::Reaped
-            )
-            || self.child.owner_id() != &self.binding.compatibility.execution_owner.id
-            || self.child.incarnation_id() != &self.binding.authority.incarnation_id
-            || self.child.generation() != self.binding.authority.owner_generation
-            || self.child.quantized_facet() != self.profile.0.as_str()
-            || self.binding.compatibility.operating_contract.facets.len() != 1
+        if self.quarantined || std::thread::current().id() != self.thread {
+            return Err(Refusal {
+                reason: "external role is contained or belongs to another original thread".into(),
+            });
+        }
+        let declaration =
+            checked_role_declaration(&self.descriptor, &self.binding, "external_device")?;
+        if self.binding.compatibility.operating_contract.facets.len() != 1
             || self.binding.compatibility.operating_contract.mode
                 != crucible_node_contract::OperatingMode::Quantized
             || self.quantum_ps == 0
@@ -511,11 +508,23 @@ impl<C: ControlledReference> ExternalDeviceNode for ControlledReferenceNode<C> {
                 .is_none_or(|facet| facet.id != self.profile.0 || facet.version != 1)
         {
             return Err(Refusal {
+                reason: "external role differs from its original selected source contract".into(),
+            });
+        }
+
+        // Cached process/thread and sealed source checks precede every child hook.
+        if matches!(
+            self.child.status(),
+            DeviceStatus::Quarantined | DeviceStatus::Reaped
+        ) || self.child.owner_id() != &self.binding.compatibility.execution_owner.id
+            || self.child.incarnation_id() != &self.binding.authority.incarnation_id
+            || self.child.generation() != self.binding.authority.owner_generation
+            || self.child.quantized_facet() != self.profile.0.as_str()
+        {
+            return Err(Refusal {
                 reason: "external role differs from original controlled-process custody".into(),
             });
         }
-        let declaration =
-            checked_role_declaration(&self.descriptor, &self.binding, "external_device")?;
 
         Ok(ExternalDeviceDescription {
             declaration,

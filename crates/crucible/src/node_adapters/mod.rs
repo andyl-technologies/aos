@@ -24,9 +24,13 @@ mod inventory;
 mod packet_receiver;
 mod preparation_state;
 mod rate_alarm_clock;
+
+// The trusted admission fixture enrolls the literal native definition before sealing.
 pub use host::rate_alarm_evidence::{
     RATE_ALARM_PRODUCER_SPECIFICATION, host_rate_alarm_producer_schema,
 };
+#[cfg(test)]
+pub(crate) use rate_alarm_clock::RATE_ALARM_CLOCK_SPECIFICATION;
 mod reference_device;
 pub use rate_alarm_clock::{
     RateAlarmClock, RateAlarmClockDefinition, RateAlarmClockEvent, RateAlarmClockRequest,
