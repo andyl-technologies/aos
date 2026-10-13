@@ -14,10 +14,9 @@ use crate::journal::{
     IdempotencyKey, IdempotencyOutcome, Journal, JournalRecord, JournalTransaction, RecordNamespace,
 };
 
-use super::{
-    EffectLedgerRecord, EffectPlan, EffectState, OperationRecord, OperationState, ReconcilerError,
-    decode_effect, decode_operation, effect_key, encode_effect, encode_operation_record,
+use super::{ OperationRecord, OperationState, ReconcilerError, decode_operation, effect_key, encode_operation_record,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectLedgerRecord, EffectPlan, EffectState, decode_effect, encode_effect};
 
 const CHILD_IDEMPOTENCY_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-child-key.v1\0";
 const CHILD_REQUEST_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-child-request.v1\0";
@@ -79,13 +78,13 @@ fn validate_child(
     }
 
     let effect_bytes = effect.ok_or_else(corrupt)?;
-    if effect_bytes.first() != Some(&super::effect::RESERVED_OBSERVE_EFFECT_VERSION) {
+    if effect_bytes.first() != Some(&aos_sandbox_protocol::domain_ledger::effect_history::RESERVED_OBSERVE_EFFECT_VERSION) {
         return Err(corrupt());
     }
-    let effect = decode_effect(effect_bytes)?;
-    if effect.plan != EffectPlan::reserved_observe(reservation)
-        || effect.state != EffectState::Planned
-        || effect.dispatch.is_some()
+    let effect = decode_effect(effect_bytes).map_err(ReconcilerError::from)?;
+    if effect.plan() != &EffectPlan::reserved_observe(reservation)
+        || effect.state() != &EffectState::Planned
+        || effect.dispatch().is_some()
     {
         return Err(corrupt());
     }
@@ -113,14 +112,14 @@ pub(super) fn validate_all(journal: &Journal) -> Result<(), ReconcilerError> {
                 return Err(corrupt());
             }
         }
-        let effect = decode_effect(value)?;
-        if effect.plan.is_reserved_observe() {
-            if value.first() != Some(&super::effect::RESERVED_OBSERVE_EFFECT_VERSION) {
+        let effect = decode_effect(value).map_err(ReconcilerError::from)?;
+        if effect.plan().is_reserved_observe() {
+            if value.first() != Some(&aos_sandbox_protocol::domain_ledger::effect_history::RESERVED_OBSERVE_EFFECT_VERSION) {
                 return Err(corrupt());
             }
             let reservation = ControllerExecutionObserveReservationV1::decode(
-                effect.plan.request().get(8..24).ok_or_else(corrupt)?,
-                effect.plan.request(),
+                effect.plan().request().get(8..24).ok_or_else(corrupt)?,
+                effect.plan().request(),
             )
             .map_err(|_| corrupt())?;
             if key != super::effect_key(reservation.observe_operation(), 0)
@@ -231,12 +230,9 @@ pub fn adopt_execution_observe_child_v1(
     }
 
     let (key, request_digest) = observe_child_identity_v1(reservation)?;
-    let effect = EffectLedgerRecord {
-        plan: EffectPlan::reserved_observe(reservation),
-        state: EffectState::Planned,
-        dispatch: None,
-        project_admission: None,
-    };
+    let effect = EffectLedgerRecord::from_parts((
+        EffectPlan::reserved_observe(reservation), EffectState::Planned, None, None,
+    ));
     let transaction_digest: [u8; 32] = Sha256::new()
         .chain_update(CHILD_TRANSACTION_DOMAIN)
         .chain_update(reservation.encode())
@@ -261,7 +257,7 @@ pub fn adopt_execution_observe_child_v1(
         JournalRecord::put(
             RecordNamespace::Effect,
             effect_key(operation_id, 0).to_vec(),
-            encode_effect(&effect)?,
+            encode_effect(&effect).map_err(ReconcilerError::from)?,
         ),
         JournalRecord::idempotency(&key, request_digest, operation_id),
     ];
@@ -295,10 +291,10 @@ mod tests {
 
     use super::*;
     use crate::journal::JournalLimits;
-    use crate::reconciler::{
-        EffectDomain, EffectFailure, EffectObservation, EffectReceipt, OperationPlan,
+    use crate::reconciler::{ EffectFailure, EffectObservation, OperationPlan,
         ReconcileOutcome, Reconciler, SingleNodeEffectExecutor,
     };
+    use aos_sandbox_protocol::domain_ledger::effect_history::{EffectDomain, EffectReceipt};
 
     struct NoDispatch;
 

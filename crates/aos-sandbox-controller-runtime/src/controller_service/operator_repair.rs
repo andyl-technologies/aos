@@ -139,6 +139,7 @@ pub(super) fn reconcile(
     }
     let context = plan
         .public_mutation_context()
+        .map_err(aos_sandbox::ReconcilerError::from)
         .map_err(|error| EffectFailure::Retryable(error.to_string()))?
         .ok_or_else(|| {
             EffectFailure::Retryable("Repair lacks its original public admission".to_owned())

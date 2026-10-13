@@ -36,10 +36,10 @@ use crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1;
 #[cfg(target_os = "linux")]
 use crate::publication::AuthorityPublicationStore;
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
-use crate::{
-    EffectPlan, IdempotencyOutcome, Journal, OperationCompilationError, OperationPlan,
+use crate::{ IdempotencyOutcome, Journal, OperationCompilationError, OperationPlan,
     PublicMutationEffectV1,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, PublicMutationEffectHistoryV1};
 
 use super::{PublicExecutionControlDispatchV1, lower_public_execution_control_v1};
 
@@ -720,11 +720,11 @@ fn replay_public_mutation(
             let (desired_key, desired_value) = carrier.desired();
             let desired_key = desired_key.to_vec();
             let desired_value = desired_value.to_vec();
-            let context = PublicMutationEffectV1::decode_plain(carrier.ordinary_effect())
+            let context = PublicMutationEffectHistoryV1::decode_plain(carrier.ordinary_effect()).map_err(crate::ReconcilerError::from)
                 .map_err(|_| OperationCompilationError::Rejected)?
                 .ok_or(OperationCompilationError::Rejected)?
-                .with_nix_start(carrier).map_err(|_| OperationCompilationError::Rejected)?;
-            let effect = EffectPlan::authorized_public_mutation(PublicOperationMethodV1::StartSandbox, context)
+                .with_nix_start(carrier).map_err(crate::ReconcilerError::from).map_err(|_| OperationCompilationError::Rejected)?;
+            let effect = EffectPlan::from_public_mutation_context(PublicOperationMethodV1::StartSandbox, context).map_err(crate::ReconcilerError::from)
                 .map_err(|_| OperationCompilationError::Rejected)?;
             let public = crate::reconciler::recovered_public_operation_admission_v1(journal, operation_id)
                 .map_err(|_| OperationCompilationError::Rejected)?
@@ -764,7 +764,7 @@ fn replay_public_mutation(
         crate::reconciler::accepted_fuse_admission_v1(journal, operation_id)
             .map_err(|_| OperationCompilationError::Rejected)?
     {
-        let original = PublicMutationEffectV1::decode_plain(carrier.ordinary_effect())
+        let original = PublicMutationEffectHistoryV1::decode_plain(carrier.ordinary_effect()).map_err(crate::ReconcilerError::from)
             .map_err(|_| OperationCompilationError::Rejected)?
             .ok_or(OperationCompilationError::Rejected)?;
         if original.caller() != authorized.caller()
@@ -774,7 +774,8 @@ fn replay_public_mutation(
             return Err(OperationCompilationError::Rejected);
         }
         original
-            .with_fuse_admission(carrier)
+            .with_fuse_admission(carrier.into_history())
+            .map_err(crate::ReconcilerError::from)
             .map_err(|_| OperationCompilationError::Rejected)?
     } else {
         PublicMutationEffectV1::new(
@@ -784,9 +785,10 @@ fn replay_public_mutation(
             canonical_request.to_vec(),
         )
         .map_err(|_| OperationCompilationError::Rejected)?
+        .into_history()
     };
     let effect =
-        EffectPlan::authorized_public_mutation(authorized.request().operation_method(), context)
+        EffectPlan::from_public_mutation_context(authorized.request().operation_method(), context).map_err(crate::ReconcilerError::from)
             .map_err(|_| OperationCompilationError::Rejected)?;
 
     OperationPlan::new(
@@ -854,7 +856,10 @@ fn operation_plan(
         context
     };
     let effect =
-        EffectPlan::authorized_public_mutation(authorized.request().operation_method(), context)
+        {
+            let method = authorized.request().operation_method();
+            context.into_plan(method)
+        }
             .map_err(|_| OperationCompilationError::Rejected)?;
     let plan = OperationPlan::new(
         operation_id,

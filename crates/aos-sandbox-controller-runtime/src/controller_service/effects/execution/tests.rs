@@ -32,16 +32,16 @@ fn retained_public_delete_effect_is_permanently_blocked() {
     )
     .unwrap()
     .encode();
-    let effect = EffectPlan::authorized_public_mutation(
-        aos_sandbox_protocol::public_api::PublicOperationMethodV1::DeleteSandbox,
-        PublicMutationEffectV1::new(
+    let effect = {
+        let selected_method = aos_sandbox_protocol::public_api::PublicOperationMethodV1::DeleteSandbox;
+        (PublicMutationEffectV1::new(
             aos_sandbox_core::PrincipalId::from_bytes([0x55; 16]),
             aos_sandbox_core::ProjectId::from_bytes([0x66; 16]),
             1,
             envelope,
         )
-        .unwrap(),
-    )
+        .unwrap()).into_plan(selected_method)
+    }
     .unwrap();
 
     assert!(matches!(

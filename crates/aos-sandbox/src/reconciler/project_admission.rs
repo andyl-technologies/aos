@@ -47,10 +47,13 @@ use crate::policy_compiler::{
     read_source_project_admission_status_v1, read_source_project_reservation_status_v1,
 };
 
-use super::effect::EffectLedgerRecord;
+use aos_sandbox_protocol::domain_ledger::effect_history::{
+    CONTROLLER_PROJECT_EFFECT_VERSION, EffectLedgerRecord, EffectPlan,
+    MAXIMUM_DIAGNOSTIC_BYTES, decode_effect, encode_effect,
+};
 use super::{
-    EffectPlan, ReconcilerError, checked_live_create_sandbox_admission_revision_v1, decode_effect,
-    effect_key, encode_effect, retained_create_sandbox_admission_revision_v1,
+    ReconcilerError, checked_live_create_sandbox_admission_revision_v1,
+    effect_key, retained_create_sandbox_admission_revision_v1,
 };
 
 const CAPACITY_DOMAIN: &[u8] = b"aos.sandbox.controller-project-capacity-owner.v1\0";
@@ -130,11 +133,11 @@ pub fn retained_controller_project_admission_v1(
     validate_all(journal)?;
     let mut selected = None;
     for (key, bytes) in journal.records(RecordNamespace::Effect) {
-        if bytes.first() != Some(&super::effect::CONTROLLER_PROJECT_EFFECT_VERSION) {
+        if bytes.first() != Some(&CONTROLLER_PROJECT_EFFECT_VERSION) {
             continue;
         }
-        let effect = decode_effect(bytes)?;
-        let Some(metadata) = effect.project_admission else {
+        let effect = decode_effect(bytes).map_err(ReconcilerError::from)?.into_parts();
+        let Some(metadata) = effect.3 else {
             continue;
         };
         let matches = match reservation {
@@ -155,7 +158,7 @@ pub fn retained_controller_project_admission_v1(
                 journal,
                 operation,
                 scope,
-                &effect.plan,
+                &effect.0,
             )?
             .is_none()
         {
@@ -163,7 +166,7 @@ pub fn retained_controller_project_admission_v1(
         }
         selected = Some(RetainedControllerProjectAdmissionV1 {
             operation,
-            plan: effect.plan,
+            plan: effect.0,
             metadata,
         });
     }
@@ -213,8 +216,8 @@ fn dispatch_readback_from_original_graph(
         journal
             .get(RecordNamespace::Effect, &effect_key(operation, 0))
             .ok_or_else(invalid_metadata)?,
-    )?;
-    let metadata = effect.project_admission.ok_or_else(invalid_metadata)?;
+    ).map_err(ReconcilerError::from)?.into_parts();
+    let metadata = effect.3.ok_or_else(invalid_metadata)?;
     if metadata.phase() != ProjectAdmissionPhase::DispatchAuthorized {
         return Err(invalid_metadata().into());
     }
@@ -243,8 +246,8 @@ pub(crate) fn accepted_controller_project_terminal_v1(
         journal
             .get(RecordNamespace::Effect, &effect_key(operation, 0))
             .ok_or_else(invalid_metadata)?,
-    )?;
-    let metadata = effect.project_admission.ok_or_else(invalid_metadata)?;
+    ).map_err(ReconcilerError::from)?.into_parts();
+    let metadata = effect.3.ok_or_else(invalid_metadata)?;
     // A previous RootRetired row is useful only for exact floor replay, never
     // to issue a new retirement carrier or nominate another historical cut.
     if metadata.phase() != ProjectAdmissionPhase::AcceptedRootTerminal {
@@ -295,10 +298,9 @@ impl ControllerProjectHistoryAcceptanceV1<'_> {
             self.controller
                 .get(RecordNamespace::Effect, &effect_key(self.operation, 0))
                 .ok_or(JournalError::ProtectedBoundary)?,
-        )
-        .map_err(|_| JournalError::ProtectedBoundary)?;
-        let metadata = effect
-            .project_admission
+        ).map_err(ReconcilerError::from)
+        .map_err(|_| JournalError::ProtectedBoundary)?.into_parts();
+        let metadata = effect.3
             .ok_or(JournalError::ProtectedBoundary)?;
         if metadata.phase() != ProjectAdmissionPhase::RootRetired
             || metadata.retired_floor() != Some(self.floor)
@@ -341,9 +343,7 @@ pub fn accept_controller_project_history_floor_v1<'controller>(
 > {
     require_controller_writer(journal)?;
     let mut effect = load_scoped_effect(journal, operation, scope, plan)?;
-    let prior = effect
-        .project_admission
-        .clone()
+    let prior = effect.project_admission().cloned()
         .ok_or_else(invalid_metadata)?;
     let floor = proof.floor();
     if !prior.matches_floor(operation, floor)
@@ -367,7 +367,7 @@ pub fn accept_controller_project_history_floor_v1<'controller>(
         }
     } else {
         let reservation = journal.recover_global_capacity_reservation_v1(prior.capacity_id())?;
-        effect.project_admission = Some(next.clone());
+        effect.set_project_admission(Some(next.clone()));
         let transaction = JournalTransaction::new(
             aos_sandbox_core::OperationId::new().into_bytes(),
             vec![
@@ -387,8 +387,8 @@ pub fn accept_controller_project_history_floor_v1<'controller>(
         journal
             .get(RecordNamespace::Effect, &effect_key(operation, 0))
             .ok_or_else(invalid_metadata)?,
-    )?;
-    if readback.project_admission != Some(next) {
+    ).map_err(ReconcilerError::from)?;
+    if readback.project_admission() != Some(next).as_ref() {
         return Err(invalid_metadata().into());
     }
     Ok(ControllerProjectHistoryAcceptanceV1 {
@@ -454,7 +454,7 @@ pub fn prepare_current_create_project_admission_v1(
         source.project(),
     )?;
     let mut effect = load_scoped_effect(journal, source.operation(), scope, plan)?;
-    if let Some(prior) = &effect.project_admission {
+    if let Some(prior) = effect.project_admission() {
         if prior.reservation() == reservation
             && prior.admission_revision() == source.operation_revision()
             && prior.admission_generation() == source.accepted_generation()
@@ -514,13 +514,13 @@ pub fn prepare_current_create_project_admission_v1(
             .retained_record_bytes()
             .map_err(CurrentCreatePolicySourceErrorV1::from)?,
     );
-    effect.project_admission = Some(metadata.clone());
+    effect.set_project_admission(Some(metadata.clone()));
     let budget = controller_project_suffix_budget(&effect)?;
     let transaction_id = aos_sandbox_core::OperationId::new().into_bytes();
     let request = capacity_request(source.operation(), &metadata, plan, 3, 8, budget);
     let prepared = journal.prepare_global_capacity_reservation_v1(request, transaction_id)?;
     metadata.set_historical_capacity_id(prepared.reservation_id());
-    effect.project_admission = Some(metadata);
+    effect.set_project_admission(Some(metadata));
     let transaction = JournalTransaction::new(
         transaction_id,
         vec![
@@ -543,9 +543,9 @@ pub fn prepare_current_create_project_admission_v1(
 fn controller_project_suffix_budget(
     effect: &EffectLedgerRecord,
 ) -> Result<u64, ControllerProjectAdmissionJournalErrorV1> {
-    let append_bound = u64::try_from(encode_effect(effect)?.len())
+    let append_bound = u64::try_from(encode_effect(effect).map_err(ReconcilerError::from)?.len())
         .map_err(|_| JournalError::JournalTooLarge)?
-        .checked_add((super::effect::MAXIMUM_DIAGNOSTIC_BYTES + 2048) as u64)
+        .checked_add((MAXIMUM_DIAGNOSTIC_BYTES + 2048) as u64)
         .ok_or(JournalError::JournalTooLarge)?;
     Ok(append_bound
         .checked_mul(3)
@@ -569,9 +569,7 @@ pub fn authorize_controller_project_admission_dispatch_v1(
 ) -> Result<(), ControllerProjectAdmissionJournalErrorV1> {
     require_controller_writer(journal)?;
     let effect = load_scoped_effect(journal, operation, scope, plan)?;
-    let metadata = effect
-        .project_admission
-        .clone()
+    let metadata = effect.project_admission().cloned()
         .ok_or_else(invalid_metadata)?;
     if metadata.phase() == ProjectAdmissionPhase::DispatchAuthorized {
         validate_all(journal)?;
@@ -612,9 +610,7 @@ pub fn accept_controller_project_admission_outcome_v1(
 ) -> Result<(), ControllerProjectAdmissionJournalErrorV1> {
     require_controller_writer(journal)?;
     let effect = load_scoped_effect(journal, operation, scope, plan)?;
-    let prior = effect
-        .project_admission
-        .clone()
+    let prior = effect.project_admission().cloned()
         .ok_or_else(invalid_metadata)?;
     let (reservation, canceled) =
         read_source_project_reservation_status_v1(owner)?.ok_or_else(invalid_metadata)?;
@@ -665,9 +661,7 @@ pub fn accept_controller_project_reservation_cancellation_v1(
 ) -> Result<(), ControllerProjectAdmissionJournalErrorV1> {
     require_controller_writer(journal)?;
     let effect = load_scoped_effect(journal, operation, scope, plan)?;
-    let prior = effect
-        .project_admission
-        .clone()
+    let prior = effect.project_admission().cloned()
         .ok_or_else(invalid_metadata)?;
     let (reservation, _) =
         read_source_project_reservation_status_v1(owner)?.ok_or_else(invalid_metadata)?;
@@ -710,7 +704,7 @@ fn load_scoped_effect(
         journal
             .get(RecordNamespace::Effect, &effect_key(operation, 0))
             .ok_or_else(invalid_metadata)?,
-    )
+    ).map_err(ReconcilerError::from)
 }
 
 fn require_controller_writer(journal: &Journal) -> Result<(), JournalError> {
@@ -762,7 +756,7 @@ fn effect_record(
     Ok(JournalRecord::put(
         RecordNamespace::Effect,
         effect_key(operation, 0).to_vec(),
-        encode_effect(effect)?,
+        encode_effect(effect).map_err(ReconcilerError::from)?,
     ))
 }
 
@@ -772,9 +766,7 @@ fn transfer_metadata(
     mut effect: EffectLedgerRecord,
     mut next: ProjectAdmissionMetadata,
 ) -> Result<(), ControllerProjectAdmissionJournalErrorV1> {
-    let prior = effect
-        .project_admission
-        .clone()
+    let prior = effect.project_admission().cloned()
         .ok_or_else(invalid_metadata)?;
     let capacity = journal.recover_global_capacity_reservation_v1(prior.capacity_id())?;
     let old = capacity.request();
@@ -799,7 +791,7 @@ fn transfer_metadata(
     // its codec or estimating frame lengths.
     let draft = journal.prepare_global_capacity_reservation_v1(request, transaction_id)?;
     next.set_historical_capacity_id(draft.reservation_id());
-    effect.project_admission = Some(next.clone());
+    effect.set_project_admission(Some(next.clone()));
     let draft_transaction = JournalTransaction::new(
         transaction_id,
         vec![
@@ -820,7 +812,7 @@ fn transfer_metadata(
         .ok_or(JournalError::JournalTooLarge)?;
     let successor = journal.prepare_global_capacity_reservation_v1(request, transaction_id)?;
     next.set_historical_capacity_id(successor.reservation_id());
-    effect.project_admission = Some(next);
+    effect.set_project_admission(Some(next));
     let transaction = JournalTransaction::new(
         transaction_id,
         vec![
@@ -850,11 +842,11 @@ pub(super) fn validate_all(journal: &Journal) -> Result<(), ReconcilerError> {
     let mut expected_capacity = std::collections::BTreeSet::new();
     let mut pending_flights = 0;
     for (key, bytes) in journal.records(RecordNamespace::Effect) {
-        if bytes.first() != Some(&super::effect::CONTROLLER_PROJECT_EFFECT_VERSION) {
+        if bytes.first() != Some(&CONTROLLER_PROJECT_EFFECT_VERSION) {
             continue;
         }
-        let effect = decode_effect(bytes)?;
-        let Some(metadata) = &effect.project_admission else {
+        let effect = decode_effect(bytes).map_err(ReconcilerError::from)?;
+        let Some(metadata) = effect.project_admission() else {
             continue;
         };
         let operation_bytes: [u8; 16] = key
@@ -893,14 +885,13 @@ pub(super) fn validate_all(journal: &Journal) -> Result<(), ReconcilerError> {
         {
             return Err(invalid_metadata());
         }
-        let context = effect
-            .plan
-            .public_mutation_context()?
+        let context = effect.plan()
+            .public_mutation_context().map_err(ReconcilerError::from)?
             .ok_or_else(invalid_metadata)?;
         if context.project() != metadata.project() {
             return Err(invalid_metadata());
         }
-        validate_original_projection(journal, operation, metadata, &effect.plan, request_digest)?;
+        validate_original_projection(journal, operation, metadata, effect.plan(), request_digest)?;
         if metadata.phase() == ProjectAdmissionPhase::RootRetired {
             if journal
                 .lookup_global_capacity_reservation_v1(metadata.capacity_id())?
@@ -929,7 +920,7 @@ pub(super) fn validate_all(journal: &Journal) -> Result<(), ReconcilerError> {
                 != capacity_request(
                     operation,
                     metadata,
-                    &effect.plan,
+                    effect.plan(),
                     transactions,
                     records,
                     request.terminal_bytes,
@@ -966,10 +957,10 @@ fn validate_original_projection(
         return Err(invalid_metadata());
     };
     let context = plan
-        .public_mutation_context()?
+        .public_mutation_context().map_err(ReconcilerError::from)?
         .ok_or_else(invalid_metadata)?;
     let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(request) =
-        context.validated_request()?
+        context.validated_request().map_err(ReconcilerError::from)?
     else {
         return Err(invalid_metadata());
     };

@@ -412,6 +412,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         reject_unqualified_delete_effect(plan)?;
 
         if plan.public_mutation_context()
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
             .is_some_and(|context| context.has_retained_nix_start())
         {
@@ -554,12 +555,14 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         }
         if let DormantSandboxRequestKindV1::ViewCreate(request) = context
             .validated_request()
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
         {
             return view_mutations::observe_create_view(operation_id, &context, &request, journal);
         }
         if let DormantSandboxRequestKindV1::ViewRelease(request) = context
             .validated_request()
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
         {
             return view_mutations::observe_release_view(operation_id, &context, &request, journal);
@@ -577,6 +580,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         reject_unqualified_delete_effect(plan)?;
 
         if plan.public_mutation_context()
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
             .is_some_and(|context| context.has_retained_nix_start())
         {
@@ -737,6 +741,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         }
         let request = context
             .validated_request()
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
         if let DormantSandboxRequestKindV1::ViewCreate(create) = &request {
             return view_mutations::apply_create_view(operation_id, &context, create, journal);

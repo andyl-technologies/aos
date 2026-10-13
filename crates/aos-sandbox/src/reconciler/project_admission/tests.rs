@@ -15,7 +15,7 @@ use aos_sandbox_core::{OperationId, RevocationScopeId};
 use super::*;
 use aos_sandbox_protocol::public_api::projection::PublicProjectionPlanV1;
 use crate::policy_compiler::HistoricalCreateProjectSourceHeadsV1;
-use crate::reconciler::effect::EffectState;
+use aos_sandbox_protocol::domain_ledger::effect_history::EffectState;
 
 struct Fixture {
     directory: tempfile::TempDir,
@@ -176,12 +176,12 @@ impl Fixture {
             )
             .unwrap();
         metadata.set_historical_capacity_id(capacity.reservation_id());
-        let effect = EffectLedgerRecord {
-            plan: plan.clone(),
-            state: EffectState::Planned,
-            dispatch: None,
-            project_admission: Some(metadata),
-        };
+        let effect = EffectLedgerRecord::from_parts((
+            plan.clone(),
+            EffectState::Planned,
+            None,
+            Some(metadata),
+        ));
         let transaction = JournalTransaction::new(
             transaction_id,
             vec![
@@ -245,7 +245,7 @@ fn historical_dispatch_claims_rejoin_actual_original_effect_without_current_publ
     let mut fixture = Fixture::prepared();
     assert!(dispatch_readback_from_original_graph(&fixture.journal, fixture.operation).is_err());
     let effect = fixture.effect();
-    let metadata = effect.project_admission.clone().unwrap();
+    let metadata = effect.project_admission().cloned().unwrap();
     transfer_metadata(&mut fixture.journal, fixture.operation, effect, {
         let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
         let mut next = metadata.clone();
@@ -307,7 +307,7 @@ fn historical_dispatch_claims_rejoin_actual_original_effect_without_current_publ
 fn original_graph_and_dispatch_suffix_survive_cold_replay_without_source_row() {
     let mut fixture = Fixture::prepared();
     let effect = fixture.effect();
-    let metadata = effect.project_admission.clone().unwrap();
+    let metadata = effect.project_admission().cloned().unwrap();
     assert!(
         fixture
             .source
@@ -322,7 +322,7 @@ fn original_graph_and_dispatch_suffix_survive_cold_replay_without_source_row() {
         next
     })
     .unwrap();
-    let authorized = fixture.effect().project_admission.unwrap();
+    let authorized = fixture.effect().into_parts().3.unwrap();
     assert_eq!(
         authorized.admission_revision(),
         metadata.admission_revision()
@@ -343,7 +343,7 @@ fn original_graph_and_dispatch_suffix_survive_cold_replay_without_source_row() {
     );
     fixture.reopen();
     validate_all(&fixture.journal).unwrap();
-    assert_eq!(fixture.effect().project_admission, Some(authorized));
+    assert_eq!(fixture.effect().into_parts().3, Some(authorized));
     assert!(
         checked_live_create_sandbox_admission_revision_v1(
             &fixture.journal,
@@ -360,7 +360,7 @@ fn original_graph_and_dispatch_suffix_survive_cold_replay_without_source_row() {
 #[test]
 fn original_graph_rejects_changed_child_source_and_same_key_request() {
     let fixture = Fixture::prepared();
-    let metadata = fixture.effect().project_admission.unwrap();
+    let metadata = fixture.effect().into_parts().3.unwrap();
     let (_, _, request_digest) =
         retained_create_sandbox_admission_revision_v1(&fixture.journal, fixture.operation, false)
             .unwrap()
@@ -431,7 +431,7 @@ fn original_graph_rejects_changed_child_source_and_same_key_request() {
 fn changed_dispatch_transfer_is_nonmutating_and_keeps_reserved_suffix() {
     let mut fixture = Fixture::prepared();
     let effect = fixture.effect();
-    let metadata = effect.project_admission.clone().unwrap();
+    let metadata = effect.project_admission().cloned().unwrap();
     let _admission_revision = metadata.admission_revision();
     let admission_generation = metadata.admission_generation();
     let source_commitment = metadata.source_commitment();
@@ -465,7 +465,7 @@ fn changed_dispatch_transfer_is_nonmutating_and_keeps_reserved_suffix() {
     let cut = fixture.journal.snapshot_sequence();
     assert!(transfer_metadata(&mut fixture.journal, fixture.operation, effect, changed).is_err());
     assert_eq!(fixture.journal.snapshot_sequence(), cut);
-    assert_eq!(fixture.effect().project_admission, Some(metadata));
+    assert_eq!(fixture.effect().into_parts().3, Some(metadata));
     validate_all(&fixture.journal).unwrap();
 }
 
@@ -473,7 +473,7 @@ fn changed_dispatch_transfer_is_nonmutating_and_keeps_reserved_suffix() {
 fn dispatch_without_root_artifact_keeps_exact_flight_when_credentials_expire_or_rotate() {
     let mut fixture = Fixture::prepared();
     let effect = fixture.effect();
-    let metadata = effect.project_admission.clone().unwrap();
+    let metadata = effect.project_admission().cloned().unwrap();
     transfer_metadata(&mut fixture.journal, fixture.operation, effect, {
         let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
         let mut next = metadata;
@@ -482,7 +482,7 @@ fn dispatch_without_root_artifact_keeps_exact_flight_when_credentials_expire_or_
     })
     .unwrap();
     fixture.reopen();
-    let retained = fixture.effect().project_admission.unwrap();
+    let retained = fixture.effect().into_parts().3.unwrap();
     let before = fixture.journal.snapshot_sequence();
     let deployment_key = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
     let project_key = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
@@ -544,7 +544,7 @@ fn dispatch_without_root_artifact_keeps_exact_flight_when_credentials_expire_or_
         "a different pin cannot rebase the original signed inputs"
     );
     assert_eq!(fixture.journal.snapshot_sequence(), before);
-    assert_eq!(fixture.effect().project_admission, Some(retained.clone()));
+    assert_eq!(fixture.effect().into_parts().3, Some(retained.clone()));
     assert!(
         fixture
             .source

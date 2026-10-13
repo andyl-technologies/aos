@@ -38,11 +38,11 @@ use crate::runtime_execution::no_apply_settlement::HostSettlementRecordV1;
 
 use prepare::{CreateFailurePrepareV1, load_floor, record_digest};
 
-use super::{
-    EffectReceipt, EffectState, OperationRecord, OperationState, Reconciler, ReconcilerError,
-    SingleNodeEffectExecutor, decode_effect, decode_operation, effect_key, encode_effect,
+use super::{ OperationRecord, OperationState, Reconciler, ReconcilerError,
+    SingleNodeEffectExecutor, decode_operation, effect_key,
     encode_operation_record, recovered_public_operation_admission_v1, transition_operation,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt, EffectState, decode_effect, encode_effect};
 
 const MAGIC: &[u8; 8] = b"AOSCFB01";
 const DOMAIN: &[u8] = b"aos.sandbox.create-failed-before-commit.v1\0";
@@ -409,16 +409,15 @@ fn desired_execution_key(
 }
 
 fn validate_accepted_create_identity(
-    effect: &super::EffectLedgerRecord,
+    effect: &aos_sandbox_protocol::domain_ledger::effect_history::EffectLedgerRecord,
     operation_id: OperationId,
     execution: &aos_proto::aos::sandbox::v1::Execution,
 ) -> Result<(), ReconcilerError> {
-    let context = effect
-        .plan
-        .public_mutation_context()?
+    let context = effect.plan()
+        .public_mutation_context().map_err(ReconcilerError::from)?
         .ok_or_else(invalid_settlement)?;
     let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Exec(request) =
-        context.validated_request()?
+        context.validated_request().map_err(ReconcilerError::from)?
     else {
         return Err(invalid_settlement());
     };
@@ -452,10 +451,9 @@ pub(super) fn validate_failed_create_operation(
             let bytes = journal
                 .get(RecordNamespace::Effect, &effect_key(operation_id, step))
                 .ok_or_else(invalid_settlement)?;
-            let effect = decode_effect(bytes)?;
-            if let EffectState::Applied { receipt, .. } = effect.state {
-                if receipt
-                    .create_failure_receipt()
+            let effect = decode_effect(bytes).map_err(ReconcilerError::from)?.into_parts();
+            if let EffectState::Applied { receipt, .. } = effect.1 {
+                if super::create_failure_receipt(&receipt)
                     .map_err(|()| invalid_settlement())?
                     .is_some()
                 {
@@ -468,11 +466,10 @@ pub(super) fn validate_failed_create_operation(
     let bytes = journal
         .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
         .ok_or_else(invalid_settlement)?;
-    let effect = decode_effect(bytes)?;
-    let (receipt, effect_attempt) = match &effect.state {
+    let effect = decode_effect(bytes).map_err(ReconcilerError::from)?;
+    let (receipt, effect_attempt) = match effect.state() {
         EffectState::Applied { attempt, receipt } => (
-            receipt
-                .create_failure_receipt()
+            super::create_failure_receipt(receipt)
                 .map_err(|()| invalid_settlement())?,
             *attempt,
         ),
@@ -494,7 +491,7 @@ pub(super) fn validate_failed_create_operation(
         || operation.runtime_intent_digest().is_some()
         || operation.public_operation().map(|public| public.method())
             != Some(PublicOperationMethodV1::CreateExecution)
-        || effect.plan.public_mutation_method() != Some(PublicOperationMethodV1::CreateExecution)
+        || effect.plan().public_mutation_method() != Some(PublicOperationMethodV1::CreateExecution)
         || marker.create_operation_id != operation_id.into_bytes()
         || receipt.successor_operation != operation_digest(operation)
         || receipt.effect_attempt != effect_attempt
@@ -694,12 +691,12 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
             .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
             .ok_or_else(invalid_settlement)?
             .to_vec();
-        let mut effect = decode_effect(&effect_bytes)?;
-        let EffectState::Applying { attempt, .. } = effect.state else {
+        let mut effect = decode_effect(&effect_bytes).map_err(ReconcilerError::from)?;
+        let EffectState::Applying { attempt, .. } = *effect.state() else {
             return Err(invalid_settlement());
         };
-        if effect.plan.public_mutation_method() != Some(PublicOperationMethodV1::CreateExecution)
-            || effect.dispatch.is_some()
+        if effect.plan().public_mutation_method() != Some(PublicOperationMethodV1::CreateExecution)
+            || effect.dispatch().is_some()
         {
             return Err(invalid_settlement());
         }
@@ -770,9 +767,16 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
             successor_revision,
             ..pending_receipt
         };
-        effect.state = EffectState::Applied {
+        let state = EffectState::Applied {
             attempt,
-            receipt: EffectReceipt(receipt.encode()),
+            receipt: EffectReceipt::from_bytes_unchecked(receipt.encode()),
+        };
+        effect = {
+            // Keep the original mutable binding and replace only its state.
+            // The old state dies before the remaining fields are reassembled.
+            let mut parts = effect.into_parts();
+            parts.1 = state;
+            aos_sandbox_protocol::domain_ledger::effect_history::EffectLedgerRecord::from_parts(parts)
         };
         let (desired_key, desired_value) = successor.into_desired_state();
         let predecessor_desired = self
@@ -784,7 +788,7 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
             JournalRecord::put(
                 RecordNamespace::Effect,
                 effect_key(operation_id, 0).to_vec(),
-                encode_effect(&effect)?,
+                encode_effect(&effect).map_err(ReconcilerError::from)?,
             ),
             JournalRecord::put(
                 RecordNamespace::Operation,

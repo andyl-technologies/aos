@@ -818,9 +818,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        EffectFailure, EffectObservation, EffectPlan, EffectReceipt, Reconciler,
+        EffectFailure, EffectObservation, Reconciler,
         SingleNodeEffectExecutor,
     };
+    use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
 
     struct NoEffects;
 

@@ -25,7 +25,7 @@ use sha2::{Digest as _, Sha256};
 use crate::controller::ControllerRequestScopeV1;
 use crate::journal::controller::production_journal_limits;
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
-use crate::reconciler::EffectPlan;
+use aos_sandbox_protocol::domain_ledger::effect_history::EffectPlan;
 use crate::{Journal, RecordNamespace};
 
 use super::deployment_head::{SIGNER_PINS_KEY, decode_policy_signer_pins_v1};

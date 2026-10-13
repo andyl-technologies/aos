@@ -573,9 +573,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        EffectFailure, EffectObservation, EffectPlan, EffectReceipt, Reconciler,
+        EffectFailure, EffectObservation, Reconciler,
         SingleNodeEffectExecutor,
     };
+    use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
     use aos_sandbox_core::model::{
         IdentityProfile, NetworkKind, NetworkProfile, ResourceProfile, UnmappableIdentityPolicy,
     };

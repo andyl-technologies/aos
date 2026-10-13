@@ -34,6 +34,7 @@
 pub mod capacity;
 pub mod create_q04_history;
 pub mod delete_batch;
+pub mod effect_history;
 pub mod execution_observe_reservation;
 pub mod lifecycle_model;
 pub mod operation;

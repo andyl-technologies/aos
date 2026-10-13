@@ -25,8 +25,10 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    EffectFailure, EffectObservation, EffectReceipt, Journal, OperationId, PublicMutationEffectV1,
+    EffectFailure, EffectObservation, Journal, OperationId,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
 use super::cache_directory_source::ProjectSealedViewObjectSourceV1;
 
 const MAXIMUM_VIEW_BYTES: usize = 1024 * 1024;
@@ -36,7 +38,7 @@ const RELEASE_RECEIPT_MAGIC: &[u8; 8] = b"AOSVRL01";
 
 pub(super) fn observe_create_view(
     operation_id: OperationId,
-    context: &PublicMutationEffectV1,
+    context: &PublicMutationEffectHistoryV1,
     request: &CreateViewRequest,
     journal: &Journal,
 ) -> Result<EffectObservation, EffectFailure> {
@@ -103,7 +105,7 @@ fn verified_creation_receipt(
 
 pub(super) fn apply_create_view(
     operation_id: OperationId,
-    context: &PublicMutationEffectV1,
+    context: &PublicMutationEffectHistoryV1,
     request: &CreateViewRequest,
     journal: &mut Journal,
 ) -> Result<EffectReceipt, EffectFailure> {
@@ -149,7 +151,7 @@ pub(super) fn apply_create_view(
 
 pub(super) fn observe_release_view(
     operation_id: OperationId,
-    context: &PublicMutationEffectV1,
+    context: &PublicMutationEffectHistoryV1,
     request: &ReleaseViewRequest,
     journal: &Journal,
 ) -> Result<EffectObservation, EffectFailure> {
@@ -179,7 +181,7 @@ pub(super) fn observe_release_view(
 
 pub(super) fn apply_release_view(
     operation_id: OperationId,
-    context: &PublicMutationEffectV1,
+    context: &PublicMutationEffectHistoryV1,
     request: &ReleaseViewRequest,
     journal: &mut Journal,
 ) -> Result<EffectReceipt, EffectFailure> {
@@ -276,7 +278,7 @@ fn release_receipt(
     bytes.extend_from_slice(RELEASE_RECEIPT_MAGIC);
     bytes.extend_from_slice(operation_id.as_bytes());
     bytes.extend_from_slice(revision_digest.as_bytes());
-    EffectReceipt::new(bytes).map_err(permanent)
+    EffectReceipt::new(bytes).map_err(aos_sandbox::ReconcilerError::from).map_err(permanent)
 }
 
 fn accepted_creation(
@@ -376,7 +378,7 @@ pub(super) fn portable_descriptor(
     Ok(descriptor)
 }
 
-fn normalized_request_digest(context: &PublicMutationEffectV1) -> ObjectDigest {
+fn normalized_request_digest(context: &PublicMutationEffectHistoryV1) -> ObjectDigest {
     let request = context.canonical_request();
     let digest: [u8; 32] = Sha256::new()
         .chain_update(REQUEST_DIGEST_DOMAIN)
@@ -397,7 +399,7 @@ fn create_receipt(
     bytes.extend_from_slice(CREATE_RECEIPT_MAGIC);
     bytes.extend_from_slice(operation_id.as_bytes());
     bytes.extend_from_slice(revision_digest.as_bytes());
-    EffectReceipt::new(bytes).map_err(permanent)
+    EffectReceipt::new(bytes).map_err(aos_sandbox::ReconcilerError::from).map_err(permanent)
 }
 
 fn permanent(error: impl ToString) -> EffectFailure {

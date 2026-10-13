@@ -92,13 +92,14 @@ use aos_sandbox::production_operation_compiler::{
 use aos_sandbox::{
     AcceptOutcome, ActivatedOperationCompiler, AuthorityEffectAttemptTimingV1,
     AuthorityEffectObservationV1, ControllerRequestScopeV1, ControllerServiceError, EffectFailure,
-    EffectObservation, EffectPlan, EffectReceipt, GuardianPlanRequestV1,
+    EffectObservation, GuardianPlanRequestV1,
     Journal, JournalError, NodeController, NodeControllerLimits, OperationCompilationError,
     PreparedAuthorityEffectV1,
     PublicMutationEffectV1, Reconciler, SingleNodeEffectExecutor,
     ValidatedAuthorityEffectReceiptV1, activated_ownership_gate_digest_from_journal_v1,
     prepare_runtime_lifecycle_authority_effect_v1, public_operation_resource_from_journal_v1,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt, PublicMutationEffectHistoryV1};
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 use resident_custody::{

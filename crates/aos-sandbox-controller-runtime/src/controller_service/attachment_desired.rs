@@ -29,8 +29,9 @@ use sha2::{Digest as _, Sha256};
 use super::attachment_target::ControllerAttachmentTargetInputsV1;
 use super::view_mutations::portable_descriptor;
 use super::{
-    EffectFailure, ProductionEffectExecutor, PublicMutationEffectV1, sample_ownership_clock,
+    EffectFailure, ProductionEffectExecutor, sample_ownership_clock,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 
 const DESIRED_REQUEST_DOMAIN: &[u8] = b"aos.sandbox.public-attachment-desired.v1\0";
@@ -39,7 +40,7 @@ const DESIRED_REQUEST_DOMAIN: &[u8] = b"aos.sandbox.public-attachment-desired.v1
 pub(super) fn advance_immutable_attach(
     executor: &mut ProductionEffectExecutor,
     operation: OperationId,
-    context: &PublicMutationEffectV1,
+    context: &PublicMutationEffectHistoryV1,
     request: &AttachViewRequest,
     projection: &Attachment,
     sandbox: SandboxId,
@@ -179,7 +180,7 @@ pub(super) fn advance_immutable_attach(
 pub(super) fn advance_existing(
     executor: &mut ProductionEffectExecutor,
     operation: OperationId,
-    context: &PublicMutationEffectV1,
+    context: &PublicMutationEffectHistoryV1,
     request: &DormantSandboxRequestKindV1,
     projection: &Attachment,
     sandbox: SandboxId,
@@ -375,7 +376,7 @@ fn mutation(projection: &Attachment) -> Result<ViewMutation, EffectFailure> {
     }
 }
 
-fn request_digest(context: &PublicMutationEffectV1) -> ObjectDigest {
+fn request_digest(context: &PublicMutationEffectHistoryV1) -> ObjectDigest {
     let request = context.canonical_request();
     let digest: [u8; 32] = Sha256::new()
         .chain_update(DESIRED_REQUEST_DOMAIN)

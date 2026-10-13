@@ -10,13 +10,14 @@ impl ProductionEffectExecutor {
     pub(super) fn public_mutation_context(
         &mut self,
         plan: &EffectPlan,
-    ) -> Result<PublicMutationEffectV1, EffectFailure> {
+    ) -> Result<PublicMutationEffectHistoryV1, EffectFailure> {
         aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(&mut self.source_domains)
             .and_then(|owner| owner.replay())
             .map_err(|error| {
                 EffectFailure::Permanent(format!("protected source-domain replay failed: {error}"))
             })?;
         plan.public_mutation_context()
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
             .ok_or_else(|| {
                 EffectFailure::Permanent(
@@ -42,6 +43,7 @@ impl ProductionEffectExecutor {
         if !matches!(
             context
                 .validated_request()
+                .map_err(aos_sandbox::ReconcilerError::from)
                 .map_err(|error| EffectFailure::Permanent(error.to_string()))?,
             DormantSandboxRequestKindV1::Create(_)
         ) {
@@ -59,10 +61,11 @@ impl ProductionEffectExecutor {
     }
 
     pub(super) fn cancellation_request(
-        context: &PublicMutationEffectV1,
+        context: &PublicMutationEffectHistoryV1,
     ) -> Result<ProductionCancellationRequest, EffectFailure> {
         let DormantSandboxRequestKindV1::CancelOperation(request) = context
             .validated_request()
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
         else {
             return Err(EffectFailure::Permanent(
@@ -100,16 +103,17 @@ impl ProductionEffectExecutor {
         let mut bytes = Vec::with_capacity(40);
         bytes.extend_from_slice(b"AOSCAN01");
         bytes.extend_from_slice(resolution.receipt().as_bytes());
-        EffectReceipt::new(bytes).map_err(|error| EffectFailure::Permanent(error.to_string()))
+        EffectReceipt::new(bytes).map_err(aos_sandbox::ReconcilerError::from).map_err(|error| EffectFailure::Permanent(error.to_string()))
     }
 
     pub(super) fn ownership_recovery_receipt(
         recovery_operation: OperationId,
-        context: &PublicMutationEffectV1,
+        context: &PublicMutationEffectHistoryV1,
         journal: &Journal,
     ) -> Result<Option<EffectReceipt>, EffectFailure> {
         let DormantSandboxRequestKindV1::OperatorRecover(request) = context
             .validated_request()
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
         else {
             return Err(EffectFailure::Permanent(
@@ -144,6 +148,7 @@ impl ProductionEffectExecutor {
         ]
         .concat();
         EffectReceipt::new(receipt)
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map(Some)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))
     }
@@ -177,6 +182,7 @@ impl ProductionEffectExecutor {
             .finalize()
             .into();
         EffectReceipt::new([b"AOSCAT01".as_slice(), receipt.as_slice()].concat())
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map(Some)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))
     }
@@ -278,7 +284,7 @@ impl ProductionEffectExecutor {
     pub(super) fn validate_lifecycle_admission(
         &self,
         operation: OperationId,
-        context: &PublicMutationEffectV1,
+        context: &PublicMutationEffectHistoryV1,
         request: &DormantSandboxRequestKindV1,
         journal: &mut Journal,
     ) -> Result<LifecycleOperationV1, EffectFailure> {

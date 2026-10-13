@@ -45,10 +45,10 @@ use crate::journal::{
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
-use crate::reconciler::{
-    EffectPlan, ReconcilerError, checked_live_create_sandbox_admission_revision_v1,
+use crate::reconciler::{ ReconcilerError, checked_live_create_sandbox_admission_revision_v1,
     live_create_sandbox_admission_revision_v1, recovered_public_operation_admission_v1,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan};
 use crate::{Journal, JournalError};
 
 use super::{
@@ -569,10 +569,10 @@ pub fn current_parentless_create_project_source_for_operation_v1(
         .one_parentless_create_sandbox(operation, project)?
         .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
     let context = effect_plan
-        .public_mutation_context()?
+        .public_mutation_context().map_err(ReconcilerError::from)?
         .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
     let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(request) =
-        context.validated_request()?
+        context.validated_request().map_err(ReconcilerError::from)?
     else {
         return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
     };

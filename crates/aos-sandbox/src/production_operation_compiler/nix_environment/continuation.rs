@@ -29,7 +29,7 @@ use crate::controller::ControllerProtectedClockV1;
 use crate::journal::controller::{ControllerJournalError, validate_controller_journal};
 use crate::publisher_authority::PublisherAuthorityLimits;
 use crate::publisher_policy::PublisherPolicyLimits;
-use crate::reconciler::EffectPlan;
+use aos_sandbox_protocol::domain_ledger::effect_history::EffectPlan;
 use crate::runtime_scope::CurrentAssignmentTarget;
 use crate::controller_resource_reservation::{AcquisitionFailureV1, PaidNixStartOriginalsV1};
 

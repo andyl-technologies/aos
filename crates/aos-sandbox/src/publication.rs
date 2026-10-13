@@ -25,10 +25,11 @@ use aos_sandbox_core::{
 use crate::{
     AuthorityBoundEffectPlanV1, BrokerDispatchAttemptError, BrokerDispatchAttemptV1,
     GuardianPlanRequestV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
-    JournalRecord, JournalTransaction, PreparedAuthorityEffectV1, RecordNamespace,
+    JournalRecord, JournalTransaction, RecordNamespace,
     SignedOwnershipLease,
 };
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
+use aos_sandbox_protocol::domain_ledger::effect_history::PreparedAuthorityEffectHistoryV1;
 use aos_sandbox_ownership_protocol::{OwnershipClaimAction, OwnershipClaimV1};
 
 #[cfg(test)]
@@ -510,7 +511,7 @@ pub(crate) fn validate_durable_effect_attempt(
     audience: BrokerAudience,
     template_digest: ObjectDigest,
     body_without_deadline: &[u8],
-    prepared_effect: &PreparedAuthorityEffectV1,
+    prepared_effect: &PreparedAuthorityEffectHistoryV1,
     current_host_boot_id: Option<[u8; 16]>,
 ) -> Result<(), AuthorityPublicationError> {
     validate_publication_namespace(journal)?;
@@ -579,7 +580,7 @@ pub(crate) fn validate_durable_effect_attempt(
         )
     }
     .map_err(AuthorityPublicationError::DispatchAttempt)?;
-    if &reconstructed != prepared_effect.attempt() {
+    if reconstructed.history() != prepared_effect.attempt() {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
     Ok(())

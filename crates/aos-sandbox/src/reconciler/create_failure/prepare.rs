@@ -29,10 +29,11 @@ use crate::runtime_execution::no_apply_settlement::{
 };
 
 use super::{
-    CreateFailureSettlementProofV1, EffectState, OperationState, ReconcilerError, decode_effect,
+    CreateFailureSettlementProofV1, OperationState, ReconcilerError,
     decode_operation, effect_key, invalid_settlement, recovered_public_operation_admission_v1,
     validate_accepted_create_identity, validate_failed_create_operation,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectState, decode_effect};
 
 const MAGIC: &[u8; 8] = b"AOSCFP01";
 const DOMAIN: &[u8] = b"aos.sandbox.create-failure-prepare.v1\0";
@@ -370,7 +371,7 @@ pub(super) fn validate_all_floors(journal: &Journal) -> Result<(), ReconcilerErr
         let actual: [ObjectDigest; 3] = digests.try_into().map_err(|_| invalid_settlement())?;
         match operation.state() {
             OperationState::Applying if actual == floor.predecessor => {
-                let effect = decode_effect(effect_bytes)?;
+                let effect = decode_effect(effect_bytes).map_err(ReconcilerError::from)?;
                 let projection = PublicProjectionStoreV1::new(journal)
                     .get(
                         PublicProjectionKindV1::Execution,
@@ -389,10 +390,10 @@ pub(super) fn validate_all_floors(journal: &Journal) -> Result<(), ReconcilerErr
                     || operation.runtime_intent_digest().is_some()
                     || operation.public_operation().map(|public| public.method())
                         != Some(PublicOperationMethodV1::CreateExecution)
-                    || effect.plan.public_mutation_method()
+                    || effect.plan().public_mutation_method()
                         != Some(PublicOperationMethodV1::CreateExecution)
-                    || effect.dispatch.is_some()
-                    || !matches!(effect.state, EffectState::Applying { .. })
+                    || effect.dispatch().is_some()
+                    || !matches!(effect.state(), EffectState::Applying { .. })
                     || projection.operation() != floor.operation_id
                     || execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_REQUESTED)
                     || execution.result.as_option().is_some()

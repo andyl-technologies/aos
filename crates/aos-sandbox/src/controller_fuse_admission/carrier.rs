@@ -39,6 +39,10 @@ impl ControllerFuseAdmissionCarrierV1 {
         &self.0
     }
 
+    pub(crate) fn into_history(self) -> HistoricalCarrier {
+        self.0
+    }
+
     pub(crate) fn from_authorized(
         journal: &Journal,
         authorized: &AuthorizedPublicMutationRequestV1,

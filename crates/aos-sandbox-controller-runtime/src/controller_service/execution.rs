@@ -38,9 +38,11 @@ use aos_sandbox::runtime_execution::{
 };
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{
-    AuthorityPublicationStore, EffectFailure, EffectReceipt, Journal, JournalRecord,
-    JournalTransaction, PublicMutationEffectV1, RecordNamespace,
+    AuthorityPublicationStore, EffectFailure, Journal, JournalRecord,
+    JournalTransaction, RecordNamespace,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
 use aos_sandbox_core::runtime_backend::{BackendExecutionPhaseV1, EffectOperationV1};
 use aos_sandbox_core::{
     BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, ExecutionEndpointCapabilityV1,
@@ -507,11 +509,12 @@ impl ControllerExecutionIntentV1 {
 
     pub(crate) fn from_request(
         operation_id: OperationId,
-        context: &PublicMutationEffectV1,
+        context: &PublicMutationEffectHistoryV1,
         journal: &Journal,
     ) -> Result<Self, EffectFailure> {
         let request = context
             .validated_request()
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
         let (execution_id, action) = match request {
             DormantSandboxRequestKindV1::ExecutionControl(request) => {
@@ -595,7 +598,7 @@ impl ControllerExecutionIntentV1 {
     #[allow(dead_code)]
     pub(crate) fn from_retained_create_attempt(
         operation_id: OperationId,
-        context: &PublicMutationEffectV1,
+        context: &PublicMutationEffectHistoryV1,
         journal: &Journal,
         assignment: &CurrentAssignmentTarget,
         attempt: &ControllerExecutionSpecAttemptV1,
@@ -616,6 +619,7 @@ impl ControllerExecutionIntentV1 {
         let specification = retained.decoded_specification().map_err(retryable)?;
         let DormantSandboxRequestKindV1::Exec(request) = context
             .validated_request()
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
         else {
             return Err(EffectFailure::Permanent(
@@ -1667,6 +1671,7 @@ fn classify_outcome(
             }
             let digest: [u8; 32] = receipt_hash.finalize().into();
             let receipt = EffectReceipt::new([b"AOSEXE01".as_slice(), digest.as_slice()].concat())
+                .map_err(aos_sandbox::ReconcilerError::from)
                 .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
             // Only exact signed Host request/completion classification may mint
             // this binding; a receipt prefix by itself is not authorization.

@@ -37,7 +37,8 @@ use crate::policy_compiler::{CurrentNixPreflightAttemptV1, CurrentNixPreflightOr
 use crate::production_operation_compiler::{NixStartAdmissionCarrierV2, NixStartContinuationErrorV2};
 use crate::runtime_authority::RuntimeAuthorityBindingV1;
 use crate::runtime_scope::CurrentAssignmentTarget;
-use crate::{EffectPlan, Journal, JournalError};
+use crate::{ Journal, JournalError};
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan};
 
 // Owned closure payload with no reference to I or the external acquisition.
 // Field order preserves the old constructor's reverse local Drop order.

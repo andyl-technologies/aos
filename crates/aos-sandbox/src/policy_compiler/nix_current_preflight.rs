@@ -546,7 +546,7 @@ impl<'source> CurrentNixPreflightAttemptV1<'source> {
         // disappears when only their final inventory is returned.
         let decoded_cell_bytes = std::mem::size_of::<crate::sandbox_spec_state::DurableSandboxSpecV1>()
             .checked_add(std::mem::size_of::<crate::runtime_authority::RuntimeAuthorityBindingV1>())
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::reconciler::PublicMutationEffectV1>()))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1>()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<HierarchyProtectedJournalEnvelopeV1>()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<HierarchyJournalReplayTransactionV1>()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<

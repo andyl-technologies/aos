@@ -21,7 +21,8 @@ use crate::hierarchy::protected_journal::{
 use crate::journal::ProtectedJournalNamesV1;
 use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::production_operation_compiler::{NixStartAdmissionCarrierV2, NixStartAdmissionErrorV2};
-use crate::reconciler::{PublicMutationEffectV1, ReconcilerError};
+use crate::reconciler::ReconcilerError;
+use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
 use crate::runtime_authority::{
     RuntimeAuthorityBindingV1, RuntimeAuthorityError, RuntimeAuthorityLimits, RuntimeAuthorityStore,
 };
@@ -72,7 +73,7 @@ pub(super) struct CurrentNixTreeTargetV1 {
 pub(super) struct CurrentNixInputAttemptV1<'source> {
     pub(super) entered: bool,
     pub(super) carrier: Option<Result<Vec<u8>, NixStartAdmissionErrorV2>>,
-    pub(super) context: Option<Result<Option<PublicMutationEffectV1>, ReconcilerError>>,
+    pub(super) context: Option<Result<Option<PublicMutationEffectHistoryV1>, ReconcilerError>>,
     pub(super) request: Option<Result<DormantSandboxRequestKindV1, ReconcilerError>>,
     pub(super) binding: Option<Result<Option<RuntimeAuthorityBindingV1>, RuntimeAuthorityError>>,
     pub(super) specification: Option<Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError>>,
@@ -91,7 +92,7 @@ pub(super) struct CurrentNixInputAttemptV1<'source> {
 // CurrentStart or Source reference enters that resident Session destination.
 pub(super) struct CurrentNixInputOriginalsV1 {
     carrier: Option<Result<Vec<u8>, NixStartAdmissionErrorV2>>,
-    context: Option<Result<Option<PublicMutationEffectV1>, ReconcilerError>>,
+    context: Option<Result<Option<PublicMutationEffectHistoryV1>, ReconcilerError>>,
     request: Option<Result<DormantSandboxRequestKindV1, ReconcilerError>>,
     binding: Option<Result<Option<RuntimeAuthorityBindingV1>, RuntimeAuthorityError>>,
     specification: Option<Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError>>,
@@ -110,7 +111,7 @@ pub(super) struct CurrentNixInputOriginalsV1 {
 // moves no payload and never reconstructs a former journal or Source loan.
 struct CurrentNixInputResultViewV1<'original> {
     carrier: &'original Option<Result<Vec<u8>, NixStartAdmissionErrorV2>>,
-    context: &'original Option<Result<Option<PublicMutationEffectV1>, ReconcilerError>>,
+    context: &'original Option<Result<Option<PublicMutationEffectHistoryV1>, ReconcilerError>>,
     request: &'original Option<Result<DormantSandboxRequestKindV1, ReconcilerError>>,
     binding: &'original Option<Result<Option<RuntimeAuthorityBindingV1>, RuntimeAuthorityError>>,
     specification: &'original Option<Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError>>,
@@ -209,9 +210,9 @@ impl<'source> CurrentNixInputAttemptV1<'source> {
 
         self.controller_names = Some(controller.protected_writer_physical_names_v1());
         self.carrier = Some(original.encode().map_err(NixStartAdmissionErrorV2::from));
-        self.context = Some(PublicMutationEffectV1::decode_plain(original.ordinary_effect()));
+        self.context = Some(PublicMutationEffectHistoryV1::decode_plain(original.ordinary_effect()).map_err(ReconcilerError::from));
         if let Some(Ok(Some(context))) = self.context.as_ref() {
-            self.request = Some(context.validated_request());
+            self.request = Some(context.validated_request().map_err(ReconcilerError::from));
         }
         self.binding = Some(
             RuntimeAuthorityStore::load(controller, RuntimeAuthorityLimits::default())

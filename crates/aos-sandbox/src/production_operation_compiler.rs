@@ -1052,9 +1052,10 @@ mod renewal_replay_tests {
     use super::*;
     use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
     use crate::reconciler::{
-        AcceptOutcome, EffectFailure, EffectObservation, EffectPlan, EffectReceipt, Reconciler,
+        AcceptOutcome, EffectFailure, EffectObservation, Reconciler,
         SingleNodeEffectExecutor,
     };
+    use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
     use crate::{IdempotencyKey, JournalLimits};
 
     #[cfg(target_os = "linux")]

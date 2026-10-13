@@ -1055,8 +1055,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        EffectFailure, EffectObservation, EffectPlan, EffectReceipt, SingleNodeEffectExecutor,
+        EffectFailure, EffectObservation, SingleNodeEffectExecutor,
     };
+    use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
     use aos_sandbox_core::model::{
         AttachmentConsistency, AttachmentLease, AttachmentPresentation, CacheDomain,
         CacheDomainKind, MountAttributes, View, ViewConsistency, ViewMutation, ViewSource,

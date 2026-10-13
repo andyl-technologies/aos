@@ -16,7 +16,8 @@ use aos_sandbox::controller_service::public_projection::{PublicProjectionStoreV1
 use aos_sandbox::environment::EnvironmentProtectedEvidenceOwnerV1;
 use aos_sandbox::execution_parent_resource::current_execution_parent_resource_from_journal_v1;
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
-use aos_sandbox::{EffectFailure, Journal, PublicMutationEffectV1};
+use aos_sandbox::{EffectFailure, Journal};
+use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
 use aos_sandbox_core::{ExecutionId, OperationId, SandboxId};
 
 use super::attachment_target::ControllerAttachmentTargetInputsV1;
@@ -32,7 +33,7 @@ use super::{ProductionEffectExecutor, sample_ownership_clock};
 pub(super) fn observe(
     executor: &mut ProductionEffectExecutor,
     operation: OperationId,
-    context: &PublicMutationEffectV1,
+    context: &PublicMutationEffectHistoryV1,
     controller: &mut Journal,
 ) -> Result<(), EffectFailure> {
     advance(executor, operation, context, controller, true)
@@ -47,7 +48,7 @@ pub(super) fn observe(
 pub(super) fn apply(
     executor: &mut ProductionEffectExecutor,
     operation: OperationId,
-    context: &PublicMutationEffectV1,
+    context: &PublicMutationEffectHistoryV1,
     controller: &mut Journal,
 ) -> Result<(), EffectFailure> {
     advance(executor, operation, context, controller, false)
@@ -56,7 +57,7 @@ pub(super) fn apply(
 fn advance(
     executor: &mut ProductionEffectExecutor,
     operation: OperationId,
-    context: &PublicMutationEffectV1,
+    context: &PublicMutationEffectHistoryV1,
     controller: &mut Journal,
     observing: bool,
 ) -> Result<(), EffectFailure> {
@@ -227,7 +228,7 @@ fn advance(
 fn accepted_target(
     controller: &Journal,
     operation: OperationId,
-    context: &PublicMutationEffectV1,
+    context: &PublicMutationEffectHistoryV1,
 ) -> Result<(SandboxId, ExecutionId), EffectFailure> {
     let projections = PublicProjectionStoreV1::new(controller)
         .list_operation(operation)

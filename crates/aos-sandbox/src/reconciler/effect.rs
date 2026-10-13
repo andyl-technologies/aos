@@ -30,39 +30,18 @@ use buffa::Message as _;
 #[cfg(test)]
 use sha2::{Digest as _, Sha256};
 
-use super::project_admission::{MAXIMUM_RECORD_BYTES, ProjectAdmissionMetadata};
-use super::{EffectReceipt, ReconcilerError};
+use super::ReconcilerError;
 use crate::controller_execution_observe_reservation::ControllerExecutionObserveReservationV1;
 use crate::{BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1};
 
 mod history;
 
-pub(super) use history::{decode_effect, effect_body_digest, encode_effect};
-#[cfg(target_os = "linux")]
-pub(super) use history::{decode_effect_with_q04, encode_q04_effect, q04_effect_subgate};
-use history::{attempt_token_digest, effect_binding_digest, validate_broker_method_domain};
-#[cfg(test)]
-use history::{audience_code, audience_from_code};
-pub(crate) use history::{
-    compare_capacity_effect_history, decode_capacity_effect_history, validate_delete_effect_record,
+use aos_sandbox_protocol::domain_ledger::effect_history::{
+    AuthorityEffectBindingV1, BrokerDispatchAttemptHistoryV1, EffectDomain, EffectPlan, EffectReceipt,
+    PreparedAuthorityEffectHistoryV1, PublicMutationEffectHistoryV1,
+    MAXIMUM_REQUEST_BYTES, MAXIMUM_RECEIPT_BYTES, attempt_token_digest, effect_body_digest,
 };
-
-pub(super) const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
-pub(super) const MAXIMUM_RECEIPT_BYTES: usize = 64 * 1024;
-pub(super) const MAXIMUM_DIAGNOSTIC_BYTES: usize = 4096;
-const EFFECT_VERSION: u8 = 2;
-const CONTROLLER_EFFECT_VERSION: u8 = 3;
-pub(super) const RESERVED_OBSERVE_EFFECT_VERSION: u8 = 4;
-pub(super) const CONTROLLER_PROJECT_EFFECT_VERSION: u8 = 5;
-const CONTROLLER_Q04_EFFECT_VERSION: u8 = 6;
-const AUTHORITY_BOUND_FLAG: u8 = 1;
-const MAXIMUM_DISPATCH_PACKET_BYTES: usize = MAXIMUM_REQUEST_BYTES;
-const BODY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-body.v1\0";
-const BINDING_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-binding.v1\0";
-const ATTEMPT_TOKEN_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-attempt-token.v1\0";
-#[cfg(test)]
-// The original golden vector remains independent of the relocated encoder.
-const PUBLIC_MUTATION_EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-mutation-effect.v1\0";
+pub(crate) use history::{compare_capacity_effect_history, decode_capacity_effect_history, validate_delete_effect_record};
 
 /// Carries authenticated admission identity with one exact public mutation.
 ///
@@ -74,26 +53,12 @@ const PUBLIC_MUTATION_EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-mutatio
 /// retains the original FUSE/Nix carrier selection and admission recipes.
 #[derive(Clone, Eq, PartialEq)]
 pub struct PublicMutationEffectV1 {
-    plain: PublicMutationContextV1,
-    #[cfg(target_os = "linux")]
-    fuse_admission: Option<crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1>,
-    #[cfg(target_os = "linux")]
-    nix_start: Option<crate::production_operation_compiler::NixStartAdmissionCarrierV2>,
+    history: PublicMutationEffectHistoryV1,
 }
 
 impl std::fmt::Debug for PublicMutationEffectV1 {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Keep the original flat diagnostic fields despite nested DATA storage.
-        let mut fields = formatter.debug_struct("PublicMutationEffectV1");
-        fields.field("caller", &self.plain.caller());
-        fields.field("project", &self.plain.project());
-        fields.field("accepted_wall_seconds", &self.plain.accepted_wall_seconds());
-        fields.field("canonical_request", &self.plain.canonical_request());
-        #[cfg(target_os = "linux")]
-        fields.field("fuse_admission", &self.fuse_admission);
-        #[cfg(target_os = "linux")]
-        fields.field("nix_start", &self.nix_start);
-        fields.finish()
+        std::fmt::Debug::fmt(&self.history, formatter)
     }
 }
 
@@ -118,37 +83,31 @@ impl PublicMutationEffectV1 {
         let plain =
             PublicMutationContextV1::new(caller, project, accepted_wall_seconds, canonical_request)
                 .map_err(invalid_public_mutation_context)?;
-        Ok(Self {
-            plain,
-            #[cfg(target_os = "linux")]
-            fuse_admission: None,
-            #[cfg(target_os = "linux")]
-            nix_start: None,
-        })
+        Ok(Self { history: PublicMutationEffectHistoryV1::from_plain(plain) })
     }
 
     /// Returns the authenticated caller fixed at admission.
     #[must_use]
     pub const fn caller(&self) -> PrincipalId {
-        self.plain.caller()
+        self.history.plain().caller()
     }
 
     /// Returns the authenticated project fixed at admission.
     #[must_use]
     pub const fn project(&self) -> ProjectId {
-        self.plain.project()
+        self.history.plain().project()
     }
 
     /// Returns the protected admission clock in Unix seconds.
     #[must_use]
     pub const fn accepted_wall_seconds(&self) -> i64 {
-        self.plain.accepted_wall_seconds()
+        self.history.plain().accepted_wall_seconds()
     }
 
     /// Returns the exact canonical public mutation envelope.
     #[must_use]
     pub fn canonical_request(&self) -> &[u8] {
-        self.plain.canonical_request()
+        self.history.plain().canonical_request()
     }
 
     /// Decodes the exact public request through the established mutation validator.
@@ -166,41 +125,21 @@ impl PublicMutationEffectV1 {
     pub fn validated_request(
         &self,
     ) -> Result<aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1, ReconcilerError> {
-        self.plain
+        self.history.plain()
             .validated_request()
             .map_err(invalid_public_mutation_context)
     }
 
+    #[cfg(test)]
     fn encode(&self) -> Result<Vec<u8>, ReconcilerError> {
-        #[cfg(target_os = "linux")]
-        return aos_sandbox_protocol::public_api::mutation_history::encode_history(
-            &self.plain,
-            self.fuse_admission
-                .as_ref()
-                .map(|carrier| carrier.history()),
-            self.nix_start.as_ref(),
-        )
-        .map_err(|error| ReconcilerError::InvalidPlan(error.reason()));
-        #[cfg(not(target_os = "linux"))]
-        self.encode_plain()
+        self.history.encode().map_err(ReconcilerError::from)
     }
 
     pub(crate) fn encode_plain(&self) -> Result<Vec<u8>, ReconcilerError> {
-        self.plain.encode().map_err(invalid_public_mutation_context)
+        self.history.encode_plain().map_err(ReconcilerError::from)
     }
 
-    fn decode(bytes: &[u8]) -> Result<Option<Self>, ReconcilerError> {
-        #[cfg(target_os = "linux")]
-        return aos_sandbox_protocol::public_api::mutation_history::decode_history(bytes)
-            .map(|parts| parts.map(|(plain, fuse_admission, nix_start)| Self {
-                plain,
-                fuse_admission: fuse_admission.map(crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1::from_history),
-                nix_start,
-            }))
-            .map_err(|error| ReconcilerError::InvalidPlan(error.reason()));
-        #[cfg(not(target_os = "linux"))]
-        Self::decode_plain(bytes)
-    }
+
 
     #[cfg(target_os = "linux")]
     pub(crate) fn with_fuse_admission(
@@ -208,20 +147,20 @@ impl PublicMutationEffectV1 {
         carrier: crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1,
     ) -> Result<Self, ReconcilerError> {
         aos_sandbox_protocol::public_api::mutation_history::require_fuse_context(
-            &self.plain,
-            self.nix_start.as_ref(),
+            self.history.plain(),
+            self.history.nix_start(),
             carrier.history(),
         )
         .map_err(|error| ReconcilerError::InvalidPlan(error.reason()))?;
-        self.fuse_admission = Some(carrier);
+        self.history.set_fuse_admission(carrier.into_history());
         Ok(self)
     }
 
     #[cfg(target_os = "linux")]
     pub(crate) fn fuse_admission(
         &self,
-    ) -> Option<&crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1> {
-        self.fuse_admission.as_ref()
+    ) -> Option<&aos_sandbox_protocol::public_api::mutation_history::ControllerFuseAdmissionCarrierV1> {
+        self.history.fuse_admission()
     }
 
     #[cfg(target_os = "linux")]
@@ -230,264 +169,42 @@ impl PublicMutationEffectV1 {
         carrier: crate::production_operation_compiler::NixStartAdmissionCarrierV2,
     ) -> Result<Self, ReconcilerError> {
         aos_sandbox_protocol::public_api::mutation_history::require_nix_context(
-            &self.plain,
-            self.fuse_admission
-                .as_ref()
-                .map(|carrier| carrier.history()),
+            self.history.plain(),
+            self.history.fuse_admission(),
             &carrier,
         )
         .map_err(|error| ReconcilerError::InvalidPlan(error.reason()))?;
-        self.nix_start = Some(carrier);
+        self.history.set_nix_start(carrier);
         Ok(self)
     }
 
     /// Reports retained Nix continuation DATA, never build or floor readiness.
     #[cfg(target_os = "linux")]
     pub fn has_retained_nix_start(&self) -> bool {
-        self.nix_start.is_some()
+        self.history.has_retained_nix_start()
     }
 
     #[cfg(target_os = "linux")]
     pub(crate) fn nix_start(&self) -> Option<&crate::production_operation_compiler::NixStartAdmissionCarrierV2> {
-        self.nix_start.as_ref()
+        self.history.nix_start()
     }
 
-    pub(crate) fn decode_plain(bytes: &[u8]) -> Result<Option<Self>, ReconcilerError> {
-        PublicMutationContextV1::decode(bytes)
-            .map(|context| {
-                context.map(|plain| Self {
-                    plain,
-                    #[cfg(target_os = "linux")]
-                    fuse_admission: None,
-                    #[cfg(target_os = "linux")]
-                    nix_start: None,
-                })
-            })
-            .map_err(invalid_public_mutation_context)
-    }
+
 }
 
-/// Selects the sole fixed-function boundary allowed to execute an effect.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum EffectDomain {
-    /// Typed systemd, cgroup, runtime, and freeze operations.
-    Host = 1,
-    /// Typed dataset, snapshot, hold, clone, quota, and destroy operations.
-    Storage = 2,
-    /// Descriptor-only mount preparation and namespace publication.
-    Mount = 3,
-    /// Typed network namespace, link, route, and packet-gate operations.
-    Network = 4,
-    /// Assignment ownership and fail-stop lease operations.
-    Guardian = 5,
-    /// Authenticated in-guest readiness, execution, and quiesce operations.
-    Guest = 6,
-    /// Controller-owned orchestration of one authenticated public mutation.
-    Controller = 7,
-}
 
-impl EffectDomain {
-    pub(super) fn from_byte(value: u8) -> Result<Self, ReconcilerError> {
-        match value {
-            1 => Ok(Self::Host),
-            2 => Ok(Self::Storage),
-            3 => Ok(Self::Mount),
-            4 => Ok(Self::Network),
-            5 => Ok(Self::Guardian),
-            6 => Ok(Self::Guest),
-            7 => Ok(Self::Controller),
-            _ => Err(ReconcilerError::CorruptLedger("unknown effect domain")),
-        }
+impl PublicMutationEffectV1 {
+    /// Transfers checked fresh context into its sole historical DATA storage.
+    pub(crate) fn into_history(self) -> PublicMutationEffectHistoryV1 {
+        self.history
     }
 
-    pub(super) const fn from_audience(audience: BrokerAudience) -> Result<Self, ReconcilerError> {
-        match audience {
-            BrokerAudience::Host => Ok(Self::Host),
-            BrokerAudience::Storage => Ok(Self::Storage),
-            BrokerAudience::Mount => Ok(Self::Mount),
-            BrokerAudience::Network => Ok(Self::Network),
-            BrokerAudience::Guardian => Err(ReconcilerError::InvalidPlan(
-                "guardian authority cannot use the generic broker effect path",
-            )),
-            BrokerAudience::Nix => Err(ReconcilerError::InvalidPlan(
-                "Nix authority cannot use the generic broker effect path",
-            )),
-        }
-    }
-}
-
-/// Defines one ordered, idempotent request to a fixed effect boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EffectPlan {
-    pub(super) domain: EffectDomain,
-    pub(super) method: Option<BrokerMethod>,
-    pub(super) controller_method: Option<aos_sandbox_protocol::public_api::PublicOperationMethodV1>,
-    pub(super) request: Vec<u8>,
-    pub(super) authority: Option<AuthorityEffectBindingV1>,
-}
-
-impl EffectPlan {
-    /// Retains an Observe child without a dispatch method or effect authority.
-    #[must_use]
-    pub(super) fn reserved_observe(reservation: &ControllerExecutionObserveReservationV1) -> Self {
-        Self {
-            domain: EffectDomain::Controller,
-            method: None,
-            controller_method: None,
-            request: reservation.encode(),
-            authority: None,
-        }
-    }
-
-    pub(super) fn is_reserved_observe(&self) -> bool {
-        self.domain == EffectDomain::Controller
-            && self.method.is_none()
-            && self.controller_method.is_none()
-            && self.authority.is_none()
-            && self.request.get(8..24).is_some_and(|execution| {
-                ControllerExecutionObserveReservationV1::decode(execution, &self.request).is_ok()
-            })
-    }
-
-    /// Constructs a controller effect with authenticated admission context.
+    /// Consumes fresh Native context through the complete canonical plan validator.
     ///
     /// # Errors
-    ///
-    /// Returns [`ReconcilerError::InvalidPlan`] when the context cannot be
-    /// encoded or its inner envelope does not select `method`.
-    pub fn authorized_public_mutation(
-        method: aos_sandbox_protocol::public_api::PublicOperationMethodV1,
-        effect: PublicMutationEffectV1,
-    ) -> Result<Self, ReconcilerError> {
-        Self::from_public_mutation_bytes(method, effect.encode()?)
-    }
-
-    /// Constructs a bounded generic broker effect from validated request bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ReconcilerError::InvalidPlan`] for an unknown or cross-domain
-    /// method, or for an empty or oversized request.
-    pub fn new(
-        domain: EffectDomain,
-        method: BrokerMethod,
-        request: Vec<u8>,
-    ) -> Result<Self, ReconcilerError> {
-        if request.is_empty() || request.len() > MAXIMUM_REQUEST_BYTES {
-            return Err(ReconcilerError::InvalidPlan(
-                "invalid effect request length",
-            ));
-        }
-        validate_broker_method_domain(domain, method)?;
-
-        Ok(Self {
-            domain,
-            method: Some(method),
-            controller_method: None,
-            request,
-            authority: None,
-        })
-    }
-
-    // Construction and recovery use the same context-bearing request validator.
-    fn from_public_mutation_bytes(
-        method: aos_sandbox_protocol::public_api::PublicOperationMethodV1,
-        request: Vec<u8>,
-    ) -> Result<Self, ReconcilerError> {
-        if request.is_empty() || request.len() > MAXIMUM_REQUEST_BYTES {
-            return Err(ReconcilerError::InvalidPlan(
-                "invalid controller effect request length",
-            ));
-        }
-        let authenticated = PublicMutationEffectV1::decode(&request)?.ok_or(
-            ReconcilerError::InvalidPlan("controller effect lacks authenticated admission context"),
-        )?;
-        let canonical_request = authenticated.canonical_request();
-        if method == aos_sandbox_protocol::public_api::PublicOperationMethodV1::OperatorRecover {
-            let envelope = crate::cli_model::PublicMutationRequestV1::decode(canonical_request)
-                .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))?;
-            let kind = envelope
-                .decode_validated_kind()
-                .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))?;
-            if envelope.method() != crate::cli_model::PublicApiAuditMethodV1::OperatorRecover
-                || !matches!(
-                    kind,
-                    aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::OperatorRecover(_)
-                )
-            {
-                return Err(ReconcilerError::InvalidPlan(
-                    "controller effect method does not match its request",
-                ));
-            }
-        } else {
-            let resolved =
-                crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(
-                    canonical_request,
-                )
-                .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))?;
-            if resolved.operation_method() != method {
-                return Err(ReconcilerError::InvalidPlan(
-                    "controller effect method does not match its request",
-                ));
-            }
-        }
-
-        Ok(Self {
-            domain: EffectDomain::Controller,
-            method: None,
-            controller_method: Some(method),
-            request,
-            authority: None,
-        })
-    }
-
-    /// Returns the fixed boundary selected for this effect.
-    #[must_use]
-    pub const fn domain(&self) -> EffectDomain {
-        self.domain
-    }
-
-    /// Returns the exact broker method, or `None` for Controller-owned effects.
-    #[must_use]
-    pub const fn method(&self) -> Option<BrokerMethod> {
-        self.method
-    }
-
-    /// Returns the exact public mutation handled by controller orchestration.
-    #[must_use]
-    pub const fn public_mutation_method(
-        &self,
-    ) -> Option<aos_sandbox_protocol::public_api::PublicOperationMethodV1> {
-        self.controller_method
-    }
-
-    /// Decodes authenticated admission context for a controller mutation.
-    ///
-    /// Controller mutations retain a context. Broker effects and reserved
-    /// Observe children return `None`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ReconcilerError::InvalidPlan`] when an authenticated envelope
-    /// has malformed lengths, reserved bytes, identities, time, or digest.
-    pub fn public_mutation_context(
-        &self,
-    ) -> Result<Option<PublicMutationEffectV1>, ReconcilerError> {
-        if self.controller_method.is_none() {
-            return Ok(None);
-        }
-        PublicMutationEffectV1::decode(&self.request)
-    }
-
-    /// Returns the exact idempotent request bytes sent to the executor.
-    #[must_use]
-    pub fn request(&self) -> &[u8] {
-        &self.request
-    }
-
-    pub(super) fn authority(&self) -> Option<&AuthorityEffectBindingV1> {
-        self.authority.as_ref()
+    /// Returns the original Native encoding or method/request validation refusal.
+    pub fn into_plan(self, method: aos_sandbox_protocol::public_api::PublicOperationMethodV1) -> Result<EffectPlan, ReconcilerError> {
+        EffectPlan::from_public_mutation_context(method, self.history).map_err(ReconcilerError::from)
     }
 }
 
@@ -516,28 +233,21 @@ impl AuthorityBoundEffectPlanV1 {
                 "invalid authority effect body",
             ));
         }
-        let domain = EffectDomain::from_audience(audience)?;
+        let domain = EffectDomain::from_audience(audience).map_err(ReconcilerError::from)?;
         let body_digest = effect_body_digest(body);
         let semantic_digest = crate::dispatch::semantic_identity_digest(semantics);
         Ok(Self {
-            plan: EffectPlan {
+            plan: EffectPlan::from_parts((
                 domain,
-                method: Some(method),
-                controller_method: None,
-                request: body.to_vec(),
-                authority: Some(AuthorityEffectBindingV1 {
-                    source_draft_digest,
-                    audience,
-                    method,
-                    template_digest,
-                    body_digest,
-                    semantic_digest,
-                    descriptor_free,
-                    operation_id: OperationId::from_bytes([0; 16]),
-                    step: 0,
-                    digest: ObjectDigest::from_bytes([0; 32]),
-                }),
-            },
+                Some(method),
+                None,
+                body.to_vec(),
+                Some(AuthorityEffectBindingV1::from_parts((
+                    OperationId::from_bytes([0; 16]), 0, source_draft_digest,
+                    audience, method, template_digest, body_digest, semantic_digest,
+                    descriptor_free, ObjectDigest::from_bytes([0; 32]),
+                ))),
+            )),
             source_draft_digest,
             audience,
             template_digest,
@@ -566,12 +276,12 @@ impl AuthorityBoundEffectPlanV1 {
     /// Returns the exact deadline-free request body committed by the template.
     #[must_use]
     pub fn body_without_deadline(&self) -> &[u8] {
-        &self.plan.request
+        self.plan.request()
     }
 
     pub(super) fn is_supported_authority_apply(&self) -> bool {
         let method_matches_audience = matches!(
-            (self.audience, self.plan.method),
+            (self.audience, self.plan.method()),
             (
                 BrokerAudience::Host,
                 Some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME)
@@ -595,36 +305,9 @@ impl AuthorityBoundEffectPlanV1 {
         operation_id: OperationId,
         step: u32,
     ) -> Result<EffectPlan, ReconcilerError> {
-        if let Some(binding) = &mut self.plan.authority {
-            binding.operation_id = operation_id;
-            binding.step = step;
-            binding.digest = effect_binding_digest(
-                operation_id,
-                step,
-                binding.source_draft_digest,
-                binding.audience,
-                binding.method,
-                binding.template_digest,
-                binding.body_digest,
-                binding.semantic_digest,
-            )?;
-        }
+        self.plan.bind_operation(operation_id, step).map_err(ReconcilerError::from)?;
         Ok(self.plan)
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct AuthorityEffectBindingV1 {
-    pub(super) operation_id: OperationId,
-    pub(super) step: u32,
-    pub(super) source_draft_digest: ObjectDigest,
-    pub(super) audience: BrokerAudience,
-    pub(super) method: BrokerMethod,
-    pub(super) template_digest: ObjectDigest,
-    pub(super) body_digest: ObjectDigest,
-    pub(super) semantic_digest: ObjectDigest,
-    pub(super) descriptor_free: bool,
-    pub(super) digest: ObjectDigest,
 }
 
 /// Supplies advisory clock facts used to attenuate one durable broker attempt.
@@ -653,15 +336,16 @@ impl AuthorityEffectAttemptTimingV1 {
     }
 }
 
-/// Carries the exact broker request made durable before external I/O.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Retains the exact prepared history at the Native executor/session boundary.
+#[derive(Clone, Eq, PartialEq)]
 pub struct PreparedAuthorityEffectV1 {
-    binding_digest: ObjectDigest,
-    publication_digest: ObjectDigest,
-    preparation_wall_seconds: i64,
-    preparation_boottime_nanoseconds: u64,
-    preparation_host_boot_id: [u8; 16],
-    attempt: BrokerDispatchAttemptV1,
+    history: PreparedAuthorityEffectHistoryV1,
+}
+
+impl std::fmt::Debug for PreparedAuthorityEffectV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.history, formatter)
+    }
 }
 
 /// Carries one exact durable authority request into authenticated session custody.
@@ -732,32 +416,15 @@ impl PreparedAuthorityEffectV1 {
         attempt: BrokerDispatchAttemptV1,
     ) -> Self {
         Self {
-            binding_digest,
-            publication_digest,
-            preparation_wall_seconds: preparation_clock.wall_seconds(),
-            preparation_boottime_nanoseconds: preparation_clock.boottime_nanoseconds(),
-            preparation_host_boot_id: preparation_clock.host_boot_id(),
-            attempt,
+            history: PreparedAuthorityEffectHistoryV1::from_durable_parts(
+                binding_digest, publication_digest, preparation_clock.wall_seconds(),
+                preparation_clock.boottime_nanoseconds(), preparation_clock.host_boot_id(),
+                attempt.into_history(),
+            ),
         }
     }
 
-    pub(crate) const fn from_durable_parts(
-        binding_digest: ObjectDigest,
-        publication_digest: ObjectDigest,
-        preparation_wall_seconds: i64,
-        preparation_boottime_nanoseconds: u64,
-        preparation_host_boot_id: [u8; 16],
-        attempt: BrokerDispatchAttemptV1,
-    ) -> Self {
-        Self {
-            binding_digest,
-            publication_digest,
-            preparation_wall_seconds,
-            preparation_boottime_nanoseconds,
-            preparation_host_boot_id,
-            attempt,
-        }
-    }
+
 
     /// Validates a Host completion body against this exact persisted Apply.
     ///
@@ -776,13 +443,13 @@ impl PreparedAuthorityEffectV1 {
         }
         aos_sandbox_protocol::validate_runtime_effect_receipt_for_apply(
             &bytes,
-            self.attempt.body(),
+            self.history.attempt().body(),
         )
         .map_err(|_| ReconcilerError::InvalidExecutorOutput("invalid Host effect receipt"))?;
         Ok(ValidatedAuthorityEffectReceiptV1 {
             bytes,
-            binding_digest: self.binding_digest,
-            attempt_digest: attempt_token_digest(&self.attempt),
+            binding_digest: self.history.binding_digest(),
+            attempt_digest: attempt_token_digest(self.history.attempt()),
         })
     }
 
@@ -801,8 +468,8 @@ impl PreparedAuthorityEffectV1 {
         &self,
         outcome: &AuthenticatedBrokerMethodOutcomeV1,
     ) -> Result<ValidatedAuthorityEffectReceiptV1, ReconcilerError> {
-        let method = self.attempt_method()?;
-        if outcome.method() != method || outcome.request().exact_body() != self.attempt.body() {
+        let method = authority_attempt_method(self.history.attempt())?;
+        if outcome.method() != method || outcome.request().exact_body() != self.history.attempt().body() {
             return Err(ReconcilerError::InvalidExecutorOutput(
                 "authority effect outcome belongs to another durable attempt",
             ));
@@ -820,8 +487,8 @@ impl PreparedAuthorityEffectV1 {
 
         Ok(ValidatedAuthorityEffectReceiptV1 {
             bytes: exact_body.clone(),
-            binding_digest: self.binding_digest,
-            attempt_digest: attempt_token_digest(&self.attempt),
+            binding_digest: self.history.binding_digest(),
+            attempt_digest: attempt_token_digest(self.history.attempt()),
         })
     }
 
@@ -847,7 +514,7 @@ impl PreparedAuthorityEffectV1 {
         let request = self.broker_request()?;
         if method != request.method()
             || request_id != request.request_id()
-            || request_body != self.attempt.body()
+            || request_body != self.history.attempt().body()
         {
             return Err(ReconcilerError::InvalidExecutorOutput(
                 "protected terminal exchange belongs to another durable attempt",
@@ -864,8 +531,8 @@ impl PreparedAuthorityEffectV1 {
 
         Ok(ValidatedAuthorityEffectReceiptV1 {
             bytes: receipt,
-            binding_digest: self.binding_digest,
-            attempt_digest: attempt_token_digest(&self.attempt),
+            binding_digest: self.history.binding_digest(),
+            attempt_digest: attempt_token_digest(self.history.attempt()),
         })
     }
 
@@ -901,7 +568,7 @@ impl PreparedAuthorityEffectV1 {
         if !query.__buffa_unknown_fields.is_empty()
             || query.encode_to_vec() != outcome.request().exact_body()
             || header.request_id.as_slice() != original.request_id()
-            || query.original_apply_request.as_slice() != self.attempt.body()
+            || query.original_apply_request.as_slice() != self.history.attempt().body()
         {
             return Err(ReconcilerError::InvalidExecutorOutput(
                 "authority effect query does not name the durable Apply",
@@ -954,14 +621,14 @@ impl PreparedAuthorityEffectV1 {
     /// envelope or method body is noncanonical, incomplete, or inconsistent
     /// with the attempt deadline.
     pub fn broker_request(&self) -> Result<PreparedAuthorityBrokerRequestV1, ReconcilerError> {
-        let envelope = self.attempt_envelope()?;
+        let envelope = decode_authority_attempt_envelope(self.history.attempt())?;
         let method = envelope
             .method
             .as_known()
             .ok_or(ReconcilerError::InvalidExecutorOutput(
                 "authority effect method is unknown",
             ))?;
-        let header = decode_authority_apply_header(method, self.attempt.body())?;
+        let header = decode_authority_apply_header(method, self.history.attempt().body())?;
         let request_id: [u8; 16] = header.request_id.as_slice().try_into().map_err(|_| {
             ReconcilerError::InvalidExecutorOutput("authority effect request ID is invalid")
         })?;
@@ -978,7 +645,7 @@ impl PreparedAuthorityEffectV1 {
                 "authority effect audience is unknown",
             ))?;
         if request_id == [0; 16]
-            || header.deadline_boottime_nanoseconds != self.attempt.deadline_boottime_nanoseconds()
+            || header.deadline_boottime_nanoseconds != self.history.attempt().deadline_boottime_nanoseconds()
             || !(aos_sandbox_protocol::MINIMUM_RESPONSE_BYTES
                 ..=aos_sandbox_protocol::MAXIMUM_RESPONSE_BYTES)
                 .contains(&header.maximum_response_bytes)
@@ -999,40 +666,72 @@ impl PreparedAuthorityEffectV1 {
         })
     }
 
-    pub(crate) fn validate_durable_receipt(&self, bytes: &[u8]) -> Result<(), ReconcilerError> {
-        if bytes.is_empty() || bytes.len() > MAXIMUM_RECEIPT_BYTES {
-            return Err(ReconcilerError::InvalidExecutorOutput(
-                "invalid authority effect receipt length",
-            ));
-        }
-        if self.attempt_method()? == BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME {
-            aos_sandbox_protocol::validate_runtime_effect_receipt_for_apply(
-                bytes,
-                self.attempt.body(),
-            )
-            .map_err(|_| ReconcilerError::InvalidExecutorOutput("invalid Host effect receipt"))?;
-        }
 
-        Ok(())
+
+
+
+
+
+    pub(crate) const fn binding_digest(&self) -> ObjectDigest {
+        self.history.binding_digest()
     }
 
-    fn attempt_method(&self) -> Result<BrokerMethod, ReconcilerError> {
-        self.attempt_envelope()?
-            .method
-            .as_known()
-            .ok_or(ReconcilerError::InvalidExecutorOutput(
-                "authority effect method is unknown",
-            ))
+    /// Returns the exact current publication selected for this attempt.
+    #[must_use]
+    pub const fn publication_digest(&self) -> ObjectDigest {
+        self.history.publication_digest()
     }
 
-    fn attempt_envelope(&self) -> Result<BrokerRequestEnvelope, ReconcilerError> {
+    /// Returns the byte-exact deadline-bearing broker attempt.
+    ///
+    /// Its packet is the original Apply carrier retained for either direct
+    /// transmission or construction of an authenticated effect query after a
+    /// crash or ambiguous response.
+    #[must_use]
+    pub const fn attempt(&self) -> &BrokerDispatchAttemptHistoryV1 {
+        self.history.attempt()
+    }
+
+    pub(crate) const fn preparation_wall_seconds(&self) -> i64 {
+        self.history.preparation_wall_seconds()
+    }
+
+    /// Returns the monotonic clock value at which this attempt became durable.
+    #[must_use]
+    pub const fn preparation_boottime_nanoseconds(&self) -> u64 {
+        self.history.preparation_boottime_nanoseconds()
+    }
+
+    /// Returns the host boot in which this attempt became durable.
+    #[must_use]
+    pub const fn preparation_host_boot_id(&self) -> [u8; 16] {
+        self.history.preparation_host_boot_id()
+    }
+}
+
+
+impl PreparedAuthorityEffectV1 {
+    pub(super) const fn from_history(history: PreparedAuthorityEffectHistoryV1) -> Self {
+        Self { history }
+    }
+
+    pub(super) const fn history(&self) -> &PreparedAuthorityEffectHistoryV1 {
+        &self.history
+    }
+
+    pub(super) const fn into_history(self) -> PreparedAuthorityEffectHistoryV1 {
+        self.history
+    }
+}
+
+pub(super) fn decode_authority_attempt_envelope(attempt: &BrokerDispatchAttemptHistoryV1) -> Result<BrokerRequestEnvelope, ReconcilerError> {
         let packet =
-            BrokerRequestEnvelope::decode_from_slice(self.attempt.packet()).map_err(|_| {
+            BrokerRequestEnvelope::decode_from_slice(attempt.packet()).map_err(|_| {
                 ReconcilerError::InvalidExecutorOutput("authority effect request is malformed")
             })?;
         if !packet.__buffa_unknown_fields.is_empty()
-            || packet.encode_to_vec() != self.attempt.packet()
-            || packet.body.as_slice() != self.attempt.body()
+            || packet.encode_to_vec() != attempt.packet()
+            || packet.body.as_slice() != attempt.body()
         {
             return Err(ReconcilerError::InvalidExecutorOutput(
                 "authority effect request is not canonical",
@@ -1042,42 +741,31 @@ impl PreparedAuthorityEffectV1 {
         Ok(packet)
     }
 
-    pub(crate) const fn binding_digest(&self) -> ObjectDigest {
-        self.binding_digest
+fn authority_attempt_method(attempt: &BrokerDispatchAttemptHistoryV1) -> Result<BrokerMethod, ReconcilerError> {
+        decode_authority_attempt_envelope(attempt)?
+            .method
+            .as_known()
+            .ok_or(ReconcilerError::InvalidExecutorOutput(
+                "authority effect method is unknown",
+            ))
     }
 
-    /// Returns the exact current publication selected for this attempt.
-    #[must_use]
-    pub const fn publication_digest(&self) -> ObjectDigest {
-        self.publication_digest
-    }
+pub(super) fn validate_durable_receipt_history(prepared: &PreparedAuthorityEffectHistoryV1, bytes: &[u8]) -> Result<(), ReconcilerError> {
+        if bytes.is_empty() || bytes.len() > MAXIMUM_RECEIPT_BYTES {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "invalid authority effect receipt length",
+            ));
+        }
+        if authority_attempt_method(prepared.attempt())? == BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME {
+            aos_sandbox_protocol::validate_runtime_effect_receipt_for_apply(
+                bytes,
+                prepared.attempt().body(),
+            )
+            .map_err(|_| ReconcilerError::InvalidExecutorOutput("invalid Host effect receipt"))?;
+        }
 
-    /// Returns the byte-exact deadline-bearing broker attempt.
-    ///
-    /// Its packet is the original Apply carrier retained for either direct
-    /// transmission or construction of an authenticated effect query after a
-    /// crash or ambiguous response.
-    #[must_use]
-    pub const fn attempt(&self) -> &BrokerDispatchAttemptV1 {
-        &self.attempt
+        Ok(())
     }
-
-    pub(crate) const fn preparation_wall_seconds(&self) -> i64 {
-        self.preparation_wall_seconds
-    }
-
-    /// Returns the monotonic clock value at which this attempt became durable.
-    #[must_use]
-    pub const fn preparation_boottime_nanoseconds(&self) -> u64 {
-        self.preparation_boottime_nanoseconds
-    }
-
-    /// Returns the host boot in which this attempt became durable.
-    #[must_use]
-    pub const fn preparation_host_boot_id(&self) -> [u8; 16] {
-        self.preparation_host_boot_id
-    }
-}
 
 fn decode_authority_apply_header(
     method: BrokerMethod,
@@ -1137,14 +825,14 @@ impl ValidatedAuthorityEffectReceiptV1 {
         self,
         prepared: &PreparedAuthorityEffectV1,
     ) -> Result<EffectReceipt, ReconcilerError> {
-        if self.binding_digest != prepared.binding_digest
+        if self.binding_digest != prepared.history.binding_digest()
             || self.attempt_digest != attempt_token_digest(prepared.attempt())
         {
             return Err(ReconcilerError::InvalidExecutorOutput(
                 "authority effect receipt belongs to another durable attempt",
             ));
         }
-        Ok(EffectReceipt(self.bytes))
+        Ok(EffectReceipt::from_bytes_unchecked(self.bytes))
     }
 }
 
@@ -1162,30 +850,8 @@ pub enum AuthorityEffectObservationV1 {
     Applied(ValidatedAuthorityEffectReceiptV1),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum EffectState {
-    Planned,
-    Applying {
-        attempt: u32,
-        diagnostic: String,
-    },
-    Applied {
-        attempt: u32,
-        receipt: EffectReceipt,
-    },
-    PermanentlyBlocked {
-        attempt: u32,
-        diagnostic: String,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct EffectLedgerRecord {
-    pub(super) plan: EffectPlan,
-    pub(super) state: EffectState,
-    pub(super) dispatch: Option<PreparedAuthorityEffectV1>,
-    pub(super) project_admission: Option<ProjectAdmissionMetadata>,
-}
+#[cfg(test)]
+const PUBLIC_MUTATION_EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-mutation-effect.v1\0";
 
 #[cfg(test)]
 mod tests {
@@ -1215,9 +881,9 @@ mod tests {
             .chain_update(&expected).finalize();
         expected.extend_from_slice(&digest);
 
-        let retained = PublicMutationEffectV1::decode(&context.encode().unwrap()).unwrap().unwrap();
+        let retained = PublicMutationEffectHistoryV1::decode(&context.encode().unwrap()).map_err(ReconcilerError::from).unwrap().unwrap();
         assert_eq!(context.encode().unwrap(), expected);
-        assert_eq!(retained, context);
+        assert_eq!(retained, context.history);
         assert_eq!(retained.accepted_wall_seconds(), 123);
         assert!(!retained.has_retained_nix_start());
         assert!(retained.fuse_admission().is_none());
@@ -1226,8 +892,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn malformed_recognized_nix_carrier_never_falls_back_to_ordinary_effect() {
-        assert!(PublicMutationEffectV1::decode(b"AOSNCA02").is_err());
-        assert_eq!(PublicMutationEffectV1::decode(b"unrelated-format").unwrap(), None);
+        assert!(PublicMutationEffectHistoryV1::decode(b"AOSNCA02").map_err(ReconcilerError::from).is_err());
+        assert_eq!(PublicMutationEffectHistoryV1::decode(b"unrelated-format").map_err(ReconcilerError::from).unwrap(), None);
     }
 
     #[cfg(target_os = "linux")]
@@ -1275,58 +941,40 @@ mod tests {
             request.encode(),
         )
         .unwrap();
-        let plan = EffectPlan::authorized_public_mutation(method, context.clone()).unwrap();
-        assert_eq!(plan.public_mutation_context().unwrap(), Some(context));
-        let record = EffectLedgerRecord {
-            plan,
-            state: EffectState::Planned,
-            dispatch: None,
-            project_admission: None,
-        };
+        let plan = {
+            let selected_method = method;
+            (context.clone()).into_plan(selected_method)
+        }.unwrap();
+        assert_eq!(plan.public_mutation_context().map_err(ReconcilerError::from).unwrap(), Some(context.into_history()));
+        let record = EffectLedgerRecord::from_parts((
+            plan, EffectState::Planned, None, None,
+        ));
         assert_eq!(
             decode_effect(&encode_effect(&record).unwrap()).unwrap(),
             record
         );
 
         assert!(matches!(
-            EffectPlan::from_public_mutation_bytes(method, request.encode()),
+            EffectPlan::from_public_mutation_bytes(method, request.encode()).map_err(ReconcilerError::from),
             Err(ReconcilerError::InvalidPlan(
                 "controller effect lacks authenticated admission context"
             ))
         ));
         let mut bare = record;
-        bare.plan.request = request.encode();
+        bare = {
+            let canonical_request = request.encode();
+            let mut parts = bare.into_parts();
+            let mut plan = parts.0.into_parts();
+            plan.3 = canonical_request;
+            parts.0 = EffectPlan::from_parts(plan);
+            EffectLedgerRecord::from_parts(parts)
+        };
         assert!(matches!(
-            encode_effect(&bare),
+            encode_effect(&bare).map_err(ReconcilerError::from),
             Err(ReconcilerError::InvalidPlan(
                 "controller effect lacks authenticated admission context"
             ))
         ));
-    }
-
-    #[test]
-    fn nix_audience_cannot_enter_or_encode_the_generic_broker_effect_path() {
-        assert!(matches!(
-            EffectDomain::from_audience(BrokerAudience::Nix),
-            Err(ReconcilerError::InvalidPlan(
-                "Nix authority cannot use the generic broker effect path"
-            ))
-        ));
-        assert!(matches!(
-            audience_code(BrokerAudience::Nix),
-            Err(ReconcilerError::InvalidPlan(
-                "Nix authority cannot use the generic broker effect path"
-            ))
-        ));
-
-        for reserved in [0, 5, 6, u8::MAX] {
-            assert!(matches!(
-                audience_from_code(reserved),
-                Err(ReconcilerError::CorruptLedger(
-                    "unknown authority effect audience"
-                ))
-            ));
-        }
     }
 
     #[test]
@@ -1352,31 +1000,31 @@ mod tests {
             ))
         ));
 
-        let invalid_record = EffectLedgerRecord {
-            plan: EffectPlan {
-                domain: EffectDomain::Host,
-                method: Some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME),
-                controller_method: None,
-                request: b"guardian".to_vec(),
-                authority: Some(AuthorityEffectBindingV1 {
-                    operation_id: OperationId::from_bytes([3; 16]),
-                    step: 0,
-                    source_draft_digest: ObjectDigest::from_bytes([1; 32]),
-                    audience: BrokerAudience::Guardian,
-                    method: BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-                    template_digest: ObjectDigest::from_bytes([2; 32]),
-                    body_digest: ObjectDigest::from_bytes([4; 32]),
-                    semantic_digest: ObjectDigest::from_bytes([5; 32]),
-                    descriptor_free: true,
-                    digest: ObjectDigest::from_bytes([6; 32]),
-                }),
-            },
-            state: EffectState::Planned,
-            dispatch: None,
-            project_admission: None,
-        };
+        let invalid_record = EffectLedgerRecord::from_parts((
+            EffectPlan::from_parts((
+                EffectDomain::Host,
+                Some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME),
+                None,
+                b"guardian".to_vec(),
+                Some(AuthorityEffectBindingV1::from_parts((
+                    OperationId::from_bytes([3; 16]),
+                    0,
+                    ObjectDigest::from_bytes([1; 32]),
+                    BrokerAudience::Guardian,
+                    BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                    ObjectDigest::from_bytes([2; 32]),
+                    ObjectDigest::from_bytes([4; 32]),
+                    ObjectDigest::from_bytes([5; 32]),
+                    true,
+                    ObjectDigest::from_bytes([6; 32]),
+                ))),
+            )),
+            EffectState::Planned,
+            None,
+            None,
+        ));
         assert!(matches!(
-            encode_effect(&invalid_record),
+            encode_effect(&invalid_record).map_err(ReconcilerError::from),
             Err(ReconcilerError::InvalidPlan(
                 "guardian authority cannot use the generic broker effect path"
             ))
@@ -1384,7 +1032,7 @@ mod tests {
 
         for reserved in [0, 5] {
             assert!(matches!(
-                audience_from_code(reserved),
+                aos_sandbox_protocol::domain_ledger::effect_history::audience_from_code(reserved).map_err(ReconcilerError::from),
                 Err(ReconcilerError::CorruptLedger(
                     "unknown authority effect audience"
                 ))
@@ -1392,385 +1040,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn generic_v1_effect_is_rejected_in_every_state() {
-        let cases = [
-            (
-                "planned",
-                vec![
-                    1, 1, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'a', b'b', b'c',
-                ],
-            ),
-            (
-                "applying",
-                vec![
-                    1, 1, 2, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 3, 0, b'a', b'b', b'c', b't',
-                    b'r', b'y',
-                ],
-            ),
-            (
-                "applied",
-                vec![
-                    1, 1, 3, 0, 3, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 0, 0, b'a', b'b', b'c', 9, 8,
-                ],
-            ),
-            (
-                "permanently blocked",
-                vec![
-                    1, 1, 4, 0, 4, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 2, 0, b'a', b'b', b'c', b'n',
-                    b'o',
-                ],
-            ),
-        ];
-        for (state, bytes) in cases {
-            assert!(
-                matches!(
-                    decode_effect(&bytes),
-                    Err(ReconcilerError::CorruptLedger(
-                        "invalid effect record header"
-                    ))
-                ),
-                "{state}",
-            );
-        }
-    }
+}
 
-    #[test]
-    fn opaque_effect_plan_is_rejected_by_the_encoder() {
-        let record = EffectLedgerRecord {
-            plan: EffectPlan {
-                domain: EffectDomain::Host,
-                method: None,
-                controller_method: None,
-                request: b"abc".to_vec(),
-                authority: None,
-            },
-            state: EffectState::Planned,
-            dispatch: None,
-            project_admission: None,
-        };
+impl From<aos_sandbox_protocol::domain_ledger::effect_history::EffectHistoryDataError> for ReconcilerError {
+    fn from(error: aos_sandbox_protocol::domain_ledger::effect_history::EffectHistoryDataError) -> Self {
+        use aos_sandbox_protocol::domain_ledger::effect_history::EffectHistoryDataError;
 
-        assert!(matches!(
-            encode_effect(&record),
-            Err(ReconcilerError::InvalidPlan("broker effect has no method"))
-        ));
-    }
-
-    #[test]
-    fn generic_v2_effect_bytes_remain_exact_in_every_state() {
-        let cases = [
-            (
-                EffectState::Planned,
-                vec![
-                    2, 2, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, b'a', b'b',
-                    b'c',
-                ],
-            ),
-            (
-                EffectState::Applying {
-                    attempt: 2,
-                    diagnostic: "try".to_owned(),
-                },
-                vec![
-                    2, 2, 2, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 7, b'a', b'b',
-                    b'c', b't', b'r', b'y',
-                ],
-            ),
-            (
-                EffectState::Applied {
-                    attempt: 3,
-                    receipt: EffectReceipt::new(vec![9, 8]).unwrap(),
-                },
-                vec![
-                    2, 2, 3, 0, 3, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 7, b'a', b'b',
-                    b'c', 9, 8,
-                ],
-            ),
-            (
-                EffectState::PermanentlyBlocked {
-                    attempt: 4,
-                    diagnostic: "no".to_owned(),
-                },
-                vec![
-                    2, 2, 4, 0, 4, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 7, b'a', b'b',
-                    b'c', b'n', b'o',
-                ],
-            ),
-        ];
-        for (state, expected) in cases {
-            let record = EffectLedgerRecord {
-                plan: EffectPlan::new(
-                    EffectDomain::Storage,
-                    BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
-                    b"abc".to_vec(),
-                )
-                .unwrap(),
-                state,
-                dispatch: None,
-                project_admission: None,
-            };
-            assert_eq!(encode_effect(&record).unwrap(), expected);
-            assert_eq!(decode_effect(&expected).unwrap(), record);
-        }
-    }
-
-    #[test]
-    fn generic_v2_effect_binds_the_exact_broker_method() {
-        let record = EffectLedgerRecord {
-            plan: EffectPlan::new(
-                EffectDomain::Storage,
-                BrokerMethod::BROKER_METHOD_STORAGE_APPLY,
-                b"abc".to_vec(),
-            )
-            .unwrap(),
-            state: EffectState::Planned,
-            dispatch: None,
-            project_admission: None,
-        };
-        let expected = vec![
-            2, 2, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, b'a', b'b', b'c',
-        ];
-        assert_eq!(encode_effect(&record).unwrap(), expected);
-        assert_eq!(decode_effect(&expected).unwrap(), record);
-
-        let mut unknown_method = expected.clone();
-        unknown_method[18..22].copy_from_slice(&5_i32.to_be_bytes());
-        assert!(matches!(
-            decode_effect(&unknown_method),
-            Err(ReconcilerError::CorruptLedger(
-                "unknown broker effect method"
-            ))
-        ));
-
-        let mut cross_domain = expected;
-        cross_domain[18..22].copy_from_slice(
-            &(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME as i32).to_be_bytes(),
-        );
-        assert!(matches!(
-            decode_effect(&cross_domain),
-            Err(ReconcilerError::CorruptLedger(
-                "broker effect method/domain mismatch"
-            ))
-        ));
-    }
-
-    #[test]
-    fn new_effect_rejects_unspecified_and_cross_domain_methods() {
-        assert!(matches!(
-            EffectPlan::new(
-                EffectDomain::Host,
-                BrokerMethod::BROKER_METHOD_UNSPECIFIED,
-                b"body".to_vec(),
-            ),
-            Err(ReconcilerError::InvalidPlan("unknown broker effect method"))
-        ));
-        assert!(matches!(
-            EffectPlan::new(
-                EffectDomain::Storage,
-                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-                b"body".to_vec(),
-            ),
-            Err(ReconcilerError::InvalidPlan(
-                "broker effect method crosses its fixed domain"
-            ))
-        ));
-    }
-
-    #[test]
-    fn authority_bound_v2_effect_has_fixed_binding_and_record_digests() {
-        let record = EffectLedgerRecord {
-            plan: authority_bound_plan(),
-            state: EffectState::Planned,
-            dispatch: None,
-            project_admission: None,
-        };
-        let binding = record.plan.authority().unwrap();
-        assert_eq!(
-            binding.digest.as_bytes(),
-            &[
-                0x93, 0xa5, 0xb9, 0xa6, 0x43, 0x87, 0xa8, 0x85, 0xf7, 0xe6, 0xd2, 0x06, 0x3e, 0x82,
-                0x98, 0xaf, 0xd2, 0xbe, 0x2e, 0xf1, 0xbc, 0x51, 0x38, 0xfc, 0x29, 0x71, 0x70, 0xda,
-                0xcd, 0x5a, 0xfb, 0x92,
-            ]
-        );
-
-        let bytes = encode_effect(&record).unwrap();
-        assert_eq!(bytes.len(), 400);
-        assert_eq!(bytes[0], EFFECT_VERSION);
-        assert_eq!(bytes[3], AUTHORITY_BOUND_FLAG);
-        assert_eq!(decode_effect(&bytes).unwrap(), record);
-        let record_digest: [u8; 32] = Sha256::digest(&bytes).into();
-        assert_eq!(
-            record_digest,
-            [
-                0x08, 0x44, 0x42, 0xef, 0x5f, 0x24, 0xfc, 0x96, 0xf3, 0xa3, 0xd4, 0x30, 0x65, 0x84,
-                0x33, 0xae, 0xbb, 0x49, 0x72, 0xb3, 0x66, 0xfd, 0x2f, 0x89, 0x89, 0xfc, 0xc4, 0xf5,
-                0x7a, 0xd4, 0x6c, 0xd7,
-            ]
-        );
-    }
-
-    #[test]
-    fn authority_bound_v1_record_is_rejected_before_binding_recovery() {
-        let record = EffectLedgerRecord {
-            plan: authority_bound_plan(),
-            state: EffectState::Planned,
-            dispatch: None,
-            project_admission: None,
-        };
-        let mut legacy = encode_effect(&record).unwrap();
-        legacy[0] = 1;
-        legacy.drain(18..22);
-
-        assert!(matches!(
-            decode_effect(&legacy),
-            Err(ReconcilerError::CorruptLedger(
-                "invalid effect record header"
-            ))
-        ));
-    }
-
-    #[test]
-    fn effect_decoder_accepts_only_known_versions_and_closed_flags() {
-        let generic = encode_effect(&EffectLedgerRecord {
-            plan: EffectPlan::new(
-                EffectDomain::Host,
-                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-                b"generic".to_vec(),
-            )
-            .unwrap(),
-            state: EffectState::Planned,
-            dispatch: None,
-            project_admission: None,
-        })
-        .unwrap();
-        let authority = encode_effect(&EffectLedgerRecord {
-            plan: authority_bound_plan(),
-            state: EffectState::Planned,
-            dispatch: None,
-            project_admission: None,
-        })
-        .unwrap();
-
-        for version in [0, CONTROLLER_Q04_EFFECT_VERSION + 1, u8::MAX] {
-            for canonical in [&generic, &authority] {
-                let mut unknown_version = canonical.clone();
-                unknown_version[0] = version;
-                assert!(matches!(
-                    decode_effect(&unknown_version),
-                    Err(ReconcilerError::CorruptLedger(
-                        "invalid effect record header"
-                    ))
-                ));
-            }
-        }
-        for flags in [2, 3, u8::MAX] {
-            for canonical in [&generic, &authority] {
-                let mut unknown_flags = canonical.clone();
-                unknown_flags[3] = flags;
-                assert!(matches!(
-                    decode_effect(&unknown_flags),
-                    Err(ReconcilerError::CorruptLedger(
-                        "invalid effect record header"
-                    ))
-                ));
-            }
-        }
-    }
-
-    #[test]
-    fn authority_dispatch_requires_a_nonzero_preparation_host_boot() {
-        const HOST_BOOT_OFFSET: usize = 373;
-        const HOST_BOOT_BYTES: usize = 16;
-
-        let plan = authority_bound_plan();
-        let binding = plan.authority().unwrap();
-        let dispatch = PreparedAuthorityEffectV1::from_durable_parts(
-            binding.digest,
-            ObjectDigest::from_bytes([7; 32]),
-            10,
-            20,
-            [8; 16],
-            BrokerDispatchAttemptV1::from_durable_parts(
-                binding.template_digest,
-                ObjectDigest::from_bytes([6; 32]),
-                1,
-                30,
-                b"attempt".to_vec(),
-                b"packet".to_vec(),
-            ),
-        );
-        let record = EffectLedgerRecord {
-            plan,
-            state: EffectState::Applying {
-                attempt: 1,
-                diagnostic: String::new(),
-            },
-            dispatch: Some(dispatch),
-            project_admission: None,
-        };
-
-        let bytes = encode_effect(&record).unwrap();
-        assert_eq!(decode_effect(&bytes).unwrap(), record);
-
-        let mut zero_boot_record = record.clone();
-        zero_boot_record
-            .dispatch
-            .as_mut()
-            .unwrap()
-            .preparation_host_boot_id = [0; 16];
-        assert!(matches!(
-            encode_effect(&zero_boot_record),
-            Err(ReconcilerError::InvalidPlan(
-                "authority effect dispatch has a sentinel host boot"
-            ))
-        ));
-
-        let mut zero_boot_bytes = bytes;
-        zero_boot_bytes[HOST_BOOT_OFFSET..HOST_BOOT_OFFSET + HOST_BOOT_BYTES].fill(0);
-        assert!(matches!(
-            decode_effect(&zero_boot_bytes),
-            Err(ReconcilerError::CorruptLedger(
-                "invalid authority effect dispatch"
-            ))
-        ));
-    }
-
-    fn authority_bound_plan() -> EffectPlan {
-        let operation_id = OperationId::from_bytes([3; 16]);
-        let source_draft_digest = ObjectDigest::from_bytes([1; 32]);
-        let template_digest = ObjectDigest::from_bytes([2; 32]);
-        let body_digest = effect_body_digest(b"abc");
-        let semantic_digest = ObjectDigest::from_bytes([5; 32]);
-        let digest = effect_binding_digest(
-            operation_id,
-            7,
-            source_draft_digest,
-            BrokerAudience::Host,
-            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-            template_digest,
-            body_digest,
-            semantic_digest,
-        )
-        .unwrap();
-
-        EffectPlan {
-            domain: EffectDomain::Host,
-            method: Some(BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME),
-            controller_method: None,
-            request: b"abc".to_vec(),
-            authority: Some(AuthorityEffectBindingV1 {
-                operation_id,
-                step: 7,
-                source_draft_digest,
-                audience: BrokerAudience::Host,
-                method: BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
-                template_digest,
-                body_digest,
-                semantic_digest,
-                descriptor_free: true,
-                digest,
-            }),
+        match error {
+            EffectHistoryDataError::InvalidPlan(reason) => Self::InvalidPlan(reason),
+            EffectHistoryDataError::CorruptLedger(reason) => Self::CorruptLedger(reason),
+            EffectHistoryDataError::InvalidExecutorOutput(reason) => Self::InvalidExecutorOutput(reason),
         }
     }
 }

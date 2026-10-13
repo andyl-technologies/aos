@@ -11,11 +11,11 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 
 use aos_sandbox::{
-    ActivatedOperationCompiler, ControllerRequestScopeV1, EffectFailure, EffectObservation,
-    EffectPlan, EffectReceipt, Journal, JournalLimits, NetworkResourceInventoryClient,
+    ActivatedOperationCompiler, ControllerRequestScopeV1, EffectFailure, EffectObservation, Journal, JournalLimits, NetworkResourceInventoryClient,
     NodeController, NodeControllerLimits, OperationCompilationError, OperationPlan, Reconciler,
     ResourceInventoryServiceIdentity, SingleNodeEffectExecutor,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
 use aos_sandbox_core::{ObjectDigest, OperationId};
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with};

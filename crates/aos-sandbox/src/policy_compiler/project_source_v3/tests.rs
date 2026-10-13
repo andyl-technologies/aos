@@ -44,10 +44,11 @@ use crate::publisher_policy::{
     PreparedPublisherPolicyRevisionV1, PublisherPolicyError, PublisherRevocationHeadV1,
 };
 use crate::reconciler::{
-    EffectFailure, EffectObservation, EffectReceipt, OperationPlan, PublicMutationEffectV1,
+    EffectFailure, EffectObservation, OperationPlan, PublicMutationEffectV1,
     PublicOperationAdmissionV1, PublicOperationAuthorizationV1, Reconciler,
     SingleNodeEffectExecutor,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
 
 struct SyntheticInputVerifier;
 
@@ -292,11 +293,11 @@ fn admit_create(
     .expect("exact original public envelope")
     .encode();
     let request_digest = scope.public_request_digest(caller, project, &envelope);
-    let effect = EffectPlan::authorized_public_mutation(
-        PublicOperationMethodV1::CreateSandbox,
-        PublicMutationEffectV1::new(caller, project, 100, envelope)
-            .expect("original effect context"),
-    )
+    let effect = {
+        let selected_method = PublicOperationMethodV1::CreateSandbox;
+        (PublicMutationEffectV1::new(caller, project, 100, envelope)
+            .expect("original effect context")).into_plan(selected_method)
+    }
     .expect("exact Create effect");
     let timestamp = Timestamp {
         seconds: 100,

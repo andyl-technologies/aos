@@ -7,7 +7,8 @@
 use aos_sandbox::cache_residency::{CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1, CachePinV1};
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 
-use super::{EffectFailure, EffectReceipt, Journal, OperationId, ProductionEffectExecutor};
+use super::{EffectFailure, Journal, OperationId, ProductionEffectExecutor};
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use super::cache_public_pin::{
     PublicCacheUnpinProgressV1, PublicCacheUnpinRecoveryV1, execute_public_cache_unpin_consumer_v1,
@@ -124,5 +125,5 @@ fn cache_unpin_receipt(operation_id: OperationId) -> Result<EffectReceipt, Effec
     let mut receipt = Vec::with_capacity(24);
     receipt.extend_from_slice(b"AOSCUN01");
     receipt.extend_from_slice(operation_id.as_bytes());
-    EffectReceipt::new(receipt).map_err(|error| EffectFailure::Permanent(error.to_string()))
+    EffectReceipt::new(receipt).map_err(aos_sandbox::ReconcilerError::from).map_err(|error| EffectFailure::Permanent(error.to_string()))
 }

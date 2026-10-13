@@ -25,9 +25,10 @@ use aos_sandbox_core::{AttachmentId, ObjectDigest, OperationId, RawPairedClockSa
 
 use super::attachment_target::ControllerAttachmentTargetInputsV1;
 use super::{
-    ControllerBrokerPlanSignerV1, EffectFailure, EffectReceipt, ProductionEffectExecutor,
+    ControllerBrokerPlanSignerV1, EffectFailure, ProductionEffectExecutor,
     sample_ownership_clock,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
 
 pub(super) enum PendingAttachmentCatalogQueryV1 {
     Initial(PreparedCurrentAttachmentMountCatalogQueryV1),
@@ -91,7 +92,7 @@ impl VerifiedAttachmentPhysicalV1 {
                 bytes.extend_from_slice(desired_digest.as_bytes());
             }
         }
-        EffectReceipt::new(bytes).map_err(|error| EffectFailure::Permanent(error.to_string()))
+        EffectReceipt::new(bytes).map_err(aos_sandbox::ReconcilerError::from).map_err(|error| EffectFailure::Permanent(error.to_string()))
     }
 }
 

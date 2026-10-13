@@ -415,10 +415,11 @@ mod tests {
     use crate::journal::IdempotencyKey;
     use crate::publication::tests::{activation_claim, descriptor_free_activation_fixture};
     use crate::{
-        ActivatedOperationCompiler, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,
+        ActivatedOperationCompiler, EffectFailure, EffectObservation,
         NodeController, NodeControllerLimits, OperationCompilationError, OperationPlan,
         OwnershipResumeOutcomeV1, Reconciler, SingleNodeEffectExecutor,
     };
+    use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
 
     struct TestDirectory(PathBuf);
 

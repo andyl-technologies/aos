@@ -39,13 +39,14 @@ use crate::policy_compiler::{
     HistoricalCreateProjectSourceHeadsV1, create_project_source_commitment_v1,
     project_admission_client_nonce_v1,
 };
-use crate::reconciler::effect::EffectState;
+use aos_sandbox_protocol::domain_ledger::effect_history::EffectState;
 use crate::reconciler::{
-    EffectFailure, EffectObservation, EffectPlan, EffectReceipt, OperationPlan,
+    EffectFailure, EffectObservation, OperationPlan,
     PublicMutationEffectV1, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
-    ReconcileOutcome, Reconciler, SingleNodeEffectExecutor, decode_effect, effect_key,
+    ReconcileOutcome, Reconciler, SingleNodeEffectExecutor, effect_key,
     public_operation_resource_from_journal_v1, retained_create_sandbox_admission_revision_v1,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt, decode_effect};
 
 const PROJECT: ProjectId = ProjectId::from_bytes([1; 16]);
 const SCOPE_DIGEST: ObjectDigest = ObjectDigest::from_bytes([0xe1; 32]);
@@ -168,7 +169,7 @@ pub fn prepare_project_history_vm_flight_v1(
         heads,
         original_projection,
     );
-    effect.project_admission = Some(metadata.clone());
+    effect.set_project_admission(Some(metadata.clone()));
     let bytes = controller_project_suffix_budget(&effect)?;
     let transaction_id = OperationId::new().into_bytes();
     let capacity = journal.prepare_global_capacity_reservation_v1(
@@ -176,7 +177,7 @@ pub fn prepare_project_history_vm_flight_v1(
         transaction_id,
     )?;
     metadata.set_historical_capacity_id(capacity.reservation_id());
-    effect.project_admission = Some(metadata);
+    effect.set_project_admission(Some(metadata));
     let reservation_record = capacity.record().clone();
     journal.commit_global_capacity_reservation_v1(
         capacity,
@@ -211,18 +212,17 @@ pub fn require_project_history_vm_flight_v1(
         journal
             .get(RecordNamespace::Effect, &effect_key(operation, 0))
             .ok_or("VM original Effect absent")?,
-    )?;
-    let metadata = effect
-        .project_admission
-        .ok_or("VM flight metadata absent")?;
+    ).map_err(crate::ReconcilerError::from)?;
+    let effect = effect.into_parts();
+    let metadata = effect.3.ok_or("VM flight metadata absent")?;
     let expected = if retired {
         ProjectAdmissionPhase::RootRetired
     } else {
         ProjectAdmissionPhase::DispatchAuthorized
     };
-    let is_blocked = matches!(effect.state, EffectState::PermanentlyBlocked { .. });
+    let is_blocked = matches!(effect.1, EffectState::PermanentlyBlocked { .. });
     if metadata.phase() != expected
-        || !(matches!(effect.state, EffectState::Applying { .. }) || retired && is_blocked)
+        || !(matches!(effect.1, EffectState::Applying { .. }) || retired && is_blocked)
     {
         return Err("VM original Create phase changed or became applied".into());
     }
@@ -343,10 +343,10 @@ fn admitted_create(
     .encode();
     let caller = PrincipalId::from_bytes([0x93; 16]);
     let digest = scope.public_request_digest(caller, PROJECT, &envelope);
-    let effect = EffectPlan::authorized_public_mutation(
-        PublicOperationMethodV1::CreateSandbox,
-        PublicMutationEffectV1::new(caller, PROJECT, 100, envelope)?,
-    )?;
+    let effect = {
+        let selected_method = PublicOperationMethodV1::CreateSandbox;
+        (PublicMutationEffectV1::new(caller, PROJECT, 100, envelope)?).into_plan(selected_method)
+    }?;
     let authorization = PublicOperationAuthorizationV1::new(
         PROJECT,
         ResourceKind::ChildDelegation,

@@ -49,7 +49,8 @@ use aos_sandbox::reconciler::{
     authorize_controller_project_admission_dispatch_v1,
     prepare_current_create_project_admission_v1, retained_controller_project_admission_v1,
 };
-use aos_sandbox::{ControllerRequestScopeV1, EffectPlan, Journal};
+use aos_sandbox::{ControllerRequestScopeV1, Journal};
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan};
 use aos_sandbox_core::ObjectDigest;
 
 use crate::controller_service::hold_credential::with_process_controller_hold_signer_v1;

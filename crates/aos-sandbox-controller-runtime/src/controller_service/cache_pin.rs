@@ -11,7 +11,8 @@ use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 use aos_sandbox_core::DecodeLimits;
 use sha2::{Digest as _, Sha256};
 
-use super::{EffectFailure, EffectReceipt, Journal, OperationId, ProductionEffectExecutor};
+use super::{EffectFailure, Journal, OperationId, ProductionEffectExecutor};
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use super::cache_directory_source::ProjectSealedViewObjectSourceV1;
 use super::cache_source_membership::{CacheCompiledSourceLimitsV1, CacheSourceMembershipLimitsV1};
@@ -229,7 +230,7 @@ fn cache_pin_receipt(operation_id: OperationId) -> Result<EffectReceipt, EffectF
     let mut receipt = Vec::with_capacity(24);
     receipt.extend_from_slice(b"AOSCPN01");
     receipt.extend_from_slice(operation_id.as_bytes());
-    EffectReceipt::new(receipt).map_err(|error| EffectFailure::Permanent(error.to_string()))
+    EffectReceipt::new(receipt).map_err(aos_sandbox::ReconcilerError::from).map_err(|error| EffectFailure::Permanent(error.to_string()))
 }
 
 #[cfg(test)]

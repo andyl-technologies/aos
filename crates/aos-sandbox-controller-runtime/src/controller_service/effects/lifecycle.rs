@@ -980,6 +980,7 @@ impl ProductionEffectExecutor {
         ]
         .concat();
         EffectReceipt::new(bytes)
+            .map_err(aos_sandbox::ReconcilerError::from)
             .map(Some)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))
     }

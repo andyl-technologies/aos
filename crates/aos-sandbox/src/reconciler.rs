@@ -88,12 +88,16 @@ pub(crate) use operator_repair_failure::{
 };
 pub use effect::{
     AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV1,
-    EffectDomain, EffectPlan, PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1,
+    PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1,
     PublicMutationEffectV1, ValidatedAuthorityEffectReceiptV1, ValidatedHostEffectReceiptV1,
 };
-use effect::{
-    EffectLedgerRecord, EffectState, MAXIMUM_DIAGNOSTIC_BYTES, decode_effect, encode_effect,
+use aos_sandbox_protocol::domain_ledger::effect_history::{
+    EffectDomain, EffectLedgerRecord, EffectPlan, EffectReceipt, EffectState,
+    MAXIMUM_DIAGNOSTIC_BYTES, PreparedAuthorityEffectHistoryV1, effect_body_digest,
+    PublicMutationEffectHistoryV1, decode_effect, encode_effect,
 };
+#[cfg(target_os = "linux")]
+use aos_sandbox_protocol::domain_ledger::effect_history::{decode_effect_with_q04, q04_effect_subgate};
 #[cfg(target_os = "linux")]
 pub(crate) use fuse_admission::accepted_fuse_admission_v1;
 #[cfg(target_os = "linux")]
@@ -140,7 +144,6 @@ pub use aos_sandbox_protocol::domain_ledger::public_operation::{
     PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
 };
 
-const MAXIMUM_RECEIPT_BYTES: usize = 64 * 1024;
 
 /// Defines one atomically admitted desired mutation and its ordered effects.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -574,64 +577,8 @@ pub enum AcceptOutcome {
     Replay(OperationId),
 }
 
-/// Carries bounded executor evidence for one applied effect.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EffectReceipt(Vec<u8>);
-
-const CANCELED_BEFORE_COMMIT_RECEIPT_MAGIC: &[u8; 8] = b"AOSCXL01";
-const CANCELED_BEFORE_COMMIT_RECEIPT_BYTES: usize = 40;
-
-impl EffectReceipt {
-    /// Constructs a bounded, nonempty executor receipt.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ReconcilerError::InvalidExecutorOutput`] for an empty receipt
-    /// or one exceeding 64 KiB.
-    pub fn new(bytes: Vec<u8>) -> Result<Self, ReconcilerError> {
-        if bytes.is_empty() || bytes.len() > MAXIMUM_RECEIPT_BYTES {
-            return Err(ReconcilerError::InvalidExecutorOutput(
-                "invalid effect receipt length",
-            ));
-        }
-        Ok(Self(bytes))
-    }
-
-    /// Returns the exact executor receipt bytes.
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-
-    /// Constructs controller evidence that an operation was canceled before
-    /// its semantic commit point.
-    #[must_use]
-    pub fn canceled_before_commit(evidence: ObjectDigest) -> Self {
-        let mut bytes = Vec::with_capacity(CANCELED_BEFORE_COMMIT_RECEIPT_BYTES);
-        bytes.extend_from_slice(CANCELED_BEFORE_COMMIT_RECEIPT_MAGIC);
-        bytes.extend_from_slice(evidence.as_bytes());
-        Self(bytes)
-    }
-
-    fn canceled_before_commit_evidence(&self) -> Result<Option<ObjectDigest>, ()> {
-        if !self.0.starts_with(CANCELED_BEFORE_COMMIT_RECEIPT_MAGIC) {
-            return Ok(None);
-        }
-        if self.0.len() != CANCELED_BEFORE_COMMIT_RECEIPT_BYTES {
-            return Err(());
-        }
-
-        let mut digest = [0_u8; 32];
-        digest.copy_from_slice(&self.0[CANCELED_BEFORE_COMMIT_RECEIPT_MAGIC.len()..]);
-        if digest == [0; 32] {
-            return Err(());
-        }
-        Ok(Some(ObjectDigest::from_bytes(digest)))
-    }
-
-    fn create_failure_receipt(&self) -> Result<Option<CreateFailureReceiptV1>, ()> {
-        CreateFailureReceiptV1::decode(&self.0)
-    }
+fn create_failure_receipt(receipt: &EffectReceipt) -> Result<Option<CreateFailureReceiptV1>, ()> {
+    CreateFailureReceiptV1::decode(receipt.as_bytes())
 }
 
 /// Reports the executor's observation of an ambiguous in-flight effect.
@@ -1914,12 +1861,9 @@ where
             records.push(JournalRecord::put(
                 RecordNamespace::Effect,
                 effect_key(plan.operation_id, step).to_vec(),
-                encode_effect(&EffectLedgerRecord {
-                    plan: effect.clone(),
-                    state: EffectState::Planned,
-                    dispatch: None,
-                    project_admission: None,
-                })?,
+                encode_effect(&EffectLedgerRecord::from_parts((
+                    effect.clone(), EffectState::Planned, None, None,
+                ))).map_err(ReconcilerError::from)?,
             ));
         }
         let transaction = JournalTransaction::new(OperationId::new().into_bytes(), records)
@@ -2080,9 +2024,9 @@ where
             OperationState::Succeeded | OperationState::PermanentlyBlocked => {
                 if has_operator_repair_settlement_debt_v1(&self.journal, operation_id)? {
                     let effect = decode_effect(self.journal.get(RecordNamespace::Effect,
-                        &effect_key(operation_id, 0)).ok_or(ReconcilerError::CorruptLedger("Repair settlement debt lost its effect"))?)?;
+                        &effect_key(operation_id, 0)).ok_or(ReconcilerError::CorruptLedger("Repair settlement debt lost its effect"))?).map_err(ReconcilerError::from)?.into_parts();
                     return self.reconcile_applying(operation_id, 0, operation.effect_count(), 1,
-                        effect.plan, None, None, wall_seconds);
+                        effect.0, None, None, wall_seconds);
                 }
                 return Ok(if operation.state() == OperationState::Succeeded {
                     ReconcileOutcome::Succeeded
@@ -2118,9 +2062,10 @@ where
                 .get(RecordNamespace::Effect, &key)
                 .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
             #[cfg(target_os = "linux")]
-            let (record, q04) = effect::decode_effect_with_q04(bytes)?;
+            let (record, q04) = decode_effect_with_q04(bytes).map_err(ReconcilerError::from)
+                .map(|(record, q04)| (record.into_parts(), q04))?;
             #[cfg(not(target_os = "linux"))]
-            let record = decode_effect(bytes)?;
+            let record = decode_effect(bytes).map_err(ReconcilerError::from)?.into_parts();
             #[cfg(target_os = "linux")]
             if q04.is_some() {
                 // A historical policy subgate cannot dispatch Create, retire
@@ -2128,7 +2073,7 @@ where
                 // the original selected invocation advances its closed phase.
                 return Ok(ReconcileOutcome::RetryPending);
             }
-            match record.state {
+            match record.1 {
                 EffectState::Applied { receipt, .. } => {
                     if receipt
                         .canceled_before_commit_evidence()
@@ -2141,7 +2086,7 @@ where
                     {
                         if operation.effect_count() != 1
                             || step != 0
-                            || record.plan.public_mutation_method().is_none()
+                            || record.0.public_mutation_method().is_none()
                         {
                             return Err(ReconcilerError::CorruptLedger(
                                 "invalid canceled-before-commit effect receipt",
@@ -2161,7 +2106,7 @@ where
                     return Ok(ReconcileOutcome::PermanentlyBlocked);
                 }
                 EffectState::Planned => {
-                    let dispatch = if let Some(binding) = record.plan.authority() {
+                    let dispatch = if let Some(binding) = record.0.authority() {
                         let OwnershipGateStatusV1::Activated {
                             plan: gate_plan,
                             publication_digest,
@@ -2186,13 +2131,13 @@ where
                             step,
                             sandbox,
                             *publication_digest,
-                            binding.source_draft_digest,
-                            binding.audience,
-                            binding.template_digest,
+                            binding.source_draft_digest(),
+                            binding.audience(),
+                            binding.template_digest(),
                             timing,
                         )?;
                         Some(PreparedAuthorityEffectV1::new(
-                            binding.digest,
+                            binding.digest(),
                             selected_publication,
                             timing.clock(),
                             attempt,
@@ -2200,15 +2145,15 @@ where
                     } else {
                         None
                     };
-                    let applying = EffectLedgerRecord {
-                        plan: record.plan,
-                        state: EffectState::Applying {
+                    let applying = EffectLedgerRecord::from_parts((
+                        record.0,
+                        EffectState::Applying {
                             attempt: 1,
                             diagnostic: String::new(),
                         },
-                        dispatch,
-                        project_admission: record.project_admission,
-                    };
+                        dispatch.map(PreparedAuthorityEffectV1::into_history),
+                        record.3,
+                    ));
                     self.store_effect(
                         operation_id,
                         step,
@@ -2224,8 +2169,8 @@ where
                         step,
                         operation.effect_count(),
                         attempt,
-                        record.plan,
-                        record.dispatch,
+                        record.0,
+                        record.2.map(PreparedAuthorityEffectV1::from_history),
                         match gate.as_ref() {
                             Some(OwnershipGateStatusV1::Activated {
                                 plan,
@@ -2687,7 +2632,7 @@ where
                 .ok_or(ReconcilerError::CorruptLedger(
                     "ownership-gated operation is missing an effect",
                 ))?;
-            if !matches!(decode_effect(bytes)?.state, EffectState::Planned) {
+            if !matches!(decode_effect(bytes).map_err(ReconcilerError::from)?.state(), EffectState::Planned) {
                 return Err(ReconcilerError::CorruptLedger(
                     "ownership-gated effect advanced before activation",
                 ));
@@ -2852,13 +2797,13 @@ where
             .ok_or(ReconcilerError::CorruptLedger(
                 "canceled operation is missing its effect",
             ))?;
-        let effect = decode_effect(bytes)?;
-        let EffectState::Applied { receipt, .. } = effect.state else {
+        let effect = decode_effect(bytes).map_err(ReconcilerError::from)?.into_parts();
+        let EffectState::Applied { receipt, .. } = effect.1 else {
             return Err(ReconcilerError::CorruptLedger(
                 "canceled operation effect is not applied",
             ));
         };
-        if effect.plan.public_mutation_method().is_none()
+        if effect.0.public_mutation_method().is_none()
             || receipt
                 .canceled_before_commit_evidence()
                 .map_err(|()| {
@@ -2886,37 +2831,37 @@ where
                 .journal
                 .get(RecordNamespace::Effect, &effect_key(operation_id, step))
                 .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
-            let effect = decode_effect(bytes)?;
-            match (draft, effect.plan.authority()) {
+            let effect = decode_effect(bytes).map_err(ReconcilerError::from)?;
+            match (draft, effect.plan().authority()) {
                 (None, None) => {}
                 (Some(draft), Some(binding)) => {
                     let template = draft
                         .templates()
                         .iter()
-                        .find(|template| template.digest() == binding.template_digest)
+                        .find(|template| template.digest() == binding.template_digest())
                         .ok_or(ReconcilerError::CorruptLedger(
                             "authority effect template is absent from gate draft",
                         ))?;
-                    if binding.source_draft_digest != draft.digest()
-                        || binding.operation_id != operation_id
-                        || binding.step != step
-                        || binding.audience != template.audience()
-                        || binding.method != template.method()
-                        || binding.body_digest
-                            != effect::effect_body_digest(template.body_without_deadline())
-                        || binding.semantic_digest
+                    if binding.source_draft_digest() != draft.digest()
+                        || binding.operation_id() != operation_id
+                        || binding.step() != step
+                        || binding.audience() != template.audience()
+                        || binding.method() != template.method()
+                        || binding.body_digest()
+                            != effect_body_digest(template.body_without_deadline())
+                        || binding.semantic_digest()
                             != crate::dispatch::semantic_identity_digest(template.semantics())
-                        || !binding.descriptor_free
+                        || !binding.descriptor_free()
                         || !template.descriptor_roles().is_empty()
-                        || effect.plan.request() != template.body_without_deadline()
+                        || effect.plan().request() != template.body_without_deadline()
                     {
                         return Err(ReconcilerError::CorruptLedger(
                             "authority effect does not match gate draft template",
                         ));
                     }
-                    if let Some(dispatch) = &effect.dispatch {
+                    if let Some(dispatch) = effect.dispatch() {
                         let current_host_boot_id = if validate_current_boot
-                            && matches!(&effect.state, EffectState::Applying { .. })
+                            && matches!(effect.state(), EffectState::Applying { .. })
                         {
                             Some(
                                 self.executor
@@ -2936,11 +2881,11 @@ where
                             activated_publication.ok_or(ReconcilerError::CorruptLedger(
                                 "authority dispatch exists before gate activation",
                             ))?,
-                            binding.digest,
-                            binding.source_draft_digest,
-                            binding.audience,
-                            binding.template_digest,
-                            effect.plan.request(),
+                            binding.digest(),
+                            binding.source_draft_digest(),
+                            binding.audience(),
+                            binding.template_digest(),
+                            effect.plan().request(),
                             dispatch,
                             current_host_boot_id,
                         )
@@ -2949,9 +2894,8 @@ where
                                 "authority effect dispatch is missing or corrupt",
                             )
                         })?;
-                        if let EffectState::Applied { receipt, .. } = &effect.state {
-                            dispatch
-                                .validate_durable_receipt(receipt.as_bytes())
+                        if let EffectState::Applied { receipt, .. } = effect.state() {
+                            effect::validate_durable_receipt_history(dispatch, receipt.as_bytes())
                                 .map_err(|_| {
                                     ReconcilerError::CorruptLedger(
                                         "authority effect receipt is malformed or substituted",
@@ -3140,13 +3084,13 @@ where
                         step,
                         sandbox,
                         activated_publication,
-                        binding.source_draft_digest,
-                        binding.audience,
-                        binding.template_digest,
+                        binding.source_draft_digest(),
+                        binding.audience(),
+                        binding.template_digest(),
                         timing,
                     )?;
                     let fresh = PreparedAuthorityEffectV1::new(
-                        binding.digest,
+                        binding.digest(),
                         publication_digest,
                         timing.clock(),
                         fresh_attempt,
@@ -3157,30 +3101,30 @@ where
                             .ok_or(ReconcilerError::InvalidExecutorOutput(
                                 "effect retry counter exhausted",
                             ))?;
-                    let refreshed = EffectLedgerRecord {
-                        plan: plan.clone(),
-                        state: EffectState::Applying {
+                    let refreshed = EffectLedgerRecord::from_parts((
+                        plan.clone(),
+                        EffectState::Applying {
                             attempt: next_attempt,
                             diagnostic: String::new(),
                         },
-                        dispatch: Some(fresh.clone()),
-                        project_admission: None,
-                    };
+                        Some(fresh.clone().into_history()),
+                        None,
+                    ));
                     // This commit is the crash boundary: no Apply may use the
                     // fresh packet until its exact replacement is durable.
                     self.store_effect(operation_id, step, &refreshed, None, wall_seconds)?;
                     match self.executor.apply_authority(operation_id, step, &fresh) {
                         Ok(receipt) => {
                             let receipt = receipt.into_effect_receipt_for(&fresh)?;
-                            let applied = EffectLedgerRecord {
-                                plan,
-                                state: EffectState::Applied {
+                            let applied = EffectLedgerRecord::from_parts((
+                        plan,
+                        EffectState::Applied {
                                     attempt: next_attempt,
                                     receipt,
                                 },
-                                dispatch: Some(fresh),
-                                project_admission: None,
-                            };
+                        Some(fresh.into_history()),
+                        None,
+                    ));
                             self.store_effect(operation_id, step, &applied, None, wall_seconds)?;
                             return Ok(ReconcileOutcome::EffectApplied);
                         }
@@ -3283,8 +3227,7 @@ where
                 "invalid canceled-before-commit effect receipt",
             ));
         }
-        if receipt
-            .create_failure_receipt()
+        if create_failure_receipt(&receipt)
             .map_err(|()| ReconcilerError::InvalidExecutorOutput("invalid failed-Create receipt"))?
             .is_some()
         {
@@ -3292,12 +3235,12 @@ where
                 "failed-Create requires the protected three-record transaction",
             ));
         }
-        let applied = EffectLedgerRecord {
-            plan,
-            state: EffectState::Applied { attempt, receipt },
-            dispatch,
-            project_admission: None,
-        };
+        let applied = EffectLedgerRecord::from_parts((
+                        plan,
+                        EffectState::Applied { attempt, receipt },
+                        dispatch.map(PreparedAuthorityEffectV1::into_history),
+                        None,
+                    ));
         self.store_effect(operation_id, step, &applied, None, wall_seconds)?;
         Ok(ReconcileOutcome::EffectApplied)
     }
@@ -3323,28 +3266,28 @@ where
                         .ok_or(ReconcilerError::InvalidExecutorOutput(
                             "effect retry counter exhausted",
                         ))?;
-                let applying = EffectLedgerRecord {
-                    plan,
-                    state: EffectState::Applying {
+                let applying = EffectLedgerRecord::from_parts((
+                        plan,
+                        EffectState::Applying {
                         attempt: next_attempt,
                         diagnostic,
                     },
-                    dispatch,
-                    project_admission: None,
-                };
+                        dispatch.map(PreparedAuthorityEffectV1::into_history),
+                        None,
+                    ));
                 self.store_effect(operation_id, step, &applying, None, wall_seconds)?;
                 Ok(ReconcileOutcome::RetryPending)
             }
             EffectFailure::Permanent(diagnostic) => {
-                let blocked = EffectLedgerRecord {
-                    plan,
-                    state: EffectState::PermanentlyBlocked {
+                let blocked = EffectLedgerRecord::from_parts((
+                        plan,
+                        EffectState::PermanentlyBlocked {
                         attempt,
                         diagnostic,
                     },
-                    dispatch,
-                    project_admission: None,
-                };
+                        dispatch.map(PreparedAuthorityEffectV1::into_history),
+                        None,
+                    ));
                 self.store_effect(
                     operation_id,
                     step,
@@ -3406,7 +3349,7 @@ where
             .get(RecordNamespace::Effect, &effect_key(operation_id, step))
             .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
         #[cfg(target_os = "linux")]
-        if effect::q04_effect_subgate(current)?.is_some() {
+        if q04_effect_subgate(current).map_err(ReconcilerError::from)?.is_some() {
             // The selected same-flight CAS is the only writer for this
             // Applying subgate. A generic retry/result must not erase it or
             // turn policy admission into Applied/public Create completion.
@@ -3414,25 +3357,26 @@ where
                 "Q04 policy admission requires its original closed transition",
             ));
         }
-        let current = decode_effect(current)?;
-        if current.plan != record.plan
-            || record
-                .project_admission
-                .as_ref()
-                .is_some_and(|metadata| Some(metadata) != current.project_admission.as_ref())
+        let current = decode_effect(current).map_err(ReconcilerError::from)?.into_parts();
+        if current.0 != *record.plan()
+            || record.project_admission()
+                .is_some_and(|metadata| Some(metadata) != current.3.as_ref())
         {
             return Err(ReconcilerError::CorruptLedger(
                 "Effect changed during executor transition",
             ));
         }
-        let retained = EffectLedgerRecord {
-            project_admission: current.project_admission,
-            ..record.clone()
+        let retained = {
+            // The replacement moves before the complete clone, including its
+            // overridden metadata. The unused clone field dies at this cut.
+            let metadata = current.3;
+            let cloned = record.clone().into_parts();
+            EffectLedgerRecord::from_parts((cloned.0, cloned.1, cloned.2, metadata))
         };
         let mut records = vec![JournalRecord::put(
             RecordNamespace::Effect,
             effect_key(operation_id, step).to_vec(),
-            encode_effect(&retained)?,
+            encode_effect(&retained).map_err(ReconcilerError::from)?,
         )];
         let operation = self.load_operation(operation_id)?;
         if let Some(effect_count) = operation_effect_count {
@@ -3441,7 +3385,7 @@ where
                     "operation effect count changed during transition",
                 ));
             }
-            let state = match record.state {
+            let state = match record.state() {
                 EffectState::Applying { .. } => OperationState::Applying,
                 EffectState::PermanentlyBlocked { .. } => OperationState::PermanentlyBlocked,
                 EffectState::Planned | EffectState::Applied { .. } => {
@@ -3553,16 +3497,16 @@ pub(crate) fn recovered_public_operation_resource_v1(
         let bytes = journal
             .get(RecordNamespace::Effect, &effect_key(operation_id, step))
             .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
-        let effect = decode_effect(bytes)?;
+        let effect = decode_effect(bytes).map_err(ReconcilerError::from)?;
         if operation.effect_count() == 1 {
-            controller_method = effect.plan.public_mutation_method();
+            controller_method = effect.plan().public_mutation_method();
         }
-        match effect.state {
-            EffectState::Applied { ref receipt, .. } => {
+        match effect.state() {
+            EffectState::Applied { receipt, .. } => {
                 increment_effect_count(&mut applied_effects)?;
                 if operator_repair_failure::classify(receipt)? {
                     if step != 0 || operation.effect_count() != 1
-                        || !is_operator_storage_repair_effect_v1(&effect.plan)?
+                        || !is_operator_storage_repair_effect_v1(effect.plan())?
                     {
                         return Err(ReconcilerError::CorruptLedger("Repair failure has another method or step"));
                     }
@@ -3579,7 +3523,7 @@ pub(crate) fn recovered_public_operation_resource_v1(
                 {
                     if operation.effect_count() != 1
                         || step != 0
-                        || effect.plan.public_mutation_method().is_none()
+                        || effect.plan().public_mutation_method().is_none()
                     {
                         return Err(ReconcilerError::CorruptLedger(
                             "invalid canceled-before-commit effect receipt",
@@ -3587,14 +3531,13 @@ pub(crate) fn recovered_public_operation_resource_v1(
                     }
                     increment_effect_count(&mut canceled_effects)?;
                 }
-                if receipt
-                    .create_failure_receipt()
+                if create_failure_receipt(receipt)
                     .map_err(|()| ReconcilerError::CorruptLedger("invalid failed-Create receipt"))?
                     .is_some()
                 {
                     if operation.effect_count() != 1
                         || step != 0
-                        || effect.plan.public_mutation_method()
+                        || effect.plan().public_mutation_method()
                             != Some(
                                 aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateExecution,
                             )
@@ -3751,15 +3694,15 @@ fn retained_create_sandbox_admission_revision_v1(
         .ok_or(ReconcilerError::CorruptLedger(
             "live Create effect is absent",
         ))?;
-    let effect = decode_effect(effect_bytes)?;
+    let effect = decode_effect(effect_bytes).map_err(ReconcilerError::from)?.into_parts();
     let matching_live_state = matches!(
-        (&operation.state(), &effect.state),
+        (&operation.state(), &effect.1),
         (OperationState::Accepted, EffectState::Planned)
             | (OperationState::Applying, EffectState::Applying { .. })
     );
     let matching_terminal_history = allow_terminal_history
         && matches!(
-            (&operation.state(), &effect.state),
+            (&operation.state(), &effect.1),
             (
                 OperationState::Succeeded
                     | OperationState::CanceledBeforeCommit
@@ -3771,12 +3714,12 @@ fn retained_create_sandbox_admission_revision_v1(
             )
         );
     if (!matching_live_state && !matching_terminal_history)
-        || effect.plan.public_mutation_method()
+        || effect.0.public_mutation_method()
             != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
     {
         return Ok(None);
     }
-    let Some(context) = effect.plan.public_mutation_context()? else {
+    let Some(context) = effect.0.public_mutation_context().map_err(ReconcilerError::from)? else {
         return Ok(None);
     };
     let admission = recovered_public_operation_admission_v1(journal, operation_id)?.ok_or(
@@ -3832,12 +3775,9 @@ fn retained_create_sandbox_admission_revision_v1(
         None,
         Some(admission.durable()),
     ));
-    let admitted_effect = encode_effect(&EffectLedgerRecord {
-        plan: effect.plan,
-        state: EffectState::Planned,
-        dispatch: None,
-        project_admission: None,
-    })?;
+    let admitted_effect = encode_effect(&EffectLedgerRecord::from_parts((
+        effect.0, EffectState::Planned, None, None,
+    ))).map_err(ReconcilerError::from)?;
     let revision =
         resource_version(operation_id, &admitted_operation, &[&admitted_effect]);
 
@@ -3873,13 +3813,12 @@ pub fn checked_live_create_sandbox_admission_revision_v1(
         .ok_or(ReconcilerError::CorruptLedger(
             "live Create effect is absent",
         ))?;
-    let effect = decode_effect(effect_bytes)?;
-    if &effect.plan != expected_plan {
+    let effect = decode_effect(effect_bytes).map_err(ReconcilerError::from)?;
+    if effect.plan() != expected_plan {
         return Ok(None);
     }
-    let context = effect
-        .plan
-        .public_mutation_context()?
+    let context = effect.plan()
+        .public_mutation_context().map_err(ReconcilerError::from)?
         .ok_or(ReconcilerError::CorruptLedger(
             "live Create context is absent",
         ))?;
@@ -3895,14 +3834,22 @@ pub fn checked_live_create_sandbox_admission_revision_v1(
     Ok(Some((revision, generation)))
 }
 
+// Complete DATA field order retains overridden state in this consuming owner.
+type EffectRecordParts = (
+    EffectPlan,
+    EffectState,
+    Option<PreparedAuthorityEffectHistoryV1>,
+    Option<aos_sandbox_protocol::domain_ledger::project_admission_metadata::ProjectAdmissionMetadataV1>,
+);
+
 /// Carries one retained public Repair admission into a separately proved terminal CAS.
 #[allow(dead_code, reason = "public operator Repair route remains closed")]
 pub(crate) struct PendingOperatorRepairLedgerV1 {
     operation_id: OperationId,
     operation: OperationRecord,
-    effect: EffectLedgerRecord,
+    effect: EffectRecordParts,
     request: crate::cli_model::OperatorRecoveryRequestV1,
-    context: PublicMutationEffectV1,
+    context: PublicMutationEffectHistoryV1,
 }
 
 #[allow(dead_code, reason = "public operator Repair route remains closed")]
@@ -3911,7 +3858,7 @@ impl PendingOperatorRepairLedgerV1 {
         &self.request
     }
 
-    pub(crate) const fn context(&self) -> &PublicMutationEffectV1 {
+    pub(crate) const fn context(&self) -> &PublicMutationEffectHistoryV1 {
         &self.context
     }
 
@@ -3950,7 +3897,7 @@ impl PendingOperatorRepairLedgerV1 {
         completion_wall_seconds: i64,
         decision: OperationState,
     ) -> Result<[JournalRecord; 2], ReconcilerError> {
-        let attempt = match &self.effect.state {
+        let attempt = match &self.effect.1 {
             EffectState::Planned => 1,
             EffectState::Applying { attempt, .. } => *attempt,
             _ => {
@@ -3959,11 +3906,11 @@ impl PendingOperatorRepairLedgerV1 {
                 ));
             }
         };
-        let effect = encode_effect(&EffectLedgerRecord {
-            state: EffectState::Applied { attempt, receipt },
-            ..self.effect
-        })?;
-        decode_effect(&effect)?;
+        let state = EffectState::Applied { attempt, receipt };
+        let effect = encode_effect(&EffectLedgerRecord::from_parts((
+            self.effect.0, state, self.effect.2, self.effect.3,
+        ))).map_err(ReconcilerError::from)?;
+        decode_effect(&effect).map_err(ReconcilerError::from)?;
         let public = self
             .operation
             .public_operation()
@@ -4012,7 +3959,7 @@ pub(crate) fn pending_operator_repair_ledger_v1(
     let effect_bytes = journal
         .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
         .ok_or(ReconcilerError::CorruptLedger("Repair effect is absent"))?;
-    let effect = decode_effect(effect_bytes)?;
+    let effect = decode_effect(effect_bytes).map_err(ReconcilerError::from)?;
     recovered_public_operation_resource_v1(journal, operation_id)?.ok_or(
         ReconcilerError::CorruptLedger("Repair public operation is absent"),
     )?;
@@ -4030,14 +3977,13 @@ fn pending_operator_repair_from_exact_rows_v1(
     use aos_proto::aos::sandbox::v1::OperatorRecoveryAction;
     use aos_sandbox_core::{ResourceKind, Selector};
 
-    let context = effect
-        .plan
-        .public_mutation_context()?
+    let context = effect.plan()
+        .public_mutation_context().map_err(ReconcilerError::from)?
         .ok_or(ReconcilerError::CorruptLedger(
             "Repair effect has no admission context",
         ))?;
     let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::OperatorRecover(request) =
-        context.validated_request()?
+        context.validated_request().map_err(ReconcilerError::from)?
     else {
         return Err(ReconcilerError::CorruptLedger(
             "Repair effect names another method",
@@ -4065,10 +4011,10 @@ fn pending_operator_repair_from_exact_rows_v1(
         || operation.ownership_gated()
         || operation.runtime_intent_digest().is_some()
         || !matches!(
-            &effect.state,
+            effect.state(),
             EffectState::Planned | EffectState::Applying { .. }
         )
-        || effect.plan.public_mutation_method()
+        || effect.plan().public_mutation_method()
             != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::OperatorRecover)
         || request.action() != OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_REPAIR as i32
         || request.resource_id() != sandbox_id
@@ -4087,7 +4033,7 @@ fn pending_operator_repair_from_exact_rows_v1(
     Ok(PendingOperatorRepairLedgerV1 {
         operation_id,
         operation,
-        effect,
+        effect: effect.into_parts(),
         request,
         context,
     })
@@ -4106,8 +4052,8 @@ pub(crate) fn verify_operator_repair_terminal_public_rows_v2(
 ) -> Result<(), ReconcilerError> {
     journal.ensure_protected_authority()?;
     let pending = pending_operator_repair_from_exact_rows_v1(journal, operation_id, sandbox_id,
-        request_digest, decode_operation(predecessor_operation)?, decode_effect(predecessor_effect)?)?;
-    let terminal = pending.complete(EffectReceipt::new(receipt.to_vec())?, completion_wall_seconds)?;
+        request_digest, decode_operation(predecessor_operation)?, decode_effect(predecessor_effect).map_err(ReconcilerError::from)?)?;
+    let terminal = pending.complete(EffectReceipt::new(receipt.to_vec()).map_err(ReconcilerError::from)?, completion_wall_seconds)?;
     if !terminal.iter().all(|record| journal.get(record.namespace(), record.key()) == record.value()) {
         return Err(ReconcilerError::CorruptLedger("Repair terminal public rows disagree with exact predecessor"));
     }
@@ -4141,9 +4087,9 @@ pub(crate) fn operator_repair_failure_terminal_rows_v1(
     }
     pending_operator_repair_from_exact_rows_v1(
         journal, operation_id, sandbox_id, request_digest,
-        decode_operation(predecessor_operation)?, decode_effect(predecessor_effect)?,
+        decode_operation(predecessor_operation)?, decode_effect(predecessor_effect).map_err(ReconcilerError::from)?,
     )?.complete_original_precondition_replaced(
-        EffectReceipt::new(receipt.to_vec())?, completion_wall_seconds,
+        EffectReceipt::new(receipt.to_vec()).map_err(ReconcilerError::from)?, completion_wall_seconds,
     )
 }
 
@@ -4162,7 +4108,7 @@ pub(crate) fn operator_repair_original_ledger_v1(
 ) -> Result<PendingOperatorRepairLedgerV1, ReconcilerError> {
     pending_operator_repair_from_exact_rows_v1(
         journal, operation_id, sandbox_id, request_digest,
-        decode_operation(predecessor_operation)?, decode_effect(predecessor_effect)?,
+        decode_operation(predecessor_operation)?, decode_effect(predecessor_effect).map_err(ReconcilerError::from)?,
     )
 }
 
@@ -4178,7 +4124,7 @@ pub(crate) fn operator_repair_original_ledger_v1(
 pub(crate) fn accepted_create_execution_effect_from_journal_v1(
     journal: &Journal,
     operation_id: OperationId,
-) -> Result<Option<PublicMutationEffectV1>, ReconcilerError> {
+) -> Result<Option<PublicMutationEffectHistoryV1>, ReconcilerError> {
     if recovered_public_operation_resource_v1(journal, operation_id)?.is_none() {
         return Ok(None);
     }
@@ -4201,20 +4147,19 @@ pub(crate) fn accepted_create_execution_effect_from_journal_v1(
         .ok_or(ReconcilerError::CorruptLedger(
             "accepted Create effect is absent",
         ))?;
-    let effect = decode_effect(effect_bytes)?;
-    if effect.plan.public_mutation_method()
+    let effect = decode_effect(effect_bytes).map_err(ReconcilerError::from)?;
+    if effect.plan().public_mutation_method()
         != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateExecution)
     {
         return Ok(None);
     }
-    let context = effect
-        .plan
-        .public_mutation_context()?
+    let context = effect.plan()
+        .public_mutation_context().map_err(ReconcilerError::from)?
         .ok_or(ReconcilerError::CorruptLedger(
             "accepted Create context is absent",
         ))?;
     if !matches!(
-        context.validated_request()?,
+        context.validated_request().map_err(ReconcilerError::from)?,
         aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Exec(_)
     ) {
         return Err(ReconcilerError::CorruptLedger(
@@ -4354,8 +4299,8 @@ fn is_operator_storage_repair_effect_v1(plan: &EffectPlan) -> Result<bool, Recon
     if plan.public_mutation_method() != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::OperatorRecover) {
         return Ok(false);
     }
-    let Some(context) = plan.public_mutation_context()? else { return Ok(false); };
-    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::OperatorRecover(request) = context.validated_request()? else {
+    let Some(context) = plan.public_mutation_context().map_err(ReconcilerError::from)? else { return Ok(false); };
+    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::OperatorRecover(request) = context.validated_request().map_err(ReconcilerError::from)? else {
         return Err(ReconcilerError::InvalidPlan("Recover effect has another public request"));
     };
     let request = crate::cli_model::OperatorRecoveryRequestV1::try_from(request)
@@ -4365,7 +4310,7 @@ fn is_operator_storage_repair_effect_v1(plan: &EffectPlan) -> Result<bool, Recon
 
 fn has_operator_repair_settlement_debt_v1(journal: &Journal, operation: OperationId) -> Result<bool, ReconcilerError> {
     let Some(effect) = journal.get(RecordNamespace::Effect, &effect_key(operation, 0)) else { return Ok(false); };
-    if !is_operator_storage_repair_effect_v1(&decode_effect(effect)?.plan)? {
+    if !is_operator_storage_repair_effect_v1(decode_effect(effect).map_err(ReconcilerError::from)?.plan())? {
         return Ok(false);
     }
     let mut has_hold = false;
@@ -4421,7 +4366,7 @@ mod tests {
     use buffa::Message as _;
 
     use super::*;
-    use crate::BrokerDispatchAttemptV1;
+    use aos_sandbox_protocol::domain_ledger::effect_history::BrokerDispatchAttemptHistoryV1;
     use crate::controller_execution_observe_reservation::ControllerExecutionObserveReservationV1;
     use crate::journal::JournalLimits;
     use crate::publication::tests::{
@@ -4723,16 +4668,16 @@ mod tests {
         )
         .unwrap()
         .encode();
-        let effect = EffectPlan::authorized_public_mutation(
-            PublicOperationMethodV1::StartSandbox,
-            PublicMutationEffectV1::new(
+        let effect = {
+            let selected_method = PublicOperationMethodV1::StartSandbox;
+            (PublicMutationEffectV1::new(
                 PrincipalId::from_bytes([0x93; 16]),
                 ProjectId::from_bytes([0x91; 16]),
                 100,
                 envelope,
             )
-            .unwrap(),
-        )
+            .unwrap()).into_plan(selected_method)
+        }
         .unwrap();
 
         OperationPlan::new(
@@ -4832,16 +4777,16 @@ mod tests {
         )
         .unwrap()
         .encode();
-        let effect = EffectPlan::authorized_public_mutation(
-            PublicOperationMethodV1::CreateExecution,
-            PublicMutationEffectV1::new(
+        let effect = {
+            let selected_method = PublicOperationMethodV1::CreateExecution;
+            (PublicMutationEffectV1::new(
                 PrincipalId::from_bytes([0x93; 16]),
                 project,
                 100,
                 envelope,
             )
-            .unwrap(),
-        )
+            .unwrap()).into_plan(selected_method)
+        }
         .unwrap();
         let execution = Execution {
             execution_id: execution_id.to_vec(),
@@ -5033,16 +4978,16 @@ mod tests {
         let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes([0xe1; 32])).unwrap();
         let request_digest =
             scope.public_request_digest(PrincipalId::from_bytes([0x93; 16]), project, &envelope);
-        let effect = EffectPlan::authorized_public_mutation(
-            PublicOperationMethodV1::CreateSandbox,
-            PublicMutationEffectV1::new(
+        let effect = {
+            let selected_method = PublicOperationMethodV1::CreateSandbox;
+            (PublicMutationEffectV1::new(
                 PrincipalId::from_bytes([0x93; 16]),
                 project,
                 100,
                 envelope,
             )
-            .unwrap(),
-        )
+            .unwrap()).into_plan(selected_method)
+        }
         .unwrap();
         let authorization = PublicOperationAuthorizationV1::new(
             project,
@@ -5140,19 +5085,20 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
+            let effect = effect.into_parts();
             reconciler
                 .store_effect(
                     operation_id,
                     0,
-                    &EffectLedgerRecord {
-                        plan: effect.plan,
-                        state: EffectState::Applying {
+                    &EffectLedgerRecord::from_parts((
+effect.0,
+EffectState::Applying {
                             attempt: 2,
                             diagnostic: "retry".to_owned(),
                         },
-                        dispatch: None,
-                        project_admission: None,
-                    },
+None,
+None,
+)),
                     None,
                     Some(102),
                 )
@@ -5202,15 +5148,15 @@ mod tests {
             .commit_records(vec![JournalRecord::put(
                 RecordNamespace::Effect,
                 effect_key(operation_id, 0).to_vec(),
-                encode_effect(&EffectLedgerRecord {
-                    plan: changed.effects[0].clone(),
-                    state: EffectState::Applying {
+                encode_effect(&EffectLedgerRecord::from_parts((
+changed.effects[0].clone(),
+EffectState::Applying {
                         attempt: 1,
                         diagnostic: String::new(),
                     },
-                    dispatch: None,
-                    project_admission: None,
-                })
+None,
+None,
+)))
                 .unwrap(),
             )])
             .unwrap();
@@ -5272,15 +5218,15 @@ mod tests {
                 JournalRecord::put(
                     RecordNamespace::Effect,
                     effect_key(operation_id, 0).to_vec(),
-                    encode_effect(&EffectLedgerRecord {
-                        plan: plan.effects[0].clone(),
-                        state: EffectState::Applied {
+                    encode_effect(&EffectLedgerRecord::from_parts((
+plan.effects[0].clone(),
+EffectState::Applied {
                             attempt: 1,
                             receipt: EffectReceipt::new(vec![1]).unwrap(),
                         },
-                        dispatch: None,
-                        project_admission: None,
-                    })
+None,
+None,
+)))
                     .unwrap(),
                 ),
                 JournalRecord::put(
@@ -5319,9 +5265,14 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        effect.state = EffectState::Applying {
+        effect = {
+            let replacement = EffectState::Applying {
             attempt: 1,
             diagnostic: "original Host handoff unresolved".to_owned(),
+        };
+            let mut parts = effect.into_parts();
+            parts.1 = replacement;
+            EffectLedgerRecord::from_parts(parts)
         };
         let applying =
             transition_operation(operation, OperationState::Applying, Some(101)).unwrap();
@@ -6551,7 +6502,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let first_dispatch = first_record.dispatch.as_ref().unwrap();
+        let first_dispatch = first_record.dispatch().unwrap();
         assert_eq!(first_dispatch.attempt().lease_generation(), 1);
         let first_companion = aos_sandbox_protocol::decode_host_guardian_companion_v1(
             first_dispatch.attempt().body(),
@@ -6597,7 +6548,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let applied_dispatch = applied.dispatch.as_ref().unwrap();
+        let applied_dispatch = applied.dispatch().unwrap();
         assert_eq!(applied_dispatch.attempt().lease_generation(), 2);
         let renewed_companion = aos_sandbox_protocol::decode_host_guardian_companion_v1(
             applied_dispatch.attempt().body(),
@@ -6685,7 +6636,7 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
-            let durable = record.dispatch.as_ref().unwrap();
+            let durable = record.dispatch().unwrap();
             let mut body = durable.attempt().body().to_vec();
             let mut packet = durable.attempt().packet().to_vec();
             let mut host_boot_id = durable.preparation_host_boot_id();
@@ -6695,7 +6646,7 @@ mod tests {
                 "boot" => host_boot_id = [0x93; 16],
                 _ => unreachable!(),
             }
-            let substituted = BrokerDispatchAttemptV1::from_durable_parts(
+            let substituted = BrokerDispatchAttemptHistoryV1::from_durable_parts(
                 durable.attempt().template_digest(),
                 durable.attempt().lease_digest(),
                 durable.attempt().lease_generation(),
@@ -6703,7 +6654,8 @@ mod tests {
                 body,
                 packet,
             );
-            record.dispatch = Some(PreparedAuthorityEffectV1::from_durable_parts(
+            record = {
+                let replacement = Some(PreparedAuthorityEffectHistoryV1::from_durable_parts(
                 durable.binding_digest(),
                 durable.publication_digest(),
                 durable.preparation_wall_seconds(),
@@ -6711,6 +6663,10 @@ mod tests {
                 host_boot_id,
                 substituted,
             ));
+                let mut parts = record.into_parts();
+                parts.2 = replacement;
+                EffectLedgerRecord::from_parts(parts)
+            };
             let replacement = JournalRecord::put(
                 RecordNamespace::Effect,
                 effect_key.to_vec(),
@@ -6796,7 +6752,8 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
-            durable_attempt = record.dispatch.unwrap();
+            let record = record.into_parts();
+            durable_attempt = record.2.unwrap();
         }
 
         let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
@@ -6808,7 +6765,8 @@ mod tests {
                 .unwrap(),
         )
         .unwrap()
-        .dispatch
+        .into_parts()
+        .2
         .unwrap();
         assert_eq!(recovered, durable_attempt);
         assert_eq!(
@@ -6875,7 +6833,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let durable = record.dispatch.as_ref().unwrap();
+        let durable = record.dispatch().unwrap();
         let alternate_clock = RawPairedClockSample::new_untrusted(
             RawClockProvenance::new_untrusted([0xee; 16]).unwrap(),
             durable.preparation_host_boot_id(),
@@ -6884,12 +6842,25 @@ mod tests {
         )
         .unwrap();
         let mut alternate = record.clone();
-        alternate.dispatch = Some(PreparedAuthorityEffectV1::new(
-            durable.binding_digest(),
-            durable.publication_digest(),
-            alternate_clock,
-            durable.attempt().clone(),
-        ));
+        alternate = {
+            let replacement = Some({
+                let binding_digest = durable.binding_digest();
+                let publication_digest = durable.publication_digest();
+                let preparation_clock = alternate_clock;
+                let attempt = durable.attempt().clone();
+                PreparedAuthorityEffectHistoryV1::from_durable_parts(
+                    binding_digest,
+                    publication_digest,
+                    preparation_clock.wall_seconds(),
+                    preparation_clock.boottime_nanoseconds(),
+                    preparation_clock.host_boot_id(),
+                    attempt,
+                )
+            });
+            let mut parts = alternate.into_parts();
+            parts.2 = replacement;
+            EffectLedgerRecord::from_parts(parts)
+        };
         assert_eq!(
             encode_effect(&record).unwrap(),
             encode_effect(&alternate).unwrap()
@@ -6902,12 +6873,25 @@ mod tests {
             durable.preparation_boottime_nanoseconds(),
         )
         .unwrap();
-        alternate.dispatch = Some(PreparedAuthorityEffectV1::new(
-            durable.binding_digest(),
-            durable.publication_digest(),
-            another_boot,
-            durable.attempt().clone(),
-        ));
+        alternate = {
+            let replacement = Some({
+                let binding_digest = durable.binding_digest();
+                let publication_digest = durable.publication_digest();
+                let preparation_clock = another_boot;
+                let attempt = durable.attempt().clone();
+                PreparedAuthorityEffectHistoryV1::from_durable_parts(
+                    binding_digest,
+                    publication_digest,
+                    preparation_clock.wall_seconds(),
+                    preparation_clock.boottime_nanoseconds(),
+                    preparation_clock.host_boot_id(),
+                    attempt,
+                )
+            });
+            let mut parts = alternate.into_parts();
+            parts.2 = replacement;
+            EffectLedgerRecord::from_parts(parts)
+        };
         assert_ne!(
             encode_effect(&record).unwrap(),
             encode_effect(&alternate).unwrap()
@@ -6950,8 +6934,9 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
+        let effect = effect.into_parts();
         assert_eq!(
-            effect.dispatch.unwrap().publication_digest(),
+            effect.2.unwrap().publication_digest(),
             renewed.digest()
         );
         assert_eq!(reconciler.executor.apply_calls, 1);
@@ -6976,8 +6961,10 @@ mod tests {
                 .unwrap(),
         )
         .unwrap()
-        .dispatch
+        .into_parts()
+        .2
         .unwrap();
+        let old = PreparedAuthorityEffectV1::from_history(old);
         let old_apply_token = host_receipt(&old);
         let old_observe_token = host_receipt(&old);
         let (_, renewed) = descriptor_free_activation_fixture(2);
@@ -7002,7 +6989,8 @@ mod tests {
                 .unwrap(),
         )
         .unwrap()
-        .dispatch
+        .into_parts()
+        .2
         .unwrap();
         assert_eq!(fresh.publication_digest(), renewed.digest());
 
@@ -7035,10 +7023,10 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let durable = record.dispatch.as_ref().unwrap();
+        let durable = record.dispatch().unwrap();
         let mut packet = durable.attempt().packet().to_vec();
         packet.push(0xff);
-        let substituted = BrokerDispatchAttemptV1::from_durable_parts(
+        let substituted = BrokerDispatchAttemptHistoryV1::from_durable_parts(
             durable.attempt().template_digest(),
             durable.attempt().lease_digest(),
             durable.attempt().lease_generation(),
@@ -7046,7 +7034,8 @@ mod tests {
             durable.attempt().body().to_vec(),
             packet,
         );
-        record.dispatch = Some(PreparedAuthorityEffectV1::from_durable_parts(
+        record = {
+            let replacement = Some(PreparedAuthorityEffectHistoryV1::from_durable_parts(
             durable.binding_digest(),
             durable.publication_digest(),
             durable.preparation_wall_seconds(),
@@ -7054,6 +7043,10 @@ mod tests {
             durable.preparation_host_boot_id(),
             substituted,
         ));
+            let mut parts = record.into_parts();
+            parts.2 = replacement;
+            EffectLedgerRecord::from_parts(parts)
+        };
         let replacement = JournalRecord::put(
             RecordNamespace::Effect,
             effect_key(plan.operation_id(), 0).to_vec(),
@@ -7092,12 +7085,17 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let EffectState::Applied { attempt, .. } = record.state else {
+        let EffectState::Applied { attempt, .. } = *record.state() else {
             panic!("effect was not applied");
         };
-        record.state = EffectState::Applied {
+        record = {
+            let replacement = EffectState::Applied {
             attempt,
             receipt: EffectReceipt::new(vec![0xff]).unwrap(),
+        };
+            let mut parts = record.into_parts();
+            parts.1 = replacement;
+            EffectLedgerRecord::from_parts(parts)
         };
         reconciler
             .journal_mut()
@@ -7291,8 +7289,9 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
+        let effect = effect.into_parts();
         assert_eq!(
-            effect.dispatch.unwrap().publication_digest(),
+            effect.2.unwrap().publication_digest(),
             renewed.digest()
         );
     }
@@ -7813,11 +7812,12 @@ mod tests {
             .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
             .unwrap()
             .to_vec();
-        let mut changed_effect = decode_effect(&original_effect_bytes).unwrap();
-        let EffectState::Applying { diagnostic, .. } = &mut changed_effect.state else {
+        let mut changed_effect = decode_effect(&original_effect_bytes).unwrap().into_parts();
+        let EffectState::Applying { diagnostic, .. } = &mut changed_effect.1 else {
             panic!("expected applying effect");
         };
         *diagnostic = "changed after Controller prepare".to_owned();
+        let changed_effect = EffectLedgerRecord::from_parts(changed_effect);
         reconciler
             .commit_records(vec![JournalRecord::put(
                 RecordNamespace::Effect,
@@ -7929,7 +7929,7 @@ mod tests {
         let EffectState::Applied {
             receipt: original_receipt,
             ..
-        } = &original_effect.state
+        } = original_effect.state()
         else {
             panic!("expected terminal receipt");
         };
@@ -7960,9 +7960,14 @@ mod tests {
             unknown_marker
         }] {
             let mut forged_effect = original_effect.clone();
-            forged_effect.state = EffectState::Applied {
+            forged_effect = {
+                let replacement = EffectState::Applied {
                 attempt: 1,
-                receipt: EffectReceipt(forged_receipt),
+                receipt: EffectReceipt::from_bytes_unchecked(forged_receipt),
+            };
+                let mut parts = forged_effect.into_parts();
+                parts.1 = replacement;
+                EffectLedgerRecord::from_parts(parts)
             };
             recovered
                 .commit_records(vec![JournalRecord::put(
@@ -8418,9 +8423,14 @@ mod tests {
             EffectReceipt::new(vec![1]).unwrap(),
             EffectReceipt::canceled_before_commit(ObjectDigest::from_bytes([2; 32])),
         ] {
-            effect.state = EffectState::Applied {
+            effect = {
+                let replacement = EffectState::Applied {
                 attempt: 1,
                 receipt,
+            };
+                let mut parts = effect.into_parts();
+                parts.1 = replacement;
+                EffectLedgerRecord::from_parts(parts)
             };
             assert!(
                 create_failure::validate_failed_create_operation(
@@ -8471,9 +8481,14 @@ mod tests {
             1,
             100,
         );
-        later_effect.state = EffectState::Applied {
+        later_effect = {
+            let replacement = EffectState::Applied {
             attempt: 1,
-            receipt: EffectReceipt(receipt.encode()),
+            receipt: EffectReceipt::from_bytes_unchecked(receipt.encode()),
+        };
+            let mut parts = later_effect.into_parts();
+            parts.1 = replacement;
+            EffectLedgerRecord::from_parts(parts)
         };
         reconciler
             .commit_records(vec![JournalRecord::put(
@@ -8701,65 +8716,65 @@ mod tests {
                 1 => JournalRecord::put(
                     RecordNamespace::Effect,
                     effect_key(gated.operation_id(), 1).to_vec(),
-                    encode_effect(&EffectLedgerRecord {
-                        plan: effect,
-                        state: EffectState::Planned,
-                        dispatch: None,
-                        project_admission: None,
-                    })
+                    encode_effect(&EffectLedgerRecord::from_parts((
+effect,
+EffectState::Planned,
+None,
+None,
+)))
                     .unwrap(),
                 ),
                 2 => JournalRecord::put(
                     RecordNamespace::Effect,
                     effect_key(gated.operation_id(), 0).to_vec(),
-                    encode_effect(&EffectLedgerRecord {
-                        plan: effect,
-                        state: EffectState::Applying {
+                    encode_effect(&EffectLedgerRecord::from_parts((
+effect,
+EffectState::Applying {
                             attempt: 1,
                             diagnostic: String::new(),
                         },
-                        dispatch: None,
-                        project_admission: None,
-                    })
+None,
+None,
+)))
                     .unwrap(),
                 ),
                 3 => JournalRecord::put(
                     RecordNamespace::Effect,
                     effect_key(gated.operation_id(), 0).to_vec(),
-                    encode_effect(&EffectLedgerRecord {
-                        plan: effect,
-                        state: EffectState::Applied {
+                    encode_effect(&EffectLedgerRecord::from_parts((
+effect,
+EffectState::Applied {
                             attempt: 1,
                             receipt: EffectReceipt::new(b"receipt".to_vec()).unwrap(),
                         },
-                        dispatch: None,
-                        project_admission: None,
-                    })
+None,
+None,
+)))
                     .unwrap(),
                 ),
                 4 => JournalRecord::put(
                     RecordNamespace::Effect,
                     effect_key(gated.operation_id(), 0).to_vec(),
-                    encode_effect(&EffectLedgerRecord {
-                        plan: effect,
-                        state: EffectState::PermanentlyBlocked {
+                    encode_effect(&EffectLedgerRecord::from_parts((
+effect,
+EffectState::PermanentlyBlocked {
                             attempt: 1,
                             diagnostic: "blocked".to_owned(),
                         },
-                        dispatch: None,
-                        project_admission: None,
-                    })
+None,
+None,
+)))
                     .unwrap(),
                 ),
                 5 => JournalRecord::put(
                     RecordNamespace::Effect,
                     effect_key(gated.operation_id(), 0).to_vec(),
-                    encode_effect(&EffectLedgerRecord {
-                        plan: effect,
-                        state: EffectState::Planned,
-                        dispatch: None,
-                        project_admission: None,
-                    })
+                    encode_effect(&EffectLedgerRecord::from_parts((
+effect,
+EffectState::Planned,
+None,
+None,
+)))
                     .unwrap(),
                 ),
                 _ => unreachable!(),
@@ -8943,7 +8958,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            effect.state,
+            *effect.state(),
             EffectState::Applying {
                 attempt: 2,
                 ref diagnostic,

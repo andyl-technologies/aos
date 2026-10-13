@@ -43,6 +43,8 @@ pub(crate) use aos_sandbox_protocol::dispatch_template::{
     validate_durable_attempt_body,
 };
 
+use aos_sandbox_protocol::domain_ledger::effect_history::BrokerDispatchAttemptHistoryV1;
+
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
 /// Checks a fully formed selected wrapper without direct-header injection.
@@ -214,15 +216,16 @@ impl GuardianPlanRequestV1 {
         .map_err(|_| BrokerDispatchAttemptError::GuardianPlanMismatch)
     }
 }
-/// Owns one exact, non-authorizing packet attenuated to a lease and deadline.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Retains an attempt from the fixed signed/current Native construction recipes.
+#[derive(Clone, Eq, PartialEq)]
 pub struct BrokerDispatchAttemptV1 {
-    template_digest: ObjectDigest,
-    lease_digest: ObjectDigest,
-    lease_generation: u64,
-    deadline_boottime_nanoseconds: u64,
-    body: Vec<u8>,
-    packet: Vec<u8>,
+    history: BrokerDispatchAttemptHistoryV1,
+}
+
+impl std::fmt::Debug for BrokerDispatchAttemptV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.history, formatter)
+    }
 }
 
 impl BrokerDispatchAttemptV1 {
@@ -289,12 +292,10 @@ impl BrokerDispatchAttemptV1 {
             },
         )?;
         Ok(Self {
-            template_digest: template.digest(),
-            lease_digest: lease.digest(),
-            lease_generation: lease.generation(),
-            deadline_boottime_nanoseconds,
-            body,
-            packet,
+            history: BrokerDispatchAttemptHistoryV1::from_durable_parts(
+                template.digest(), lease.digest(), lease.generation(),
+                deadline_boottime_nanoseconds, body, packet,
+            ),
         })
     }
 
@@ -383,12 +384,10 @@ impl BrokerDispatchAttemptV1 {
             },
         )?;
         Ok(Self {
-            template_digest: template.digest(),
-            lease_digest: lease.digest(),
-            lease_generation: lease.generation(),
-            deadline_boottime_nanoseconds,
-            body,
-            packet,
+            history: BrokerDispatchAttemptHistoryV1::from_durable_parts(
+                template.digest(), lease.digest(), lease.generation(),
+                deadline_boottime_nanoseconds, body, packet,
+            ),
         })
     }
 
@@ -471,12 +470,10 @@ impl BrokerDispatchAttemptV1 {
             },
         )?;
         Ok(Self {
-            template_digest: template.digest(),
-            lease_digest: lease.digest(),
-            lease_generation: recovered_lease.lease_generation(),
-            deadline_boottime_nanoseconds,
-            body,
-            packet,
+            history: BrokerDispatchAttemptHistoryV1::from_durable_parts(
+                template.digest(), lease.digest(), recovered_lease.lease_generation(),
+                deadline_boottime_nanoseconds, body, packet,
+            ),
         })
     }
 
@@ -606,67 +603,59 @@ impl BrokerDispatchAttemptV1 {
             },
         )?;
         Ok(Self {
-            template_digest: template.digest(),
-            lease_digest: lease.digest(),
-            lease_generation: recovered_lease.lease_generation(),
-            deadline_boottime_nanoseconds,
-            body,
-            packet,
+            history: BrokerDispatchAttemptHistoryV1::from_durable_parts(
+                template.digest(), lease.digest(), recovered_lease.lease_generation(),
+                deadline_boottime_nanoseconds, body, packet,
+            ),
         })
     }
 
     /// Returns the immutable template digest used for this attempt.
     #[must_use]
     pub const fn template_digest(&self) -> ObjectDigest {
-        self.template_digest
+        self.history.template_digest()
     }
 
     /// Returns the exact signed lease digest used for this attempt.
     #[must_use]
     pub const fn lease_digest(&self) -> ObjectDigest {
-        self.lease_digest
+        self.history.lease_digest()
     }
 
     /// Returns the issuer-chosen lease generation used for this attempt.
     #[must_use]
     pub const fn lease_generation(&self) -> u64 {
-        self.lease_generation
+        self.history.lease_generation()
     }
 
     /// Returns the conservative attempt-local BOOTTIME deadline.
     #[must_use]
     pub const fn deadline_boottime_nanoseconds(&self) -> u64 {
-        self.deadline_boottime_nanoseconds
+        self.history.deadline_boottime_nanoseconds()
     }
 
     /// Returns the exact protobuf body with the attempt deadline injected.
     #[must_use]
     pub fn body(&self) -> &[u8] {
-        &self.body
+        self.history.body()
     }
 
     /// Returns the exact non-authorizing broker packet ready for transport.
     #[must_use]
     pub fn packet(&self) -> &[u8] {
-        &self.packet
+        self.history.packet()
     }
 
-    pub(crate) fn from_durable_parts(
-        template_digest: ObjectDigest,
-        lease_digest: ObjectDigest,
-        lease_generation: u64,
-        deadline_boottime_nanoseconds: u64,
-        body: Vec<u8>,
-        packet: Vec<u8>,
-    ) -> Self {
-        Self {
-            template_digest,
-            lease_digest,
-            lease_generation,
-            deadline_boottime_nanoseconds,
-            body,
-            packet,
-        }
+}
+
+
+impl BrokerDispatchAttemptV1 {
+    pub(crate) const fn history(&self) -> &BrokerDispatchAttemptHistoryV1 {
+        &self.history
+    }
+
+    pub(crate) const fn into_history(self) -> BrokerDispatchAttemptHistoryV1 {
+        self.history
     }
 }
 

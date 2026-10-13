@@ -26,11 +26,11 @@ pub(crate) fn require_current_effect_v2(
     }
 
     // Later custody cuts read afresh; reuse is confined to this immutable phase.
-    require_pending_states(readback.operation.state(), &readback.effect.state)?;
+    require_pending_states(readback.operation.state(), readback.effect.state())?;
     let (desired_key, desired_value) = carrier.desired();
-    if &readback.effect.plan != expected_plan
-        || readback.effect.dispatch.is_some()
-        || readback.effect.project_admission.is_some()
+    if readback.effect.plan() != expected_plan
+        || readback.effect.dispatch().is_some()
+        || readback.effect.project_admission().is_some()
         || journal.get(RecordNamespace::DesiredState, desired_key) != Some(desired_value)
     {
         return Err(ReconcilerError::CorruptLedger("retained Start effect or Desired changed"));
@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn completed_or_blocked_effect_cannot_continue() {
         let applied = EffectState::Applied {
-            attempt: 1, receipt: EffectReceipt(vec![1]),
+            attempt: 1, receipt: EffectReceipt::from_bytes_unchecked(vec![1]),
         };
         let blocked = EffectState::PermanentlyBlocked {
             attempt: 1, diagnostic: String::new(),

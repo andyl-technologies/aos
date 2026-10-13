@@ -25,7 +25,7 @@ use crate::controller::ControllerRequestScopeV1;
 use crate::journal::controller::production_journal_limits;
 use crate::journal::{Journal, JournalError, RecordNamespace};
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
-use crate::reconciler::EffectPlan;
+use aos_sandbox_protocol::domain_ledger::effect_history::EffectPlan;
 
 use super::controller_hold_readback::PinnedControllerHoldSignerV1;
 use super::public_create_source::{

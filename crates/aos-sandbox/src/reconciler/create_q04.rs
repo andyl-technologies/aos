@@ -17,7 +17,7 @@ use crate::policy_compiler::create_q04::{
     Q04EffectSubgateV1,
 };
 
-use super::effect::{
+use aos_sandbox_protocol::domain_ledger::effect_history::{
     EffectLedgerRecord, EffectState, decode_effect_with_q04, encode_effect, encode_q04_effect,
 };
 use super::{
@@ -350,7 +350,7 @@ pub fn continue_original_create_q04_policy_subgate_v1(
 
         retain_q04_data(first, profile.recheck().map_err(Into::into))?;
         if credentials.capture().is_err() { return Err(()); }
-        let context = retain_q04_data(first, plan.public_mutation_context().map_err(Into::into))?
+        let context = retain_q04_data(first, plan.public_mutation_context().map_err(ReconcilerError::from).map_err(Into::into))?
             .ok_or(())?;
         let project = context.project();
         let (generation, signer) = retain_q04_data(first,
@@ -664,7 +664,7 @@ impl OriginalQ04ControllerLedgerV1 {
         journal: &mut Journal,
         operation: OperationId,
         scope: crate::controller::ControllerRequestScopeV1,
-        expected_plan: &super::EffectPlan,
+        expected_plan: &aos_sandbox_protocol::domain_ledger::effect_history::EffectPlan,
     ) -> Result<Self, CreateQ04ErrorV1> {
         journal.validate_held_protected_names()?;
         journal.require_q04_native_recipes_v1(&[])?;
@@ -679,26 +679,26 @@ impl OriginalQ04ControllerLedgerV1 {
         let operation_row = decode_operation(operation_bytes).map_err(ReconcilerError::from)?;
         let effect_bytes = journal.get(RecordNamespace::Effect, &effect_key(operation, 0))
             .ok_or(ReconcilerError::CorruptLedger("Q04 original Effect is absent"))?;
-        let (effect, gate) = decode_effect_with_q04(effect_bytes)?;
+        let (effect, gate) = decode_effect_with_q04(effect_bytes).map_err(ReconcilerError::from)?;
         if operation_row.state() != OperationState::Applying
             || operation_row.effect_count() != 1
             || operation_row.ownership_gated()
             || operation_row.runtime_intent_digest().is_some()
             || operation_row.public_operation().is_none()
-            || !matches!(effect.state, EffectState::Applying { .. })
-            || effect.dispatch.is_some()
-            || effect.plan.authority().is_some()
-            || effect.project_admission.is_some()
+            || !matches!(effect.state(), EffectState::Applying { .. })
+            || effect.dispatch().is_some()
+            || effect.plan().authority().is_some()
+            || effect.project_admission().is_some()
             || gate.is_some()
             || encode_operation_record(operation_row).as_slice() != operation_bytes
-            || encode_effect(&effect)?.as_slice() != effect_bytes
+            || encode_effect(&effect).map_err(ReconcilerError::from)?.as_slice() != effect_bytes
         {
             return Err(ReconcilerError::CorruptLedger("Q04 original applying rows changed").into());
         }
 
-        let context = effect.plan.public_mutation_context()?
+        let context = effect.plan().public_mutation_context().map_err(ReconcilerError::from)?
             .ok_or(ReconcilerError::CorruptLedger("Q04 original Create context is absent"))?;
-        let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(create) = context.validated_request()?
+        let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(create) = context.validated_request().map_err(ReconcilerError::from)?
         else {
             return Err(ReconcilerError::CorruptLedger("Q04 original method changed").into());
         };
@@ -816,12 +816,9 @@ impl OriginalQ04ControllerLedgerV1 {
     }
 
     pub(crate) fn effect_plan_digest(&self) -> Result<ObjectDigest, CreateQ04ErrorV1> {
-        let planned = encode_effect(&EffectLedgerRecord {
-            state: EffectState::Planned,
-            dispatch: None,
-            project_admission: None,
-            ..self.effect.clone()
-        })?;
+        let planned = encode_effect(&EffectLedgerRecord::from_parts((
+            self.effect.clone().into_parts().0, EffectState::Planned, None, None,
+        ))).map_err(ReconcilerError::from)?;
         Ok(ObjectDigest::from_bytes(Sha256::digest(planned).into()))
     }
 
@@ -834,7 +831,7 @@ impl OriginalQ04ControllerLedgerV1 {
     ) -> Result<crate::policy_compiler::CurrentCreateProjectPolicySourceV1, CreateQ04ErrorV1> {
         self.require_original(journal)?;
         let current = crate::policy_compiler::current_parentless_create_project_source_for_operation_v1(
-            journal, self.operation, self.project, self.scope, &self.effect.plan,
+            journal, self.operation, self.project, self.scope, self.effect.plan(),
         )?;
         if current.commitment() != self.source.commitment()
             || current.operation_revision() != self.revision
@@ -877,10 +874,10 @@ impl OriginalQ04ControllerLedgerV1 {
         }
         let actual = journal.get(RecordNamespace::Effect, &effect_key(self.operation, 0))
             .ok_or(ReconcilerError::CorruptLedger("Q04 original Effect is absent"))?;
-        let (effect, _) = decode_effect_with_q04(actual)?;
-        if encode_effect(&effect)? != self.effect_bytes
+        let (effect, _) = decode_effect_with_q04(actual).map_err(ReconcilerError::from)?;
+        if encode_effect(&effect).map_err(ReconcilerError::from)? != self.effect_bytes
             || super::checked_live_create_sandbox_admission_revision_v1(
-                journal, self.operation, self.scope, &self.effect.plan,
+                journal, self.operation, self.scope, self.effect.plan(),
             )? != Some((self.revision, self.accepted_generation))
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
@@ -901,7 +898,7 @@ impl OriginalQ04ControllerLedgerV1 {
     ) -> Result<JournalRecord, CreateQ04ErrorV1> {
         Ok(JournalRecord::put(
             RecordNamespace::Effect, effect_key(self.operation, 0).to_vec(),
-            encode_q04_effect(&self.effect, gate)?,
+            encode_q04_effect(&self.effect, gate).map_err(ReconcilerError::from)?,
         ))
     }
 
@@ -922,8 +919,8 @@ impl OriginalQ04ControllerLedgerV1 {
         let selected_key = effect_key(self.operation, 0);
         let bytes = state.get(&(RecordNamespace::Effect, selected_key.to_vec()))
             .ok_or(ReconcilerError::CorruptLedger("Q04 original materialized Effect is absent"))?;
-        let (effect, gate) = decode_effect_with_q04(bytes)?;
-        if encode_effect(&effect)? != self.effect_bytes
+        let (effect, gate) = decode_effect_with_q04(bytes).map_err(ReconcilerError::from)?;
+        if encode_effect(&effect).map_err(ReconcilerError::from)? != self.effect_bytes
             || state.iter().any(|((namespace, key), bytes)| {
                 *namespace == RecordNamespace::Effect
                     && bytes.first() == Some(&6)
@@ -992,12 +989,12 @@ pub(crate) struct Q04OriginalRowDataV1 {
 
 impl Q04OriginalRowDataV1 {
     pub(crate) fn effect_plan_digest(self) -> Result<ObjectDigest, CreateQ04ErrorV1> {
-        let admitted = encode_effect(&EffectLedgerRecord {
-            state: EffectState::Planned,
-            dispatch: None,
-            project_admission: None,
-            ..self.effect
-        })?;
+        // This owner has only Copy identity besides the effect. Keep every
+        // residual field until after hashing, without changing borrowed encoding.
+        let effect = self.effect.into_parts();
+        let admitted = encode_effect(&EffectLedgerRecord::from_parts((
+            effect.0, EffectState::Planned, None, None,
+        ))).map_err(ReconcilerError::from)?;
         Ok(ObjectDigest::from_bytes(Sha256::digest(admitted).into()))
     }
 
@@ -1008,7 +1005,7 @@ impl Q04OriginalRowDataV1 {
         &self,
         gate: &Q04EffectSubgateV1,
     ) -> Result<Vec<u8>, CreateQ04ErrorV1> {
-        Ok(encode_q04_effect(&self.effect, gate)?)
+        Ok(encode_q04_effect(&self.effect, gate).map_err(ReconcilerError::from)?)
     }
 }
 
@@ -1032,21 +1029,21 @@ pub(crate) fn read_original_q04_rows_v1(
         return Err(ReconcilerError::CorruptLedger("Q04 Claim Operation changed").into());
     }
 
-    let (effect, gate) = decode_effect_with_q04(effect_bytes)?;
+    let (effect, gate) = decode_effect_with_q04(effect_bytes).map_err(ReconcilerError::from)?;
     if gate.is_some()
-        || !matches!(effect.state, EffectState::Applying { .. })
-        || effect.dispatch.is_some()
-        || effect.plan.authority().is_some()
-        || effect.project_admission.is_some()
-        || effect.plan.public_mutation_method()
+        || !matches!(effect.state(), EffectState::Applying { .. })
+        || effect.dispatch().is_some()
+        || effect.plan().authority().is_some()
+        || effect.project_admission().is_some()
+        || effect.plan().public_mutation_method()
             != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
-        || encode_effect(&effect)?.as_slice() != effect_bytes
+        || encode_effect(&effect).map_err(ReconcilerError::from)?.as_slice() != effect_bytes
     {
         return Err(ReconcilerError::CorruptLedger("Q04 Claim original Effect changed").into());
     }
-    let context = effect.plan.public_mutation_context()?
+    let context = effect.plan().public_mutation_context().map_err(ReconcilerError::from)?
         .ok_or(ReconcilerError::CorruptLedger("Q04 Claim Create context is absent"))?;
-    let request = context.validated_request()?;
+    let request = context.validated_request().map_err(ReconcilerError::from)?;
     let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(create) = request else {
         return Err(ReconcilerError::CorruptLedger("Q04 Claim method changed").into());
     };
@@ -1119,10 +1116,11 @@ pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, Reconc
     let selected_key = effect_key(operation_id, 0);
     let effect_bytes = journal.get(RecordNamespace::Effect, &selected_key)
         .ok_or(ReconcilerError::CorruptLedger("Q04 Effect is absent"))?;
-    let (effect, gate) = decode_effect_with_q04(effect_bytes)?;
-    if !matches!(effect.state, EffectState::Applying { .. })
-        || effect.dispatch.is_some()
-        || effect.plan.public_mutation_method()
+    let (effect, gate) = decode_effect_with_q04(effect_bytes).map_err(ReconcilerError::from)
+        .map(|(effect, gate)| (effect.into_parts(), gate))?;
+    if !matches!(effect.1, EffectState::Applying { .. })
+        || effect.2.is_some()
+        || effect.0.public_mutation_method()
             != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
     {
         return Err(ReconcilerError::CorruptLedger("Q04 Effect is not Applying Create"));
@@ -1142,12 +1140,9 @@ pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, Reconc
     {
         return Err(ReconcilerError::CorruptLedger("Q04 original admission changed"));
     }
-    let admitted_effect = encode_effect(&EffectLedgerRecord {
-        state: EffectState::Planned,
-        dispatch: None,
-        project_admission: None,
-        ..effect
-    })?;
+    let admitted_effect = encode_effect(&EffectLedgerRecord::from_parts((
+        effect.0, EffectState::Planned, None, None,
+    ))).map_err(ReconcilerError::from)?;
     let plan_digest = ObjectDigest::from_bytes(Sha256::digest(admitted_effect).into());
     if plan_digest != history.identity.effect_plan_digest() {
         return Err(ReconcilerError::CorruptLedger("Q04 original Effect plan changed"));

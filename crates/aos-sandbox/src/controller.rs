@@ -3879,10 +3879,10 @@ mod tests {
 
     use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 
-    use crate::{
-        EffectDomain, EffectFailure, EffectObservation, EffectPlan, EffectReceipt, IdempotencyKey,
+    use crate::{ EffectFailure, EffectObservation, IdempotencyKey,
         Journal, JournalLimits,
     };
+    use aos_sandbox_protocol::domain_ledger::effect_history::{EffectDomain, EffectPlan, EffectReceipt};
 
     use super::*;
 

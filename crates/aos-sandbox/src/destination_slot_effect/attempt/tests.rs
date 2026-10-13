@@ -44,9 +44,10 @@ use crate::dispatch::{
     BrokerDispatchSemanticIdentityV1, semantic_identity_digest, template_digest_from_parts,
 };
 use crate::{
-    EffectFailure, EffectObservation, EffectPlan, EffectReceipt, JournalLimits, Reconciler,
+    EffectFailure, EffectObservation, JournalLimits, Reconciler,
     SingleNodeEffectExecutor,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
 use aos_sandbox_protocol::authorization_artifact::{
     BrokerPlanPreparation, ReturnedSignature, SigningAuthority,
 };

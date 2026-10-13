@@ -10,9 +10,10 @@ use aos_sandbox_core::{IncarnationId, SandboxId};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use crate::{
-    EffectFailure, EffectObservation, EffectPlan, EffectReceipt, JournalLimits, Reconciler,
+    EffectFailure, EffectObservation, JournalLimits, Reconciler,
     SingleNodeEffectExecutor,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
 
 struct NoEffects;
 

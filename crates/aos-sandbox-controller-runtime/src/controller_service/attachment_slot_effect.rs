@@ -16,9 +16,10 @@ use sha2::{Digest as _, Sha256};
 
 use super::attachment_target::ControllerAttachmentTargetInputsV1;
 use super::{
-    ControllerBrokerPlanSignerV1, EffectFailure, ProductionEffectExecutor, PublicMutationEffectV1,
+    ControllerBrokerPlanSignerV1, EffectFailure, ProductionEffectExecutor,
     sample_ownership_clock,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 
 const SLOT_REQUEST_DOMAIN: &[u8] = b"aos.sandbox.public-attachment-slot-effect.v1\0";
@@ -26,7 +27,7 @@ const SLOT_REQUEST_DOMAIN: &[u8] = b"aos.sandbox.public-attachment-slot-effect.v
 pub(super) fn advance(
     executor: &mut ProductionEffectExecutor,
     operation: OperationId,
-    context: &PublicMutationEffectV1,
+    context: &PublicMutationEffectHistoryV1,
     request: &DormantSandboxRequestKindV1,
     sandbox: SandboxId,
     slot_id: AttachmentSlotId,
@@ -231,7 +232,7 @@ fn drain_pending(
     Ok(())
 }
 
-fn request_digest(context: &PublicMutationEffectV1) -> ObjectDigest {
+fn request_digest(context: &PublicMutationEffectHistoryV1) -> ObjectDigest {
     let request = context.canonical_request();
     let digest: [u8; 32] = Sha256::new()
         .chain_update(SLOT_REQUEST_DOMAIN)

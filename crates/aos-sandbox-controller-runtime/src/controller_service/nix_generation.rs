@@ -16,7 +16,8 @@ use aos_sandbox::production_operation_compiler::{
     NixGenerationOriginalErrorV1, NixStartContinuationErrorV2,
     StorageGenerationPreparationDraftV1,
 };
-use aos_sandbox::{EffectFailure, EffectObservation, EffectPlan, EffectReceipt};
+use aos_sandbox::{EffectFailure, EffectObservation};
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 use aos_sandbox_core::{ObjectDigest, OperationId};
 use aos_sandbox_protocol::authenticated_session::all_methods::{

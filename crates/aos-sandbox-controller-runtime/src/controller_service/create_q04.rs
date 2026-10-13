@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use aos_sandbox::cache_residency::CacheResidentInitializationV1;
 use aos_sandbox::normal_root::{NormalRootStartupErrorV1, ProductionControllerNormalRootProfileV1};
-use aos_sandbox::reconciler::{EffectFailure, EffectPlan};
+use aos_sandbox::reconciler::{EffectFailure};
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan};
 use aos_sandbox::Journal;
 use aos_sandbox_core::OperationId;
 

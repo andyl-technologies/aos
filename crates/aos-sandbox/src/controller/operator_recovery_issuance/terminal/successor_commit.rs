@@ -28,7 +28,8 @@ use aos_sandbox_protocol::public_api::projection::{
 use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::production_operation_compiler::repair_sandbox_successor_projection_v1;
 use crate::reconciler::pending_operator_repair_ledger_v1;
-use crate::{EffectReceipt, Journal, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::{ Journal, JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
 
 const TERMINAL_RECEIPT_PREFIX: &[u8] = b"storage-repair-terminal-v1/";
 const COMMIT_DOMAIN: &[u8] = b"aos.sandbox.operator-repair-public-successor.v1\0";
@@ -159,7 +160,7 @@ impl PreparedRepairSuccessorV1 {
             super::issued_intent(journal, signer, OperationId::from_bytes(derived.operation_id))?.0.public_request_digest)
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
         let ledger = pending.complete(
-            EffectReceipt::new(receipt.as_bytes().to_vec()).map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?,
+            EffectReceipt::new(receipt.as_bytes().to_vec()).map_err(crate::ReconcilerError::from).map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?,
             completion_wall_seconds,
         ).map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
         let records = vec![
@@ -294,6 +295,7 @@ impl PreparedRepairSuccessorV1 {
         let ledger = pending
             .complete(
                 EffectReceipt::new(receipt.encode().to_vec())
+                    .map_err(crate::ReconcilerError::from)
                     .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?,
                 completion_wall_seconds,
             )

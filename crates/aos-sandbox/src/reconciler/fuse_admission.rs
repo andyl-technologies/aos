@@ -39,16 +39,16 @@ pub(crate) fn accepted_fuse_admission_v1(
         .ok_or(ReconcilerError::CorruptLedger(
             "missing FUSE admission effect",
         ))?;
-    let effect = decode_effect(effect_bytes)?;
+    let effect = decode_effect(effect_bytes).map_err(ReconcilerError::from)?;
     if !matches!(
-        effect.plan.public_mutation_method(),
+        effect.plan().public_mutation_method(),
         Some(PublicOperationMethodV1::AttachView | PublicOperationMethodV1::ReplaceAttachment)
     ) {
         return Ok(None);
     }
     let context = effect
-        .plan
-        .public_mutation_context()?
+        .plan()
+        .public_mutation_context().map_err(ReconcilerError::from)?
         .ok_or(ReconcilerError::CorruptLedger(
             "missing FUSE admission context",
         ))?;
@@ -74,7 +74,7 @@ pub(crate) fn accepted_fuse_admission_v1(
         ) != IdempotencyOutcome::Replay(operation_id)
         || public.method()
             != effect
-                .plan
+                .plan()
                 .public_mutation_method()
                 .ok_or(ReconcilerError::CorruptLedger("missing FUSE method"))?
         || public.accepted_wall_seconds() != context.accepted_wall_seconds()
@@ -83,5 +83,5 @@ pub(crate) fn accepted_fuse_admission_v1(
             "FUSE admission operation mismatch",
         ));
     }
-    Ok(Some(carrier.clone()))
+    Ok(Some(ControllerFuseAdmissionCarrierV1::from_history(carrier.clone())))
 }

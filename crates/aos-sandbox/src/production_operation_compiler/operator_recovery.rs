@@ -21,11 +21,11 @@ use aos_sandbox_protocol::public_api::{
 };
 use aos_sandbox_protocol::public_api::projection::{PublicProjectionKindV1, PublicProjectionResourceV1};
 use crate::controller_service::public_projection::{PublicProjectionStoreV1};
-use crate::{
-    EffectPlan, IdempotencyKey, IdempotencyOutcome, Journal, OperationCompilationError,
+use crate::{ IdempotencyKey, IdempotencyOutcome, Journal, OperationCompilationError,
     OperationPlan, PublicMutationEffectV1, PublicOperationAdmissionV1,
     PublicOperationAuthorizationV1,
 };
+use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan};
 
 mod successor;
 
@@ -58,7 +58,10 @@ pub(crate) fn compile_prepared_storage_repair_v1(
         peer.principal(), peer.project(), accepted_wall_seconds, canonical_request.to_vec(),
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
-    let effect = EffectPlan::authorized_public_mutation(PublicOperationMethodV1::OperatorRecover, context)
+    let effect = {
+        let method = PublicOperationMethodV1::OperatorRecover;
+        context.into_plan(method)
+    }
         .map_err(|_| OperationCompilationError::Rejected)?;
     let idempotency = IdempotencyKey::new(request.idempotency_key().to_vec())
         .map_err(|_| OperationCompilationError::Rejected)?;
@@ -101,7 +104,10 @@ pub(crate) fn compile_replayed_storage_repair_v1(
         peer.principal(), public.project(), public.accepted_wall_seconds(), canonical_request.to_vec(),
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
-    let effect = EffectPlan::authorized_public_mutation(PublicOperationMethodV1::OperatorRecover, context)
+    let effect = {
+        let method = PublicOperationMethodV1::OperatorRecover;
+        context.into_plan(method)
+    }
         .map_err(|_| OperationCompilationError::Rejected)?;
     let idempotency = IdempotencyKey::new(request.idempotency_key().to_vec())
         .map_err(|_| OperationCompilationError::Rejected)?;
@@ -224,16 +230,16 @@ pub(super) fn compile_public_operator_recovery(
         PublicOperationMethodV1::OperatorRecover,
         canonical_request,
     );
-    let effect = EffectPlan::authorized_public_mutation(
-        PublicOperationMethodV1::OperatorRecover,
-        PublicMutationEffectV1::new(
+    let effect = {
+        let method = PublicOperationMethodV1::OperatorRecover;
+        (PublicMutationEffectV1::new(
             peer.principal(),
             peer.project(),
             authorization.accepted_wall_seconds(),
             canonical_request.to_vec(),
         )
-        .map_err(|_| OperationCompilationError::Rejected)?,
-    )
+        .map_err(|_| OperationCompilationError::Rejected)?).into_plan(method)
+    }
     .map_err(|_| OperationCompilationError::Rejected)?;
     let plan = OperationPlan::new(
         operation_id,
@@ -482,16 +488,16 @@ fn replay_operator_recovery(
         .with_public_operation(public)
         .map_err(|_| OperationCompilationError::Rejected);
     }
-    let effect = EffectPlan::authorized_public_mutation(
-        PublicOperationMethodV1::OperatorRecover,
-        PublicMutationEffectV1::new(
+    let effect = {
+        let method = PublicOperationMethodV1::OperatorRecover;
+        (PublicMutationEffectV1::new(
             peer.principal(),
             public.project(),
             public.accepted_wall_seconds(),
             canonical_request.to_vec(),
         )
-        .map_err(|_| OperationCompilationError::Rejected)?,
-    )
+        .map_err(|_| OperationCompilationError::Rejected)?).into_plan(method)
+    }
     .map_err(|_| OperationCompilationError::Rejected)?;
 
     OperationPlan::new(

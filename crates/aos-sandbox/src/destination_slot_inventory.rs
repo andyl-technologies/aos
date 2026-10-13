@@ -770,9 +770,10 @@ mod tests {
     use super::*;
     use crate::attachment_slot_state::{AttachmentSlotMutationV1, commit_for_test};
     use crate::{
-        EffectFailure, EffectObservation, EffectPlan, EffectReceipt, JournalLimits, Reconciler,
+        EffectFailure, EffectObservation, JournalLimits, Reconciler,
         ReconcilerError, SingleNodeEffectExecutor,
     };
+    use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
 
     const SLOT_ID: [u8; 16] = [1; 16];
     const SANDBOX_ID: [u8; 16] = [2; 16];

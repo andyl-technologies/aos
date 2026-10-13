@@ -4,6 +4,9 @@
 //! not reconstruct a startup, lease verifier, session or physical floor owner.
 
 use super::*;
+use aos_sandbox_protocol::domain_ledger::effect_history::{
+    EffectLedgerRecord, EffectPlan, PublicMutationEffectHistoryV1, decode_effect,
+};
 use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use crate::production_operation_compiler::NixStartAdmissionCarrierV2;
 
@@ -15,7 +18,7 @@ pub(crate) use continuation::require_current_effect_v2;
 struct DecodedNixStartLedgerV2 {
     operation: OperationRecord,
     effect: EffectLedgerRecord,
-    context: PublicMutationEffectV1,
+    context: PublicMutationEffectHistoryV1,
 }
 
 pub(crate) fn accepted_nix_start_admission_v2(
@@ -44,8 +47,8 @@ fn accepted_nix_start_readback_v2(
     }
     let effect_bytes = journal.get(RecordNamespace::Effect, &effect_key(operation_id, 0))
         .ok_or(ReconcilerError::CorruptLedger("missing retained Start effect"))?;
-    let effect = decode_effect(effect_bytes)?;
-    let context = effect.plan.public_mutation_context()?
+    let effect = decode_effect(effect_bytes).map_err(ReconcilerError::from)?;
+    let context = effect.plan().public_mutation_context().map_err(ReconcilerError::from)?
         .ok_or(ReconcilerError::CorruptLedger("missing retained Start context"))?;
     let Some(carrier) = context.nix_start() else {
         return Ok(None);
@@ -54,11 +57,11 @@ fn accepted_nix_start_readback_v2(
         .ok_or(ReconcilerError::CorruptLedger("missing retained Start authorization"))?;
     let request = crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(context.canonical_request())
         .map_err(|_| ReconcilerError::CorruptLedger("invalid original Start request"))?;
-    let expected_effect = EffectPlan::authorized_public_mutation(
+    let expected_effect = EffectPlan::from_public_mutation_context(
         PublicOperationMethodV1::StartSandbox, context.clone(),
-    )?;
+    ).map_err(ReconcilerError::from)?;
     if operation.effect_count() != 1 || operation.ownership_gated() || operation.runtime_intent_digest().is_some()
-        || effect.plan != expected_effect
+        || effect.plan() != &expected_effect
         || !matches!(request.request(), aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Start(_))
         || carrier.operation() != operation_id
         || admission.method() != PublicOperationMethodV1::StartSandbox
@@ -89,10 +92,10 @@ pub(super) fn require_exact_nix_replay_plan_v2(
     plan: &OperationPlan,
 ) -> Result<(), ReconcilerError> {
     let recorded = journal.get(RecordNamespace::Effect, &effect_key(operation_id, 0))
-        .map(decode_effect).transpose()?;
-    let recorded_nix = recorded.as_ref().map(|effect| effect.plan.public_mutation_context())
+        .map(|bytes| decode_effect(bytes).map_err(ReconcilerError::from)).transpose()?;
+    let recorded_nix = recorded.as_ref().map(|effect| effect.plan().public_mutation_context().map_err(ReconcilerError::from))
         .transpose()?.flatten().is_some_and(|context| context.has_retained_nix_start());
-    let planned_nix = plan.effects.first().map(EffectPlan::public_mutation_context)
+    let planned_nix = plan.effects.first().map(|effect| effect.public_mutation_context().map_err(ReconcilerError::from))
         .transpose()?.flatten().is_some_and(|context| context.has_retained_nix_start());
     if !recorded_nix && !planned_nix {
         return Ok(());
@@ -103,7 +106,7 @@ pub(super) fn require_exact_nix_replay_plan_v2(
     let (desired_key, desired_value) = carrier.desired();
     if plan.operation_id != operation_id
         || plan.effects.len() != 1
-        || plan.effects[0] != recorded.plan
+        || &plan.effects[0] != recorded.plan()
         || plan.request_digest != carrier.request_digest()
         || plan.desired_key != desired_key
         || plan.desired_value != desired_value
