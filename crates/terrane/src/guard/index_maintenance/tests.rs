@@ -22,16 +22,72 @@ async fn native_repeated_producer_checks_preserve_current_and_original_refusal()
 
     let fixture = complete_population().await?;
     let guard = fixture.repository.coordinator().guard();
-    let record = guard
-        .store()
-        .ref_get(REFERENCE)
-        .await?
-        .ok_or("selected source")?;
+    let names = [b"copy-a".as_slice(), b"copy-b".as_slice()];
+
+    // The completed fixture preserves one old producer and introduces another
+    // during backfill. New names make both unchanged values genuine current
+    // productions of one native commit, without changing their correct bytes.
+    let (mut session, mut request) = fixture.template().await?;
+    let evidence =
+        crate::guard::TreeEvidence::load_tree(guard.store(), request.commit.tree, &[], 262144)
+            .await?;
+    let tree = {
+        let source = evidence.tree(evidence.root, 262144)?;
+        let mut items = source.iter().cloned().collect::<Vec<_>>();
+        assert_eq!(items.len(), names.len());
+        for (item, name) in items.iter_mut().zip(names) {
+            item.key = name.to_vec();
+        }
+        let tree = terrane_core::tree_builder::Tree::build(
+            items,
+            source.props().map(<[_]>::to_vec),
+            262144,
+            terrane_core::tree_format::TreeUse::Ordinary,
+        )?;
+        crate::repository::PreparedTree::from_tree(&tree)?
+    };
+    request.commit.tree = tree.root();
+    let published = fixture
+        .repository
+        .commit_with_report(&mut session, tree, request)
+        .await?;
+    assert!(
+        published
+            .index_work
+            .operations
+            .iter()
+            .any(|operation| { operation.association.attribute == ATTRIBUTE })
+    );
+    let record = published.record;
     let token = crate::ref_advance::tests::token();
     let observation = crate::guard::HistoryObservation::default();
     let snapshot = guard
         .read_commit_snapshot_observed(record.commit, &token, b"/", "sdk", observation)
         .await?;
+    let expected_object = TERRANE_V1
+        .calculate(IdentityKind::Chunk, fixture::BODY)?
+        .terrane_v1_digest()?;
+    let expected_value = terrane_core::derived::AttributeValue::Sha256(fixture::SHA256).encode()?;
+    for name in names {
+        let (location, _) = snapshot.history.locate(record.commit, name)?;
+        let entry = snapshot.history.entry(&location)?;
+        assert!(
+            matches!(entry.kind, terrane_core::tree_format::EntryKind::File {
+            content: terrane_core::tree_format::ContentRef::Inline(object), size: 5, ..
+        } if object == expected_object)
+        );
+        assert!(
+            entry.attrs.iter().any(|attribute| {
+                attribute.name == ATTRIBUTE && attribute.value == expected_value
+            })
+        );
+        assert_eq!(
+            snapshot.history.attribute_producer(&location, ATTRIBUTE)?,
+            record.commit
+        );
+    }
+    assert!(snapshot.history.locate(record.commit, b"file").is_err());
+    assert!(snapshot.history.locate(record.commit, b"other").is_err());
     let stored = physical(guard.store().root()).await?;
     let controls = physical(&fixture.control).await?;
     let publication = publication_image(&fixture.repository).await?;
@@ -44,6 +100,8 @@ async fn native_repeated_producer_checks_preserve_current_and_original_refusal()
     assert_eq!(work.occurrence_checks, 2);
     assert_eq!(work.attribute_origin_checks, 2);
     assert_eq!(work.producer_checks, 2);
+    // One two-entry source inventory and two independently completed purposes.
+    // Candidate validation and current authorization still run for both rows.
     assert_eq!(work.producer_entries, 2);
     assert_eq!(work.history_boundary_calls, 2);
     assert_eq!(requests.len(), 8);
