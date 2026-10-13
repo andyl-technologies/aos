@@ -278,15 +278,11 @@ pub(super) trait InputCommitPeer {
         self.commit_verify_native().map_err(unknown)?;
         self.commit_retain_boundary(&intent.delivery_inventory, Vec::new())
             .map_err(after_native_effect)?;
-        self.commit_retain_boundary(
-            &record.staged_bytes,
-            public
-                .events
-                .iter()
-                .map(|event| event.payload.clone())
-                .collect(),
-        )
-        .map_err(after_native_effect)?;
+        // The native octet stream is a byte leaf, and a single delivery can
+        // reuse its original payload reference. Causality belongs to the
+        // commitment record below, through the inventory and staging receipt.
+        self.commit_retain_boundary(&record.staged_bytes, Vec::new())
+            .map_err(after_native_effect)?;
         self.commit_retain_boundary(
             &commit_record_ref,
             vec![

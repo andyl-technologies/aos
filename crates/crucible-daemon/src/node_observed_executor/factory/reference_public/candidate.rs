@@ -15,8 +15,9 @@ use crucible_node_provider::{
 };
 
 use super::{
-    installation::SourcePublicReferenceInstallation, package::InstalledPublicReferencePackage,
-    world::CandidateWorldDefinition,
+    installation::SourcePublicReferenceInstallation,
+    package::InstalledPublicReferencePackage,
+    world::{CandidateTopology, CandidateWorldDefinition},
 };
 
 pub(super) struct PrivateCandidate {
@@ -43,13 +44,52 @@ impl PrivateCandidate {
         host_budget_ns: U64,
         nonce: Bytes,
     ) -> Result<Self, ProviderError> {
-        let definition = CandidateWorldDefinition::build(
-            Rc::clone(&package),
+        Self::with_nonce_scoped(
+            package,
             quantum_ps,
             host_budget_ns,
             nonce,
-        )?;
-        let mut installations = Vec::with_capacity(2);
+            CandidateTopology::DirectPair,
+        )
+    }
+
+    /// Creates the distinct ordinary singleton collecting scope before birth.
+    pub(super) fn new_singleton(
+        package: Rc<InstalledPublicReferencePackage>,
+        quantum_ps: U64,
+        host_budget_ns: U64,
+    ) -> Result<Self, ProviderError> {
+        Self::with_nonce_scoped(
+            package,
+            quantum_ps,
+            host_budget_ns,
+            entropy()?,
+            CandidateTopology::OrdinarySingleton,
+        )
+    }
+
+    fn with_nonce_scoped(
+        package: Rc<InstalledPublicReferencePackage>,
+        quantum_ps: U64,
+        host_budget_ns: U64,
+        nonce: Bytes,
+        topology: CandidateTopology,
+    ) -> Result<Self, ProviderError> {
+        let definition = match topology {
+            CandidateTopology::DirectPair => CandidateWorldDefinition::build(
+                Rc::clone(&package),
+                quantum_ps,
+                host_budget_ns,
+                nonce,
+            )?,
+            CandidateTopology::OrdinarySingleton => CandidateWorldDefinition::build_singleton(
+                Rc::clone(&package),
+                quantum_ps,
+                host_budget_ns,
+                nonce,
+            )?,
+        };
+        let mut installations = Vec::with_capacity(definition.profiles().len());
         for (index, profile) in definition.profiles().iter().enumerate() {
             let bootstrap = ReferenceServiceBootstrap::fixture(
                 profile,
@@ -108,7 +148,7 @@ impl PrivateCandidate {
                 profile.clone(),
                 bootstrap,
                 qualifications,
-                index == 1,
+                topology == CandidateTopology::OrdinarySingleton || index == 1,
             )?);
         }
         let first = installations

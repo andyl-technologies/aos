@@ -56,6 +56,7 @@ pub use record::{
     evaluate_acceptance,
 };
 
+pub(crate) use cnp::project_cnp_prelaunch_qualification;
 pub use cnp::{CnpBehavioralAcceptance, CnpQualificationProjection, project_cnp_qualification};
 
 pub use packet_collection::{

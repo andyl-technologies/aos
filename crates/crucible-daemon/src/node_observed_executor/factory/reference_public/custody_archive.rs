@@ -48,15 +48,6 @@ impl OriginalArchiveAttempt {
                 "original peer publication or incident disposition unresolved",
             ));
         }
-        let original = scope
-            .ordinary_negotiation
-            .as_ref()
-            .ok_or(ProviderError::Correlation(
-                "ordinary original negotiation custody unavailable",
-            ))?;
-        let original = original.try_borrow().map_err(|_| {
-            ProviderError::Correlation("ordinary original negotiation is still borrowed")
-        })?;
         let source = scope
             .source_custody
             .as_ref()
@@ -88,7 +79,21 @@ impl OriginalArchiveAttempt {
         )
         .map_err(crucible_node_contract::ContractError::from)?;
         bytes.write_all(b",\"negotiation\":")?;
-        original.write_attached_originals(&mut bytes)?;
+        match (&scope.ordinary_negotiation, &scope.collecting_negotiation) {
+            (Some(original), None) => original
+                .try_borrow()
+                .map_err(|_| ProviderError::Correlation("ordinary negotiation remains borrowed"))?
+                .write_attached_originals(&mut bytes)?,
+            (None, Some(original)) => original
+                .try_borrow()
+                .map_err(|_| ProviderError::Correlation("collecting negotiation remains borrowed"))?
+                .write_attached_transport(&mut bytes)?,
+            _ => {
+                return Err(ProviderError::Correlation(
+                    "exact original transport custody unavailable",
+                ));
+            }
+        }
         bytes.write_all(b",\"peer\":")?;
         let semantic =
             peer.write_resolved_originals(&scope.activation, &scope.owner, &mut bytes)?;
@@ -210,8 +215,13 @@ impl OriginalArchiveAttempt {
         self.complete && self.identity == identity
     }
 
-    pub(super) fn acknowledge(self, original: ReclaimedPublicPeer) -> RetainedResolvedPeer {
+    pub(super) fn acknowledge(
+        self,
+        identity: crucible_node_contract::U64,
+        original: ReclaimedPublicPeer,
+    ) -> RetainedResolvedPeer {
         RetainedResolvedPeer {
+            identity,
             _original: original,
             _archive: self,
         }
@@ -220,8 +230,28 @@ impl OriginalArchiveAttempt {
 
 /// Keeps the exact reclaimed capsule alongside its acknowledged private file.
 pub(super) struct RetainedResolvedPeer {
+    identity: crucible_node_contract::U64,
     _original: ReclaimedPublicPeer,
     _archive: OriginalArchiveAttempt,
+}
+
+impl RetainedResolvedPeer {
+    pub(super) fn belongs_to(
+        &self,
+        record: &crucible::node_contract::ActivationRecord,
+        owner: &crucible::node_contract::OwnerIdentity,
+    ) -> bool {
+        self._original.scope.activation == *record
+            && self._original.scope.owner == *owner
+            && self._original.scope.publication
+                == Some(crucible::node_contract::PublicationStatus::Committed)
+            && self._archive.complete_for(self.identity)
+    }
+
+    pub(super) fn confirm_original(&mut self) -> Result<(), ProviderError> {
+        self._archive.poll()?;
+        Ok(())
+    }
 }
 
 fn authenticate_directory(directory: &File) -> Result<(), ProviderError> {

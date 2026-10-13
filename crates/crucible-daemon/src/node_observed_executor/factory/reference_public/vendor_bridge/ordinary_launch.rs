@@ -234,6 +234,7 @@ pub(super) fn prepare(
         private_launch,
         original_hello,
         ordinary_negotiation: Some(originals.clone()),
+        collecting_negotiation: None,
     })?;
     // The same terminal originals fence the FIRST resource effect, including
     // directory creation. No installed callback lies between this read and birth.
@@ -256,54 +257,21 @@ pub(super) fn prepare(
     // The already-reserved queue holder owns the original pipe before any
     // fallible guard construction, fcntl, write or Hello callback.
     originals.borrow_mut().upload.stdin = child.stdin.take();
-    let mut guard =
+    let guard =
         CnpLaunchGuard::new(child, request.directory, slot).map_err(|failure| failure.error)?;
-    let deadline = originals.borrow_mut().upload.upload(EXCHANGE_BUDGET)?;
-    let stream = connect_original(&socket, &deadline)?;
-    let peer = ClientPeer {
-        pid: guard
-            .provider_pid()
-            .ok_or(ProviderError::Correlation("ordinary original Child absent"))?,
-        uid: rustix::process::geteuid().as_raw(),
-        executable: installed
-            .package
-            .artifact_content("provider")
-            .map_err(package_error)?
-            .clone(),
-    };
-    {
-        let mut owned = originals.borrow_mut();
-        let OriginalReferenceNegotiation {
-            hello: hello_journal,
-            handshake,
-            session,
-            ..
-        } = &mut *owned;
-        let registrar = handshake.as_mut().ok_or(ProviderError::Correlation(
-            "ordinary original registrar absent",
-        ))?;
-        *session = Some(ClientSession::negotiate_recorded_before(
-            stream,
-            &peer,
-            &hello,
-            request.connection_id,
-            registrar,
-            installed,
-            Rc::new(OriginalIncident(incidents)),
-            Rc::new(ClosedSchemas),
-            deadline,
-            FRAME_BYTES,
-            64,
-            hello_journal,
-        )?);
-        owned.prepare_controller(
-            installed.profile.clone(),
+    let guard = negotiate_original(
+        guard,
+        &mut originals.borrow_mut().transport,
+        installed,
+        OriginalNegotiationRequest {
+            hello: &hello,
+            connection_id: request.connection_id,
+            socket: &socket,
+            incidents,
             bootstrap,
-            installed.qualifications.clone(),
-            EXCHANGE_BUDGET,
-        )?;
-        owned.attach_original(&mut guard)?;
-    }
+            observation: None,
+        },
+    )?;
     let acceptance = CnpBehavioralAcceptance::new(policy, acceptance_limits);
     CnpAcceptedPreparation::prepare(guard, installed, &acceptance)
         .map_err(|failure| ProviderError::Io(std::io::Error::other(failure.error.reason)))
@@ -314,6 +282,39 @@ fn preflight(
     request: &OrdinaryReferenceLaunch,
     policy: &dyn InstalledAcceptancePolicy,
     limits: AcceptanceLimits,
+) -> Result<(), ProviderError> {
+    closed_source_preflight(installed, request)?;
+    let bootstrap = &installed.bootstrap;
+    let regenerated = installed
+        .package
+        .profile(
+            installed.profile.descriptor.id.clone(),
+            installed.profile.owner.id.clone(),
+            bootstrap.quantum_ps,
+            bootstrap.host_budget_ns,
+            true,
+        )
+        .map_err(package_error)?;
+    let (binding, _) =
+        regenerated.bind_qualified(bootstrap.authority.clone(), &installed.qualifications)?;
+    if policy
+        .scope_for_node(&binding.compatibility.node_id)
+        .map_err(|error| ProviderError::Io(std::io::Error::other(error.to_string())))?
+        .binding
+        != &binding.compatibility
+    {
+        return Err(ProviderError::Correlation(
+            "ordinary complete accepted binding changed",
+        ));
+    }
+    CnpBehavioralAcceptance::new(policy, limits)
+        .authenticate_prelaunch(&regenerated, &bootstrap.resource_limits)
+        .map_err(|error| ProviderError::Io(std::io::Error::other(error.to_string())))
+}
+
+pub(super) fn closed_source_preflight(
+    installed: &SourcePublicReferenceInstallation,
+    request: &OrdinaryReferenceLaunch,
 ) -> Result<(), ProviderError> {
     // Bound complete source-owned inputs before constructing launch Values or
     // cloning private credentials. Bytes' own temporary encoding remains bounded
@@ -407,20 +408,101 @@ fn preflight(
     let (actual, _) = installed
         .profile
         .bind_qualified(bootstrap.authority.clone(), &installed.qualifications)?;
-    if actual != binding
-        || policy
-            .scope_for_node(&binding.compatibility.node_id)
-            .map_err(|error| ProviderError::Io(std::io::Error::other(error.to_string())))?
-            .binding
-            != &binding.compatibility
-    {
+    if actual != binding {
         return Err(ProviderError::Correlation(
-            "ordinary complete source binding changed",
+            "complete closed source binding changed",
         ));
     }
-    CnpBehavioralAcceptance::new(policy, limits)
-        .authenticate_prelaunch(&regenerated, &bootstrap.resource_limits)
-        .map_err(|error| ProviderError::Io(std::io::Error::other(error.to_string())))
+    Ok(())
+}
+
+pub(super) struct OriginalNegotiationRequest<'a> {
+    pub(super) hello: &'a Envelope,
+    pub(super) connection_id: Id,
+    pub(super) socket: &'a std::path::Path,
+    pub(super) incidents: Rc<RefCell<Option<ConnectionIncident>>>,
+    pub(super) bootstrap: crucible_node_provider::reference_service::ReferenceServiceBootstrap,
+    pub(super) observation:
+        Option<&'a RefCell<Option<crucible_node_provider::client::ObservationHandle>>>,
+}
+
+/// Negotiates through the queue-owned original holders under one deadline.
+///
+/// This performs no class acceptance. Its caller already owns the native
+/// reservation and retains either genuine ordinary birth leases or the distinct
+/// source-only collecting context before the first Child effect.
+///
+/// # Errors
+/// Retains partial upload, Hello, session and controller originals on refusal;
+/// the same guard transfers into its original queue when this function returns.
+pub(super) fn negotiate_original(
+    mut guard: CnpLaunchGuard,
+    owned: &mut super::negotiation::OriginalReferenceTransport,
+    installed: &mut SourcePublicReferenceInstallation,
+    request: OriginalNegotiationRequest<'_>,
+) -> Result<CnpLaunchGuard, ProviderError> {
+    let OriginalNegotiationRequest {
+        hello,
+        connection_id,
+        socket,
+        incidents,
+        bootstrap,
+        observation,
+    } = request;
+    let deadline = owned.upload.upload(EXCHANGE_BUDGET)?;
+    let stream = connect_original(socket, &deadline)?;
+    let peer = ClientPeer {
+        pid: guard
+            .provider_pid()
+            .ok_or(ProviderError::Correlation("ordinary original Child absent"))?,
+        uid: rustix::process::geteuid().as_raw(),
+        executable: installed
+            .package
+            .artifact_content("provider")
+            .map_err(package_error)?
+            .clone(),
+    };
+    {
+        let super::negotiation::OriginalReferenceTransport {
+            hello: hello_journal,
+            handshake,
+            session,
+            ..
+        } = &mut *owned;
+        let registrar = handshake.as_mut().ok_or(ProviderError::Correlation(
+            "ordinary original registrar absent",
+        ))?;
+        *session = Some(ClientSession::negotiate_recorded_before(
+            stream,
+            &peer,
+            hello,
+            connection_id,
+            registrar,
+            installed,
+            Rc::new(OriginalIncident(incidents)),
+            Rc::new(ClosedSchemas),
+            deadline,
+            FRAME_BYTES,
+            64,
+            hello_journal,
+        )?);
+        owned.prepare_controller(
+            installed.profile.clone(),
+            bootstrap,
+            installed.qualifications.clone(),
+            EXCHANGE_BUDGET,
+        )?;
+        if let Some(sink) = observation {
+            if sink.borrow().is_some() {
+                return Err(ProviderError::Correlation(
+                    "collecting original observation already installed",
+                ));
+            }
+            *sink.borrow_mut() = Some(owned.observe_pending_original()?);
+        }
+        owned.attach_original(&mut guard)?;
+    }
+    Ok(guard)
 }
 
 fn package_error(error: crate::node_observed_executor::NodeObservedError) -> ProviderError {

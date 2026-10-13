@@ -341,7 +341,7 @@ fn retirement_oracle(unit: &QualificationUnit) -> Value {
     })
 }
 
-fn extract_clauses(
+pub(super) fn extract_clauses(
     specification: &ContentRef,
     bytes: &[u8],
     objects: &mut BTreeMap<ContentRef, Vec<u8>>,
@@ -409,7 +409,7 @@ fn extract_clauses(
     Ok(clauses)
 }
 
-fn put(
+pub(super) fn put(
     objects: &mut BTreeMap<ContentRef, Vec<u8>>,
     value: &Value,
 ) -> Result<ContentRef, QualificationError> {
@@ -419,7 +419,7 @@ fn put(
     Ok(reference)
 }
 
-fn insert(
+pub(super) fn insert(
     objects: &mut BTreeMap<ContentRef, Vec<u8>>,
     reference: ContentRef,
     bytes: Vec<u8>,

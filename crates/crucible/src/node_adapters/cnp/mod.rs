@@ -25,6 +25,7 @@ mod preparation_probe;
 mod preparation_resend;
 mod process;
 mod readiness;
+mod retirement;
 mod semantic;
 mod windows;
 
@@ -44,8 +45,8 @@ pub use semantic::{
     CnpSemanticConformanceAuthority, CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
     CnpSemanticConformanceWorldProvider, CnpSemanticExactConformanceWorldProvider,
     CnpSemanticExactWorldReservation, CnpSemanticExactWorldReservationFailure,
-    CnpSemanticInstallation, CnpSemanticLaunchFailure,
-    CnpSemanticLaunchGuard, CnpSemanticLaunchReservation, CnpSemanticNode, CnpSemanticPreparation,
+    CnpSemanticInstallation, CnpSemanticLaunchFailure, CnpSemanticLaunchGuard,
+    CnpSemanticLaunchReservation, CnpSemanticNode, CnpSemanticPreparation,
     CnpSemanticPreparationFailure, CnpSemanticProcessCustody, CnpSemanticProcessSlot,
     CnpSemanticProvider, CnpSemanticProviderFailure, CnpSemanticRealizationScope,
     CnpSemanticRegistrationPolicy, CnpSemanticRegistry, CnpSemanticReservationFailure,

@@ -110,9 +110,11 @@ pub use native_state::{
 };
 pub use recorded_ingress::InstalledRecordedIngressProfile;
 pub use reference_public::{
-    InstalledPublicReferencePackage, InstalledReferenceQualifier, PublicReferenceVendorProfile,
-    PublicReferenceVendorSelection, QualificationRunError, ReferenceQualificationObservation,
-    ReferenceQualificationRun, ReferenceVendorInstallation, ReferenceVendorInstallationRequest,
+    InstalledPublicReferencePackage, InstalledReferenceQualifier, InstalledSingletonCollector,
+    OriginalSingletonCollection, PublicReferenceVendorProfile, PublicReferenceVendorSelection,
+    QualificationRunError, ReferenceQualificationObservation, ReferenceQualificationRun,
+    ReferenceVendorInstallation, ReferenceVendorInstallationRequest,
+    SingletonCollectionObservation,
 };
 pub use scripted::InstalledScriptedSourceProfile;
 pub use seeded::InstalledSeededLinkProfile;

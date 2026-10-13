@@ -12,8 +12,13 @@ mod geometry;
 mod installation;
 mod launch_upload;
 mod negotiation;
-pub(super) use negotiation::OriginalReferenceNegotiation;
+pub(super) use negotiation::{OriginalReferenceNegotiation, OriginalReferenceTransport};
+mod collecting_launch;
 mod ordinary_launch;
+pub(super) use collecting_launch::{
+    CollectingReferenceLaunch, prepare as prepare_collecting_singleton,
+};
+
 mod provider;
 mod source;
 

@@ -215,6 +215,114 @@ pub(crate) struct ObservationRecorder {
 }
 
 impl ObservationRecorder {
+    pub(crate) fn private_original_credit(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<usize, ProviderError> {
+        use crate::client::history_credit::{ByteCredit, Count, Sequence};
+
+        #[derive(Serialize)]
+        struct Content<'a> {
+            reference: &'a ContentRef,
+            bytes: ByteCredit,
+        }
+
+        #[derive(Serialize)]
+        struct Request<'a> {
+            key: &'a ObservedRequestKey,
+            identity: &'a crucible_node_contract::HashRef,
+            request: Content<'a>,
+            response: Option<Content<'a>>,
+        }
+
+        #[derive(Serialize)]
+        struct Evidence<'a, R: Serialize, O: Serialize> {
+            schema_version: u16,
+            encoding: &'static str,
+            scope: &'a ObservationScope,
+            requests: R,
+            objects: O,
+        }
+
+        #[derive(Serialize)]
+        struct Recording<E: Serialize> {
+            recording_complete: bool,
+            observed_unknown: bool,
+            recording_failure: Option<&'static str>,
+            evidence: E,
+        }
+
+        let archive = self
+            .archive
+            .lock()
+            .map_err(|_| ProviderError::Correlation("original observation archive poisoned"))?;
+        if archive.failure.is_some() || archive.observed_unknown {
+            return Err(ProviderError::Correlation(
+                "original observation archive remains incomplete",
+            ));
+        }
+        for original in
+            archive
+                .objects
+                .iter()
+                .chain(archive.requests.iter().flat_map(|request| {
+                    std::iter::once(&request.request).chain(request.response.iter())
+                }))
+        {
+            if original.end < original.start || original.end > archive.bytes.len() {
+                return Err(ProviderError::Correlation(
+                    "original observation range changed",
+                ));
+            }
+        }
+        fn content(original: &ArchivedContent) -> Content<'_> {
+            Content {
+                reference: &original.reference,
+                bytes: ByteCredit(original.end - original.start),
+            }
+        }
+        let evidence = Evidence {
+            schema_version: 1,
+            encoding: "retained-canonical-envelope-v1",
+            scope: &archive.scope,
+            requests: Sequence(|| {
+                archive.requests.iter().map(|original| Request {
+                    key: &original.key,
+                    identity: &original.identity,
+                    request: content(&original.request),
+                    response: original.response.as_ref().map(content),
+                })
+            }),
+            objects: Sequence(|| archive.objects.iter().map(content)),
+        };
+        let recording = Recording {
+            recording_complete: true,
+            observed_unknown: false,
+            recording_failure: None,
+            evidence,
+        };
+        let mut credit = Count::new(maximum_bytes);
+        serde_json::to_writer(&mut credit, &recording)
+            .map_err(crucible_node_contract::ContractError::from)?;
+        Ok(credit.used())
+    }
+
+    pub(crate) fn private_original_snapshot(
+        &self,
+    ) -> Result<RecordedReferenceObservation, ProviderError> {
+        let limits = self
+            .archive
+            .lock()
+            .map_err(|_| ProviderError::Correlation("original observation archive poisoned"))?
+            .limits;
+        let handle = ObservationHandle {
+            archive: Arc::clone(&self.archive),
+        };
+        let keys = handle.request_keys()?;
+        let references = handle.content_references()?;
+        handle.snapshot(&keys, &references, limits)
+    }
+
     pub(crate) fn reserve(
         scope: ObservationScope,
         limits: ObservationLimits,

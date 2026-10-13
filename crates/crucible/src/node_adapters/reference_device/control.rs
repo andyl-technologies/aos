@@ -134,6 +134,59 @@ pub trait ControlledReference: sealed::Sealed {
     /// Retains actual resources and originals when native reclamation is unknown.
     fn quarantine(&mut self) -> Result<bool, ProviderError>;
 
+    /// Reports whether this original backend supports same-owner graceful cleanup.
+    fn graceful_retirement_available(&self) -> bool {
+        false
+    }
+
+    /// Executes original native Shutdown without a signaling fallback.
+    ///
+    /// # Errors
+    /// Refuses unsupported cleanup or retains the first uncertain native result.
+    fn shutdown_retirement(&mut self) -> Result<(), OperationFailure> {
+        Err(super::native_failure(
+            "controlled graceful retirement is unsupported",
+        ))
+    }
+
+    /// Polls actual resources after successful original graceful Shutdown.
+    ///
+    /// # Errors
+    /// Refuses unsupported cleanup or unresolved original Shutdown custody.
+    fn poll_retirement(&mut self) -> Result<bool, ProviderError> {
+        Err(ProviderError::Correlation(
+            "controlled graceful reclamation is unsupported",
+        ))
+    }
+
+    /// Moves the same reclaimed native capsule into its original supervisor slot.
+    ///
+    /// # Errors
+    /// Refuses unsupported transfer, live resources or incomplete semantic cleanup.
+    fn transfer_retirement(&mut self) -> Result<(), OperationFailure> {
+        Err(super::native_failure(
+            "controlled retirement transfer is unsupported",
+        ))
+    }
+
+    /// Declares the finite original backend history allowance before reading it.
+    fn retirement_history_credit(&self) -> Option<usize> {
+        None
+    }
+
+    /// Reads private original backend bodies without issuing native work.
+    ///
+    /// # Errors
+    /// Refuses unsupported history, lost original custody or exhausted credit.
+    fn retirement_history(
+        &self,
+        _maximum_bytes: usize,
+    ) -> Result<Vec<InputPayload>, OperationFailure> {
+        Err(super::no_effect(
+            "controlled original retirement history is unsupported",
+        ))
+    }
+
     /// Returns authenticated public readiness, or delegates to native readiness.
     ///
     /// # Errors

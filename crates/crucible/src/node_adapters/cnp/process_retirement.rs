@@ -42,6 +42,10 @@ impl CnpPeerCustody {
         owner: &OwnerIdentity,
         output: &mut impl Write,
     ) -> Result<CnpSemanticRetirement<'_>, ProviderError> {
+        let runtime = self.runtime.as_ref().ok_or(ProviderError::Correlation(
+            "original runtime custody unavailable for semantic resolution",
+        ))?;
+        runtime.validate_retained(self.companion)?;
         if self.reaped.is_none() || !super::group_empty(self.child.id())? {
             return Err(ProviderError::Correlation(
                 "original peer kernel custody remains live",
@@ -52,10 +56,6 @@ impl CnpPeerCustody {
                 "qualification probe originals require their owning resolver",
             ));
         }
-        let runtime = self.runtime.as_ref().ok_or(ProviderError::Correlation(
-            "original runtime custody unavailable for semantic resolution",
-        ))?;
-        runtime.validate_retained(self.companion)?;
         if !runtime.semantic_release
             || !matches!(
                 runtime.status,
@@ -171,7 +171,7 @@ impl CnpPeerCustody {
         )
         .map_err(crucible_node_contract::ContractError::from)?;
         bounded.write_all(b",\"controller\":")?;
-        controller.write_retirement_originals(&mut bounded)?;
+        controller.write_owned_completed_originals(&mut bounded)?;
         bounded.write_all(b"}")?;
         Ok(CnpSemanticRetirement { peer: self })
     }

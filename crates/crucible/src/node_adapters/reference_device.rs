@@ -113,6 +113,7 @@ pub struct ControlledReferenceNode<C: ControlledReference> {
     maximum_operations: usize,
     reclaimed: Option<NativeReclamationReceipt>,
     quarantined: bool,
+    graceful_retirement: bool,
     observation: Option<(WorldActivation, NativeSchedulingObservation)>,
     boundary_evidence: BTreeMap<crucible_node_contract::HashRef, InputPayload>,
     boundary_evidence_bytes: usize,
@@ -290,6 +291,7 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
             maximum_operations,
             reclaimed: None,
             quarantined: false,
+            graceful_retirement: false,
             observation: None,
             boundary_evidence: BTreeMap::new(),
             boundary_evidence_bytes: 0,
@@ -540,6 +542,9 @@ impl<C: ControlledReference> ExternalDeviceNode for ControlledReferenceNode<C> {
 
 #[path = "reference_device/runtime.rs"]
 mod runtime;
+
+#[path = "reference_device/retirement.rs"]
+mod retirement;
 
 fn root(time_ps: u64, phase: Phase) -> Position {
     Position::new(time_ps.into(), 0.into(), phase)

@@ -55,6 +55,26 @@ impl ClientContent {
         ))
     }
 
+    pub(super) fn retirement_object_credit(
+        &self,
+    ) -> Result<impl serde::Serialize + '_, ProviderError> {
+        if self.transfers.values().any(|transfer| !transfer.complete) {
+            return Err(ProviderError::Correlation(
+                "original content transfer unresolved",
+            ));
+        }
+        // Exact content verification remains in the real exporter, after
+        // this complete borrowed credit passes and before any owning copies.
+        Ok((
+            &self.transfers,
+            super::history_credit::Sequence(|| {
+                self.objects
+                    .values()
+                    .map(|(reference, bytes)| (reference, bytes.as_slice()))
+            }),
+        ))
+    }
+
     pub(super) fn preflight_capacity(
         &self,
         objects: usize,

@@ -29,6 +29,9 @@ mod prepared_gate_evidence;
 mod qualification;
 mod run_error;
 mod runtime_retries;
+mod singleton;
+mod singleton_criteria;
+mod singleton_unit;
 mod source_metadata_reviews;
 #[cfg(test)]
 mod source_native_progress_loss;
@@ -69,3 +72,7 @@ mod source_original_conflict_wire;
 mod source_window_provider_loss;
 
 pub(super) use vendor_bridge::ReferenceVendorCleanup;
+
+pub use singleton::{
+    InstalledSingletonCollector, OriginalSingletonCollection, SingletonCollectionObservation,
+};

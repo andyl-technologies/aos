@@ -278,6 +278,22 @@ impl CnpLaunchGuard {
     pub fn supervision_id(&self) -> crucible_node_contract::U64 {
         self.slot.identity()
     }
+
+    pub(super) fn transfer_reclaimed_original(&mut self) -> Result<(), ProviderError> {
+        let original = self.custody.as_ref().ok_or(ProviderError::Correlation(
+            "original native custody is absent from its reserved guard",
+        ))?;
+        if original.reaped.is_none() || !group_empty(original.child.id())? {
+            return Err(ProviderError::Correlation(
+                "original native resources remain live",
+            ));
+        }
+        let original = self.custody.take().ok_or(ProviderError::Correlation(
+            "original native custody changed during transfer",
+        ))?;
+        self.slot.retain(*original);
+        Ok(())
+    }
 }
 
 impl Drop for CnpLaunchGuard {

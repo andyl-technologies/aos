@@ -951,6 +951,65 @@ impl<C: ControlledReference> SimulationNode for ControlledReferenceNode<C> {
         let _ = self.child.quarantine();
     }
 
+    fn graceful_retirement_available(&self) -> bool {
+        self.thread == std::thread::current().id()
+            && self.role_process == std::process::id()
+            && !self.quarantined
+            && self.active.is_none()
+            && self.staged.is_none()
+            && self.windows.values().all(|window| {
+                window.acknowledged && window.failure.is_none() && window.outcome.is_some()
+            })
+            && self.child.graceful_retirement_available()
+    }
+
+    fn shutdown_resources(&mut self) -> Result<(), OperationFailure> {
+        if !self.graceful_retirement_available() {
+            return Err(no_effect(
+                "original controlled graceful cleanup is unavailable",
+            ));
+        }
+        // Purpose is retained before the first source hook. A lost Shutdown
+        // remains on this original path and never falls back to quarantine.
+        self.graceful_retirement = true;
+        self.quarantined = true;
+        self.child.shutdown_retirement()
+    }
+
+    fn transfer_retirement_resources(&mut self) -> Result<(), OperationFailure> {
+        if self.thread != std::thread::current().id()
+            || self.role_process != std::process::id()
+            || !self.graceful_retirement
+            || self.reclaimed.is_none()
+            || self.child.status() != DeviceStatus::Reaped
+        {
+            return Err(no_effect(
+                "original controlled retirement has no reclamation",
+            ));
+        }
+        self.child.transfer_retirement()
+    }
+
+    fn retirement_history_pending(&self) -> bool {
+        self.graceful_retirement
+    }
+
+    fn retirement_history_credit(&self) -> Option<usize> {
+        if self.thread != std::thread::current().id() || self.role_process != std::process::id() {
+            return None;
+        }
+        self.child
+            .retirement_history_credit()?
+            .checked_add(64 * 1024 * 1024)
+    }
+
+    fn retirement_history(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<Vec<InputPayload>, OperationFailure> {
+        self.original_retirement_history(maximum_bytes)
+    }
+
     fn poll_reclamation(
         &mut self,
         owner: &OwnerIdentity,
@@ -961,7 +1020,12 @@ impl<C: ControlledReference> SimulationNode for ControlledReferenceNode<C> {
                 "reference owner not under original quarantine",
             )));
         }
-        match self.child.quarantine() {
+        let reclaimed = if self.graceful_retirement {
+            self.child.poll_retirement()
+        } else {
+            self.child.quarantine()
+        };
+        match reclaimed {
             Err(error) => Poll::Ready(Err(native_failure(&error.to_string()))),
             Ok(false) => {
                 context.waker().wake_by_ref();

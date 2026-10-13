@@ -44,6 +44,10 @@ impl RuntimeCustodySlot for WorldSlot {
 }
 
 impl WorldSupervisor {
+    pub(super) fn is_empty(&self) -> bool {
+        self.retained.borrow().is_empty()
+    }
+
     pub(super) fn reserve(limits: RuntimeLimits) -> (Self, Box<dyn RuntimeCustodySlot>) {
         let retained = Rc::new(RefCell::new(Vec::with_capacity(1)));
         let original = Rc::new(RefCell::new(None));

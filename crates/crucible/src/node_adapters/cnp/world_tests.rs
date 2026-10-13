@@ -9,6 +9,10 @@ mod custody;
 #[path = "world_tests/input_failure.rs"]
 mod input_failure;
 
+#[path = "world_tests/retirement.rs"]
+mod retirement;
+use retirement::verify_original_retirement;
+
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -79,6 +83,25 @@ fn launch(
     retained: Rc<RefCell<Vec<CnpPeerCustody>>>,
     schemas: Rc<dyn BodySchemaVerifier>,
 ) -> CnpReferencePreparation {
+    launch_with_observer(
+        provider,
+        device,
+        installed,
+        directory,
+        retained,
+        (schemas, false),
+    )
+}
+
+fn launch_with_observer(
+    provider: &Path,
+    device: &Path,
+    installed: &mut Installed,
+    directory: PathBuf,
+    retained: Rc<RefCell<Vec<CnpPeerCustody>>>,
+    transport: (Rc<dyn BodySchemaVerifier>, bool),
+) -> CnpReferencePreparation {
+    let (schemas, observe) = transport;
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(&directory)
@@ -122,7 +145,22 @@ fn launch(
         socket.exists(),
         "actual public endpoint did not become available"
     );
-    connect_with_schema(&mut guard, &socket, installed, schemas);
+    if observe {
+        let (mut controller, handshake) = original_control(&guard, &socket, installed, schemas);
+        controller
+            .observe(ObservationLimits {
+                maximum_requests: 256,
+                maximum_objects: 256,
+                maximum_bytes: 16 * 1024 * 1024,
+            })
+            .unwrap();
+        // The same genuine observer remains owned; tiny credit cannot build
+        // a full archive/controller body or change native control originals.
+        assert!(controller.private_original_history_credit(1).is_err());
+        guard.attach(controller, handshake).unwrap();
+    } else {
+        connect_with_schema(&mut guard, &socket, installed, schemas);
+    }
     match CnpReferencePreparation::prepare(guard, installed) {
         Ok(prepared) => prepared,
         Err(failure) => panic!(
@@ -253,6 +291,16 @@ fn actual_two_public_providers_publish_complete_initial_world_and_consume_origin
 }
 
 fn run_actual_world(failure: input_failure::FailureMode) {
+    run_actual_world_mode(failure, false)
+}
+
+#[test]
+#[ignore = "requires fresh source-built provider and companion; component evidence only"]
+fn actual_observed_retirement_preserves_original_journals_and_transfers_once() {
+    run_actual_world_mode(input_failure::FailureMode::None, true)
+}
+
+fn run_actual_world_mode(failure: input_failure::FailureMode, graceful: bool) {
     let provider = PathBuf::from(
         std::env::var_os("CRUCIBLE_REFERENCE_PROVIDER_EXECUTABLE")
             .expect("set source-built provider"),
@@ -299,14 +347,25 @@ fn run_actual_world(failure: input_failure::FailureMode) {
     let transcript = Rc::new(input_failure::InputTranscript::default());
     let mut prepared = Vec::new();
     for (index, installed) in installed.iter_mut().enumerate() {
-        prepared.push(launch(
-            &provider,
-            &device,
-            installed,
-            directory.join(installed.profile.descriptor.id.as_str()),
-            Rc::clone(&retained[index]),
-            transcript.clone(),
-        ));
+        prepared.push(if graceful {
+            launch_with_observer(
+                &provider,
+                &device,
+                installed,
+                directory.join(installed.profile.descriptor.id.as_str()),
+                Rc::clone(&retained[index]),
+                (transcript.clone(), true),
+            )
+        } else {
+            launch(
+                &provider,
+                &device,
+                installed,
+                directory.join(installed.profile.descriptor.id.as_str()),
+                Rc::clone(&retained[index]),
+                transcript.clone(),
+            )
+        });
     }
     let pids = prepared
         .iter()
@@ -403,6 +462,14 @@ fn run_actual_world(failure: input_failure::FailureMode) {
         });
         assert_eq!(output.bytes_processed.get(), source.len() as u64);
         assert_eq!(output.checksum.get(), expected);
+    }
+    if graceful {
+        verify_original_retirement(runtime, &activation, &retained, &world_supervisor);
+        for pid in pids {
+            assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+        return;
     }
     let mut quarantined = runtime.into_quarantine();
     let mut context = Context::from_waker(Waker::noop());

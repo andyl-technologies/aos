@@ -9,6 +9,7 @@
 mod content;
 mod controller;
 mod deadline;
+pub(crate) mod history_credit;
 mod reference;
 mod session;
 

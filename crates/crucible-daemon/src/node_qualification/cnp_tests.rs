@@ -225,3 +225,29 @@ fn source_projection_refuses_oversize_before_report_policy_or_byte_copy() {
     );
     assert_eq!(fixture.policy.fixture.authority.case_calls.get(), before);
 }
+
+#[test]
+fn singleton_prelaunch_projection_matches_the_original_realized_projection() {
+    let fixture = CnpFixture::new();
+    let before = project_cnp_prelaunch_qualification(&fixture.profile, &fixture.resources).unwrap();
+    let after =
+        project_cnp_qualification(&fixture.profile, &fixture.result, &fixture.resources).unwrap();
+
+    assert_eq!(before.implementation, after.implementation);
+    assert_eq!(before.realization, after.realization);
+    assert_eq!(before.descriptors, after.descriptors);
+    assert_eq!(before.contracts, after.contracts);
+    assert_eq!(before.port_profiles, after.port_profiles);
+    assert_eq!(before.required_classes, after.required_classes);
+
+    let mut resources = fixture.resources.clone();
+    resources.memory_bytes = U64::new(256 * 1024 * 1024);
+    let changed = project_cnp_prelaunch_qualification(&fixture.profile, &resources).unwrap();
+    assert_ne!(changed.realization, before.realization);
+    assert_eq!(changed.required_classes, before.required_classes);
+    assert!(
+        CnpBehavioralAcceptance::new(&fixture.policy, AcceptanceLimits::default())
+            .authenticate_prelaunch(&fixture.profile, &resources)
+            .is_err()
+    );
+}

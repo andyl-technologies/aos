@@ -2245,6 +2245,28 @@ review verifies all 22 changed source bodies and the emitted control executable.
 The current ordinary package, complete singleton acceptance, end-to-end native
 cleanup, readiness and capture/restore qualification remain incomplete.
 
+The lifecycle successor retains complete controller and runtime histories through
+semantic Shutdown, native reclamation, private archival and once-only resource
+transfer. It counts the complete borrowed history before snapshots, base64
+encoding or owning copies. A bounded streaming counter handles numeric tokens
+across arbitrary writes and uses the authoritative canonical numeric encoder;
+it replaces an insufficient multiplicative estimate for floating-point extension
+values. The final canonical output uses the same encoder as existing identities.
+Raw consumed input bytes remain immutable leaves even when they equal an existing
+payload; their containing commitment retains the causal dependencies.
+
+The final 50-file source passes strict all-target checks for the provider, core
+and daemon. Two numeric-sizing controls cover split tokens, escaped strings,
+exponents, integer rounding, final-token handling and exhausted credit. A fresh
+actual-child retirement test passes with nonempty consumed input, original
+journals, lost archive-sink retry, exact readback and duplicate transfer. These
+executions retain their source cohort; the final lint-only test annotation is
+separately verified to preserve production and assertions. Three preceding
+actual preparation, lost-readiness and connected-world tests and 30 canonical
+contract controls retain their earlier source scope. The ordinary singleton
+collector and complete clause plan are implemented, but their current installed
+package and full 382-obligation acceptance remain unqualified.
+
 ## Selected DMTCP writer package
 
 The source-built `dmtcp-selected-writer-park` package passes its normal
@@ -2491,9 +2513,13 @@ The 11-file component passes 21 distinct controls on its final executable:
 17 restoration controls, including four new exact cases, and four portable
 codec controls. Strict all-feature, all-target Clippy and formatting pass.
 The tests use actual core runtime and restoration ledgers with modeled native
-participants. A genuine live host producer, native child capture and fresh
-journal installation remain unqualified; Source1 capture and unsupported
-native restoration callbacks retain their existing refusals.
+participants. A subsequent real four-owner run produces the genuine host
+continuation from its attached runtime before the first grant. Independent
+review verifies the complete runtime, scheduler, activation and source bindings
+on that empty-ledger cut. The overall run still fails its first grant; this
+producer witness does not establish nonempty capture or fresh native journal
+installation. Source1 capture and unsupported native restoration callbacks
+retain their existing refusals.
 
 ## KVM constructor descriptor
 

@@ -54,6 +54,8 @@ pub(super) struct PublicWindow {
 }
 
 pub(super) struct CnpRuntimeCustody {
+    pub(super) control_process: u32,
+    pub(super) control_thread: std::thread::ThreadId,
     pub(super) binding: NodeBinding,
     pub(super) owner_binding: OwnerBinding,
     pub(super) gate: ControlReceipt,
@@ -76,6 +78,13 @@ pub(super) struct CnpRuntimeCustody {
 
 impl CnpRuntimeCustody {
     pub(super) fn validate_retained(&self, companion: Option<u32>) -> Result<(), ProviderError> {
+        if self.control_process != std::process::id()
+            || self.control_thread != std::thread::current().id()
+        {
+            return Err(ProviderError::Correlation(
+                "original runtime has foreign process or thread custody",
+            ));
+        }
         let bytes = self
             .boundary_evidence
             .values()
@@ -175,6 +184,8 @@ impl CnpRuntimeCustody {
 /// supplied by the installation registry before graph admission. Unknown wire
 /// outcomes retain the original process, operation and input journals.
 pub struct CnpControlledReference {
+    pub(super) control_process: u32,
+    pub(super) control_thread: std::thread::ThreadId,
     pub(super) guard: CnpLaunchGuard,
     pub(super) binding: NodeBinding,
     pub(super) owner_binding: OwnerBinding,
@@ -194,14 +205,25 @@ pub struct CnpControlledReference {
     pub(super) checksum: u64,
     pub(super) boundary_evidence: BTreeMap<ContentRef, crate::node_scheduling::InputPayload>,
     pub(super) boundary_dependencies: BTreeMap<ContentRef, Vec<ContentRef>>,
+    pub(super) retired_history: Option<crate::node_scheduling::InputPayload>,
 }
 
 impl Drop for CnpControlledReference {
     fn drop(&mut self) {
-        if let Some(custody) = self.guard.custody.as_mut() {
+        self.retain_runtime_originals();
+    }
+}
+
+impl CnpControlledReference {
+    pub(super) fn retain_runtime_originals(&mut self) {
+        if let Some(custody) = self.guard.custody.as_mut()
+            && custody.runtime.is_none()
+        {
             // Dropping a borrower cannot erase opaque host admissions or turn
             // incomplete native windows into reusable operation identities.
             custody.runtime = Some(CnpRuntimeCustody {
+                control_process: self.control_process,
+                control_thread: self.control_thread,
                 binding: self.binding.clone(),
                 owner_binding: self.owner_binding.clone(),
                 gate: self.gate.clone(),
@@ -228,6 +250,8 @@ impl Drop for CnpControlledReference {
 impl CnpControlledReference {
     pub(super) fn new(preparation: CnpReferencePreparation, maximum_operations: usize) -> Self {
         Self {
+            control_process: std::process::id(),
+            control_thread: std::thread::current().id(),
             guard: preparation.guard,
             binding: preparation.binding,
             owner_binding: preparation.owner_binding,
@@ -247,6 +271,7 @@ impl CnpControlledReference {
             checksum: 0,
             boundary_evidence: BTreeMap::new(),
             boundary_dependencies: BTreeMap::new(),
+            retired_history: None,
         }
     }
 

@@ -60,6 +60,21 @@ pub fn project_cnp_qualification(
     project_source(profile, &manifest.owners, resources)
 }
 
+/// Projects the exact source-selected singleton before any native realization.
+///
+/// This data projection shares the ordinary admission serialization and class
+/// selection. It grants no acceptance, installation or execution authority;
+/// the collector must independently measure the installed source and context.
+///
+/// # Errors
+/// Refuses invalid resources or guarantees and oversized source projections.
+pub(crate) fn project_cnp_prelaunch_qualification(
+    profile: &ReferenceProfile,
+    resources: &ResourceLimits,
+) -> Result<CnpQualificationProjection, QualificationError> {
+    project_source(profile, std::slice::from_ref(&profile.owner), resources)
+}
+
 fn project_source(
     profile: &ReferenceProfile,
     owners: &[crucible_node_contract::OwnerRef],
@@ -165,7 +180,7 @@ impl<'a> CnpBehavioralAcceptance<'a> {
     ) -> Result<(), QualificationError> {
         let scope = self.policy.scope_for_node(&profile.descriptor.id)?;
         let binding = scope.binding;
-        let projection = project_source(profile, std::slice::from_ref(&profile.owner), resources)?;
+        let projection = project_cnp_prelaunch_qualification(profile, resources)?;
         if binding.node_id != profile.descriptor.id
             || binding.implementation != profile.implementation
             || binding.configuration_ref != profile.configuration_ref

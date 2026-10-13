@@ -333,6 +333,8 @@ impl LineageControlledReference {
         let incarnation = binding.authority.incarnation_id.clone();
         let generation = binding.authority.owner_generation;
         let runtime = super::control::CnpRuntimeCustody {
+            control_process: std::process::id(),
+            control_thread: std::thread::current().id(),
             binding,
             owner_binding,
             gate,

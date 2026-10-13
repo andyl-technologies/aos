@@ -36,6 +36,8 @@ pub(super) struct PublicPeerScope {
     // Ordinary preparation retains actual negotiated originals in this SAME entry.
     pub(super) ordinary_negotiation:
         Option<Rc<RefCell<super::vendor_bridge::OriginalReferenceNegotiation>>>,
+    pub(super) collecting_negotiation:
+        Option<Rc<RefCell<super::vendor_bridge::OriginalReferenceTransport>>>,
 }
 
 struct Entry {
@@ -103,10 +105,27 @@ impl PublicReferenceCustodyQueue {
                 "public peer reservation scope differs",
             ));
         }
-        if scope.ordinary_negotiation.is_some() && scope.source_custody.is_none() {
+        if (scope.ordinary_negotiation.is_some() || scope.collecting_negotiation.is_some())
+            && scope.source_custody.is_none()
+        {
             return Err(ProviderError::Correlation(
                 "ordinary package source custody was not reserved",
             ));
+        }
+        if scope.ordinary_negotiation.is_some() && scope.collecting_negotiation.is_some() {
+            return Err(ProviderError::Correlation(
+                "ordinary and collecting originals cannot share a slot",
+            ));
+        }
+        if let Some(original) = &scope.collecting_negotiation {
+            let original = original
+                .try_borrow()
+                .map_err(|_| ProviderError::Correlation("collecting transport already borrowed"))?;
+            if !original.is_unstarted() {
+                return Err(ProviderError::Correlation(
+                    "collecting transport already attempted",
+                ));
+            }
         }
         if let Some(original) = &scope.ordinary_negotiation {
             let original = original.try_borrow().map_err(|_| {
@@ -323,6 +342,17 @@ impl PublicReferenceCustodyQueue {
 
     /// Resolves one ordinary capsule only after its original semantic and durable seals.
     pub(super) fn resolve_ordinary_reclaimed(&self) -> Result<bool, ProviderError> {
+        self.resolve_original_reclaimed()
+    }
+
+    /// Resolves the same ordinary or source-only collecting originals.
+    ///
+    /// Transport selection grants no class acceptance. The original semantic
+    /// seal and same-attempt source-complete private archive remain mandatory.
+    ///
+    /// # Errors
+    /// Retains every capsule on unresolved semantic or durable disposition.
+    pub(super) fn resolve_original_reclaimed(&self) -> Result<bool, ProviderError> {
         let mut registry = self.0.borrow_mut();
         let candidate = registry.entries.iter().position(|entry| {
             entry.as_ref().is_some_and(|entry| {
@@ -330,7 +360,8 @@ impl PublicReferenceCustodyQueue {
                 state.reclaimed
                     && !state.in_flight
                     && state.custody.is_some()
-                    && state.scope.ordinary_negotiation.is_some()
+                    && (state.scope.ordinary_negotiation.is_some()
+                        || state.scope.collecting_negotiation.is_some())
                     && Rc::strong_count(entry) == 1
             })
         });
@@ -368,14 +399,13 @@ impl PublicReferenceCustodyQueue {
         // All private originals travel together after the SAME attempt's positive
         // acknowledgement. They stay actor-owned; the durable file survives exit.
         match (entry.archive.take(), entry.custody.take()) {
-            (Some(archive), Some(custody)) => {
-                registry
-                    .resolved
-                    .push(archive.acknowledge(ReclaimedPublicPeer {
-                        scope: entry.scope,
-                        custody,
-                    }))
-            }
+            (Some(archive), Some(custody)) => registry.resolved.push(archive.acknowledge(
+                entry.identity,
+                ReclaimedPublicPeer {
+                    scope: entry.scope,
+                    custody,
+                },
+            )),
             (archive, custody) => {
                 entry.archive = archive;
                 entry.custody = custody;
@@ -391,6 +421,43 @@ impl PublicReferenceCustodyQueue {
         } else {
             Ok(false)
         }
+    }
+
+    /// Authenticates the actual retained archive acknowledgements for this world.
+    ///
+    /// # Errors
+    /// Refuses remaining original slots, missing exact owners or changed original
+    /// file/source bytes. An activation label cannot construct an acknowledgement.
+    pub(super) fn authenticate_resolved(
+        &self,
+        record: &ActivationRecord,
+    ) -> Result<(), ProviderError> {
+        let mut registry = self.0.borrow_mut();
+        if registry.entries.iter().any(Option::is_some)
+            || registry.resolved.len() != record.owners.len()
+            || record.owners.is_empty()
+        {
+            return Err(ProviderError::Correlation(
+                "original world archives incomplete",
+            ));
+        }
+        for owner in &record.owners {
+            if registry
+                .resolved
+                .iter()
+                .filter(|original| original.belongs_to(record, owner))
+                .count()
+                != 1
+            {
+                return Err(ProviderError::Correlation(
+                    "original world archive owner differs",
+                ));
+            }
+        }
+        for original in &mut registry.resolved {
+            original.confirm_original()?;
+        }
+        Ok(())
     }
 
     pub(super) fn take_reclaimed(&self) -> Option<ReclaimedPublicPeer> {

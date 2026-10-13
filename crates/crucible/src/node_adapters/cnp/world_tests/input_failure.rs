@@ -8,6 +8,8 @@ use crate::node_scheduling::RuntimeInputBatch;
 
 /// Retains bounded actual authenticated input frames before a test-only rejection.
 #[derive(Default)]
+// The three actual windows each retain staging and source-consumed commitment
+// as distinct Input controls; retries keep the same six original IDs.
 pub(super) struct InputTranscript {
     requests: RefCell<BTreeMap<Id, Envelope>>,
     responses: RefCell<BTreeMap<Id, Envelope>>,
@@ -33,14 +35,14 @@ impl BodySchemaVerifier for InputTranscript {
         match body {
             ReceivedBody::Request(_) => {
                 let mut requests = self.requests.borrow_mut();
-                assert!(requests.len() < 4 || requests.contains_key(request_id));
+                assert!(requests.len() < 6 || requests.contains_key(request_id));
                 if let Some(original) = requests.insert(request_id.clone(), envelope.clone()) {
                     assert_eq!(original, *envelope);
                 }
             }
             ReceivedBody::Response(response) => {
                 let mut responses = self.responses.borrow_mut();
-                assert!(responses.len() < 4 || responses.contains_key(request_id));
+                assert!(responses.len() < 6 || responses.contains_key(request_id));
                 if let Some(original) = responses.insert(request_id.clone(), envelope.clone()) {
                     assert_eq!(original, *envelope);
                 }

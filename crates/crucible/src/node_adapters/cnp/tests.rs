@@ -484,6 +484,20 @@ fn actual_public_preparation_retains_original_ready_and_reclaims_both_native_pro
         controlled.active.is_none(),
         "readiness did not open a world gate"
     );
+    assert!(controlled.original_retirement_history(1).is_err());
+    assert!(!controlled.semantic_release);
+    let history = controlled
+        .original_retirement_history(64 * 1024 * 1024)
+        .unwrap();
+    assert!(!controlled.original_graceful_retirement_available());
+    assert!(controlled.shutdown_original_retirement().is_err());
+    assert_eq!(
+        controlled
+            .original_retirement_history(64 * 1024 * 1024)
+            .unwrap(),
+        history
+    );
+    assert!(!controlled.semantic_release);
     for _ in 0..300 {
         if controlled.quarantine_public().unwrap() {
             break;

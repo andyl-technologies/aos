@@ -18,10 +18,8 @@ use crucible_node_provider::{
     reference_service::{ReferenceProfile, ReferenceServiceBootstrap},
 };
 
-pub(in crate::node_observed_executor::factory::reference_public) struct OriginalReferenceNegotiation
-{
+pub(in crate::node_observed_executor::factory::reference_public) struct OriginalReferenceTransport {
     pub(super) hello: OriginalHelloJournal,
-    pub(super) birth_currency: super::currency::OriginalBirthCurrency,
     pub(super) upload: super::launch_upload::OriginalLaunchUpload,
     pub(super) handshake: Option<Handshake>,
     pub(super) session: Option<ClientSession>,
@@ -29,6 +27,26 @@ pub(in crate::node_observed_executor::factory::reference_public) struct Original
     controller: Option<ReferenceController>,
     failed_controller: Option<Box<ReferenceControllerPreparationFailure>>,
     controller_attempted: bool,
+}
+
+pub(in crate::node_observed_executor::factory::reference_public) struct OriginalReferenceNegotiation
+{
+    pub(super) transport: OriginalReferenceTransport,
+    pub(super) birth_currency: super::currency::OriginalBirthCurrency,
+}
+
+impl std::ops::Deref for OriginalReferenceNegotiation {
+    type Target = OriginalReferenceTransport;
+
+    fn deref(&self) -> &Self::Target {
+        &self.transport
+    }
+}
+
+impl std::ops::DerefMut for OriginalReferenceNegotiation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.transport
+    }
 }
 
 impl OriginalReferenceNegotiation {
@@ -41,30 +59,9 @@ impl OriginalReferenceNegotiation {
         birth_currency: super::currency::OriginalBirthCurrency,
     ) -> Self {
         Self {
-            hello,
-            upload,
+            transport: OriginalReferenceTransport::new(hello, handshake, journal, upload),
             birth_currency,
-            handshake: Some(handshake),
-            session: None,
-            journal: Some(journal),
-            controller: None,
-            failed_controller: None,
-            controller_attempted: false,
         }
-    }
-
-    /// Reports unused data storage without authenticating a peer or source.
-    pub(in crate::node_observed_executor::factory::reference_public) fn is_unstarted(
-        &self,
-    ) -> bool {
-        self.upload.is_unstarted()
-            && !self.hello.attempted()
-            && self.handshake.is_some()
-            && self.session.is_none()
-            && self.journal.is_some()
-            && self.controller.is_none()
-            && self.failed_controller.is_none()
-            && !self.controller_attempted
     }
 
     pub(in crate::node_observed_executor::factory::reference_public) fn write_attached_originals(
@@ -98,6 +95,67 @@ impl OriginalReferenceNegotiation {
             ),
         )
         .map_err(crucible_node_contract::ContractError::from)?;
+        Ok(())
+    }
+}
+
+impl OriginalReferenceTransport {
+    /// Reserves the original data holders before any Child or Hello effect.
+    pub(super) fn new(
+        hello: OriginalHelloJournal,
+        handshake: Handshake,
+        journal: ClientCustody,
+        upload: super::launch_upload::OriginalLaunchUpload,
+    ) -> Self {
+        Self {
+            hello,
+            upload,
+            handshake: Some(handshake),
+            session: None,
+            journal: Some(journal),
+            controller: None,
+            failed_controller: None,
+            controller_attempted: false,
+        }
+    }
+
+    /// Reports unused data storage without authenticating a peer or source.
+    pub(in crate::node_observed_executor::factory::reference_public) fn is_unstarted(
+        &self,
+    ) -> bool {
+        self.upload.is_unstarted()
+            && !self.hello.attempted()
+            && self.handshake.is_some()
+            && self.session.is_none()
+            && self.journal.is_some()
+            && self.controller.is_none()
+            && self.failed_controller.is_none()
+            && !self.controller_attempted
+    }
+
+    pub(in crate::node_observed_executor::factory::reference_public) fn write_attached_transport(
+        &self,
+        output: &mut impl std::io::Write,
+    ) -> Result<(), ProviderError> {
+        if !self.controller_attempted
+            || self.handshake.is_some()
+            || self.session.is_some()
+            || self.journal.is_some()
+            || self.controller.is_some()
+            || self.failed_controller.is_some()
+            || !self.hello.attempted()
+        {
+            return Err(ProviderError::Correlation(
+                "original negotiation was not completely attached",
+            ));
+        }
+        let hello = self
+            .hello
+            .response()
+            .ok_or(ProviderError::Correlation("original Hello unresolved"))?;
+        let launch = self.upload.completed_original()?;
+        serde_json::to_writer(output, &(self.hello.request(), hello, launch))
+            .map_err(crucible_node_contract::ContractError::from)?;
         Ok(())
     }
 
@@ -163,6 +221,25 @@ impl OriginalReferenceNegotiation {
                 ))
             }
         }
+    }
+
+    /// Observes the same prepared controller before its original attachment.
+    ///
+    /// # Errors
+    /// Refuses absent original controller or exhausted collecting archive credit.
+    pub(super) fn observe_pending_original(
+        &mut self,
+    ) -> Result<crucible_node_provider::client::ObservationHandle, ProviderError> {
+        self.controller
+            .as_mut()
+            .ok_or(ProviderError::Correlation(
+                "collecting original controller absent",
+            ))?
+            .observe(crucible_node_provider::client::ObservationLimits {
+                maximum_requests: 1024,
+                maximum_objects: 1024,
+                maximum_bytes: 8 * 1024 * 1024,
+            })
     }
 
     /// Moves both validated originals directly into their existing Child capsule.

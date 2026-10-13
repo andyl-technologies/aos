@@ -42,7 +42,7 @@ impl CnpControlledReference {
         }
     }
 
-    fn close_native_application(&mut self) -> Result<(), ProviderError> {
+    pub(super) fn close_native_application(&mut self) -> Result<(), ProviderError> {
         let bootstrap = self.controller()?.bootstrap.clone();
         if self.active.is_none() {
             let request_id = original_id("abort", &bootstrap.transaction_id)?;

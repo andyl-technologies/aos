@@ -283,12 +283,34 @@ pub fn canonical_json(value: &Value) -> Result<Vec<u8>, ContractError> {
     Ok(output)
 }
 
-fn write_canonical(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), ContractError> {
+/// Writes the authoritative canonical JSON to a caller-owned sink.
+///
+/// The sink can enforce an allocation or byte allowance before accepting each
+/// write. This is the same RFC 8785 algorithm as [`canonical_json`]; partial
+/// output on error must remain with its original operational owner.
+///
+/// # Errors
+/// Refuses the same numeric, array and nesting violations as [`canonical_json`]
+/// and propagates sink errors without restarting or replacing partial output.
+pub fn canonical_json_to_writer(
+    value: &Value,
+    output: &mut impl std::io::Write,
+) -> Result<(), ContractError> {
+    write_canonical(value, output, 0)
+}
+
+fn write_canonical(
+    value: &Value,
+    output: &mut impl std::io::Write,
+    depth: usize,
+) -> Result<(), ContractError> {
     match value {
-        Value::Null => output.extend_from_slice(b"null"),
-        Value::Bool(true) => output.extend_from_slice(b"true"),
-        Value::Bool(false) => output.extend_from_slice(b"false"),
-        Value::String(value) => output.extend_from_slice(serde_json::to_string(value)?.as_bytes()),
+        Value::Null => output.write_all(b"null").map_err(serde_json::Error::io)?,
+        Value::Bool(true) => output.write_all(b"true").map_err(serde_json::Error::io)?,
+        Value::Bool(false) => output.write_all(b"false").map_err(serde_json::Error::io)?,
+        Value::String(value) => output
+            .write_all(serde_json::to_string(value)?.as_bytes())
+            .map_err(serde_json::Error::io)?,
         Value::Number(number) => {
             // JCS uses the ECMAScript number algorithm even for JSON integer
             // tokens. Typed counters are strings, so they retain all 64 bits.
@@ -297,7 +319,9 @@ fn write_canonical(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<
                 .filter(|value| value.is_finite())
                 .ok_or_else(|| invalid("number", "not a finite JCS number"))?;
             let mut buffer = ryu_js::Buffer::new();
-            output.extend_from_slice(buffer.format(number).as_bytes());
+            output
+                .write_all(buffer.format(number).as_bytes())
+                .map_err(serde_json::Error::io)?;
         }
         Value::Array(values) => {
             if depth >= 64 {
@@ -306,14 +330,14 @@ fn write_canonical(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<
             if values.len() > MAX_ARRAY_ELEMENTS {
                 return Err(invalid("array", "exceeds 65536 elements"));
             }
-            output.push(b'[');
+            output.write_all(b"[").map_err(serde_json::Error::io)?;
             for (index, value) in values.iter().enumerate() {
                 if index != 0 {
-                    output.push(b',');
+                    output.write_all(b",").map_err(serde_json::Error::io)?;
                 }
                 write_canonical(value, output, depth + 1)?;
             }
-            output.push(b']');
+            output.write_all(b"]").map_err(serde_json::Error::io)?;
         }
         Value::Object(values) => {
             if depth >= 64 {
@@ -323,16 +347,18 @@ fn write_canonical(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<
                 .iter()
                 .map(|(key, value)| (key.encode_utf16().collect(), (key.as_str(), value)))
                 .collect();
-            output.push(b'{');
+            output.write_all(b"{").map_err(serde_json::Error::io)?;
             for (index, (key, value)) in ordered.values().enumerate() {
                 if index != 0 {
-                    output.push(b',');
+                    output.write_all(b",").map_err(serde_json::Error::io)?;
                 }
-                output.extend_from_slice(serde_json::to_string(key)?.as_bytes());
-                output.push(b':');
+                output
+                    .write_all(serde_json::to_string(key)?.as_bytes())
+                    .map_err(serde_json::Error::io)?;
+                output.write_all(b":").map_err(serde_json::Error::io)?;
                 write_canonical(value, output, depth + 1)?;
             }
-            output.push(b'}');
+            output.write_all(b"}").map_err(serde_json::Error::io)?;
         }
     }
     Ok(())

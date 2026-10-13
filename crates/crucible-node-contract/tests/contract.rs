@@ -636,3 +636,49 @@ fn cleanup_quarantine_requires_explicit_supervisor_custody() {
         canonical::decode::<CleanupRecord>(&serde_json::to_vec(&value).unwrap(), 4096).is_err()
     );
 }
+
+#[test]
+fn canonical_stream_preserves_jcs_numeric_and_utf16_vectors() {
+    let value: Value =
+        serde_json::from_str(r#"{"\uE000":2,"\uD83D\uDE00":1,"tiny":0.0000001,"small":0.000001}"#)
+            .unwrap();
+    let mut output = Vec::new();
+    canonical::canonical_json_to_writer(&value, &mut output).unwrap();
+    assert_eq!(
+        output,
+        "{\"small\":0.000001,\"tiny\":1e-7,\"😀\":1,\"\":2}".as_bytes()
+    );
+}
+
+#[test]
+fn canonical_stream_preserves_original_partial_sink_on_failure() {
+    struct OriginalSink {
+        bytes: Vec<u8>,
+        maximum: usize,
+    }
+
+    impl std::io::Write for OriginalSink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.bytes.len() + bytes.len() > self.maximum {
+                return Err(std::io::Error::other(
+                    "original selected sink credit exhausted",
+                ));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let value = json!({"z": "unchanged original body", "a": 1});
+    let mut original = OriginalSink {
+        bytes: Vec::new(),
+        maximum: 8,
+    };
+    assert!(canonical::canonical_json_to_writer(&value, &mut original).is_err());
+    assert_eq!(original.bytes, b"{\"a\":1,");
+    assert!(original.bytes.len() <= original.maximum);
+}

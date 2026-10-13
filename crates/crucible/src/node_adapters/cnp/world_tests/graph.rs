@@ -223,6 +223,23 @@ impl Definition {
             prepared,
             bindings: &bindings,
         };
+        // Fresh source-built debug companions can exceed the production default
+        // blob ceiling. Reserve this fixture's exact declared artifact bytes;
+        // the host's ordinary admission policy remains unchanged.
+        let artifact_bytes = self
+            .artifacts
+            .keys()
+            .try_fold(0usize, |total, reference| {
+                total.checked_add(usize::try_from(reference.length.get()).unwrap())
+            })
+            .unwrap();
+        let maximum_content_bytes = self
+            .artifacts
+            .keys()
+            .map(|reference| usize::try_from(reference.length.get()).unwrap())
+            .max()
+            .unwrap_or(0)
+            .max(8 * 1024 * 1024);
         admit_graph(
             AdmissionRequest {
                 world: &self.world,
@@ -233,7 +250,8 @@ impl Definition {
             },
             &evidence,
             AdmissionLimits {
-                maximum_content_bytes: 8 * 1024 * 1024,
+                maximum_content_bytes,
+                maximum_total_content_bytes: artifact_bytes.checked_add(64 * 1024 * 1024).unwrap(),
                 ..AdmissionLimits::default()
             },
         )

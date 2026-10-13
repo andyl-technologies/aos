@@ -224,6 +224,7 @@ pub(super) fn launch(
         private_launch,
         original_hello,
         ordinary_negotiation: None,
+        collecting_negotiation: None,
     })?;
     std::fs::DirBuilder::new()
         .mode(0o700)

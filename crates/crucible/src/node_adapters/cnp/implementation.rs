@@ -17,6 +17,33 @@ use crate::node_adapters::reference_device::control::{ControlledReference, seale
 impl sealed::Sealed for CnpControlledReference {}
 
 impl ControlledReference for CnpControlledReference {
+    fn graceful_retirement_available(&self) -> bool {
+        self.original_graceful_retirement_available()
+    }
+
+    fn shutdown_retirement(&mut self) -> Result<(), OperationFailure> {
+        self.shutdown_original_retirement()
+    }
+
+    fn poll_retirement(&mut self) -> Result<bool, ProviderError> {
+        self.poll_original_retirement()
+    }
+
+    fn transfer_retirement(&mut self) -> Result<(), OperationFailure> {
+        self.transfer_original_retirement()
+    }
+
+    fn retirement_history_credit(&self) -> Option<usize> {
+        Some(64 * 1024 * 1024)
+    }
+
+    fn retirement_history(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<Vec<crate::node_scheduling::InputPayload>, OperationFailure> {
+        Ok(vec![self.original_retirement_history(maximum_bytes)?])
+    }
+
     fn commit_runtime_input_custody(
         &mut self,
         original: &RuntimeInputBatch,
