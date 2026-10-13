@@ -884,6 +884,9 @@ mod tests {
     use super::*;
     use aos_proto::aos::sandbox::v1::AttenuateCapabilityRequest;
     use aos_sandbox_core::{BrokerArgumentCommitment, BrokerGrantTarget, BrokerVerb};
+    use aos_sandbox_protocol::domain_ledger::effect_history::{
+        EffectLedgerRecord, EffectState, decode_effect, encode_effect,
+    };
     use buffa::Message as _;
 
     #[cfg(target_os = "linux")]
