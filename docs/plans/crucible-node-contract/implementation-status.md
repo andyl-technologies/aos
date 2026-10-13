@@ -2251,6 +2251,18 @@ restore checks. The matching source output independently preserves the upstream
 archive, all ten patches, recipe, continuation fixture and current license
 inventory. The earlier sparse-directory package result remains historical.
 
+The subsequent exec-custody patch preserves the original selected writer's
+complete log, control and account state across exec before assertion/runtime
+initialization. A bounded descriptor census refuses inherited high descriptors
+even when the process later lowers its descriptor limit. Its ordinary package
+passes the original application, checkpoint and two fresh-restore comparisons;
+a separate source-built check passes eight control groups. The matching source
+retains all 542 prior files with exactly 12 modified and four added native files,
+all 11 patches, the recipe, control source and additive license inventory.
+Independent review reads back the installed binary and corresponding-source
+artifacts. These results exclude the later source-custody patch and do not
+establish semantic issuance, complete gem5 restoration or node readiness.
+
 The host archive importer verifies complete original writer histories, final
 debits, control delivery and terminal-park framing against retained typed
 dependencies before consulting the installed source verifier. The default

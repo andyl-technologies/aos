@@ -72,3 +72,21 @@ Configured TU and inert control results do not authorize capture, restored accou
 The distinct terminal-park successor appends exact selected-only changes to the same six native roles. The explicit terminal.v1 selector seals existing settled control custody before application resume; no missing selector changes the ordinary or earlier selected route. No LGPL/native body enters Apache host code. Early restored account adoption remains unsupported.
 
 The nonworker finalized-history link successor adds an explicitly unsupported false/ENOTSUP predicate to src/dmtcpnohijackstubs.cpp; actual worker history and all original notices remain unchanged.
+
+The distinct `selected-exec-custody.patch` preserves all original notices in
+`include/protectedfds.h`, `jalib/crucible_log_writer.h`, `jalib/jassert.cpp`,
+`src/crucible_single_worker.h`, `src/crucible_control_frame.h`,
+`src/crucible_final_frame.h`, `src/dmtcp_launch.cpp`, `src/util_init.cpp`,
+`src/execwrappers.cpp`, `src/uniquepid.h`, `src/uniquepid.cpp`, and
+`src/crucible_restart_writer.h`. It adds `src/crucible_exec_state.h`,
+`src/crucible_exec_custody.h`, `src/crucible_kernel_identity.h`, and
+`src/crucible_descriptor_scope.h` under
+LGPL-3.0-or-later; no native file is removed. All code executes within the
+native toolkit processes. The separate Apache host consumes versioned data
+and does not link or include these implementation files.
+
+`exec-custody-controls.cpp` is an independently authored LGPL-3.0-or-later
+component test. Its source is retained in the corresponding-source output.
+It checks original debit, body, peer and descriptor preservation and source
+selected kernel identity; parsed records and component checks do not authorize
+source issuance, operative restored-account adoption, or node readiness.
