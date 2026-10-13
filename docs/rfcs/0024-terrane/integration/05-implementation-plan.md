@@ -153,6 +153,18 @@ this is not a passing full focus run. Both failed fixtures have reviewed
 corrections awaiting qualification on a fresh composition. Core renewal,
 all six growth populations and the complete current T1 floor remain pending.
 
+The next preparation `fcf229ee3358` is held before any formatter, compiler or
+runtime command: independent review identifies cancellation staging files that
+the new operation lookup would reject after a finite sync failure. A reviewed
+correction distinguishes only the native temporary names after protected
+nofollow capture; their bytes grant no authority. The corrected frozen tree
+`ac122d206f4f` passes the exact formatter pair, then strict SDK Clippy fails
+with two E0599 errors in the new preservation fixture. Its projected property
+selection is already the ordinary enum. Both calls are corrected to compare
+that enum directly. Compilation, actual inventory, focused runtime, Core and
+growth qualification remain unstarted in this failed packet; a new frozen
+composition must qualify the corrected source. No task or milestone advances.
+
 The earlier frozen payload-sharing tree `ee7171fa88a7` passes native build,
 strict all-target SDK and Core Clippy, all-target test compilation and the exact
 formatter pair. Its inventories contain 1,101 SDK tests and 764 no-default Core
