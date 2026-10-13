@@ -316,7 +316,12 @@ pub(super) async fn retain_historical_and_issue_new() {
         .await
         .unwrap();
     source.clock.set(
-        old_roles[0].not_before + 10,
+        old_roles[0].not_before
+            + destination
+                .coordinator()
+                .maximum_commit_duration()
+                .as_secs()
+            + 10,
         source.clock.monotonic().as_secs(),
     );
     let new_key = source
@@ -520,9 +525,6 @@ pub(super) async fn retain_historical_and_issue_new() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    source
-        .clock
-        .set(newest.not_before - 1, source.clock.monotonic().as_secs());
     let mut rollback_target = destination
         .coordinator()
         .begin(REFERENCE, destination.authority.token(), "sdk")
@@ -530,6 +532,28 @@ pub(super) async fn retain_historical_and_issue_new() {
         .unwrap();
     let rollback_head = rollback_target.record().cloned();
     let rollback_before = physical_snapshot(destination.coordinator().store().root()).await;
+    // Real timer progression must not heal the rollback during native setup.
+    // Keep the old role valid and the newest role future for the entire existing
+    // commit bound, so refusal cannot be explained by both roles being invalid.
+    source
+        .clock
+        .set(old_roles[0].not_before, source.clock.monotonic().as_secs());
+    let rollback_wall = source
+        .clock
+        .now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(rollback_wall >= old_roles[0].not_before);
+    assert!(old_roles[0].not_after.is_none_or(|end| rollback_wall < end));
+    assert!(rollback_wall < newest.not_before);
+    assert!(
+        newest.not_before - rollback_wall
+            > destination
+                .coordinator()
+                .maximum_commit_duration()
+                .as_secs()
+    );
     let rollback = destination
         .coordinator()
         .advance_disclosure(
@@ -557,6 +581,15 @@ pub(super) async fn retain_historical_and_issue_new() {
         outcome => panic!("newest role clock rollback: unexpected result: {outcome:?}"),
     };
     assert_retention_denied(&failure, "newest role clock rollback");
+    let rollback_wall = source
+        .clock
+        .now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(rollback_wall >= old_roles[0].not_before);
+    assert!(old_roles[0].not_after.is_none_or(|end| rollback_wall < end));
+    assert!(rollback_wall < newest.not_before);
     assert_eq!(
         physical_snapshot(destination.coordinator().store().root()).await,
         rollback_before
