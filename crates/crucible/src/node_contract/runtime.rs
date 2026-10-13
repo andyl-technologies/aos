@@ -757,7 +757,8 @@ impl NodeRuntime {
     /// Acquires one explicitly advertised observation-only facet.
     ///
     /// # Errors
-    /// Refuses unknown nodes, unsupported or incorrectly returned facet kinds.
+    /// Refuses unknown nodes, changed admitted routing or thread custody,
+    /// unsupported facets, or incorrectly returned facet kinds.
     pub fn facet(&mut self, node: &NodeId, kind: FacetKind) -> Result<NodeFacet<'_>, RuntimeError> {
         if self.condition_fenced() && kind != FacetKind::Debugging {
             return Err(RuntimeError::OutstandingObligations);
@@ -765,6 +766,7 @@ impl NodeRuntime {
         if self.terminal.is_some() && kind != FacetKind::TerminalAssertions {
             return Err(RuntimeError::OutstandingObligations);
         }
+        self.checked_route(node)?;
         let handle = self.nodes.get_mut(node).ok_or(RuntimeError::UnknownNode)?;
         if !handle.facets().contains(&kind) {
             return Err(RuntimeError::UnsupportedFacet);

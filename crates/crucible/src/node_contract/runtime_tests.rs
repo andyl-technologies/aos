@@ -15,7 +15,7 @@ use super::*;
 use crate::node_contract::{
     ExactBoundaryPolicy, FacetDescription, NativeReclamationReceipt, NodeStatus, PhysicalState,
     ProgressEvidence, PublicationStatus, QuantumClosureEvidence, ReadyAttestation, Refusal,
-    StopReason,
+    StopReason, ThreadAffinity,
 };
 
 fn id(value: &str) -> Id {
@@ -73,6 +73,8 @@ struct NativeState {
     overshoot: bool,
     refuse: bool,
     uncertain: bool,
+    facet_calls: usize,
+    thread_affinity_override: Option<ThreadAffinity>,
     begin_calls: usize,
     poll_calls: usize,
     close_calls: usize,
@@ -128,7 +130,10 @@ impl SimulationNode for TestNode {
     }
 
     fn thread_affinity(&self) -> crate::node_contract::ThreadAffinity {
-        crate::node_contract::ThreadAffinity::OwnerThread(std::thread::current().id())
+        self.state
+            .borrow()
+            .thread_affinity_override
+            .unwrap_or_else(|| ThreadAffinity::OwnerThread(std::thread::current().id()))
     }
 
     fn facets(&self) -> &[FacetKind] {
@@ -658,6 +663,7 @@ impl SimulationNode for TestNode {
     }
 
     fn facet(&mut self, kind: FacetKind) -> Result<NodeFacet<'_>, Refusal> {
+        self.state.borrow_mut().facet_calls += 1;
         match kind {
             FacetKind::ExactExecution if self.facets.contains(&kind) => {
                 Ok(NodeFacet::ExactExecution(self))
@@ -888,6 +894,71 @@ fn runtime(mode: OperatingMode) -> (NodeRuntime, Vec<Rc<RefCell<NativeState>>>) 
         original_error_site: None,
     };
     (runtime, vec![a_state, b_state])
+}
+
+#[test]
+fn facet_access_preserves_original_profile_and_unsupported_refusal() {
+    for (mode, kind) in [
+        (OperatingMode::Exact, FacetKind::ExactExecution),
+        (OperatingMode::Quantized, FacetKind::QuantizedExecution),
+    ] {
+        let (mut runtime, states) = runtime(mode);
+
+        let facet = runtime.facet(&id("a"), kind).unwrap();
+        assert_eq!(facet.kind(), kind);
+        assert_eq!(facet.profile(), &id("test-execution"));
+        assert!(matches!(
+            runtime.facet(&id("a"), FacetKind::Coverage),
+            Err(RuntimeError::UnsupportedFacet)
+        ));
+
+        assert_eq!(states[0].borrow().facet_calls, 1);
+        assert_eq!(states[0].borrow().quarantine_calls, 0);
+        assert_eq!(states[1].borrow().quarantine_calls, 0);
+    }
+}
+
+#[test]
+fn facet_access_contains_changed_custody_before_native_callback() {
+    let (mut runtime, states) = runtime(OperatingMode::Exact);
+    let activation = activate(&mut runtime);
+    let token = exact(&mut runtime, &activation, "original-run");
+    states[0].borrow_mut().pending = true;
+    assert!(matches!(poll(&mut runtime, &token), Poll::Pending));
+    let original_facet_calls = states[0].borrow().facet_calls;
+
+    states[0].borrow_mut().thread_affinity_override = Some(ThreadAffinity::OwningActor);
+    assert!(matches!(
+        runtime.facet(&id("a"), FacetKind::ExactExecution),
+        Err(RuntimeError::ForeignAuthority)
+    ));
+
+    assert_eq!(states[0].borrow().facet_calls, original_facet_calls);
+    assert_eq!(states[0].borrow().quarantine_calls, 1);
+    assert_eq!(states[1].borrow().quarantine_calls, 1);
+    let owner = runtime.owners.get(&id("shared-owner")).unwrap();
+    assert_eq!(owner.lifecycle, Lifecycle::Quarantined);
+    assert_eq!(owner.operation.as_ref(), Some(token.operation()));
+    assert!(matches!(
+        runtime.operations.get(token.operation()).unwrap().result,
+        RetainedResult::Pending
+    ));
+    assert_eq!(states[0].borrow().ack_calls, 0);
+}
+
+#[test]
+fn facet_access_contains_changed_declarations_before_native_callback() {
+    let (mut runtime, states) = runtime(OperatingMode::Exact);
+    states[0].borrow_mut().changed_declarations = true;
+
+    assert!(matches!(
+        runtime.facet(&id("a"), FacetKind::ExactExecution),
+        Err(RuntimeError::ForeignAuthority)
+    ));
+
+    assert_eq!(states[0].borrow().facet_calls, 0);
+    assert_eq!(states[0].borrow().quarantine_calls, 1);
+    assert_eq!(states[1].borrow().quarantine_calls, 1);
 }
 
 struct Publisher {
