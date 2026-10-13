@@ -369,6 +369,9 @@ fn targets(request: &RawRequest) -> io::Result<BTreeMap<PathBuf, Target>> {
 /// # Errors
 /// Refuses changed retained inputs, controls, names or ancestry, mismatched
 /// backend association and actual descriptor/directory synchronization failure.
+///
+/// # Panics
+/// Panics in test builds if enabled native phase diagnostics cannot write to standard error.
 pub(super) fn execute(request: RawRequest, mut worker: Worker) -> Result<(), NativeEffectFailure> {
     #[cfg(test)]
     let trace = crate::ref_advance::NativeTrace::new(&request.root, "raw-final-ack-worker");
