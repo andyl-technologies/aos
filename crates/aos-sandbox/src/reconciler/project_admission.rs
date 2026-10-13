@@ -6,9 +6,14 @@
 //! validate the protected Operation/Effect join and the opaque Root transport.
 //!
 //! Protocol owns the complete canonical historical metadata DATA. This native
-//! owner retains its protected original-admission and terminal transition graph.
+//! owner retains the prepare, dispatch and Source-terminal transitions. Its
+//! private original-history owner keeps complete replay and protected readbacks
+//! together with the validated history-floor acceptance and opaque Journal loan.
 
-mod metadata;
+mod original_history;
+
+#[cfg(test)]
+mod metadata_tests;
 
 #[cfg(test)]
 mod tests;
@@ -16,396 +21,69 @@ mod tests;
 #[cfg(feature = "project-negative-recovery-vm-fixture")]
 pub(super) mod vm_fixture;
 
-pub(super) use metadata::{
-    MAXIMUM_RECORD_BYTES, ProjectAdmissionMetadata, ProjectAdmissionPhase,
-    RetainedRootProjectTerminal,
+pub(super) use aos_sandbox_protocol::domain_ledger::project_admission_metadata::{
+    ProjectAdmissionMetadataV1 as ProjectAdmissionMetadata,
+    ProjectAdmissionPhaseV1 as ProjectAdmissionPhase,
+    RetainedRootProjectTerminalV1 as RetainedRootProjectTerminal,
 };
 
-use aos_sandbox_core::{ObjectDigest, ProjectId, SandboxId};
+pub use original_history::{
+    ControllerProjectHistoryAcceptanceV1, RetainedControllerProjectAdmissionV1,
+    accept_controller_project_history_floor_v1, checked_live_create_sandbox_admission_revision_v1,
+    retained_controller_project_admission_v1,
+};
+pub(crate) use original_history::{
+    AcceptedControllerProjectTerminalV1, ControllerProjectDispatchReadbackV1,
+    accepted_controller_project_terminal_v1, controller_project_dispatch_readback_v1,
+    live_create_sandbox_admission_revision_v1,
+};
+pub(super) use original_history::validate_all;
+
+use original_history::{
+    capacity_request, effect_record, invalid_metadata, load_scoped_effect, require_controller_writer,
+};
+#[cfg(test)]
+use original_history::dispatch_readback_from_original_graph;
+#[cfg(any(test, feature = "project-negative-recovery-vm-fixture"))]
+pub(super) use original_history::retained_create_sandbox_admission_revision_v1;
+
 use aos_sandbox_protocol::domain_ledger::project_admission_metadata::ProjectAdmissionMetadataDataErrorV1;
-use sha2::{Digest as _, Sha256};
 
 use crate::controller::ControllerRequestScopeV1;
-use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionKindV1, PublicProjectionRecordV1, PublicProjectionResourceV1,
-};
+use aos_sandbox_protocol::public_api::projection::PublicProjectionKindV1;
 use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::journal::{
-    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, Journal, JournalError,
-    JournalRecord, JournalTransaction, RecordNamespace, SourceProjectAdmissionChallengeV1,
+    GlobalCapacityReservationRequestV1, Journal, JournalError,
+    JournalTransaction,
     SourceProjectAdmissionReservationV1, encoded_transaction_append_bytes,
 };
 use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::policy_compiler::{
     CurrentCreatePolicySourceErrorV1, CurrentCreateProjectPolicySourceV1,
     RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeProofV1,
-    RootProjectAdmissionOutcomeV1, RootProjectHistoryFloorProofV1, RootProjectHistoryFloorV1,
-    RootProjectHistoryTerminalKindV1, RootProjectReservationCancellationProofV1,
-    SourceProjectAdmissionChallengeErrorV1, create_project_source_commitment_v1,
+    RootProjectReservationCancellationProofV1,
+    SourceProjectAdmissionChallengeErrorV1,
     current_parentless_create_project_source_for_operation_v1,
     preflight_source_project_admission_v1, project_admission_client_nonce_v1,
     read_source_project_admission_status_v1, read_source_project_reservation_status_v1,
 };
 
 use aos_sandbox_protocol::domain_ledger::effect_history::{
-    CONTROLLER_PROJECT_EFFECT_VERSION, EffectLedgerRecord, EffectPlan, MAXIMUM_DIAGNOSTIC_BYTES,
-    decode_effect, encode_effect,
+    EffectLedgerRecord, EffectPlan, MAXIMUM_DIAGNOSTIC_BYTES, encode_effect,
 };
-use super::{
-    ReconcilerError, checked_live_create_sandbox_admission_revision_v1, effect_key,
-    retained_create_sandbox_admission_revision_v1,
-};
-
-const CAPACITY_DOMAIN: &[u8] = b"aos.sandbox.controller-project-capacity-owner.v1\0";
-
-/// Retains the actual original Effect selected for historical recovery.
-///
-/// This readback does not authorize a new dispatch or owner transition. Each
-/// consumer separately rechecks the protected original Effect and its phase.
-pub struct RetainedControllerProjectAdmissionV1 {
-    operation: aos_sandbox_core::OperationId,
-    plan: EffectPlan,
-    metadata: ProjectAdmissionMetadata,
-}
-
-impl RetainedControllerProjectAdmissionV1 {
-    /// Returns the immutable original operation.
-    #[must_use]
-    pub const fn operation(&self) -> aos_sandbox_core::OperationId {
-        self.operation
-    }
-
-    /// Returns the exact original Effect plan.
-    #[must_use]
-    pub const fn plan(&self) -> &EffectPlan {
-        &self.plan
-    }
-
-    /// Returns the Source reservation retained before dispatch.
-    #[must_use]
-    pub const fn reservation(&self) -> SourceProjectAdmissionReservationV1 {
-        self.metadata.reservation()
-    }
-
-    /// Reports whether Root dispatch has not yet been authorized.
-    #[must_use]
-    pub const fn is_prepared(&self) -> bool {
-        matches!(self.metadata.phase(), ProjectAdmissionPhase::Prepared)
-    }
-
-    /// Reports whether an exact Root terminal was accepted locally.
-    #[must_use]
-    pub const fn has_accepted_terminal(&self) -> bool {
-        matches!(
-            self.metadata.phase(),
-            ProjectAdmissionPhase::AcceptedRootTerminal | ProjectAdmissionPhase::RootRetired
-        )
-    }
-
-    /// Returns the historical outcome, without establishing Root transport.
-    #[must_use]
-    pub const fn outcome(&self) -> Option<RootProjectAdmissionOutcomeV1> {
-        match self.metadata.terminal() {
-            Some(RetainedRootProjectTerminal::Outcome(outcome)) => Some(outcome),
-            _ => None,
-        }
-    }
-}
-
-/// Selects one original Effect for exact Source-flight recovery.
-///
-/// The configured scope is checked against the protected idempotency decision.
-/// A Source row without matching metadata cannot be adopted. With no Source
-/// row, only the unique nonretired Controller flight is returned; a node with
-/// no flight therefore has no Root-service startup dependency.
-///
-/// # Errors
-///
-/// Rejects changed fixed names, an inconsistent original admission or request,
-/// an ambiguous flight, or a mismatched configured request scope.
-pub fn retained_controller_project_admission_v1(
-    journal: &Journal,
-    scope: ControllerRequestScopeV1,
-    reservation: Option<SourceProjectAdmissionReservationV1>,
-) -> Result<Option<RetainedControllerProjectAdmissionV1>, ControllerProjectAdmissionJournalErrorV1>
-{
-    require_controller_writer(journal)?;
-    validate_all(journal)?;
-    let mut selected = None;
-    for (key, bytes) in journal.records(RecordNamespace::Effect) {
-        if bytes.first() != Some(&CONTROLLER_PROJECT_EFFECT_VERSION) {
-            continue;
-        }
-        let effect = decode_effect(bytes)
-            .map_err(ReconcilerError::from)?
-            .into_parts();
-        let Some(metadata) = effect.3 else {
-            continue;
-        };
-        let matches = match reservation {
-            Some(reservation) => metadata.reservation() == reservation,
-            None => metadata.phase() != ProjectAdmissionPhase::RootRetired,
-        };
-        if !matches {
-            continue;
-        }
-        let operation = aos_sandbox_core::OperationId::from_bytes(
-            key.get(..16)
-                .ok_or_else(invalid_metadata)?
-                .try_into()
-                .map_err(|_| invalid_metadata())?,
-        );
-        if selected.is_some()
-            || checked_live_create_sandbox_admission_revision_v1(
-                journal, operation, scope, &effect.0,
-            )?
-            .is_none()
-        {
-            return Err(invalid_metadata().into());
-        }
-        selected = Some(RetainedControllerProjectAdmissionV1 {
-            operation,
-            plan: effect.0,
-            metadata,
-        });
-    }
-    Ok(selected)
-}
-
-pub(crate) struct AcceptedControllerProjectTerminalV1 {
-    pub operation: aos_sandbox_core::OperationId,
-    pub sandbox: SandboxId,
-    pub project: ProjectId,
-    pub source_commitment: ObjectDigest,
-    pub admission_revision: ObjectDigest,
-    pub admission_generation: u64,
-    pub accepted_metadata: ObjectDigest,
-    pub reservation: SourceProjectAdmissionReservationV1,
-    pub challenge: Option<SourceProjectAdmissionChallengeV1>,
-    pub root_terminal: ObjectDigest,
-    pub kind: RootProjectHistoryTerminalKindV1,
-}
-
-/// Retains an actual immutable flight, solely to obtain a durable Root denial.
-pub(crate) struct ControllerProjectDispatchReadbackV1 {
-    pub operation: aos_sandbox_core::OperationId,
-    pub sandbox: SandboxId,
-    pub project: ProjectId,
-    pub source_commitment: ObjectDigest,
-    pub admission_revision: ObjectDigest,
-    pub admission_generation: u64,
-    pub metadata: ObjectDigest,
-    pub reservation: SourceProjectAdmissionReservationV1,
-}
-
-pub(crate) fn controller_project_dispatch_readback_v1(
-    journal: &Journal,
-    operation: aos_sandbox_core::OperationId,
-) -> Result<ControllerProjectDispatchReadbackV1, ControllerProjectAdmissionJournalErrorV1> {
-    require_controller_writer(journal)?;
-    dispatch_readback_from_original_graph(journal, operation)
-}
-
-fn dispatch_readback_from_original_graph(
-    journal: &Journal,
-    operation: aos_sandbox_core::OperationId,
-) -> Result<ControllerProjectDispatchReadbackV1, ControllerProjectAdmissionJournalErrorV1> {
-    validate_all(journal)?;
-    let effect = decode_effect(
-        journal
-            .get(RecordNamespace::Effect, &effect_key(operation, 0))
-            .ok_or_else(invalid_metadata)?,
-    )
-    .map_err(ReconcilerError::from)?
-    .into_parts();
-    let metadata = effect.3.ok_or_else(invalid_metadata)?;
-    if metadata.phase() != ProjectAdmissionPhase::DispatchAuthorized {
-        return Err(invalid_metadata().into());
-    }
-    Ok(ControllerProjectDispatchReadbackV1 {
-        operation,
-        sandbox: metadata.sandbox(),
-        project: metadata.project(),
-        source_commitment: metadata.source_commitment(),
-        admission_revision: metadata.admission_revision(),
-        admission_generation: metadata.admission_generation(),
-        metadata: ObjectDigest::from_bytes(
-            Sha256::digest(metadata.encode().map_err(ReconcilerError::from)?).into(),
-        ),
-        reservation: metadata.reservation(),
-    })
-}
-
-/// Reads only actual accepted original-Effect metadata under Controller custody.
-pub(crate) fn accepted_controller_project_terminal_v1(
-    journal: &Journal,
-    operation: aos_sandbox_core::OperationId,
-) -> Result<AcceptedControllerProjectTerminalV1, ControllerProjectAdmissionJournalErrorV1> {
-    require_controller_writer(journal)?;
-    validate_all(journal)?;
-    let effect = decode_effect(
-        journal
-            .get(RecordNamespace::Effect, &effect_key(operation, 0))
-            .ok_or_else(invalid_metadata)?,
-    )
-    .map_err(ReconcilerError::from)?
-    .into_parts();
-    let metadata = effect.3.ok_or_else(invalid_metadata)?;
-    // A previous RootRetired row is useful only for exact floor replay, never
-    // to issue a new retirement carrier or nominate another historical cut.
-    if metadata.phase() != ProjectAdmissionPhase::AcceptedRootTerminal {
-        return Err(invalid_metadata().into());
-    }
-    let terminal = metadata.terminal().ok_or_else(invalid_metadata)?;
-    Ok(AcceptedControllerProjectTerminalV1 {
-        operation,
-        sandbox: metadata.sandbox(),
-        project: metadata.project(),
-        source_commitment: metadata.source_commitment(),
-        admission_revision: metadata.admission_revision(),
-        admission_generation: metadata.admission_generation(),
-        accepted_metadata: metadata
-            .acceptance_digest()
-            .map_err(ReconcilerError::from)?,
-        reservation: metadata.reservation(),
-        challenge: metadata.challenge(),
-        root_terminal: terminal.record_digest(),
-        kind: terminal.kind(),
-    })
-}
-
-/// Borrows Controller custody after its exact historical Root-floor acceptance.
-///
-/// The borrow keeps the retained writer alive and excludes subsequent mutable
-/// Controller cuts while Source immediately verifies and records its own ACK.
-/// This token cannot be decoded, serialized, or minted from a digest. It never
-/// authorizes Create success or owner-hold release.
-pub struct ControllerProjectHistoryAcceptanceV1<'controller> {
-    controller: &'controller Journal,
-    operation: aos_sandbox_core::OperationId,
-    accepted_metadata: ObjectDigest,
-    floor: ObjectDigest,
-}
-
-impl ControllerProjectHistoryAcceptanceV1<'_> {
-    pub(crate) fn validate_source_ack(
-        &self,
-        floor: RootProjectHistoryFloorV1,
-        reservation: SourceProjectAdmissionReservationV1,
-        challenge: Option<SourceProjectAdmissionChallengeV1>,
-        source_terminal: ObjectDigest,
-    ) -> Result<(), JournalError> {
-        require_controller_writer(self.controller)?;
-        validate_all(self.controller).map_err(|_| JournalError::ProtectedBoundary)?;
-        let effect = decode_effect(
-            self.controller
-                .get(RecordNamespace::Effect, &effect_key(self.operation, 0))
-                .ok_or(JournalError::ProtectedBoundary)?,
-        )
-        .map_err(ReconcilerError::from)
-        .map_err(|_| JournalError::ProtectedBoundary)?
-        .into_parts();
-        let metadata = effect.3.ok_or(JournalError::ProtectedBoundary)?;
-        if metadata.phase() != ProjectAdmissionPhase::RootRetired
-            || metadata.retired_floor() != Some(self.floor)
-            || floor.record_digest() != self.floor
-            || metadata
-                .acceptance_digest()
-                .map_err(|_| JournalError::ProtectedBoundary)?
-                != self.accepted_metadata
-            || metadata.reservation() != reservation
-            || metadata.challenge() != challenge
-            || floor.source_terminal_digest() != source_terminal
-            || !metadata.matches_floor(self.operation, floor)
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
-}
-
-/// Durably accepts an exact Root history floor without completing Create.
-///
-/// The returned borrow is consumed immediately by Source's terminal ACK path;
-/// Controller remains under the same retained writer throughout that join.
-/// A lost reply replays the identical protected metadata without another cut.
-///
-/// # Errors
-///
-/// Rejects foreign custody, an altered original Create/admission, a changed
-/// Root terminal or floor, missing accepted outcome, capacity loss, or an
-/// ambiguous durable append/readback. No failed append lifts Source's fence.
-pub fn accept_controller_project_history_floor_v1<'controller>(
-    journal: &'controller mut Journal,
-    operation: aos_sandbox_core::OperationId,
-    scope: ControllerRequestScopeV1,
-    plan: &EffectPlan,
-    proof: RootProjectHistoryFloorProofV1,
-) -> Result<
-    ControllerProjectHistoryAcceptanceV1<'controller>,
-    ControllerProjectAdmissionJournalErrorV1,
-> {
-    require_controller_writer(journal)?;
-    let mut effect = load_scoped_effect(journal, operation, scope, plan)?;
-    let prior = effect
-        .project_admission()
-        .cloned()
-        .ok_or_else(invalid_metadata)?;
-    let floor = proof.floor();
-    if !prior.matches_floor(operation, floor)
-        || !matches!(
-            prior.phase(),
-            ProjectAdmissionPhase::AcceptedRootTerminal | ProjectAdmissionPhase::RootRetired
-        )
-    {
-        return Err(invalid_metadata().into());
-    }
-    let floor_digest = floor.record_digest();
-    let accepted_metadata = prior.acceptance_digest().map_err(ReconcilerError::from)?;
-    let next_phase = ProjectAdmissionPhase::RootRetired;
-    let next_floor = Some(floor_digest);
-    let mut next = prior.clone();
-    next.set_historical_phase(next_phase);
-    next.set_historical_retired_floor(next_floor);
-    if prior.phase() == ProjectAdmissionPhase::RootRetired {
-        if prior != next {
-            return Err(invalid_metadata().into());
-        }
-    } else {
-        let reservation = journal.recover_global_capacity_reservation_v1(prior.capacity_id())?;
-        effect.set_project_admission(Some(next.clone()));
-        let transaction = JournalTransaction::new(
-            aos_sandbox_core::OperationId::new().into_bytes(),
-            vec![
-                effect_record(operation, &effect)?,
-                reservation.settlement_record(),
-            ],
-        )
-        .map_err(JournalError::from)?;
-        let mut capacity = journal.claim_global_capacity_reservation_authority(
-            GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
-        )?;
-        let preflight = capacity.preflight_reserved_terminal_v1(&reservation, &transaction)?;
-        capacity.commit_reserved_terminal_v1(&preflight, reservation, &transaction)?;
-    }
-    require_controller_writer(journal)?;
-    validate_all(journal)?;
-    let readback = decode_effect(
-        journal
-            .get(RecordNamespace::Effect, &effect_key(operation, 0))
-            .ok_or_else(invalid_metadata)?,
-    )
-    .map_err(ReconcilerError::from)?;
-    if readback.project_admission() != Some(next).as_ref() {
-        return Err(invalid_metadata().into());
-    }
-    Ok(ControllerProjectHistoryAcceptanceV1 {
-        controller: journal,
-        operation,
-        accepted_metadata,
-        floor: floor_digest,
-    })
-}
+use super::ReconcilerError;
+#[cfg(test)]
+use aos_sandbox_core::{ObjectDigest, SandboxId};
+#[cfg(test)]
+use aos_sandbox_protocol::domain_ledger::effect_history::decode_effect;
+#[cfg(test)]
+use super::effect_key;
+#[cfg(test)]
+use crate::journal::{JournalRecord, RecordNamespace};
+#[cfg(test)]
+use crate::policy_compiler::create_project_source_commitment_v1;
+#[cfg(test)]
+use aos_sandbox_protocol::public_api::projection::PublicProjectionResourceV1;
 
 /// Reports an unavailable exact Controller/Source project-admission cut.
 #[derive(Debug, thiserror::Error)]
@@ -706,76 +384,6 @@ pub fn accept_controller_project_reservation_cancellation_v1(
     Ok(())
 }
 
-fn load_scoped_effect(
-    journal: &Journal,
-    operation: aos_sandbox_core::OperationId,
-    scope: ControllerRequestScopeV1,
-    plan: &EffectPlan,
-) -> Result<EffectLedgerRecord, ReconcilerError> {
-    checked_live_create_sandbox_admission_revision_v1(journal, operation, scope, plan)?
-        .ok_or_else(invalid_metadata)?;
-    validate_all(journal)?;
-    decode_effect(
-        journal
-            .get(RecordNamespace::Effect, &effect_key(operation, 0))
-            .ok_or_else(invalid_metadata)?,
-    )
-    .map_err(ReconcilerError::from)
-}
-
-fn require_controller_writer(journal: &Journal) -> Result<(), JournalError> {
-    let uid = rustix::process::getuid().as_raw();
-    if uid == 0 {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    journal.require_protected_named_location(
-        std::path::Path::new("/var/lib/aos/sandboxd"),
-        "controller.journal",
-        uid,
-        crate::journal::controller::production_journal_limits(),
-    )
-}
-
-fn capacity_request(
-    operation: aos_sandbox_core::OperationId,
-    metadata: &ProjectAdmissionMetadata,
-    plan: &EffectPlan,
-    future_transactions: u32,
-    records: u32,
-    bytes: u64,
-) -> GlobalCapacityReservationRequestV1 {
-    GlobalCapacityReservationRequestV1 {
-        purpose: GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
-        owner_namespace: RecordNamespace::Effect,
-        owner_id: Sha256::new()
-            .chain_update(CAPACITY_DOMAIN)
-            .chain_update(effect_key(operation, 0))
-            .finalize()
-            .into(),
-        owner_digest: *metadata.reservation().record_digest().as_bytes(),
-        operation_id: *operation.as_bytes(),
-        artifact_digest: Sha256::digest(plan.request()).into(),
-        checkpoint_digest: *metadata.admission_revision().as_bytes(),
-        chain_head_digest: *metadata.source_commitment().as_bytes(),
-        future_transactions,
-        terminal_records: records,
-        terminal_bytes: bytes,
-        poison_records: records,
-        poison_bytes: bytes,
-    }
-}
-
-fn effect_record(
-    operation: aos_sandbox_core::OperationId,
-    effect: &EffectLedgerRecord,
-) -> Result<JournalRecord, ReconcilerError> {
-    Ok(JournalRecord::put(
-        RecordNamespace::Effect,
-        effect_key(operation, 0).to_vec(),
-        encode_effect(effect).map_err(ReconcilerError::from)?,
-    ))
-}
-
 fn transfer_metadata(
     journal: &mut Journal,
     operation: aos_sandbox_core::OperationId,
@@ -845,190 +453,10 @@ fn transfer_metadata(
     Ok(())
 }
 
-fn invalid_metadata() -> ReconcilerError {
-    ReconcilerError::CorruptLedger("invalid Controller project-admission metadata")
-}
-
 impl From<ProjectAdmissionMetadataDataErrorV1> for ReconcilerError {
     fn from(error: ProjectAdmissionMetadataDataErrorV1) -> Self {
         match error {
             ProjectAdmissionMetadataDataErrorV1::InvalidMetadata => invalid_metadata(),
         }
     }
-}
-
-/// Validates the immutable original Create join without granting currentness.
-pub(super) fn validate_all(journal: &Journal) -> Result<(), ReconcilerError> {
-    let mut expected_capacity = std::collections::BTreeSet::new();
-    let mut pending_flights = 0;
-    for (key, bytes) in journal.records(RecordNamespace::Effect) {
-        if bytes.first() != Some(&CONTROLLER_PROJECT_EFFECT_VERSION) {
-            continue;
-        }
-        let effect = decode_effect(bytes).map_err(ReconcilerError::from)?;
-        let Some(metadata) = effect.project_admission() else {
-            continue;
-        };
-        let operation_bytes: [u8; 16] = key
-            .get(..16)
-            .ok_or_else(invalid_metadata)?
-            .try_into()
-            .map_err(|_| invalid_metadata())?;
-        let operation = aos_sandbox_core::OperationId::from_bytes(operation_bytes);
-        let (revision, generation, request_digest) = retained_create_sandbox_admission_revision_v1(
-            journal,
-            operation,
-            metadata.phase() == ProjectAdmissionPhase::RootRetired,
-        )?
-        .ok_or_else(invalid_metadata)?;
-        if key != effect_key(operation, 0)
-            || create_project_source_commitment_v1(
-                operation,
-                metadata.admission_revision(),
-                metadata.admission_generation(),
-                metadata.sandbox(),
-                metadata.project(),
-                metadata.source_heads(),
-            ) != metadata.source_commitment()
-            || crate::policy_compiler::project_admission_client_nonce_v1(
-                operation,
-                metadata.source_commitment(),
-            ) != metadata.reservation().client_nonce()
-            || revision != metadata.admission_revision()
-            || generation != metadata.admission_generation()
-            || metadata.terminal().is_some_and(|terminal| {
-                matches!(terminal,
-                RetainedRootProjectTerminal::Outcome(outcome)
-                    if outcome.kind() == RootProjectAdmissionOutcomeKindV1::Committed
-                        && outcome.operation() != operation_bytes)
-            })
-        {
-            return Err(invalid_metadata());
-        }
-        let context = effect
-            .plan()
-            .public_mutation_context()
-            .map_err(ReconcilerError::from)?
-            .ok_or_else(invalid_metadata)?;
-        if context.project() != metadata.project() {
-            return Err(invalid_metadata());
-        }
-        validate_original_projection(journal, operation, metadata, effect.plan(), request_digest)?;
-        if metadata.phase() == ProjectAdmissionPhase::RootRetired {
-            if journal
-                .lookup_global_capacity_reservation_v1(metadata.capacity_id())?
-                .is_some()
-            {
-                return Err(invalid_metadata());
-            }
-        } else {
-            pending_flights += 1;
-            if pending_flights > 1 {
-                return Err(invalid_metadata());
-            }
-            if !expected_capacity.insert(metadata.capacity_id()) {
-                return Err(invalid_metadata());
-            }
-            let retained =
-                journal.recover_global_capacity_reservation_v1(metadata.capacity_id())?;
-            let request = retained.request();
-            let (transactions, records) = match metadata.phase() {
-                ProjectAdmissionPhase::Prepared => (3, 8),
-                ProjectAdmissionPhase::DispatchAuthorized => (2, 5),
-                ProjectAdmissionPhase::AcceptedRootTerminal => (1, 2),
-                ProjectAdmissionPhase::RootRetired => return Err(invalid_metadata()),
-            };
-            if request
-                != capacity_request(
-                    operation,
-                    metadata,
-                    effect.plan(),
-                    transactions,
-                    records,
-                    request.terminal_bytes,
-                )
-            {
-                return Err(invalid_metadata());
-            }
-        }
-    }
-    let actual_capacity = journal
-        .controller_project_capacity_ids_v1()?
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-    if actual_capacity != expected_capacity {
-        return Err(invalid_metadata());
-    }
-    Ok(())
-}
-
-fn validate_original_projection(
-    journal: &Journal,
-    operation: aos_sandbox_core::OperationId,
-    metadata: &ProjectAdmissionMetadata,
-    plan: &EffectPlan,
-    request_digest: [u8; 32],
-) -> Result<(), ReconcilerError> {
-    let projection = PublicProjectionRecordV1::from_retained_record_bytes(
-        PublicProjectionKindV1::Sandbox,
-        *metadata.sandbox().as_bytes(),
-        metadata.original_projection(),
-    )
-    .map_err(|_| invalid_metadata())?;
-    let PublicProjectionResourceV1::Sandbox(sandbox) = projection.resource() else {
-        return Err(invalid_metadata());
-    };
-    let context = plan
-        .public_mutation_context()
-        .map_err(ReconcilerError::from)?
-        .ok_or_else(invalid_metadata)?;
-    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(request) =
-        context.validated_request().map_err(ReconcilerError::from)?
-    else {
-        return Err(invalid_metadata());
-    };
-    let desired = sandbox.desired.as_option().ok_or_else(invalid_metadata)?;
-    let policy = desired
-        .requested_policy
-        .as_option()
-        .ok_or_else(invalid_metadata)?;
-    if projection.operation() != operation
-        || projection.project() != metadata.project()
-        || projection.revision() != metadata.source_heads().projection_revision()
-        || !sandbox.parent_sandbox_id.is_empty()
-        || !request.parent_sandbox_id.is_empty()
-        || sandbox.sandbox_id.as_slice() != metadata.sandbox().as_bytes()
-        || sandbox.project_id.as_slice() != metadata.project().as_bytes()
-        || request.project_id.as_slice() != metadata.project().as_bytes()
-        || desired.specification.as_option() != request.specification.as_option()
-        || desired.requested_policy.as_option() != request.requested_policy.as_option()
-        || sandbox.effective_policy.as_option() != Some(policy)
-        || policy.sha256.as_slice() != metadata.source_heads().publisher_digest().as_bytes()
-        || sandbox.resource_version
-            != crate::production_operation_compiler::admitted_public_resource_version_v1(
-                operation,
-                aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox,
-                1,
-                request_digest,
-            )
-    {
-        return Err(invalid_metadata());
-    }
-    // The immutable captured projection is still the selected child while this
-    // attempt is unsettled. After exact Root retirement, legitimate later
-    // projection successors do not replace or invalidate its historical copy.
-    if metadata.phase() != ProjectAdmissionPhase::RootRetired {
-        let current = PublicProjectionStoreV1::new(journal)
-            .one_parentless_create_sandbox(operation, metadata.project())
-            .map_err(|_| invalid_metadata())?;
-        if current
-            != Some((
-                metadata.sandbox(),
-                metadata.source_heads().projection_revision(),
-            ))
-        {
-            return Err(invalid_metadata());
-        }
-    }
-    Ok(())
 }
