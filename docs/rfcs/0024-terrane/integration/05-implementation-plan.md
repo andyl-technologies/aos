@@ -141,12 +141,15 @@ cases pass once each with unchanged source, compiler inputs and executables.
 Authorized-only cancellation passes in 96.184 seconds under its unchanged
 120-second limit. Core renewal passes library build, all-target no-default
 compilation, strict all-target Clippy and all 770 tests across eleven AOS
-executables, with none skipped or ignored. All six growth populations, full
-SDK and Nix qualification remain pending. Full
-original task-diff review is complete for the 99 core-test, 58 ref-advance
-and 103 bucket paths. Two isolated bucket presentation corrections add a
-missing panic contract and method separation, with unchanged test bodies.
-The 158-path collector review and all formal task acceptance remain pending.
+executables, with none skipped or ignored. The 1,024-entry ordinary growth
+case passes in 1,435.906 seconds under its unchanged 1,800-second limit;
+the adversarial case is running and the four larger cases remain unstarted.
+Full SDK and Nix qualification remain pending. Full original task-diff
+review is complete for the 99 core-test, 58 ref-advance, 103 bucket and
+158 collector paths. Isolated presentation corrections add missing panic
+contracts, private ownership-field documentation and method separation,
+with unchanged function bodies. They remain queued until frozen growth
+qualification ends. All formal task acceptance remains pending.
 
 The renewed frozen composition `342f1cf7114b` (tree `90fb7240d717`) passes
 the exact formatter pair, strict SDK all-target Clippy, SDK all-target test
