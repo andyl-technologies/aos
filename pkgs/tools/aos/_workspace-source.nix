@@ -23,6 +23,9 @@ in
         );
     in
       !generatedDir
+      # The Terrane registry binds the plan separately, so task progress keeps
+      # unchanged workspace compilation sources stable.
+      && pathString != "${repoRootString}/docs/rfcs/0024-terrane/integration/05-implementation-plan.md"
       && (
         pathString
         == repoRootString
