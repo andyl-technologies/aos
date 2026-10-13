@@ -932,6 +932,16 @@ fn run_once(
     run_once_retained(factory, config, qemu, hostile, partition_step_ps, None)
 }
 
+/// Reserves the extra raw-copy extent only for the diagnostic variant.
+const fn attempt_writable_bytes(retain_raw_trace: bool) -> u64 {
+    if retain_raw_trace {
+        // This also bounds the attempt project quota and RLIMIT_FSIZE backstop.
+        DISK_BYTES + PRODUCTION_RUNTIME_TRACE_BYTES
+    } else {
+        DISK_BYTES
+    }
+}
+
 fn run_once_retained(
     factory: &mut LinuxQemuAttemptHostFactory,
     config: &QemuLiveNodeStepGateConfig,
@@ -951,7 +961,11 @@ fn run_once_retained(
                 .open(path)
         })
         .transpose()?;
-    let mut owner = factory.begin(4, MEMORY_BYTES, DISK_BYTES)?;
+    let mut owner = factory.begin(
+        4,
+        MEMORY_BYTES,
+        attempt_writable_bytes(retained_raw.is_some()),
+    )?;
     let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
     directory.prepare_fresh_artifacts_guarded(qemu, None, owner.process_contract()?)?;
     let launch = config.clone().with_run_directory(directory.path());

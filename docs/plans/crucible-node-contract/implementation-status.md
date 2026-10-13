@@ -2106,8 +2106,14 @@ comparison: configuration reserved one trace extent while the command builder
 required both normalized and raw copies. Configuration now reserves both.
 The real four-vCPU command/admission control passes and preserves refusal for
 differently reserved commands; all `crucible-qemu` targets compile on that
-frozen successor. New production outputs and the original VM comparison remain
-separate validation. The earlier timer divergence is unresolved.
+frozen successor. The next fresh VM refused the aggregate disk ceiling before
+guest execution: its two trace extents require 1,152 MiB, exceeding the admitted
+1 GiB. Raw-copy diagnostics now receive an additional 256 MiB project quota and
+file-size backstop; ordinary runs retain 1 GiB. The actual production host recipe
+passes the new ordinary/diagnostic admission control, including refusal under
+the old ceiling. CPU, memory, workload and clock settings remain unchanged.
+New corresponding source, rootfs and the original VM comparison remain separate
+validation. The earlier timer divergence is unresolved.
 
 ## Staged whole-operation control framing
 
