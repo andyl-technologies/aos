@@ -363,6 +363,7 @@ impl<
     ///
     /// # Errors
     /// Refuses foreign or stale observations, invalid keys and malformed records.
+    #[cfg(all(feature = "tokio", unix))]
     pub(crate) async fn current_ref_from_observation(
         &self,
         observed: &SelectedObservation<'_>,
@@ -543,6 +544,7 @@ impl<
     /// # Errors
     /// Rejects a foreign holder, changed physical ancestry or selected observation,
     /// absent or malformed Guard bytes, digest disagreement and unavailable reads.
+    #[cfg(all(feature = "tokio", unix))]
     pub(crate) async fn selected_guard_snapshot_record_retained(
         &self,
         observed: &SelectedObservation<'_>,
