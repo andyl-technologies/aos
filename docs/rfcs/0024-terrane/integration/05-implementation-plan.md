@@ -281,8 +281,12 @@ unchanged. This source preparation advances no task; each formal merge still
 requires its task gates and the complete floor on the actual trunk candidate.
 The shared workspace source filter now excludes this plan alone from compilation
 inputs; `registry-complete` retains the actual plan as a separate explicit input.
-The focused source-identity evaluation and actual registry build remain pending
-through the coordinated check lane. This preparation changes no Rust, normative
+The focused source-identity evaluation and actual registry build pass on
+`0825118b1cb9`; the Rust formatter reports declaration ordering in the new
+test-only scaffold, before the all-format command starts. The shared scaffold
+correction also makes diagnostic clock helpers available to std-only tests;
+collection and reporting remain confined to Tokio tests. The corrected source
+requires renewed formatting. This preparation changes no normative
 specification, manifest or dependency and accepts no task.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
