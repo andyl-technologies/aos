@@ -9,6 +9,8 @@ use std::cell::RefCell;
 use std::ffi::{c_int, c_void};
 use std::sync::OnceLock;
 
+mod return_observation;
+
 use super::{Arc, Ordering, SharedCallbackCustody, callback_process_current, current_tid};
 use crate::runtime::live_callbacks::LiveDirectedRingPair;
 
@@ -72,6 +74,7 @@ pub(super) struct PreparationApis {
     register: RegisterPreparation,
     read: ReadPreparation,
     bind: BindPrepared,
+    read_return: return_observation::ReadPreparationReturn,
     network: crate::QemuRegisterNetTxCbFn,
     block: crate::QemuRegisterBlkCbFn,
     block_event: crate::QemuRegisterBlkEventCbFn,
@@ -97,7 +100,8 @@ impl PreparationApis {
         let register = resolve(c"qemu_plugin_crucible_register_whole_preparation_v1");
         let read = resolve(c"qemu_plugin_crucible_whole_read_preparation_v1");
         let bind = resolve(c"qemu_plugin_crucible_whole_bind_prepared_userdata_v1");
-        if register.is_null() || read.is_null() || bind.is_null() {
+        let read_return = resolve(c"qemu_plugin_crucible_whole_read_preparation_return_v1");
+        if register.is_null() || read.is_null() || bind.is_null() || read_return.is_null() {
             return None;
         }
         Some(Self {
@@ -107,6 +111,12 @@ impl PreparationApis {
             read: unsafe { std::mem::transmute::<*mut c_void, ReadPreparation>(read) },
             // SAFETY: Binding retains only the opaque subordinate address.
             bind: unsafe { std::mem::transmute::<*mut c_void, BindPrepared>(bind) },
+            // SAFETY: The frozen source declares the exact initialized tuple144 ABI.
+            read_return: unsafe {
+                std::mem::transmute::<*mut c_void, return_observation::ReadPreparationReturn>(
+                    read_return,
+                )
+            },
             network: capabilities.register_net_tx?,
             block: capabilities.register_block?,
             block_event: capabilities.register_block_event?,
@@ -266,12 +276,22 @@ fn prepare_engine(
         Some(closed_burst),
         pointer.cast(),
     );
+    ENGINE
+        .try_with(|cell| {
+            let mut slot = cell.try_borrow_mut().map_err(|_| -libc::EBUSY)?;
+            // This records completed Rust setter calls. The post-return source
+            // getter independently checks the actual native retained tables.
+            slot.as_mut().ok_or(-libc::ESTALE)?.registered_families = 31;
+            Ok::<(), c_int>(())
+        })
+        .map_err(|_| -libc::ESTALE)??;
     Ok(())
 }
 
 /// Retains real original queue adapters and stable handles, without service permission.
 struct EndpointEngine {
     native_visible: bool,
+    registered_families: u32,
     _original: Arc<SharedCallbackCustody>,
     _birth: NativePreparation,
     _network_tx: crate::PluginNetworkTx,
@@ -304,6 +324,7 @@ impl EndpointEngine {
         let (ninep_out, ninep_in) = ninep.descriptors();
         Ok(Self {
             native_visible: false,
+            registered_families: 0,
             _original: Arc::clone(original),
             _birth: birth,
             _network_tx: crate::PluginNetworkTx::from_directed_ring_with_sequence(

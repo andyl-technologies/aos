@@ -2818,6 +2818,24 @@ modeled. Independent review verifies all ten changed source paths and retained
 build dependencies. Installed plugin execution, complete physical/source
 closure, HOLD, readiness, guest execution and boundary gates remain pending.
 
+## Read-only RR preparation return observation
+
+The GPL plugin now reads the native post-preparation tuple before accessing its
+retained Rust owner or RR-local engine. It compares the original boxed engine,
+constructor birth, callback identities and five completed setter families, then
+returns an 88-byte pointer-free observation. Refusal fences callback admission
+without taking mapping or journal guards. This process-private ABI does not
+cross the Apache host protocol or authorize service, HOLD or readiness.
+
+Strict all-target checks and a fresh unit build pass; three affected controls
+cover the retained original SCM/mapping construction, refusal with ownership
+guards held, and altered native context. Native getter peers in these controls
+are modeled. Independent review verifies the three source paths and private
+144/88-byte ABI. Selected installation now requires the native return getter
+before claiming the setup descriptor; the preceding canonical native source
+lacks it and correctly refuses. A matching native successor and genuine
+installed pair qualification remain required.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

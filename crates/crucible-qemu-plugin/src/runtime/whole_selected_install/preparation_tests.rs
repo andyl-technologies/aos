@@ -8,9 +8,14 @@
 use std::cell::Cell;
 
 use super::*;
+use return_observation::{
+    NativePreparationReturn, crucible_qemu_plugin_preparation_observation_v1,
+};
 
 thread_local! {
     static TUPLE: Cell<NativePreparation> = Cell::new(NativePreparation::default());
+    static RETURN: Cell<NativePreparationReturn> = Cell::new(NativePreparationReturn::default());
+    static RETURN_READS: Cell<usize> = const { Cell::new(0) };
     static STATUS: Cell<c_int> = const { Cell::new(0) };
     static BOUND: Cell<usize> = const { Cell::new(0) };
     static FAMILIES: Cell<u8> = const { Cell::new(0) };
@@ -31,6 +36,17 @@ extern "C" fn read(destination: *mut NativePreparation) -> c_int {
     READS.set(READS.get() + 1);
     // SAFETY: Capture supplies one initialized, exclusively borrowed tuple128.
     unsafe { destination.write(TUPLE.get()) };
+    0
+}
+
+extern "C" fn read_return(destination: *mut NativePreparationReturn) -> c_int {
+    RETURN_READS.set(RETURN_READS.get() + 1);
+    let status = STATUS.get();
+    if status != 0 {
+        return status;
+    }
+    // SAFETY: The caller supplies one initialized, exclusively borrowed tuple144.
+    unsafe { destination.write(RETURN.get()) };
     0
 }
 
@@ -128,6 +144,7 @@ pub(super) fn modeled_apis() -> PreparationApis {
         register,
         read,
         bind,
+        read_return,
         network,
         block,
         block_event: event,
@@ -208,6 +225,51 @@ pub(super) fn exercise_preparation(original: Arc<SharedCallbackCustody>) {
         });
         assert_eq!(prepare_on_rr(userdata), 0);
         assert_eq!(FAMILIES.get(), 31);
+        let birth = TUPLE.get();
+        RETURN.set(NativePreparationReturn {
+            phase: 2,
+            cpu_index: birth.cpu_index,
+            plugin_id: birth.plugin_id,
+            process: birth.process,
+            actual_tid: birth.actual_tid,
+            loader_tid: birth.loader_tid,
+            deadline_ns: birth.deadline_ns,
+            callback: birth.callback,
+            userdata: birth.userdata,
+            constructor: birth.constructor,
+            cpu: birth.cpu,
+            permit: birth.permit,
+            engine: BOUND.get() as *mut c_void,
+            setter_mask: 31,
+            setup_digest: birth.setup_digest,
+            ..NativePreparationReturn::default()
+        });
+        let before = RETURN_READS.get();
+        let observed = crucible_qemu_plugin_preparation_observation_v1(userdata);
+        assert_eq!(RETURN_READS.get(), before + 1);
+        assert_eq!(observed.status, 0);
+        assert_eq!(observed.process, birth.process);
+        assert_eq!(observed.actual_tid, birth.actual_tid);
+        assert_eq!(observed.loader_tid, birth.loader_tid);
+        assert_eq!(observed.observed_mask, 15);
+        assert_eq!(observed.family_mask, 31);
+        assert_eq!(observed.setup_digest, birth.setup_digest);
+        assert_eq!(observed.reserved, 0);
+
+        let mut changed = RETURN.get();
+        changed.engine = std::ptr::dangling_mut();
+        assert_eq!(
+            return_observation::compare_retained_for_test(&original, changed, userdata)
+                .unwrap_err(),
+            -libc::ESTALE
+        );
+        changed = RETURN.get();
+        changed.permit = std::ptr::null();
+        assert_eq!(
+            return_observation::compare_retained_for_test(&original, changed, userdata)
+                .unwrap_err(),
+            -libc::ESTALE
+        );
         assert!(!original.failed.load(Ordering::Acquire));
         ENGINE.with_borrow(|engine| {
             let engine = engine.as_ref().unwrap();
@@ -231,11 +293,86 @@ pub(super) fn exercise_refusal(original: &Arc<SharedCallbackCustody>) {
     // RR-local RefCell too makes premature constructor access observable.
     ENGINE.with_borrow_mut(|_held| {
         STATUS.set(-libc::ESTALE);
+        let before = RETURN_READS.get();
+        let refused = crucible_qemu_plugin_preparation_observation_v1(
+            Arc::as_ptr(original).cast_mut().cast(),
+        );
+        assert_eq!(RETURN_READS.get(), before + 1);
+        assert_eq!(refused.status, -libc::ESTALE);
+        assert_eq!(refused.process, 0);
+        assert_eq!(refused.observed_mask, 0);
+        assert_eq!(refused.family_mask, 0);
+        assert_eq!(refused.setup_digest, [0; 32]);
         assert_eq!(
             prepare_on_rr(Arc::as_ptr(original).cast_mut().cast()),
             -libc::ESTALE
         );
         assert!(original.failed.load(Ordering::Acquire));
+        STATUS.set(0);
+    });
+}
+
+#[test]
+fn return_observation_rejects_changed_revoked_source_context_before_engine_access() {
+    let apis = modeled_apis();
+    let birth = tuple();
+    let original = NativePreparationReturn {
+        phase: 2,
+        plugin_id: birth.plugin_id,
+        process: birth.process,
+        actual_tid: birth.actual_tid,
+        loader_tid: birth.loader_tid,
+        deadline_ns: birth.deadline_ns,
+        callback: birth.callback,
+        userdata: birth.userdata,
+        constructor: birth.constructor,
+        cpu: birth.cpu,
+        permit: birth.permit,
+        engine: std::ptr::dangling_mut(),
+        setter_mask: 31,
+        ..NativePreparationReturn::default()
+    };
+    RETURN.set(original);
+    assert_eq!(return_observation::capture(&apis).unwrap(), original);
+
+    let mut invalid = Vec::new();
+    let mut changed = original;
+    changed.phase = 1;
+    invalid.push(changed);
+    changed = original;
+    changed.actual_tid += 1;
+    invalid.push(changed);
+    changed = original;
+    changed.process += 1;
+    invalid.push(changed);
+    changed = original;
+    changed.setter_mask = 15;
+    invalid.push(changed);
+    changed = original;
+    changed.reserved = 1;
+    invalid.push(changed);
+    changed = original;
+    changed.deadline_ns = 1;
+    invalid.push(changed);
+    changed = original;
+    changed.engine = std::ptr::null_mut();
+    invalid.push(changed);
+
+    // A held real RR RefCell makes any premature engine inspection fail. These
+    // refusals must depend on the fresh native read before inspecting that cell.
+    ENGINE.with_borrow_mut(|_held| {
+        for changed in invalid {
+            RETURN.set(changed);
+            assert_eq!(
+                return_observation::capture(&apis).unwrap_err(),
+                -libc::ESTALE
+            );
+        }
+        STATUS.set(-libc::ENOTSUP);
+        assert_eq!(
+            return_observation::capture(&apis).unwrap_err(),
+            -libc::ENOTSUP
+        );
         STATUS.set(0);
     });
 }
