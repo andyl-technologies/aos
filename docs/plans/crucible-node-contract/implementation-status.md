@@ -2675,6 +2675,24 @@ split package has not yet passed ordinary evaluation or realization. Diagnostic
 ownership checks confer no native issuance, restoration or readiness authority;
 those remain production implementation and qualification requirements.
 
+## Explicit source-built Ninja command shell
+
+Ninja now executes commands through its compile-time AOS Bash dependency,
+with `sh` argument semantics, instead of an ambient `/bin/sh`. The source change
+verifies exact upstream and patched launcher bodies, preserves existing
+qualification probes, and co-retains the complete patched source, original
+archive, licenses, recipe, patch and compiler inputs. Actual source-built Ninja
+pipe and console controls verify the executing shell through `/proc` despite a
+bogus `SHELL`, and preserve command exit status 33. The component build and the
+unchanged original probes pass; ordinary package realization remains separate.
+
+A separate complete QEMU replay executes all 2,479 recorded build commands
+through pinned AOS Bash. Independent review verifies the command records,
+2,133 object bodies and both linked emulator targets. The original Ninja build
+remains historically unqualified for shell dispatch. This replay qualifies
+configured compilation and linking, while ordinary installed packages, runtime
+behavior, readiness and ABI/license gates still require their own checks.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
