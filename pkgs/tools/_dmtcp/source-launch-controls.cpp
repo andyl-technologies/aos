@@ -60,10 +60,33 @@ int main(int argc, char **argv)
   for (const auto &selector : selectors)
     assert(setenv(selector[0], selector[1], 1) == 0);
 
+  // Each native producer adopts a private empty0600 console. Sharing the
+  // outer controller's log would mix unrelated file offsets and debit banks.
+  Descriptor originalControllerConsole;
+  originalControllerConsole.number = int(kernelCall(SYS_fcntl, STDERR_FILENO,
+                                                     F_DUPFD_CLOEXEC, 0));
+  assert(originalControllerConsole.number >= 0);
+  const std::string coordinatorConsolePath = std::string(temporary) + "/coordinator-console";
+  const std::string applicationConsolePath = std::string(temporary) + "/application-console";
+  Descriptor coordinatorConsole;
+  Descriptor applicationConsole;
+  coordinatorConsole.number = int(kernelCall(SYS_openat, AT_FDCWD,
+      reinterpret_cast<long>(coordinatorConsolePath.c_str()),
+      O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
+  assert(coordinatorConsole.number >= 0);
+  applicationConsole.number = int(kernelCall(SYS_openat, AT_FDCWD,
+      reinterpret_cast<long>(applicationConsolePath.c_str()),
+      O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
+  assert(applicationConsole.number >= 0);
+
   // This original literal child is held before any further probe or effect.
   const long coordinatorPid = kernelCall(SYS_fork);
   assert(coordinatorPid >= 0);
   if (coordinatorPid == 0) {
+    if (kernelCall(SYS_dup2, coordinatorConsole.number, STDERR_FILENO) != STDERR_FILENO) {
+      kernelCall(SYS_exit_group, 125);
+      __builtin_unreachable();
+    }
     char *arguments[] = {const_cast<char *>(coordinator.c_str()),
       const_cast<char *>("--quiet"), const_cast<char *>("--quiet"),
       const_cast<char *>("--coord-port"), const_cast<char *>("0"),
@@ -106,7 +129,13 @@ int main(int argc, char **argv)
     const_cast<char *>("--no-gzip"), const_cast<char *>("--tmpdir"),
     const_cast<char *>(temporary), const_cast<char *>(application), nullptr};
   extern char **environ;
-  assert(original->launch(arguments, environ));
+  // The launcher and final application retain the SAME native console
+  // across their authenticated exec. Restore the controller's unrelated
+  // diagnostics before evaluating or reporting the launch result.
+  assert(kernelCall(SYS_dup2, applicationConsole.number, STDERR_FILENO) == STDERR_FILENO);
+  const bool launched = original->launch(arguments, environ);
+  assert(kernelCall(SYS_dup2, originalControllerConsole.number, STDERR_FILENO) == STDERR_FILENO);
+  assert(launched);
   assert(original->originalArgumentCount() == 12);
   assert(waitReadable(original->originalChannel()));
   assert(original->receiveOffer());
@@ -120,13 +149,25 @@ int main(int argc, char **argv)
   assert(original->cancel());
   assert(waitReadable(original->originalDeathDescriptor()));
   assert(original->retire());
+  std::printf("Selected original application status=%d after original cancellation\n",
+              original->originalTerminalStatus());
+  std::fflush(stdout);
   assert(WIFSIGNALED(original->originalTerminalStatus()));
+  assert(WTERMSIG(original->originalTerminalStatus()) == SIGKILL);
 
   assert(waitReadable(coordinatorDeath.number));
   int status;
   assert(kernelCall(SYS_wait4, coordinatorPid, reinterpret_cast<long>(&status), 0, 0)
          == coordinatorPid);
-  assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  // Intentional cancellation closes the selected worker's original stream.
+  // Its finite selected reader refuses EOF before generic exit-on-last logic.
+  std::printf("Observed original app terminal=%d; coordinator terminal=%d\n",
+              original->originalTerminalStatus(), status);
+  std::fflush(stdout);
+  assert(WIFEXITED(status) && WEXITSTATUS(status) == 86);
   assert(coordinatorDeath.closeOnce());
+  assert(coordinatorConsole.closeOnce());
+  assert(applicationConsole.closeOnce());
+  assert(originalControllerConsole.closeOnce());
   std::puts("Original normal launch peers reaped; no checkpoint/native graph/cut/adoption/Ready claimed.");
 }

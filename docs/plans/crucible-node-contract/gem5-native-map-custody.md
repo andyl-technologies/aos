@@ -31,3 +31,26 @@ map/capsule journal while its original threads remain held. That capture does
 not qualify whole-node native issuance or two operative restored gem5 branches.
 Those restorations, full-system guests, device parity and common readiness still
 require their own integration and qualification. Raw artifacts stay local.
+
+## Original thread identity and launch diagnostics
+
+The selected thread-owner binding reads its identity through the raw kernel
+adapter. DMTCP's next syscall symbol can return a virtual thread ID, which must
+not be compared with the owner's kernel identity. The ordinary `Thread::tid`
+and PID plugin retain their existing virtualization behavior.
+
+A fresh complete-source diagnostic configures, builds and installs in 3.41,
+26.82 and 0.82 seconds. Its selected launcher/library exec observation passes
+with the same kernel child, then observes exact original cancellation by
+SIGKILL and coordinator refusal on the closed selected channel (exit86).
+A separate ordinary unselected application and coordinator both exit0.
+Each native producer owns a distinct empty mode-0600 console. Normalized
+package diagnostic sources compile with warnings treated as errors, and the
+required source-owner check runs both lifecycles.
+
+Independent review verifies the source delta, preserved native features and
+corresponding-source/license inventory. Earlier failed startup assertions stay
+recorded separately. The ordinary package, complete production journal, native
+cut, checkpoint issuer, restored adoption and readiness remain unqualified.
+The helper's libc `system()` shell path is a separate outstanding hermeticity
+requirement; these diagnostic controls do not establish its correction.

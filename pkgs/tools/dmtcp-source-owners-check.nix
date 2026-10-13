@@ -60,10 +60,20 @@ mkDerivation {
         $CXX -std=c++17 -Wall -Wextra -Werror -pedantic -UNDEBUG -O2 -I./src \
           ${./_dmtcp/source-launch-probe.cpp} -o source-launch-probe
         $CXX -std=c++17 -Wall -Wextra -Werror -pedantic -UNDEBUG -O2 \
-          ${./_dmtcp/source-launch-controls.cpp} -o source-launch-controls
+          -I${./_dmtcp} ${./_dmtcp/source-launch-controls.cpp} -o source-launch-controls
         mkdir selected-launch
         ${coreutils}/bin/timeout 120 ./source-launch-controls \
           ${dmtcp-selected-writer-park} "$PWD/source-launch-probe" "$PWD/selected-launch"
+
+        # The ordinary route retains its original zero-exit behavior. Keep
+        # this inverse independent of the selected refusal-on-EOF lifecycle.
+        $CXX -std=c++17 -Wall -Wextra -Werror -pedantic -UNDEBUG -O2 \
+          ${./_dmtcp/source-unselected-probe.cpp} -o source-unselected-probe
+        $CXX -std=c++17 -Wall -Wextra -Werror -pedantic -UNDEBUG -O2 \
+          -I${./_dmtcp} ${./_dmtcp/source-unselected-controls.cpp} -o source-unselected-controls
+        mkdir nonselected-launch
+        ${coreutils}/bin/timeout 120 ./source-unselected-controls \
+          ${dmtcp-selected-writer-park} "$PWD/source-unselected-probe" "$PWD/nonselected-launch"
 
         mkdir -p "$out/share/checks" "$out/share/licenses/dmtcp-source-owners-check"
         printf '%s\n' 'Source-owned thread/shared-area controls and actual selected launcher/library exec observation passed; no whole-node issuance or readiness.' \

@@ -1039,19 +1039,22 @@
    if (curThread == NULL) {
      curThread = th;
    }
-@@ -424,6 +467,11 @@
+@@ -424,6 +467,14 @@
    th->ptid = (pid_t*)((char*) pthread_self() + TLSInfo_GetTidOffset());
    th->ctid = th->ptid;
  
++  // DMTCP's next syscall symbol may return a virtual TID. The native
++  // owner binds kernel identity while th->tid retains upstream semantics.
 +  if (originalThreads.selected() &&
-+      !originalThreads.bindThread(th, _real_syscall(SYS_gettid),
-+                                  (void *)pthread_self()))
++      !originalThreads.bindThread(
++          th, dmtcp_crucible::raw_kernel_call::kernelCall(SYS_gettid),
++          (void *)pthread_self()))
 +    _real_syscall(SYS_exit_group, 86);
 +
    JTRACE("starting thread") (th->tid);
  
    // Check and remove any thread descriptor which has the same tid as ours.
-@@ -439,6 +487,7 @@
+@@ -439,6 +490,7 @@
  void
  ThreadList::writeCkpt()
  {
@@ -1059,7 +1062,7 @@
    // Remove stale threads from activeThreads list.
    SigInfo::saveSigHandlers();
  
-@@ -456,6 +505,11 @@
+@@ -456,6 +508,11 @@
    // TODO(kapil): re-add this block after handling non-4096 sizes.
    // const ssize_t pagesize = Util::pageSize();
    // ASSERT_EQ(sizeof(header) % pagesize, 0ul);
@@ -1071,7 +1074,7 @@
  
    crucibleRecordDescriptors();
    crucibleRecordThreadContexts();
-@@ -1143,6 +1197,9 @@
+@@ -1143,6 +1200,9 @@
  void
  ThreadList::threadIsDead(Thread *thread)
  {

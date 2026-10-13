@@ -149,3 +149,17 @@ implementation files. Kernel controls, production exec observation and parsed
 preservation data do not qualify a whole native process closure, checkpoint
 issuer, operative restore adopter or SourceReady. Ordinary toolkit
 application/checkpoint/two fresh reconstruction checks remain mandatory.
+
+
+The source-owner identity correction keeps DMTCP's virtual `Thread::tid` and
+PID plugin behavior intact. Only the selected original-owner binding obtains
+its TID through the noninterposed raw kernel adapter. Native kernel identity
+and checkpoint-visible virtual identity remain separate.
+
+`source-unselected-probe.cpp` and `source-unselected-controls.cpp` are
+independently authored LGPL-3.0-or-later diagnostic sources co-retained with
+this recipe. The selected launch control owns a separate empty mode-0600
+console per native producer and checks exact original cancellation and
+selected stream-EOF refusal statuses. Its ordinary inverse checks zero exits
+for the application and coordinator. These controls grant no whole-process
+closure, source-cut permit, checkpoint issuer, restored adoption or readiness.

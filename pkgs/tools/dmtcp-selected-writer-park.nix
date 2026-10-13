@@ -121,6 +121,8 @@ in
           cp ${./_dmtcp/thread-owner-controls.cpp} "$source/build/thread-owner-controls.cpp"
           cp ${./_dmtcp/source-launch-probe.cpp} "$source/build/source-launch-probe.cpp"
           cp ${./_dmtcp/source-launch-controls.cpp} "$source/build/source-launch-controls.cpp"
+          cp ${./_dmtcp/source-unselected-probe.cpp} "$source/build/source-unselected-probe.cpp"
+          cp ${./_dmtcp/source-unselected-controls.cpp} "$source/build/source-unselected-controls.cpp"
           cp ${./_dmtcp/source-launch-peer-controls.h} "$source/build/source-launch-peer-controls.h"
           cp ${./dmtcp-source-owners-check.nix} "$source/build/source-owners-check.nix"
           # Retain the actual tree after all patches and hermetic substitutions,
