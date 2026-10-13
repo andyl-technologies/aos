@@ -1,5 +1,9 @@
 //! Exercises actual private files independently of semantic release authority.
 
+// crucible-lint: allow panic-shortcut -- Private file fixture assertions intentionally fail on invariant drift.
+// crucible-lint: allow rust-allow -- These test-only file fixture assertions deliberately panic.
+#![allow(clippy::unwrap_used)]
+
 use std::{
     fs::{self, DirBuilder, OpenOptions},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt, symlink},

@@ -123,6 +123,9 @@ fn measurements(
     }
 }
 
+// This explicit native fixture bounds physical cleanup/lifecycle waits. The
+// operational watchdog neither advances nor authenticates modeled guest time.
+#[allow(clippy::disallowed_methods)]
 fn await_progress<T>(mut action: impl FnMut(&mut Context<'_>) -> Poll<T>) -> T {
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut context = Context::from_waker(Waker::noop());

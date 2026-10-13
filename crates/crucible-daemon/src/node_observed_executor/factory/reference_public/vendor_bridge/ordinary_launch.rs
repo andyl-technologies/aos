@@ -451,12 +451,7 @@ fn connect_original(
                 deadline.remaining()?;
                 return Ok(stream);
             }
-            Err(error)
-                if matches!(
-                    error,
-                    rustix::io::Errno::NOENT | rustix::io::Errno::CONNREFUSED
-                ) =>
-            {
+            Err(rustix::io::Errno::NOENT | rustix::io::Errno::CONNREFUSED) => {
                 std::thread::park_timeout(deadline.remaining()?.min(Duration::from_millis(1)));
             }
             Err(error) => return Err(std::io::Error::from(error).into()),

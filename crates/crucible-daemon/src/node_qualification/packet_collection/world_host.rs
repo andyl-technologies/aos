@@ -136,6 +136,9 @@ impl InstalledPacketWorldCollectionAuthority {
     /// Returns the same complete holder on wrong authority/plan/owner roster,
     /// altered requirements, exhausted whole-world credit or source registration
     /// refusal. Every original attempted ticket and publisher remains retained.
+    // Success and failure retain the same generic native/publisher ownership;
+    // the complete returned capsule must stay explicit in this public contract.
+    #[allow(clippy::type_complexity)]
     pub fn prepare_world_host<'a, V, A, R>(
         self: &'a Rc<Self>,
         request: PacketWorldHostRequest<'a, V, A, R>,

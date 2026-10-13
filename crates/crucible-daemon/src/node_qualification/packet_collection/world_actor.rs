@@ -221,6 +221,9 @@ impl<'a, T: InstalledConformanceAuthority + ConformanceAdmissionAuthority>
     /// # Errors
     /// Refuses foreign or active runtime, exhausted publication credit or revoked
     /// original plan. No Arm or native grant is submitted by this method.
+    // Success and failure retain the same generic native/publisher ownership;
+    // the complete returned capsule must stay explicit in this public contract.
+    #[allow(clippy::type_complexity)]
     pub fn attach<A: ActivationPublisher, R: ConformanceResultPublisher>(
         self,
         runtime: ConformanceRuntime,

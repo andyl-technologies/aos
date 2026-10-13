@@ -514,16 +514,16 @@ impl<V: TrustedHandshakeVerifier> PacketWorldStoredFixture<'_, V> {
 
 impl<V: TrustedHandshakeVerifier> Drop for PacketWorldStoredFixture<'_, V> {
     fn drop(&mut self) {
-        if let Some(mut original) = self.original.take() {
-            if original.started {
-                let _ = catch_unwind(AssertUnwindSafe(|| original.retire_original()));
-                // A started upper capsule may contain uncertain durable bodies.
-                // Keep it whole after attempted borrowed transfer, even on
-                // refusal or unwind. The independent supervisor proves cleanup.
-                // No implicit successful cleanup
-                // or audit GC is claimed by dropping this public handle.
-                std::mem::forget(original);
-            }
+        if let Some(mut original) = self.original.take()
+            && original.started
+        {
+            let _ = catch_unwind(AssertUnwindSafe(|| original.retire_original()));
+            // A started upper capsule may contain uncertain durable bodies.
+            // Keep it whole after attempted borrowed transfer, even on
+            // refusal or unwind. The independent supervisor proves cleanup.
+            // No implicit successful cleanup
+            // or audit GC is claimed by dropping this public handle.
+            std::mem::forget(original);
         }
     }
 }

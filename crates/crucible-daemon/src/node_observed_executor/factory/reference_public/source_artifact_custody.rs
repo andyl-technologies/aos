@@ -46,12 +46,12 @@ impl InstalledPublicReferencePackage {
             ])
             .chain(self.runtime.build_tools.values())
         {
-            if let Some(original) = roster.insert(artifact.path.clone(), artifact) {
-                if original.content != artifact.content {
-                    return Err(ProviderError::Correlation(
-                        "original source artifact identity collision",
-                    ));
-                }
+            if let Some(original) = roster.insert(artifact.path.clone(), artifact)
+                && original.content != artifact.content
+            {
+                return Err(ProviderError::Correlation(
+                    "original source artifact identity collision",
+                ));
             }
         }
         if roster.len() > 4128 {
@@ -166,6 +166,9 @@ impl OriginalSourceArtifact {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- Original descriptor fixture assertions intentionally fail on source drift.
+// crucible-lint: allow rust-allow -- This test-only module uses assertions on private fixture effects.
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -218,29 +221,28 @@ mod tests {
         assert_eq!(original.reference.length.get(), bytes.len() as u64);
         assert_eq!(std::fs::read(&path).unwrap(), changed);
     }
-}
 
-#[cfg(test)]
-impl OriginalPackageSourceCustody {
-    /// Creates a private file-sink fixture, without a package or native authority.
-    pub(in crate::node_observed_executor::factory::reference_public) fn fixture_for_sink(
-        path: &std::path::Path,
-        bytes: &[u8],
-    ) -> Self {
-        std::fs::write(path, bytes).unwrap();
-        let reference =
-            crucible_node_contract::canonical::content_ref(bytes, "application/octet-stream")
-                .unwrap();
-        let header = serde_json::to_vec(&(path, &reference)).unwrap();
-        let archive_bytes = 8 + header.len() as u64 + bytes.len() as u64;
-        Self {
-            document: b"private source-only filesystem fixture".to_vec(),
-            objects: vec![OriginalSourceArtifact {
-                source: File::open(path).unwrap(),
-                reference,
-                header,
-            }],
-            archive_bytes,
+    impl OriginalPackageSourceCustody {
+        /// Creates a private file-sink fixture, without a package or native authority.
+        pub(in crate::node_observed_executor::factory::reference_public) fn fixture_for_sink(
+            path: &std::path::Path,
+            bytes: &[u8],
+        ) -> Self {
+            std::fs::write(path, bytes).unwrap();
+            let reference =
+                crucible_node_contract::canonical::content_ref(bytes, "application/octet-stream")
+                    .unwrap();
+            let header = serde_json::to_vec(&(path, &reference)).unwrap();
+            let archive_bytes = 8 + header.len() as u64 + bytes.len() as u64;
+            Self {
+                document: b"private source-only filesystem fixture".to_vec(),
+                objects: vec![OriginalSourceArtifact {
+                    source: File::open(path).unwrap(),
+                    reference,
+                    header,
+                }],
+                archive_bytes,
+            }
         }
     }
 }
