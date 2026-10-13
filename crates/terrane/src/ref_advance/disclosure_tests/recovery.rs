@@ -9,6 +9,13 @@ use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
 use terrane_core::auth::{Attenuation, Grant, Token, Verb, Verbs};
 
+/// Checks exact paired recovery without granting ordinary reopening repair authority.
+///
+/// Uses a genuinely interrupted import, valid restricted tokens, and restored
+/// trust to distinguish current authorization refusals from selection failures.
+///
+/// # Panics
+/// Panics if fixture setup, retained-file I/O, or any recovery assertion fails.
 pub(super) async fn recover_cached_transition() {
     let (source, source_authority, _) = super::independent_factory("public").await;
     let (destination, destination_authority, _) = super::independent_factory("public").await;
@@ -245,6 +252,10 @@ pub(super) async fn recover_cached_transition() {
     );
 }
 
+/// Attenuates a fixture token to the supplied grant with its terminal secret.
+///
+/// # Panics
+/// Panics if the token cannot be decoded or the supplied attenuation is invalid.
 pub(super) fn restricted_token(token: &[u8], secret: &[u8; 32], grant: Grant) -> Vec<u8> {
     Token::decode(token)
         .unwrap()
@@ -260,6 +271,13 @@ pub(super) fn restricted_token(token: &[u8], secret: &[u8; 32], grant: Grant) ->
         .encode()
 }
 
+/// Checks that one source cannot recover another source's pending import.
+///
+/// The unrelated attempt preserves the published head; the genuine source then
+/// recovers its own interrupted transition and publishes its certified content.
+///
+/// # Panics
+/// Panics if fixture setup or any refusal, recovery, or content assertion fails.
 pub(super) async fn refuse_unrelated_transition() {
     let (source_a, authority_a, _) = super::independent_factory("public").await;
     let (source_b, authority_b, _) = super::independent_factory("public").await;
@@ -370,6 +388,13 @@ pub(super) async fn refuse_unrelated_transition() {
     );
 }
 
+/// Checks that matching subject names do not equate different principal kinds.
+///
+/// Independently authorized source Read and destination Commit still produce a
+/// malformed-request refusal, preserving the head and retained physical state.
+///
+/// # Panics
+/// Panics if fixture setup or any authorization or preservation assertion fails.
 pub(super) async fn refuse_cross_kind_pair() {
     let (source, source_authority, _) = super::independent_factory("public").await;
     let (destination, destination_authority, _) =

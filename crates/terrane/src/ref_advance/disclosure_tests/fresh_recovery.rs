@@ -78,6 +78,15 @@ async fn factory() -> (
     (repository, authority, location)
 }
 
+/// Checks fresh paired recovery and destination-only reopening after source erasure.
+///
+/// Drops the interrupted destination factory, checks current authorization and
+/// exact retained trust, then recovers through a new factory and reads the
+/// certified file after deleting the source bucket and authority records.
+///
+/// # Panics
+/// Panics if fixture setup, retained-file I/O, source erasure, or any refusal,
+/// recovery, reopening, or content assertion fails.
 pub(super) async fn recover_fresh_transition() {
     let (source, source_authority, source_location) = factory().await;
     let (destination, destination_authority, destination_location) = factory().await;
