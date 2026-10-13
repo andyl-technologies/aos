@@ -240,6 +240,23 @@ pub(crate) async fn advance<F: LocalFs + BucketBinding>(
     Ok(result)
 }
 
+// These are the closed cancellation executor's 16-byte staging nonce and
+// optional fixed artifact index, not the operation's 32-byte nonce namespace.
+fn cancellation_staging_name(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(".cancel-") else {
+        return false;
+    };
+    let nonce = match suffix.split_once('.') {
+        Some((nonce, "invalidate-0" | "invalidate-1" | "invalidate-2")) => nonce,
+        Some(_) => return false,
+        None => suffix,
+    };
+    nonce.len() == 32
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 /// Locates represented ownership only as a lookup hint for native observation.
 ///
 /// # Errors
@@ -325,7 +342,6 @@ pub(crate) async fn restore_owner<F: LocalFs + BucketBinding>(
                 .to_str()
                 .ok_or_else(corrupt)?
                 .to_owned();
-            terrane_core::bucket::BucketKey::parse(&key).map_err(|_| corrupt())?;
             let bytes = frame
                 .actual_read(
                     fs,
@@ -334,6 +350,17 @@ pub(crate) async fn restore_owner<F: LocalFs + BucketBinding>(
                 )
                 .await?
                 .ok_or_else(corrupt)?;
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(corrupt)?;
+            if cancellation_staging_name(name) {
+                // A failed pre-rename sync may leave partial private staging.
+                // Retain its protected nofollow preimage, but its bytes never
+                // select an operation or authorize cancellation/restoration.
+                continue;
+            }
+            terrane_core::bucket::BucketKey::parse(&key).map_err(|_| corrupt())?;
             let intent = DeleteOperation::decode(&bytes, &key).map_err(|_| corrupt())?;
             let matches_incarnation = matches!(
                 intent.phase,
