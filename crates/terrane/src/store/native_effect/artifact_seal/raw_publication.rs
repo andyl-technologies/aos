@@ -7,9 +7,13 @@
 
 use super::super::publication::CompletedWrites;
 use super::publication_sync::SyncScope;
-use super::publication_sync::outputs::{Inventory, Target, insert_target, synchronize};
+use super::publication_sync::outputs::{Inventory, Target, insert_target, synchronize_raw};
 use super::{FencePolicy, MetadataStamp, NativeEffectFailure, PathBuf, Plan, Worker};
-use std::{collections::BTreeMap, io, sync::mpsc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    sync::mpsc,
+};
 use terrane_core::gc::publication::{PublicationCommit, PublicationProof, PublicationTransaction};
 
 /// Fixes actual backend outputs and the independently captured registration.
@@ -30,6 +34,7 @@ pub(in super::super) struct RawRequest {
     pointer: Vec<u8>,
     changes: Vec<(PathBuf, Option<Vec<u8>>)>,
     writes: CompletedWrites,
+    fresh_immutable_outputs: BTreeSet<PathBuf>,
     result: mpsc::Sender<DurableRaw>,
 }
 
@@ -70,6 +75,8 @@ impl RawReceiver {
 pub(in super::super) struct RawDurabilityInputs<'input> {
     /// The actual producer's completed outputs and current Original records.
     pub(in super::super) writes: &'input CompletedWrites,
+    /// Newly absent immutable outputs, excluding every previously consumed path.
+    pub(in super::super) fresh_immutable_outputs: &'input BTreeSet<PathBuf>,
     /// The same closed control context used to build the submitted native Frame.
     pub(in super::super) context:
         Option<&'input crate::selected_bridge::native_guard::GuardEffectContext>,
@@ -88,7 +95,11 @@ pub(in super::super) fn raw_plan(
     snapshot: &[u8],
     durability: RawDurabilityInputs<'_>,
 ) -> Result<(Plan, RawReceiver), NativeEffectFailure> {
-    let RawDurabilityInputs { writes, context } = durability;
+    let RawDurabilityInputs {
+        writes,
+        fresh_immutable_outputs,
+        context,
+    } = durability;
     let revision = observed
         .state()
         .revision
@@ -186,6 +197,27 @@ pub(in super::super) fn raw_plan(
             original_directories.push((controls.directory().to_owned(), controls.owner()));
         }
     }
+    for path in fresh_immutable_outputs {
+        let change = mutation
+            .changes()
+            .iter()
+            .find(|change| root.join(&change.key) == *path)
+            .ok_or_else(|| io::Error::other("raw immutable output is not a mutation"))?;
+        let key = terrane_core::bucket::BucketKey::parse(&change.key).map_err(io::Error::other)?;
+        let completed = writes.records().find(|(record, _)| *record == path);
+        if key.mutability() != terrane_core::bucket::Mutability::Immutable
+            || key.as_str().ends_with(".pack")
+            || change.expected.is_some()
+            || change.new.is_none()
+            || completed.is_none_or(|(_, write)| {
+                write.root() != root.as_path()
+                    || !matches!(write.policy(), FencePolicy::Payload { owner: actual } if actual == owner)
+                    || write.expected() != change.new.as_deref()
+            })
+        {
+            return Err(io::Error::other("raw immutable output provenance differs").into());
+        }
+    }
     let (sender, receiver) = mpsc::channel();
     Ok((
         Plan::SealRawPublication(Box::new(RawRequest {
@@ -209,6 +241,7 @@ pub(in super::super) fn raw_plan(
             original_directories,
             contextual: context.is_some(),
             writes: writes.clone(),
+            fresh_immutable_outputs: fresh_immutable_outputs.clone(),
             result: sender,
         })),
         RawReceiver { result: receiver },
@@ -336,9 +369,19 @@ fn targets(request: &RawRequest) -> io::Result<BTreeMap<PathBuf, Target>> {
 /// # Errors
 /// Refuses changed retained inputs, controls, names or ancestry, mismatched
 /// backend association and actual descriptor/directory synchronization failure.
+///
+/// # Panics
+/// Panics in test builds if enabled native phase diagnostics cannot write to standard error.
 pub(super) fn execute(request: RawRequest, mut worker: Worker) -> Result<(), NativeEffectFailure> {
-    association(&request, &worker)?;
-    synchronize(
+    #[cfg(test)]
+    let trace = crate::ref_advance::NativeTrace::new(&request.root, "raw-final-ack-worker");
+    association(&request, &worker).inspect_err(|_| {
+        #[cfg(test)]
+        super::diagnostic::refusal("raw-association-before-sync", None, None);
+    })?;
+    #[cfg(test)]
+    trace.mark("association-before-sync-complete");
+    synchronize_raw(
         Inventory {
             scopes: &request.scopes,
             targets: targets(&request)?,
@@ -347,8 +390,20 @@ pub(super) fn execute(request: RawRequest, mut worker: Worker) -> Result<(), Nat
             completed_syncs: None,
         },
         &mut worker,
-    )?;
-    association(&request, &worker)?;
+        &request.fresh_immutable_outputs,
+    )
+    .inspect_err(|_| {
+        #[cfg(test)]
+        super::diagnostic::refusal("raw-output-synchronize", None, None);
+    })?;
+    #[cfg(test)]
+    trace.mark("output-synchronize-complete");
+    association(&request, &worker).inspect_err(|_| {
+        #[cfg(test)]
+        super::diagnostic::refusal("raw-association-after-sync", None, None);
+    })?;
+    #[cfg(test)]
+    trace.mark("association-after-sync-complete");
     let _ = request.result.send(DurableRaw);
     Ok(())
 }

@@ -17,6 +17,10 @@
 mod control;
 #[cfg(unix)]
 pub(crate) use control::{ControlExclusion, RetainedControls};
+#[cfg(unix)]
+mod import;
+#[cfg(unix)]
+pub(crate) use import::retention_failure;
 mod verifier;
 pub(super) use verifier::OriginalVerifier;
 
@@ -174,6 +178,30 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
         authority: &OriginalAuthority,
         held: &HeldIdentity<'_>,
     ) -> Result<ControlExclusion<'a, F>, StoreFailure> {
+        self.hold_original_registration_with_access(authority, held, control::ControlAccess::Read)
+            .await
+    }
+
+    /// Retains exclusive administrative access before installing original records.
+    ///
+    /// # Errors
+    /// Refuses unsafe or mismatched registration, unsupported acquisition and
+    /// busy controls without waiting while holding the backend namespace.
+    pub(crate) async fn hold_original_registration_write<'a>(
+        &'a self,
+        authority: &OriginalAuthority,
+        held: &HeldIdentity<'_>,
+    ) -> Result<ControlExclusion<'a, F>, StoreFailure> {
+        self.hold_original_registration_with_access(authority, held, control::ControlAccess::Write)
+            .await
+    }
+
+    async fn hold_original_registration_with_access<'a>(
+        &'a self,
+        authority: &OriginalAuthority,
+        held: &HeldIdentity<'_>,
+        access: control::ControlAccess,
+    ) -> Result<ControlExclusion<'a, F>, StoreFailure> {
         let (name, profile) = self.store.publication_profile();
         if name != self.config.chunk_profile_name || profile != self.config.chunk_profile.as_ref() {
             return Err(invalid());
@@ -199,7 +227,7 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
             .publication_operator_uid()
             .ok_or_else(|| StoreFailure::new(StoreErrorKind::Unsupported))?;
         let mut control =
-            ControlExclusion::acquire(self.store.fs(), &authority.control, owner).await?;
+            ControlExclusion::acquire(self.store.fs(), &authority.control, owner, access).await?;
         if control.read_record("registration.cbor").await? != expected {
             return Err(invalid());
         }
@@ -416,9 +444,19 @@ pub struct OriginalCommitContext {
     commit: terrane_core::identity::Digest,
     baseline: RetainedBootstrap,
     retention_owner: OriginalAuthority,
+    #[cfg(unix)]
+    imported: Option<import::ImportedEvidence>,
 }
 
 impl OriginalCommitContext {
+    /// Compares the concrete owner of the independently retained protected records.
+    ///
+    /// This ordinary equality check does not replace original-authority or import
+    /// verification, and cannot manufacture a local retention binding.
+    pub(super) fn retained_by(&self, owner: &OriginalAuthority) -> bool {
+        &self.retention_owner == owner
+    }
+
     /// Returns the exact immutable commit named by protected association.
     pub fn commit(&self) -> &terrane_core::identity::Digest {
         &self.commit
@@ -590,6 +628,7 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
             commit: *view.commit,
             baseline: baseline.clone(),
             retention_owner: authority.clone(),
+            imported: None,
         })
     }
 }
@@ -672,6 +711,12 @@ fn unavailable() -> StoreFailure {
 }
 
 impl<S, C> Guard<S, C> {
+    /// Copies the retained bootstrap bound to an exact reference and writer epoch.
+    ///
+    /// This lookup does not replace the required physical Original recheck.
+    ///
+    /// # Errors
+    /// Rejects missing bindings or unavailable retained-state synchronization.
     pub(crate) fn original_bootstrap(
         &self,
         reference: &str,
@@ -685,6 +730,12 @@ impl<S, C> Guard<S, C> {
             .ok_or_else(invalid)
     }
 
+    /// Copies the retained Original context associated with an exact commit.
+    ///
+    /// This lookup does not establish current rights or recheck physical controls.
+    ///
+    /// # Errors
+    /// Rejects missing associations or unavailable retained-state synchronization.
     pub(crate) fn original_commit(
         &self,
         commit: &terrane_core::identity::Digest,
@@ -709,6 +760,14 @@ pub(crate) fn consumed_pins(
 
     let baseline = context.baseline();
     let authority = baseline.authority();
+    #[cfg(unix)]
+    let imported_pins = match &context.imported {
+        Some(imported) if !imported.supplements_local => {
+            return imported.pins(&context.retention_owner);
+        }
+        Some(imported) => imported.pins(&context.retention_owner)?,
+        None => Vec::new(),
+    };
     if &context.retention_owner != authority {
         return Err(invalid());
     }
@@ -734,7 +793,7 @@ pub(crate) fn consumed_pins(
     cbor::write_text(&mut association, baseline.reference());
     cbor::write_uint(&mut association, baseline.epoch());
     let owner = super::consumed::registration(authority);
-    [
+    let local_pins = [
         (
             ControlKind::Registration,
             "registration.cbor".into(),
@@ -758,5 +817,13 @@ pub(crate) fn consumed_pins(
         pin.check_record(&bytes).map_err(|_| invalid())?;
         Ok(pin)
     })
-    .collect()
+    .collect::<Result<Vec<_>, StoreFailure>>();
+    #[cfg(unix)]
+    {
+        let mut pins = local_pins?;
+        pins.extend(imported_pins);
+        Ok(pins)
+    }
+    #[cfg(not(unix))]
+    local_pins
 }

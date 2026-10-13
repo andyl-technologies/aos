@@ -591,6 +591,126 @@ fn store_object_reassembles_verified_chunks_in_manifest_order() {
     );
 }
 
+// Encodes wire input independently so malformed metadata reaches the reader.
+fn receiving_manifest_bytes(
+    size: u64,
+    chunks: &[terrane_core::manifest::ChunkRef],
+    plaintext: &[u8],
+    include_blake3: bool,
+) -> Vec<u8> {
+    use terrane_core::cbor;
+
+    let mut bytes = Vec::new();
+    cbor::write_map(&mut bytes, 3);
+    cbor::write_uint(&mut bytes, 1);
+    cbor::write_uint(&mut bytes, size);
+    cbor::write_uint(&mut bytes, 2);
+    cbor::write_array(&mut bytes, chunks.len());
+    for chunk in chunks {
+        cbor::write_array(&mut bytes, 2);
+        cbor::write_bytes(&mut bytes, &chunk.digest);
+        cbor::write_uint(&mut bytes, chunk.length);
+    }
+    cbor::write_uint(&mut bytes, 3);
+    cbor::write_map(&mut bytes, usize::from(include_blake3));
+    if include_blake3 {
+        cbor::write_text(&mut bytes, "blake3");
+        cbor::write_bytes(&mut bytes, blake3::hash(plaintext).as_bytes());
+    }
+    bytes
+}
+
+// Both refused and valid manifests name the same available verified chunk bodies.
+fn assert_receiving_manifest_refusal(size_difference: u64, include_blake3: bool) {
+    use terrane_core::{chunking::ChunkProfile, manifest::ChunkRef, tree_format::ContentRef};
+
+    let store = MemoryStore::default();
+    let profile = ChunkProfile::new(16, 64, 128, 48, 1, [3; 32]).expect("test chunk profile");
+    let plaintext: Vec<u8> = (0..513).map(|index| (index % 251) as u8).collect();
+    let chunks = profile
+        .ranges(&plaintext)
+        .map(|range| {
+            let body = &plaintext[range];
+            let identity = TERRANE_V1
+                .calculate(IdentityKind::Chunk, body)
+                .expect("chunk identity");
+            let encoded =
+                crate::codec::encode_chunk(body, profile.maximum(), 3, None).expect("chunk codec");
+            store
+                .bytes
+                .lock()
+                .expect("test mutex")
+                .insert(identity.digest().to_vec(), encoded);
+            ChunkRef {
+                digest: identity.terrane_v1_digest().expect("chunk digest"),
+                length: body.len() as u64,
+            }
+        })
+        .collect::<Vec<_>>();
+    assert!(chunks.len() > 2);
+
+    let size = plaintext.len() as u64 + size_difference;
+    let malformed = receiving_manifest_bytes(size, &chunks, &plaintext, include_blake3);
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Manifest, &malformed)
+        .expect("identity of actual malformed wire bytes");
+    store
+        .bytes
+        .lock()
+        .expect("test mutex")
+        .insert(identity.digest().to_vec(), malformed);
+
+    let refused = ready(StoreObject::open(
+        &store,
+        &NoDictionaries,
+        &profile,
+        ContentRef::Manifest(identity.terrane_v1_digest().expect("manifest digest")),
+        size,
+    ));
+    assert!(matches!(
+        refused,
+        Err(Error::Manifest(
+            terrane_core::manifest::Error::InvalidManifest
+        ))
+    ));
+    // Manifest validation refused the wire input before every chunk GET.
+    assert_eq!(store.reads.load(Ordering::Relaxed), 1);
+
+    let valid = receiving_manifest_bytes(plaintext.len() as u64, &chunks, &plaintext, true);
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Manifest, &valid)
+        .expect("valid wire identity");
+    store
+        .bytes
+        .lock()
+        .expect("test mutex")
+        .insert(identity.digest().to_vec(), valid);
+    let object = ready(StoreObject::open(
+        &store,
+        &NoDictionaries,
+        &profile,
+        ContentRef::Manifest(identity.terrane_v1_digest().expect("manifest digest")),
+        plaintext.len() as u64,
+    ))
+    .expect("valid control opens through the same reader");
+    assert_eq!(store.reads.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        ready(object.read_range(0, plaintext.len())).expect("available control chunk bodies"),
+        plaintext,
+    );
+    assert_eq!(store.reads.load(Ordering::Relaxed), 2 + chunks.len());
+}
+
+#[test]
+fn store_object_rejects_invalid_manifest_length_sum_before_chunk_get() {
+    assert_receiving_manifest_refusal(1, true);
+}
+
+#[test]
+fn store_object_rejects_missing_plaintext_blake3_before_chunk_get() {
+    assert_receiving_manifest_refusal(0, false);
+}
+
 #[test]
 fn verification_quarantines_an_executable_record_for_non_executable_bytes() {
     let store = MemoryStore::default();

@@ -7,6 +7,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod map_model;
+
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -103,6 +105,8 @@ fn graft_entry(target: &Tree<'static>) -> Entry<'static> {
 
 #[test]
 fn graft_reuses_target_and_nested_lookup_resolves() {
+    map_model::graft_witness();
+
     let target = tree(&[(b"file", value(b"bytes"))]);
     let parent = tree(&[]);
     let grafted = graft(
@@ -158,6 +162,8 @@ fn graft_requires_explicit_inline_replacement() {
 
 #[test]
 fn split_inline_matches_direct_construction() {
+    map_model::split_witness();
+
     let parent = tree(&[
         (b"mount", entry(EntryKind::Directory { mode: 0o755 })),
         (b"mount/file", value(b"data")),
@@ -240,6 +246,8 @@ fn split_relabels_hardlinks_within_and_across_prefix() {
 
 #[test]
 fn flatten_checks_authority_and_preserves_lookup() {
+    map_model::flatten_witness();
+
     let target = tree(&[(b"file", value(b"bytes"))]);
     let parent = graft(
         &tree(&[]),
@@ -416,6 +424,8 @@ fn overlay_precedence_whiteouts_and_materialization_agree() {
 
 #[test]
 fn overlay_ranges_match_independent_point_updates_and_canonical_roots() {
+    map_model::overlay_witness();
+
     let bottom = tree(&[
         (b"a", value(b"bottom-a")),
         (b"b", value(b"bottom-b")),
@@ -482,6 +492,8 @@ fn overlay_ranges_match_independent_point_updates_and_canonical_roots() {
 
 #[test]
 fn diff_is_ordered_and_skips_equal_root() {
+    map_model::diff_witness();
+
     let old = tree(&[(b"a", value(b"old")), (b"c", value(b"removed"))]);
     let new = tree(&[(b"a", value(b"new")), (b"b", value(b"added"))]);
     let changes = diff(&old, &new);
@@ -643,6 +655,8 @@ fn diff_local_change_skips_shared_nodes() {
 
 #[test]
 fn merge_randomized_reference_model_and_symmetric_policy() {
+    map_model::randomized_merge_witness();
+
     fn sample(state: &mut u64) -> Option<Entry<'static>> {
         *state = state
             .wrapping_mul(6364136223846793005)
@@ -1657,6 +1671,8 @@ fn merge_prefer_newer_binds_verified_timestamps_and_falls_back_on_ties() {
 
 #[test]
 fn merge_adopts_unchanged_base_ranges_from_incoming_subtrees() {
+    map_model::equal_internal_subtree_witness();
+
     let entries: Vec<_> = (0..10000)
         .map(|number| LeafItem {
             key: alloc::format!("{number:08}").into_bytes(),

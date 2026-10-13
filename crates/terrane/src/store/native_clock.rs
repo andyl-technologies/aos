@@ -5,7 +5,7 @@
 //! existing representation and may refuse this optional native operation.
 
 /// Supplies a test clock that retains the same injected lease-clock state.
-#[cfg(test)]
+#[cfg(all(test, any(feature = "tokio", all(unix, not(feature = "send")))))]
 #[path = "../gc/lease/clock.rs"]
 pub(crate) mod gc_test_clock;
 
@@ -32,7 +32,7 @@ pub struct NativeEffectClock {
 
 impl NativeEffectClock {
     /// Owns this actual native binding without replacing its injected clock state.
-    #[cfg(feature = "send")]
+    #[cfg(all(feature = "send", any(feature = "tokio", test)))]
     pub(super) fn from_native_clock<C: Clock + Send + Sync + 'static>(clock: C) -> Self {
         Self {
             clock: Shared::new(clock),
@@ -40,7 +40,7 @@ impl NativeEffectClock {
     }
 
     /// Owns this actual local binding without requiring thread transfer.
-    #[cfg(not(feature = "send"))]
+    #[cfg(all(not(feature = "send"), any(feature = "tokio", test)))]
     pub(super) fn from_native_clock<C: Clock + 'static>(clock: C) -> Self {
         Self {
             clock: Shared::new(clock),

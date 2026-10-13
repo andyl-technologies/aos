@@ -12,6 +12,13 @@ fn defaults() -> Defaults<'static> {
 }
 
 fn completed(message: &str) -> (VerifiedHistory, VerifiedCommit) {
+    completed_selected(message, crate::properties::selected::Selection::Legacy)
+}
+
+fn completed_selected(
+    message: &str,
+    selection: crate::properties::selected::Selection,
+) -> (VerifiedHistory, VerifiedCommit) {
     let mut domain = Vec::new();
     crate::cbor::write_text(&mut domain, "public");
     let (root, bytes) = tree(
@@ -38,7 +45,9 @@ fn completed(message: &str) -> (VerifiedHistory, VerifiedCommit) {
     });
     let mut history = VerifiedHistory::new(MIN_CHUNK);
     history.insert_tree(root, &[(root, bytes)]).unwrap();
-    history.insert_commit(signed.clone()).unwrap();
+    history
+        .insert_commit_selected(signed.clone(), selection)
+        .unwrap();
     verify_fixture_scope(&mut history, signed.identity(), defaults()).unwrap();
     (history, signed)
 }
@@ -107,7 +116,7 @@ fn prov_history_union_rejects_provisional_contexts_on_either_side() {
 #[test]
 fn prov_history_union_rejects_different_original_verification_contexts() {
     let (original, signed) = completed("same immutable signed record");
-    let mut shortened = original.clone();
+
     let mut keys = issuer_keys();
     keys[0].retirement = Some(150);
     let roots = [RequestRoot {
@@ -119,7 +128,26 @@ fn prov_history_union_rejects_different_original_verification_contexts() {
     assert_eq!(reverified.commit(), signed.commit());
     assert_eq!(reverified.identity(), signed.identity());
     assert_ne!(reverified, signed);
+    let mut unchanged = original.clone();
+    assert!(unchanged.insert_commit(reverified.clone()).is_err());
+    assert_eq!(unchanged.commit(&signed.identity()), Some(&signed));
+
+    // A distinct verified context requires an independently assembled history;
+    // replacing an immutable context in the original is itself a refusal.
+    let mut domain = Vec::new();
+    crate::cbor::write_text(&mut domain, "public");
+    let (root, bytes) = tree(
+        vec![item(b"file", entry(b"content"))],
+        Some(vec![Property {
+            name: "domain",
+            value: &domain,
+        }]),
+    );
+    assert_eq!(root, signed.commit().tree);
+    let mut shortened = VerifiedHistory::new(MIN_CHUNK);
+    shortened.insert_tree(root, &[(root, bytes)]).unwrap();
     shortened.insert_commit(reverified).unwrap();
+    verify_fixture_scope(&mut shortened, signed.identity(), defaults()).unwrap();
     assert!(
         shortened
             .require_verified_context(signed.identity())
@@ -185,4 +213,86 @@ fn prov_history_union_rejects_conflicting_retained_bootstrap_associations() {
 
     assert_rejection_preserves(&mut original.clone(), &other);
     assert_rejection_preserves(&mut other, &original);
+}
+
+#[test]
+fn prov_history_union_preserves_exact_historical_selection() {
+    use crate::properties::{selected::Selection, semantics::RecordedContext};
+    let selected = Selection::Recorded(RecordedContext::new(1, 3, &["index-roots"]).unwrap());
+    let (mut destination, _) = completed("legacy receiver");
+    let (source, signed) = completed_selected("historical sender", selected.clone());
+
+    destination.append_verified(&source).unwrap();
+
+    assert_eq!(
+        destination.view_selection(signed.identity()).unwrap(),
+        selected
+    );
+    let context = TrustContext::new(
+        &destination,
+        signed.identity(),
+        Selector::preset(Preset::Any),
+        "public",
+        None,
+    )
+    .unwrap();
+    assert_eq!(context.canonical_context()[1], 3);
+    assert!(validate_canonical_context(context.canonical_context()).is_ok());
+}
+
+#[test]
+fn prov_history_union_refuses_reinterpreting_one_view_and_preserves_receiver() {
+    use crate::properties::{selected::Selection, semantics::RecordedContext};
+    let (mut destination, _) = completed("same immutable view");
+    let selected = Selection::Recorded(RecordedContext::new(1, 3, &[]).unwrap());
+    let (source, _) = completed_selected("same immutable view", selected);
+
+    assert_rejection_preserves(&mut destination, &source);
+}
+
+#[test]
+fn prov_recorded_installation_requires_explicit_view_selection() {
+    use crate::properties::{selected::Selection, semantics::RecordedContext};
+    let (_, signed) = completed("independently verified record");
+    let selected = Selection::Recorded(RecordedContext::new(1, 3, &[]).unwrap());
+    let mut history = VerifiedHistory::new_selected(MIN_CHUNK, selected.clone());
+
+    assert!(history.insert_commit(signed.clone()).is_err());
+    assert!(history.commit(&signed.identity()).is_none());
+    history
+        .insert_commit_selected(signed.clone(), selected.clone())
+        .unwrap();
+    assert_eq!(history.view_selection(signed.identity()).unwrap(), selected);
+}
+
+#[test]
+fn prov_recorded_current_revision_remains_distinct_when_registered_bytes_match() {
+    use crate::properties::{selected::Selection, semantics::RecordedContext};
+    let first = Selection::Recorded(RecordedContext::new(1, 2, &[]).unwrap());
+    let second = Selection::Recorded(RecordedContext::new(1, 3, &[]).unwrap());
+    let (left, view) = completed_selected("same signed historical interpretation", first);
+    let (right, _) = completed_selected("same signed historical interpretation", second);
+    let a = TrustContext::new(
+        &left,
+        view.identity(),
+        Selector::preset(Preset::Any),
+        "public",
+        None,
+    )
+    .unwrap();
+    let b = TrustContext::new(
+        &right,
+        view.identity(),
+        Selector::preset(Preset::Any),
+        "public",
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(a.canonical_context(), b.canonical_context());
+    assert_ne!(
+        left.view_selection(view.identity()).unwrap(),
+        right.view_selection(view.identity()).unwrap()
+    );
+    assert_rejection_preserves(&mut left.clone(), &right);
 }

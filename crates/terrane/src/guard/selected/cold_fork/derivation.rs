@@ -38,7 +38,7 @@ pub(super) fn extend_completed_fork<S, C, F: LocalFs>(
     for view in qualified.policies.source_views() {
         let mut candidate = view.clone();
         candidate.view = identity;
-        // Full equal Legacy semantics and the exact signed source tree retain
+        // Full equal independently selected authoring semantics and the exact signed source tree retain
         // all canonical occurrences and layers; no ancestor is forged/decoded.
         used.views.push(candidate);
     }
@@ -54,5 +54,9 @@ pub(super) fn extend_completed_fork<S, C, F: LocalFs>(
     {
         return Err(invalid());
     }
+    // The genuine producer checked the new signed candidate, its separate
+    // Original and the unchanged qualified namespace. Retain only its executed
+    // selection; source completeness still comes from native selected lineage.
+    crate::guard::cold_fork::retain_candidate_selection(guard, admitted)?;
     Ok(())
 }

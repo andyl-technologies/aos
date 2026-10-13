@@ -102,6 +102,8 @@ pub(crate) struct SingleHeld<'a, F: LocalFs, C, V> {
     retention: NamespaceRetention,
     write_allowed: bool,
     _guard: F::Lock,
+    #[cfg(test)]
+    _trace: crate::ref_advance::NativeTrace,
 }
 
 impl<'a, F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
@@ -135,6 +137,8 @@ impl<'a, F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidat
             retention,
             write_allowed: true,
             _guard: guard,
+            #[cfg(test)]
+            _trace: crate::ref_advance::NativeTrace::new(bucket.root(), "single-held-namespace"),
         })
     }
 
@@ -171,6 +175,8 @@ impl<'a, F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidat
             retention,
             write_allowed: true,
             _guard: guard,
+            #[cfg(test)]
+            _trace: crate::ref_advance::NativeTrace::new(bucket.root(), "single-held-namespace"),
         })
     }
 
@@ -185,36 +191,20 @@ impl<'a, F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidat
     pub(crate) async fn acquire_read_only(
         bucket: &'a FileBucket<F, C, V>,
     ) -> Result<Self, StoreFailure> {
-        if bucket.inner.access.read_only() {
-            return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
-        }
-        let checked_identity = identity(bucket).await?;
-        let guard = bucket.existing_exclusive().await?;
-        if identity(bucket).await? != checked_identity {
-            return Err(files::layout_corrupt());
-        }
-        let retention = NamespaceRetention::capture(&bucket.inner.fs, &guard)?;
-        if identity(bucket).await? != checked_identity {
-            return Err(files::layout_corrupt());
-        }
+        let held = Self::acquire_read_namespace(bucket).await?;
         bucket.ensure_layout().await?;
-        Ok(Self {
-            bucket,
-            identity: checked_identity,
-            retention,
-            write_allowed: false,
-            _guard: guard,
-        })
+        Ok(held)
     }
 
-    /// Acquires actual read exclusion before one fresh selected observation.
+    /// Retains a read namespace before its caller validates selected layout.
     ///
-    /// The current reader validates its catalog from that original observation.
-    /// This holder grants no layout repair, actor or mutation permission.
+    /// The private ordinary-get producer validates CAPABILITIES from its one
+    /// fresh selected observation before consuming any content. This holder
+    /// remains read-only and supplies no layout, actor or mutation permission.
     ///
     /// # Errors
-    /// Rejects legacy access, changed or unsafe namespace identities, failed
-    /// exclusion and unavailable actual descriptor retention.
+    /// Rejects legacy access, unsafe or changed namespace identities, failed
+    /// existing exclusion and failed actual descriptor retention.
     pub(crate) async fn acquire_read_namespace(
         bucket: &'a FileBucket<F, C, V>,
     ) -> Result<Self, StoreFailure> {
@@ -236,6 +226,8 @@ impl<'a, F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidat
             retention,
             write_allowed: false,
             _guard: guard,
+            #[cfg(test)]
+            _trace: crate::ref_advance::NativeTrace::new(bucket.root(), "single-held-namespace"),
         })
     }
 
@@ -359,6 +351,19 @@ impl<
             write_allowed: true,
         }
     }
+
+    /// Borrows the already excluded destination without write or repair authority.
+    ///
+    /// The actual pair retains its original descriptor and physical identity;
+    /// this adapter cannot outlive that exclusion or authorize mutation.
+    pub(crate) fn destination_read_only(&self) -> HeldBucket<'_, G, D, W, false> {
+        HeldBucket {
+            bucket: self.destination,
+            identity: self.destination_identity,
+            retention: self.destination_retention.clone(),
+            write_allowed: false,
+        }
+    }
 }
 
 async fn recheck<
@@ -392,6 +397,19 @@ pub(crate) struct HeldIdentity<'guard> {
 }
 
 impl HeldIdentity<'_> {
+    /// Distinguishes pure preparation under this exact live exclusion allocation.
+    ///
+    /// The weak reference neither prolongs exclusion nor grants any authority.
+    /// Unavailable retention conservatively disables preparation reuse.
+    pub(crate) fn candidate_preparation_scope(
+        &self,
+    ) -> Option<std::sync::Weak<crate::store::NativeExclusion>> {
+        match self.retention {
+            NamespaceRetention::Available(retention) => Some(Arc::downgrade(retention)),
+            NamespaceRetention::Unavailable => None,
+        }
+    }
+
     /// Returns the configured root whose physical identity was rechecked.
     pub(crate) fn root(&self) -> &std::path::Path {
         self.root
@@ -433,6 +451,28 @@ impl<
     const WRITABLE: bool,
 > HeldBucket<'_, F, C, V, WRITABLE>
 {
+    /// Borrows an actual existing namespace exclusion as a read-only adapter.
+    ///
+    /// # Errors
+    /// Refuses another configured backend or changed physical namespace. No lock
+    /// is acquired and the adapter remains bounded by the original holder.
+    pub(crate) async fn borrow_read_namespace<'a>(
+        bucket: &'a FileBucket<F, C, V>,
+        held: &'a HeldIdentity<'a>,
+    ) -> Result<HeldBucket<'a, F, C, V, false>, StoreFailure> {
+        held.retained_namespace()?;
+        let actual = identity(bucket).await?;
+        if bucket.root() != held.root || actual != held.identity {
+            return Err(files::layout_corrupt());
+        }
+        Ok(HeldBucket {
+            bucket,
+            identity: actual,
+            retention: held.retention.clone(),
+            write_allowed: false,
+        })
+    }
+
     /// Borrows proof of this adapter's live single or paired namespace exclusion.
     pub(crate) fn identity_proof(&self) -> HeldIdentity<'_> {
         HeldIdentity {

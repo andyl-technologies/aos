@@ -20,6 +20,9 @@ mod directory;
 #[path = "tests/range.rs"]
 mod range;
 
+#[path = "tests/immutable_cohort.rs"]
+mod immutable_cohort;
+
 // Deliberately Send, not Sync or Clone: the effect owns only actual descriptor
 // duplicates, so no stronger associated lock contract is needed.
 struct HeldLock {
@@ -143,6 +146,7 @@ fn effect(held: &HeldLock, plan: Plan) -> NativeFsEffect {
         }],
         preimages: Vec::new(),
         final_check: None,
+        pairs: Vec::new(),
         plan,
         #[cfg(feature = "tokio")]
         gates: Vec::new(),
@@ -262,6 +266,43 @@ fn queued_expired_check_precedes_actual_remove() {
         drop(held);
         std::fs::remove_dir_all(root).unwrap();
     });
+}
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn final_sync_elapsed_check_never_acknowledges_native_effect() {
+    let (root, held) = fixture();
+    let exact_clock = Arc::new(AtomicUsize::new(0));
+    let mut request = effect(&held, Plan::SyncDirectory { path: root.clone() });
+    request.final_check = Some(crate::selected_bridge::effect_test_checks::deadline_check(
+        crate::store::NativeEffectClock::from_native_clock(TestClock(Arc::clone(&exact_clock))),
+        std::time::Duration::ZERO,
+        std::time::Duration::from_secs(9),
+    ));
+
+    let (arrived, received) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    request.gates.push(TestGate {
+        phase: TestGatePhase::AfterDirectorySync,
+        arrived,
+        release: released,
+    });
+    let task = tokio::spawn(request.execute_tokio());
+    tokio::task::spawn_blocking(move || received.recv_timeout(std::time::Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Advance only this new mechanics witness's retained clock after the actual
+    // sync. An earlier successful check cannot acknowledge the completed effect.
+    exact_clock.store(10, Ordering::SeqCst);
+    release.send(()).unwrap();
+    let failure = task.await.unwrap().unwrap_err();
+
+    assert!(matches!(failure, NativeEffectFailure::Rejected(failure)
+        if matches!(failure.kind(), crate::store::StoreErrorKind::Denied { verb: "test-deadline", .. })));
+    drop(held);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -896,6 +937,7 @@ async fn actual_tokio_binding_retains_its_guard_and_executes_the_fixed_effect() 
         }],
         preimages: Vec::new(),
         final_check: None,
+        pairs: Vec::new(),
         plan: Plan::WriteNew {
             path: path.clone(),
             bytes: b"actual binding".to_vec(),

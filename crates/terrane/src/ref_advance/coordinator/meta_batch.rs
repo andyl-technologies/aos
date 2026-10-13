@@ -129,6 +129,16 @@ where
             &mut trace,
         )
         .await?;
+        let commit_bytes = admitted
+            .commit
+            .commit()
+            .encode()
+            .map_err(|_| crate::guard::invalid())?;
+        let commit_upload = MetaUpload::new(IdentityKind::Commit, &commit_bytes)?;
+        let expected_commit = TERRANE_V1
+            .from_digest(IdentityKind::Commit, &admitted.commit.identity())
+            .map_err(|_| crate::guard::invalid())?;
+        let mut commit_published = false;
         let mut offset = 0;
         while offset < admitted.uploads.len() {
             self.check_time(started)?;
@@ -145,14 +155,26 @@ where
                     .await?;
                 offset += 1;
             } else {
-                let mut uploads = Vec::with_capacity(offset - first);
+                // The final Meta run can carry the already closed signed Commit.
+                // Real pack/index creator ACKs precede its catalog admission; a
+                // Complete result verifies all bodies before reflog publication.
+                let includes_commit = offset == admitted.uploads.len();
+                let mut uploads = Vec::with_capacity(offset - first + usize::from(includes_commit));
                 for upload in &admitted.uploads[first..offset] {
                     match upload.as_upload()? {
                         ContentUpload::Meta(meta) => uploads.push(meta),
                         ContentUpload::Chunk(_) => return Err(crate::guard::invalid().into()),
                     }
                 }
-                match self.store().put_meta_batch(&uploads, context).await? {
+                if includes_commit {
+                    uploads.push(commit_upload);
+                }
+                #[cfg(test)]
+                trace.mark("immutable-meta-batch-entry");
+                let outcome = self.store().put_meta_batch(&uploads, context).await?;
+                #[cfg(test)]
+                trace.mark("immutable-meta-batch-returned");
+                match outcome {
                     crate::bucket::held::BatchOutcome::Complete(identities) => {
                         if identities.len() != uploads.len() {
                             return Err(crate::guard::invalid().into());
@@ -166,8 +188,16 @@ where
                                 return Err(crate::guard::invalid().into());
                             }
                         }
+                        if includes_commit {
+                            if identities.last() != Some(&expected_commit) {
+                                return Err(crate::guard::invalid().into());
+                            }
+                            commit_published = true;
+                        }
                     }
                     crate::bucket::held::BatchOutcome::Sequential => {
+                        // No batch effect occurred. Keep the original member
+                        // order and the separate ordinary Commit admission.
                         for upload in &admitted.uploads[first..offset] {
                             self.store()
                                 .put_contextual(upload.as_upload()?, context)
@@ -181,25 +211,22 @@ where
         }
         #[cfg(test)]
         trace.mark("immutable-upload-bodies-durable");
-        // Signed Commit remains a separate ordinary admission after all inputs.
-        // It carries the same actual context and deadline, rather than extending
-        // generic Store semantics or treating a body as publication authority.
-        let bytes = admitted
-            .commit
-            .commit()
-            .encode()
-            .map_err(|_| crate::guard::invalid())?;
+        if commit_published {
+            #[cfg(test)]
+            trace.mark("immutable-commit-batch-durable");
+            return self.check_time(started);
+        }
+        // Empty inputs, a final Chunk or batch fallback retain the ordinary
+        // separate Commit put after every original upload is durable.
+        #[cfg(test)]
+        trace.mark("immutable-commit-put-entry");
         let actual = self
             .store()
-            .put_contextual(
-                ContentUpload::Meta(MetaUpload::new(IdentityKind::Commit, &bytes)?),
-                context,
-            )
+            .put_contextual(ContentUpload::Meta(commit_upload), context)
             .await?;
-        let expected = TERRANE_V1
-            .from_digest(IdentityKind::Commit, &admitted.commit.identity())
-            .map_err(|_| crate::guard::invalid())?;
-        if actual != expected {
+        #[cfg(test)]
+        trace.mark("immutable-commit-put-returned");
+        if actual != expected_commit {
             return Err(crate::guard::invalid().into());
         }
         self.check_time(started)

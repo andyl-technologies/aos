@@ -4,7 +4,7 @@
 //! Every member is verified, but exact live-body shards remain unchanged. This
 //! preserves quarantine tombstones; individual bodies need independent admission.
 
-use super::catalog::{Catalog, registered};
+use super::catalog::{Catalog, CatalogReads, registered};
 use super::content::{corrupt, invalid};
 use super::{BucketBinding, FileBucket, files};
 use crate::pack::{EntryKind, MergedShard, NativeBodyDecoder, PackId, PackReader};
@@ -99,6 +99,32 @@ pub(super) fn admitted_artifacts(
     })
 }
 
+/// Parses an already freshly read and identity-checked inventory pair.
+///
+/// # Errors
+/// Attributes malformed pack format/header bindings to the pack and detached
+/// index disagreement to the index, after the caller's ordered read/hash checks.
+pub(in crate::bucket) fn parse_verified_container<'pack>(
+    entry: &PackInventoryEntry,
+    pack: &'pack [u8],
+    index: &[u8],
+) -> Result<PackReader<'pack>, StoreFailure> {
+    let identity = TERRANE_V1
+        .from_digest(IdentityKind::Pack, &entry.pack_hash)
+        .map_err(|_| files::layout_corrupt())?;
+    let index_identity = TERRANE_V1
+        .from_digest(IdentityKind::Index, &entry.index_hash)
+        .map_err(|_| corrupt(&identity))?;
+    let reader = PackReader::open(pack).map_err(|_| corrupt(&identity))?;
+    if reader.header().id() != PackId::from_random_bytes(entry.pack_id) {
+        return Err(corrupt(&identity));
+    }
+    reader
+        .check_index_object(index)
+        .map_err(|_| corrupt(&index_identity))?;
+    Ok(reader)
+}
+
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
@@ -111,38 +137,95 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         &self,
         entry: &PackInventoryEntry,
     ) -> Result<(Vec<u8>, Vec<u8>), StoreFailure> {
+        Self::verified_container_with_reads(entry, self).await
+    }
+
+    /// Verifies a complete inventory pair through the caller's actual reader.
+    ///
+    /// # Errors
+    /// Preserves complete pack/index identity, size, member and read failures.
+    pub(super) async fn verified_container_with_reads<R: CatalogReads + ?Sized>(
+        entry: &PackInventoryEntry,
+        reads: &R,
+    ) -> Result<(Vec<u8>, Vec<u8>), StoreFailure> {
+        let (pack, index) = Self::verified_container_observed_with_reads(entry, reads).await?;
+        Ok((
+            pack.into_bytes().ok_or_else(files::layout_corrupt)?,
+            index.into_bytes().ok_or_else(files::layout_corrupt)?,
+        ))
+    }
+
+    /// Verifies both retained artifacts against their authoritative inventory row.
+    ///
+    /// # Errors
+    /// Returns corruption for missing or mismatched bytes, pack IDs, or detached
+    /// indexes, and propagates failed filesystem reads.
+    pub(super) async fn verified_container_observed(
+        &self,
+        entry: &PackInventoryEntry,
+    ) -> Result<
+        (
+            super::publication::receipts::RecordRead,
+            super::publication::receipts::RecordRead,
+        ),
+        StoreFailure,
+    > {
+        Self::verified_container_observed_with_reads(entry, self).await
+    }
+
+    async fn verified_container_observed_with_reads<R: CatalogReads + ?Sized>(
+        entry: &PackInventoryEntry,
+        reads: &R,
+    ) -> Result<
+        (
+            super::publication::receipts::RecordRead,
+            super::publication::receipts::RecordRead,
+        ),
+        StoreFailure,
+    > {
+        let (pack_read, index_read) = Self::read_container_artifacts(entry, reads).await?;
+        let pack = pack_read.bytes().ok_or_else(files::layout_corrupt)?;
+        let index = index_read.bytes().ok_or_else(files::layout_corrupt)?;
+        parse_verified_container(entry, pack, index)?;
+        Ok((pack_read, index_read))
+    }
+
+    /// Reads and hashes both artifacts before interpreting their pure format.
+    ///
+    /// # Errors
+    /// Preserves pack-then-index I/O order, missing/size attribution to the pack,
+    /// and complete pack/index identity failures.
+    pub(in crate::bucket) async fn read_container_artifacts<R: CatalogReads + ?Sized>(
+        entry: &PackInventoryEntry,
+        reads: &R,
+    ) -> Result<
+        (
+            super::publication::receipts::RecordRead,
+            super::publication::receipts::RecordRead,
+        ),
+        StoreFailure,
+    > {
         let id = PackId::from_random_bytes(entry.pack_id);
         let identity = TERRANE_V1
             .from_digest(IdentityKind::Pack, &entry.pack_hash)
             .map_err(|_| files::layout_corrupt())?;
-        let pack = self
-            .read_optional(&registered(&id.pack_key())?)
-            .await?
-            .ok_or_else(|| corrupt(&identity))?;
-        let index = self
-            .read_optional(&registered(&id.index_key())?)
-            .await?
-            .ok_or_else(|| corrupt(&identity))?;
+        let pack_read = reads.read_artifact(&registered(&id.pack_key())?).await?;
+        let index_read = reads.read_artifact(&registered(&id.index_key())?).await?;
+        let pack = pack_read.bytes().ok_or_else(|| corrupt(&identity))?;
+        let index = index_read.bytes().ok_or_else(|| corrupt(&identity))?;
         if pack.len() as u64 != entry.pack_size || index.len() as u64 != entry.index_size {
             return Err(corrupt(&identity));
         }
         TERRANE_V1
-            .verify(&identity, &pack)
+            .verify(&identity, pack)
             .map_err(|_| corrupt(&identity))?;
         let index_identity = TERRANE_V1
             .from_digest(IdentityKind::Index, &entry.index_hash)
             .map_err(|_| corrupt(&identity))?;
         TERRANE_V1
-            .verify(&index_identity, &index)
+            .verify(&index_identity, index)
             .map_err(|_| corrupt(&index_identity))?;
-        let reader = PackReader::open(&pack).map_err(|_| corrupt(&identity))?;
-        if reader.header().id() != id {
-            return Err(corrupt(&identity));
-        }
-        reader
-            .check_index_object(&index)
-            .map_err(|_| corrupt(&identity))?;
-        Ok((pack, index))
+        Ok((pack_read, index_read))
     }
 
     /// Resolves a named container only from the selected inventory.
@@ -154,6 +237,19 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         &self,
         catalog: &Catalog,
         identity: &Identity,
+    ) -> Result<Option<Vec<u8>>, StoreFailure> {
+        self.container_with_reads(catalog, identity, self).await
+    }
+
+    /// Resolves only selected eligible inventory through an actual artifact reader.
+    ///
+    /// # Errors
+    /// Preserves profile, exclusion and complete container-verification failures.
+    pub(super) async fn container_with_reads<R: CatalogReads + ?Sized>(
+        &self,
+        catalog: &Catalog,
+        identity: &Identity,
+        reads: &R,
     ) -> Result<Option<Vec<u8>>, StoreFailure> {
         if identity.profile() != TERRANE_V1.name() {
             return Err(files::malformed());
@@ -177,7 +273,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let Some(entry) = entry else {
             return Ok(None);
         };
-        let (pack, index) = self.verified_container(entry).await?;
+        let (pack, index) = Self::verified_container_with_reads(entry, reads).await?;
         Ok(Some(if identity.kind() == IdentityKind::Pack {
             pack
         } else {

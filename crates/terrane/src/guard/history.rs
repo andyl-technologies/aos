@@ -3,17 +3,36 @@
 #[cfg(all(feature = "std", feature = "tokio", unix))]
 mod current_reads;
 
-#[cfg(feature = "std")]
-pub(super) mod completion;
-
-use std::collections::{BTreeMap, BTreeSet};
-
+#[cfg(all(feature = "std", feature = "tokio", unix))]
+use std::collections::BTreeMap;
 use terrane_core::auth::RequestRoot;
 use terrane_core::identity::Digest;
-use terrane_core::provenance::{self, EntryLocation, VerifiedCommit, VerifiedHistory};
+use terrane_core::provenance::{self, VerifiedCommit, VerifiedHistory};
+
+/// Owns operation-local reuse of ordinary candidate preparation.
+#[cfg(feature = "std")]
+pub(in crate::guard) mod candidate_preparation;
+#[cfg(all(test, feature = "std", feature = "tokio", unix))]
+mod candidate_preparation_tests;
+#[cfg(feature = "std")]
+mod collection;
+/// Prepares selected view inputs for the owning signed-history checks.
+#[cfg(feature = "std")]
+pub(in crate::guard) mod completion;
+mod disclosure;
+#[cfg(feature = "std")]
+mod layers;
+#[cfg(feature = "std")]
+pub(crate) use collection::CollectionOccurrence;
+#[cfg(feature = "std")]
+pub(crate) use disclosure::CompletedCollectionHistory;
+#[cfg(all(feature = "std", unix))]
+pub(crate) use disclosure::DisclosureSourceSelection;
 
 use super::{Guard, TreeEvidence, invalid};
-use crate::store::{Clock, Store, StoreErrorKind, StoreFailure};
+#[cfg(not(feature = "std"))]
+use crate::store::StoreErrorKind;
+use crate::store::{Clock, Store, StoreFailure};
 
 /// Borrows synchronization evidence without converting it into authorization.
 #[derive(Clone, Copy, Default)]
@@ -22,6 +41,15 @@ pub(crate) struct HistoryObservation<'a> {
     held: Option<&'a crate::bucket::held::HeldIdentity<'a>>,
     #[cfg(feature = "std")]
     consumed: Option<&'a super::consumed::ConsumedResolver>,
+    /// Borrows ordinary inputs captured for the actual candidate operation.
+    #[cfg(feature = "std")]
+    pub(super) candidate: Option<&'a super::view_selection::CandidateInputs>,
+    /// Borrows a private repair purpose without supplying current authority.
+    #[cfg(feature = "std")]
+    pub(super) maintenance: Option<&'a super::index_maintenance::Purpose>,
+    requested_target: bool,
+    /// Selects one input-only signed layer for an explicit owning operation.
+    overlay_layer: Option<(Digest, Digest)>,
     lifetime: std::marker::PhantomData<&'a ()>,
     /// Borrows a privately checked paired Guard transition without granting authority.
     #[cfg(all(feature = "std", feature = "tokio", unix))]
@@ -30,9 +58,50 @@ pub(crate) struct HistoryObservation<'a> {
 }
 
 impl<'a> HistoryObservation<'a> {
+    /// Borrows the held backend identity without granting authorization.
     #[cfg(feature = "std")]
     pub(crate) fn identity(self) -> Option<&'a crate::bucket::held::HeldIdentity<'a>> {
         self.held
+    }
+
+    /// Borrows the actual operation resolver without granting completion.
+    #[cfg(all(feature = "std", feature = "tokio", unix))]
+    pub(crate) fn resolver(self) -> Option<&'a super::consumed::ConsumedResolver> {
+        self.consumed
+    }
+
+    /// Requires the same actual candidate observation and complete input purpose.
+    ///
+    /// This compares borrowed data only; the native producer independently
+    /// closes its actual physical, Original and current evidence.
+    ///
+    /// # Errors
+    /// Refuses absent, foreign or substituted holder, resolver, candidate or purpose.
+    #[cfg(all(feature = "std", feature = "tokio", unix))]
+    pub(crate) fn same_candidate_scope(self, other: Self) -> Result<(), StoreFailure> {
+        let held = self.held.ok_or_else(invalid)?;
+        let other_held = other.held.ok_or_else(invalid)?;
+        let consumed = self.consumed.ok_or_else(invalid)?;
+        let other_consumed = other.consumed.ok_or_else(invalid)?;
+        let candidate = self.candidate.ok_or_else(invalid)?;
+        let other_candidate = other.candidate.ok_or_else(invalid)?;
+        let same_purpose = match (self.maintenance, other.maintenance) {
+            (None, None) => true,
+            (Some(left), Some(right)) => std::ptr::eq(left, right),
+            _ => false,
+        };
+        if !std::ptr::eq(held, other_held)
+            || !std::ptr::eq(consumed, other_consumed)
+            || !std::ptr::eq(candidate, other_candidate)
+            || candidate != other_candidate
+            || !self.same_paired_transition(other)
+            || !same_purpose
+            || self.requested_target != other.requested_target
+            || self.overlay_layer != other.overlay_layer
+        {
+            return Err(invalid());
+        }
+        Ok(())
     }
 
     #[cfg(feature = "std")]
@@ -41,6 +110,10 @@ impl<'a> HistoryObservation<'a> {
         Self {
             held: Some(identity),
             consumed: None,
+            candidate: None,
+            maintenance: None,
+            requested_target: false,
+            overlay_layer: None,
             lifetime: std::marker::PhantomData,
             #[cfg(all(feature = "std", feature = "tokio", unix))]
             paired_transition: None,
@@ -51,6 +124,62 @@ impl<'a> HistoryObservation<'a> {
     #[cfg(feature = "std")]
     pub(crate) fn tracked(mut self, consumed: &'a super::consumed::ConsumedResolver) -> Self {
         self.consumed = Some(consumed);
+        self
+    }
+
+    /// Borrows ordinary inputs independently captured from the closed actual admission.
+    #[cfg(feature = "std")]
+    pub(crate) fn candidate(
+        mut self,
+        candidate: &'a super::view_selection::CandidateInputs,
+    ) -> Self {
+        self.candidate = Some(candidate);
+        self
+    }
+
+    /// Selects namespace-only dependency qualification for a private repair operation.
+    ///
+    /// This ordinary purpose grants no permission or serving completion. The
+    /// actual authored candidate, when present, still requires every relationship.
+    #[cfg(feature = "std")]
+    pub(crate) fn maintenance(mut self, purpose: &'a super::index_maintenance::Purpose) -> Self {
+        self.maintenance = Some(purpose);
+        self
+    }
+
+    /// Reports whether this dependency needs namespace-only qualification.
+    ///
+    /// Collection always requires complete qualification. Maintenance excludes
+    /// the actual candidate, while requested-target mode excludes the requested
+    /// view; neither choice supplies current rights or serving completion.
+    #[cfg(feature = "std")]
+    pub(super) fn namespace_only(self, view: Digest, requested: Digest, collection: bool) -> bool {
+        if collection {
+            return false;
+        }
+        if self.maintenance.is_some() {
+            return self
+                .candidate
+                .is_none_or(|candidate| candidate.view() != view);
+        }
+        self.requested_target && view != requested
+    }
+
+    /// Selects the exact immutable layer at an explicit authoring/use boundary.
+    ///
+    /// This supplies decoding context only; signatures, Original scopes and
+    /// complete input histories remain mandatory before the layer may be used.
+    #[cfg(feature = "std")]
+    pub(crate) fn overlay_layer(mut self, view: Digest, root: Digest) -> Self {
+        self.overlay_layer = Some((view, root));
+        self
+    }
+
+    /// Checks the requested serving target while authenticating its source ancestry.
+    ///
+    /// Explicit maintenance qualification remains distinct and takes precedence.
+    pub(crate) fn requested_target(mut self) -> Self {
+        self.requested_target = true;
         self
     }
 
@@ -92,27 +221,64 @@ impl<'a> HistoryObservation<'a> {
     /// # Errors
     /// Rejects invalid candidate witnesses, missing metadata, or trace contradictions.
     #[cfg(feature = "std")]
-    pub(crate) async fn record_candidate<S: crate::store::ContentStore>(
+    pub(crate) async fn record_candidate<S: crate::store::ContentStore, C>(
         self,
-        store: &S,
+        guard: &Guard<S, C>,
         admitted: &super::AdmittedCommit,
-        minimum: u64,
     ) -> Result<(), StoreFailure> {
         if let Some(consumed) = self.consumed {
-            let evidence = TreeEvidence::load_tree(
-                store,
+            guard.capture_candidate_inputs(admitted)?;
+            let evidence = TreeEvidence::load_tree_for(
+                guard.store(),
                 admitted.commit.commit().tree,
                 &admitted.uploads,
-                minimum,
+                guard.config().min_chunk_size,
+                admitted.tree_usage,
             )
             .await?;
+            #[cfg(unix)]
+            if guard.has_view_selection(admitted.commit.identity())? {
+                let original = guard.original_commit(&admitted.commit.identity())?;
+                consumed.historical_issuer(&admitted.commit, &original)?;
+            } else {
+                consumed.issuer(&admitted.commit)?;
+            }
+            #[cfg(not(unix))]
             consumed.issuer(&admitted.commit)?;
-            let pending = completion::PendingViewUse::prepare(
+            // Only successful pure preparation is reusable. All independently
+            // fresh physical, selected-input and issuer checks above still run.
+            let key = candidate_preparation::Key::capture(
+                guard,
+                self.held,
+                &admitted.completion_inputs,
+                &admitted.commit,
+                &evidence,
+                admitted.tree_usage,
+            );
+            consumed.prepare_candidate(
+                key,
                 &admitted.completion_inputs,
                 &admitted.commit,
                 &evidence,
             )?;
-            consumed.pending_view(&pending)?;
+        }
+        Ok(())
+    }
+    /// Reports whether the observation borrows this exact operation trace.
+    #[cfg(feature = "std")]
+    pub(crate) fn tracks(self, consumed: &super::consumed::ConsumedResolver) -> bool {
+        self.consumed
+            .is_some_and(|actual| std::ptr::eq(actual, consumed))
+    }
+
+    /// Checks the actual operation trace before final publication effects.
+    ///
+    /// # Errors
+    /// Rejects inconsistent canonical observations or unavailable synchronization.
+    #[cfg(feature = "std")]
+    pub(crate) fn finish(self) -> Result<(), StoreFailure> {
+        if let Some(consumed) = self.consumed {
+            consumed.finish()?;
         }
         Ok(())
     }
@@ -164,12 +330,180 @@ impl CompletedViewUse {
     }
 }
 
+/// Authenticates namespace provenance without certifying auxiliary index coverage.
+///
+/// Only the complete owning history walk constructs this capability. It cannot
+/// enter `complete_views` or certify its own auxiliary serving coverage.
+#[cfg(feature = "std")]
+pub(super) struct SourceResolvedViewUse {
+    prepared: completion::PendingViewUse,
+}
+
+#[cfg(feature = "std")]
+impl SourceResolvedViewUse {
+    /// Borrows authenticated source data without exposing capability construction.
+    pub(super) fn prepared(&self) -> &completion::PendingViewUse {
+        &self.prepared
+    }
+}
+
+/// Retains semantic candidate checks without promoting any view or history.
+///
+/// Only the owning verifier constructs this pending data. Promotion also needs
+/// the producer's combined actual Original, selected and artifact closing check.
+#[cfg(all(feature = "std", feature = "tokio", unix))]
+pub(crate) struct PendingCandidateHistory<'scope, 'history> {
+    history: Box<VerifiedHistory>,
+    selection: super::view_selection::CandidateInputs,
+    requested: Digest,
+    observation: HistoryObservation<'history>,
+    reads: &'scope dyn crate::bucket::held::NodeReads,
+    pending_uses: BTreeMap<Digest, completion::PendingViewUse>,
+}
+
+/// Pairs a closed candidate selection with its freshly completed staged history.
+///
+/// Only the owning verifier constructs this after the tracked history walk
+/// completes. This does not select a ref or cache an index coverage result.
+#[cfg(feature = "std")]
+pub(crate) struct CompletedCandidateHistory {
+    history: VerifiedHistory,
+    selection: super::view_selection::CandidateInputs,
+}
+
+#[cfg(feature = "std")]
+impl CompletedCandidateHistory {
+    /// Borrows the exact ordinary candidate inputs used by the completed walk.
+    pub(super) fn selection(&self) -> &super::view_selection::CandidateInputs {
+        &self.selection
+    }
+
+    /// Borrows the complete genuine history checked for this candidate.
+    pub(super) fn history(&self) -> &VerifiedHistory {
+        &self.history
+    }
+}
+
+/// Retains a tree together with the dependency graph completed for that exact commit.
+///
+/// Only this Guard-owned verifier initializes the private paired fields. Neither
+/// component is current collection permission; the producer checks current roots
+/// and holds independently before constructing its private retirement carrier.
+#[cfg(feature = "std")]
+pub(crate) struct VerifiedCollectionTree {
+    tree: VerifiedTree,
+    completed: CompletedCollectionHistory,
+    interpretation: super::recorded_properties::SelectedReadInterpretation,
+}
+
+#[cfg(feature = "std")]
+impl VerifiedCollectionTree {
+    /// Borrows the exact immutable canonical tree whose signed history completed.
+    pub(crate) fn tree(&self) -> &VerifiedTree {
+        &self.tree
+    }
+
+    /// Borrows the completed dependency observation paired with this signed tree.
+    pub(crate) fn completed(&self) -> &CompletedCollectionHistory {
+        &self.completed
+    }
+}
+
+/// Pairs a signature-checked commit with its addressed canonical tree evidence.
+///
+/// The private loader constructs this before complete history verification.
+/// Owning callers must finish Original and history checks before using it as
+/// provenance evidence; this value supplies no current operation authority.
 pub(crate) struct VerifiedTree {
+    /// Retains the commit authenticated against its original signed claims.
     pub(crate) commit: VerifiedCommit,
+    /// Retains addressed metadata for the exact signed tree and decoding usage.
     pub(crate) evidence: TreeEvidence,
+    /// Retains the independently selected interpretation for this view and root.
+    interpretation: super::recorded_properties::SelectedReadInterpretation,
 }
 
 impl<S: Store, C: Clock> Guard<S, C> {
+    /// Completes staged candidate history using its actual tracked operation inputs.
+    ///
+    /// # Errors
+    /// Rejects missing candidate or trace, a substituted view, and every owning
+    /// signature, Original, history, disclosure, profile or index relationship failure.
+    #[cfg(feature = "std")]
+    pub(crate) async fn complete_candidate_history_observed(
+        &self,
+        view: Digest,
+        observation: HistoryObservation<'_>,
+    ) -> Result<CompletedCandidateHistory, StoreFailure> {
+        let selected = observation.candidate.ok_or_else(invalid)?;
+        if selected.view() != view || observation.consumed.is_none() {
+            return Err(invalid());
+        }
+        let history = self.verified_history_observed(view, observation).await?;
+        Ok(CompletedCandidateHistory {
+            history,
+            selection: selected.clone(),
+        })
+    }
+
+    /// Prepares candidate relationships from one actual held Node read scope.
+    ///
+    /// The sealed reader supplies bytes only. Signatures, provenance and actual
+    /// Original checks still use this Guard's owning verifier. The returned
+    /// pending data promotes no view and constructs no completion receipt.
+    ///
+    /// # Errors
+    /// Preserves every ordinary candidate/history failure and refuses changed or
+    /// unavailable physical and selected evidence consumed by the Node reader.
+    #[cfg(all(feature = "std", feature = "tokio", unix))]
+    pub(crate) async fn prepare_candidate_history_with_node_reads<'scope, 'history: 'scope>(
+        &self,
+        view: Digest,
+        observation: HistoryObservation<'history>,
+        reads: &'scope dyn crate::bucket::held::NodeReads,
+    ) -> Result<PendingCandidateHistory<'scope, 'history>, StoreFailure> {
+        let selected = observation.candidate.ok_or_else(invalid)?;
+        if selected.view() != view || observation.consumed.is_none() {
+            return Err(invalid());
+        }
+        reads.check_holder(observation.held.ok_or_else(invalid)?)?;
+        self.prepare_history_with_node_reads(view, observation, reads)
+            .await
+    }
+
+    /// Promotes pending candidate history after one genuine combined closure.
+    ///
+    /// This synchronous boundary performs no await after physical closing checks.
+    ///
+    /// # Errors
+    /// Refuses a different closed scope, changed current inputs or contradictory
+    /// view promotion without constructing a completed candidate receipt.
+    #[cfg(all(feature = "std", feature = "tokio", unix))]
+    pub(crate) fn promote_candidate_history(
+        &self,
+        pending: PendingCandidateHistory<'_, '_>,
+        checked: crate::store::native_publication_effects::CheckedHistoryInputs<'_, '_, '_>,
+    ) -> Result<CompletedCandidateHistory, StoreFailure> {
+        checked.check_candidate_scope(pending.observation, pending.reads)?;
+        self.promote_prepared_view_inputs::<false, false>(
+            pending.requested,
+            pending.observation,
+            pending.pending_uses,
+            &pending.history,
+        )?;
+        Ok(CompletedCandidateHistory {
+            history: *pending.history,
+            selection: pending.selection,
+        })
+    }
+
+    /// Loads an exact signed tree and completes its canonical dependency history.
+    ///
+    /// The result supplies immutable provenance evidence without current rights.
+    ///
+    /// # Errors
+    /// Preserves metadata, signature, selected interpretation, complete history
+    /// and protected Original failures under the default observation.
     pub(crate) async fn verified_tree(
         &self,
         identity: Digest,
@@ -205,19 +539,86 @@ impl<S: Store, C: Clock> Guard<S, C> {
         identity: Digest,
         observation: HistoryObservation<'_>,
     ) -> Result<(VerifiedTree, VerifiedHistory), StoreFailure> {
-        let verified = self.signed_tree(identity).await?;
+        let verified = self.signed_tree(identity, observation).await?;
         let history = self
             .verified_history_observed(identity, observation)
             .await?;
         Ok((verified, history))
     }
 
+    /// Retains the exact tree and fully completed collection dependency graph.
+    ///
+    /// This operation-local result provides no current collection or deletion
+    /// authority. The collector separately checks current roots, lease, original
+    /// controls, actual holder and every absolute proof occurrence.
+    ///
+    /// # Errors
+    /// Preserves signature, scope, history, certificate and protected-control errors.
+    #[cfg(feature = "std")]
+    pub(crate) async fn verified_collection_tree_observed(
+        &self,
+        identity: Digest,
+        observation: HistoryObservation<'_>,
+    ) -> Result<VerifiedCollectionTree, StoreFailure> {
+        let tree = if let Some((selected, root)) = observation.overlay_layer {
+            if selected != identity {
+                return Err(invalid());
+            }
+            let tree = self
+                .signed_tree_for(
+                    identity,
+                    observation,
+                    terrane_core::tree_format::TreeUse::OverlayLayer,
+                )
+                .await?;
+            if tree.evidence.root != root {
+                return Err(invalid());
+            }
+            tree
+        } else {
+            self.signed_tree(identity, observation).await?
+        };
+        let completed = self
+            .complete_collection_history_observed(identity, observation)
+            .await?;
+        let interpretation = tree.interpretation.clone();
+        Ok(VerifiedCollectionTree {
+            tree,
+            completed,
+            interpretation,
+        })
+    }
+
     // This private value authenticates a signature only. Canonical original
     // scope and protected association must be checked before any caller uses
     // the record as policy or origin authority.
-    async fn signed_tree(&self, identity: Digest) -> Result<VerifiedTree, StoreFailure> {
-        let evidence =
-            TreeEvidence::load_commit(self.store(), identity, self.config().min_chunk_size).await?;
+    async fn signed_tree(
+        &self,
+        identity: Digest,
+        observation: HistoryObservation<'_>,
+    ) -> Result<VerifiedTree, StoreFailure> {
+        self.signed_tree_for(
+            identity,
+            observation,
+            terrane_core::tree_format::TreeUse::Ordinary,
+        )
+        .await
+    }
+
+    /// Authenticates an explicitly selected layer without changing ordinary reads.
+    async fn signed_tree_for(
+        &self,
+        identity: Digest,
+        observation: HistoryObservation<'_>,
+        usage: terrane_core::tree_format::TreeUse,
+    ) -> Result<VerifiedTree, StoreFailure> {
+        let evidence = TreeEvidence::load_commit_for(
+            self.store(),
+            identity,
+            self.config().min_chunk_size,
+            usage,
+        )
+        .await?;
         let commit = evidence.commit.as_ref().ok_or_else(invalid)?;
         if commit.profile_pair.chunk_profile != self.config().chunk_profile_name
             || self.config().min_chunk_size != self.config().chunk_profile.minimum() as u64
@@ -229,35 +630,44 @@ impl<S: Store, C: Clock> Guard<S, C> {
             .commit_context
             .as_ref()
             .ok_or_else(invalid)?;
-        // Complete disclosure validation owns audit-edge cuts. Refuse this
-        // ordinary loader before it can follow a private certified parent.
-        if commit
+        let has_disclosures = commit
             .profile_pair
             .entry_receipts
             .iter()
             .flatten()
-            .any(|receipt| receipt.disclosure_proof.is_some())
-        {
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-        }
-        let mut witnessed = self.authoring_roots(&evidence)?;
+            .any(|receipt| receipt.disclosure_proof.is_some());
+        // A certified candidate is authenticated against its signed claims only.
+        // Complete candidate validation checks actual root scope before exposing
+        // history; it alone determines whether any private parent is audit-only.
+        let interpretation = self.select_view(identity, evidence.root, observation)?;
+        let mut witnessed = interpretation.historical_roots(
+            &evidence,
+            self.config().min_chunk_size,
+            self.defaults_for(&evidence),
+        )?;
         let missing_candidate_claim = context.roots().iter().any(|claim| {
             !witnessed
                 .iter()
                 .any(|(path, domain)| path.as_slice() == claim.path() && domain == claim.domain())
         });
-        if missing_candidate_claim {
+        if !has_disclosures && missing_candidate_claim {
             let parent = commit.parents.first().ok_or_else(invalid)?;
             let previous =
                 TreeEvidence::load_commit(self.store(), *parent, self.config().min_chunk_size)
                     .await?;
-            witnessed.extend(self.authoring_roots(&previous)?);
+            witnessed.extend(interpretation.historical_roots(
+                &previous,
+                self.config().min_chunk_size,
+                self.defaults_for(&previous),
+            )?);
         }
-        if context.roots().iter().any(|claim| {
-            !witnessed
-                .iter()
-                .any(|(path, domain)| path.as_slice() == claim.path() && domain == claim.domain())
-        }) {
+        if !has_disclosures
+            && context.roots().iter().any(|claim| {
+                !witnessed.iter().any(|(path, domain)| {
+                    path.as_slice() == claim.path() && domain == claim.domain()
+                })
+            })
+        {
             return Err(invalid());
         }
         let roots = context
@@ -269,16 +679,50 @@ impl<S: Store, C: Clock> Guard<S, C> {
             })
             .collect::<Vec<_>>();
         let epochs = [(context.reference(), commit.provenance.writer_epoch)];
-        let commit = provenance::verify_history(commit, self.keys(), &roots, &epochs)
-            .map_err(|_| invalid())?;
+        // Signature-only loading may encounter a genuinely local newly signed
+        // view before owning Original verification. Only an already retained
+        // imported context supplies alternate keys; a present import failure
+        // never falls back to configured local keys. Complete history below
+        // still requires the exact protected Original association.
+        #[cfg(all(feature = "std", unix))]
+        let historical_keys = {
+            let retained = self
+                .original_commits
+                .read()
+                .map_err(|_| {
+                    StoreFailure::new(crate::store::StoreErrorKind::Unavailable {
+                        retry_after: None,
+                    })
+                })?
+                .get(&identity)
+                .cloned();
+            match retained {
+                Some(original) => original.historical_keys()?,
+                None => None,
+            }
+        };
+        #[cfg(all(feature = "std", unix))]
+        let keys = historical_keys.as_deref().unwrap_or(self.keys());
+        #[cfg(not(all(feature = "std", unix)))]
+        let keys = self.keys();
+        let commit =
+            provenance::verify_history(commit, keys, &roots, &epochs).map_err(|_| invalid())?;
         if commit.identity() != identity {
             return Err(invalid());
         }
-        Ok(VerifiedTree { commit, evidence })
+        Ok(VerifiedTree {
+            commit,
+            evidence,
+            interpretation,
+        })
     }
 
     /// Loads parents and explicit source receipts before checking every entry
     /// introduction and independent attribute producer against complete trees.
+    ///
+    /// # Errors
+    /// Rejects incomplete or unverifiable canonical history and protected associations.
+    #[cfg(feature = "std")]
     pub(crate) async fn verified_history(
         &self,
         identity: Digest,
@@ -296,147 +740,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         identity: Digest,
         observation: HistoryObservation<'_>,
     ) -> Result<VerifiedHistory, StoreFailure> {
-        let mut history =
-            VerifiedHistory::new_selected(self.config().min_chunk_size, self.semantic_selection());
-        let mut pending = vec![identity];
-        let mut visited = BTreeSet::new();
-        let mut locations = Vec::new();
-        let mut domains = BTreeMap::new();
-        #[cfg(feature = "std")]
-        let mut active_plans = Vec::new();
-        #[cfg(feature = "std")]
-        let mut prepared_views = BTreeMap::new();
-        while let Some(identity) = pending.pop() {
-            if !visited.insert(identity) {
-                continue;
-            }
-            let verified = self.signed_tree(identity).await?;
-            #[cfg(feature = "std")]
-            if let Some(consumed) = observation.consumed {
-                consumed.issuer(&verified.commit)?;
-                let prepared = completion::PendingViewUse::prepare(
-                    &self.completion_inputs()?,
-                    &verified.commit,
-                    &verified.evidence,
-                )?;
-                consumed.pending_view(&prepared)?;
-                prepared_views.insert(identity, prepared);
-            }
-            #[cfg(feature = "std")]
-            if self.semantic_selection() == terrane_core::properties::selected::Selection::Active {
-                active_plans.push(completion::active::plan(
-                    &verified.evidence,
-                    &self.completion_inputs()?,
-                )?);
-            }
-            domains.insert(identity, verified.evidence.default_domain.clone());
-            pending.extend(verified.commit.commit().parents.iter().copied());
-            pending.extend(provenance::source_commit_references(&verified.commit));
-            history
-                .insert_commit(verified.commit)
-                .map_err(|_| invalid())?;
-
-            // Core Trees contain local Rc sharing. Keep this CPU-only witness
-            // phase inside the iteration, before the next asynchronous fetch.
-            for root in &verified.evidence.roots {
-                let tree = verified
-                    .evidence
-                    .tree(*root, self.config().min_chunk_size)?;
-                let nodes = tree
-                    .nodes()
-                    .map(|node| (node.identity(), node.encoded().to_vec()))
-                    .collect::<Vec<_>>();
-                history.insert_tree(*root, &nodes).map_err(|_| invalid())?;
-                for entry in tree.iter() {
-                    locations.push((
-                        EntryLocation {
-                            commit: identity,
-                            root: *root,
-                            path: entry.key.clone(),
-                        },
-                        entry
-                            .entry
-                            .attrs
-                            .iter()
-                            .map(|attribute| attribute.name.to_owned())
-                            .collect::<Vec<_>>(),
-                    ));
-                }
-            }
-        }
-        // Canonical context verification requires the actual first parent to
-        // have checked scope first. No caller-supplied ordering or root label
-        // can mint that history authority.
-        let mut remaining = visited;
-        while !remaining.is_empty() {
-            let ready = remaining
-                .iter()
-                .filter(|identity| {
-                    history.commit(identity).is_some_and(|commit| {
-                        commit
-                            .commit()
-                            .parents
-                            .iter()
-                            .all(|parent| !remaining.contains(parent))
-                    })
-                })
-                .copied()
-                .collect::<Vec<_>>();
-            if ready.is_empty() {
-                return Err(invalid());
-            }
-            for identity in ready {
-                self.check_original_scope(
-                    &mut history,
-                    identity,
-                    domains.get(&identity).ok_or_else(invalid)?,
-                    observation,
-                )
-                .await?;
-                remaining.remove(&identity);
-            }
-        }
-
-        for (location, attributes) in locations {
-            history
-                .introducing_commit(&location)
-                .map_err(|_| invalid())?;
-            for name in attributes {
-                history
-                    .attribute_producer(&location, &name)
-                    .map_err(|_| invalid())?;
-            }
-        }
-        #[cfg(feature = "std")]
-        for plan in &active_plans {
-            completion::active::check_relationships(
-                self.store(),
-                plan,
-                self.config().min_chunk_size,
-            )
-            .await?;
-        }
-        #[cfg(feature = "std")]
-        if self.semantic_selection() == terrane_core::properties::selected::Selection::Active {
-            // Active metadata awaits cannot preserve an earlier native check by
-            // assertion. Reread every actual reached Original association.
-            for view in domains.keys() {
-                let context = self.original_commit(view)?;
-                self.revalidate_original_context(&context, observation)
-                    .await?;
-            }
-        }
-        // No prepared view becomes completed until the entire invocation has
-        // passed Original scope, entry-origin and attribute-producer verification.
-        #[cfg(feature = "std")]
-        if let Some(consumed) = observation.consumed {
-            let completed = prepared_views
-                .into_values()
-                .map(|prepared| CompletedViewUse { prepared })
-                .collect::<Vec<_>>();
-            consumed.complete_views(&completed)?;
-        }
-        Ok(history)
+        self.complete_history_observed(identity, observation).await
     }
 
     #[cfg(feature = "std")]
@@ -456,8 +760,12 @@ impl<S: Store, C: Clock> Guard<S, C> {
             epoch: baseline.epoch(),
         };
         let checked = match observation.held {
+            Some(held) if held.writable() => {
+                self.recheck_original_commit_observed(baseline, association, held)
+                    .await?
+            }
             Some(held) => {
-                self.check_original_commit_held(baseline, association, held)
+                self.recheck_original_commit_read_observed(baseline, association, held)
                     .await?
             }
             None => self.check_original_commit(baseline, association).await?,
@@ -485,7 +793,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
             private_domain,
             home: self.config().home.region.as_deref().unwrap_or("local"),
         };
-        provenance::verify_root_context_with_bootstrap(
+        let root = history.commit(&identity).ok_or_else(invalid)?.commit().tree;
+        let interpretation = self.select_view(identity, root, observation)?;
+        interpretation.verify_original_scope(
             history,
             identity,
             defaults,
@@ -496,8 +806,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 writer_epoch: baseline.epoch(),
                 acl: &acl,
             },
-        )
-        .map_err(|_| invalid())?;
+        )?;
         Ok(())
     }
 
@@ -510,5 +819,25 @@ impl<S: Store, C: Clock> Guard<S, C> {
         _observation: HistoryObservation<'_>,
     ) -> Result<(), StoreFailure> {
         Err(StoreFailure::new(StoreErrorKind::Unsupported))
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl<S, C> Guard<S, C> {
+    /// Projects the native-free deliberately configured selection as ordinary data.
+    ///
+    /// # Errors
+    /// Preserves unsupported or unnormalized selection errors.
+    pub(super) fn select_view(
+        &self,
+        view: Digest,
+        root: Digest,
+        observation: HistoryObservation<'_>,
+    ) -> Result<super::recorded_properties::SelectedReadInterpretation, StoreFailure> {
+        super::recorded_properties::SelectedReadInterpretation::from_selection(
+            view,
+            root,
+            self.view_semantics(view, root, observation)?,
+        )
     }
 }

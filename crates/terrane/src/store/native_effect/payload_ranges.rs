@@ -17,7 +17,12 @@ use std::path::Path;
 #[cfg(all(feature = "tokio", unix))]
 use super::{MetadataStamp, NodeKind, ParentFence};
 #[cfg(all(feature = "tokio", unix))]
-use std::{fs::File, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock, Weak},
+};
 
 /// Carries a sealed original-descriptor capture, bounded read or physical check.
 ///
@@ -31,6 +36,8 @@ pub struct NativePayloadRangeRead {
     recipe: Recipe,
     #[cfg(all(test, feature = "tokio", unix))]
     before_read: Option<Box<dyn FnOnce() + Send>>,
+    #[cfg(all(test, feature = "tokio", unix))]
+    before_leaf_open: Option<Box<dyn FnOnce() + Send>>,
 }
 
 /// Returns actual original-descriptor data or a completed physical observation.
@@ -94,8 +101,153 @@ struct OriginalPayload {
     length: u64,
     modified: (i64, i64),
     changed: (i64, i64),
-    file: File,
-    directories: Vec<File>,
+    file: Arc<File>,
+    directories: Vec<Arc<File>>,
+}
+
+/// Identifies one exact named directory incarnation, with directory kind fixed.
+#[cfg(all(feature = "tokio", unix))]
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct DirectoryKey {
+    path: PathBuf,
+    identity: (u64, u64),
+    owner: u32,
+    mode: u32,
+}
+
+/// Keeps weak identity rows with amortized cleanup during unique-key growth.
+#[cfg(all(feature = "tokio", unix))]
+struct DirectoryIndex {
+    entries: BTreeMap<DirectoryKey, Weak<File>>,
+    next_prune: usize,
+}
+
+#[cfg(all(feature = "tokio", unix))]
+impl DirectoryIndex {
+    fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            next_prune: 32,
+        }
+    }
+
+    fn insert(&mut self, key: DirectoryKey, directory: &Arc<File>) {
+        self.entries.insert(key, Arc::downgrade(directory));
+        if self.entries.len() < self.next_prune {
+            return;
+        }
+
+        // Hits never scan the index. Dead rows own no descriptors; geometric
+        // growth bounds their memory without rescanning every live ancestor.
+        self.entries
+            .retain(|_, directory| directory.strong_count() != 0);
+        self.next_prune = self.entries.len().saturating_mul(2).max(32);
+    }
+}
+
+/// Shares only original handles; each capture still opens and validates freshly.
+#[cfg(all(feature = "tokio", unix))]
+fn intern_directory(path: &Path, stamp: MetadataStamp, opened: File) -> io::Result<Arc<File>> {
+    static DIRECTORIES: OnceLock<Mutex<DirectoryIndex>> = OnceLock::new();
+
+    let key = DirectoryKey {
+        path: path.to_owned(),
+        identity: stamp.identity,
+        owner: stamp.owner,
+        mode: stamp.mode,
+    };
+    let opened = Arc::new(opened);
+    let original = {
+        let mut directories = DIRECTORIES
+            .get_or_init(|| Mutex::new(DirectoryIndex::new()))
+            .lock()
+            .map_err(|_| io::Error::other("original directory handle index poisoned"))?;
+        match directories.entries.get(&key).and_then(Weak::upgrade) {
+            Some(original) => original,
+            None => {
+                directories.insert(key, &opened);
+                Arc::clone(&opened)
+            }
+        }
+    };
+
+    // The process index owns no descriptor or successful observation. Strong
+    // ownership belongs to the original operation and its submitted workers.
+    // Sharing cannot bypass a fresh capture's open errors or any later checks.
+    let metadata = MetadataStamp::checked(&original.metadata()?)?;
+    validate_parent(metadata)?;
+    if !metadata.same_incarnation(stamp) {
+        return Err(io::Error::other(
+            "original directory handle incarnation changed",
+        ));
+    }
+
+    Ok(original)
+}
+
+/// Identifies an exact named regular-file incarnation without caching observations.
+#[cfg(all(feature = "tokio", unix))]
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct PayloadKey {
+    path: PathBuf,
+    identity: (u64, u64),
+    owner: u32,
+    mode: u32,
+    links: u64,
+}
+
+/// Keeps weak leaf handles with geometric cleanup during unique-key growth.
+#[cfg(all(feature = "tokio", unix))]
+struct PayloadIndex {
+    entries: BTreeMap<PayloadKey, Weak<File>>,
+    next_prune: usize,
+}
+
+#[cfg(all(feature = "tokio", unix))]
+impl PayloadIndex {
+    fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            next_prune: 32,
+        }
+    }
+
+    fn insert(&mut self, key: PayloadKey, file: &Arc<File>) {
+        self.entries.insert(key, Arc::downgrade(file));
+        if self.entries.len() < self.next_prune {
+            return;
+        }
+
+        // Hits perform no scan. Dead rows own no handles; geometric pruning
+        // amortizes their cleanup without repeatedly visiting live receipts.
+        self.entries.retain(|_, file| file.strong_count() != 0);
+        self.next_prune = self.entries.len().saturating_mul(2).max(32);
+    }
+}
+
+/// Shares only a live file handle after the complete fresh capture has checked it.
+#[cfg(all(feature = "tokio", unix))]
+fn intern_payload(path: &Path, stamp: MetadataStamp, opened: &Arc<File>) -> io::Result<Arc<File>> {
+    static PAYLOADS: OnceLock<Mutex<PayloadIndex>> = OnceLock::new();
+
+    let key = PayloadKey {
+        path: path.to_owned(),
+        identity: stamp.identity,
+        owner: stamp.owner,
+        mode: stamp.mode,
+        links: stamp.links,
+    };
+    let mut files = PAYLOADS
+        .get_or_init(|| Mutex::new(PayloadIndex::new()))
+        .lock()
+        .map_err(|_| io::Error::other("original payload handle index poisoned"))?;
+    match files.entries.get(&key).and_then(Weak::upgrade) {
+        Some(original) => Ok(original),
+        None => {
+            files.insert(key, opened);
+            Ok(Arc::clone(opened))
+        }
+    }
 }
 
 #[cfg(all(feature = "tokio", unix))]
@@ -329,6 +481,8 @@ impl NativePayloadRangeRead {
             recipe,
             #[cfg(test)]
             before_read: None,
+            #[cfg(test)]
+            before_leaf_open: None,
         }
     }
 
@@ -379,9 +533,11 @@ impl NativePayloadRangeRead {
     pub(in crate::store) fn execute(self) -> io::Result<NativePayloadRangeRecord> {
         let outcome = match self.recipe {
             Recipe::Probe => Outcome::Supported,
-            Recipe::Capture { path } => {
-                Outcome::Captured(Arc::new(OriginalPayload::capture(path)?))
-            }
+            Recipe::Capture { path } => Outcome::Captured(Arc::new(OriginalPayload::capture(
+                path,
+                #[cfg(test)]
+                self.before_leaf_open,
+            )?)),
             Recipe::Read { original, range } => {
                 #[cfg(test)]
                 if let Some(before_read) = self.before_read {
@@ -400,7 +556,10 @@ impl NativePayloadRangeRead {
 
 #[cfg(all(feature = "tokio", unix))]
 impl OriginalPayload {
-    fn capture(path: PathBuf) -> io::Result<Self> {
+    fn capture(
+        path: PathBuf,
+        #[cfg(test)] before_leaf_open: Option<Box<dyn FnOnce() + Send>>,
+    ) -> io::Result<Self> {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
         if !path.is_absolute() {
@@ -438,17 +597,21 @@ impl OriginalPayload {
                 path: prefix.clone(),
                 stamp,
             });
-            directories.push(directory);
+            directories.push(intern_directory(&prefix, stamp, directory)?);
         }
 
         let before = std::fs::symlink_metadata(&path)?;
         let stamp = MetadataStamp::checked(&before)?;
         validate_leaf(stamp)?;
+        #[cfg(test)]
+        if let Some(before_leaf_open) = before_leaf_open {
+            before_leaf_open();
+        }
         let file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(&path)?;
-        let original = Self {
+        let mut original = Self {
             path,
             parents,
             stamp,
@@ -456,10 +619,16 @@ impl OriginalPayload {
             modified: (before.mtime(), before.mtime_nsec()),
             changed: (before.ctime(), before.ctime_nsec()),
             metadata: before,
-            file,
+            file: Arc::new(file),
             directories,
         };
         original.check()?;
+
+        // Every capture opens and checks its own descriptor before considering
+        // sharing. Only the handle is interned: ancestry, metadata and consumed
+        // ranges remain independent, and the weak index grants no authority.
+        original.file = intern_payload(&original.path, original.stamp, &original.file)?;
+        original.check_leaf(&original.file.metadata()?)?;
         Ok(original)
     }
 

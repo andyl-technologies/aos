@@ -73,6 +73,93 @@ impl CheckedHistoryInputs<'_, '_, '_> {
     }
 }
 
+type RecordPathIndices<'controls> = std::collections::BTreeMap<&'controls std::path::Path, usize>;
+
+type ControlDirectory<'controls> = (
+    &'controls crate::guard::RetainedControls,
+    Option<RecordPathIndices<'controls>>,
+);
+
+/// Borrows exact immutable control inputs for one candidate closing lookup.
+///
+/// The first directory receipt remains selected, including when it lacks a
+/// record carried by a later receipt. Physical closing still checks every
+/// retained receipt independently after these immutable lookups.
+pub(super) struct ControlPinRecords<'controls> {
+    directories: std::collections::BTreeMap<&'controls [u8], ControlDirectory<'controls>>,
+    #[cfg(test)]
+    joined_paths: usize,
+    #[cfg(test)]
+    indexed_records: usize,
+}
+
+impl<'controls> ControlPinRecords<'controls> {
+    /// Borrows the first receipt for each exact encoded directory name.
+    pub(super) fn new(controls: &'controls [crate::guard::RetainedControls]) -> Self {
+        let mut directories = std::collections::BTreeMap::new();
+        for retained in controls {
+            directories
+                .entry(retained.directory().as_os_str().as_encoded_bytes())
+                .or_insert((retained, None));
+        }
+
+        Self {
+            directories,
+            #[cfg(test)]
+            joined_paths: 0,
+            #[cfg(test)]
+            indexed_records: 0,
+        }
+    }
+
+    /// Checks one pin in the caller's unchanged processing order.
+    ///
+    /// # Errors
+    /// Refuses unsupported owner registrations and missing exact directories or
+    /// records. Changed consumed bytes remain corruption. The index performs
+    /// no filesystem observation or current authority check.
+    pub(super) fn check(&mut self, pin: &RequiredControlPin) -> Result<(), StoreFailure> {
+        let PhysicalRegistration::Local(owner) = &pin.owner else {
+            return Err(unsupported());
+        };
+        let (retained, records) = self
+            .directories
+            .get_mut(owner.control.as_slice())
+            .ok_or_else(unsupported)?;
+
+        if records.is_none() {
+            let mut indexed = std::collections::BTreeMap::new();
+            for (index, record) in retained.records().iter().enumerate() {
+                // Keep the scalar first-match rule even for repeated paths.
+                indexed.entry(record.path()).or_insert(index);
+                #[cfg(test)]
+                {
+                    self.indexed_records += 1;
+                }
+            }
+            *records = Some(indexed);
+        }
+
+        let path = retained.directory().join(&pin.key);
+        #[cfg(test)]
+        {
+            self.joined_paths += 1;
+        }
+        let index = records
+            .as_ref()
+            .and_then(|records| records.get(path.as_path()))
+            .ok_or_else(unsupported)?;
+        let record = retained.records().get(*index).ok_or_else(corrupt)?;
+        pin.check_record(record.bytes()).map_err(|_| corrupt())
+    }
+
+    /// Returns separately measured immutable lookup work for focused tests.
+    #[cfg(test)]
+    pub(super) fn work(&self) -> (usize, usize) {
+        (self.indexed_records, self.joined_paths)
+    }
+}
+
 /// Checks one complete original physical input set in the native read lane.
 ///
 /// The actual namespace and administrative exclusions remain owned by the
@@ -104,23 +191,9 @@ pub(crate) async fn close_history_inputs<'scope, 'history, 'held, F: LocalFs + B
     }
 
     let pins = history.resolver().ok_or_else(unsupported)?.control_pins()?;
+    let mut control_records = ControlPinRecords::new(context.controls());
     for pin in &pins {
-        let PhysicalRegistration::Local(owner) = &pin.owner else {
-            return Err(unsupported());
-        };
-        let retained = context
-            .controls()
-            .iter()
-            .find(|retained| {
-                retained.directory().as_os_str().as_encoded_bytes() == owner.control.as_slice()
-            })
-            .ok_or_else(unsupported)?;
-        let record = retained
-            .records()
-            .iter()
-            .find(|record| record.path() == retained.directory().join(&pin.key))
-            .ok_or_else(unsupported)?;
-        pin.check_record(record.bytes()).map_err(|_| corrupt())?;
+        control_records.check(pin)?;
     }
 
     let artifacts = scope.begin_closing()?;

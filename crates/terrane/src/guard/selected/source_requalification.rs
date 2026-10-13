@@ -113,6 +113,7 @@ where
         .await?;
     current.check_requalification_source_profile(completed.commit())?;
 
+    consumed.check_completed_target(completed.commit())?;
     let lineage = CheckedLineage {
         source_name: source.to_owned(),
         source: completed.record().clone(),
@@ -151,11 +152,17 @@ where
     }
 
     let requests = retain_final_check(current, completed.requests(), started, timing)?;
+    let snapshot_disclosures = ConsumedResolver::snapshot_disclosure_inputs(current)?;
     let final_snapshot = snapshot.clone();
     let final_authority = authority.clone();
     let comparisons = OwnedFinalCheck {
         check: SharedCheck::new(move || {
-            if ConsumedResolver::new(&configured, &final_authority)?.snapshot_bytes()?
+            if ConsumedResolver::new_with_snapshot_disclosures(
+                &configured,
+                &final_authority,
+                &snapshot_disclosures,
+            )?
+            .snapshot_bytes()?
                 != final_snapshot
             {
                 return Err(invalid());

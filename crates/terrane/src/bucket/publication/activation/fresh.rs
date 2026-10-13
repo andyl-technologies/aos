@@ -1,8 +1,9 @@
-//! Creates actual absent roots and activates their exact retained empty genesis.
+//! Creates absent roots or registers explicit copies with exact retained genesis.
 //!
-//! Only a successful native create-new operation supplies the creator event.
+//! Only a successful native create-new operation supplies the administrative event.
 //! The one submitted worker retains opened parent/root/control descriptors and
 //! actual coordination exclusion through durable Pending and recoverable staging.
+//! Empty-root initialization and D-108 copy staging retain distinct data contracts.
 
 #[cfg(unix)]
 #[path = "bootstrap.rs"]
@@ -14,6 +15,10 @@ mod genesis;
 #[path = "io.rs"]
 mod io;
 
+#[cfg(unix)]
+#[path = "copy.rs"]
+pub(in super::super) mod copy;
+
 #[cfg(all(test, feature = "tokio", unix))]
 #[path = "fresh_tests.rs"]
 pub(super) mod tests;
@@ -21,6 +26,10 @@ pub(super) mod tests;
 #[cfg(all(test, feature = "tokio", unix))]
 #[path = "test_fs.rs"]
 pub(super) mod test_fs;
+
+#[cfg(all(test, feature = "tokio", unix))]
+#[path = "copy_tests.rs"]
+pub(crate) mod copy_tests;
 
 use super::NativePendingRoot;
 use crate::bucket::BucketBinding;
@@ -68,6 +77,9 @@ pub(crate) fn initialize(
 async fn create(
     request: NativePublicationInitialization,
 ) -> Result<NativePublicationInitializationOutcome, StoreFailure> {
+    if request.copy.is_some() {
+        return copy::create(request).await;
+    }
     let owner = request.operator_uid;
     if rustix::process::geteuid().as_raw() != owner {
         return Err(StoreFailure::new(StoreErrorKind::Unsupported));

@@ -31,7 +31,7 @@ pub(crate) use current_history::{CheckedCurrentHistoryInputs, PendingCurrentRead
 #[cfg(feature = "std")]
 mod existing;
 #[cfg(all(feature = "std", feature = "tokio", unix))]
-mod held_history;
+pub(crate) mod held_history;
 mod history;
 #[cfg(all(feature = "tokio", unix))]
 pub(crate) use history::CompletedCandidateHistory;
@@ -485,6 +485,14 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 let current = self
                     .current_history_native(reference, token, verb, record, observation)
                     .await?;
+                #[cfg(all(feature = "std", feature = "tokio", unix))]
+                let current = match current {
+                    Some(tree) => Some(tree),
+                    None => {
+                        self.held_history_native(reference, token, verb, record, observation)
+                            .await?
+                    }
+                };
                 #[cfg(not(all(feature = "std", feature = "tokio", unix)))]
                 let current = None;
 
