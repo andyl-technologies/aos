@@ -1,6 +1,6 @@
-From 3157f824133986b86b4386f09856583929b4fbaf Mon Sep 17 00:00:00 2001
+From d9037e32ec3648d1fc24a35049248190f4b22792 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 13 Oct 2026 21:27:00 +0000
+Date: Tue, 13 Oct 2026 22:17:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -562,6 +562,30 @@ Bind the selected GPL mapping callback to the original parked RR preparation inv
 Four affected complete translation units compile with warnings treated as errors. Native mapping component controls retain explicitly modeled authority certificates. Two actual C/Rust/Linux coupled controls cover successful six-ring HOLD and post-effect source loss; the latter retains the held mapping and publishes no success. These are component results, not an installed pair or a new full emulator link. Earlier full-link evidence remains bound to its original source revision.
 
 Canonical reconstruction preserves the complete signed Git tree and changes exactly eight existing source files. No native source file is created or removed; the license inventory is unchanged. Worker and in-flight callback closure remain reserved. Installed pair, full physical HOLD, Ready, guest, package and release gates remain unqualified.
+
+Integrate source-born firmware publication and original ROM file
+event retention, held RAM lifetime checks, endpoint membership
+before native dereferences, and the original ACPI state/MR tuple.
+Preserve the mapping-only six-ring HOLD path and its status limits;
+the shared early header receives only additive declarations.
+
+Fresh ordinary-feature configuration, fourteen exact affected
+complete translation units with warnings treated as errors and
+their175 required generator commands pass through directly
+recorded AOS Bash dispatch. All64 existing regression controls
+pass on the same coherent source fragments and headers, with
+original authority peers explicitly modeled. Fixture link and
+invocation failures are retained; no production corrections were
+required. This evidence supplies source typing and component
+behavior, not a whole link or package qualification.
+
+Canonical source reconstructs the complete signed3157 tree plus
+exactly16 existing-file posts. It does not copy the configured
+component export, whose inherited shebang normalization, nested
+source omissions and mode limitations remain documented. No files
+are created or deleted and all per-file licenses remain intact.
+Full physical closure, complete FW/ROM seals, installed pair,
+SourceReady, guest and release gates remain unqualified.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -28459,7 +28483,7 @@ index bc9c7a5ab3b989aaac1c8341ab60c52544c45d7a..a149ddbdfb7e8497ada42ffd049e6027
  
  static void rng_backend_init(Object *obj)
 diff --git a/block.c b/block.c
-index f0a6042e616031076bda4618737fdac804431712..11c4bf20da44530c3ea3c5d0eef136ae2ea040f3 100644
+index f0a6042e616031076bda4618737fdac804431712..ff3fe231a99b8abf34a42c837844363f0745e654 100644
 --- a/block.c
 +++ b/block.c
 @@ -24,6 +24,7 @@
@@ -28670,7 +28694,7 @@ index f0a6042e616031076bda4618737fdac804431712..11c4bf20da44530c3ea3c5d0eef136ae
      if (!bs) {
          return;
      }
-@@ -8523,3 +8602,39 @@ void bdrv_bsc_fill(BlockDriverState *bs, int64_t offset, int64_t bytes)
+@@ -8523,3 +8602,46 @@ void bdrv_bsc_fill(BlockDriverState *bs, int64_t offset, int64_t bytes)
          g_free_rcu(old_bsc, rcu);
      }
  }
@@ -28684,6 +28708,13 @@ index f0a6042e616031076bda4618737fdac804431712..11c4bf20da44530c3ea3c5d0eef136ae
 +        return -EPERM;
 +    }
 +    QTAILQ_FOREACH(bs, &all_bdrv_states, bs_list) {
++        CrucibleEndpointOriginalBinding original;
++
++        if (qemu_endpoint_whole_original_owner_read(CRUCIBLE_ORIGINAL_BLOCK_NODE,
++                                                    bs, &original) ||
++            bs->aio_context != original.context) {
++            return -ESTALE;
++        }
 +        if (found || bs != original_bs || !bs->crucible_original_birth ||
 +            !bs->drv || !bs->opaque || bs->in_flight ||
 +            !QLIST_EMPTY(&bs->children)) {
@@ -28711,7 +28742,7 @@ index f0a6042e616031076bda4618737fdac804431712..11c4bf20da44530c3ea3c5d0eef136ae
 +    return found == !!original_bs ? 0 : -ESTALE;
 +}
 diff --git a/block/block-backend.c b/block/block-backend.c
-index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd9718ae5d 100644
+index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..deb8ae9ef4e48e7ef5da096ec6de556863ced5b9 100644
 --- a/block/block-backend.c
 +++ b/block/block-backend.c
 @@ -11,6 +11,7 @@
@@ -28753,7 +28784,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
  };
  
  typedef struct BlockBackendAIOCB {
-@@ -119,6 +137,679 @@ static QTAILQ_HEAD(, BlockBackend) block_backends =
+@@ -119,6 +137,688 @@ static QTAILQ_HEAD(, BlockBackend) block_backends =
  static QTAILQ_HEAD(, BlockBackend) monitor_block_backends =
      QTAILQ_HEAD_INITIALIZER(monitor_block_backends);
  
@@ -28762,7 +28793,8 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
 +    const BlockDevOps *ops = blk->dev_ops;
 +
 +    return (CrucibleEndpointOriginalBinding) {
-+        .owner = blk, .context = blk->ctx, .queue = &blk->queued_requests,
++        .owner = blk, .context = blk->ctx, .methods = ops,
++        .queue = &blk->queued_requests,
 +        .userdata = { blk->dev_opaque, blk->dev, blk->root },
 +        .callbacks = { (uintptr_t)ops->change_media_cb,
 +                       (uintptr_t)ops->eject_request_cb,
@@ -28797,6 +28829,14 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
 +        return -EPERM;
 +    }
 +    QTAILQ_FOREACH(blk, &block_backends, link) {
++        CrucibleEndpointOriginalBinding original;
++
++        if (qemu_endpoint_whole_original_owner_read(CRUCIBLE_ORIGINAL_BLOCK_BACKEND,
++                                                    blk, &original) ||
++            blk->dev_ops != original.methods || blk->ctx != original.context ||
++            blk->root != original.userdata[2]) {
++            return -ESTALE;
++        }
 +        if (found || !original_bs || !blk->crucible_original_bound ||
 +            !blk->root || blk->root->bs != original_bs ||
 +            !blk->dev || !blk->dev_ops || !blk->dev_opaque ||
@@ -29433,7 +29473,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
  static int coroutine_mixed_fn GRAPH_RDLOCK
  blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
                      Error **errp);
-@@ -199,6 +890,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
+@@ -199,6 +899,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
      }
  
      blk->disable_perm = false;
@@ -29441,7 +29481,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
  
      /*
       * blk->shared_perm contains the permissions we want to share once
-@@ -213,9 +905,11 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
+@@ -213,9 +914,11 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
      if (local_err) {
          error_propagate(errp, local_err);
          blk->disable_perm = true;
@@ -29453,7 +29493,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
  
      if (runstate_check(RUN_STATE_INMIGRATE)) {
          /* Activation can happen when migration process is still active, for
-@@ -232,6 +926,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
+@@ -232,6 +935,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
      if (local_err) {
          error_propagate(errp, local_err);
          blk->disable_perm = true;
@@ -29461,7 +29501,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
          return;
      }
  }
-@@ -274,6 +969,7 @@ static int GRAPH_RDLOCK blk_root_inactivate(BdrvChild *child)
+@@ -274,6 +978,7 @@ static int GRAPH_RDLOCK blk_root_inactivate(BdrvChild *child)
      }
  
      blk->disable_perm = true;
@@ -29469,7 +29509,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      if (blk->root) {
          bdrv_child_try_set_perm(blk->root, 0, BLK_PERM_ALL, &error_abort);
      }
-@@ -359,7 +1055,14 @@ BlockBackend *blk_new(AioContext *ctx, uint64_t perm, uint64_t shared_perm)
+@@ -359,7 +1064,14 @@ BlockBackend *blk_new(AioContext *ctx, uint64_t perm, uint64_t shared_perm)
  
      GLOBAL_STATE_CODE();
  
@@ -29484,7 +29524,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      blk->refcnt = 1;
      blk->ctx = ctx;
      blk->perm = perm;
-@@ -377,6 +1080,7 @@ BlockBackend *blk_new(AioContext *ctx, uint64_t perm, uint64_t shared_perm)
+@@ -377,6 +1089,7 @@ BlockBackend *blk_new(AioContext *ctx, uint64_t perm, uint64_t shared_perm)
      notifier_list_init(&blk->insert_bs_notifiers);
      QLIST_INIT(&blk->aio_notifiers);
  
@@ -29492,7 +29532,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      QTAILQ_INSERT_TAIL(&block_backends, blk, link);
      return blk;
  }
-@@ -496,9 +1200,13 @@ static void blk_delete(BlockBackend *blk)
+@@ -496,9 +1209,13 @@ static void blk_delete(BlockBackend *blk)
      assert(QLIST_EMPTY(&blk->aio_notifiers));
      assert(qemu_co_queue_empty(&blk->queued_requests));
      qemu_mutex_destroy(&blk->queued_requests_lock);
@@ -29506,7 +29546,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      g_free(blk);
  }
  
-@@ -526,6 +1234,7 @@ void blk_ref(BlockBackend *blk)
+@@ -526,6 +1243,7 @@ void blk_ref(BlockBackend *blk)
      assert(blk->refcnt > 0);
      GLOBAL_STATE_CODE();
      blk->refcnt++;
@@ -29514,7 +29554,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
  }
  
  /*
-@@ -537,9 +1246,13 @@ void blk_unref(BlockBackend *blk)
+@@ -537,9 +1255,13 @@ void blk_unref(BlockBackend *blk)
  {
      GLOBAL_STATE_CODE();
      if (blk) {
@@ -29528,7 +29568,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
          } else {
              blk_drain(blk);
              /* blk_drain() cannot resurrect blk, nobody held a reference */
-@@ -563,6 +1276,10 @@ BlockBackend *blk_all_next(BlockBackend *blk)
+@@ -563,6 +1285,10 @@ BlockBackend *blk_all_next(BlockBackend *blk)
  
  void blk_remove_all_bs(void)
  {
@@ -29539,7 +29579,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      BlockBackend *blk = NULL;
  
      GLOBAL_STATE_CODE();
-@@ -706,6 +1423,7 @@ bool monitor_add_blk(BlockBackend *blk, const char *name, Error **errp)
+@@ -706,6 +1432,7 @@ bool monitor_add_blk(BlockBackend *blk, const char *name, Error **errp)
  
      blk->name = g_strdup(name);
      QTAILQ_INSERT_TAIL(&monitor_block_backends, blk, monitor_link);
@@ -29547,7 +29587,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      return true;
  }
  
-@@ -724,6 +1442,7 @@ void monitor_remove_blk(BlockBackend *blk)
+@@ -724,6 +1451,7 @@ void monitor_remove_blk(BlockBackend *blk)
      QTAILQ_REMOVE(&monitor_block_backends, blk, monitor_link);
      g_free(blk->name);
      blk->name = NULL;
@@ -29555,7 +29595,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
  }
  
  /*
-@@ -859,6 +1578,10 @@ BlockBackendPublic *blk_get_public(BlockBackend *blk)
+@@ -859,6 +1587,10 @@ BlockBackendPublic *blk_get_public(BlockBackend *blk)
   */
  void blk_remove_bs(BlockBackend *blk)
  {
@@ -29566,7 +29606,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      ThrottleGroupMember *tgm = &blk->public.throttle_group_member;
      BdrvChild *root;
  
-@@ -889,6 +1612,7 @@ void blk_remove_bs(BlockBackend *blk)
+@@ -889,6 +1621,7 @@ void blk_remove_bs(BlockBackend *blk)
      blk_drain(blk);
      root = blk->root;
      blk->root = NULL;
@@ -29574,7 +29614,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
  
      bdrv_graph_wrlock_drained();
      bdrv_root_unref_child(root);
-@@ -900,6 +1624,10 @@ void blk_remove_bs(BlockBackend *blk)
+@@ -900,6 +1633,10 @@ void blk_remove_bs(BlockBackend *blk)
   */
  int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp)
  {
@@ -29585,7 +29625,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      ThrottleGroupMember *tgm = &blk->public.throttle_group_member;
      uint64_t perm, shared_perm;
  
-@@ -921,9 +1649,12 @@ int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp)
+@@ -921,9 +1658,12 @@ int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp)
                                         perm, shared_perm, blk, errp);
      bdrv_graph_wrunlock();
      if (blk->root == NULL) {
@@ -29598,7 +29638,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      notifier_list_notify(&blk->insert_bs_notifiers, blk);
      if (tgm->throttle_state) {
          throttle_group_detach_aio_context(tgm);
-@@ -938,6 +1669,10 @@ int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp)
+@@ -938,6 +1678,10 @@ int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp)
   */
  int blk_replace_bs(BlockBackend *blk, BlockDriverState *new_bs, Error **errp)
  {
@@ -29609,7 +29649,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      GLOBAL_STATE_CODE();
      return bdrv_replace_child_bs(blk->root, new_bs, errp);
  }
-@@ -949,6 +1684,10 @@ static int coroutine_mixed_fn GRAPH_RDLOCK
+@@ -949,6 +1693,10 @@ static int coroutine_mixed_fn GRAPH_RDLOCK
  blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
                      Error **errp)
  {
@@ -29620,7 +29660,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      int ret;
      GLOBAL_STATE_CODE();
  
-@@ -961,6 +1700,7 @@ blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
+@@ -961,6 +1709,7 @@ blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
  
      blk->perm = perm;
      blk->shared_perm = shared_perm;
@@ -29628,7 +29668,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
  
      return 0;
  }
-@@ -968,6 +1708,10 @@ blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
+@@ -968,6 +1717,10 @@ blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
  int blk_set_perm(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
                   Error **errp)
  {
@@ -29639,7 +29679,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      GLOBAL_STATE_CODE();
      GRAPH_RDLOCK_GUARD_MAINLOOP();
  
-@@ -997,10 +1741,13 @@ int blk_attach_dev(BlockBackend *blk, DeviceState *dev)
+@@ -997,10 +1750,13 @@ int blk_attach_dev(BlockBackend *blk, DeviceState *dev)
       * job or NBD server writing to the image for storage migration. */
      if (runstate_check(RUN_STATE_INMIGRATE)) {
          blk->disable_perm = true;
@@ -29653,7 +29693,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      blk_iostatus_reset(blk);
  
      return 0;
-@@ -1015,6 +1762,7 @@ void blk_detach_dev(BlockBackend *blk, DeviceState *dev)
+@@ -1015,6 +1771,7 @@ void blk_detach_dev(BlockBackend *blk, DeviceState *dev)
      assert(blk->dev == dev);
      GLOBAL_STATE_CODE();
      blk->dev = NULL;
@@ -29661,7 +29701,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      blk->dev_ops = NULL;
      blk->dev_opaque = NULL;
      blk_set_perm(blk, 0, BLK_PERM_ALL, &error_abort);
-@@ -1092,8 +1840,13 @@ void blk_set_dev_ops(BlockBackend *blk, const BlockDevOps *ops,
+@@ -1092,8 +1849,13 @@ void blk_set_dev_ops(BlockBackend *blk, const BlockDevOps *ops,
                       void *opaque)
  {
      GLOBAL_STATE_CODE();
@@ -29675,7 +29715,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
  
      /* Are we currently quiesced? Should we enforce this right now? */
      if (qatomic_read(&blk->quiesce_counter) && ops && ops->drained_begin) {
-@@ -2411,6 +3164,10 @@ AioContext *blk_get_aio_context(BlockBackend *blk)
+@@ -2411,6 +3173,10 @@ AioContext *blk_get_aio_context(BlockBackend *blk)
  int blk_set_aio_context(BlockBackend *blk, AioContext *new_context,
                          Error **errp)
  {
@@ -29686,7 +29726,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      bool old_allow_change;
      BlockDriverState *bs = blk_bs(blk);
      int ret;
-@@ -2419,6 +3176,7 @@ int blk_set_aio_context(BlockBackend *blk, AioContext *new_context,
+@@ -2419,6 +3185,7 @@ int blk_set_aio_context(BlockBackend *blk, AioContext *new_context,
  
      if (!bs) {
          qatomic_set(&blk->ctx, new_context);
@@ -29694,7 +29734,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
          return 0;
      }
  
-@@ -2448,6 +3206,7 @@ static void blk_root_set_aio_ctx_commit(void *opaque)
+@@ -2448,6 +3215,7 @@ static void blk_root_set_aio_ctx_commit(void *opaque)
      ThrottleGroupMember *tgm = &blk->public.throttle_group_member;
  
      qatomic_set(&blk->ctx, new_context);
@@ -29702,7 +29742,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..bb39deb176d8c71322939c3400e7d7fd
      if (tgm->throttle_state) {
          throttle_group_detach_aio_context(tgm);
          throttle_group_attach_aio_context(tgm, new_context);
-@@ -2873,3 +3632,92 @@ int blk_make_empty(BlockBackend *blk, Error **errp)
+@@ -2873,3 +3641,92 @@ int blk_make_empty(BlockBackend *blk, Error **errp)
  
      return bdrv_make_empty(blk->root, errp);
  }
@@ -32663,10 +32703,10 @@ index 0000000000000000000000000000000000000000..4e8405224a5d8f5bea3076bf25d9277a
 +}
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..6bceef6d9760421f1d98979266e3ecae8e8e19f9
+index 0000000000000000000000000000000000000000..7cc0f97519fcee0db92e4754899cf1fd465bdc61
 --- /dev/null
 +++ b/block/crucible-shmem.c
-@@ -0,0 +1,1272 @@
+@@ -0,0 +1,1284 @@
 +/*
 + * Crucible shmem block driver
 + *
@@ -32756,6 +32796,8 @@ index 0000000000000000000000000000000000000000..6bceef6d9760421f1d98979266e3ecae
 +static void *crucible_blk_event_userdata;
 +static BDRVCrucibleShmemState *crucible_blk_state;
 +
++static BlockDriver bdrv_crucible_shmem;
++
 +static CrucibleEndpointOriginalBinding block_original_binding(
 +    BDRVCrucibleShmemState *state)
 +{
@@ -32844,6 +32886,16 @@ index 0000000000000000000000000000000000000000..6bceef6d9760421f1d98979266e3ecae
 +        int result = bdrv_endpoint_whole_roots_verify(NULL);
 +
 +        return result ? result : blk_endpoint_whole_roots_verify(NULL);
++    }
++    CrucibleEndpointOriginalBinding original, original_node;
++
++    if (qemu_endpoint_whole_original_owner_read(CRUCIBLE_ORIGINAL_BLOCK,
++                                                state, &original) ||
++        state->bs != original.queue ||
++        qemu_endpoint_whole_original_owner_read(CRUCIBLE_ORIGINAL_BLOCK_NODE,
++                                                state->bs, &original_node) ||
++        state->bs->drv != &bdrv_crucible_shmem) {
++        return -ESTALE;
 +    }
 +    if (!state->bs || state->bs->opaque != state ||
 +        !state->crucible_original_bound || !state->wake_registered ||
@@ -37660,7 +37712,7 @@ index 0000000000000000000000000000000000000000..da31cb8430c55cb633ccee7df1d2ece0
 +    return 0;
 +}
 diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
-index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317c96cff67 100644
+index 2774fc2290a83bc602816319adc1c3aa6d8c7989..d3148e01858a3f9ba35a6e350858c763faaf615c 100644
 --- a/hw/9pfs/virtio-9p-device.c
 +++ b/hw/9pfs/virtio-9p-device.c
 @@ -17,7 +17,13 @@
@@ -37677,7 +37729,7 @@ index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317
  #include "qemu/sockets.h"
  #include "virtio-9p.h"
  #include "fsdev/qemu-fsdev.h"
-@@ -26,14 +32,254 @@
+@@ -26,14 +32,261 @@
  #include "hw/virtio/virtio-access.h"
  #include "qemu/iov.h"
  #include "qemu/module.h"
@@ -37826,6 +37878,13 @@ index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317
 +        if (!state) {
 +            continue;
 +        }
++        CrucibleEndpointOriginalBinding original;
++
++        if (qemu_endpoint_whole_original_owner_read(CRUCIBLE_ORIGINAL_NINEP,
++                                                    state, &original) ||
++            &state->state != original.context || state->vq != original.queue) {
++            return -ESTALE;
++        }
 +        if (found || !state->crucible_original_bound || !state->vq ||
 +            !state->crucible_9p_wake_registered ||
 +            !(state->state.ctx.export_flags & V9FS_RDONLY) ||
@@ -37932,7 +37991,7 @@ index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317
      /* push onto queue and notify */
      virtqueue_push(v->vq, elem, pdu->size);
      g_free(elem);
-@@ -43,6 +289,232 @@ static void coroutine_fn virtio_9p_push_and_notify(V9fsPDU *pdu)
+@@ -43,6 +296,232 @@ static void coroutine_fn virtio_9p_push_and_notify(V9fsPDU *pdu)
      virtio_notify(VIRTIO_DEVICE(v), v->vq);
  }
  
@@ -38165,7 +38224,7 @@ index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317
  static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
  {
      V9fsVirtioState *v = (V9fsVirtioState *)vdev;
-@@ -50,6 +522,11 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
+@@ -50,6 +529,11 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
      V9fsPDU *pdu;
      ssize_t len;
      VirtQueueElement *elem;
@@ -38177,7 +38236,7 @@ index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317
  
      while ((pdu = pdu_alloc(s))) {
          P9MsgHeader out;
-@@ -75,15 +552,36 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
+@@ -75,15 +559,36 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
  
          v->elems[pdu->idx] = elem;
  
@@ -38214,7 +38273,7 @@ index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317
      pdu_free(pdu);
  }
  
-@@ -114,6 +612,12 @@ static void virtio_9p_reset(VirtIODevice *vdev)
+@@ -114,6 +619,12 @@ static void virtio_9p_reset(VirtIODevice *vdev)
  {
      V9fsVirtioState *v = (V9fsVirtioState *)vdev;
  
@@ -38227,7 +38286,7 @@ index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317
      v9fs_reset(&v->state);
  }
  
-@@ -226,6 +730,13 @@ static void virtio_9p_device_realize(DeviceState *dev, Error **errp)
+@@ -226,6 +737,13 @@ static void virtio_9p_device_realize(DeviceState *dev, Error **errp)
      V9fsState *s = &v->state;
      FsDriverEntry *fse = get_fsdev_fsentry(s->fsconf.fsdev_id);
  
@@ -38241,7 +38300,7 @@ index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317
      if (qtest_enabled() && fse) {
          fse->export_flags |= V9FS_NO_PERF_WARN;
      }
-@@ -234,9 +745,18 @@ static void virtio_9p_device_realize(DeviceState *dev, Error **errp)
+@@ -234,9 +752,18 @@ static void virtio_9p_device_realize(DeviceState *dev, Error **errp)
          return;
      }
  
@@ -38260,7 +38319,7 @@ index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317
  }
  
  static void virtio_9p_device_unrealize(DeviceState *dev)
-@@ -245,6 +765,21 @@ static void virtio_9p_device_unrealize(DeviceState *dev)
+@@ -245,6 +772,21 @@ static void virtio_9p_device_unrealize(DeviceState *dev)
      V9fsVirtioState *v = VIRTIO_9P(dev);
      V9fsState *s = &v->state;
  
@@ -38282,7 +38341,7 @@ index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317
      v9fs_reset(s); /* cancel all in-flight PDUs to prevent UAF */
      virtio_delete_queue(v->vq);
      virtio_cleanup(vdev);
-@@ -253,10 +788,80 @@ static void virtio_9p_device_unrealize(DeviceState *dev)
+@@ -253,10 +795,80 @@ static void virtio_9p_device_unrealize(DeviceState *dev)
  
  /* virtio-9p device */
  
@@ -38363,7 +38422,7 @@ index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317
      .fields = (const VMStateField[]) {
          VMSTATE_VIRTIO_DEVICE,
          VMSTATE_END_OF_LIST()
-@@ -273,6 +878,7 @@ static void virtio_9p_class_init(ObjectClass *klass, const void *data)
+@@ -273,6 +885,7 @@ static void virtio_9p_class_init(ObjectClass *klass, const void *data)
      DeviceClass *dc = DEVICE_CLASS(klass);
      VirtioDeviceClass *vdc = VIRTIO_DEVICE_CLASS(klass);
  
@@ -38371,7 +38430,7 @@ index 2774fc2290a83bc602816319adc1c3aa6d8c7989..2e016eb3a5407d3b42d9406a6c001317
      device_class_set_props(dc, virtio_9p_properties);
      dc->vmsd = &vmstate_virtio_9p;
      set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
-@@ -296,3 +902,5 @@ static void virtio_9p_register_types(void)
+@@ -296,3 +909,5 @@ static void virtio_9p_register_types(void)
  }
  
  type_init(virtio_9p_register_types)
@@ -46647,10 +46706,10 @@ index 0000000000000000000000000000000000000000..3d8fb8c4d2f7e150f5c93c5241fbe506
 +}
 diff --git a/hw/core/crucible-whole-rom.inc.c b/hw/core/crucible-whole-rom.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1735ab8c52b3cac0e39a0fda104e75439b5677b8
+index 0000000000000000000000000000000000000000..a2d6706b1cbc39a6b0ecacc443c30b60a9430f9c
 --- /dev/null
 +++ b/hw/core/crucible-whole-rom.inc.c
-@@ -0,0 +1,1044 @@
+@@ -0,0 +1,1110 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Source-born loader objects and payloads in the original finite arena. */
 +
@@ -46677,6 +46736,11 @@ index 0000000000000000000000000000000000000000..1735ab8c52b3cac0e39a0fda104e7543
 +    int source_fd;
 +    bool borrowed_fd;
 +    unsigned builtin_kind;
++    const void *fw_publication;
++    MachineState *fw_machine;
++    MachineClass *fw_machine_class;
++    bool fw_option_rom_has_mr;
++    bool fw_rom_file_has_mr;
 +    struct stat source_stat;
 +    unsigned read_attempts;
 +    bool inserted;
@@ -47430,6 +47494,66 @@ index 0000000000000000000000000000000000000000..1735ab8c52b3cac0e39a0fda104e7543
 +    whole_rom.fwcfg = fwcfg;
 +}
 +
++/* Only the literal file producer can retain the native publication issued by
++ * AddFile. This is a readback of an already completed source event, not a new
++ * birth or permission obtained from a file name or matching payload bytes. */
++static void rom_whole_fw_file_published(Rom *rom, MachineClass *machine_class,
++                                       bool has_option_rom)
++{
++    WholeRomRow *row = rom_whole_row(rom);
++    MachineState *machine;
++    const void *publication;
++
++    if (!row || !row->builtin_kind) {
++        return;
++    }
++    machine = (MachineState *)qdev_get_machine();
++    if (!crucible_whole_setup_machine_current(machine) ||
++        machine_class != MACHINE_GET_CLASS(machine) || !has_option_rom ||
++        (machine_class->option_rom_has_mr && machine_class->rom_file_has_mr) ||
++        row->fw_publication || row->complete || row->retired ||
++        !row->inserted || !row->payload_authenticated || row->borrowed_fd ||
++        row->source_fd < 0 || rom->mr ||
++        rom->as != &address_space_memory || !rom->fw_file ||
++        !rom->fw_dir || rom->data != row->payload ||
++        rom->datasize != row->payload_extent ||
++        rom->romsize != row->payload_extent || whole_rom.fwcfg != fw_cfg) {
++        rom_whole_fault("builtin FW file lacks its original no-MR producer");
++    }
++    publication = crucible_whole_fwcfg_rom_file_publication(
++        whole_rom.fwcfg, row->payload, row->payload_extent);
++    if (!publication) {
++        rom_whole_fault("builtin FW file has no native publication");
++    }
++    row->fw_machine = machine;
++    row->fw_machine_class = machine_class;
++    row->fw_option_rom_has_mr = machine_class->option_rom_has_mr;
++    row->fw_rom_file_has_mr = machine_class->rom_file_has_mr;
++    row->fw_publication = publication;
++}
++
++static bool rom_whole_fw_file_current(WholeRomRow *row)
++{
++    if (!row->builtin_kind || !row->retained.fw_file) {
++        return !row->fw_publication;
++    }
++    /* Authenticate the retained machine before following its class. The FW
++     * proof independently checks its original entry without calling this ROM
++     * observer again; neither observer authorizes guest reads or writes. */
++    if (!row->fw_publication || !row->fw_machine || !row->fw_machine_class ||
++        !crucible_whole_setup_machine_current(row->fw_machine) ||
++        MACHINE_GET_CLASS(row->fw_machine) != row->fw_machine_class ||
++        row->fw_machine_class->option_rom_has_mr != row->fw_option_rom_has_mr ||
++        row->fw_machine_class->rom_file_has_mr != row->fw_rom_file_has_mr ||
++        (row->fw_option_rom_has_mr && row->fw_rom_file_has_mr) ||
++        row->retained.mr || row->retained.as != &address_space_memory ||
++        row->payload_retired || !row->payload_authenticated || row->borrowed_fd) {
++        return false;
++    }
++    return crucible_whole_fwcfg_rom_file_current(whole_rom.fwcfg,
++        row->fw_publication, row->payload, row->payload_extent);
++}
++
 +static bool rom_whole_fields_current(WholeRomRow *row)
 +{
 +    Rom *rom = row->original;
@@ -47450,7 +47574,8 @@ index 0000000000000000000000000000000000000000..1735ab8c52b3cac0e39a0fda104e7543
 +        rom->fw_file != retained->fw_file || rom->fw_dir != retained->fw_dir ||
 +        rom->mapped_file || retained->mapped_file ||
 +        !rom_whole_digest(row->payload, retained->datasize, digest) ||
-+        memcmp(digest, row->digest, sizeof(digest))) {
++        memcmp(digest, row->digest, sizeof(digest)) ||
++        !rom_whole_fw_file_current(row)) {
 +        return false;
 +    }
 +    if (row->source_fd >= 0) {
@@ -48671,7 +48796,7 @@ index 1b610e75e15d2924f7f7faf82c5bcb9e1e732f63..63c5e4d88c7d2208395a91ec8b2ee651
          gpio_in[i]->observer = handler;
      }
 diff --git a/hw/core/loader.c b/hw/core/loader.c
-index 5cbfba0a86d24569923c863d6ecda125ce43bceb..3a508f44a6362eee7d24db250fc657089c847f25 100644
+index 5cbfba0a86d24569923c863d6ecda125ce43bceb..01a946bbd1032c6602ff13295c5841456720b869 100644
 --- a/hw/core/loader.c
 +++ b/hw/core/loader.c
 @@ -65,9 +65,15 @@
@@ -49048,7 +49173,15 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..3a508f44a6362eee7d24db250fc65708
      }
      rom->addr     = addr;
      rom->romsize  = size;
-@@ -1150,6 +1430,7 @@ ssize_t rom_add_file(const char *file, const char *fw_dir,
+@@ -1141,6 +1421,7 @@ ssize_t rom_add_file(const char *file, const char *fw_dir,
+         }
+ 
+         fw_cfg_add_file(fw_cfg, fw_file_name, data, rom->romsize);
++        rom_whole_fw_file_published(rom, mc, has_option_rom);
+     } else {
+         if (mr) {
+             rom->mr = mr;
+@@ -1150,6 +1431,7 @@ ssize_t rom_add_file(const char *file, const char *fw_dir,
          }
      }
  
@@ -49056,7 +49189,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..3a508f44a6362eee7d24db250fc65708
      add_boot_device_path(bootindex, NULL, devpath);
      return 0;
  
-@@ -1167,15 +1448,22 @@ MemoryRegion *rom_add_blob(const char *name, const void *blob, size_t len,
+@@ -1167,15 +1449,22 @@ MemoryRegion *rom_add_blob(const char *name, const void *blob, size_t len,
      Rom *rom;
      MemoryRegion *mr = NULL;
  
@@ -49082,7 +49215,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..3a508f44a6362eee7d24db250fc65708
      rom_insert(rom);
      if (fw_file_name && fw_cfg) {
          char devpath[100];
-@@ -1198,6 +1486,7 @@ MemoryRegion *rom_add_blob(const char *name, const void *blob, size_t len,
+@@ -1198,6 +1487,7 @@ MemoryRegion *rom_add_blob(const char *name, const void *blob, size_t len,
                                   fw_callback, NULL, callback_opaque,
                                   data, rom->datasize, read_only);
      }
@@ -49090,7 +49223,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..3a508f44a6362eee7d24db250fc65708
      return mr;
  }
  
-@@ -1210,6 +1499,8 @@ int rom_add_elf_program(const char *name, GMappedFile *mapped_file, void *data,
+@@ -1210,6 +1500,8 @@ int rom_add_elf_program(const char *name, GMappedFile *mapped_file, void *data,
                          size_t datasize, size_t romsize, hwaddr addr,
                          AddressSpace *as)
  {
@@ -49099,7 +49232,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..3a508f44a6362eee7d24db250fc65708
      Rom *rom;
  
      rom           = g_malloc0(sizeof(*rom));
-@@ -1236,11 +1527,14 @@ ssize_t rom_add_vga(const char *file)
+@@ -1236,11 +1528,14 @@ ssize_t rom_add_vga(const char *file)
  
  ssize_t rom_add_option(const char *file, int32_t bootindex)
  {
@@ -49114,7 +49247,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..3a508f44a6362eee7d24db250fc65708
      Rom *rom;
  
      QTAILQ_FOREACH(rom, &roms, next) {
-@@ -1266,16 +1560,20 @@ static void rom_reset(void *unused)
+@@ -1266,16 +1561,20 @@ static void rom_reset(void *unused)
          if (rom->data == NULL) {
              continue;
          }
@@ -49140,7 +49273,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..3a508f44a6362eee7d24db250fc65708
          }
          if (rom->isrom) {
              /* rom needs to be written only once */
-@@ -1291,6 +1589,7 @@ static void rom_reset(void *unused)
+@@ -1291,6 +1590,7 @@ static void rom_reset(void *unused)
  
          trace_loader_write_rom(rom->name, rom->addr, rom->datasize, rom->isrom);
      }
@@ -49148,7 +49281,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..3a508f44a6362eee7d24db250fc65708
  }
  
  /* Return true if two consecutive ROMs in the ROM list overlap */
-@@ -1357,7 +1656,10 @@ int rom_check_and_register_reset(void)
+@@ -1357,7 +1657,10 @@ int rom_check_and_register_reset(void)
          }
          section = memory_region_find(rom->mr ? rom->mr : get_system_memory(),
                                       rom->addr, 1);
@@ -49160,7 +49293,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..3a508f44a6362eee7d24db250fc65708
          memory_region_unref(section.mr);
      }
      if (found_overlap) {
-@@ -1371,21 +1673,30 @@ int rom_check_and_register_reset(void)
+@@ -1371,21 +1674,30 @@ int rom_check_and_register_reset(void)
  
  void rom_set_fw(FWCfgState *f)
  {
@@ -49191,7 +49324,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..3a508f44a6362eee7d24db250fc65708
      Rom *rom;
      Rom *tmp;
  
-@@ -1394,6 +1705,7 @@ void rom_transaction_end(bool commit)
+@@ -1394,6 +1706,7 @@ void rom_transaction_end(bool commit)
              continue;
          }
          if (commit) {
@@ -53730,7 +53863,7 @@ index 51513e73fdec284abe0e068711c6397804b7fdd1..c4e4e37ada29e4d249a1d29aecbea486
          VMSTATE_PCI_DEVICE(dev, ICH9SMBState),
          VMSTATE_BOOL(irq_enabled, ICH9SMBState),
 diff --git a/hw/i386/acpi-build.c b/hw/i386/acpi-build.c
-index 8837b69687d13ede3c2a809f2cec7a1d5583384e..6c60272ae11758f9f19309a2761c6c3f9bfe9575 100644
+index 8837b69687d13ede3c2a809f2cec7a1d5583384e..04dccafb2b24af936b954c5aef5b687f9b512134 100644
 --- a/hw/i386/acpi-build.c
 +++ b/hw/i386/acpi-build.c
 @@ -21,6 +21,7 @@
@@ -53993,7 +54126,7 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..6c60272ae11758f9f19309a2761c6c3f
  
      acpi_ram_update(build_state->table_mr, tables.table_data);
  
-@@ -2253,18 +2278,49 @@ static void acpi_build_update(void *build_opaque)
+@@ -2253,18 +2278,50 @@ static void acpi_build_update(void *build_opaque)
  
      acpi_ram_update(build_state->linker_mr, tables.linker->cmd_blob);
      acpi_build_tables_cleanup(&tables, true);
@@ -54013,7 +54146,8 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..6c60272ae11758f9f19309a2761c6c3f
 +                                              Error **errp)
 +{
 +    if (crucible_whole_setup_selected() &&
-+        (!acpi_whole_source_current() || opaque != acpi_whole_producer.state)) {
++        (!acpi_whole_source_current() || opaque != acpi_whole_producer.state ||
++         !acpi_whole_state_regions_current())) {
 +        _exit(125);
 +    }
 +
@@ -54043,7 +54177,7 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..6c60272ae11758f9f19309a2761c6c3f
      .fields = (const VMStateField[]) {
          VMSTATE_UINT8(patched, AcpiBuildState),
          VMSTATE_END_OF_LIST()
-@@ -2273,7 +2329,13 @@ static const VMStateDescription vmstate_acpi_build = {
+@@ -2273,7 +2330,13 @@ static const VMStateDescription vmstate_acpi_build = {
  
  void acpi_setup(void)
  {
@@ -54058,7 +54192,7 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..6c60272ae11758f9f19309a2761c6c3f
      X86MachineState *x86ms = X86_MACHINE(pcms);
      AcpiBuildTables tables;
      AcpiBuildState *build_state;
-@@ -2285,23 +2347,34 @@ void acpi_setup(void)
+@@ -2285,23 +2348,34 @@ void acpi_setup(void)
  
      if (!x86ms->fw_cfg) {
          ACPI_BUILD_DPRINTF("No fw cfg. Bailing out.\n");
@@ -54094,7 +54228,7 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..6c60272ae11758f9f19309a2761c6c3f
  
      /* Now expose it all to Guest */
      build_state->table_mr = acpi_add_rom_blob(acpi_build_update,
-@@ -2347,12 +2420,13 @@ void acpi_setup(void)
+@@ -2347,12 +2421,13 @@ void acpi_setup(void)
       * in build_state.
       */
      acpi_build_tables_cleanup(&tables, false);
@@ -54111,10 +54245,10 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..6c60272ae11758f9f19309a2761c6c3f
    return table;
 diff --git a/hw/i386/crucible-whole-acpi.inc.c b/hw/i386/crucible-whole-acpi.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..6a0d6d8d7254d22088ba0650f349f2fd82a587b5
+index 0000000000000000000000000000000000000000..43049e8b5f8cefa3302f2bb43c2609d5ce4069fa
 --- /dev/null
 +++ b/hw/i386/crucible-whole-acpi.inc.c
-@@ -0,0 +1,521 @@
+@@ -0,0 +1,542 @@
 +/* Original lazy x86 ACPI producer; GPL-2.0-or-later. */
 +#include "system/crucible-whole-early.h"
 +#include "system/crucible-whole-ram.h"
@@ -54195,6 +54329,22 @@ index 0000000000000000000000000000000000000000..6a0d6d8d7254d22088ba0650f349f2fd
 +    return true;
 +}
 +
++/* The source state owns these three exact MRs. Compare its tuple before a
++ * lazy build can allocate, query topology or follow a substituted MR. */
++static bool acpi_whole_state_regions_current(void)
++{
++    AcpiBuildState *state = acpi_whole_producer.state;
++
++    return state &&
++        crucible_whole_setup_history_span_current(state, sizeof(*state)) &&
++        acpi_whole_producer.roms[0].published &&
++        acpi_whole_producer.roms[1].published &&
++        acpi_whole_producer.roms[2].published &&
++        state->table_mr == acpi_whole_producer.roms[0].region &&
++        state->linker_mr == acpi_whole_producer.roms[1].region &&
++        state->rsdp_mr == acpi_whole_producer.roms[2].region;
++}
++
 +bool acpi_whole_allocation_context_current(void)
 +{
 +    if (!acpi_whole_source_current()) {
@@ -54203,7 +54353,8 @@ index 0000000000000000000000000000000000000000..6a0d6d8d7254d22088ba0650f349f2fd
 +    if (acpi_whole_producer.constructing) {
 +        return crucible_whole_setup_constructor_current();
 +    }
-+    if (!acpi_whole_producer.building || !acpi_whole_producer.state ||
++    if (!acpi_whole_producer.building ||
++        !acpi_whole_state_regions_current() ||
 +        !crucible_whole_fwcfg_acpi_callback_current(acpi_build_update,
 +                                                   acpi_whole_producer.state)) {
 +        return false;
@@ -54253,7 +54404,7 @@ index 0000000000000000000000000000000000000000..6a0d6d8d7254d22088ba0650f349f2fd
 +        return;
 +    }
 +    if (!acpi_whole_allocation_context_current() ||
-+        !acpi_whole_producer.state) {
++        !acpi_whole_state_regions_current()) {
 +        acpi_whole_fault();
 +    }
 +    acpi_whole_producer.constructing = false;
@@ -54419,6 +54570,7 @@ index 0000000000000000000000000000000000000000..6a0d6d8d7254d22088ba0650f349f2fd
 +    }
 +    if (!acpi_whole_source_current() || acpi_whole_producer.constructing ||
 +        acpi_whole_producer.building || opaque != acpi_whole_producer.state ||
++        !acpi_whole_state_regions_current() ||
 +        !crucible_whole_fwcfg_acpi_callback_current(acpi_build_update, opaque)) {
 +        acpi_whole_fault();
 +    }
@@ -54580,6 +54732,7 @@ index 0000000000000000000000000000000000000000..6a0d6d8d7254d22088ba0650f349f2fd
 +    }
 +    if (!acpi_whole_source_current() || opaque != acpi_whole_producer.state ||
 +        acpi_whole_producer.building ||
++        !acpi_whole_state_regions_current() ||
 +        (!acpi_whole_producer.constructing &&
 +         !qemu_reset_whole_q35_callback_current(acpi_build_reset, opaque))) {
 +        acpi_whole_fault();
@@ -54595,6 +54748,8 @@ index 0000000000000000000000000000000000000000..6a0d6d8d7254d22088ba0650f349f2fd
 +        return false;
 +    }
 +    if (!body || !extent || !acpi_whole_producer.state ||
++        (!acpi_whole_producer.constructing &&
++         !acpi_whole_state_regions_current()) ||
 +        !crucible_whole_setup_history_span_current(acpi_whole_producer.state,
 +            sizeof(*acpi_whole_producer.state)) ||
 +        (acpi_whole_producer.state->patched != acpi_whole_producer.patched &&
@@ -70547,10 +70702,10 @@ index 43e3c916f73fa3bda638e170895ec0421fedfeef..da2b831f4822ba0424d76606dc9617b9
      uint32_t    conf_msix_qsize;
 diff --git a/hw/nvram/crucible-whole-fwcfg.inc.c b/hw/nvram/crucible-whole-fwcfg.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..fd5bdff98d334386e23291c1c76dd95ab1c27271
+index 0000000000000000000000000000000000000000..b2818a9875b25caa83814735fd53fc31099b1ee3
 --- /dev/null
 +++ b/hw/nvram/crucible-whole-fwcfg.inc.c
-@@ -0,0 +1,841 @@
+@@ -0,0 +1,1045 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Original finite table allocations and pre-effect native entry history. */
 +
@@ -70582,6 +70737,13 @@ index 0000000000000000000000000000000000000000..fd5bdff98d334386e23291c1c76dd95a
 +    unsigned key;
 +    bool replacement;
 +    bool directory;
++    bool directory_completed;
++    bool file_birth;
++    bool file_published;
++    bool file_publication_observed;
++    char file_name[FW_CFG_MAX_FILE_PATH];
++    FWCfgEntry file_entry;
++    WholeFwPayloadSource file_source;
 +    uint8_t *before_directory;
 +    uint8_t *after_directory;
 +    size_t directory_extent;
@@ -71226,6 +71388,196 @@ index 0000000000000000000000000000000000000000..fd5bdff98d334386e23291c1c76dd95a
 +    return event;
 +}
 +
++static void fwcfg_whole_file_birth(FWCfgState *owner, WholeFwEvent *event,
++                                   const char *filename,
++                                   FWCfgCallback select_callback,
++                                   FWCfgWriteCallback write_callback,
++                                   void *opaque, void *data, size_t extent,
++                                   bool read_only)
++{
++    size_t name_extent;
++
++    if (!fwcfg_whole_active()) {
++        return;
++    }
++    fwcfg_whole_mutation_guard(owner);
++    if (!event || event->owner != owner || !event->directory ||
++        event->file_birth || !filename || extent >= UINT32_MAX) {
++        fwcfg_whole_fault("original file birth has no retained directory intent");
++    }
++    name_extent = strnlen(filename, sizeof(event->file_name));
++    if (!name_extent || name_extent == sizeof(event->file_name)) {
++        fwcfg_whole_fault("original file name exceeds native directory geometry");
++    }
++    /* This is the actual pre-effect native filename and entry tuple, not a
++     * name/hash supplied later by a census or a readback caller. */
++    event->file_birth = true;
++    memcpy(event->file_name, filename, name_extent + 1);
++    event->file_entry = (FWCfgEntry) {
++        .len = extent,
++        .data = data,
++        .select_cb = select_callback,
++        .write_cb = write_callback,
++        .callback_opaque = opaque,
++        .allow_write = !read_only,
++    };
++    event->file_source = fwcfg_whole_entry_source(owner, &event->file_entry);
++}
++
++static bool fwcfg_whole_file_roots_current(FWCfgState *owner)
++{
++    size_t table_extent, order_extent, directory_extent;
++
++    if (!crucible_whole_setup_source_current() || !fwcfg_whole_active() ||
++        owner != whole_fwcfg.owner || !owner ||
++        whole_fwcfg.maximum > WHOLE_FWCFG_MAX_ENTRIES ||
++        whole_fwcfg.allocation_count > WHOLE_FWCFG_MAX_ALLOCATIONS ||
++        whole_fwcfg.event_count > WHOLE_FWCFG_MAX_EVENTS ||
++        !crucible_whole_setup_history_span_current(whole_fwcfg.allocations,
++            sizeof(*whole_fwcfg.allocations) * WHOLE_FWCFG_MAX_ALLOCATIONS) ||
++        !crucible_whole_setup_history_span_current(whole_fwcfg.events,
++            sizeof(*whole_fwcfg.events) * WHOLE_FWCFG_MAX_EVENTS) ||
++        !crucible_whole_setup_q35_instance_span_current(OBJECT(owner), owner,
++                                                       sizeof(*owner))) {
++        return false;
++    }
++    if (object_get_class(OBJECT(owner)) != whole_fwcfg.owner_class ||
++        owner->entries[0] != whole_fwcfg.tables[0] ||
++        owner->entries[1] != whole_fwcfg.tables[1] ||
++        owner->entry_order != whole_fwcfg.entry_order ||
++        FW_CFG_FILE_FIRST + owner->file_slots != whole_fwcfg.maximum) {
++        return false;
++    }
++    table_extent = sizeof(FWCfgEntry) * whole_fwcfg.maximum;
++    order_extent = sizeof(int) * whole_fwcfg.maximum;
++    directory_extent = sizeof(uint32_t) + sizeof(FWCfgFile) * owner->file_slots;
++    return fwcfg_whole_owned_span(owner->entries[0], table_extent) &&
++        fwcfg_whole_owned_span(owner->entries[1], table_extent) &&
++        fwcfg_whole_owned_span(owner->entry_order, order_extent) &&
++        fwcfg_whole_owned_span(owner->files, directory_extent) &&
++        crucible_whole_setup_history_span_current(owner->entries[0], table_extent) &&
++        crucible_whole_setup_history_span_current(owner->entries[1], table_extent) &&
++        crucible_whole_setup_history_span_current(owner->entry_order, order_extent) &&
++        crucible_whole_setup_history_span_current(owner->files, directory_extent);
++}
++
++static bool fwcfg_whole_rom_file_view_current(FWCfgState *owner,
++                                              WholeFwEvent *publication)
++{
++    WholeFwEvent *directory = NULL;
++    unsigned count, matches = 0;
++    size_t table_extent, order_extent, directory_extent, archive_extent;
++    const uint8_t *saved;
++
++    if (!fwcfg_whole_file_roots_current(owner) ||
++        publication->owner != owner || !publication->directory ||
++        !publication->file_birth || !publication->directory_completed ||
++        !memchr(publication->file_name, 0, sizeof(publication->file_name))) {
++        return false;
++    }
++    for (unsigned index = 0; index < whole_fwcfg.event_count; index++) {
++        WholeFwEvent *event = &whole_fwcfg.events[index];
++
++        if (event->directory) {
++            directory = event;
++        }
++    }
++    table_extent = sizeof(FWCfgEntry) * whole_fwcfg.maximum;
++    order_extent = sizeof(int) * whole_fwcfg.maximum;
++    directory_extent = sizeof(uint32_t) + sizeof(FWCfgFile) * owner->file_slots;
++    archive_extent = 2 * table_extent + order_extent + directory_extent;
++    if (!directory || directory->owner != owner ||
++        !directory->directory_completed || directory->directory_extent != archive_extent ||
++        !fwcfg_whole_owned_span(directory->after_directory, archive_extent) ||
++        !crucible_whole_setup_history_span_current(directory->after_directory,
++                                                  archive_extent)) {
++        return false;
++    }
++    saved = directory->after_directory + 2 * table_extent;
++    if (memcmp(saved, owner->entry_order, order_extent) ||
++        memcmp(saved + order_extent, owner->files, directory_extent)) {
++        return false;
++    }
++    count = be32_to_cpu(owner->files->count);
++    if (count > owner->file_slots) {
++        return false;
++    }
++    for (unsigned index = 0; index < count; index++) {
++        FWCfgFile *file = &owner->files->f[index];
++        unsigned key = FW_CFG_FILE_FIRST + index;
++
++        if (!memchr(file->name, 0, sizeof(file->name)) ||
++            be16_to_cpu(file->select) != key) {
++            return false;
++        }
++        if (memcmp(file->name, publication->file_name, sizeof(file->name))) {
++            continue;
++        }
++        if (be32_to_cpu(file->size) != publication->file_entry.len ||
++            !fwcfg_whole_entry_equal(&owner->entries[0][key],
++                                     &publication->file_entry)) {
++            return false;
++        }
++        matches++;
++    }
++    return matches == 1;
++}
++
++bool crucible_whole_fwcfg_rom_file_current(FWCfgState *owner,
++                                          const void *original_publication,
++                                          const void *body, size_t extent)
++{
++    WholeFwEvent *publication = NULL;
++
++    if (!fwcfg_whole_file_roots_current(owner)) {
++        return false;
++    }
++    /* Authenticate original event membership before any supplied-pointer
++     * dereference. No ROM reader is invoked here: its own field validator
++     * calls this metadata proof and separately validates the original bytes. */
++    for (unsigned index = 0; index < whole_fwcfg.event_count; index++) {
++        if (original_publication == &whole_fwcfg.events[index]) {
++            publication = &whole_fwcfg.events[index];
++            break;
++        }
++    }
++    return publication && publication->file_published &&
++        publication->file_publication_observed &&
++        publication->file_source == WHOLE_FW_PAYLOAD_ROM &&
++        publication->file_entry.data == body && publication->file_entry.len == extent &&
++        !publication->file_entry.allow_write && !publication->file_entry.select_cb &&
++        !publication->file_entry.write_cb && !publication->file_entry.callback_opaque &&
++        fwcfg_whole_rom_file_view_current(owner, publication);
++}
++
++const void *crucible_whole_fwcfg_rom_file_publication(FWCfgState *owner,
++                                                    const void *body, size_t extent)
++{
++    WholeFwEvent *publication = NULL;
++
++    if (!crucible_whole_setup_constructor_current() ||
++        !fwcfg_whole_file_roots_current(owner)) {
++        return NULL;
++    }
++    for (unsigned index = 0; index < whole_fwcfg.event_count; index++) {
++        if (whole_fwcfg.events[index].directory) {
++            publication = &whole_fwcfg.events[index];
++        }
++    }
++    if (!publication || !publication->file_published ||
++        publication->file_publication_observed ||
++        publication->file_source != WHOLE_FW_PAYLOAD_ROM ||
++        publication->file_entry.data != body || publication->file_entry.len != extent ||
++        publication->file_entry.allow_write || publication->file_entry.select_cb ||
++        publication->file_entry.write_cb || publication->file_entry.callback_opaque ||
++        !crucible_whole_rom_payload_current(owner, body, extent) ||
++        !fwcfg_whole_rom_file_view_current(owner, publication)) {
++        return NULL;
++    }
++    publication->file_publication_observed = true;
++    return publication;
++}
++
 +static void fwcfg_whole_directory_finish(FWCfgState *owner, WholeFwEvent *event)
 +{
 +    if (!fwcfg_whole_active()) {
@@ -71237,6 +71589,13 @@ index 0000000000000000000000000000000000000000..fd5bdff98d334386e23291c1c76dd95a
 +        fwcfg_whole_fault("original directory attempt disappeared");
 +    }
 +    fwcfg_whole_directory_copy(owner, event->after_directory);
++    event->directory_completed = true;
++    if (event->file_birth) {
++        if (!fwcfg_whole_rom_file_view_current(owner, event)) {
++            fwcfg_whole_fault("original native file publication changed during insertion");
++        }
++        event->file_published = true;
++    }
 +}
 +
 +static void *fwcfg_whole_resize_archive_allocate(size_t extent)
@@ -71393,7 +71752,7 @@ index 0000000000000000000000000000000000000000..fd5bdff98d334386e23291c1c76dd95a
 +    return -ENOTSUP;
 +}
 diff --git a/hw/nvram/fw_cfg.c b/hw/nvram/fw_cfg.c
-index b057d870c004110fdfbe4b34da55719acbf69c7a..74bc6e80d07929cbd6557d00c9a736bf8584b7a7 100644
+index b057d870c004110fdfbe4b34da55719acbf69c7a..17f1fe8c06a827713a76d6ef6c96ba5914a03a28 100644
 --- a/hw/nvram/fw_cfg.c
 +++ b/hw/nvram/fw_cfg.c
 @@ -23,6 +23,8 @@
@@ -72383,12 +72742,14 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..74bc6e80d07929cbd6557d00c9a736bf
  }
  
  /*
-@@ -843,10 +1547,15 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
+@@ -843,10 +1547,17 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
      int i, index, count;
      size_t dsize;
      int order = 0;
 +    WholeFwEvent *whole_event = fwcfg_whole_directory_begin(s);
  
++    fwcfg_whole_file_birth(s, whole_event, filename, select_cb, write_cb,
++                          callback_opaque, data, len, read_only);
 +    if (crucible_firmware_alias.sealed && s == crucible_firmware_alias.owner) {
 +        error_report("Crucible original firmware lifetime refused: FW_CFG file roster changed");
 +        _exit(125);
@@ -72400,7 +72761,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..74bc6e80d07929cbd6557d00c9a736bf
          fw_cfg_add_bytes(s, FW_CFG_FILE_DIR, s->files, dsize);
      }
  
-@@ -899,6 +1608,7 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
+@@ -899,6 +1610,7 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
  
      s->files->count = cpu_to_be32(count+1);
      fw_cfg_acpi_mr_save(s, filename, len);
@@ -72408,7 +72769,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..74bc6e80d07929cbd6557d00c9a736bf
  }
  
  void fw_cfg_add_file(FWCfgState *s,  const char *filename,
-@@ -913,16 +1623,23 @@ void *fw_cfg_modify_file(FWCfgState *s, const char *filename,
+@@ -913,16 +1625,23 @@ void *fw_cfg_modify_file(FWCfgState *s, const char *filename,
      int i, index;
      void *ptr = NULL;
  
@@ -72432,7 +72793,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..74bc6e80d07929cbd6557d00c9a736bf
              return ptr;
          }
      }
-@@ -944,6 +1661,8 @@ bool fw_cfg_add_file_from_generator(FWCfgState *s,
+@@ -944,6 +1663,8 @@ bool fw_cfg_add_file_from_generator(FWCfgState *s,
      Object *obj;
      gsize size;
  
@@ -72441,7 +72802,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..74bc6e80d07929cbd6557d00c9a736bf
      obj = object_resolve_path_component(parent, part);
      if (!obj) {
          error_setg(errp, "Cannot find object ID '%s'", part);
-@@ -972,19 +1691,26 @@ static void fw_cfg_machine_reset(void *opaque)
+@@ -972,19 +1693,26 @@ static void fw_cfg_machine_reset(void *opaque)
      size_t len;
      char *buf;
  
@@ -72471,7 +72832,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..74bc6e80d07929cbd6557d00c9a736bf
  }
  
  static const Property fw_cfg_properties[] = {
-@@ -996,13 +1722,16 @@ static void fw_cfg_common_realize(DeviceState *dev, Error **errp)
+@@ -996,13 +1724,16 @@ static void fw_cfg_common_realize(DeviceState *dev, Error **errp)
      FWCfgState *s = FW_CFG(dev);
      MachineState *machine = MACHINE(qdev_get_machine());
      uint32_t version = FW_CFG_VERSION;
@@ -72489,7 +72850,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..74bc6e80d07929cbd6557d00c9a736bf
      fw_cfg_add_bytes(s, FW_CFG_UUID, &qemu_uuid, 16);
      fw_cfg_add_i16(s, FW_CFG_NOGRAPHIC, (uint16_t)!machine->enable_graphics);
      fw_cfg_add_i16(s, FW_CFG_BOOT_MENU, (uint16_t)(machine->boot_config.has_menu && machine->boot_config.menu));
-@@ -1199,9 +1928,13 @@ static void fw_cfg_file_slots_allocate(FWCfgState *s, Error **errp)
+@@ -1199,9 +1930,13 @@ static void fw_cfg_file_slots_allocate(FWCfgState *s, Error **errp)
          return;
      }
  
@@ -72506,7 +72867,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..74bc6e80d07929cbd6557d00c9a736bf
  }
  
  static const Property fw_cfg_io_properties[] = {
-@@ -1317,6 +2050,23 @@ static void fw_cfg_register_types(void)
+@@ -1317,6 +2052,23 @@ static void fw_cfg_register_types(void)
      type_register_static(&fw_cfg_info);
      type_register_static(&fw_cfg_io_info);
      type_register_static(&fw_cfg_mem_info);
@@ -99570,10 +99931,10 @@ index 0000000000000000000000000000000000000000..94133bab8c1d185d41a9942dea422142
 +#endif
 diff --git a/include/qemu/crucible-endpoint-roots.h b/include/qemu/crucible-endpoint-roots.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..5b54322c83c6e048d4d51e6711bc317704e006a1
+index 0000000000000000000000000000000000000000..2a6120135df25c0cb641bfcb10d2c222a3c6ad78
 --- /dev/null
 +++ b/include/qemu/crucible-endpoint-roots.h
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,147 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#ifndef QEMU_CRUCIBLE_ENDPOINT_ROOTS_H
 +#define QEMU_CRUCIBLE_ENDPOINT_ROOTS_H
@@ -99632,6 +99993,7 @@ index 0000000000000000000000000000000000000000..5b54322c83c6e048d4d51e6711bc3177
 +typedef struct CrucibleEndpointOriginalBinding {
 +    const void *owner;
 +    const void *context;
++    const void *methods; /* Original native vtable identity; never wire data. */
 +    const void *queue;
 +    const void *userdata[3];
 +    uintptr_t callbacks[8];
@@ -99684,6 +100046,11 @@ index 0000000000000000000000000000000000000000..5b54322c83c6e048d4d51e6711bc3177
 +    void *original_birth, const CrucibleEndpointOriginalBinding *binding);
 +void qemu_endpoint_whole_original_retire(
 +    CrucibleEndpointOriginalKind kind, const void *owner);
++/* Reads a bound original before a native registry follows its owner/context.
++ * Valid only during the held sealing walk, not an allocation/effect permit. */
++int qemu_endpoint_whole_original_owner_read(
++    CrucibleEndpointOriginalKind kind, const void *original_owner,
++    CrucibleEndpointOriginalBinding *original_binding);
 +int qemu_endpoint_whole_original_verify(
 +    CrucibleEndpointOriginalKind kind,
 +    const CrucibleEndpointOriginalBinding *binding);
@@ -107258,10 +107625,10 @@ index 0000000000000000000000000000000000000000..7fdbaf05a28166efade32274a1e3845b
 +#endif /* SYSTEM_CRUCIBLE_SIM_PREEMPTION_H */
 diff --git a/include/system/crucible-whole-early.h b/include/system/crucible-whole-early.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e6e99b9d89a5b41ad04d595baddf182afe2d44ef
+index 0000000000000000000000000000000000000000..e531858d5b3358e6e11178d2aeedfc599dda8ef3
 --- /dev/null
 +++ b/include/system/crucible-whole-early.h
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,237 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Original native setup provenance. No declaration here is a wire layout. */
 +#ifndef SYSTEM_CRUCIBLE_WHOLE_EARLY_H
@@ -107377,6 +107744,13 @@ index 0000000000000000000000000000000000000000..e6e99b9d89a5b41ad04d595baddf182a
 +int crucible_whole_rom_current(void);
 +bool crucible_whole_rom_payload_current(struct FWCfgState *fwcfg,
 +                                         const void *body, size_t extent);
++/* GPL-local original FW-only ROM publication. The opaque source event never
++ * crosses a process boundary; these queries grant no effect or Ready permit. */
++const void *crucible_whole_fwcfg_rom_file_publication(
++    struct FWCfgState *owner, const void *body, size_t extent);
++bool crucible_whole_fwcfg_rom_file_current(
++    struct FWCfgState *owner, const void *original_publication,
++    const void *body, size_t extent);
 +/* Source-native ACPI callbacks and owned spans; no wire addresses or setter. */
 +typedef bool (*CrucibleWholeAcpiPayloadCurrent)(const void *, size_t,
 +                                               void (*)(void *), void *);
@@ -107494,10 +107868,10 @@ index 0000000000000000000000000000000000000000..e6e99b9d89a5b41ad04d595baddf182a
 +#endif
 diff --git a/include/system/crucible-whole-ram.h b/include/system/crucible-whole-ram.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..02275a4be35ecf5aacafdbc6f5ac274d779cf98b
+index 0000000000000000000000000000000000000000..3f81f06b0c22f69a6598eea8942da955f7d45d40
 --- /dev/null
 +++ b/include/system/crucible-whole-ram.h
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,66 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Source-owned RAM births. These declarations are not a process protocol. */
 +#ifndef SYSTEM_CRUCIBLE_WHOLE_RAM_H
@@ -107528,6 +107902,10 @@ index 0000000000000000000000000000000000000000..02275a4be35ecf5aacafdbc6f5ac274d
 +
 +uint64_t qemu_ram_whole_storage_bytes(void);
 +int qemu_ram_whole_begin(void);
++/* A genuine stopped constructor seals the exact original allocation universe.
++ * Neither currentness nor this RAM-only fence grants AS writes or readiness. */
++int qemu_ram_whole_held_seal(void);
++int qemu_ram_whole_held_current(void);
 +int qemu_ram_whole_main_begin(struct Object *backend,
 +                              struct MemoryRegion *region, uint64_t extent);
 +int qemu_ram_whole_bios_begin(struct MachineState *machine,
@@ -118553,7 +118931,7 @@ index 427da24097f2ec0897f69ba4ec5c9d7dbe6e9a52..0497d6cec2f466ee4ca1a1b606613746
  }
  
 diff --git a/net/net.c b/net/net.c
-index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b24bce1a9 100644
+index 0a30579ca4a7440f38aaa376265e991142cb5aa8..b996fb21af17b7e317e20f2a18d8b80abb6f79f7 100644
 --- a/net/net.c
 +++ b/net/net.c
 @@ -23,6 +23,10 @@
@@ -118582,7 +118960,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
  #include "qapi/opts-visitor.h"
  #include "system/runstate.h"
  #include "net/colo-compare.h"
-@@ -78,6 +87,193 @@ typedef QSIMPLEQ_HEAD(, NetdevQueueEntry) NetdevQueue;
+@@ -78,6 +87,201 @@ typedef QSIMPLEQ_HEAD(, NetdevQueueEntry) NetdevQueue;
  static NetdevQueue nd_queue = QSIMPLEQ_HEAD_INITIALIZER(nd_queue);
  
  static GHashTable *nic_model_help;
@@ -118650,6 +119028,14 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
 +        return -EPERM;
 +    }
 +    QTAILQ_FOREACH(client, &net_clients, next) {
++        CrucibleEndpointOriginalBinding original;
++
++        if (qemu_endpoint_whole_original_owner_read(CRUCIBLE_ORIGINAL_PACKET,
++                                                    client, &original) ||
++            client->info != original.context ||
++            client->incoming_queue != original.queue) {
++            return -ESTALE;
++        }
 +        /* This source class owns the actual naked NIC queue0 and its original
 +         * plugin producer. Host netdevs, peers and filters need another issuer. */
 +        if (found || !client->info || client->info->type != NET_CLIENT_DRIVER_NIC ||
@@ -118776,7 +119162,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
  
  static int nb_nics;
  static NICInfo nd_table[MAX_NICS];
-@@ -269,6 +465,8 @@ static void qemu_net_client_setup(NetClientState *nc,
+@@ -269,6 +473,8 @@ static void qemu_net_client_setup(NetClientState *nc,
                                    NetClientDestructor *destructor,
                                    bool is_datapath)
  {
@@ -118785,7 +119171,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
      nc->info = info;
      nc->model = g_strdup(model);
      if (name) {
-@@ -288,6 +486,7 @@ static void qemu_net_client_setup(NetClientState *nc,
+@@ -288,6 +494,7 @@ static void qemu_net_client_setup(NetClientState *nc,
      nc->destructor = destructor;
      nc->is_datapath = is_datapath;
      QTAILQ_INIT(&nc->filters);
@@ -118793,7 +119179,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
  }
  
  NetClientState *qemu_new_net_client(NetClientInfo *info,
-@@ -296,10 +495,15 @@ NetClientState *qemu_new_net_client(NetClientInfo *info,
+@@ -296,10 +503,15 @@ NetClientState *qemu_new_net_client(NetClientInfo *info,
                                      const char *name)
  {
      NetClientState *nc;
@@ -118809,7 +119195,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
      qemu_net_client_setup(nc, info, peer, model, name,
                            qemu_net_client_destructor, true);
  
-@@ -312,10 +516,15 @@ NetClientState *qemu_new_net_control_client(NetClientInfo *info,
+@@ -312,10 +524,15 @@ NetClientState *qemu_new_net_control_client(NetClientInfo *info,
                                              const char *name)
  {
      NetClientState *nc;
@@ -118825,7 +119211,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
      qemu_net_client_setup(nc, info, peer, model, name,
                            qemu_net_client_destructor, false);
  
-@@ -331,11 +540,20 @@ NICState *qemu_new_nic(NetClientInfo *info,
+@@ -331,11 +548,20 @@ NICState *qemu_new_nic(NetClientInfo *info,
  {
      NetClientState **peers = conf->peers.ncs;
      NICState *nic;
@@ -118846,7 +119232,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
      nic = g_malloc0(info->size + sizeof(NetClientState) * queues);
      nic->ncs = (void *)nic + info->size;
      nic->conf = conf;
-@@ -343,6 +561,10 @@ NICState *qemu_new_nic(NetClientInfo *info,
+@@ -343,6 +569,10 @@ NICState *qemu_new_nic(NetClientInfo *info,
      nic->opaque = opaque;
  
      for (i = 0; i < queues; i++) {
@@ -118857,7 +119243,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
          qemu_net_client_setup(&nic->ncs[i], info, peers[i], model, name,
                                NULL, true);
          nic->ncs[i].queue_index = i;
-@@ -385,6 +607,10 @@ NetClientState *qemu_get_peer(NetClientState *nc, int queue_index)
+@@ -385,6 +615,10 @@ NetClientState *qemu_get_peer(NetClientState *nc, int queue_index)
  static void qemu_cleanup_net_client(NetClientState *nc,
                                      bool remove_from_net_clients)
  {
@@ -118868,7 +119254,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
      if (remove_from_net_clients) {
          QTAILQ_REMOVE(&net_clients, nc, next);
      }
-@@ -445,6 +671,11 @@ void qemu_del_net_client(NetClientState *nc)
+@@ -445,6 +679,11 @@ void qemu_del_net_client(NetClientState *nc)
  
          for (i = 0; i < queues; i++) {
              ncs[i]->peer->link_down = true;
@@ -118880,7 +119266,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
              QTAILQ_REMOVE(&net_clients, ncs[i], next);
          }
  
-@@ -620,6 +851,7 @@ int qemu_set_vnet_be(NetClientState *nc, bool is_be)
+@@ -620,6 +859,7 @@ int qemu_set_vnet_be(NetClientState *nc, bool is_be)
  
  int qemu_can_receive_packet(NetClientState *nc)
  {
@@ -118888,7 +119274,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
      if (nc->receive_disabled) {
          return 0;
      } else if (nc->info->can_receive &&
-@@ -742,6 +974,9 @@ static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,
+@@ -742,6 +982,9 @@ static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,
      if (sender->link_down || !sender->peer) {
          return size;
      }
@@ -118898,7 +119284,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
  
      /* Let filters handle the packet first */
      ret = filter_receive(sender, NET_FILTER_DIRECTION_TX,
-@@ -839,6 +1074,7 @@ static ssize_t qemu_deliver_packet_iov(NetClientState *sender,
+@@ -839,6 +1082,7 @@ static ssize_t qemu_deliver_packet_iov(NetClientState *sender,
      g_autofree struct iovec *iov_copy = NULL;
  
  
@@ -118906,7 +119292,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
      if (nc->link_down) {
          return iov_size(iov, iovcnt);
      }
-@@ -886,16 +1122,47 @@ ssize_t qemu_sendv_packet_async(NetClientState *sender,
+@@ -886,16 +1130,47 @@ ssize_t qemu_sendv_packet_async(NetClientState *sender,
                                  NetPacketSent *sent_cb)
  {
      NetQueue *queue;
@@ -118957,7 +119343,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
  
      /* Let filters handle the packet first */
      ret = filter_receive_iov(sender, NET_FILTER_DIRECTION_TX, sender,
-@@ -1344,12 +1611,14 @@ static int net_client_init1(const Netdev *netdev, bool is_netdev, Error **errp)
+@@ -1344,12 +1619,14 @@ static int net_client_init1(const Netdev *netdev, bool is_netdev, Error **errp)
                         NetClientDriver_str(netdev->type));
              return -1;
          }
@@ -118977,7 +119363,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..6ae27ade7cf6df6bb72db12a73114b3b
      }
  
      nc = qemu_find_netdev(netdev->id);
-@@ -2175,3 +2444,5 @@ int net_fill_rstate(SocketReadState *rs, const uint8_t *buf, int size)
+@@ -2175,3 +2452,5 @@ int net_fill_rstate(SocketReadState *rs, const uint8_t *buf, int size)
      assert(size == 0);
      return 0;
  }
@@ -185100,10 +185486,10 @@ index 0000000000000000000000000000000000000000..090737ccf7fa898c85f134ffa0573d5c
 +}
 diff --git a/system/crucible-whole-ram.inc.c b/system/crucible-whole-ram.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6ef889475
+index 0000000000000000000000000000000000000000..4413b0d9173bd6e5b41833f782171330fcabf70d
 --- /dev/null
 +++ b/system/crucible-whole-ram.inc.c
-@@ -0,0 +1,1003 @@
+@@ -0,0 +1,1118 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Included by physmem.c, beside the actual RAM and dirty-directory owners. */
 +
@@ -185187,6 +185573,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +typedef struct WholeRamOwners {
 +    pid_t process;
 +    bool failed;
++    bool held_sealed;
 +    unsigned dirty_generations;
 +    unsigned dirty_capacity;
 +    uint64_t main_extent;
@@ -185199,6 +185586,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +    WholeRamBirth births[WHOLE_RAM_BIRTHS];
 +    DirtyMemoryBlocks *directories[WHOLE_RAM_BIRTHS][DIRTY_MEMORY_NUM];
 +    unsigned long **bitmaps[DIRTY_MEMORY_NUM];
++    unsigned long *bitmap_bases[DIRTY_MEMORY_NUM];
 +} WholeRamOwners;
 +
 +static pid_t whole_ram_process;
@@ -185227,6 +185615,8 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +        _exit(125);
 +    }
 +    if (!crucible_whole_setup_source_current() || !whole_ram_owners ||
++        !crucible_whole_setup_history_span_current(whole_ram_owners,
++                                                  sizeof(*whole_ram_owners)) ||
 +        whole_ram_owners->failed) {
 +        whole_ram_refuse();
 +    }
@@ -185382,6 +185772,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +        if (!maps) {
 +            whole_ram_refuse();
 +        }
++        owners->bitmap_bases[client] = maps;
 +        for (unsigned index = 0; index < count; index++) {
 +            owners->bitmaps[client][index] =
 +                maps + index * BITS_TO_LONGS(DIRTY_MEMORY_BLOCK_SIZE);
@@ -185401,6 +185792,12 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +    return 0;
 +}
 +
++static bool whole_ram_constructor_open(void)
++{
++    return crucible_whole_setup_constructor_current() && whole_ram_owners &&
++        !whole_ram_owners->held_sealed;
++}
++
 +static int whole_ram_birth(unsigned index, Object *owner, MemoryRegion *region,
 +                            uint64_t extent)
 +{
@@ -185408,7 +185805,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +    uint64_t rounded;
 +
 +    if (!whole_ram_selected() ||
-+        !crucible_whole_setup_constructor_current() || !owner || !region ||
++        !whole_ram_constructor_open() || !owner || !region ||
 +        !whole_ram_round(extent, &rounded)) {
 +        return -ESTALE;
 +    }
@@ -185455,7 +185852,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +    if (!crucible_whole_setup_selected()) {
 +        return 0;
 +    }
-+    if (!crucible_whole_setup_constructor_current() ||
++    if (!whole_ram_constructor_open() ||
 +        !crucible_whole_setup_machine_current(machine) ||
 +        !crucible_whole_setup_q35_instance_span_current(OBJECT(machine), region,
 +                                                        sizeof(*region)) ||
@@ -185474,7 +185871,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +    CrucibleWholeRamResize resized = NULL;
 +    WholeRamBirth *birth = NULL;
 +
-+    if (!whole_ram_selected() || !crucible_whole_setup_constructor_current() ||
++    if (!whole_ram_selected() || !whole_ram_constructor_open() ||
 +        !crucible_whole_setup_machine_current(machine) ||
 +        !crucible_whole_rom_acpi_region_birth ||
 +        !crucible_whole_rom_acpi_region_current ||
@@ -185546,7 +185943,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +    if (!birth) {
 +        return NULL;
 +    }
-+    if (!crucible_whole_setup_constructor_current() ||
++    if (!whole_ram_constructor_open() ||
 +        birth->phase != WHOLE_RAM_REQUESTED || birth->name || !name ||
 +        (extent = strnlen(name, 256)) == 256) {
 +        whole_ram_refuse();
@@ -185588,7 +185985,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +        return;
 +    }
 +    birth = whole_ram_region(region);
-+    if (!crucible_whole_setup_constructor_current() || !birth ||
++    if (!whole_ram_constructor_open() || !birth ||
 +        birth->phase != WHOLE_RAM_REQUESTED ||
 +        size != birth->requested_extent || max_size != birth->maximum || host ||
 +        resized != birth->resized ||
@@ -185609,7 +186006,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +    birth = whole_ram_region(region);
 +    /* Only an issued ACPI bank admits its original resizeable callback. Other
 +     * unsupported categories refuse before allocation or publication. */
-+    if (!crucible_whole_setup_constructor_current() || !birth ||
++    if (!whole_ram_constructor_open() || !birth ||
 +        birth->phase != WHOLE_RAM_REQUESTED ||
 +        TARGET_PAGE_BITS != WHOLE_RAM_X86_PAGE_BITS || host ||
 +        flags != (birth->acpi ? RAM_RESIZEABLE : 0) || resized != birth->resized ||
@@ -185647,7 +186044,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +        return;
 +    }
 +    birth = whole_ram_block(block);
-+    if (!crucible_whole_setup_constructor_current() || !birth ||
++    if (!whole_ram_constructor_open() || !birth ||
 +        birth->phase != WHOLE_RAM_PUBLISHED || block->flags != birth->expected_flags) {
 +        whole_ram_refuse();
 +    }
@@ -185664,7 +186061,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +        return;
 +    }
 +    birth = whole_ram_block(block);
-+    if (!crucible_whole_setup_constructor_current() || !birth ||
++    if (!whole_ram_constructor_open() || !birth ||
 +        birth->phase != WHOLE_RAM_PUBLISHED || device || name != birth->name ||
 +        birth->original_id[0]) {
 +        whole_ram_refuse();
@@ -185679,7 +186076,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +        return;
 +    }
 +    birth = whole_ram_block(block);
-+    if (!crucible_whole_setup_constructor_current() || !birth ||
++    if (!whole_ram_constructor_open() || !birth ||
 +        birth->phase != WHOLE_RAM_PUBLISHED || birth->original_id[0]) {
 +        whole_ram_refuse();
 +    }
@@ -185694,7 +186091,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +        return;
 +    }
 +    birth = whole_ram_block(block);
-+    if (!crucible_whole_setup_constructor_current() || !birth ||
++    if (!whole_ram_constructor_open() || !birth ||
 +        (birth->phase != WHOLE_RAM_PUBLISHED && birth->phase != WHOLE_RAM_RETIRED) ||
 +        memcmp(birth->original_id, block->idstr, sizeof(block->idstr))) {
 +        whole_ram_refuse();
@@ -185760,8 +186157,12 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +    for (unsigned client = 0; client < DIRTY_MEMORY_NUM; client++) {
 +        DirtyMemoryBlocks *directory =
 +            owners->directories[owners->dirty_generations - 1][client];
++        size_t table_extent = owners->dirty_capacity * sizeof(unsigned long *);
++        size_t directory_extent = sizeof(*directory) + table_extent;
 +
-+        if (ram_list.dirty_memory[client] != directory) {
++        if (!crucible_whole_setup_history_span_current(directory, directory_extent) ||
++            !crucible_whole_setup_history_span_current(owners->bitmaps[client], table_extent) ||
++            ram_list.dirty_memory[client] != directory) {
 +            return false;
 +        }
 +        for (unsigned index = 0; index < ram_list.num_dirty_blocks; index++) {
@@ -185788,13 +186189,14 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +        return -ESTALE;
 +    }
 +    if (!birth->name_extent || birth->name_extent > sizeof(birth->original_name) ||
-+        object_get_class(birth->owner) != birth->owner_class ||
 +        (birth->acpi ?
 +            !crucible_whole_rom_acpi_region_current(birth->machine, region,
 +                (struct FWCfgState *)birth->owner, birth->requested_extent,
 +                birth->maximum, birth->resized) :
 +            !crucible_whole_setup_q35_instance_span_current(birth->owner, region,
-+                                                            sizeof(*region)))) {
++                                                            sizeof(*region))) ||
++        object_get_class(birth->owner) != birth->owner_class ||
++        !crucible_whole_setup_history_span_current(birth->name, birth->name_extent)) {
 +        return -ESTALE;
 +    }
 +    original = &birth->block;
@@ -185817,6 +186219,105 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +    *backing = birth->host;
 +    *rounded_extent = birth->selected_extent;
 +    return 0;
++}
++
++static bool whole_ram_held_roots_current(void)
++{
++    WholeRamOwners *owners = whole_ram_owners;
++    size_t bitmap_words, table_extent, directory_extent, bitmap_extent;
++
++    if (!whole_ram_selected() || whole_ram_update ||
++        !owners->dirty_capacity ||
++        owners->births[0].phase != WHOLE_RAM_PUBLISHED ||
++        owners->births[1].phase != WHOLE_RAM_PUBLISHED ||
++        !whole_ram_registry_current()) {
++        return false;
++    }
++    bitmap_words = BITS_TO_LONGS(DIRTY_MEMORY_BLOCK_SIZE);
++    if (__builtin_mul_overflow((size_t)owners->dirty_capacity,
++                               sizeof(unsigned long *), &table_extent) ||
++        __builtin_add_overflow(sizeof(DirtyMemoryBlocks), table_extent,
++                               &directory_extent) ||
++        __builtin_mul_overflow((size_t)owners->dirty_capacity, bitmap_words,
++                               &bitmap_extent) ||
++        __builtin_mul_overflow(bitmap_extent, sizeof(unsigned long),
++                               &bitmap_extent)) {
++        return false;
++    }
++    for (unsigned client = 0; client < DIRTY_MEMORY_NUM; client++) {
++        if (!crucible_whole_setup_history_span_current(owners->bitmaps[client],
++                                                       table_extent) ||
++            !crucible_whole_setup_history_span_current(owners->bitmap_bases[client],
++                                                       bitmap_extent)) {
++            return false;
++        }
++        for (unsigned generation = 0; generation < WHOLE_RAM_BIRTHS; generation++) {
++            DirtyMemoryBlocks *directory = owners->directories[generation][client];
++
++            if (!crucible_whole_setup_history_span_current(directory,
++                                                           directory_extent)) {
++                return false;
++            }
++            for (unsigned index = 0; index < owners->dirty_capacity; index++) {
++                unsigned long *bitmap = owners->bitmap_bases[client] +
++                    index * bitmap_words;
++
++                if (owners->bitmaps[client][index] != bitmap ||
++                    directory->blocks[index] != bitmap) {
++                    return false;
++                }
++            }
++        }
++    }
++    for (unsigned index = 0; index < WHOLE_RAM_BIRTHS; index++) {
++        WholeRamBirth *birth = &owners->births[index];
++        RAMBlock *block;
++        void *backing;
++        uint64_t extent;
++
++        if (birth->phase == WHOLE_RAM_UNUSED) {
++            continue;
++        }
++        /* A pending/failed/retired allocation remains charged. It cannot be
++         * erased into the stopped census; retained retirement needs its own
++         * original lifecycle proof before this world can close. */
++        if (birth->phase != WHOLE_RAM_PUBLISHED ||
++            qemu_ram_whole_backing_current(birth->region, &block, &backing,
++                                           &extent) ||
++            block != &birth->block || backing != birth->host ||
++            extent != birth->selected_extent) {
++            return false;
++        }
++    }
++    return true;
++}
++
++int qemu_ram_whole_held_seal(void)
++{
++    if (!crucible_whole_setup_selected()) {
++        return 0;
++    }
++    if (!whole_ram_selected() ||
++        !crucible_whole_setup_constructor_current() ||
++        !crucible_whole_setup_cold_stop_current()) {
++        return -ESTALE;
++    }
++    if (whole_ram_owners->held_sealed) {
++        return -EALREADY;
++    }
++    if (!whole_ram_held_roots_current()) {
++        return -ESTALE;
++    }
++    /* This fences constructor allocations, not runtime memory writes. The
++     * original ACPI update journal retains its separate effect admission. */
++    whole_ram_owners->held_sealed = true;
++    return 0;
++}
++
++int qemu_ram_whole_held_current(void)
++{
++    return whole_ram_selected() && whole_ram_owners->held_sealed &&
++        whole_ram_held_roots_current() ? 0 : -ESTALE;
 +}
 +
 +static bool whole_ram_update_owned(WholeRamUpdate *update)
@@ -186049,7 +186550,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +        return false;
 +    }
 +    owners = whole_ram_owners;
-+    if (!crucible_whole_setup_constructor_current() ||
++    if (!whole_ram_constructor_open() ||
 +        owners->dirty_generations == WHOLE_RAM_BIRTHS || new_count > owners->dirty_capacity) {
 +        whole_ram_refuse();
 +    }
@@ -186081,7 +186582,7 @@ index 0000000000000000000000000000000000000000..8a647b4c456927c98e400244e81170d6
 +        return false;
 +    }
 +    birth = whole_ram_block(block);
-+    if (!crucible_whole_setup_constructor_current() || !birth ||
++    if (!whole_ram_constructor_open() || !birth ||
 +        birth->phase != WHOLE_RAM_PUBLISHED) {
 +        whole_ram_refuse();
 +    }
@@ -253679,10 +254180,10 @@ index 8ef603d081ea02b80ecfca27a22a6b19d8a1a49c..ec273e2d683387492ce26e803896f522
 +}
 diff --git a/util/crucible-endpoint-roots.c b/util/crucible-endpoint-roots.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..e4fca6196e76cdce63a24305250f8f82830e1e22
+index 0000000000000000000000000000000000000000..4e16204c95c9c5e356011ffa51676342e21cb097
 --- /dev/null
 +++ b/util/crucible-endpoint-roots.c
-@@ -0,0 +1,793 @@
+@@ -0,0 +1,845 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Original early allocation history and nonblocking zero-class admission. */
 +#include "qemu/osdep.h"
@@ -253699,12 +254200,18 @@ index 0000000000000000000000000000000000000000..e4fca6196e76cdce63a24305250f8f82
 +
 +static bool endpoint_observation_enabled;
 +static pid_t endpoint_original_process;
++static pid_t original_endpoint_journal_process;
 +static uint64_t endpoint_state[CRUCIBLE_ENDPOINT_ROOT_KINDS];
 +
 +static G_NORETURN void endpoint_refuse(void)
 +{
 +    /* A producer request is not a complete stopped or NoEffects receipt. The
 +     * original child and journals must be supervised with effects unknown. */
++    if ((endpoint_original_process && endpoint_original_process != getpid()) ||
++        (original_endpoint_journal_process &&
++         original_endpoint_journal_process != getpid())) {
++        _exit(125);
++    }
 +    error_report("Crucible original endpoint lifetime refused: input or "
 +                 "allocation has no original source effect cut");
 +    /* Do not invoke QEMU atexit/plugin cleanup or acquire their BQL here. */
@@ -253850,8 +254357,15 @@ index 0000000000000000000000000000000000000000..e4fca6196e76cdce63a24305250f8f82
 +
 +static EndpointOriginalJournal *endpoint_original(void)
 +{
-+    EndpointOriginalJournal *journal =
-+        qatomic_load_acquire(&original_endpoints);
++    EndpointOriginalJournal *journal;
++
++    /* The original PID lives outside the inherited arena. A copied process
++     * must not chase even the journal header or an inherited reporter lock. */
++    if (original_endpoint_journal_process &&
++        original_endpoint_journal_process != getpid()) {
++        _exit(125);
++    }
++    journal = qatomic_load_acquire(&original_endpoints);
 +
 +    /* An inherited pointer does not issue a child constructor or effect loan. */
 +    if (journal && journal->process != getpid()) {
@@ -253865,7 +254379,8 @@ index 0000000000000000000000000000000000000000..e4fca6196e76cdce63a24305250f8f82
 +    const CrucibleEndpointOriginalBinding *right)
 +{
 +    return left->owner == right->owner && left->context == right->context &&
-+        left->queue == right->queue && left->descriptor == right->descriptor &&
++        left->methods == right->methods && left->queue == right->queue &&
++        left->descriptor == right->descriptor &&
 +        left->native_thread == right->native_thread &&
 +        left->attributes == right->attributes &&
 +        !memcmp(left->userdata, right->userdata, sizeof(left->userdata)) &&
@@ -253932,6 +254447,7 @@ index 0000000000000000000000000000000000000000..e4fca6196e76cdce63a24305250f8f82
 +    journal->process = getpid();
 +    journal->constructor_thread = qemu_get_thread_id();
 +    journal->phase = ENDPOINT_CONSTRUCTING;
++    original_endpoint_journal_process = getpid();
 +    qatomic_store_release(&original_endpoints, journal);
 +    return 0;
 +}
@@ -254301,6 +254817,43 @@ index 0000000000000000000000000000000000000000..e4fca6196e76cdce63a24305250f8f82
 +        endpoint_refuse();
 +    }
 +    entry->retired = true;
++}
++
++int qemu_endpoint_whole_original_owner_read(
++    CrucibleEndpointOriginalKind kind, const void *original_owner,
++    CrucibleEndpointOriginalBinding *original_binding)
++{
++    EndpointOriginalJournal *journal = endpoint_original();
++    const EndpointOriginalBirth *original = NULL;
++
++    if (!journal || !crucible_whole_setup_source_current() || !bql_locked() ||
++        !original_binding || kind < 0 || kind >= CRUCIBLE_ORIGINAL_KINDS) {
++        return -ESTALE;
++    }
++    QEMU_LOCK_GUARD(&journal->lock);
++    if (journal->phase != ENDPOINT_SEALING ||
++        qemu_get_thread_id() != journal->constructor_thread ||
++        journal->births > ORIGINAL_ENDPOINT_BIRTHS) {
++        return -ESTALE;
++    }
++    for (size_t index = 0; index < journal->births; index++) {
++        const EndpointOriginalBirth *entry = &journal->entries[index];
++
++        if (entry->kind == kind && entry->bound && !entry->retired &&
++            entry->binding.owner == original_owner) {
++            if (original) {
++                return -ESTALE;
++            }
++            original = entry;
++        }
++    }
++    if (!original || !endpoint_descriptor_current(original)) {
++        return -ESTALE;
++    }
++    /* Equality identifies a source-born row before any candidate dereference.
++     * No verification bit, journal capacity or caller state is advanced. */
++    *original_binding = original->binding;
++    return 0;
 +}
 +
 +int qemu_endpoint_whole_original_verify(

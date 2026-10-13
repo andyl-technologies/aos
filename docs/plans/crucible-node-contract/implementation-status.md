@@ -3073,8 +3073,10 @@ a permission error and interrupts the build. No compiler failure is reported.
 All 3,179 observed process generations retire and the original host confirms
 writer-lock release. A corrected exact realization request subsequently
 succeeds in 22.62 seconds using a registered LLVM18 output, with no new compiler
-dispatch. Its full output and installed-tool audit remains pending. The failed
-attempt stays retained; neither result qualifies the backend package tuples.
+dispatch. Independent full-NAR, eight runtime-reference and nine installed
+compiler controls pass on that registered output. Nine inherited utility
+interpreter shebangs remain an open policy gap. The failed attempt stays
+retained; neither result qualifies the backend package tuples.
 
 The direct selected DMTCP source diagnostic configures, builds and installs
 successfully in 4.13, 27.26 and 0.70 seconds. Its first startup fails before port
@@ -3124,6 +3126,32 @@ SHA256 `bb071893b36afcd4e47ba13e1fd2720a1689e1eb222a7f03011babc70b6e2f45`.
 The workspace staging hash now follows these exact bytes. This source correction
 performs no fetching, store admission or package qualification and does not
 relabel the earlier staging output.
+
+## Coherent native device-state guards
+
+Signed QEMU source `d9037e32ec3648d1fc24a35049248190f4b22792` joins original
+firmware publication, ROM file-event correlation, held RAM lifetime checks,
+endpoint membership and ACPI state/memory-region identity. Endpoint checks
+validate original membership before dereferencing native owners or callback
+structures. Foreign processes refuse before inherited journal or logging
+access. The six-ring mapping path is preserved; its shared header receives
+only additive firmware declarations.
+
+Fresh configuration, 175 generator commands and 14 exact complete translation
+units with warnings treated as errors pass on one materialization. All 64
+existing component controls pass on that same source: 14 firmware, 10 ROM,
+20 RAM, 13 endpoint and seven ACPI cases. Authority certificates in these
+controls remain explicitly modeled. Earlier fixture failures and the mistaken
+root-block suffix context selection retain their original scope. No complete
+emulator link, installed pair or native guest result is inferred.
+
+Independent review verifies the complete source and compiled dependencies.
+Canonical reconstruction preserves all 78,082 signed parent entries, changes
+exactly 16 existing files and reproduces final tree
+`d690ff95f9ca59c14ae0f7f39d54ddc7ca0d36fe` from the sole upstream base.
+The license inventory is unchanged. Genuine AddressSpace/FlatView ownership,
+complete physical closure, full firmware/ROM sealing, readiness and current
+package/ABI/license qualification remain required.
 
 ## Performance evidence
 
