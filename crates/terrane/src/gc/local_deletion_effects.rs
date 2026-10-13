@@ -284,21 +284,26 @@ pub(crate) async fn restore_owner<F: LocalFs + BucketBinding>(
             operation_key = Some(candidate);
         }
     }
-    if operation_key.is_none()
-        && observed_journals.len() == 3
-        && observed_journals
-            .iter()
-            .all(|journal| journal.state == terrane_core::gc::JournalState::Invalidated)
-    {
-        // Invalidated's registered encoding intentionally carries no owner key.
-        // Directory entries are lookup hints only; protected intent and all
-        // current journal nonces must independently identify the exact receipt.
+    if operation_key.is_none() {
+        // Neither Committed nor Invalidated carries an owner key. A durable
+        // Authorized intent can precede the first DeleteOwned journal. Entries
+        // are hints only; native observation independently checks exact intent,
+        // journal state/binding/nonces and actual artifact incarnations.
         let directory = control.join(format!(
             "gc/{}/delete/{}",
             exclusion.cycle,
             hex(&exclusion.pack_id)
         ));
-        let metadata = fs.symlink_metadata(&directory).await.map_err(io_failure)?;
+        let requires_intent = observed_journals
+            .iter()
+            .any(|journal| journal.state == terrane_core::gc::JournalState::Invalidated);
+        let metadata = match fs.symlink_metadata(&directory).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !requires_intent => {
+                return Ok(None);
+            }
+            Err(error) => return Err(io_failure(error)),
+        };
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err(corrupt());
         }
@@ -330,7 +335,13 @@ pub(crate) async fn restore_owner<F: LocalFs + BucketBinding>(
                 .await?
                 .ok_or_else(corrupt)?;
             let intent = DeleteOperation::decode(&bytes, &key).map_err(|_| corrupt())?;
-            if intent.phase == DeletePhase::Cancelled
+            let matches_incarnation = matches!(
+                intent.phase,
+                DeletePhase::Authorized | DeletePhase::Cancelled
+            ) && intent.authorization.pack_id == exclusion.pack_id
+                && intent.authorization.cycle == exclusion.cycle
+                && intent.authorization.epoch == exclusion.epoch
+                && observed_journals.len() == 3
                 && intent
                     .authorization
                     .artifacts
@@ -338,13 +349,16 @@ pub(crate) async fn restore_owner<F: LocalFs + BucketBinding>(
                     .zip(&observed_journals)
                     .all(|(version, journal)| {
                         version.key == journal.key && version.nonce == journal.nonce
-                    })
-                && operation_key.replace(key).is_some()
-            {
+                    });
+            if matches_incarnation {
+                if operation_key.replace(key).is_some() {
+                    return Err(corrupt());
+                }
+            } else if intent.phase != DeletePhase::Cancelled {
                 return Err(corrupt());
             }
         }
-        if operation_key.is_none() {
+        if operation_key.is_none() && requires_intent {
             return Err(corrupt());
         }
     }
