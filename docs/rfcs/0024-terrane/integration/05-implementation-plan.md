@@ -249,8 +249,10 @@ seconds under its original 900-second bound. The other twenty-three cases keep
 their original 120-second bounds. Every actual one-case summary reports one
 pass, with unchanged source, compiler inputs and original and archived binaries.
 The renewed 1,024-entry ordinary and adversarial populations pass once in
-766.455 and 722.203 seconds under their original 1,800-second bounds. The other
-four populations, full SDK, owning Nix gates, application targets and complete
+766.455 and 722.203 seconds under their original 1,800-second bounds. The
+2,048-entry ordinary population also passes once in 1,375.060 seconds under
+its original bound, with unchanged source, inputs and executables. The three
+later populations, full SDK, owning Nix gates, application targets and complete
 current T1 floor remain pending; scoped success advances no task.
 The unfiltered SDK qualification must retain all 1,121 actual cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
