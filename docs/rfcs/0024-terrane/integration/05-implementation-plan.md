@@ -141,9 +141,10 @@ cases pass once each with unchanged source, compiler inputs and executables.
 Authorized-only cancellation passes in 96.184 seconds under its unchanged
 120-second limit. Core renewal passes library build, all-target no-default
 compilation, strict all-target Clippy and all 770 tests across eleven AOS
-executables, with none skipped or ignored. The 1,024-entry ordinary growth
-case passes in 1,435.906 seconds under its unchanged 1,800-second limit;
-the adversarial case is running and the four larger cases remain unstarted.
+executables, with none skipped or ignored. Both 1,024-entry growth cases
+pass under their unchanged 1,800-second limits: ordinary in 1,435.906
+seconds and adversarial in 1,507.903 seconds. The 2,048-entry ordinary
+case is running and the three later populations remain unstarted.
 Full SDK and Nix qualification remain pending. Full original task-diff
 review is complete for the 99 core-test, 58 ref-advance, 103 bucket and
 158 collector paths. Isolated presentation corrections add missing panic
