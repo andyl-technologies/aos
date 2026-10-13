@@ -2349,6 +2349,33 @@ and RR callbacks have different threads; constructor TLS cannot supply shared
 callback participation. That ownership successor must preserve compiler-checked
 thread safety and authentic native context before readiness is enabled.
 
+## Original host scheduler and exact input collection
+
+The common runtime retains one original scheduler allocation before Arm. Lazy
+initialization and restoration install into that allocation; its host owner
+observes the same queues, input commitments and credits. Private authority,
+process, thread and world checks precede borrows. Containment and retirement
+revoke external access while preserving the original retained state.
+
+A separate exact-input collection route preserves time, phase and microstep.
+Native staging, acknowledgement and commitment precede grants, including empty
+input cuts. Legacy exact-input and quantized admission branches remain intact.
+Daemon callers release scheduler borrows before subsequent runtime operations.
+Snapshot preflight counts borrowed state against its byte limit before copying.
+
+The final component source passes strict all-target, all-feature Clippy and 43
+focused controls. A separate preceding executable passes 324 scheduler, runtime
+and restoration controls; those executions retain their original source scope.
+The daemon caller cohort passes all-target, all-feature typing in its recorded
+source composition. Its original compiler logs and source bodies are retained;
+the historical daemon dependency files were overwritten by later checks and
+provide no retained readback evidence. These checks do not qualify the complete
+current source or actual connected native execution.
+
+Host capture remains unsupported in this preparation profile. Full original
+host continuation, fresh restoration, native peer capture and the connected
+world's installed-provider execution remain required.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
