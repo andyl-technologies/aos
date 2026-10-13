@@ -27,9 +27,9 @@ use crate::journal::CacheMutationGateV1;
 use crate::journal::semantic_append::AppendScope;
 
 use aos_sandbox_protocol::domain_ledger::operation::effect_key;
-use aos_sandbox_protocol::domain_ledger::project_admission_metadata::{
-    ProjectAdmissionMetadataV1 as ProjectAdmissionMetadata,
-    ProjectAdmissionPhaseV1 as ProjectAdmissionPhase,
+use aos_sandbox_protocol::domain_ledger::controller_history_relation::{
+    ControllerCapacityHistoryErrorV1, validate_controller_capacity_transfer_v1,
+    validate_controller_capacity_settlement_v1,
 };
 
 use sha2::{Digest as _, Sha256};
@@ -737,30 +737,9 @@ fn validate_capacity_transfer(
     old_capacity: [u8; 32],
     new_capacity: [u8; 32],
 ) -> Result<(), JournalError> {
-    let (prior, next) = capacity_effect_transition(journal, transaction, operation)?;
-    if prior.capacity_id() != old_capacity || next.capacity_id() != new_capacity {
-        return Err(JournalError::AuthorityPreflightMismatch);
-    }
-    let mut expected = prior.clone();
-    expected.set_historical_capacity_id(new_capacity);
-    match (prior.phase(), next.phase()) {
-        (ProjectAdmissionPhase::Prepared, ProjectAdmissionPhase::DispatchAuthorized) => {
-            expected.set_historical_phase(ProjectAdmissionPhase::DispatchAuthorized);
-        }
-        (
-            ProjectAdmissionPhase::DispatchAuthorized,
-            ProjectAdmissionPhase::AcceptedRootTerminal,
-        ) => {
-            expected.set_historical_phase(ProjectAdmissionPhase::AcceptedRootTerminal);
-            expected.set_historical_challenge(next.challenge());
-            expected.set_historical_terminal(next.terminal());
-        }
-        _ => return Err(JournalError::AuthorityPreflightMismatch),
-    }
-    if next != expected {
-        return Err(JournalError::AuthorityPreflightMismatch);
-    }
-    Ok(())
+    let (key, prior) = borrow_controller_capacity_predecessor(journal, operation)?;
+    validate_controller_capacity_transfer_v1(prior, &key, transaction, old_capacity, new_capacity)
+        .map_err(controller_capacity_relation_error)
 }
 
 fn validate_capacity_settlement(
@@ -769,43 +748,31 @@ fn validate_capacity_settlement(
     operation: [u8; 16],
     capacity: [u8; 32],
 ) -> Result<(), JournalError> {
-    let (prior, next) = capacity_effect_transition(journal, transaction, operation)?;
-    let expected_phase = ProjectAdmissionPhase::RootRetired;
-    let expected_floor = next.retired_floor();
-    let mut expected = prior.clone();
-    expected.set_historical_phase(expected_phase);
-    expected.set_historical_retired_floor(expected_floor);
-    if prior.phase() != ProjectAdmissionPhase::AcceptedRootTerminal
-        || prior.capacity_id() != capacity
-        || next != expected
-        || transaction.records().len() != 2
-    {
-        return Err(JournalError::AuthorityPreflightMismatch);
-    }
-    Ok(())
+    let (key, prior) = borrow_controller_capacity_predecessor(journal, operation)?;
+    validate_controller_capacity_settlement_v1(prior, &key, transaction, capacity)
+        .map_err(controller_capacity_relation_error)
 }
 
-fn capacity_effect_transition(
+// Select once through the real Journal before the complete historical relation.
+fn borrow_controller_capacity_predecessor(
     journal: &Journal,
-    transaction: &JournalTransaction,
     operation: [u8; 16],
-) -> Result<(ProjectAdmissionMetadata, ProjectAdmissionMetadata), JournalError> {
+) -> Result<([u8; 20], &[u8]), JournalError> {
     let operation = aos_sandbox_core::OperationId::from_bytes(operation);
     let key = effect_key(operation, 0);
     let prior = journal
         .get(RecordNamespace::Effect, &key)
         .ok_or(JournalError::ProtectedBoundary)?;
-    let prior = crate::reconciler::decode_capacity_effect_history(prior)?;
-    let mut effects = transaction
-        .records()
-        .iter()
-        .filter(|record| record.namespace() == RecordNamespace::Effect);
-    let next = effects.next().ok_or(JournalError::ProtectedBoundary)?;
-    if next.key() != key || effects.next().is_some() {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    crate::reconciler::compare_capacity_effect_history(prior, next)
+    Ok((key, prior))
 }
+
+fn controller_capacity_relation_error(error: ControllerCapacityHistoryErrorV1) -> JournalError {
+    match error {
+        ControllerCapacityHistoryErrorV1::ProtectedBoundary => JournalError::ProtectedBoundary,
+        ControllerCapacityHistoryErrorV1::AuthorityPreflightMismatch => JournalError::AuthorityPreflightMismatch,
+    }
+}
+
 
 #[cfg(test)]
 mod purpose_tests {

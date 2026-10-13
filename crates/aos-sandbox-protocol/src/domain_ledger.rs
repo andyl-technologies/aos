@@ -31,9 +31,12 @@
 //! shared private codec. Native signing, custody and continuation stay upper.
 //! [`resource_bank`] owns the complete passive account/claim codecs, inclusive
 //! replay, co-issuance and terminal history. Native resource loans stay upper.
+//! [`controller_history_relation`] owns complete atomic Delete metadata and
+//! Controller capacity transfer/settlement comparisons, without Native admission.
 
 pub mod capacity;
 pub mod capacity_family;
+pub mod controller_history_relation;
 pub mod create_q04_history;
 pub mod delete_batch;
 pub mod effect_history;

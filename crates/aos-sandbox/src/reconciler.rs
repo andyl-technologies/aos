@@ -66,7 +66,6 @@ mod effect;
 #[cfg(target_os = "linux")]
 mod fuse_admission;
 mod observe_reservation;
-mod delete_gate_history;
 mod operator_repair_failure;
 pub(crate) mod project_admission;
 mod runtime_authority;
@@ -128,10 +127,6 @@ use aos_sandbox_protocol::domain_ledger::ownership_gate::{
     OwnershipGateDataErrorV1, OwnershipGatePlanV1, OwnershipGateStatusV1, decode_ownership_gate,
     encode_ownership_gate,
 };
-pub(crate) use effect::{
-    compare_capacity_effect_history, decode_capacity_effect_history, validate_delete_effect_record,
-};
-pub(crate) use delete_gate_history::decode_delete_gate;
 #[cfg(test)]
 use aos_sandbox_protocol::domain_ledger::operation::{
     OPERATION_RECORD_V1_BYTES, OPERATION_RUNTIME_INTENT_DIGEST_BYTES, RECORD_VERSION_V1,

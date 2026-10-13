@@ -566,3 +566,95 @@ fn dispatch_without_root_artifact_keeps_exact_flight_when_credentials_expire_or_
     // compatible inputs. This fixture proves retention and rejection only;
     // expired credentials do not instead supply negative settlement authority.
 }
+
+// These recipes compare passive DATA derived from the existing real admission
+// fixture. Synthetic terminal/floor claims are never committed or used as grants.
+fn historical_capacity_successor(
+    fixture: &Fixture,
+    prior: &EffectLedgerRecord,
+    metadata: ProjectAdmissionMetadata,
+    extra_records: usize,
+) -> JournalTransaction {
+    let mut next = prior.clone();
+    next.set_project_admission(Some(metadata));
+    let mut records = vec![effect_record(fixture.operation, &next).unwrap()];
+    for index in 0..extra_records {
+        records.push(JournalRecord::put(RecordNamespace::DesiredState, vec![index as u8], vec![1]));
+    }
+    JournalTransaction::new([30; 16], records).unwrap()
+}
+
+#[test]
+fn complete_capacity_history_checks_both_transfers_and_original_identity() {
+    use aos_sandbox_protocol::domain_ledger::controller_history_relation::{
+        ControllerCapacityHistoryErrorV1, validate_controller_capacity_transfer_v1,
+    };
+
+    let fixture = Fixture::prepared();
+    let prior = fixture.effect();
+    let key = effect_key(fixture.operation, 0);
+    let bytes = encode_effect(&prior).unwrap();
+    let old_capacity = prior.project_admission().unwrap().capacity_id();
+    let mut dispatch = prior.project_admission().unwrap().clone();
+    dispatch.set_historical_capacity_id([31; 32]);
+    dispatch.set_historical_phase(ProjectAdmissionPhase::DispatchAuthorized);
+    let transaction = historical_capacity_successor(&fixture, &prior, dispatch.clone(), 2);
+
+    assert!(validate_controller_capacity_transfer_v1(&bytes, &key, &transaction, old_capacity, [31; 32]).is_ok());
+    assert_eq!(validate_controller_capacity_transfer_v1(&bytes, &key, &transaction, [32; 32], [31; 32]), Err(ControllerCapacityHistoryErrorV1::AuthorityPreflightMismatch));
+    let mut changed = dispatch.clone();
+    changed.set_historical_capacity_id([33; 32]);
+    let changed_transaction = historical_capacity_successor(&fixture, &prior, changed, 2);
+    assert_eq!(validate_controller_capacity_transfer_v1(&bytes, &key, &changed_transaction, old_capacity, [31; 32]), Err(ControllerCapacityHistoryErrorV1::AuthorityPreflightMismatch));
+    let mut wrong_key = key;
+    wrong_key[19] = 1;
+    assert_eq!(validate_controller_capacity_transfer_v1(&bytes, &wrong_key, &transaction, old_capacity, [31; 32]), Err(ControllerCapacityHistoryErrorV1::ProtectedBoundary));
+
+    let mut dispatched = prior.clone();
+    dispatched.set_project_admission(Some(dispatch.clone()));
+    let dispatch_bytes = encode_effect(&dispatched).unwrap();
+    let cancellation = crate::policy_compiler::test_root_project_reservation_cancellation_v1(dispatch.reservation());
+    let mut accepted = dispatch;
+    accepted.set_historical_capacity_id([34; 32]);
+    accepted.set_historical_phase(ProjectAdmissionPhase::AcceptedRootTerminal);
+    accepted.set_historical_terminal(Some(RetainedRootProjectTerminal::Cancellation(cancellation)));
+    let terminal = historical_capacity_successor(&fixture, &dispatched, accepted, 2);
+
+    assert!(validate_controller_capacity_transfer_v1(&dispatch_bytes, &key, &terminal, [31; 32], [34; 32]).is_ok());
+    assert_eq!(validate_controller_capacity_transfer_v1(&bytes, &key, &terminal, old_capacity, [34; 32]), Err(ControllerCapacityHistoryErrorV1::AuthorityPreflightMismatch));
+    assert_eq!(validate_controller_capacity_transfer_v1(&dispatch_bytes[..dispatch_bytes.len()-1], &key, &terminal, [31; 32], [34; 32]), Err(ControllerCapacityHistoryErrorV1::ProtectedBoundary));
+}
+
+#[test]
+fn complete_capacity_settlement_requires_accepted_history_and_exact_two_row_successor() {
+    use aos_sandbox_protocol::domain_ledger::controller_history_relation::{
+        ControllerCapacityHistoryErrorV1, validate_controller_capacity_settlement_v1,
+    };
+
+    let fixture = Fixture::prepared();
+    let mut prior = fixture.effect();
+    let key = effect_key(fixture.operation, 0);
+    let mut accepted = prior.project_admission().unwrap().clone();
+    let capacity = accepted.capacity_id();
+    let cancellation = crate::policy_compiler::test_root_project_reservation_cancellation_v1(accepted.reservation());
+    accepted.set_historical_phase(ProjectAdmissionPhase::AcceptedRootTerminal);
+    accepted.set_historical_terminal(Some(RetainedRootProjectTerminal::Cancellation(cancellation)));
+    prior.set_project_admission(Some(accepted.clone()));
+    let bytes = encode_effect(&prior).unwrap();
+    let mut retired = accepted;
+    retired.set_historical_phase(ProjectAdmissionPhase::RootRetired);
+    retired.set_historical_retired_floor(Some(ObjectDigest::from_bytes([35; 32])));
+    let transaction = historical_capacity_successor(&fixture, &prior, retired.clone(), 1);
+
+    assert!(validate_controller_capacity_settlement_v1(&bytes, &key, &transaction, capacity).is_ok());
+    assert_eq!(validate_controller_capacity_settlement_v1(&bytes, &key, &transaction, [36; 32]), Err(ControllerCapacityHistoryErrorV1::AuthorityPreflightMismatch));
+    for extra_records in [0, 2] {
+        let transaction = historical_capacity_successor(&fixture, &prior, retired.clone(), extra_records);
+        assert_eq!(validate_controller_capacity_settlement_v1(&bytes, &key, &transaction, capacity), Err(ControllerCapacityHistoryErrorV1::AuthorityPreflightMismatch));
+    }
+
+    let prepared = encode_effect(&fixture.effect()).unwrap();
+    assert_eq!(validate_controller_capacity_settlement_v1(&prepared, &key, &transaction, capacity), Err(ControllerCapacityHistoryErrorV1::AuthorityPreflightMismatch));
+    assert_eq!(validate_controller_capacity_settlement_v1(&bytes[..bytes.len()-1], &key, &transaction, capacity), Err(ControllerCapacityHistoryErrorV1::ProtectedBoundary));
+    assert_eq!(fixture.effect().project_admission().unwrap().phase(), ProjectAdmissionPhase::Prepared);
+}
