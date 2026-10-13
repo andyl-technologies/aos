@@ -6,6 +6,11 @@ use super::*;
 ///
 /// # Errors
 /// Propagates actual publication, read, closing-pause and filesystem failures.
+///
+/// # Panics
+/// Panics if native fixture setup or proposal construction fails, or if log
+/// selection, hard links, returned bytes or physical replacement refusal
+/// contradict the fixture assertions.
 pub(super) async fn check_public_logs() -> TestResult {
     let native = crate::ref_advance::tests::fixture().await;
     let name = "refs/heads/tenant/main";
