@@ -15,10 +15,15 @@ use serde_json::{Map, Value};
 use crate::{
     ProviderError,
     bodies::*,
-    envelope::{Envelope, Nullable, RequestOrigin},
+    envelope::{Envelope, Method, Nullable, RequestOrigin},
 };
 
 use super::{PacketGrant, PacketInventory, PacketProgram};
+
+mod input;
+mod program;
+
+use program::NativeProgram;
 
 const FRAME: usize = 65_536;
 const ORIGINALS: usize = 256;
@@ -108,7 +113,7 @@ impl ReplyPreparation<'_> {
 /// Owns the native packet source, all initial/global gates and immutable originals.
 pub struct PacketControl {
     selection: PacketControlSelection,
-    program: PacketProgram,
+    program: NativeProgram,
     originals: BTreeMap<Id, (HashRef, PacketControlReply)>,
     begins: BTreeMap<Id, BeginRequest>,
     begin_requests: BTreeMap<Id, Id>,
@@ -125,6 +130,7 @@ pub struct PacketControl {
     terminals: BTreeMap<Id, Map<String, Value>>,
     common_coordinator: Option<super::coordinator::PacketCoordinatorInstallation>,
     world_coordinator: Option<super::coordinator::PacketWorldCoordinatorInstallation>,
+    connected_coordinator: Option<super::coordinator::PacketConnectedCoordinatorInstallation>,
 }
 
 impl PacketControl {
@@ -133,7 +139,10 @@ impl PacketControl {
         installed: super::coordinator::PacketCoordinatorInstallation,
     ) -> Result<(), ProviderError> {
         self.endpoint_scope()?;
-        if self.common_coordinator.is_some() || self.world_coordinator.is_some() {
+        if self.common_coordinator.is_some()
+            || self.world_coordinator.is_some()
+            || self.connected_coordinator.is_some()
+        {
             return Err(ProviderError::Correlation(
                 "packet coordinator already installed",
             ));
@@ -148,7 +157,10 @@ impl PacketControl {
         installed: super::coordinator::PacketWorldCoordinatorInstallation,
     ) -> Result<(), ProviderError> {
         self.endpoint_scope()?;
-        if self.common_coordinator.is_some() || self.world_coordinator.is_some() {
+        if self.common_coordinator.is_some()
+            || self.world_coordinator.is_some()
+            || self.connected_coordinator.is_some()
+        {
             return Err(ProviderError::Correlation(
                 "packet coordinator already installed",
             ));
@@ -158,8 +170,26 @@ impl PacketControl {
         Ok(())
     }
 
+    pub(super) fn install_connected_coordinator(
+        &mut self,
+        installed: super::coordinator::PacketConnectedCoordinatorInstallation,
+    ) -> Result<(), ProviderError> {
+        self.endpoint_scope()?;
+        if self.common_coordinator.is_some()
+            || self.world_coordinator.is_some()
+            || self.connected_coordinator.is_some()
+        {
+            return Err(ProviderError::Correlation(
+                "packet coordinator already installed",
+            ));
+        }
+        installed.validate(&self.selection)?;
+        self.connected_coordinator = Some(installed);
+        Ok(())
+    }
+
     pub(super) fn endpoint_scope(&self) -> Result<&PacketControlSelection, ProviderError> {
-        if !self.immediate || self.fenced || self.realized || !self.program.inventory().gate_closed
+        if !self.immediate || self.fenced || self.realized || !self.program.inventory()?.gate_closed
         {
             return Err(ProviderError::Correlation(
                 "packet endpoint requires original unopened source2",
@@ -176,12 +206,19 @@ impl PacketControl {
         selection: PacketControlSelection,
         program: PacketProgram,
     ) -> Result<Self, ProviderError> {
+        Self::new_native(selection, NativeProgram::OutputOnly(program))
+    }
+
+    fn new_native(
+        selection: PacketControlSelection,
+        program: NativeProgram,
+    ) -> Result<Self, ProviderError> {
         selection.provider.validate()?;
         selection.realization.validate()?;
         selection.realize.validate()?;
         selection.world.validate()?;
         let realization = &selection.realization;
-        let actual_configuration = reference(&encode(&program.definition())?)?;
+        let actual_configuration = reference(&encode(&program.configuration()?)?)?;
         if realization.bindings.len() != 1
             || realization.owners.len() != 1
             || realization.descriptors.len() != 1
@@ -192,8 +229,8 @@ impl PacketControl {
             || selection.realize.configuration != actual_configuration
             || realization.bindings[0].compatibility.configuration_ref != actual_configuration
             || realization.descriptors[0].model_ref != actual_configuration
-            || !program.inventory().gate_closed
-            || !program.inventory().retained_outputs.is_empty()
+            || !program.inventory()?.gate_closed
+            || !program.inventory()?.retained_outputs.is_empty()
         {
             return Err(ProviderError::Correlation(
                 "packet complete installed native scope",
@@ -218,6 +255,7 @@ impl PacketControl {
             terminals: BTreeMap::new(),
             common_coordinator: None,
             world_coordinator: None,
+            connected_coordinator: None,
         })
     }
 
@@ -321,6 +359,99 @@ impl PacketControl {
         Ok(control)
     }
 
+    /// Constructs the distinct phased connected native dialect beneath a closed gate.
+    ///
+    /// This constructor grants no host admission or class qualification. Its
+    /// caller independently installs the complete measured source selection;
+    /// the original all-owner barrier must still authenticate gate opening.
+    ///
+    /// # Errors
+    /// Refuses a missing explicit connected edition, changed configuration or
+    /// invalid original source tuple. Unsupported control routes remain closed.
+    pub fn new_connected(
+        selection: PacketControlSelection,
+        program: super::connected::PacketConnectedProgram,
+    ) -> Result<Self, ProviderError> {
+        let expected = super::contracts::connected_packet_contract()?;
+        let definition = reference(&expected)?;
+        if selection.provider.supported_profiles.len() != 1
+            || selection.provider.supported_profiles[0].profile_id.as_str()
+                != "source-owned.packet-connected/4"
+            || !selection
+                .provider
+                .implementation
+                .formats
+                .iter()
+                .any(|format| {
+                    format.id.as_str() == "source-owned.packet-receipt/4"
+                        && format.version == 4
+                        && format.definition == definition
+                        && format.extensions.is_empty()
+                })
+        {
+            return Err(ProviderError::Correlation(
+                "packet connected edition not installed",
+            ));
+        }
+        let mut control = Self::new_native(selection, NativeProgram::Connected(program))?;
+        control.immediate = true;
+        Ok(control)
+    }
+
+    /// Installs a connected native interpreter under the complete original world.
+    ///
+    /// # Errors
+    /// Refuses undeclared routes, a changed source selection or another coordinator.
+    pub fn new_connected_world(
+        selection: PacketControlSelection,
+        program: super::connected::PacketConnectedProgram,
+        coordinator: super::coordinator::PacketConnectedCoordinatorInstallation,
+    ) -> Result<Self, ProviderError> {
+        coordinator.validate(&selection)?;
+        let world: WorldBinding = serde_json::from_value(coordinator.template["world"].clone())
+            .map_err(ContractError::from)?;
+        let node = &selection.realization.descriptors[0].id;
+        let incoming = world
+            .connections
+            .iter()
+            .filter(|route| &route.consumer.node_id == node)
+            .collect::<Vec<_>>();
+        if incoming.len() != program.definition().connections.len()
+            || program.definition().connections.iter().any(|native| {
+                incoming.iter().all(|route| {
+                    route.id != native.id
+                        || route.policy_ref != native.policy
+                        || route.producer != native.producer
+                        || route.consumer != native.consumer
+                        || route.minimum_latency_ps != native.delay_ps
+                })
+            })
+        {
+            return Err(ProviderError::Correlation(
+                "packet native routes differ from installed world",
+            ));
+        }
+        let mut native = Self::new_connected(selection, program)?;
+        native.install_connected_coordinator(coordinator)?;
+        Ok(native)
+    }
+
+    /// Installs the unchanged source-2 producer inside a connected original world.
+    ///
+    /// # Errors
+    /// Refuses source-2 profile changes, an incomplete roster or another coordinator.
+    pub fn new_producer_in_connected_world(
+        selection: PacketControlSelection,
+        program: PacketProgram,
+        coordinator: super::coordinator::PacketConnectedCoordinatorInstallation,
+    ) -> Result<Self, ProviderError> {
+        coordinator.validate(&selection)?;
+        let mut native =
+            Self::new_immediate_profile(selection, program, "source-owned.packet-emitter-world/3")?;
+        native.install_connected_coordinator(coordinator)?;
+        Ok(native)
+    }
+
     /// Retains verified inert original content before a consuming native operation.
     ///
     /// # Errors
@@ -330,6 +461,13 @@ impl PacketControl {
         object: ContentRef,
         bytes: &[u8],
     ) -> Result<(), ProviderError> {
+        if self.connected_coordinator.is_some()
+            && bytes.len() > super::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "packet complete connected content",
+            ));
+        }
         object.verify(bytes)?;
         if let Some(original) = self.content.get(&object) {
             return if original == bytes {
@@ -342,7 +480,15 @@ impl PacketControl {
             .content_bytes
             .checked_add(bytes.len())
             .ok_or(ProviderError::ResourceExhausted("packet content bytes"))?;
-        if self.content.len() >= OBJECTS || total > CONTENT_BYTES || bytes.len() > FRAME {
+        // Only the explicitly installed connected-four profile needs the larger
+        // complete coordinator object. Socket frames and old profiles stay fixed;
+        // every byte remains charged to the same original total content ledger.
+        let maximum_object = if self.connected_coordinator.is_some() {
+            super::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES
+        } else {
+            FRAME
+        };
+        if self.content.len() >= OBJECTS || total > CONTENT_BYTES || bytes.len() > maximum_object {
             return Err(ProviderError::ResourceExhausted(
                 "packet complete native content",
             ));
@@ -352,8 +498,13 @@ impl PacketControl {
         Ok(())
     }
 
-    /// Copies a native state snapshot without executing a callback or changing its gate.
-    pub fn inventory(&self) -> PacketInventory {
+    /// Copies the administrative native projection without executing a callback.
+    ///
+    /// Connected input/phase proof uses its separate complete native record.
+    ///
+    /// # Errors
+    /// Refuses failed or foreign originating-process custody for connected sources.
+    pub fn inventory(&self) -> Result<PacketInventory, ProviderError> {
         self.program.inventory()
     }
 
@@ -467,11 +618,15 @@ impl PacketControl {
                 .as_ref()
                 .is_some_and(|owner| owner != &self.selection.realization.owners[0].id)
             || request.capture_owner_id.0.is_some()
-            || !request.extensions.is_empty()
+            || (!request.extensions.is_empty()
+                && !(self.program.is_connected() && request.method == Method::Input))
         {
             return Err(ProviderError::Correlation("packet original native route"));
         }
         let decoded = decode_request(request.method, &request.body)?;
+        if self.program.is_connected() && request.method == Method::Input {
+            super::input::PacketInputContext::decode(&request.extensions)?;
+        }
         // Reserve the original unknown response before any setter or callback.
         self.originals.insert(
             id.clone(),
@@ -548,7 +703,7 @@ impl PacketControl {
         request: &Envelope,
         grant: Option<PacketGrant>,
     ) -> Result<(ContentRef, Vec<u8>), ProviderError> {
-        self.retain_record(request, self.program.inventory(), grant)
+        self.retain_record(request, self.program.inventory()?, grant)
     }
 
     fn retain_record(
@@ -557,18 +712,25 @@ impl PacketControl {
         inventory: PacketInventory,
         grant: Option<PacketGrant>,
     ) -> Result<(ContentRef, Vec<u8>), ProviderError> {
-        let bytes = encode(&PacketNativeRecord {
-            schema: if self.immediate {
-                "source-owned.packet-native/2"
-            } else {
-                "source-owned.packet-native/1"
-            }
-            .into(),
-            native_pid: U64::new(u64::from(std::process::id())),
-            original: request.clone(),
-            inventory,
-            grant,
-        })?;
+        let bytes = if let Some(record) =
+            self.program
+                .connected_record(request, &inventory, grant.as_ref())?
+        {
+            encode(&record)?
+        } else {
+            encode(&PacketNativeRecord {
+                schema: if self.immediate {
+                    "source-owned.packet-native/2"
+                } else {
+                    "source-owned.packet-native/1"
+                }
+                .into(),
+                native_pid: U64::new(u64::from(std::process::id())),
+                original: request.clone(),
+                inventory,
+                grant,
+            })?
+        };
         let root = reference(&bytes)?;
         self.install_content(root.clone(), &bytes)?;
         Ok((root, bytes))
@@ -660,7 +822,7 @@ impl PacketControl {
                     || activate.prepared_token != self.selection.prepared_token
                     || activate.world_binding_hash != self.selection.world
                     || activate.gate_id != self.selection.gate
-                    || !self.program.inventory().gate_closed
+                    || !self.program.inventory()?.gate_closed
                 {
                     return Err(ProviderError::Correlation(
                         "packet original nonexecuting activation",
@@ -682,6 +844,7 @@ impl PacketControl {
                 self.activate_world(request, activate, preparation)
             }
             RequestBody::Begin(begin) => self.begin(request, begin, preparation),
+            RequestBody::Input(input) => self.input(request, input),
             RequestBody::Poll(_) => self.poll(request),
             RequestBody::Cancel(_) => self.cancel(request),
             RequestBody::Observe(observe) => self.observe(request, observe),
@@ -733,7 +896,9 @@ impl PacketControl {
             || manifest.world_generation != activate.world_generation
             || manifest.gate_id != activate.gate_id
             || manifest.world_binding_hash != activate.world_binding_hash
-            || (self.world_coordinator.is_none() && manifest.owners != [expected_owner])
+            || (self.world_coordinator.is_none()
+                && self.connected_coordinator.is_none()
+                && manifest.owners != [expected_owner])
             || !self.content.contains_key(&manifest.coordinator_state_ref)
         {
             return Err(ProviderError::Correlation(
@@ -758,7 +923,19 @@ impl PacketControl {
                 &manifest,
             )?;
         }
-        let mut inventory = self.program.inventory();
+        if let Some(installed) = &self.connected_coordinator {
+            let coordinator = self.content.get(&manifest.coordinator_state_ref).ok_or(
+                ProviderError::Correlation("packet connected coordinator absent"),
+            )?;
+            installed.authenticate_staged(
+                coordinator,
+                &self.selection,
+                staged,
+                ready,
+                &manifest,
+            )?;
+        }
+        let mut inventory = self.program.inventory()?;
         inventory.gate_closed = false;
         let proof = self.retain_record(request, inventory, None)?;
         let response = reply(
@@ -809,10 +986,10 @@ impl PacketControl {
             || arguments.world_generation != active.world_generation
             || arguments.owner_generation != binding.authority.owner_generation
             || arguments.input_epoch != binding.authority.input_epoch
-            || arguments.input_watermark.get() != 0
+            || (!self.program.is_connected() && arguments.input_watermark.get() != 0)
             || arguments.boundary_policy != BoundaryPolicy::OrdinaryStop
             || !self.content.contains_key(&arguments.input_authorization)
-            || arguments.start != self.program.inventory().reached
+            || arguments.start != self.program.inventory()?.reached
         {
             return Err(ProviderError::Correlation(
                 "packet original native grant binding",
@@ -824,7 +1001,58 @@ impl PacketControl {
                 .ok_or(ProviderError::Correlation(
                     "packet original common authorization absent",
                 ))?;
-        if let Some(installed) = &self.world_coordinator {
+        if let NativeProgram::Connected(program) = &self.program {
+            let installed =
+                self.connected_coordinator
+                    .as_ref()
+                    .ok_or(ProviderError::Correlation(
+                        "packet original connected coordinator absent",
+                    ))?;
+            let (consumed, reference) = program.committed_input()?;
+            let consumed_id =
+                consumed
+                    .original
+                    .request_id
+                    .0
+                    .as_ref()
+                    .ok_or(ProviderError::Correlation(
+                        "packet original consumed request absent",
+                    ))?;
+            let original = self
+                .originals
+                .get(consumed_id)
+                .ok_or(ProviderError::Correlation(
+                    "packet original consumed response absent",
+                ))?;
+            let decoded = decode_request(consumed.original.method, &consumed.original.body)?;
+            let response = decode_response(&decoded, &original.1.body)?;
+            if !matches!(response.result, Some(MethodResult::Input(_))) {
+                return Err(ProviderError::Correlation(
+                    "packet input commitment not completed",
+                ));
+            }
+            super::common::PacketConnectedCommonGrant::authenticate(
+                input,
+                &self.selection,
+                active,
+                operation,
+                &begin,
+                &arguments,
+                installed,
+                consumed,
+                reference,
+            )?;
+        } else if let Some(installed) = &self.connected_coordinator {
+            super::common::PacketCommonGrant::authenticate_connected_world(
+                input,
+                &self.selection,
+                active,
+                operation,
+                &begin,
+                &arguments,
+                installed,
+            )?;
+        } else if let Some(installed) = &self.world_coordinator {
             super::common::PacketCommonGrant::authenticate_world(
                 input,
                 &self.selection,
@@ -890,16 +1118,7 @@ impl PacketControl {
         )?;
         let next_attention = Bound {
             kind: BoundKind::At,
-            position: Some(
-                prospective
-                    .inventory
-                    .pending
-                    .iter()
-                    .filter(|event| event.payload.is_some())
-                    .map(|event| event.completion)
-                    .min()
-                    .unwrap_or(prospective.inventory.reached),
-            ),
+            position: Some(self.program.attention(&prospective)?),
             evidence: Some(proof.0.clone()),
         };
         let terminal = object(ResponseShape::Completed {
@@ -932,7 +1151,7 @@ impl PacketControl {
         let actual = self
             .program
             .execute(native_operation, arguments.start, arguments.limit)?;
-        if actual != &prospective {
+        if actual != prospective {
             return Err(ProviderError::Correlation(
                 "packet immediate actual result differs from reserved original",
             ));
@@ -951,7 +1170,7 @@ impl PacketControl {
         }
         let state = if self
             .program
-            .original(operation)
+            .original(operation)?
             .is_some_and(|original| original.complete)
         {
             OperationState::Completed
@@ -1049,7 +1268,7 @@ impl PacketControl {
         let grant = self
             .program
             .execute(native_operation, arguments.start, arguments.limit)?;
-        if grant != &prospective {
+        if grant != prospective {
             return Err(ProviderError::Correlation(
                 "packet actual callback differs from reserved complete result",
             ));
@@ -1110,10 +1329,7 @@ impl PacketControl {
                 observations: vec![batch],
                 next_sequence: U64::new(1),
                 complete: true,
-                inventory_hash: canonical::json_hash(
-                    "source-owned.packet-inventory.v1",
-                    &self.program.inventory(),
-                )?,
+                inventory_hash: self.program.inventory_hash()?,
             },
             vec![proof],
         )
@@ -1144,15 +1360,20 @@ impl PacketControl {
         ))?;
         let expected = self
             .program
-            .original(operation)
+            .original(operation)?
             .ok_or(ProviderError::Correlation("packet retirement grant absent"))?
             .newborn
             .iter()
             .map(|output| output.event.clone())
             .collect::<Vec<_>>();
         let consumption: Value = canonical::parse_json(body, FRAME)?;
+        let schema = if self.program.is_connected() {
+            "source-owned.packet-consumption.v4"
+        } else {
+            "source-owned.packet-consumption.v1"
+        };
         if consumption
-            != serde_json::json!({"schema":"source-owned.packet-consumption.v1", "operation":operation,"outputs":expected})
+            != serde_json::json!({"schema":schema, "operation":operation,"outputs":expected})
         {
             return Err(ProviderError::Correlation(
                 "packet original consumption changed",

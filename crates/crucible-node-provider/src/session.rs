@@ -29,6 +29,16 @@ pub struct CorrelationGuard {
 }
 
 impl CorrelationGuard {
+    /// Checks initial sequencing, including frames whose transport credit retired.
+    pub(crate) fn unused(&self) -> bool {
+        !self.failed
+            && self.next_received == 2
+            && self.next_sent == 2
+            && self.pending.is_empty()
+            && self.received_requests.is_empty()
+            && self.writing_responses.is_empty()
+    }
+
     /// Binds the negotiated identities and positive request credit.
     ///
     /// # Errors

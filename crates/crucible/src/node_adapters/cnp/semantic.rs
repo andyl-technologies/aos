@@ -14,7 +14,9 @@ mod input;
 mod lifecycle;
 mod node;
 mod operations;
+mod packet_connected_source;
 mod packet_grant;
+mod packet_lineage;
 mod packet_source;
 mod preparation;
 mod process;
@@ -31,11 +33,13 @@ pub use conformance::{
 pub use world_provider::{
     CnpSemanticConformanceWorldProvider, CnpSemanticExactConformanceWorldProvider,
     CnpSemanticExactWorldReservation, CnpSemanticExactWorldReservationFailure,
-    CnpSemanticWorldPreparationFailure,
-    CnpSemanticWorldReservationFailure,
+    CnpSemanticWorldPreparationFailure, CnpSemanticWorldReservationFailure,
 };
 
 pub use node::{CnpSemanticAdmissionFailure, CnpSemanticNode};
+pub use packet_connected_source::{
+    PacketConnectedInputWitness, PacketConnectedNativeWitness, PacketConnectedSemanticSource,
+};
 pub use packet_grant::packet_common_grant_authorization;
 pub use packet_source::{PacketNativeWitness, PacketSemanticSource};
 pub use provider::{CnpSemanticProvider, CnpSemanticProviderFailure};
@@ -79,6 +83,14 @@ mod tests {
     // crucible-lint: allow rust-allow -- Test constructors use panics as failed selected-record assertions.
     #[allow(clippy::unwrap_used)]
     mod packet_definition;
+    // crucible-lint: allow panic-shortcut -- Actual phased byte/socket controls panic on failed source custody assertions.
+    // crucible-lint: allow rust-allow -- Source component fixtures use panics only to reject broken original evidence.
+    #[allow(clippy::unwrap_used)]
+    mod packet_connected;
+    // crucible-lint: allow panic-shortcut -- Actual native datagram/projection assertions fail on lost originals or forbidden phase effects.
+    // crucible-lint: allow rust-allow -- These test-only fixture constructors intentionally panic on invalid source evidence.
+    #[allow(clippy::unwrap_used)]
+    mod packet_connected_source;
     // crucible-lint: allow panic-shortcut -- Selected source roster and actual native Arm controls fail on broken fixture evidence.
     // crucible-lint: allow rust-allow -- Test constructors panic only on inconsistent original setup or failed evidence assertions.
     #[allow(clippy::unwrap_used)]

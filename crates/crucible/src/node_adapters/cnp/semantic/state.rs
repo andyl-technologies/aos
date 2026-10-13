@@ -11,7 +11,10 @@ use crate::{
         ActivationRecord, CancelStatus, NativeReclamationReceipt, OperationAdmission,
         OperationFailure, OperationOutcome, ReadyAttestation, WorldActivation,
     },
-    node_scheduling::{NativeInputAcknowledgement, NativeSchedulingObservation, RuntimeInputBatch},
+    node_scheduling::{
+        InputCustodyCommit, NativeInputAcknowledgement, NativeSchedulingObservation,
+        RuntimeInputBatch,
+    },
 };
 
 use super::budget::SemanticCredit;
@@ -129,10 +132,20 @@ fn bounded_unknown(failure: &OperationFailure) -> OperationFailure {
 #[path = "state_tests.rs"]
 mod tests;
 
+pub(super) struct OriginalInputCommit {
+    pub(super) original: InputCustodyCommit,
+    pub(super) request_id: Id,
+    pub(super) extensions: crucible_node_contract::Extensions,
+    pub(super) context: Rc<Vec<crate::node_scheduling::InputPayload>>,
+    pub(super) response: Option<crucible_node_provider::bodies::InputResult>,
+}
+
 pub(super) struct OriginalInput {
     pub(super) original: Rc<RuntimeInputBatch>,
     pub(super) acknowledgement: Option<NativeInputAcknowledgement>,
     pub(super) watermark: U64,
+    pub(super) request: crucible_node_provider::bodies::InputRequest,
+    pub(super) commitment: Option<OriginalInputCommit>,
     pub(super) response: Option<crucible_node_provider::bodies::InputResult>,
 }
 

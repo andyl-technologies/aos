@@ -214,7 +214,7 @@ pub(super) fn serve(socket: &std::path::Path, bootstrap: NativeBootstrap) {
         // unwind until the parent kills and reaps this same original process.
         std::fs::write(
             &bootstrap.retained_native,
-            bytes(endpoint.native().inventory()),
+            bytes(endpoint.native().inventory().unwrap()),
         )
         .unwrap();
         loop {

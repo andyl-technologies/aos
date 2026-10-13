@@ -46,9 +46,11 @@ impl CnpSemanticLaunchReservation {
         executable: ContentRef,
         slot: Box<dyn CnpSemanticProcessSlot>,
     ) -> Self {
+        let creator_process = std::process::id();
         let supervision_id = slot.identity();
         let read_owner = Rc::new(current::ReadOwner::new(supervision_id));
         let custody = Box::new(CnpSemanticProcessCustody {
+            creator_process,
             child: None,
             provider_pid: 0,
             directory,
@@ -68,12 +70,14 @@ impl CnpSemanticLaunchReservation {
             reaped: None,
             read_owner,
             kernel_identity: None,
+            executable_guard: None,
         });
 
         Self {
             guard: CnpSemanticLaunchGuard {
+                creator_process,
                 custody: Some(custody),
-                slot,
+                slot: Some(slot),
                 supervision_id,
             },
             attempted: false,
@@ -92,6 +96,7 @@ impl CnpSemanticLaunchReservation {
     /// Refuses a repeated attempt, unavailable holder, spawn failure, foreign
     /// group, changed actual executable or unavailable original kernel evidence.
     pub fn launch(&mut self, command: &mut Command) -> Result<(), ProviderError> {
+        self.guard.ensure_origin()?;
         if self.attempted {
             return Err(ProviderError::Correlation(
                 "generic launch already attempted",
@@ -113,8 +118,15 @@ impl CnpSemanticLaunchReservation {
         custody.provider_pid = child.id();
         custody.group = i32::try_from(child.id()).ok().and_then(Pid::from_raw);
 
+        let identity = current::KernelIdentity::capture(custody.provider_pid)?;
+        custody.kernel_identity = Some(identity);
+        custody.executable_guard =
+            Some(Rc::new(super::executable_guard::OriginalExecutable::open(
+                custody.provider_pid,
+                &custody.expected_executable,
+                &identity,
+            )?));
         custody.authenticate_process()?;
-        custody.kernel_identity = Some(current::KernelIdentity::capture(custody.provider_pid)?);
         self.authenticated = true;
         Ok(())
     }
@@ -125,6 +137,12 @@ impl CnpSemanticLaunchReservation {
     /// Returns this whole reservation when no original successful authentication
     /// exists; it never substitutes another Child or reconstructs a reservation.
     pub fn into_guard(self) -> Result<CnpSemanticLaunchGuard, CnpSemanticReservationFailure> {
+        if let Err(error) = self.guard.ensure_origin() {
+            return Err(CnpSemanticReservationFailure {
+                error,
+                original: self,
+            });
+        }
         if !self.authenticated {
             return Err(CnpSemanticReservationFailure {
                 error: ProviderError::Correlation("generic original launch not authenticated"),
@@ -137,3 +155,6 @@ impl CnpSemanticLaunchReservation {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod origin_tests;

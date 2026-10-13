@@ -1685,3 +1685,6 @@ fn original_scheduler_snapshot_precharges_actual_payload_before_copying() {
     assert_eq!(scheduler.pending.len(), before);
     assert_eq!(scheduler.payloads.values().next().unwrap().len(), 5);
 }
+
+#[path = "tests/deferred_evaluation.rs"]
+mod deferred_evaluation;

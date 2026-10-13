@@ -32,6 +32,7 @@ use super::{
 };
 
 mod credit;
+mod lineage;
 mod native;
 mod world;
 
@@ -76,6 +77,15 @@ impl PacketNativeWitness<'_> {
 }
 
 impl PacketSemanticSource {
+    fn coordinator_byte_limit(&self) -> usize {
+        if self.world_scope.as_ref().is_some_and(world::PacketWorldSourceScope::is_connected) {
+            crucible_node_provider::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES
+        } else {
+            65_536
+        }
+    }
+
+
     /// Checks this original source's retained collecting-world installation.
     ///
     /// This compares the complete source-owned scope, not portable Ready or an
@@ -91,6 +101,20 @@ impl PacketSemanticSource {
             .as_ref()
             .ok_or_else(|| refused("packet collecting-world source absent"))?
             .authenticate_installation(coordinator)
+    }
+
+    /// Checks the complete original connected coordinator of this source-2 producer.
+    ///
+    /// # Errors
+    /// Refuses another collecting topology or a changed full installation.
+    pub fn authenticate_collecting_connected_world_scope(
+        &self,
+        coordinator: &crucible_node_provider::reference_packet::coordinator::PacketConnectedCoordinatorInstallation,
+    ) -> Result<(), OperationFailure> {
+        self.world_scope
+            .as_ref()
+            .ok_or_else(|| refused("packet connected producer scope absent"))?
+            .authenticate_connected_installation(coordinator)
     }
 
     /// Borrows one source-validated original native record and its complete body.
@@ -258,6 +282,28 @@ impl PacketSemanticSource {
         let mut source =
             Self::new_selected(installation, program, "source-owned.packet-emitter-world/3")?;
         source.world_scope = Some(world_scope);
+        Ok(source)
+    }
+
+    /// Retains the unchanged output-only producer inside a connected source world.
+    ///
+    /// The distinct coordinator4 authenticates complete topology and actual
+    /// native-three plus genuine host-owner preparation. This source has no input lane, uses
+    /// unchanged source-2 native receipts and grants no ordinary qualification.
+    ///
+    /// # Errors
+    /// Refuses changed source-2 program/profile or an incomplete connected installation.
+    pub fn new_for_collecting_connected_world(
+        installation: CnpSemanticInstallation,
+        program: PacketProgramDefinition,
+        coordinator: crucible_node_provider::reference_packet::coordinator::PacketConnectedCoordinatorInstallation,
+    ) -> Result<Self, OperationFailure> {
+        let mut source =
+            Self::new_selected(installation, program, "source-owned.packet-emitter-world/3")?;
+        source.world_scope = Some(world::PacketWorldSourceScope::new_connected(
+            &source.installation,
+            coordinator,
+        )?);
         Ok(source)
     }
 
@@ -459,6 +505,51 @@ impl PacketSemanticSource {
 }
 
 impl CnpSemanticSource for PacketSemanticSource {
+    fn original_publication_lineage(
+        &self,
+        scope: CnpSemanticRealizationScope<'_>,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &NativePublication,
+        limits: OriginalInputLineageLimits,
+    ) -> Result<OriginalPublicationClaim, OperationFailure> {
+        self.publication_claim(scope, original, outcome, publication, limits)
+    }
+
+    fn validate_original_publication_lineage(
+        &self,
+        scope: CnpSemanticRealizationScope<'_>,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &NativePublication,
+        claim: &OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        let expected = self.publication_claim(
+            scope,
+            original,
+            outcome,
+            publication,
+            OriginalInputLineageLimits::default(),
+        )?;
+        if &expected != claim {
+            return Err(refused(
+                "packet complete original publication codec changed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_exact_original_publication_lineage(
+        &self,
+        scope: CnpSemanticRealizationScope<'_>,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &NativePublication,
+        claim: &OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        self.validate_original_publication_lineage(scope, original, outcome, publication, claim)
+    }
+
     fn installation(&self) -> &CnpSemanticInstallation {
         &self.installation
     }
@@ -490,6 +581,19 @@ impl CnpSemanticSource for PacketSemanticSource {
         {
             return Err(refused(
                 "packet common ingress requires immutable original transport schema",
+            ));
+        }
+        if self
+            .installation
+            .provider
+            .implementation
+            .formats
+            .iter()
+            .any(|format| format.id.as_str() == "source-owned.packet-ingress/4")
+            && !controller.has_connected_packet_transport_schema()
+        {
+            return Err(refused(
+                "packet connected producer requires immutable original transport4",
             ));
         }
         if !self
@@ -760,7 +864,7 @@ impl CnpSemanticSource for PacketSemanticSource {
         if let Some(world) = &self.world_scope {
             world.authenticate_coordinator(&coordinator.bytes)?;
         }
-        let data = canonical::parse_json(&coordinator.bytes, 65_536).map_err(unknown)?;
+        let data = canonical::parse_json(&coordinator.bytes, self.coordinator_byte_limit()).map_err(unknown)?;
         let saved: SavedRuntimeActivation = serde_json::from_value(
             data.get("activation")
                 .cloned()
@@ -778,7 +882,17 @@ impl CnpSemanticSource for PacketSemanticSource {
             || data
                 .get("connections")
                 .and_then(serde_json::Value::as_array)
-                .is_none_or(|connections| !connections.is_empty())
+                .is_none_or(|connections| {
+                    if self
+                        .world_scope
+                        .as_ref()
+                        .is_some_and(|world| world.is_connected())
+                    {
+                        connections.is_empty()
+                    } else {
+                        !connections.is_empty()
+                    }
+                })
         {
             return Err(refused(
                 "packet common gate lacks authentic whole initial coordinator scope",
@@ -820,7 +934,7 @@ impl CnpSemanticSource for PacketSemanticSource {
         if let Some(world) = &self.world_scope {
             world.authenticate_coordinator(&coordinator.bytes)?;
         }
-        let data = canonical::parse_json(&coordinator.bytes, 65_536).map_err(unknown)?;
+        let data = canonical::parse_json(&coordinator.bytes, self.coordinator_byte_limit()).map_err(unknown)?;
         let saved: SavedRuntimeActivation = serde_json::from_value(
             data.get("activation")
                 .cloned()
@@ -1023,7 +1137,7 @@ impl CnpSemanticSource for PacketSemanticSource {
                 "operation": original.token().operation(),
                 "outputs": outputs,
             }),
-            self.installation.maximum_authorization_bytes,
+            self.installation.maximum_authorization_bytes.min(8192),
         )
     }
 

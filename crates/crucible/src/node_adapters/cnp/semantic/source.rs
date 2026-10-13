@@ -11,7 +11,10 @@ use crate::{
         ActivationRecord, FacetKind, OperationAdmission, OperationFailure, OperationOutcome,
         ReadyAttestation, WorldActivation,
     },
-    node_scheduling::{NativeInputAcknowledgement, NativeSchedulingObservation, RuntimeInputBatch},
+    node_scheduling::{
+        InputCustodyCommit, InputPayload, NativeInputAcknowledgement, NativeSchedulingObservation,
+        RuntimeInputBatch,
+    },
 };
 
 use super::CnpSemanticProcessCustody;
@@ -62,7 +65,13 @@ pub struct CnpSemanticInstallation {
     /// effects. The source oracle must check association and allocation bounds
     /// before producing the corresponding owned value.
     pub maximum_result_bytes: usize,
-    /// Limits an original input-authorization or publication-consumption body.
+    /// Limits the serialized custody of one authorization or consumption payload.
+    ///
+    /// The generic adapter sizes the complete `InputPayload`, including its
+    /// content reference and JSON byte-array representation, against this bound.
+    /// Installed source codecs separately limit the raw canonical body before
+    /// constructing the payload. Both extents consume the aggregate semantic
+    /// reservation before dispatch; neither allowance renews on retry.
     pub maximum_authorization_bytes: usize,
     /// Limits aggregate retained expanded common semantic bytes before copies.
     pub maximum_semantic_bytes: usize,
@@ -196,6 +205,137 @@ pub trait CnpSemanticSource {
         scope: CnpSemanticRealizationScope<'_>,
         original: &OperationAdmission,
     ) -> Result<(), OperationFailure>;
+
+    /// Requires the original producer-lineage route for selected native inputs.
+    ///
+    /// Unsupported sources retain ordinary staging behavior. This selector alone
+    /// authenticates no input, source codec, producer or current native custody.
+    fn requires_original_input_lineage(&self, _batch: &RuntimeInputBatch) -> bool {
+        false
+    }
+
+    /// Authenticates original producer bodies before native input staging.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects unsupported codecs, changed complete inputs,
+    /// foreign original producer scopes or missing native custody.
+    fn validate_original_input_lineage(
+        &self,
+        _scope: CnpSemanticRealizationScope<'_>,
+        _batch: &RuntimeInputBatch,
+        _provenance: &crate::node_contract::InputProvenanceClosure,
+        _lineage: &crate::node_contract::OriginalInputLineage,
+    ) -> Result<(), OperationFailure> {
+        Err(super::refused(
+            "generic original input lineage is unsupported",
+        ))
+    }
+
+    /// Reads a complete original native publication and its source-specific rows.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects unsupported codecs, foreign admitted grants,
+    /// missing retained original bodies or exhausted caller geometry limits.
+    fn original_publication_lineage(
+        &self,
+        _scope: CnpSemanticRealizationScope<'_>,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _limits: crate::node_contract::OriginalInputLineageLimits,
+    ) -> Result<crate::node_contract::OriginalPublicationClaim, OperationFailure> {
+        Err(super::refused(
+            "generic original publication lineage is unsupported",
+        ))
+    }
+
+    /// Authenticates every native publication row against the same original source.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects changed original scope, body, rows or custody.
+    fn validate_original_publication_lineage(
+        &self,
+        _scope: CnpSemanticRealizationScope<'_>,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _claim: &crate::node_contract::OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        Err(super::refused(
+            "generic original publication validation is unsupported",
+        ))
+    }
+
+    /// Authenticates exact native publication ancestry under the same original grant.
+    ///
+    /// # Errors
+    /// Defaults to refusal. Supporting sources must bind complete native phase
+    /// positions and ancestry IDs without widening legacy window codecs.
+    fn validate_exact_original_publication_lineage(
+        &self,
+        _scope: CnpSemanticRealizationScope<'_>,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _claim: &crate::node_contract::OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        Err(super::refused(
+            "generic exact native publication ancestry is unsupported",
+        ))
+    }
+
+    /// Authenticates a publication evaluated by an earlier acknowledged original grant.
+    ///
+    /// # Errors
+    /// Defaults to refusal. Supporting sources must join both complete native
+    /// grants, the pending publication and settled original retirement.
+    fn validate_deferred_original_publication(
+        &self,
+        _scope: CnpSemanticRealizationScope<'_>,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _prior: &OperationAdmission,
+        _prior_outcome: &OperationOutcome,
+    ) -> Result<(), OperationFailure> {
+        Err(super::refused(
+            "generic deferred native publication is unsupported",
+        ))
+    }
+
+    /// Reads complete original native Stage evidence under actual completion custody.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects unsupported source codecs, foreign Stage or
+    /// Commit journals, missing complete rows or exhausted caller geometry.
+    fn read_original_input_evidence(
+        &self,
+        _scope: CnpSemanticRealizationScope<'_>,
+        _original: &OperationAdmission,
+        _staged: &crate::node_contract::OriginalStagedInput<'_>,
+        _limits: crate::node_contract::OriginalInputLineageLimits,
+    ) -> Result<crate::node_contract::OriginalInputEvidence, OperationFailure> {
+        Err(super::refused(
+            "generic original input evidence is unsupported",
+        ))
+    }
+
+    /// Authenticates all original native staged-input bodies and codec rows.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects incomplete closure, changed native custody or
+    /// rows not decoded by this same independently installed original source.
+    fn validate_original_input_evidence(
+        &self,
+        _scope: CnpSemanticRealizationScope<'_>,
+        _original: &OperationAdmission,
+        _staged: &crate::node_contract::OriginalStagedInput<'_>,
+        _evidence: &crate::node_contract::OriginalInputEvidence,
+    ) -> Result<(), OperationFailure> {
+        Err(super::refused(
+            "generic original input evidence validation is unsupported",
+        ))
+    }
 
     /// Reads actual lifecycle and physical state under the original native owner.
     ///
@@ -344,6 +484,66 @@ pub trait CnpSemanticSource {
         batch: &RuntimeInputBatch,
         response: &InputResult,
     ) -> Result<NativeInputAcknowledgement, OperationFailure>;
+
+    /// Supplies source-selected envelope context and complete bytes before native staging.
+    ///
+    /// The ordinary Input body is unchanged. An enhanced source may require a
+    /// negotiated closed extension binding the original complete input cut.
+    /// Returned payloads are reserved and verified before any native effect.
+    ///
+    /// # Errors
+    /// Refuses unsupported input context, foreign cuts or unavailable source credit.
+    fn input_staging_context(
+        &self,
+        _scope: CnpSemanticRealizationScope<'_>,
+        _batch: &RuntimeInputBatch,
+        _request: &InputRequest,
+    ) -> Result<(crucible_node_contract::Extensions, Vec<InputPayload>), OperationFailure> {
+        Ok((crucible_node_contract::Extensions::new(), Vec::new()))
+    }
+
+    /// Supplies the negotiated later consumption of an actual retained input batch.
+    ///
+    /// The coordinator-issued opaque commitment must match the same complete
+    /// staging cut and native receipt. Staging alone never supplies consumption.
+    /// The default refuses sources without a genuine native consumed journal.
+    ///
+    /// # Errors
+    /// Refuses absent source support, altered original authority or unqualified bytes.
+    fn input_commit_context(
+        &self,
+        _scope: CnpSemanticRealizationScope<'_>,
+        _batch: &RuntimeInputBatch,
+        _commit: &InputCustodyCommit,
+        _request: &InputRequest,
+        _staging: &InputResult,
+    ) -> Result<(crucible_node_contract::Extensions, Vec<InputPayload>), OperationFailure> {
+        Err(super::refused(
+            "generic source has no native consumed input journal",
+        ))
+    }
+
+    /// Authenticates successful source-owned consumption before an execution grant.
+    ///
+    /// This checks the actual original request/response and source-retained byte
+    /// journal against the opaque coordinator commitment. A successful staging
+    /// receipt or a syntactically valid later response is insufficient.
+    ///
+    /// # Errors
+    /// Refuses unsupported, pending or changed original native consumed custody.
+    fn validate_input_commit(
+        &self,
+        _scope: CnpSemanticRealizationScope<'_>,
+        _batch: &RuntimeInputBatch,
+        _commit: &InputCustodyCommit,
+        _request: &InputRequest,
+        _staging: &InputResult,
+        _response: &InputResult,
+    ) -> Result<(), OperationFailure> {
+        Err(super::refused(
+            "generic source cannot authenticate consumed input",
+        ))
+    }
 
     /// Selects the proven CNP stop policy for this exact common grant.
     ///

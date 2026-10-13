@@ -13,7 +13,10 @@ use std::{
 };
 
 use super::super::{PacketProgram, control::PacketControl};
-use super::{PacketSourceLaunch, PacketSourceService, security::*};
+use super::{
+    PacketConnectedSourceLaunch, PacketConnectedSourceProgram, PacketSourceLaunch,
+    PacketSourceService, security::*,
+};
 use crate::{
     ProviderError,
     bodies::*,
@@ -29,6 +32,66 @@ pub(super) fn accept(
     launch: PacketSourceLaunch,
 ) -> Result<PacketSourceService, ProviderError> {
     launch.validate()?;
+    accept_native(
+        socket,
+        ServerLaunch {
+            schema_version: launch.schema_version,
+            selection: launch.selection,
+            program: PacketConnectedSourceProgram::Producer {
+                program: launch.program,
+            },
+            controller_pid: launch.controller_pid,
+            controller_uid: launch.controller_uid,
+            controller_executable: launch.controller_executable,
+            admission_token: launch.admission_token,
+            initial_coordinator: launch.initial_coordinator,
+            limits: launch.limits,
+            effects: launch.effects,
+        },
+    )
+}
+
+pub(super) fn accept_connected(
+    socket: &Path,
+    launch: PacketConnectedSourceLaunch,
+) -> Result<PacketSourceService, ProviderError> {
+    launch.validate()?;
+    accept_native(
+        socket,
+        ServerLaunch {
+            schema_version: launch.schema_version,
+            selection: launch.selection,
+            program: launch.program,
+            controller_pid: launch.controller_pid,
+            controller_uid: launch.controller_uid,
+            controller_executable: launch.controller_executable,
+            admission_token: launch.admission_token,
+            initial_coordinator: launch.initial_coordinator,
+            limits: launch.limits,
+            effects: launch.effects,
+        },
+    )
+}
+
+// Only fully validated private launches reach this internal common lifecycle.
+// The selected native interpreter and ingress edition remain independent.
+pub(super) struct ServerLaunch {
+    pub(super) schema_version: u16,
+    pub(super) selection: super::super::control::PacketControlSelection,
+    pub(super) program: PacketConnectedSourceProgram,
+    pub(super) controller_pid: U64,
+    pub(super) controller_uid: U64,
+    pub(super) controller_executable: ContentRef,
+    pub(super) admission_token: Bytes,
+    pub(super) initial_coordinator: crate::reference_service::InstalledContent,
+    pub(super) limits: Limits,
+    pub(super) effects: std::path::PathBuf,
+}
+
+fn accept_native(
+    socket: &Path,
+    launch: ServerLaunch,
+) -> Result<PacketSourceService, ProviderError> {
     private_parent(socket)?;
     private_parent(&launch.effects)?;
     let effects = fs::symlink_metadata(&launch.effects)?;
@@ -81,7 +144,7 @@ pub(super) fn accept(
             "packet original initial frame is not Hello",
         ));
     };
-    let selected = features()?;
+    let selected = features(launch.schema_version)?;
     let binding =
         launch
             .selection
@@ -107,7 +170,7 @@ pub(super) fn accept(
             provider_limits: launch.limits,
             required_schemas: Vec::new(),
             required_guarantees: binding.compatibility.guarantees_ref.clone(),
-            envelope_extension_features: extensions(),
+            envelope_extension_features: extensions(launch.schema_version)?,
         },
     )?;
     let mut nonce = vec![0; 32];
@@ -163,7 +226,19 @@ pub(super) fn accept(
     } else {
         None
     };
-    let ingress = if world.is_some() {
+    let connected = if launch.schema_version == 4 {
+        Some(
+            super::super::coordinator::PacketConnectedCoordinatorInstallation::decode(
+                launch.initial_coordinator.bytes.as_slice(),
+                &launch.selection,
+            )?,
+        )
+    } else {
+        None
+    };
+    let ingress = if connected.is_some() {
+        super::super::contracts::connected_ingress_contract()?
+    } else if world.is_some() {
         super::super::contracts::world_ingress_contract()?
     } else if common.is_some() {
         super::super::contracts::common_ingress_contract()?
@@ -176,25 +251,50 @@ pub(super) fn accept(
         definition: canonical::content_ref(&ingress, "application/json")?,
         common: common.clone(),
         world: world.clone(),
+        connected: connected.clone(),
     });
-    let connection = Connection::new(
+    let mut connection = Connection::new(
         stream,
         authority,
         supervisor.clone(),
         policy.clone(),
         EndpointRole::Provider,
     )?;
+    if launch.schema_version == 4 {
+        let owner = launch.selection.realization.owner_bindings.first().ok_or(
+            ProviderError::Correlation("packet connected original owner binding absent"),
+        )?;
+        connection.install_connected_packet_schema(binding, owner)?;
+    }
     let effect_socket = UnixDatagram::unbound()?;
     effect_socket.connect(&launch.effects)?;
-    let program = PacketProgram::new(launch.program.events, effect_socket)?;
-    let native = if let Some(world) = world {
-        PacketControl::new_world_immediate(launch.selection, program, world)?
-    } else {
-        let mut native = PacketControl::new_immediate(launch.selection, program)?;
-        if let Some(common) = common {
-            native.install_common_coordinator(common)?;
+    let native = match launch.program {
+        PacketConnectedSourceProgram::Producer { program } => {
+            let program = PacketProgram::new(program.events, effect_socket)?;
+            if let Some(connected) = connected {
+                PacketControl::new_producer_in_connected_world(
+                    launch.selection,
+                    program,
+                    connected,
+                )?
+            } else if let Some(world) = world {
+                PacketControl::new_world_immediate(launch.selection, program, world)?
+            } else {
+                let mut native = PacketControl::new_immediate(launch.selection, program)?;
+                if let Some(common) = common {
+                    native.install_common_coordinator(common)?;
+                }
+                native
+            }
         }
-        native
+        PacketConnectedSourceProgram::Reactive { program } => {
+            let coordinator = connected.ok_or(ProviderError::Correlation(
+                "packet reactive source requires original connected coordinator",
+            ))?;
+            let program =
+                super::super::connected::PacketConnectedProgram::new(program, effect_socket)?;
+            PacketControl::new_connected_world(launch.selection, program, coordinator)?
+        }
     };
     let endpoint = match super::super::endpoint::PacketEndpoint::new(
         connection,

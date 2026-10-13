@@ -16,8 +16,13 @@ use serde_json::{Value, json};
 use super::control::PacketControlSelection;
 use crate::{ProviderError, bodies::ActivateRequest};
 
+mod connected;
 mod world;
 
+pub use connected::{
+    PACKET_CONNECTED_COORDINATOR_BYTES, PacketConnectedCoordinatorInstallation,
+    PacketConnectedHostSelection,
+};
 pub use world::PacketWorldCoordinatorInstallation;
 
 const LIMIT: usize = 65_536;

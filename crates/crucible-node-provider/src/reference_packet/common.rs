@@ -19,6 +19,10 @@ use crate::{ProviderError, bodies::*};
 
 use super::control::PacketControlSelection;
 
+mod connected;
+
+pub use connected::{PacketConnectedCommonGrant, PacketConnectedCommonInput};
+
 /// Retains one original common owner without reconstructing native authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,6 +122,30 @@ fn required_null<'de, D: serde::Deserializer<'de>>(
 }
 
 impl PacketCommonGrant {
+    pub(super) fn authenticate_connected_world(
+        bytes: &[u8],
+        selection: &PacketControlSelection,
+        active: &WorldActivateRequest,
+        operation: &Id,
+        begin: &BeginRequest,
+        arguments: &ExactRunArguments,
+        installed: &super::coordinator::PacketConnectedCoordinatorInstallation,
+    ) -> Result<Self, ProviderError> {
+        installed.validate(selection)?;
+        let owners: Vec<PacketCommonOwner> =
+            serde_json::from_value(installed.template["activation"]["owners"].clone())
+                .map_err(crucible_node_contract::ContractError::from)?;
+        Self::authenticate_scope(
+            bytes,
+            selection,
+            active,
+            operation,
+            begin,
+            arguments,
+            Some(&owners),
+        )
+    }
+
     /// Checks complete correlation against installed native scope and original Begin.
     ///
     /// # Errors

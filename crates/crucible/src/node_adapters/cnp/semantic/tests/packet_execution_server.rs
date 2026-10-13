@@ -164,7 +164,7 @@ pub(super) fn serve(socket: &std::path::Path, bootstrap: NativeBootstrap) {
                 schema: "source-owned.packet-native/2".into(),
                 native_pid: U64::new(u64::from(std::process::id())),
                 original: request.clone(),
-                inventory: control.inventory(),
+                inventory: control.inventory().unwrap(),
                 grant: None,
             };
             std::fs::write(

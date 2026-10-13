@@ -91,3 +91,19 @@ pub use packet_collection::{
     PacketWorldWitnessPopulation, StoredPacketWorldResultPublisher,
     packet_world_independent_graph_contract,
 };
+
+pub use packet_collection::{
+    InstalledPacketConnectedCollectionAuthority, InstalledPacketConnectedGraphPolicy,
+    PacketConnectedCase, PacketConnectedCaseKind, PacketConnectedCollectionRequest,
+    PacketConnectedGrant, PacketConnectedGraphOwner, PacketConnectedGraphRequest,
+    PacketConnectedNativeOracle, PacketConnectedOracleRequest, PacketConnectedParticipant,
+    PacketConnectedPopulationRequest, PacketConnectedRoster, PacketConnectedSchedule,
+    PacketConnectedWitnessPopulation, packet_connected_independent_graph_contract,
+    packet_connected_measured_graph_proof,
+};
+
+pub use packet_collection::{
+    PacketConnectedHost, PacketConnectedHostRequest, PacketConnectedPeerLaunchFailure,
+    PacketConnectedPeerLaunchRequest, PacketConnectedPublicationRequest,
+    PreparedPacketConnectedPeer, StoredPacketConnectedResultPublisher,
+};

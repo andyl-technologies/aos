@@ -5,10 +5,10 @@
 
 use std::{cell::Cell, rc::Rc};
 
-use crucible_node_contract::{ContentRef, U64};
+use crucible_node_contract::U64;
 use crucible_node_provider::{ProviderError, client::CnpRegistrarRead};
 
-use super::{CnpSemanticProcessCustody, File, Read, fs, measure_executable};
+use super::{CnpSemanticProcessCustody, File, Read, executable_guard::OriginalExecutable, fs};
 
 pub(in super::super) struct ReadOwner {
     identity: U64,
@@ -157,10 +157,11 @@ impl KernelIdentity {
 /// source must still authenticate its complete program, role and native journal.
 /// Containment, guard transfer, uncertain calls and unwind revoke the owner.
 pub struct CnpSemanticSourceRead {
+    process: u32,
     owner: Rc<ReadOwner>,
     registration: CnpRegistrarRead,
     kernel: KernelIdentity,
-    executable: ContentRef,
+    executable: Rc<OriginalExecutable>,
 }
 
 impl CnpSemanticSourceRead {
@@ -168,6 +169,16 @@ impl CnpSemanticSourceRead {
     pub fn same_original(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.owner, &other.owner)
             && self.registration.same_original(&other.registration)
+    }
+
+    /// Compares the same original capsule allocation without reading live state.
+    ///
+    /// This comparison remains available after containment or actual reaping,
+    /// when live source reads correctly refuse. It invokes no registrar, kernel
+    /// or installed callback and supplies neither currentness nor reclamation
+    /// authority. The caller separately proves the original process was reaped.
+    pub fn same_native_owner(&self, native: &super::CnpSemanticProcessCustody) -> bool {
+        Rc::ptr_eq(&self.owner, &native.read_owner)
     }
 
     /// Returns the original pre-spawn supervision reservation identity.
@@ -182,24 +193,24 @@ impl CnpSemanticSourceRead {
     /// read is a current source fact, not execution or behavioral authority.
     ///
     /// # Errors
-    /// Refuses busy, uncertain, revoked or transferred ownership, registrar
-    /// contention/revocation, or changed original process/start/group/UID/ELF.
+    /// Refuses a copied foreign-process handle before inherited state access,
+    /// then foreign threads, busy, uncertain, revoked or transferred ownership,
+    /// registrar contention/revocation, or changed process/start/group/UID/ELF.
     pub fn ensure_current(&self) -> Result<(), ProviderError> {
-        self.owner.ensure_current()?;
-        self.registration.ensure_current()?;
-        self.kernel.ensure_current()?;
-        if measure_executable(std::path::Path::new(&format!(
-            "/proc/{}/exe",
-            self.kernel.pid
-        )))? != self.executable
-        {
+        // A copied handle refuses before inherited owner cells or the SDK
+        // registrar gate. Kernel identity remains an independent later check.
+        if self.process != std::process::id() {
             return Err(ProviderError::Correlation(
-                "generic original executable changed",
+                "generic original source read belongs to another process",
             ));
         }
-        self.kernel.ensure_current()?;
+        self.executable.ensure_origin()?;
+        self.owner.ensure_current()?;
         self.registration.ensure_current()?;
-        self.owner.ensure_current()
+        self.executable.ensure_current(&self.kernel)?;
+        self.registration.ensure_current()?;
+        self.owner.ensure_current()?;
+        self.executable.ensure_current(&self.kernel)
     }
 }
 
@@ -211,9 +222,11 @@ impl CnpSemanticProcessCustody {
     /// then retain one exact handle and refuse independent replacements.
     ///
     /// # Errors
-    /// Refuses absent attachment, changed actual process or registrar, busy or
-    /// transferred ownership, or an unavailable original kernel incarnation.
+    /// Refuses a foreign creator process before inherited owner cells, then
+    /// absent attachment, changed actual process or registrar, busy/transferred
+    /// ownership or an unavailable original kernel incarnation.
     pub fn original_source_read(&self) -> Result<CnpSemanticSourceRead, ProviderError> {
+        self.ensure_origin()?;
         self.read_owner.ensure_current()?;
         self.authenticate_process()?;
         let controller = self.controller.as_ref().ok_or(ProviderError::Correlation(
@@ -223,12 +236,15 @@ impl CnpSemanticProcessCustody {
             "generic original read handshake absent",
         ))?;
         let handle = CnpSemanticSourceRead {
+            process: std::process::id(),
             owner: Rc::clone(&self.read_owner),
             registration: controller.original_registrar_read(handshake)?,
             kernel: self.kernel_identity.ok_or(ProviderError::Correlation(
                 "generic original read kernel identity absent",
             ))?,
-            executable: self.expected_executable.clone(),
+            executable: Rc::clone(self.executable_guard.as_ref().ok_or(
+                ProviderError::Correlation("generic original executable guard absent"),
+            )?),
         };
         handle.ensure_current()?;
         Ok(handle)

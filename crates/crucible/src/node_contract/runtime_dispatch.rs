@@ -1,6 +1,7 @@
 //! No-effect preflight, opaque dispatch and original submission reconciliation.
 
 use super::*;
+use crate::node_contract::ProgressEvidence;
 
 impl NodeRuntime {
     // Model fixtures exercise owner/lifecycle mechanics independently of a
@@ -247,6 +248,10 @@ impl NodeRuntime {
         token: &OperationToken,
     ) -> Result<crate::node_scheduling::SchedulingReceipt, RuntimeError> {
         self.validate_token(token)?;
+        self.scheduler
+            .as_ref()
+            .ok_or(RuntimeError::NotActivated)?
+            .current()?;
         if !self.activated {
             return Err(RuntimeError::NotActivated);
         }
@@ -260,6 +265,7 @@ impl NodeRuntime {
             }
             _ => return Err(RuntimeError::OutstandingObligations),
         };
+        let evaluations = self.authenticate_deferred_evaluations(token, outcome)?;
         let activation = self.barrier.activation(&self.authority);
         Ok(crate::node_scheduling::SchedulingReceipt::new(
             activation,
@@ -268,7 +274,112 @@ impl NodeRuntime {
             outcome.progress.clone(),
             outcome.retained_outputs.clone(),
             outcome.scheduling.clone(),
-        ))
+        )
+        .retain_deferred_evaluations(evaluations))
+    }
+
+    fn authenticate_deferred_evaluations(
+        &self,
+        token: &OperationToken,
+        outcome: &OperationOutcome,
+    ) -> Result<Vec<crate::node_scheduling::DeferredPublicationAuthorization>, RuntimeError> {
+        use crate::node_scheduling::DeferredPublicationAuthorization;
+        let current = self
+            .operations
+            .get(token.operation())
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        let Some(observation) = outcome.scheduling.as_ref() else {
+            return Ok(Vec::new());
+        };
+        if observation.publications.len() > self.limits.maximum_retained_outputs {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        let Some((start, _)) = exact_window(current.admission.request()) else {
+            return Ok(Vec::new());
+        };
+        let node = self
+            .nodes
+            .get(&token.route.node)
+            .ok_or(RuntimeError::UnknownNode)?;
+        let snapshot = self
+            .snapshots
+            .get(&token.route.node)
+            .ok_or(RuntimeError::UnknownNode)?;
+        snapshot.validate_current(node.as_ref())?;
+        let mut authorized = Vec::new();
+        authorized
+            .try_reserve_exact(observation.publications.len())
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        let mut remaining_parents = crucible_node_contract::MAX_ARRAY_ELEMENTS;
+        for publication in &observation.publications {
+            let Some(evaluation) = publication
+                .evaluation
+                .filter(|evaluation| *evaluation < start)
+            else {
+                continue;
+            };
+            remaining_parents = remaining_parents
+                .checked_sub(publication.causal_parents.len())
+                .ok_or(RuntimeError::ResourceLimit)?;
+            let mut original_prior = None;
+            for prior in self.operations.values() {
+                let RetainedResult::Acknowledged(prior_outcome) = &prior.result else {
+                    continue;
+                };
+                let Some((prior_start, prior_limit)) = exact_window(prior.admission.request())
+                else {
+                    continue;
+                };
+                if prior.admission.token().route != token.route
+                    || !Rc::ptr_eq(
+                        &prior.admission.activation().authority,
+                        &current.admission.activation().authority,
+                    )
+                    || prior.admission.activation().record()
+                        != current.admission.activation().record()
+                    || prior.scheduling_commit.is_none()
+                    || evaluation < prior_start
+                    || evaluation >= prior_limit
+                    || !matches!(prior_outcome.progress, ProgressEvidence::Exact { reached, .. } if evaluation < reached && reached <= start)
+                {
+                    continue;
+                }
+                snapshot.validate_current(node.as_ref())?;
+                match node.validate_deferred_original_publication(
+                    &current.admission,
+                    outcome,
+                    publication,
+                    &prior.admission,
+                    prior_outcome,
+                ) {
+                    Ok(()) => {
+                        if original_prior.is_some() {
+                            return Err(RuntimeError::InvalidReceipt);
+                        }
+                        original_prior = Some(prior.admission.token().operation());
+                    }
+                    Err(OperationFailure {
+                        effects: EffectKnowledge::None,
+                        ..
+                    }) => {}
+                    Err(_) => {
+                        // Native uncertainty cannot become a candidate miss or
+                        // renewed permission on a later read. Revoke the same
+                        // original slot, retaining its queues and all custody.
+                        self.scheduler
+                            .as_ref()
+                            .ok_or(RuntimeError::NotActivated)?
+                            .revoke();
+                        return Err(RuntimeError::InvalidReceipt);
+                    }
+                }
+                snapshot.validate_current(node.as_ref())?;
+            }
+            let prior = original_prior.ok_or(RuntimeError::UnsupportedFacet)?;
+            authorized.push(DeferredPublicationAuthorization::new(publication, prior));
+        }
+        snapshot.validate_current(node.as_ref())?;
+        Ok(authorized)
     }
 
     /// Observes native producer closure while retaining stopped owner custody.
@@ -376,5 +487,18 @@ impl NodeRuntime {
             .ok_or(RuntimeError::ForeignAuthority)?;
         entry.scheduling_commit = Some(commit.retained_copy());
         Ok(commit)
+    }
+}
+
+fn exact_window(
+    request: &OperationRequest,
+) -> Option<(
+    crucible_node_contract::Position,
+    crucible_node_contract::Position,
+)> {
+    match request {
+        OperationRequest::ExactRun { start, limit, .. }
+        | OperationRequest::BoundarySettle { start, limit } => Some((*start, *limit)),
+        _ => None,
     }
 }

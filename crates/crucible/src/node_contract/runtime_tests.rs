@@ -49,6 +49,8 @@ fn blob() -> ContentRef {
 #[derive(Default)]
 struct NativeState {
     terminal_failure: Option<EffectKnowledge>,
+    deferred_results: std::collections::VecDeque<Result<(), OperationFailure>>,
+    deferred_calls: Vec<Id>,
     terminal_scheduling: Option<crate::node_scheduling::NativeSchedulingObservation>,
     lineage_claim: Option<OriginalPublicationClaim>,
     lineage_required: bool,
@@ -121,6 +123,24 @@ impl FacetDescription for TestNode {
 }
 
 impl SimulationNode for TestNode {
+    fn validate_deferred_original_publication(
+        &self,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        prior: &OperationAdmission,
+        _prior_outcome: &OperationOutcome,
+    ) -> Result<(), OperationFailure> {
+        let mut state = self.state.borrow_mut();
+        state.deferred_calls.push(prior.token().operation().clone());
+        state.deferred_results.pop_front().unwrap_or_else(|| {
+            Err(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "model deferred validation is unsupported".into(),
+            })
+        })
+    }
+
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
     }
@@ -2099,3 +2119,6 @@ pub(crate) fn host_continuation_runtime_fixture() -> (
     let _ = runtime.scheduler(&graph, &activation).unwrap();
     (graph, runtime, activation)
 }
+
+#[path = "runtime_deferred_validation_tests.rs"]
+mod deferred_validation;

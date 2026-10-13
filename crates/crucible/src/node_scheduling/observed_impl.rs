@@ -40,7 +40,7 @@ impl CausalScheduler {
         if !receipt.observation.publications.is_empty() {
             return Err(SchedulingError::MissingOutputCoordinates);
         }
-        let update = self.prepare_observation(&receipt.observation, None)?;
+        let update = self.prepare_observation(&receipt.observation, None, &[])?;
         self.apply_observation(update);
         Ok(())
     }
@@ -49,6 +49,7 @@ impl CausalScheduler {
         &self,
         observation: &NativeSchedulingObservation,
         original: Option<&Reservation>,
+        deferred: &[super::super::grant::DeferredPublicationAuthorization],
     ) -> Result<ObservationUpdate, SchedulingError> {
         observation.proof_ref.validate()?;
         check_position(observation.reached, self.maximum_microsteps)?;
@@ -158,7 +159,10 @@ impl CausalScheduler {
                     let evaluation = publication
                         .evaluation
                         .ok_or(SchedulingError::InvalidPublication)?;
-                    if evaluation < *start
+                    if (evaluation < *start
+                        && !deferred.iter().any(|authorization| {
+                            authorization.matches(publication, &self.used_operations)
+                        }))
                         || evaluation >= *limit
                         || super::super::event::reaction_publication(
                             &publication.causal_parents,

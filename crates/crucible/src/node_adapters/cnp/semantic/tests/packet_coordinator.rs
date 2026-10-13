@@ -173,8 +173,8 @@ impl Fixture {
                 ready = Some(result.activation_receipt);
             }
         }
-        assert!(control.inventory().gate_closed);
-        assert_eq!(control.inventory().packet_effects.get(), 0);
+        assert!(control.inventory().unwrap().gate_closed);
+        assert_eq!(control.inventory().unwrap().packet_effects.get(), 0);
         (control, ready.unwrap(), effects)
     }
 

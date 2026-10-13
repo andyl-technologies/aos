@@ -175,6 +175,8 @@ fn frames(
         .map_err(|_| ProviderError::ResourceExhausted("packet proof frame slots"))?;
     let mut response = request.clone();
     response.message = MessageKind::Response;
+    // Input4 contexts select requests and must not be echoed into replies.
+    response.extensions = Extensions::new();
     response.sequence = U64::new(first);
     response.body = reply.body.clone();
     frames.push(response);

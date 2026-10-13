@@ -10,7 +10,8 @@ use crucible_node_provider::{bodies::*, envelope::Method};
 use crate::{
     node_contract::*,
     node_scheduling::{
-        InputPayload, NativeInputAcknowledgement, NativeSchedulingObservation, RuntimeInputBatch,
+        InputCustodyCommit, InputPayload, NativeInputAcknowledgement, NativeSchedulingObservation,
+        RuntimeInputBatch,
     },
 };
 
@@ -138,7 +139,164 @@ impl SimulationNode for CnpSemanticNode {
         &mut self,
         batch: &RuntimeInputBatch,
     ) -> Result<NativeInputAcknowledgement, OperationFailure> {
+        self.current()?;
+        if self.source()?.requires_original_input_lineage(batch) {
+            return Err(refused(
+                "generic selected input requires original producer lineage",
+            ));
+        }
         self.stage_original(batch)
+    }
+
+    fn requires_original_input_lineage(&self, batch: &RuntimeInputBatch) -> bool {
+        if self.current().is_err() {
+            return true;
+        }
+        let required = self
+            .source()
+            .is_ok_and(|source| source.requires_original_input_lineage(batch));
+        self.current().is_err() || required
+    }
+
+    fn stage_inputs_with_original_lineage(
+        &mut self,
+        batch: &RuntimeInputBatch,
+        provenance: &InputProvenanceClosure,
+        lineage: &OriginalInputLineage,
+    ) -> Result<NativeInputAcknowledgement, OperationFailure> {
+        self.current()?;
+        self.source()?.validate_original_input_lineage(
+            self.scope()?,
+            batch,
+            provenance,
+            lineage,
+        )?;
+        self.current()?;
+        let result = self.stage_original(batch);
+        self.current()?;
+        result
+    }
+
+    fn original_publication_lineage(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &crate::node_scheduling::NativePublication,
+        limits: OriginalInputLineageLimits,
+    ) -> Result<OriginalPublicationClaim, OperationFailure> {
+        self.current()?;
+        self.validate_outcome(original, outcome)?;
+        let result = self.source()?.original_publication_lineage(
+            self.scope()?,
+            original,
+            outcome,
+            publication,
+            limits,
+        );
+        self.current()?;
+        result
+    }
+
+    fn validate_original_publication_lineage(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &crate::node_scheduling::NativePublication,
+        claim: &OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        self.current()?;
+        self.validate_outcome(original, outcome)?;
+        let result = self.source()?.validate_original_publication_lineage(
+            self.scope()?,
+            original,
+            outcome,
+            publication,
+            claim,
+        );
+        self.current()?;
+        result
+    }
+
+    fn validate_exact_original_publication_lineage(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &crate::node_scheduling::NativePublication,
+        claim: &OriginalPublicationClaim,
+    ) -> Result<(), OperationFailure> {
+        self.current()?;
+        self.validate_outcome(original, outcome)?;
+        let answer = self.source()?.validate_exact_original_publication_lineage(
+            self.scope()?,
+            original,
+            outcome,
+            publication,
+            claim,
+        );
+        self.current()?;
+        answer
+    }
+
+    fn validate_deferred_original_publication(
+        &self,
+        original: &OperationAdmission,
+        outcome: &OperationOutcome,
+        publication: &crate::node_scheduling::NativePublication,
+        prior: &OperationAdmission,
+        prior_outcome: &OperationOutcome,
+    ) -> Result<(), OperationFailure> {
+        self.current()?;
+        self.validate_outcome(original, outcome)?;
+        self.validate_outcome(prior, prior_outcome)?;
+        let retained = self.check_token(prior.token())?;
+        if !retained.acknowledged || retained.retirement.is_none() {
+            return Err(refused(
+                "generic deferred prior grant lacks original retirement",
+            ));
+        }
+        let answer = self.source()?.validate_deferred_original_publication(
+            self.scope()?,
+            original,
+            outcome,
+            publication,
+            prior,
+            prior_outcome,
+        );
+        self.current()?;
+        answer
+    }
+
+    fn read_original_input_evidence(
+        &self,
+        original: &OperationAdmission,
+        staged: &OriginalStagedInput<'_>,
+        limits: OriginalInputLineageLimits,
+    ) -> Result<OriginalInputEvidence, OperationFailure> {
+        self.current()?;
+        self.check_token(original.token())?;
+        let result =
+            self.source()?
+                .read_original_input_evidence(self.scope()?, original, staged, limits);
+        self.current()?;
+        result
+    }
+
+    fn validate_original_input_evidence(
+        &self,
+        original: &OperationAdmission,
+        staged: &OriginalStagedInput<'_>,
+        evidence: &OriginalInputEvidence,
+    ) -> Result<(), OperationFailure> {
+        self.current()?;
+        self.check_token(original.token())?;
+        let result = self.source()?.validate_original_input_evidence(
+            self.scope()?,
+            original,
+            staged,
+            evidence,
+        );
+        self.current()?;
+        result
     }
 
     fn validate_input_acknowledgement(
@@ -168,6 +326,20 @@ impl SimulationNode for CnpSemanticNode {
             return Err(refused("generic original staging acknowledgement changed"));
         }
         Ok(())
+    }
+
+    fn commit_input_custody(
+        &mut self,
+        commit: &InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        self.commit_original_input(commit)
+    }
+
+    fn validate_input_custody_commit(
+        &self,
+        commit: &InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        self.validate_original_input_commit(commit)
     }
 
     fn begin_operation(&mut self, admission: &OperationAdmission) -> Submission {

@@ -94,6 +94,10 @@ impl CnpSemanticNode {
                 .inputs
                 .get(batch.stage_operation())
                 .ok_or_else(|| refused("generic grant input cut has not been natively staged"))?;
+            let commit = staged.commitment.as_ref().ok_or_else(|| {
+                refused("generic grant input has no original source-consumed commitment")
+            })?;
+            self.validate_original_input_commit(&commit.original)?;
             if staged.original.batch() != batch.batch()
                 || staged.original.inventory() != batch.inventory()
                 || !staged

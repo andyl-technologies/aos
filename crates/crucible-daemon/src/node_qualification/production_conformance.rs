@@ -20,6 +20,8 @@ use super::{
 
 mod attempts;
 mod exact;
+mod exact_input;
+mod exact_input_collection;
 mod fixture_audit;
 mod protocol;
 mod protocol_witness;

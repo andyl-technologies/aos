@@ -8,14 +8,15 @@
 use crucible_node_provider::{
     bodies::RealizeResult,
     reference_packet::{
-        control::PacketControlSelection, coordinator::PacketWorldCoordinatorInstallation,
+        control::PacketControlSelection,
+        coordinator::{PacketConnectedCoordinatorInstallation, PacketWorldCoordinatorInstallation},
     },
 };
 
 use super::*;
 
 pub(super) struct PacketWorldSourceScope {
-    coordinator: PacketWorldCoordinatorInstallation,
+    coordinator: InstalledCoordinator,
     local: usize,
     activation: SavedRuntimeActivation,
 }
@@ -26,44 +27,76 @@ impl PacketWorldSourceScope {
         coordinator: PacketWorldCoordinatorInstallation,
     ) -> Result<Self, OperationFailure> {
         budget::serialized_size(&coordinator, 65_536)?;
+        Self::new_selected(installation, InstalledCoordinator::OutputOnly(coordinator))
+    }
+
+    pub(super) fn new_connected(
+        installation: &CnpSemanticInstallation,
+        coordinator: PacketConnectedCoordinatorInstallation,
+    ) -> Result<Self, OperationFailure> {
+        budget::serialized_size(
+            &coordinator,
+            crucible_node_provider::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES,
+        )?;
+        Self::new_selected(installation, InstalledCoordinator::Connected(Box::new(coordinator)))
+    }
+
+    fn new_selected(
+        installation: &CnpSemanticInstallation,
+        coordinator: InstalledCoordinator,
+    ) -> Result<Self, OperationFailure> {
         let mut selected = None;
-        for (index, peer) in coordinator.participants.iter().enumerate() {
-            if Self::matches_installation(installation, peer)
-                && selected.replace(index).is_some()
-            {
+        for (index, peer) in coordinator.participants().iter().enumerate() {
+            if Self::matches_installation(installation, peer) && selected.replace(index).is_some() {
                 return Err(refused("packet whole-world local source is duplicated"));
             }
         }
         let local = selected.ok_or_else(|| refused("packet whole-world local source absent"))?;
         coordinator
-            .validate(&coordinator.participants[local])
+            .validate(&coordinator.participants()[local])
             .map_err(unknown)?;
-        let contract =
-            crucible_node_provider::reference_packet::contracts::world_ingress_contract()
-                .map_err(unknown)?;
+        let (identifier, version, contract) = match &coordinator {
+            InstalledCoordinator::OutputOnly(_) => (
+                "source-owned.packet-ingress/3",
+                3,
+                crucible_node_provider::reference_packet::contracts::world_ingress_contract()
+                    .map_err(unknown)?,
+            ),
+            InstalledCoordinator::Connected(_) => (
+                "source-owned.packet-ingress/4",
+                4,
+                crucible_node_provider::reference_packet::contracts::connected_ingress_contract()
+                    .map_err(unknown)?,
+            ),
+        };
         let definition = canonical::content_ref(&contract, "application/json").map_err(unknown)?;
         let formats = &installation.provider.implementation.formats;
         if formats
             .iter()
-            .filter(|format| format.id.as_str() == "source-owned.packet-ingress/3")
+            .filter(|format| format.id.as_str() == identifier)
             .count()
             != 1
             || formats.iter().any(|format| {
-                matches!(
+                (matches!(
                     format.id.as_str(),
-                    "source-owned.packet-ingress/1" | "source-owned.packet-ingress/2"
-                ) || (format.id.as_str() == "source-owned.packet-ingress/3"
-                    && (format.version != 3
-                        || format.definition != definition
-                        || !format.extensions.is_empty()))
+                    "source-owned.packet-ingress/1"
+                        | "source-owned.packet-ingress/2"
+                        | "source-owned.packet-ingress/3"
+                        | "source-owned.packet-ingress/4"
+                ) && format.id.as_str() != identifier)
+                    || (format.id.as_str() == identifier
+                        && (format.version != version
+                            || format.definition != definition
+                            || !format.extensions.is_empty()))
             })
         {
             return Err(refused(
-                "packet whole-world source requires exact ingress edition3",
+                "packet whole-world source requires its exact original ingress edition",
             ));
         }
         let activation: SavedRuntimeActivation =
-            serde_json::from_value(coordinator.template["activation"].clone()).map_err(unknown)?;
+            serde_json::from_value(coordinator.template()["activation"].clone())
+                .map_err(unknown)?;
         Ok(Self {
             coordinator,
             local,
@@ -94,10 +127,26 @@ impl PacketWorldSourceScope {
         &self,
         coordinator: &PacketWorldCoordinatorInstallation,
     ) -> Result<(), OperationFailure> {
-        if coordinator != &self.coordinator {
+        if !matches!(&self.coordinator, InstalledCoordinator::OutputOnly(original) if original == coordinator)
+        {
             return Err(refused("packet original whole-world installation changed"));
         }
         Ok(())
+    }
+
+    pub(super) fn authenticate_connected_installation(
+        &self,
+        coordinator: &PacketConnectedCoordinatorInstallation,
+    ) -> Result<(), OperationFailure> {
+        if !matches!(&self.coordinator, InstalledCoordinator::Connected(original) if original.as_ref() == coordinator)
+        {
+            return Err(refused("packet original connected installation changed"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn is_connected(&self) -> bool {
+        matches!(&self.coordinator, InstalledCoordinator::Connected(_))
     }
 
     pub(super) fn owners(&self) -> &[OwnerIdentity] {
@@ -127,9 +176,10 @@ impl PacketWorldSourceScope {
         &self,
         realization: &RealizeResult,
     ) -> Result<(), OperationFailure> {
-        if realization.realization_manifest != self.coordinator.participants[self.local].realization
+        if realization.realization_manifest
+            != self.coordinator.participants()[self.local].realization
             || realization.prepared_token
-                != self.coordinator.participants[self.local].prepared_token
+                != self.coordinator.participants()[self.local].prepared_token
         {
             return Err(refused(
                 "packet whole-world original preparation token changed",
@@ -144,12 +194,12 @@ impl PacketWorldSourceScope {
         realization: &RealizeResult,
     ) -> Result<&'a PreparedOwner, OperationFailure> {
         self.authenticate_realization(realization)?;
-        if owners.len() != self.coordinator.participants.len() {
+        if owners.len() != self.activation.owners.len() {
             return Err(refused(
                 "packet whole-world complete prepared roster absent",
             ));
         }
-        for (actual, peer) in owners.iter().zip(&self.coordinator.participants) {
+        for (actual, peer) in owners.iter().zip(self.coordinator.participants()) {
             let binding = &peer.realization.bindings[0];
             let expected = &peer.realization.owners[0];
             if actual.owner_id != expected.id
@@ -165,6 +215,22 @@ impl PacketWorldSourceScope {
             }
             actual.ready_receipt.validate().map_err(unknown)?;
         }
+        if let InstalledCoordinator::Connected(scope) = &self.coordinator {
+            let actual = &owners[scope.participants.len()];
+            let host = &scope.host;
+            if actual.owner_id != host.owner.owner.id
+                || actual.incarnation_id != host.binding.authority.incarnation_id
+                || actual.owner_generation != host.binding.authority.owner_generation
+                || actual.binding_hashes != [host.binding.identity().map_err(unknown)?]
+                || actual.prepared_token != host.prepared_token
+                || !actual.extensions.is_empty()
+            {
+                return Err(refused(
+                    "packet connected original host preparation changed",
+                ));
+            }
+            actual.ready_receipt.validate().map_err(unknown)?;
+        }
         // A foreign Ready reference is only correlation here. Runtime barrier
         // validation and the same installed host authority authenticate each
         // original source; THIS source opens only its own actual native gate.
@@ -173,5 +239,43 @@ impl PacketWorldSourceScope {
 
     pub(super) fn authenticate_coordinator(&self, bytes: &[u8]) -> Result<(), OperationFailure> {
         self.coordinator.validate_body(bytes).map_err(unknown)
+    }
+}
+
+enum InstalledCoordinator {
+    OutputOnly(PacketWorldCoordinatorInstallation),
+    Connected(Box<PacketConnectedCoordinatorInstallation>),
+}
+
+impl InstalledCoordinator {
+    fn participants(&self) -> &[PacketControlSelection] {
+        match self {
+            Self::OutputOnly(scope) => &scope.participants,
+            Self::Connected(scope) => &scope.participants,
+        }
+    }
+
+    fn template(&self) -> &serde_json::Value {
+        match self {
+            Self::OutputOnly(scope) => &scope.template,
+            Self::Connected(scope) => &scope.template,
+        }
+    }
+
+    fn validate(
+        &self,
+        local: &PacketControlSelection,
+    ) -> Result<(), crucible_node_provider::ProviderError> {
+        match self {
+            Self::OutputOnly(scope) => scope.validate(local),
+            Self::Connected(scope) => scope.validate(local),
+        }
+    }
+
+    fn validate_body(&self, bytes: &[u8]) -> Result<(), crucible_node_provider::ProviderError> {
+        match self {
+            Self::OutputOnly(scope) => scope.validate_body(bytes),
+            Self::Connected(scope) => scope.validate_body(bytes),
+        }
     }
 }

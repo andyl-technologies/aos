@@ -307,6 +307,25 @@ impl CnpSemanticNode {
         owner_scoped: bool,
         body: T,
     ) -> Result<ResponseBody, OperationFailure> {
+        self.call_with_extensions(
+            request,
+            operation,
+            method,
+            owner_scoped,
+            body,
+            crucible_node_contract::Extensions::new(),
+        )
+    }
+
+    pub(super) fn call_with_extensions<T: serde::Serialize>(
+        &mut self,
+        request: Id,
+        operation: Option<Id>,
+        method: Method,
+        owner_scoped: bool,
+        body: T,
+        extensions: crucible_node_contract::Extensions,
+    ) -> Result<ResponseBody, OperationFailure> {
         self.preparation.authenticate_native_dispatch()?;
         let owner = Rc::clone(
             &self
@@ -319,7 +338,7 @@ impl CnpSemanticNode {
         let call = super::process::ReadCall::begin(owner).map_err(unknown)?;
         let result = self
             .controller_mut()?
-            .call(request, operation, method, owner_scoped, body)
+            .call_with_extensions(request, operation, method, owner_scoped, body, extensions)
             .map_err(unknown);
         // Successful per-operation retirement/consumed ACK preserves the owner.
         // Uncertain transport and unwind revoke the same original token.

@@ -148,6 +148,7 @@ pub struct Connection<S: ProviderStream> {
     supervisor: Rc<dyn ConnectionSupervisor>,
     schemas: Rc<dyn BodySchemaVerifier>,
     packet_schema: bool,
+    connected_packet_schema: bool,
     fenced: bool,
     role: EndpointRole,
 }
@@ -155,6 +156,11 @@ pub struct Connection<S: ProviderStream> {
 impl<S: ProviderStream> Connection<S> {
     pub(crate) fn install_packet_schema(&mut self) -> Result<(), ProviderError> {
         self.check_authority()?;
+        if self.connected_packet_schema {
+            return Err(ProviderError::Correlation(
+                "connected packet schema cannot be replaced",
+            ));
+        }
         self.schemas = Rc::new(packet_schema::PacketSchema);
         self.packet_schema = true;
         Ok(())
@@ -162,6 +168,27 @@ impl<S: ProviderStream> Connection<S> {
 
     pub(crate) fn has_packet_schema(&self) -> bool {
         self.packet_schema
+    }
+
+    pub(crate) fn install_connected_packet_schema(
+        &mut self,
+        binding: &crucible_node_contract::NodeBinding,
+        owner: &crucible_node_contract::OwnerBinding,
+    ) -> Result<(), ProviderError> {
+        self.check_authority()?;
+        if self.packet_schema || self.connected_packet_schema || !self.guard.unused() {
+            return Err(ProviderError::Correlation(
+                "connected packet schema requires original unused connection",
+            ));
+        }
+        let schemas = packet_schema::ConnectedPacketSchema::new(&self.authority, binding, owner)?;
+        self.schemas = Rc::new(schemas);
+        self.connected_packet_schema = true;
+        Ok(())
+    }
+
+    pub(crate) fn has_connected_packet_schema(&self) -> bool {
+        self.connected_packet_schema
     }
 
     pub(crate) fn provider_authority(&mut self) -> Result<&ConnectionAuthority, ProviderError> {
@@ -226,6 +253,7 @@ impl<S: ProviderStream> Connection<S> {
             supervisor,
             schemas,
             packet_schema: false,
+            connected_packet_schema: false,
             fenced: false,
             role,
         })

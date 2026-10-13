@@ -2895,6 +2895,36 @@ separate qualification change. Genuine normal/diagnostic packages and matching
 plugins, full native seals, HOLD, readiness and guest/state qualification remain
 unfinished.
 
+## Connected packet execution and deferred publication
+
+The connected packet source owns actual producer, relay and sink processes plus
+an original host scheduler. Input Stage/ACK/Commit and separate Delivery,
+Reaction and Publication positions retain their original native journals,
+payloads and exact one-picosecond causal geometry. A deferred publication must
+join the earlier acknowledged operation, retained pending event and completed
+consumed retirement before the emitting grant. The scheduler keeps both exact
+windows instead of moving the earlier evaluation into the later grant.
+
+Review found that uncertain source validation could be skipped while searching
+another prior operation. The correction immediately revokes the same original
+scheduler on every non-None failure, retaining operations, queues and native
+custody. Repeated receipt reads refuse before callbacks. Three adversarial
+runtime controls and all 97 existing runtime controls pass on the corrected
+ELF. Strict three-crate all-target/all-feature checks and 28 connected, source
+and real Unix transport controls pass on their individually recorded revisions;
+independent review verifies the 119-path composition and evidence scopes.
+
+The frozen component workload completes 13 grants and 11 commits, including
+two nonempty stages, in 53.75 seconds. A matched full-hash fallback completes
+two grants before its unchanged 60-second deadline; finishing its in-flight
+check and cleanup takes 122.38 seconds. This supports a completion advantage,
+not a speedup ratio or Linux boot projection. Kernel read leases preserve the
+complete initial executable hash, retained descriptor and process/namespace
+checks; unavailable leases use full hashing and changed identities or broken
+leases refuse permanently. Six original guard controls retain their separate
+scope. Native5 capture, full vendor acceptance and final Linux performance
+qualification remain unfinished.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

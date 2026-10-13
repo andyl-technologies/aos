@@ -1,0 +1,400 @@
+//! Source-owned phased packet reactions beneath original consumed-input custody.
+//!
+//! The source separates reaction from its next-microstep publication. Neither
+//! staging nor commitment advances the modeled cursor. Every phase effect is
+//! admitted by one original half-open grant and independently observed through
+//! the actual owned datagram socket. This mechanism grants no public admission.
+
+use std::{collections::BTreeMap, os::unix::net::UnixDatagram};
+
+use crucible_node_contract::*;
+use serde::{Deserialize, Serialize};
+
+use crate::{ProviderError, bodies::InputResult, envelope::Envelope};
+
+use super::{PacketPublication, input::PacketInputCut};
+
+mod inputs;
+mod run;
+
+pub use inputs::causal_parent_ids;
+
+const MAXIMUM_BATCHES: usize = 16;
+const MAXIMUM_EVENTS: usize = 32;
+const MAXIMUM_OPERATIONS: usize = 64;
+const MAXIMUM_BYTES: usize = 1024;
+const MAXIMUM_MICROSTEPS: u64 = 16;
+const MAXIMUM_RECORD: usize = 65_536;
+
+/// Declares one exact original admitted connection independently of input frames.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketInputConnection {
+    /// Names the immutable admitted connection.
+    pub id: Id,
+    /// Binds the complete source-installed connection policy bytes.
+    pub policy: ContentRef,
+    /// Names the declared original producer lane.
+    pub producer: Endpoint,
+    /// Names the declared original consumer lane.
+    pub consumer: Endpoint,
+    /// Gives the exact physical propagation delay in picoseconds.
+    pub delay_ps: U64,
+}
+
+/// Installs a finite input-reactive source without selecting CPU or clock fidelity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketConnectedDefinition {
+    /// Selects `source-owned.packet-connected-program/4`.
+    pub schema: String,
+    /// Declares all original input connections; frames cannot add another route.
+    pub connections: Vec<PacketInputConnection>,
+    /// Selects the local output lane, or null for a consuming sink.
+    pub output: Option<Endpoint>,
+}
+
+/// Retains a complete source-native pending reaction under one consumed cut.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketReaction {
+    /// Names the original staged public input event.
+    pub input_event: Id,
+    /// Retains the original public producer independently of native event labels.
+    pub input_producer: Id,
+    /// Retains the unchanged public recipient sequence, including sequence zero.
+    pub input_sequence: U64,
+    /// Names the immutable original input staging operation.
+    pub stage_operation: Id,
+    /// Names the original later source-consumed request.
+    pub commit_request: Id,
+    /// Retains the original complete payload bytes.
+    pub payload: Bytes,
+    /// Retains the actual recipient delivery as the immediate causal parent.
+    pub parent: Position,
+    /// Gives the admitted same-microstep native Reaction.
+    pub evaluation: Position,
+}
+
+/// Retains one actual native Delivery independently of its later reaction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketDeliveredInput {
+    /// Retains exact original consumed bytes and full delivery/reaction coordinates.
+    pub reaction: PacketReaction,
+    /// Names the actual original exclusive grant that admitted the Delivery step.
+    pub delivery_operation: Id,
+}
+
+/// Retains an actual reaction's publication without emitting it ahead of its cut.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketPendingPublication {
+    /// Names the source-generated original output, once for this input.
+    pub event: Id,
+    /// Retains the source-owned original input reaction.
+    pub reaction: PacketReaction,
+    /// Names the actual original grant which evaluated that reaction.
+    pub reaction_operation: Id,
+    /// Gives the subsequent microstep's Publication position.
+    pub publication: Position,
+}
+
+/// Retains an actual publication's complete input causality and native bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketConnectedPublication {
+    /// Retains the actual emission grant, payload, native sequence and positions.
+    pub output: PacketPublication,
+    /// Retains the exact original consumed input and native reaction association.
+    pub pending: PacketPendingPublication,
+}
+
+/// Retains complete phased native custody without granting common progress.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketConnectedInventory {
+    /// Gives the actual original stopped cursor.
+    pub reached: Position,
+    /// Gives the actual nonexecuting native gate state.
+    pub gate_closed: bool,
+    /// Retains all source-consumed reactions not yet evaluated, in native order.
+    pub reactions: Vec<PacketReaction>,
+    /// Retains every actual completed Delivery step in canonical delivery order.
+    pub delivered_inputs: Vec<PacketDeliveredInput>,
+    /// Retains all actual evaluated publications not yet emitted.
+    pub publications: Vec<PacketPendingPublication>,
+    /// Retains all native emitted outputs until the original complete ACK.
+    pub retained_outputs: Vec<PacketConnectedPublication>,
+    /// Counts actual evaluated input reactions.
+    pub reactions_completed: U64,
+    /// Counts actual emitted packets independently of host collection.
+    pub packet_effects: U64,
+    /// Lists every original staged-byte record in stream order.
+    pub stages: Vec<ContentRef>,
+    /// Lists every original consumed-input record in stream order.
+    pub commits: Vec<ContentRef>,
+}
+
+/// Retains an actual original phased grant, including its complete stopped inventory.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketConnectedGrant {
+    /// Names the original immutable operation.
+    pub operation: Id,
+    /// Gives its actual original starting cursor.
+    pub start: Position,
+    /// Gives its exclusive complete superdense ceiling.
+    pub limit: Position,
+    /// Retains the actual complete final native state.
+    pub inventory: PacketConnectedInventory,
+    /// Retains exactly this grant's actual new publications.
+    pub newborn: Vec<PacketConnectedPublication>,
+    /// Distinguishes completion from a retained unknown native effect.
+    pub complete: bool,
+}
+
+/// Retains genuine original staging and its complete owned byte proof.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketStageRecord {
+    /// Selects the exact source-native staged-byte edition.
+    pub schema: String,
+    /// Names the actual original native process.
+    pub native_pid: U64,
+    /// Retains the complete original native Input request.
+    pub original: Envelope,
+    /// Retains the exact original coordinator cut.
+    pub cut: PacketInputCut,
+    /// Retains the complete native public batch.
+    pub batch: InputBatch,
+    /// Retains all original canonical delivery and causal associations.
+    pub deliveries: Vec<crate::input_commit::CommittedDeliveryV1>,
+    /// Retains exact original payload bytes in the same complete event order.
+    pub payloads: Vec<Bytes>,
+    /// Retains native state before staging, unchanged by the transfer.
+    pub inventory: PacketConnectedInventory,
+}
+
+/// Retains actual eligibility of the same staged byte population under native custody.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketCommitRecord {
+    /// Selects the distinct native consumed-input edition.
+    pub schema: String,
+    /// Names the actual original native process.
+    pub native_pid: U64,
+    /// Retains the complete original later native Input request.
+    pub original: Envelope,
+    /// Names the actual retained original staged-byte proof.
+    pub staged_record: ContentRef,
+    /// Retains the actual original staging custody receipt.
+    pub staging_receipt: ContentRef,
+    /// Retains the exact original full cut.
+    pub cut: PacketInputCut,
+    /// Retains the native admitted reaction population, without execution.
+    pub reactions: Vec<PacketReaction>,
+    /// Preserves the unchanged actual modeled cursor at commitment.
+    pub reached: Position,
+}
+
+/// Retains an actual original native input response and its full proof closure.
+#[derive(Clone)]
+pub struct PacketInputReply {
+    /// Contains the unchanged baseline Input result.
+    pub result: InputResult,
+    /// Contains the actual complete source-owned proof bodies.
+    pub evidence: Vec<(ContentRef, Vec<u8>)>,
+}
+
+/// Retains the complete original connected source state and phased grant.
+///
+/// This edition never substitutes the output-only administrative projection
+/// for actual staged-byte, consumed-input or publication custody.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketConnectedNativeRecord {
+    /// Selects `source-owned.packet-native/4` exclusively.
+    pub schema: String,
+    /// Names the original operating-system process which owns native effects.
+    pub native_pid: U64,
+    /// Retains the complete original source request.
+    pub original: Envelope,
+    /// Retains every actual native input, reaction and publication association.
+    pub inventory: PacketConnectedInventory,
+    /// Retains the complete original phased grant, or null for a lifecycle read.
+    pub grant: Option<PacketConnectedGrant>,
+}
+
+struct OriginalStage {
+    record: PacketStageRecord,
+    record_ref: ContentRef,
+    reply: PacketInputReply,
+    commit: Option<OriginalCommit>,
+}
+
+struct OriginalCommit {
+    record: PacketCommitRecord,
+    record_ref: ContentRef,
+    reply: PacketInputReply,
+}
+
+/// Owns the finite native input journal, phased callbacks and actual effect socket.
+///
+/// This source component supplies no public Ready, whole-node qualification,
+/// capture, restart or replay authority. Its originating process exclusively
+/// owns the actual socket and immutable original request/byte journals.
+pub struct PacketConnectedProgram {
+    definition: PacketConnectedDefinition,
+    native_pid: u32,
+    effect_socket: UnixDatagram,
+    reached: Position,
+    gate_closed: bool,
+    reactions: Vec<PacketReaction>,
+    delivered_inputs: Vec<PacketDeliveredInput>,
+    publications: Vec<PacketPendingPublication>,
+    outputs: Vec<PacketConnectedPublication>,
+    stages: Vec<OriginalStage>,
+    grants: BTreeMap<Id, PacketConnectedGrant>,
+    retired: BTreeMap<Id, Vec<Id>>,
+    reactions_completed: u64,
+    packet_effects: u64,
+    failed: bool,
+}
+
+impl PacketConnectedProgram {
+    pub(super) fn committed_input(
+        &self,
+    ) -> Result<(&PacketCommitRecord, &ContentRef), ProviderError> {
+        self.current()?;
+        let commit = self
+            .stages
+            .last()
+            .and_then(|stage| stage.commit.as_ref())
+            .ok_or(ProviderError::Correlation(
+                "packet original consumed input absent",
+            ))?;
+        Ok((&commit.record, &commit.record_ref))
+    }
+
+    /// Installs the complete finite source definition and one genuine owned socket.
+    ///
+    /// # Errors
+    /// Refuses unsupported schemas, duplicate/foreign routes or unavailable credit.
+    pub fn new(
+        definition: PacketConnectedDefinition,
+        effect_socket: UnixDatagram,
+    ) -> Result<Self, ProviderError> {
+        crate::connection::serialized_credit(&definition, MAXIMUM_RECORD)?;
+        if definition.schema != "source-owned.packet-connected-program/4"
+            || definition.connections.is_empty()
+            || definition.connections.len() > 4
+        {
+            return Err(ProviderError::Correlation(
+                "packet connected source definition",
+            ));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        let node = &definition.connections[0].consumer.node_id;
+        for route in &definition.connections {
+            route.policy.validate()?;
+            if !ids.insert(&route.id)
+                || &route.consumer.node_id != node
+                || route.producer == route.consumer
+                || route.delay_ps.get() > 1024
+            {
+                return Err(ProviderError::Correlation(
+                    "packet connected complete routes",
+                ));
+            }
+        }
+        if definition
+            .output
+            .as_ref()
+            .is_some_and(|output| &output.node_id != node)
+        {
+            return Err(ProviderError::Correlation("packet connected output owner"));
+        }
+        Ok(Self {
+            definition,
+            native_pid: std::process::id(),
+            effect_socket,
+            reached: Position::new(U64::new(0), U64::new(0), Phase::BoundaryControl),
+            gate_closed: true,
+            reactions: Vec::with_capacity(MAXIMUM_EVENTS),
+            delivered_inputs: Vec::with_capacity(MAXIMUM_EVENTS),
+            publications: Vec::with_capacity(MAXIMUM_EVENTS),
+            outputs: Vec::with_capacity(MAXIMUM_EVENTS),
+            stages: Vec::with_capacity(MAXIMUM_BATCHES),
+            grants: BTreeMap::new(),
+            retired: BTreeMap::new(),
+            reactions_completed: 0,
+            packet_effects: 0,
+            failed: false,
+        })
+    }
+
+    /// Borrows the complete immutable original source program definition.
+    pub fn definition(&self) -> &PacketConnectedDefinition {
+        &self.definition
+    }
+
+    fn current(&self) -> Result<(), ProviderError> {
+        if self.native_pid != std::process::id() || self.failed {
+            return Err(ProviderError::Correlation(
+                "packet original native owner unavailable",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Opens the actual initial gate under a separately authenticated world barrier.
+    ///
+    /// This setter grants no common activation or class qualification.
+    ///
+    /// # Errors
+    /// Refuses foreign-process, failed, already open or used original state.
+    pub fn open_gate(&mut self) -> Result<(), ProviderError> {
+        self.current()?;
+        if !self.gate_closed || !self.stages.is_empty() || !self.grants.is_empty() {
+            return Err(ProviderError::Conflict("packet connected initial gate"));
+        }
+        self.gate_closed = false;
+        Ok(())
+    }
+
+    /// Reads complete original native custody without executing a step.
+    ///
+    /// # Errors
+    /// Refuses foreign-process or failed original ownership and oversized inventory.
+    pub fn inventory(&self) -> Result<PacketConnectedInventory, ProviderError> {
+        self.current()?;
+        let inventory = PacketConnectedInventory {
+            reached: self.reached,
+            gate_closed: self.gate_closed,
+            reactions: self.reactions.clone(),
+            delivered_inputs: self.delivered_inputs.clone(),
+            publications: self.publications.clone(),
+            retained_outputs: self.outputs.clone(),
+            reactions_completed: U64::new(self.reactions_completed),
+            packet_effects: U64::new(self.packet_effects),
+            stages: self
+                .stages
+                .iter()
+                .map(|stage| stage.record_ref.clone())
+                .collect(),
+            commits: self
+                .stages
+                .iter()
+                .filter_map(|stage| {
+                    stage
+                        .commit
+                        .as_ref()
+                        .map(|commit| commit.record_ref.clone())
+                })
+                .collect(),
+        };
+        crate::connection::serialized_credit(&inventory, MAXIMUM_RECORD)?;
+        Ok(inventory)
+    }
+}

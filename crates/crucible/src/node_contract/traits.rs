@@ -424,6 +424,31 @@ pub trait SimulationNode {
         })
     }
 
+    /// Authenticates a publication evaluated by an earlier same-original operation.
+    ///
+    /// Core separately requires a durably acknowledged exact prior operation
+    /// from this same runtime, activation and route. The installed source must
+    /// additionally prove both actual native grants, the retained pending event,
+    /// complete payload/parents and original retirement before emission.
+    /// The default refuses; a portable earlier position is never permission.
+    ///
+    /// # Errors
+    /// Refuses unsupported source codecs, foreign original native custody,
+    /// changed prior evaluation/pending publication or incomplete original history.
+    fn validate_deferred_original_publication(
+        &self,
+        _original: &OperationAdmission,
+        _outcome: &OperationOutcome,
+        _publication: &crate::node_scheduling::NativePublication,
+        _prior: &OperationAdmission,
+        _prior_outcome: &OperationOutcome,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "deferred original publication validation is unsupported".into(),
+        })
+    }
+
     /// Captures separately selected complete Runtime7 model journals without execution.
     ///
     /// The owning runtime must independently match the complete record and its

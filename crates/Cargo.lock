@@ -2513,6 +2513,7 @@ dependencies = [
  "crucible-cas",
  "crucible-device",
  "crucible-harness",
+ "crucible-linux-resource",
  "crucible-node-contract",
  "crucible-node-provider",
  "crucible-protocol",

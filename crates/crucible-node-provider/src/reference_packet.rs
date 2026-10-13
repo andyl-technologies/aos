@@ -17,10 +17,12 @@ const MAXIMUM_OPERATIONS: usize = 64;
 const MAXIMUM_PAYLOAD: usize = 1024;
 
 pub mod common;
+pub mod connected;
 pub mod contracts;
 pub mod control;
 pub mod coordinator;
 pub mod endpoint;
+pub mod input;
 pub mod original_gate;
 pub mod service;
 

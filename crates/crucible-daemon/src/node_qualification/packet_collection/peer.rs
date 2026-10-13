@@ -40,6 +40,10 @@ use super::{
     InstalledPacketCollectionAuthority, InstalledPacketWorldCollectionAuthority, QualificationError,
 };
 
+pub(super) mod connected;
+
+pub use connected::{PacketConnectedPeerLaunchFailure, PacketConnectedPeerLaunchRequest, PreparedPacketConnectedPeer};
+
 /// Retains independently configured private launch and actual handshake custody.
 pub struct PacketPeerLaunchRequest<V> {
     /// Names the independently selected, measured peer executable.

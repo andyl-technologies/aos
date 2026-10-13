@@ -57,6 +57,61 @@ impl<'a, 'runtime> OriginalCompletionWitness<'a, 'runtime> {
         })
     }
 
+    pub(super) fn exact_with_input(
+        original: &'a OriginalCompletedOperation<'runtime>,
+        observation: &'a ExactCompletionObservation,
+        native_input: Option<&'a OriginalInputEvidence>,
+        reference: &'a ContentRef,
+        bytes: &'a [u8],
+    ) -> Result<Self, QualificationError> {
+        if observation.schema != "crucible.original-exact-witness.v2" {
+            return Err(QualificationError::Refused(
+                "foreign full-input exact observation",
+            ));
+        }
+        observation
+            .snapshot_ref
+            .verify(observation.snapshot.as_slice())?;
+        reference.verify(bytes)?;
+        let staged = original
+            .staged_inputs()
+            .map_err(|error| QualificationError::Evidence(error.to_string()))?;
+        let staging = match (staged, native_input) {
+            (Some(staged), Some(evidence)) => Some(staging::StagedView::new(staged, evidence)),
+            (None, None) => None,
+            _ => {
+                return Err(QualificationError::Refused(
+                    "changed exact original staging custody",
+                ));
+            }
+        };
+        let admission = original.admission();
+        let fresh = current_snapshot(
+            &(
+                "crucible.original-exact-completion.v2",
+                admission.request(),
+                staging::activation_view(admission.activation()),
+                admission.inputs().map(InputView::from),
+                staging,
+                original.outcome(),
+                original.acknowledged(),
+            ),
+            observation.snapshot.as_slice().len(),
+        )?;
+        if fresh != observation.snapshot.as_slice() {
+            return Err(QualificationError::Refused(
+                "fresh exact input completion changed",
+            ));
+        }
+        Ok(Self {
+            original,
+            observation: OriginalCompletionObservation::Exact(observation),
+            native_input,
+            reference,
+            bytes,
+        })
+    }
+
     pub(super) fn quantized(
         original: &'a OriginalCompletedOperation<'runtime>,
         observation: &'a QuantizedCompletionObservation,
@@ -102,7 +157,7 @@ impl<'a, 'runtime> OriginalCompletionWitness<'a, 'runtime> {
         &self.observation
     }
 
-    /// Borrows the same full native input evidence used in the quantized snapshot.
+    /// Borrows the same full native input evidence used in the original snapshot.
     pub fn native_input(&self) -> Option<&OriginalInputEvidence> {
         self.native_input
     }

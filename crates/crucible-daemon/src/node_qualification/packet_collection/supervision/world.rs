@@ -11,6 +11,8 @@ use super::{
 };
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+mod connected;
+
 use crucible::{
     node_adapters::cnp::{CnpSemanticProcessCustody, CnpSemanticProcessSlot},
     node_contract::{ActivationRecord, RuntimeCustodySlot, RuntimeLimits},

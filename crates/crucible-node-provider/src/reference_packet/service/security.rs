@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::{cell::RefCell, collections::BTreeMap};
 
-use super::{super::control::PacketControlSelection, PacketSourceLaunch};
+use super::{super::control::PacketControlSelection, server::ServerLaunch};
 use crate::{ProviderError, blob::*, connection::*, envelope::*, handshake::*};
 
 pub(super) struct Policy {
@@ -14,6 +14,7 @@ pub(super) struct Policy {
     pub(super) definition: ContentRef,
     pub(super) common: Option<super::super::coordinator::PacketCoordinatorInstallation>,
     pub(super) world: Option<super::super::coordinator::PacketWorldCoordinatorInstallation>,
+    pub(super) connected: Option<super::super::coordinator::PacketConnectedCoordinatorInstallation>,
 }
 
 impl super::super::endpoint::PacketEndpointPolicy for Policy {
@@ -30,9 +31,18 @@ impl super::super::endpoint::PacketEndpointPolicy for Policy {
         if selection != &self.selection
             || authority.session_id() != &binding.authority.session_id
             || authority.incarnation_id() != &binding.authority.incarnation_id
-            || authority.limits().requests.get() != if self.world.is_some() { 256 } else { 64 }
+            || authority.limits().requests.get()
+                != if self.world.is_some() || self.connected.is_some() {
+                    256
+                } else {
+                    64
+                }
             || authority.limits().journal_entries.get()
-                != if self.world.is_some() { 1024 } else { 256 }
+                != if self.world.is_some() || self.connected.is_some() {
+                    1024
+                } else {
+                    256
+                }
         {
             return Err(ProviderError::Correlation(
                 "packet installed negotiated source changed",
@@ -53,12 +63,49 @@ impl BlobSchemaVerifier for Policy {
         content: &ContentRef,
         bytes: &[u8],
     ) -> Result<(), ProviderError> {
-        if schema != &self.definition || content.media_type != "application/json" {
+        if schema != &self.definition {
             return Err(ProviderError::Correlation(
                 "packet consuming schema not installed",
             ));
         }
         content.verify(bytes)?;
+        if self.connected.is_some() && content.media_type == "application/octet-stream" {
+            return if bytes.len() <= 1024 {
+                Ok(())
+            } else {
+                Err(ProviderError::ResourceExhausted(
+                    "packet original connected payload",
+                ))
+            };
+        }
+        if self.connected.is_some()
+            && content.media_type == "application/vnd.crucible.input-inventory+json"
+        {
+            let value = canonical::parse_json(bytes, 65_536)?;
+            if canonical::canonical_json(&value)? != bytes {
+                return Err(ProviderError::Frame(
+                    "packet original input inventory canonical bytes",
+                ));
+            }
+            let rows = value
+                .as_array()
+                .ok_or(ProviderError::Frame("packet delivery inventory shape"))?;
+            if rows.len() > 4 {
+                return Err(ProviderError::ResourceExhausted(
+                    "packet original delivery population",
+                ));
+            }
+            let _: Vec<crate::input_commit::CommittedDeliveryV1> =
+                serde_json::from_value(value).map_err(ContractError::from)?;
+            // Complete actual route, event, causal and payload authentication
+            // remains in the native original Input operation after upload.
+            return Ok(());
+        }
+        if content.media_type != "application/json" {
+            return Err(ProviderError::Correlation(
+                "packet source storage media unsupported",
+            ));
+        }
         let value = canonical::parse_json(bytes, 65_536)?;
         if canonical::canonical_json(&value)? != bytes {
             return Err(ProviderError::Correlation(
@@ -84,18 +131,33 @@ impl BlobSchemaVerifier for Policy {
         {
             return world.validate_body(bytes);
         }
+        if value.get("schema").and_then(Value::as_str) == Some("crucible/coordinator-initial/1")
+            && let Some(connected) = &self.connected
+        {
+            return connected.validate_body(bytes);
+        }
         match value.get("schema").and_then(Value::as_str) {
-            Some("source-owned.packet-common-grant.v2") if self.world.is_some() => {
+            Some("source-owned.packet-common-grant.v4") if self.connected.is_some() => {
+                let _: super::super::common::PacketConnectedCommonGrant =
+                    serde_json::from_value(value).map_err(ContractError::from)?;
+                Ok(())
+            }
+            Some("source-owned.packet-common-grant.v2")
+                if self.world.is_some() || self.connected.is_some() =>
+            {
                 let _: super::super::common::PacketCommonGrant =
                     serde_json::from_value(value).map_err(ContractError::from)?;
                 Ok(())
             }
-            Some("source-owned.packet-common-grant.v1") if self.world.is_none() => {
+            Some("source-owned.packet-common-grant.v1")
+                if self.world.is_none() && self.connected.is_none() =>
+            {
                 let _: super::super::common::PacketCommonGrant =
                     serde_json::from_value(value).map_err(ContractError::from)?;
                 Ok(())
             }
-            Some("source-owned.packet-consumption.v1") => {
+            Some("source-owned.packet-consumption.v1")
+            | Some("source-owned.packet-consumption.v4") => {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct Consumption {
@@ -105,7 +167,10 @@ impl BlobSchemaVerifier for Policy {
                 }
                 let body: Consumption =
                     serde_json::from_value(value).map_err(ContractError::from)?;
-                if body.schema != "source-owned.packet-consumption.v1" || body.outputs.len() > 1 {
+                let connected = body.schema == "source-owned.packet-consumption.v4";
+                if (connected && self.connected.is_none())
+                    || body.outputs.len() > if connected { 4 } else { 1 }
+                {
                     return Err(ProviderError::Correlation("packet consumption shape"));
                 }
                 body.operation.validate()?;
@@ -130,17 +195,37 @@ impl BlobSchemaVerifier for Policy {
 impl BodySchemaVerifier for Policy {
     fn verify(
         &self,
-        _: &ConnectionAuthority,
+        authority: &ConnectionAuthority,
         envelope: &Envelope,
         _: &ReceivedBody,
     ) -> Result<(), ProviderError> {
-        if !envelope.extensions.is_empty()
-            || envelope.body.get("extensions").is_some_and(|extensions| {
-                extensions
-                    .as_object()
-                    .is_none_or(|values| !values.is_empty())
-            })
+        if !envelope.extensions.is_empty() {
+            if self.connected.is_none()
+                || envelope.message != MessageKind::Request
+                || envelope.method != Method::Input
+                || !authority
+                    .selected_features()
+                    .iter()
+                    .any(|feature| feature.as_str() == super::super::input::PACKET_INPUT_FEATURE)
+            {
+                return Err(ProviderError::Correlation(
+                    "packet source extensions unsupported",
+                ));
+            }
+            super::super::input::PacketInputContext::decode(&envelope.extensions)?;
+        } else if self.connected.is_some()
+            && envelope.message == MessageKind::Request
+            && envelope.method == Method::Input
         {
+            return Err(ProviderError::Correlation(
+                "packet source original input context absent",
+            ));
+        }
+        if envelope.body.get("extensions").is_some_and(|extensions| {
+            extensions
+                .as_object()
+                .is_none_or(|values| !values.is_empty())
+        }) {
             return Err(ProviderError::Correlation(
                 "packet source extensions unsupported",
             ));
@@ -182,7 +267,7 @@ impl BlobSupervisor for Supervisor {
     }
 }
 
-pub(super) struct Verifier<'a>(pub(super) &'a PacketSourceLaunch);
+pub(super) struct Verifier<'a>(pub(super) &'a ServerLaunch);
 impl TrustedHandshakeVerifier for Verifier<'_> {
     fn authenticate_exchange(
         &mut self,
@@ -203,13 +288,13 @@ impl TrustedHandshakeVerifier for Verifier<'_> {
     fn verify_contract_selection(
         &mut self,
         manifest: &ProviderManifest,
-        features: &IdSet,
+        selected_features: &IdSet,
         schemas: &[SchemaRef],
         guarantees: &ContentRef,
     ) -> Result<(), ProviderError> {
-        let expected = vec![Id::new("cnp.control-evidence/1")?, Id::new("cnp.core/1")?];
+        let expected = features(self.0.schema_version)?;
         if manifest != &self.0.selection.provider
-            || features != &expected
+            || selected_features != &expected
             || !schemas.is_empty()
             || self
                 .0
@@ -242,13 +327,19 @@ impl TrustedHandshakeVerifier for Verifier<'_> {
     }
 }
 
-pub(super) fn features() -> Result<Vec<Id>, ProviderError> {
-    Ok(vec![
-        Id::new("cnp.control-evidence/1")?,
-        Id::new("cnp.core/1")?,
-    ])
+pub(super) fn features(edition: u16) -> Result<Vec<Id>, ProviderError> {
+    let mut features = vec![Id::new("cnp.control-evidence/1")?, Id::new("cnp.core/1")?];
+    if edition == 4 {
+        features.push(Id::new(super::super::input::PACKET_INPUT_FEATURE)?);
+    }
+    Ok(features)
 }
 
-pub(super) fn extensions() -> BTreeMap<String, Id> {
-    BTreeMap::new()
+pub(super) fn extensions(edition: u16) -> Result<BTreeMap<String, Id>, ProviderError> {
+    if edition == 4 {
+        let feature = super::super::input::PACKET_INPUT_FEATURE;
+        Ok(BTreeMap::from([(feature.into(), Id::new(feature)?)]))
+    } else {
+        Ok(BTreeMap::new())
+    }
 }

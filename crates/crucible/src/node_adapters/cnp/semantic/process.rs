@@ -8,15 +8,15 @@ use std::process::{Child, ExitStatus};
 use std::rc::Rc;
 
 use crucible_node_contract::{ContentRef, U64};
-use crucible_node_provider::{
-    ProviderError, client::CnpController, conformance::measure_executable, handshake::Handshake,
-};
+use crucible_node_provider::{ProviderError, client::CnpController, handshake::Handshake};
 use rustix::process::{Pid, Signal, getpgid, kill_process_group};
 
 #[path = "process/current.rs"]
 mod current;
 pub use current::CnpSemanticSourceRead;
 pub(super) use current::ReadCall;
+
+mod executable_guard;
 
 mod reservation;
 pub use reservation::{CnpSemanticLaunchReservation, CnpSemanticReservationFailure};
@@ -46,6 +46,7 @@ pub trait CnpSemanticProcessSlot {
 /// Reaping the original Child and observing its empty private group are required
 /// before the supervisor may discharge its actual native obligations.
 pub struct CnpSemanticProcessCustody {
+    creator_process: u32,
     pub(super) child: Option<Child>,
     provider_pid: u32,
     pub(super) directory: PathBuf,
@@ -65,9 +66,19 @@ pub struct CnpSemanticProcessCustody {
     reaped: Option<ExitStatus>,
     pub(super) read_owner: Rc<current::ReadOwner>,
     kernel_identity: Option<current::KernelIdentity>,
+    executable_guard: Option<Rc<executable_guard::OriginalExecutable>>,
 }
 
 impl CnpSemanticProcessCustody {
+    fn ensure_origin(&self) -> Result<(), ProviderError> {
+        if self.creator_process != std::process::id() {
+            return Err(ProviderError::Correlation(
+                "generic original custody belongs to another process",
+            ));
+        }
+        Ok(())
+    }
+
     /// Returns the original actual provider Child ID for native diagnostics.
     pub fn provider_pid(&self) -> u32 {
         self.provider_pid
@@ -89,9 +100,26 @@ impl CnpSemanticProcessCustody {
     /// the selected model, closed gate, receipt semantics and role capabilities.
     ///
     /// # Errors
-    /// Refuses a dead or changed Child, foreign process group, expired attached
+    /// Refuses a foreign creator process before inherited state access, then a
+    /// dead or changed Child, foreign process group, expired attached
     /// session or different measured actual executable.
     pub fn authenticate_process(&self) -> Result<(), ProviderError> {
+        self.ensure_origin()?;
+        let executable = self
+            .executable_guard
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "generic original executable guard absent",
+            ))?;
+        executable.ensure_origin()?;
+        let identity = self
+            .kernel_identity
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "generic original kernel identity absent",
+            ))?;
+        executable.ensure_current(identity)?;
+
         let directory = fs::symlink_metadata(&self.directory)?;
         if !directory.is_dir()
             || directory.mode() & 0o777 != 0o700
@@ -106,16 +134,10 @@ impl CnpSemanticProcessCustody {
                 "generic native process is contained",
             ));
         }
-        if let Some(identity) = &self.kernel_identity {
-            identity.ensure_current()?;
-        }
         let group = self.group.ok_or(ProviderError::Correlation(
             "generic native group unavailable",
         ))?;
-        if getpgid(Some(group)).map_err(std::io::Error::from)? != group
-            || measure_executable(Path::new(&format!("/proc/{}/exe", self.provider_pid)))?
-                != self.expected_executable
-        {
+        if getpgid(Some(group)).map_err(std::io::Error::from)? != group {
             return Err(ProviderError::Correlation("generic native process changed"));
         }
         if let Some(controller) = &self.controller {
@@ -126,7 +148,7 @@ impl CnpSemanticProcessCustody {
                 return Err(ProviderError::Correlation("generic control peer changed"));
             }
         }
-        Ok(())
+        executable.ensure_current(identity)
     }
 
     /// Reads actual completed child reaping and the unchanged empty original group.
@@ -135,8 +157,10 @@ impl CnpSemanticProcessCustody {
     /// authenticates complete native device/handle and semantic obligation release.
     ///
     /// # Errors
-    /// Refuses malformed or overwide current kernel census; absence is not assumed.
+    /// Refuses foreign creator processes, malformed or overwide current kernel
+    /// census; absence is not assumed.
     pub fn kernel_resources_reclaimed(&self) -> Result<bool, ProviderError> {
+        self.ensure_origin()?;
         Ok(self.reaped.is_some() && group_empty(self.provider_pid)?)
     }
 
@@ -147,9 +171,11 @@ impl CnpSemanticProcessCustody {
     /// retain the same whole capsule and do not imply successful cleanup.
     ///
     /// # Errors
+    /// Refuses foreign creator processes before inherited state or signaling.
     /// Retains custody on foreign group, signaling/wait failure or malformed or
     /// overwide kernel census. Returns false while actual cleanup is outstanding.
     pub fn poll_reclamation(&mut self) -> Result<bool, ProviderError> {
+        self.ensure_origin()?;
         self.read_owner.revoke();
         if let Some(handshake) = &mut self.handshake {
             handshake.contain();
@@ -192,11 +218,34 @@ impl CnpSemanticProcessCustody {
     }
 }
 
+impl Drop for CnpSemanticProcessCustody {
+    fn drop(&mut self) {
+        if self.creator_process == std::process::id() {
+            return;
+        }
+        // A foreign copy cannot close/fence shared sockets, invoke installed
+        // policy destructors, or discharge the parent's actual Child. Only the
+        // duplicate allocations are retained until that foreign process exits.
+        std::mem::forget(self.child.take());
+        std::mem::forget(self.controller.take());
+        std::mem::forget(self.handshake.take());
+        std::mem::forget(self.registration.take());
+        std::mem::forget(self.source.take());
+        std::mem::forget(self.acceptance.take());
+        std::mem::forget(self.conformance.take());
+        std::mem::forget(self.collection_plan.take());
+        std::mem::forget(self.runtime.take());
+        std::mem::forget(self.rejected_control.take());
+        std::mem::forget(self.executable_guard.take());
+    }
+}
+
 /// Owns pre-reserved generic CNP process custody throughout failed preparation.
 #[must_use = "retain original native custody until actual supervised reclamation"]
 pub struct CnpSemanticLaunchGuard {
+    creator_process: u32,
     pub(super) custody: Option<Box<CnpSemanticProcessCustody>>,
-    slot: Box<dyn CnpSemanticProcessSlot>,
+    slot: Option<Box<dyn CnpSemanticProcessSlot>>,
     supervision_id: U64,
 }
 
@@ -209,6 +258,15 @@ pub struct CnpSemanticLaunchFailure {
 }
 
 impl CnpSemanticLaunchGuard {
+    fn ensure_origin(&self) -> Result<(), ProviderError> {
+        if self.creator_process != std::process::id() {
+            return Err(ProviderError::Correlation(
+                "generic original launch guard belongs to another process",
+            ));
+        }
+        Ok(())
+    }
+
     /// Takes an actual newly launched private process into its pre-reserved slot.
     ///
     /// The launcher must reserve `slot` before spawning and use a private process
@@ -231,8 +289,11 @@ impl CnpSemanticLaunchGuard {
     ) -> Result<Self, CnpSemanticLaunchFailure> {
         let provider_pid = child.id();
         let group = i32::try_from(provider_pid).ok().and_then(Pid::from_raw);
+        let creator_process = std::process::id();
         let mut guard = Self {
+            creator_process,
             custody: Some(Box::new(CnpSemanticProcessCustody {
+                creator_process,
                 child: Some(child),
                 provider_pid,
                 directory,
@@ -252,14 +313,20 @@ impl CnpSemanticLaunchGuard {
                 reaped: None,
                 read_owner: Rc::new(current::ReadOwner::new(U64::new(0))),
                 kernel_identity: None,
+                executable_guard: None,
             })),
-            slot,
+            slot: Some(slot),
             supervision_id: U64::new(0),
         };
         // The legacy post-spawn API owns Child before its installed identity
         // callback too. No provisional identity can escape an unsealed guard.
         let result = (|| {
-            let identity = guard.slot.identity();
+            guard.ensure_origin()?;
+            let identity = guard
+                .slot
+                .as_ref()
+                .ok_or(ProviderError::Correlation("generic original slot absent"))?
+                .identity();
             guard.supervision_id = identity;
             let custody = guard
                 .custody
@@ -270,13 +337,14 @@ impl CnpSemanticLaunchGuard {
                     "generic owner issued before launch seal",
                 ))?
                 .set_initial_identity(identity);
-            guard.custody()?.authenticate_process()?;
-            let identity = current::KernelIdentity::capture(guard.custody()?.provider_pid())?;
-            guard
-                .custody
-                .as_mut()
-                .ok_or(ProviderError::Correlation("generic custody transferred"))?
-                .kernel_identity = Some(identity);
+            let identity = current::KernelIdentity::capture(custody.provider_pid)?;
+            custody.kernel_identity = Some(identity);
+            custody.executable_guard = Some(Rc::new(executable_guard::OriginalExecutable::open(
+                custody.provider_pid,
+                &custody.expected_executable,
+                &identity,
+            )?));
+            custody.authenticate_process()?;
             Ok(())
         })();
         match result {
@@ -318,6 +386,7 @@ impl CnpSemanticLaunchGuard {
         controller: &CnpController,
         handshake: &Handshake,
     ) -> Result<(), ProviderError> {
+        self.ensure_origin()?;
         let custody = self
             .custody
             .as_ref()
@@ -338,8 +407,9 @@ impl CnpSemanticLaunchGuard {
     /// Borrows actual original native custody for installed independent source oracles.
     ///
     /// # Errors
-    /// Refuses unavailable or already transferred original custody.
+    /// Refuses a foreign creator process or unavailable or transferred custody.
     pub fn custody(&self) -> Result<&CnpSemanticProcessCustody, ProviderError> {
+        self.ensure_origin()?;
         self.custody
             .as_deref()
             .filter(|custody| custody.child.is_some())
@@ -352,15 +422,30 @@ impl CnpSemanticLaunchGuard {
     ///
     /// The original reserved supervisor receives the same complete native and
     /// transport journals. No resource replacement or reclamation is implied.
+    /// A copied foreign-process guard detaches its duplicate allocations before
+    /// any supervisor callback; the original process retains its native owners.
     ///
     /// # Panics
     /// The trusted preallocated slot must retain without unwinding. Violation
     /// of that supervisor contract is outside callback containment, as on Drop.
     pub fn retire_original(&mut self) {
+        if self.creator_process != std::process::id() {
+            // These allocations are inherited copies. The original process
+            // still owns its reservation and native resources; copied trait
+            // callbacks and destructors must not enter its SDK or supervisor.
+            std::mem::forget(self.custody.take());
+            std::mem::forget(self.slot.take());
+            return;
+        }
         if let Some(custody) = self.custody.take() {
             custody.read_owner.revoke();
             if custody.child.is_some() {
-                self.slot.retain(*custody);
+                if let Some(slot) = self.slot.as_mut() {
+                    slot.retain(*custody);
+                } else {
+                    // A missing private reservation cannot discharge Child.
+                    std::mem::forget(custody);
+                }
             }
         }
     }

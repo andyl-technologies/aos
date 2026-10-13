@@ -11,7 +11,9 @@ use std::path::PathBuf;
 use crucible_node_contract::canonical;
 use crucible_node_provider::{
     ProviderError,
-    reference_packet::service::{PacketSourceLaunch, PacketSourceService},
+    reference_packet::service::{
+        PacketConnectedSourceLaunch, PacketSourceLaunch, PacketSourceService,
+    },
     transport::FrameReader,
 };
 
@@ -33,8 +35,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .read()?
         .ok_or("private packet bootstrap unavailable")?;
     let bytes = canonical::canonical_json(&value)?;
-    let launch = PacketSourceLaunch::decode(&bytes, 1024 * 1024)?;
-    let mut service = PacketSourceService::accept(&socket, launch)?;
+    let mut service = if value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        == Some(4)
+    {
+        let launch = PacketConnectedSourceLaunch::decode(&bytes, 1024 * 1024)?;
+        PacketSourceService::accept_connected(&socket, launch)?
+    } else {
+        let launch = PacketSourceLaunch::decode(&bytes, 1024 * 1024)?;
+        PacketSourceService::accept(&socket, launch)?
+    };
 
     loop {
         if let Err(error) = service.step() {

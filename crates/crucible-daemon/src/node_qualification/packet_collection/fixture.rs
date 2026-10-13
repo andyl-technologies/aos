@@ -24,7 +24,7 @@ use super::{
 };
 use crate::node_qualification::{PlannedFixtureAudit, QualificationLimits, WitnessPlan};
 
-mod current_files;
+pub(super) mod current_files;
 mod graph_policy;
 mod invocation;
 mod issuer;

@@ -374,3 +374,22 @@ pub use world_stored_fixture::{
     PacketWorldPeerTransport, PacketWorldStoredFixture, PacketWorldStoredFixtureFailure,
     PacketWorldStoredFixtureRequest,
 };
+
+// The connected source edition owns a distinct Refused collection route.
+pub(super) mod connected;
+
+pub use connected::{
+    InstalledPacketConnectedCollectionAuthority, InstalledPacketConnectedGraphPolicy,
+    PacketConnectedCase, PacketConnectedCaseKind, PacketConnectedCollectionRequest,
+    PacketConnectedGrant, PacketConnectedGraphOwner, PacketConnectedGraphRequest,
+    PacketConnectedNativeOracle, PacketConnectedOracleRequest, PacketConnectedParticipant,
+    PacketConnectedPopulationRequest, PacketConnectedRoster, PacketConnectedSchedule,
+    PacketConnectedWitnessPopulation, packet_connected_independent_graph_contract,
+    packet_connected_measured_graph_proof,
+};
+
+pub use connected::{
+    PacketConnectedHost, PacketConnectedHostRequest, PacketConnectedPeerLaunchFailure,
+    PacketConnectedPeerLaunchRequest, PacketConnectedPublicationRequest,
+    PreparedPacketConnectedPeer, StoredPacketConnectedResultPublisher,
+};

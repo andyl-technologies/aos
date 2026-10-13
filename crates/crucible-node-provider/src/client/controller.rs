@@ -74,6 +74,41 @@ impl CnpController {
         self.session.has_packet_schema()
     }
 
+    /// Installs the closed connected packet input codec on the original controller.
+    ///
+    /// The immutable verifier binds negotiated transport and source-owned routing
+    /// records. Syntax and registration confer no native, activation or Ready
+    /// authority; the source dispatcher still authenticates its active world and
+    /// every original staging receipt. The no-extension installer stays separate.
+    ///
+    /// # Errors
+    /// Refuses a fenced or used original controller, an unnegotiated feature,
+    /// inconsistent source bindings, or replacement of an installed packet codec.
+    pub fn install_connected_packet_transport_schema(
+        &mut self,
+        binding: &crucible_node_contract::NodeBinding,
+        owner: &crucible_node_contract::OwnerBinding,
+    ) -> Result<(), ProviderError> {
+        if self.fenced
+            || self.custody.originals().next().is_some()
+            || self.route.node != binding.compatibility.node_id
+            || self.route.execution_owner != owner.owner.id
+        {
+            return Err(ProviderError::Correlation(
+                "connected packet schema requires original unused source controller",
+            ));
+        }
+        self.session.install_connected_packet_schema(binding, owner)
+    }
+
+    /// Reports source installation of the immutable connected packet codec.
+    ///
+    /// The marker is distinct from the no-extension packet codec and grants no
+    /// semantic or native authority merely because it is present.
+    pub fn has_connected_packet_transport_schema(&self) -> bool {
+        self.session.has_connected_packet_schema()
+    }
+
     /// Checks complete source-selected reply and blob custody before dispatch.
     ///
     /// This pure capacity check grants no operation or receipt authority. The
@@ -251,6 +286,17 @@ impl CnpController {
         self.custody.originals()
     }
 
+    /// Enumerates retained originals from one exact endpoint namespace.
+    ///
+    /// This reads the same original custody without reconstructing requests or
+    /// inferring that a matching ID in the other namespace is the same request.
+    pub fn originals_by_origin(
+        &self,
+        origin: RequestOrigin,
+    ) -> impl Iterator<Item = &ClientOriginal> {
+        self.custody.originals_by_origin(origin)
+    }
+
     /// Borrows complete hash-verified bytes for an independent source oracle.
     ///
     /// # Errors
@@ -291,6 +337,34 @@ impl CnpController {
         owner_scoped: bool,
         body: impl Serialize,
     ) -> Result<ResponseBody, ProviderError> {
+        self.call_with_extensions(
+            request_id,
+            operation_id,
+            method,
+            owner_scoped,
+            body,
+            Extensions::new(),
+        )
+    }
+
+    /// Sends a negotiated envelope extension through the same original request journal.
+    ///
+    /// Complete borrowed-envelope credit precedes JSON allocation. The selected
+    /// connection schema must independently admit every extension; this method
+    /// supplies no source, consumption or execution authority.
+    ///
+    /// # Errors
+    /// Refuses oversized or invalid complete frames, unnegotiated extensions,
+    /// changed originals, exhausted custody or uncertain original transport.
+    pub fn call_with_extensions(
+        &mut self,
+        request_id: Id,
+        operation_id: Option<Id>,
+        method: Method,
+        owner_scoped: bool,
+        body: impl Serialize,
+        extensions: Extensions,
+    ) -> Result<ResponseBody, ProviderError> {
         if self.fenced {
             return Err(ProviderError::Correlation(
                 "generic original controller is fenced",
@@ -313,7 +387,7 @@ impl CnpController {
             sequence: U64::new(u64::MAX),
             method,
             body: &body,
-            extensions: Extensions::new(),
+            extensions: &extensions,
         };
         count_serialized(&wire, self.maximum_frame()?)?;
 
@@ -336,7 +410,7 @@ impl CnpController {
             sequence: U64::new(2),
             method,
             body,
-            extensions: Extensions::new(),
+            extensions,
         };
         let reply = self
             .session
@@ -483,7 +557,7 @@ struct BorrowedEnvelope<'a, T> {
     sequence: U64,
     method: Method,
     body: &'a T,
-    extensions: Extensions,
+    extensions: &'a Extensions,
 }
 
 fn count_serialized(value: &impl Serialize, maximum: usize) -> Result<(), ProviderError> {

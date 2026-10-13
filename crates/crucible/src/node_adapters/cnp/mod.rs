@@ -54,7 +54,8 @@ pub use semantic::{
     CnpSemanticRegistrationPolicy, CnpSemanticRegistry, CnpSemanticReservationFailure,
     CnpSemanticSource, CnpSemanticSourceRead, CnpSemanticTransition,
     CnpSemanticWorldPreparationFailure, CnpSemanticWorldReservationFailure,
-    InstalledCnpConformanceRole, InstalledCnpSemanticRole, PacketNativeWitness,
+    InstalledCnpConformanceRole, InstalledCnpSemanticRole, PacketConnectedInputWitness,
+    PacketConnectedNativeWitness, PacketConnectedSemanticSource, PacketNativeWitness,
     PacketSemanticSource, packet_common_grant_authorization,
 };
 

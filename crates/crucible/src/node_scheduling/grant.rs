@@ -146,6 +146,53 @@ impl ExecutionAdmission {
     }
 }
 
+/// Retains one source-authenticated earlier evaluation within an opaque receipt.
+///
+/// This process-local seal is neither serialized nor publicly constructible.
+/// Runtime7 and Scheduling1 continue to retain the original native coordinates;
+/// fresh native restoration must independently authenticate their historical source.
+#[derive(Debug)]
+pub(crate) struct DeferredPublicationAuthorization {
+    publication: Id,
+    native_sequence: crucible_node_contract::U64,
+    endpoint: crucible_node_contract::Endpoint,
+    at: crucible_node_contract::Position,
+    evaluation: Option<crucible_node_contract::Position>,
+    payload: crucible_node_contract::ContentRef,
+    parents: Vec<crucible_node_contract::Position>,
+    prior_operation: Id,
+}
+
+impl DeferredPublicationAuthorization {
+    pub(crate) fn new(publication: &super::NativePublication, prior_operation: &Id) -> Self {
+        Self {
+            publication: publication.publication_id.clone(),
+            native_sequence: publication.native_sequence,
+            endpoint: publication.endpoint.clone(),
+            at: publication.publication,
+            evaluation: publication.evaluation,
+            payload: publication.payload.clone(),
+            parents: publication.causal_parents.clone(),
+            prior_operation: prior_operation.clone(),
+        }
+    }
+
+    pub(super) fn matches(
+        &self,
+        publication: &super::NativePublication,
+        used: &std::collections::BTreeSet<Id>,
+    ) -> bool {
+        self.publication == publication.publication_id
+            && self.native_sequence == publication.native_sequence
+            && self.endpoint == publication.endpoint
+            && self.at == publication.publication
+            && self.evaluation == publication.evaluation
+            && self.payload == publication.payload
+            && self.parents == publication.causal_parents
+            && used.contains(&self.prior_operation)
+    }
+}
+
 /// Carries a native completion validated by the retaining node runtime.
 ///
 /// Reading a provider result or constructing a portable receipt does not create
@@ -158,6 +205,7 @@ pub struct SchedulingReceipt {
     pub(crate) progress: ProgressEvidence,
     pub(crate) retained_outputs: Vec<Id>,
     pub(crate) observation: Option<NativeSchedulingObservation>,
+    pub(crate) deferred_evaluations: Vec<DeferredPublicationAuthorization>,
 }
 
 impl SchedulingReceipt {
@@ -176,7 +224,16 @@ impl SchedulingReceipt {
             progress,
             retained_outputs,
             observation,
+            deferred_evaluations: Vec::new(),
         }
+    }
+
+    pub(crate) fn retain_deferred_evaluations(
+        mut self,
+        evaluations: Vec<DeferredPublicationAuthorization>,
+    ) -> Self {
+        self.deferred_evaluations = evaluations;
+        self
     }
 
     /// Returns the immutable original operation identity.

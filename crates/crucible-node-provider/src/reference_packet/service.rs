@@ -20,8 +20,11 @@ use serde::{Deserialize, Serialize};
 use super::{PacketProgramDefinition, control::PacketControlSelection};
 use crate::{ProviderError, handshake::Limits, reference_service::InstalledContent};
 
+mod connected;
 mod security;
 mod server;
+
+pub use connected::{PacketConnectedSourceLaunch, PacketConnectedSourceProgram};
 
 /// Installs the exact original packet source through a private inherited channel.
 ///
@@ -175,6 +178,17 @@ pub struct PacketSourceService {
 }
 
 impl PacketSourceService {
+    /// Installs an original participant of the distinct connected packet world.
+    ///
+    /// # Errors
+    /// Refuses changed launch, native peer, executable, coordinator or source contract.
+    pub fn accept_connected(
+        socket: &std::path::Path,
+        launch: PacketConnectedSourceLaunch,
+    ) -> Result<Self, ProviderError> {
+        server::accept_connected(socket, launch)
+    }
+
     /// Installs a private endpoint and authenticates the actual original controller.
     ///
     /// # Errors

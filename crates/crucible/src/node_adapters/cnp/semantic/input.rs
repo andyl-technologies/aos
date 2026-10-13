@@ -14,6 +14,8 @@ use super::{
     CnpSemanticNode, after_effect, preparation::request_id, refused, state::OriginalInput, unknown,
 };
 
+mod commit;
+
 impl CnpSemanticNode {
     pub(super) fn stage_original(
         &mut self,
@@ -105,6 +107,13 @@ impl CnpSemanticNode {
             events: public.events,
             extensions: Extensions::new(),
         };
+        let (extensions, context) = source.input_staging_context(self.scope()?, batch, &request)?;
+        self.state_mut()?.credit.reserve(&extensions, maximum)?;
+        self.state_mut()?.credit.reserve(&context, maximum)?;
+        for payload in &context {
+            payload.reference.verify(&payload.bytes).map_err(unknown)?;
+        }
+        self.state_mut()?.credit.reserve(&request, maximum)?;
         let id = request_id("input", batch.stage_operation())?;
         self.state_mut()?
             .credit
@@ -117,13 +126,19 @@ impl CnpSemanticNode {
                 acknowledgement: None,
                 response: None,
                 watermark: sequence,
+                request: request.clone(),
+                commitment: None,
             },
         );
         for payload in batch.payloads() {
             payload.reference.verify(&payload.bytes).map_err(unknown)?;
             self.upload(&payload.reference, &payload.bytes)?;
         }
-        let response = self.call(id, None, Method::Input, true, request)?;
+        for payload in &context {
+            self.upload(&payload.reference, &payload.bytes)?;
+        }
+        let response =
+            self.call_with_extensions(id, None, Method::Input, true, request, extensions)?;
         let Some(MethodResult::Input(result)) = response.result else {
             return Err(unknown(
                 "generic original native input staging did not complete",

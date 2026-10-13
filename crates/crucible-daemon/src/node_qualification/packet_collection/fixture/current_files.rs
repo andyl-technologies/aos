@@ -54,14 +54,14 @@ struct Original {
     content: crucible_node_contract::ContentRef,
 }
 
-pub(super) struct CurrentFiles {
+pub(in super::super) struct CurrentFiles {
     originals: Vec<Original>,
     process: u32,
     revoked: Cell<bool>,
 }
 
 impl CurrentFiles {
-    pub(super) fn install(
+    pub(in super::super) fn install(
         selected: &PacketFixtureMeasurements,
     ) -> Result<Self, QualificationError> {
         // Complete roster and serialized ownership are checked before paths,
@@ -95,7 +95,7 @@ impl CurrentFiles {
     }
 
     /// Reads only the original measured peer under the caller's finite fetch credit.
-    pub(super) fn peer_content(
+    pub(in super::super) fn peer_content(
         &self,
         expected: &crucible_node_contract::ContentRef,
         maximum: usize,
@@ -125,7 +125,39 @@ impl CurrentFiles {
         Ok(bytes)
     }
 
-    pub(super) fn current(&self) -> Result<(), QualificationError> {
+    /// Reads only the original measured host executable under the caller's finite fetch credit.
+    pub(in super::super) fn host_content(
+        &self,
+        expected: &crucible_node_contract::ContentRef,
+        maximum: usize,
+    ) -> Result<Vec<u8>, QualificationError> {
+        self.current()?;
+        let host = self.originals.get(1).ok_or_else(refused)?;
+        let extent = usize::try_from(host.facts.bytes).map_err(|_| refused())?;
+        if extent == 0
+            || extent > maximum
+            || extent > 512 * 1024 * 1024
+            || expected != &host.content
+            || expected.length.get() != host.facts.bytes
+        {
+            return Err(refused());
+        }
+        // Positional reads do not move the independently retained fd cursor.
+        // Complete caller credit precedes allocation; no callback follows the
+        // final same-path/fd/process check before returning original bytes.
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(extent).map_err(|_| refused())?;
+        bytes.resize(extent, 0);
+        host.file
+            .file()
+            .read_exact_at(&mut bytes, 0)
+            .map_err(measurement::io)?;
+        expected.verify(&bytes)?;
+        self.current()?;
+        Ok(bytes)
+    }
+
+    pub(in super::super) fn current(&self) -> Result<(), QualificationError> {
         if self.revoked.get() {
             return Err(refused());
         }
@@ -198,7 +230,7 @@ fn original(
 
 // Finish copied answers only after the original source revision is read again.
 // The caller supplies its direct compiled current read, never a vendor predicate.
-pub(super) fn current_answer<T, E>(
+pub(in super::super) fn current_answer<T, E>(
     answer: T,
     current: impl FnOnce() -> Result<(), E>,
 ) -> Result<T, E> {

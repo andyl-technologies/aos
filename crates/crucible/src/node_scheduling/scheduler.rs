@@ -952,7 +952,11 @@ impl CausalScheduler {
             {
                 return Err(SchedulingError::InvalidReceipt);
             }
-            Some(self.prepare_observation(observation, Some(reservation))?)
+            Some(self.prepare_observation(
+                observation,
+                Some(reservation),
+                &receipt.deferred_evaluations,
+            )?)
         } else {
             None
         };

@@ -226,6 +226,24 @@ impl ClientSession {
         self.connection.has_packet_schema()
     }
 
+    pub(super) fn install_connected_packet_schema(
+        &mut self,
+        binding: &crucible_node_contract::NodeBinding,
+        owner: &crucible_node_contract::OwnerBinding,
+    ) -> Result<(), ProviderError> {
+        if self.sequence != U64::new(2) {
+            return Err(ProviderError::Correlation(
+                "connected packet schema must precede original control dispatch",
+            ));
+        }
+        self.connection
+            .install_connected_packet_schema(binding, owner)
+    }
+
+    pub(super) fn has_connected_packet_schema(&self) -> bool {
+        self.connection.has_connected_packet_schema()
+    }
+
     /// Authenticates actual peer identity and admits a complete original hello exchange.
     ///
     /// The caller retains native child custody and supplies a trusted installation
