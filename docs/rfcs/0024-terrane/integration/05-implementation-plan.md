@@ -252,6 +252,11 @@ The renewed 1,024-entry ordinary and adversarial populations pass once in
 766.455 and 722.203 seconds under their original 1,800-second bounds. The other
 four populations, full SDK, owning Nix gates, application targets and complete
 current T1 floor remain pending; scoped success advances no task.
+The unfiltered SDK qualification must retain all 1,121 actual cases: 1,115
+library cases, one attribute SDK integration case and five local SDK integration
+cases. Application test-target compilation and strict Clippy/private rustdoc for
+the default, std-send and native profiles remain separate required checks;
+the current Terrane aggregate does not include those checks.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
 Growing populations, full SDK and owning Nix qualification remain pending.
