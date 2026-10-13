@@ -10,7 +10,7 @@ use std::{
     thread::{self, ThreadId},
 };
 
-use crucible_node_contract::{HashRef, Position, U64};
+use crucible_node_contract::{ContentRef, HashRef, Position, U64};
 
 use crate::node_scheduling::{CausalScheduler, SchedulingSnapshot};
 
@@ -23,6 +23,18 @@ struct Original {
     authority: Weak<()>,
     live: Cell<bool>,
     scheduler: RefCell<Option<CausalScheduler>>,
+    restored: RefCell<Option<OriginalLineageSchedulingIdentity>>,
+}
+
+/// Records the core-checked source installed into this same original allocation.
+///
+/// Equal public snapshots cannot mint this private marker. The owning runtime
+/// writes it atomically with the prepared scheduler before native installation.
+#[derive(PartialEq)]
+struct OriginalLineageSchedulingIdentity {
+    source: ContentRef,
+    scheduling: HashRef,
+    target: super::super::ActivationRecord,
 }
 
 /// Retains the runtime's original scheduler storage, including its uninitialized cut.
@@ -37,6 +49,7 @@ impl OriginalSchedulingState {
             authority: Rc::downgrade(authority),
             live: Cell::new(true),
             scheduler: RefCell::new(None),
+            restored: RefCell::new(None),
         }))
     }
 
@@ -114,6 +127,43 @@ impl OriginalSchedulingState {
             return Err(RuntimeError::ForeignAuthority);
         }
         *state = Some(scheduler);
+        Ok(())
+    }
+
+    pub(in super::super) fn install_original_lineage(
+        &self,
+        scheduler: CausalScheduler,
+        source: &ContentRef,
+        scheduling: &HashRef,
+        target: &super::super::ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        self.current()?;
+        if scheduler.activation().record() != target || target.world_binding_hash != self.0.world {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        // All metadata is bounded by the already checked restoration context.
+        // Reserve both cells before retaining any changed state: reentrancy can
+        // refuse, but cannot leave a scheduler without its original source seal.
+        let mut restored = self
+            .0
+            .restored
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OutstandingObligations)?;
+        let mut state = self
+            .0
+            .scheduler
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OutstandingObligations)?;
+        if restored.is_some() || state.is_some() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let identity = OriginalLineageSchedulingIdentity {
+            source: source.clone(),
+            scheduling: scheduling.clone(),
+            target: target.clone(),
+        };
+        *state = Some(scheduler);
+        *restored = Some(identity);
         Ok(())
     }
 
@@ -209,6 +259,48 @@ impl OriginalSchedulingSource {
             return Err(RuntimeError::ForeignAuthority);
         }
         Ok(())
+    }
+
+    pub(in super::super) fn authenticate_runtime_authority(
+        &self,
+        world: &HashRef,
+        authority: &Rc<()>,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_current(world)?;
+        let state = self
+            .original
+            .upgrade()
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        OriginalSchedulingState(state).authenticate(authority, world)
+    }
+
+    pub(in super::super) fn authenticate_original_lineage_installation(
+        &self,
+        world: &HashRef,
+        source: &ContentRef,
+        scheduling: &HashRef,
+        target: &super::super::ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_current(world)?;
+        let state = self
+            .original
+            .upgrade()
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        let original = OriginalSchedulingState(state);
+        let restored = original
+            .0
+            .restored
+            .try_borrow()
+            .map_err(|_| RuntimeError::OutstandingObligations)?;
+        let identity = restored.as_ref().ok_or(RuntimeError::UnsupportedFacet)?;
+        if &identity.source != source
+            || &identity.scheduling != scheduling
+            || &identity.target != target
+            || original.retained()?.activation().record() != target
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        original.current()
     }
 
     pub(in super::super) fn authenticate_input_batch(
@@ -311,5 +403,169 @@ mod tests {
             Err(RuntimeError::ForeignAuthority)
         ));
         drop(busy);
+    }
+    fn modeled_scheduler() -> (Rc<()>, CausalScheduler) {
+        // The queue and private allocation are actual. Native readiness and
+        // durable publication are explicitly modeled for these slot controls.
+        let (graph, _) = crate::node_admission::test_fixture_isolated_execution(false);
+        let mut owners = std::collections::BTreeMap::new();
+        for node in graph.node_ids() {
+            let binding = graph.binding(node).unwrap();
+            owners.insert(
+                binding.compatibility.execution_owner.id.clone(),
+                super::super::OwnerIdentity {
+                    owner: binding.compatibility.execution_owner.id.clone(),
+                    incarnation: binding.authority.incarnation_id.clone(),
+                    generation: binding.authority.owner_generation,
+                },
+            );
+        }
+        let authority = Rc::new(());
+        let activation = super::super::WorldActivation {
+            nodes: Rc::from([]),
+            preparation: None,
+            authority: Rc::clone(&authority),
+            record: super::super::ActivationRecord {
+                activation_id: crucible_node_contract::Id::new("modeled/restore-slot").unwrap(),
+                generation: 1.into(),
+                world_binding_hash: graph.world_binding_hash().clone(),
+                owners: owners.into_values().collect(),
+                boundary: Position::new(
+                    0.into(),
+                    0.into(),
+                    crucible_node_contract::Phase::BoundaryControl,
+                ),
+            },
+        };
+        (authority, CausalScheduler::new(&graph, activation).unwrap())
+    }
+
+    #[test]
+    fn original_restore_slot_requires_core_seal_not_equal_initialized_state() {
+        let (authority, scheduler) = modeled_scheduler();
+        let target = scheduler.activation().record().clone();
+        let state = OriginalSchedulingState::new(&authority, target.world_binding_hash.clone());
+        let source = state.source();
+        let runtime_record =
+            crucible_node_contract::canonical::content_ref(b"captured runtime", "application/json")
+                .unwrap();
+        let scheduling = scheduler
+            .snapshot(target.boundary, 0.into())
+            .unwrap()
+            .continuation_hash()
+            .unwrap();
+        state.install(scheduler).unwrap();
+
+        assert!(matches!(
+            source.authenticate_original_lineage_installation(
+                &target.world_binding_hash,
+                &runtime_record,
+                &scheduling,
+                &target,
+            ),
+            Err(RuntimeError::UnsupportedFacet)
+        ));
+        assert_eq!(
+            state
+                .snapshot(target.boundary, 0.into())
+                .unwrap()
+                .continuation_hash()
+                .unwrap(),
+            scheduling
+        );
+    }
+
+    #[test]
+    fn original_restore_slot_seal_preserves_queue_and_refuses_other_source_and_repeat() {
+        let (authority, scheduler) = modeled_scheduler();
+        let target = scheduler.activation().record().clone();
+        let snapshot = scheduler.snapshot(target.boundary, 0.into()).unwrap();
+        let scheduling = snapshot.continuation_hash().unwrap();
+        let runtime_record =
+            crucible_node_contract::canonical::content_ref(b"captured runtime", "application/json")
+                .unwrap();
+        let state = OriginalSchedulingState::new(&authority, target.world_binding_hash.clone());
+        let source = state.source();
+        state
+            .install_original_lineage(scheduler, &runtime_record, &scheduling, &target)
+            .unwrap();
+
+        source
+            .authenticate_runtime_authority(&target.world_binding_hash, &authority)
+            .unwrap();
+        source
+            .authenticate_original_lineage_installation(
+                &target.world_binding_hash,
+                &runtime_record,
+                &scheduling,
+                &target,
+            )
+            .unwrap();
+        let foreign =
+            crucible_node_contract::canonical::content_ref(b"other runtime", "application/json")
+                .unwrap();
+        assert!(matches!(
+            source.authenticate_original_lineage_installation(
+                &target.world_binding_hash,
+                &foreign,
+                &scheduling,
+                &target,
+            ),
+            Err(RuntimeError::ForeignAuthority)
+        ));
+        assert!(
+            source
+                .authenticate_runtime_authority(&target.world_binding_hash, &Rc::new(()))
+                .is_err()
+        );
+        let (_, another) = modeled_scheduler();
+        assert!(
+            state
+                .install_original_lineage(another, &runtime_record, &scheduling, &target)
+                .is_err()
+        );
+        assert_eq!(state.snapshot(target.boundary, 0.into()).unwrap(), snapshot);
+        state.revoke();
+        assert!(
+            source
+                .authenticate_original_lineage_installation(
+                    &target.world_binding_hash,
+                    &runtime_record,
+                    &scheduling,
+                    &target,
+                )
+                .is_err()
+        );
+        assert_eq!(state.snapshot(target.boundary, 0.into()).unwrap(), snapshot);
+    }
+
+    #[test]
+    fn busy_original_restore_slot_refuses_before_install_and_foreign_authority_before_borrow() {
+        let (authority, scheduler) = modeled_scheduler();
+        let target = scheduler.activation().record().clone();
+        let scheduling = scheduler
+            .snapshot(target.boundary, 0.into())
+            .unwrap()
+            .continuation_hash()
+            .unwrap();
+        let runtime_record =
+            crucible_node_contract::canonical::content_ref(b"captured runtime", "application/json")
+                .unwrap();
+        let state = OriginalSchedulingState::new(&authority, target.world_binding_hash.clone());
+        let source = state.source();
+        let busy = state.0.scheduler.try_borrow_mut().unwrap();
+
+        assert!(matches!(
+            source.authenticate_runtime_authority(&target.world_binding_hash, &Rc::new(())),
+            Err(RuntimeError::ForeignAuthority)
+        ));
+        assert!(matches!(
+            state.install_original_lineage(scheduler, &runtime_record, &scheduling, &target),
+            Err(RuntimeError::OutstandingObligations)
+        ));
+        assert!(state.0.restored.try_borrow().unwrap().is_none());
+        assert!(busy.is_none());
+        drop(busy);
+        assert!(!state.initialized().unwrap());
     }
 }

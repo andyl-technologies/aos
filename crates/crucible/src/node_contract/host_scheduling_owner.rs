@@ -32,6 +32,16 @@ pub use continuation::{
 mod node;
 pub use node::PreparedHostSchedulingNode;
 
+mod ticket;
+pub use ticket::HostSchedulingOriginalContinuationTicket;
+
+mod preservation;
+pub use preservation::{
+    host_scheduling_continuation_owner_configuration,
+    host_scheduling_continuation_owner_definition,
+    host_scheduling_continuation_owner_preparation_schema,
+};
+
 /// Borrows the source-owned initial host scheduling definition as data.
 ///
 /// # Errors
@@ -162,6 +172,15 @@ impl HostSchedulingOwner {
         selection: HostSchedulingSelection,
         world: HashRef,
     ) -> Result<Self, OperationFailure> {
+        Self::create(selection, world, preservation::Edition::Unsupported, None)
+    }
+
+    fn create(
+        selection: HostSchedulingSelection,
+        world: HashRef,
+        edition: preservation::Edition,
+        ticket: Option<HostSchedulingOriginalContinuationTicket>,
+    ) -> Result<Self, OperationFailure> {
         let process = std::process::id();
         let owner_thread = thread::current().id();
         credit(&(&selection, &world), 65_536)?;
@@ -169,9 +188,9 @@ impl HostSchedulingOwner {
         selection.binding.validate().map_err(failure)?;
         selection.owner.validate().map_err(failure)?;
         world.validate().map_err(failure)?;
-        let definition = definition_ref()?;
+        let definition = preservation::definition(edition)?;
         let configuration = canonical::content_ref(
-            &host_scheduling_owner_configuration(&selection.domains)?,
+            &preservation::configuration(edition, &selection.domains)?,
             "application/json",
         )
         .map_err(failure)?;
@@ -218,7 +237,7 @@ impl HostSchedulingOwner {
                 .compatibility
                 .implementation
                 .formats
-                .contains(&host_scheduling_owner_preparation_schema()?)
+                .contains(&preservation::preparation(edition)?)
         {
             return Err(failure(
                 "host scheduling source differs from its compiled original definition",
@@ -271,6 +290,8 @@ impl HostSchedulingOwner {
             source: Rc::new(HostSchedulingSource {
                 selection,
                 world,
+                edition,
+                original_ticket: ticket,
                 process,
                 owner_thread,
                 prepared_token,
@@ -302,6 +323,8 @@ impl Drop for HostSchedulingOwner {
 
 /// Retains concrete source identity and read-only original scheduling attachment.
 pub struct HostSchedulingSource {
+    edition: preservation::Edition,
+    original_ticket: Option<HostSchedulingOriginalContinuationTicket>,
     selection: HostSchedulingSelection,
     world: HashRef,
     process: u32,
@@ -434,6 +457,41 @@ impl HostSchedulingSource {
             .as_ref()
             .ok_or_else(|| failure("original host scheduling attachment absent"))?
             .authenticate_input_batch(batch)
+            .map_err(failure)?;
+        self.authenticate_current()
+    }
+
+    pub(super) fn authenticate_original_lineage_context(
+        &self,
+        context: &super::OriginalLineageRestoration<'_>,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_current()?;
+        self.attached
+            .try_borrow()
+            .map_err(failure)?
+            .as_ref()
+            .ok_or_else(|| failure("original host scheduling attachment absent"))?
+            .authenticate_runtime_authority(&self.world, context.original_runtime_authority())
+            .map_err(failure)?;
+        self.authenticate_current()
+    }
+
+    pub(super) fn authenticate_original_lineage_installation(
+        &self,
+        context: &super::OriginalLineageRestoration<'_>,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_original_lineage_context(context)?;
+        self.attached
+            .try_borrow()
+            .map_err(failure)?
+            .as_ref()
+            .ok_or_else(|| failure("original host scheduling attachment absent"))?
+            .authenticate_original_lineage_installation(
+                &self.world,
+                context.source_record(),
+                context.original_scheduler_identity(),
+                context.target(),
+            )
             .map_err(failure)?;
         self.authenticate_current()
     }

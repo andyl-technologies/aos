@@ -137,6 +137,14 @@ impl OriginalLineageRestoration<'_> {
         Ok(())
     }
 
+    pub(crate) fn original_runtime_authority(&self) -> &Rc<()> {
+        &self.authority
+    }
+
+    pub(crate) fn original_scheduler_identity(&self) -> &crucible_node_contract::HashRef {
+        &self.scheduling
+    }
+
     /// Borrows authenticated original bytes only by their complete typed reference.
     pub fn original_body(&self, reference: &ContentRef) -> Option<&[u8]> {
         self.content.get(reference)

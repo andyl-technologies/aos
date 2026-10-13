@@ -62,7 +62,13 @@ impl NodeRuntime {
         let scheduler = scheduling
             .activate(graph, activation)
             .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?;
-        self.install_restored_scheduler(activation, scheduler)?;
+        self.validate_activation(scheduler.activation())?;
+        self.scheduling_origin()?.install_original_lineage(
+            scheduler,
+            context.source_record(),
+            context.original_scheduler_identity(),
+            context.target(),
+        )?;
         self.install_original_lineage_restoration(context, activation)
     }
 

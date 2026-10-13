@@ -17,6 +17,8 @@ use crate::node_contract::{
 
 use super::{HostSchedulingSource, canonical, failure, json};
 
+mod preservation;
+
 /// Retains the source-created host owner without any unrelated model queue.
 pub struct PreparedHostSchedulingNode {
     source: Rc<HostSchedulingSource>,
@@ -27,6 +29,8 @@ pub struct PreparedHostSchedulingNode {
     ready: Option<(ReadyAttestation, Vec<u8>)>,
     retired: bool,
     reclamation: Option<NativeReclamationReceipt>,
+    restoration: Option<preservation::HostRestorationAdmission>,
+    restoration_installed: bool,
 }
 
 impl PreparedHostSchedulingNode {
@@ -46,6 +50,8 @@ impl PreparedHostSchedulingNode {
             ready: None,
             retired: false,
             reclamation: None,
+            restoration: None,
+            restoration_installed: false,
         }
     }
 
@@ -177,15 +183,33 @@ impl SimulationNode for PreparedHostSchedulingNode {
             ));
         }
         self.source.authenticate_initial_attachment()?;
-        let body = json!({
-            "schema":"source-owned.host-scheduling-owner-preparation/1",
-            "process":self.source.process, "world_binding_hash":self.source.world,
-            "node_binding_hash":self.source.selection.binding.identity().map_err(failure)?,
-            "owner_binding_hash":self.source.selection.owner.identity().map_err(failure)?,
-            "prepared_token":self.source.prepared_token,
-            "scheduling_slot":"original-uninitialized", "boundary":world.boundary,
-            "capture":"unsupported"
-        });
+        if self.source.original_ticket.is_some() && self.restoration.is_none() {
+            return Err(failure(
+                "original host restore context was not admitted before Arm",
+            ));
+        }
+        let body = if self.source.edition == super::preservation::Edition::Unsupported {
+            json!({
+                "schema":"source-owned.host-scheduling-owner-preparation/1",
+                "process":self.source.process, "world_binding_hash":self.source.world,
+                "node_binding_hash":self.source.selection.binding.identity().map_err(failure)?,
+                "owner_binding_hash":self.source.selection.owner.identity().map_err(failure)?,
+                "prepared_token":self.source.prepared_token,
+                "scheduling_slot":"original-uninitialized", "boundary":world.boundary,
+                "capture":"unsupported"
+            })
+        } else {
+            json!({
+                "schema":"source-owned.host-scheduling-owner-preparation/2",
+                "process":self.source.process, "world_binding_hash":self.source.world,
+                "node_binding_hash":self.source.selection.binding.identity().map_err(failure)?,
+                "owner_binding_hash":self.source.selection.owner.identity().map_err(failure)?,
+                "prepared_token":self.source.prepared_token,
+                "scheduling_slot":"original-uninitialized", "boundary":world.boundary,
+                "original_restore":self.restoration.as_ref().map(|admission| &admission.source),
+                "capture":"unsupported"
+            })
+        };
         let bytes = canonical::canonical_json(&body).map_err(failure)?;
         let reference = canonical::content_ref(&bytes, "application/json").map_err(failure)?;
         let ready = ReadyAttestation {
@@ -247,6 +271,43 @@ impl SimulationNode for PreparedHostSchedulingNode {
     ) -> Result<(), OperationFailure> {
         self.validate_readiness(world, readiness)?;
         self.source.authenticate_initial_attachment()
+    }
+
+    fn validate_original_lineage_restoration(
+        &self,
+        source_record: &crucible_node_contract::ContentRef,
+        record: &crate::node_contract::OriginalLineageRuntimeRecord,
+        scope: &crate::node_contract::OriginalLineageNativeScope,
+        content: &crate::node_state::VerifiedStateContent,
+    ) -> Result<(), OperationFailure> {
+        self.validate_original_host_restoration(source_record, record, scope, content)
+    }
+
+    fn validate_exact_original_lineage_restoration(
+        &self,
+        source_record: &crucible_node_contract::ContentRef,
+        record: &crate::node_contract::OriginalLineageRuntimeRecord,
+        scope: &crate::node_contract::OriginalLineageNativeScope,
+        content: &crate::node_state::VerifiedStateContent,
+    ) -> Result<(), OperationFailure> {
+        self.validate_original_host_restoration(source_record, record, scope, content)
+    }
+
+    fn admit_original_lineage_restoration(
+        &mut self,
+        context: &crate::node_contract::OriginalLineageRestoration<'_>,
+    ) -> Result<(), OperationFailure> {
+        self.admit_original_host_restoration(context)
+    }
+
+    fn install_original_lineage_restored_custody(
+        &mut self,
+        context: &crate::node_contract::OriginalLineageRestoration<'_>,
+        activation: &crate::node_contract::WorldActivation,
+        operations: &[OperationAdmission],
+        inputs: &[Rc<crate::node_scheduling::RuntimeInputBatch>],
+    ) -> Result<(), OperationFailure> {
+        self.install_original_host_restoration(context, activation, operations, inputs)
     }
 
     fn begin_operation(&mut self, _: &OperationAdmission) -> Submission {

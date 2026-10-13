@@ -2542,6 +2542,27 @@ producer witness does not establish nonempty capture or fresh native journal
 installation. Source1 capture and unsupported native restoration callbacks
 retain their existing refusals.
 
+### Original host continuation ticket and scheduler installation seal
+
+The distinct host continuation factory retains an opaque, nonserializable
+ticket produced by the actual attached runtime. Fresh restoration consumes
+that original ticket and checks its process/thread birth, complete compatible
+selection, domains and Runtime7 record. A private installation seal binds the
+same original scheduler allocation to its source record, scheduling identity
+and target activation. An equally initialized scheduler cannot substitute for
+that sealed allocation. Both scheduler and seal cells are reserved before
+installation, so a busy cell cannot leave partially installed state.
+
+Independent review verifies all 9,334 frozen source bodies, eight sparse current
+preimages, the fresh test executable and its dependency file. Twenty-six
+component controls pass: two factory guards, four original-slot guards, three
+preserved source-one guards and 17 restoration regressions. Strict all-target,
+all-feature checks pass. Native readiness and publication are modeled in the
+slot controls; the new host validation/admission/installation callbacks are
+compiled but have no operational whole-world restoration witness. The factory
+still enforces CaptureNone and Unsupported. Native capture, archive edition
+three, joint journal installation and genuine fresh restoration remain required.
+
 ## KVM constructor descriptor
 
 The permissive protocol now decodes a distinct bounded KVM descriptor before
