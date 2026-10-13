@@ -144,7 +144,11 @@ compilation, strict all-target Clippy and all 770 tests across eleven AOS
 executables, with none skipped or ignored. Both 1,024-entry growth cases
 pass under their unchanged 1,800-second limits: ordinary in 1,435.906
 seconds and adversarial in 1,507.903 seconds. The 2,048-entry ordinary
-case is running and the three later populations remain unstarted.
+case times out at its unchanged 1,800-second limit, after the existing
+maintained-publication witness and before independent accounting completes.
+Its source, compiler inputs and executables remain unchanged. CPU/I/O and
+memory observations are retained; they do not identify the cause. The three
+later populations remain unstarted, and DRV-29 remains unqualified.
 Full SDK and Nix qualification remain pending. Full original task-diff
 review is complete for the 99 core-test, 58 ref-advance, 103 bucket and
 158 collector paths. Isolated presentation corrections add missing panic
