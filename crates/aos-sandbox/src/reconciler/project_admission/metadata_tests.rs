@@ -10,7 +10,9 @@ use crate::policy_compiler::HistoricalCreateProjectSourceHeadsV1;
 use super::*;
 use crate::journal::Journal;
 use crate::source_domain::source_domain_journal_limits;
-use aos_sandbox_protocol::domain_ledger::effect_history::{EffectLedgerRecord, EffectState, decode_effect, encode_effect};
+use aos_sandbox_protocol::domain_ledger::effect_history::{
+    EffectLedgerRecord, EffectState, decode_effect, encode_effect,
+};
 
 const FIXED_BODY_BYTES: usize = 1024;
 
@@ -114,12 +116,7 @@ fn metadata_phase_cannot_substitute_terminal_or_retirement_authority() {
 #[test]
 fn project_effect_version_retains_legacy_bytes_and_never_completes_create() {
     let plan = crate::reconciler::tests::live_create_sandbox_plan(0xd1).effects[0].clone();
-    let mut effect = EffectLedgerRecord::from_parts((
-        plan,
-        EffectState::Planned,
-        None,
-        None,
-    ));
+    let mut effect = EffectLedgerRecord::from_parts((plan, EffectState::Planned, None, None));
     let legacy = encode_effect(&effect).unwrap();
     assert_eq!(legacy[0], 3);
     assert_eq!(
@@ -132,9 +129,9 @@ fn project_effect_version_retains_legacy_bytes_and_never_completes_create() {
     assert_eq!(decode_effect(&retained).unwrap(), effect);
     effect = {
         let replacement = EffectState::PermanentlyBlocked {
-        attempt: 1,
-        diagnostic: "history is not completion".to_owned(),
-    };
+            attempt: 1,
+            diagnostic: "history is not completion".to_owned(),
+        };
         let mut parts = effect.into_parts();
         parts.1 = replacement;
         EffectLedgerRecord::from_parts(parts)

@@ -12,8 +12,8 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerAuthorizationArtifactsV1, BrokerMethod, NixBuildResponseV2,
 };
 use aos_sandbox::production_operation_compiler::{
-    ControllerNixStartRecipeSelectorV2, CurrentRetainedNixStartV2,
-    NixResolveAuthorizationDraftV2, NixStartAdmissionErrorV2, NixStartContinuationErrorV2,
+    ControllerNixStartRecipeSelectorV2, CurrentRetainedNixStartV2, NixResolveAuthorizationDraftV2,
+    NixStartAdmissionErrorV2, NixStartContinuationErrorV2,
 };
 use aos_sandbox::{EffectFailure, EffectObservation};
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
@@ -28,14 +28,16 @@ use aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2;
 use super::nix_inputs::{NixLocalInputCutV2, NixLocalInputErrorV2};
 use super::resident_custody::{ControllerResidentCauseV1, ControllerWorkerCustodyV1};
 use super::ProductionEffectExecutor;
-use crate::controller_service::plan_signer::{ControllerBrokerPlanSignerError, ControllerBrokerPlanSignerV1};
+use crate::controller_service::plan_signer::{
+    ControllerBrokerPlanSignerError, ControllerBrokerPlanSignerV1,
+};
 use aos_sandbox_broker_session_security::controller_composition::{
     ControllerOnlineNixEndpointCustodyV1, ControllerOnlineNixHandshakeErrorV1,
     ControllerOnlineNixHandshakeProgressV1, ControllerOnlineNixHandshakeV1,
     ControllerOnlineNixHelloV1, ControllerOnlineNixNativeRequestCustodyV1,
     ControllerOnlineNixOutcomeOpeningV1, ControllerOnlineNixPreparedRequestV1,
-    ControllerOnlineNixProvisionV1, ControllerOnlineNixSessionV1,
-    OnlineTransportFailureV1, OriginalBrokerColdDeadlineV1, RetainedStorageColdOpenV1,
+    ControllerOnlineNixProvisionV1, ControllerOnlineNixSessionV1, OnlineTransportFailureV1,
+    OriginalBrokerColdDeadlineV1, RetainedStorageColdOpenV1,
 };
 use crate::{
     BrokerSessionSecurityError, DormantBrokerSessionHandshakeErrorV1,
@@ -100,16 +102,19 @@ struct NixRequestPhaseV1 {
     draft: Option<NixResolveAuthorizationDraftV2>,
     signed: Option<Result<SignedBrokerPlan, ControllerBrokerPlanSignerError>>,
     request: Option<Result<ControllerOnlineNixPreparedRequestV1, BrokerSessionSecurityError>>,
-    checked: Option<Result<ValidatedNixBuildRequestV2, aos_sandbox_protocol::ProtocolValidationError>>,
+    checked:
+        Option<Result<ValidatedNixBuildRequestV2, aos_sandbox_protocol::ProtocolValidationError>>,
     native_request: ControllerOnlineNixNativeRequestCustodyV1,
     dispatch_started: bool,
     send_failure: Option<SeqpacketError>,
     record: Option<ReceivedRecord>,
     receive_failure: Option<RetainedSeqpacketReceiveErrorV1>,
-    canonical: Option<Result<
-        aos_sandbox_broker_session_protocol::CanonicalBrokerResponseEnvelopeV1,
-        aos_sandbox_broker_session_protocol::BrokerSessionProjectionError,
-    >>,
+    canonical: Option<
+        Result<
+            aos_sandbox_broker_session_protocol::CanonicalBrokerResponseEnvelopeV1,
+            aos_sandbox_broker_session_protocol::BrokerSessionProjectionError,
+        >,
+    >,
     gate: Option<ControllerOnlineNixOutcomeOpeningV1>,
     admitted: Option<Result<ProtectedBrokerOutcomeAdmissionV1, BrokerSessionSecurityError>>,
     response: Option<Result<NixBuildResponseV2, aos_sandbox_protocol::ProtocolValidationError>>,

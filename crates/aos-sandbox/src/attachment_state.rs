@@ -1054,9 +1054,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{
-        EffectFailure, EffectObservation, SingleNodeEffectExecutor,
-    };
+    use crate::{EffectFailure, EffectObservation, SingleNodeEffectExecutor};
     use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
     use aos_sandbox_core::model::{
         AttachmentConsistency, AttachmentLease, AttachmentPresentation, CacheDomain,

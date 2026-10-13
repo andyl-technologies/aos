@@ -13,7 +13,7 @@
 use aos_sandbox_core::OperationId;
 use sha2::{Digest as _, Sha256};
 
-use super::{ Journal, ReconcilerError};
+use super::{Journal, ReconcilerError};
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
 
 pub(crate) const RECEIPT_BYTES: usize = 1132;
@@ -99,16 +99,25 @@ pub(super) fn validate_operation(
     operation: super::OperationRecord,
 ) -> Result<(), ReconcilerError> {
     for step in 0..operation.effect_count() {
-        let effect = super::decode_effect(journal.get(super::RecordNamespace::Effect,
-            &super::effect_key(operation_id, step))
-            .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?).map_err(ReconcilerError::from)?;
+        let effect = super::decode_effect(
+            journal
+                .get(
+                    super::RecordNamespace::Effect,
+                    &super::effect_key(operation_id, step),
+                )
+                .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?,
+        )
+        .map_err(ReconcilerError::from)?;
         if let super::EffectState::Applied { receipt, .. } = effect.state() {
             if classify(receipt)? {
-                if step != 0 || operation.effect_count() != 1
+                if step != 0
+                    || operation.effect_count() != 1
                     || operation.state() != super::OperationState::PermanentlyBlocked
                     || !super::is_operator_storage_repair_effect_v1(effect.plan())?
                 {
-                    return Err(ReconcilerError::CorruptLedger("Repair failure has a nonexact public graph"));
+                    return Err(ReconcilerError::CorruptLedger(
+                        "Repair failure has a nonexact public graph",
+                    ));
                 }
                 validate(journal, operation_id)?;
             }

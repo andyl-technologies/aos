@@ -48,7 +48,8 @@ pub(crate) fn accepted_fuse_admission_v1(
     }
     let context = effect
         .plan()
-        .public_mutation_context().map_err(ReconcilerError::from)?
+        .public_mutation_context()
+        .map_err(ReconcilerError::from)?
         .ok_or(ReconcilerError::CorruptLedger(
             "missing FUSE admission context",
         ))?;
@@ -83,5 +84,7 @@ pub(crate) fn accepted_fuse_admission_v1(
             "FUSE admission operation mismatch",
         ));
     }
-    Ok(Some(ControllerFuseAdmissionCarrierV1::from_history(carrier.clone())))
+    Ok(Some(ControllerFuseAdmissionCarrierV1::from_history(
+        carrier.clone(),
+    )))
 }

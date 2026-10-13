@@ -21,7 +21,9 @@ pub(crate) struct OriginalCapacityEffectHistoryV1(EffectLedgerRecord);
 pub(crate) fn decode_capacity_effect_history(
     bytes: &[u8],
 ) -> Result<OriginalCapacityEffectHistoryV1, crate::journal::JournalError> {
-    let prior = decode_effect(bytes).map_err(ReconcilerError::from).map_err(|_| crate::journal::JournalError::ProtectedBoundary)?;
+    let prior = decode_effect(bytes)
+        .map_err(ReconcilerError::from)
+        .map_err(|_| crate::journal::JournalError::ProtectedBoundary)?;
     Ok(OriginalCapacityEffectHistoryV1(prior))
 }
 
@@ -38,16 +40,16 @@ pub(crate) fn compare_capacity_effect_history(
     use crate::journal::JournalError;
 
     let prior = prior.0.into_parts();
-    let next = decode_effect(next.value().ok_or(JournalError::ProtectedBoundary)?).map_err(ReconcilerError::from)
-        .map_err(|_| JournalError::ProtectedBoundary)?.into_parts();
+    let next = decode_effect(next.value().ok_or(JournalError::ProtectedBoundary)?)
+        .map_err(ReconcilerError::from)
+        .map_err(|_| JournalError::ProtectedBoundary)?
+        .into_parts();
     if next.0 != prior.0 || next.1 != prior.1 || next.2 != prior.2 {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok((
-        prior.3
-            .ok_or(JournalError::ProtectedBoundary)?,
-        next.3
-            .ok_or(JournalError::ProtectedBoundary)?,
+        prior.3.ok_or(JournalError::ProtectedBoundary)?,
+        next.3.ok_or(JournalError::ProtectedBoundary)?,
     ))
 }
 
@@ -74,13 +76,21 @@ pub(crate) fn validate_delete_effect_record(
     if effect.state() != &EffectState::Planned
         || effect.dispatch().is_some()
         || effect.project_admission().is_some()
-        || encode_effect(&effect).map_err(ReconcilerError::from)?.as_slice() != row.value().ok_or_else(invalid)?
+        || encode_effect(&effect)
+            .map_err(ReconcilerError::from)?
+            .as_slice()
+            != row.value().ok_or_else(invalid)?
     {
         return Err(invalid());
     }
     if effect.plan().public_mutation_method() == Some(PublicOperationMethodV1::DeleteSandbox) {
-        let context = effect.plan().public_mutation_context().map_err(ReconcilerError::from)?.ok_or_else(invalid)?;
-        let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Delete(request) = context.validated_request().map_err(ReconcilerError::from)?
+        let context = effect
+            .plan()
+            .public_mutation_context()
+            .map_err(ReconcilerError::from)?
+            .ok_or_else(invalid)?;
+        let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Delete(request) =
+            context.validated_request().map_err(ReconcilerError::from)?
         else {
             return Err(invalid());
         };

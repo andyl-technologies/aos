@@ -41,10 +41,10 @@ use crate::policy_compiler::{
 };
 use aos_sandbox_protocol::domain_ledger::effect_history::EffectState;
 use crate::reconciler::{
-    EffectFailure, EffectObservation, OperationPlan,
-    PublicMutationEffectV1, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
-    ReconcileOutcome, Reconciler, SingleNodeEffectExecutor, effect_key,
-    public_operation_resource_from_journal_v1, retained_create_sandbox_admission_revision_v1,
+    EffectFailure, EffectObservation, OperationPlan, PublicMutationEffectV1,
+    PublicOperationAdmissionV1, PublicOperationAuthorizationV1, ReconcileOutcome, Reconciler,
+    SingleNodeEffectExecutor, effect_key, public_operation_resource_from_journal_v1,
+    retained_create_sandbox_admission_revision_v1,
 };
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt, decode_effect};
 
@@ -184,7 +184,8 @@ pub fn prepare_project_history_vm_flight_v1(
         &JournalTransaction::new(
             transaction_id,
             vec![effect_record(operation, &effect)?, reservation_record],
-        ).map_err(JournalError::from)?,
+        )
+        .map_err(JournalError::from)?,
     )?;
     validate_all(&journal)?;
     authorize_controller_project_admission_dispatch_v1(&mut journal, operation, scope, &plan)?;
@@ -212,7 +213,8 @@ pub fn require_project_history_vm_flight_v1(
         journal
             .get(RecordNamespace::Effect, &effect_key(operation, 0))
             .ok_or("VM original Effect absent")?,
-    ).map_err(crate::ReconcilerError::from)?;
+    )
+    .map_err(crate::ReconcilerError::from)?;
     let effect = effect.into_parts();
     let metadata = effect.3.ok_or("VM flight metadata absent")?;
     let expected = if retired {

@@ -109,13 +109,25 @@ fn advance(
         false
     };
     if settled {
-        let preissue = attempt.as_ref().ok_or_else(|| retryable("original Host output attempt is absent"))?
-            .source().preissue();
-        let signer = executor.broker_plan_signer.as_ref()
+        let preissue = attempt
+            .as_ref()
+            .ok_or_else(|| retryable("original Host output attempt is absent"))?
+            .source()
+            .preissue();
+        let signer = executor
+            .broker_plan_signer
+            .as_ref()
             .ok_or_else(|| retryable("Controller broker signer is unavailable"))?;
         return super::execution_output_storage_registration::advance(
-            &executor.sessions, operation,
-            controller, &assignment, &mut environment, &parent, preissue, signer, &mut clock,
+            &executor.sessions,
+            operation,
+            controller,
+            &assignment,
+            &mut environment,
+            &parent,
+            preissue,
+            signer,
+            &mut clock,
         );
     }
 
@@ -217,11 +229,20 @@ fn advance(
     if settlement.is_none() {
         return Err(retryable("original Host output attempt is not committed"));
     }
-    let signer = executor.broker_plan_signer.as_ref()
+    let signer = executor
+        .broker_plan_signer
+        .as_ref()
         .ok_or_else(|| retryable("Controller broker signer is unavailable"))?;
     super::execution_output_storage_registration::advance(
-        &executor.sessions, operation,
-        controller, &assignment, &mut environment, &parent, &preissue, signer, &mut clock,
+        &executor.sessions,
+        operation,
+        controller,
+        &assignment,
+        &mut environment,
+        &parent,
+        &preissue,
+        signer,
+        &mut clock,
     )
 }
 

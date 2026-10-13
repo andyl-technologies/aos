@@ -103,7 +103,9 @@ impl ProductionEffectExecutor {
         let mut bytes = Vec::with_capacity(40);
         bytes.extend_from_slice(b"AOSCAN01");
         bytes.extend_from_slice(resolution.receipt().as_bytes());
-        EffectReceipt::new(bytes).map_err(aos_sandbox::ReconcilerError::from).map_err(|error| EffectFailure::Permanent(error.to_string()))
+        EffectReceipt::new(bytes)
+            .map_err(aos_sandbox::ReconcilerError::from)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))
     }
 
     pub(super) fn ownership_recovery_receipt(

@@ -135,9 +135,7 @@ pub mod source_provider_startup;
 pub mod source_domain;
 
 #[cfg(target_os = "linux")]
-pub use production_operation_compiler::{
-    ControllerNixStartRecipeSelectorV2, NixStartAdmissionErrorV2,
-};
+pub use production_operation_compiler::{ControllerNixStartRecipeSelectorV2, NixStartAdmissionErrorV2};
 #[cfg(target_os = "linux")]
 pub mod public_api_session;
 pub mod public_attach_pending;
@@ -364,13 +362,14 @@ pub use publication::{
 };
 pub use reconciler::{
     AcceptOutcome, AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1,
-    AuthorityEffectObservationV1, EffectFailure, EffectObservation, OperationPlan, OperatorStorageRepairReconcileV1, OwnershipGateActivationOutcome,
-    PreparedAuthorityBrokerRequestV1,
-    PreparedAuthorityEffectV1, PublicMutationEffectV1, PublicOperationAdmissionV1,
-    PublicOperationAuthorizationV1, ReconcileOutcome, Reconciler, ReconcilerError,
-    SingleNodeEffectExecutor, UnfinishedOperationStateV1, ValidatedAuthorityEffectReceiptV1,
-    ValidatedHostEffectReceiptV1, ValidatedUnfinishedOperationV1,
-    activated_ownership_gate_digest_from_journal_v1, public_operation_resource_from_journal_v1,
+    AuthorityEffectObservationV1, EffectFailure, EffectObservation, OperationPlan,
+    OperatorStorageRepairReconcileV1, OwnershipGateActivationOutcome,
+    PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1, PublicMutationEffectV1,
+    PublicOperationAdmissionV1, PublicOperationAuthorizationV1, ReconcileOutcome, Reconciler,
+    ReconcilerError, SingleNodeEffectExecutor, UnfinishedOperationStateV1,
+    ValidatedAuthorityEffectReceiptV1, ValidatedHostEffectReceiptV1,
+    ValidatedUnfinishedOperationV1, activated_ownership_gate_digest_from_journal_v1,
+    public_operation_resource_from_journal_v1,
 };
 #[cfg(target_os = "linux")]
 pub use resource_inventory::{

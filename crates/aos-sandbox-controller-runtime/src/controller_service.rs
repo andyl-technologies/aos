@@ -45,8 +45,8 @@ use std::time::{Duration, Instant};
 use aos_proto::aos::sandbox::local::v1::{BrokerMethod, RuntimeAction};
 use aos_proto::aos::sandbox::v1::{Operation, OperationPhase, OperatorRecoveryAction};
 use aos_sandbox_core::{
-    AttachmentId, CapabilityId, NodeId, ObjectDigest, OperationId, ProjectId,
-    RawClockProvenance, RawPairedClockSample, ResourceId,
+    AttachmentId, CapabilityId, NodeId, ObjectDigest, OperationId, ProjectId, RawClockProvenance,
+    RawPairedClockSample, ResourceId,
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use sha2::{Digest as _, Sha256};
@@ -68,23 +68,19 @@ use aos_sandbox::cache_residency::{
 use aos_sandbox::cli_model::PublicMutationRequestV1;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox::controller::DormantControllerCompositionV1;
-use aos_sandbox::journal::controller::{
-    production_journal_limits, validate_controller_journal,
-};
+use aos_sandbox::journal::controller::{production_journal_limits, validate_controller_journal};
 use aos_sandbox::hierarchy::controller_genesis_input::{
     ControllerSourceGenesisInputErrorV1, ProvisionedControllerSourceGenesisInputV1,
 };
 use aos_sandbox::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::lifecycle::{
-    LifecycleCancelIdempotencyDigestV1, LifecycleCurrentAuxiliaryPublicationV1,
-    LifecycleIntentV1, LifecycleOperationAdmissionV1, LifecycleOperationV1,
-    LifecycleProgressCommitOutcomeV1,
+    LifecycleCancelIdempotencyDigestV1, LifecycleCurrentAuxiliaryPublicationV1, LifecycleIntentV1,
+    LifecycleOperationAdmissionV1, LifecycleOperationV1, LifecycleProgressCommitOutcomeV1,
     LifecycleProgressOutcomeUnknownV1, LifecycleProgressRecoveryV1,
     LifecycleProtectedCancellationAdmissionV1, LifecycleProtectedCancellationResolutionV1,
-    LifecycleProtectedJournalErrorV1,
-    LifecycleProtectedRecordKindV1, LifecycleSnapshotBarrierV1, LifecycleSuspensionPlanV1,
-    LifecycleTimeV1, lifecycle_operation_from_public_mutation_v1, lifecycle_protected_key_v1,
-    lifecycle_public_mutation_admission_v1,
+    LifecycleProtectedJournalErrorV1, LifecycleProtectedRecordKindV1, LifecycleSnapshotBarrierV1,
+    LifecycleSuspensionPlanV1, LifecycleTimeV1, lifecycle_operation_from_public_mutation_v1,
+    lifecycle_protected_key_v1, lifecycle_public_mutation_admission_v1,
 };
 use aos_sandbox::production_operation_compiler::{
     ControllerNixStartRecipeSelectorV2, NixStartAdmissionErrorV2, ProductionOperationCompilerV1,
@@ -92,14 +88,15 @@ use aos_sandbox::production_operation_compiler::{
 use aos_sandbox::{
     AcceptOutcome, ActivatedOperationCompiler, AuthorityEffectAttemptTimingV1,
     AuthorityEffectObservationV1, ControllerRequestScopeV1, ControllerServiceError, EffectFailure,
-    EffectObservation, GuardianPlanRequestV1,
-    Journal, JournalError, NodeController, NodeControllerLimits, OperationCompilationError,
-    PreparedAuthorityEffectV1,
+    EffectObservation, GuardianPlanRequestV1, Journal, JournalError, NodeController,
+    NodeControllerLimits, OperationCompilationError, PreparedAuthorityEffectV1,
     PublicMutationEffectV1, Reconciler, SingleNodeEffectExecutor,
     ValidatedAuthorityEffectReceiptV1, activated_ownership_gate_digest_from_journal_v1,
     prepare_runtime_lifecycle_authority_effect_v1, public_operation_resource_from_journal_v1,
 };
-use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt, PublicMutationEffectHistoryV1};
+use aos_sandbox_protocol::domain_ledger::effect_history::{
+    EffectPlan, EffectReceipt, PublicMutationEffectHistoryV1,
+};
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 use resident_custody::{
@@ -183,8 +180,8 @@ pub use activation::run_from_environment;
 pub use public_rpc::CapabilityService;
 use public_rpc::{CapabilityState, ControllerEndpoint};
 use commands::{
-    AdmittedPublicAttachV1, AdmittedPublicMutationV1, ControllerCommand,
-    ControllerCommandFailure, ControllerCommandResponse, handle_controller_command,
+    AdmittedPublicAttachV1, AdmittedPublicMutationV1, ControllerCommand, ControllerCommandFailure,
+    ControllerCommandResponse, handle_controller_command,
 };
 mod publisher_credential;
 mod publisher_ingress;
@@ -229,11 +226,14 @@ struct ControllerBrokerSessions {
     nix_existing_outputs: bool,
     #[cfg(feature = "online-nix")]
     nix_input_source: Option<cache_directory_source::ProjectSealedViewObjectSourceV1>,
-    launch_image: Option<aos_sandbox_broker_session_security::controller_composition::Pid1LaunchImageV1>,
+    launch_image:
+        Option<aos_sandbox_broker_session_security::controller_composition::Pid1LaunchImageV1>,
     host: Option<ControllerHostPublication>,
     mount: Option<crate::DormantMountLifecycleInventoryOwnerV1>,
     storage: Option<crate::DormantStorageLifecycleInventoryOwnerV1>,
-    storage_cold: Option<aos_sandbox_broker_session_security::controller_composition::RetainedStorageColdOpenV1>,
+    storage_cold: Option<
+        aos_sandbox_broker_session_security::controller_composition::RetainedStorageColdOpenV1,
+    >,
     storage_terminal: Option<std::sync::Weak<ControllerWorkerCustodyV1>>,
     storage_root: guest_root::ControllerGuestRootExchangeV1,
     network: Option<crate::DormantNetworkLifecycleInventoryOwnerV1>,

@@ -1,7 +1,9 @@
 //! Decodes complete plain/FUSE/Nix historical Effect context through the canonical selector.
 
 use aos_sandbox_core::{PrincipalId, ProjectId};
-use crate::public_api::public_mutation_context::{InvalidPublicMutationContext, PublicMutationContextV1};
+use crate::public_api::public_mutation_context::{
+    InvalidPublicMutationContext, PublicMutationContextV1,
+};
 use super::EffectHistoryDataError;
 
 /// Retains recorded admission identity beside an exact public mutation envelope.
@@ -78,7 +80,8 @@ impl PublicMutationEffectHistoryV1 {
     /// invalid.
     pub fn validated_request(
         &self,
-    ) -> Result<crate::public_api::request::DormantSandboxRequestKindV1, EffectHistoryDataError> {
+    ) -> Result<crate::public_api::request::DormantSandboxRequestKindV1, EffectHistoryDataError>
+    {
         self.plain
             .validated_request()
             .map_err(invalid_public_mutation_context)
@@ -96,11 +99,13 @@ impl PublicMutationEffectHistoryV1 {
     pub fn decode(bytes: &[u8]) -> Result<Option<Self>, EffectHistoryDataError> {
         #[cfg(target_os = "linux")]
         return crate::public_api::mutation_history::decode_history(bytes)
-            .map(|parts| parts.map(|(plain, fuse_admission, nix_start)| Self {
-                plain,
-                fuse_admission,
-                nix_start,
-            }))
+            .map(|parts| {
+                parts.map(|(plain, fuse_admission, nix_start)| Self {
+                    plain,
+                    fuse_admission,
+                    nix_start,
+                })
+            })
             .map_err(|error| EffectHistoryDataError::InvalidPlan(error.reason()));
         #[cfg(not(target_os = "linux"))]
         Self::decode_plain(bytes)
@@ -108,13 +113,17 @@ impl PublicMutationEffectHistoryV1 {
 
     /// Returns retained FUSE history without constructing Native admission.
     #[cfg(target_os = "linux")]
-    pub fn fuse_admission(&self) -> Option<&crate::public_api::mutation_history::ControllerFuseAdmissionCarrierV1> {
+    pub fn fuse_admission(
+        &self,
+    ) -> Option<&crate::public_api::mutation_history::ControllerFuseAdmissionCarrierV1> {
         self.fuse_admission.as_ref()
     }
 
     /// Returns retained Start history without current build or floor readiness.
     #[cfg(target_os = "linux")]
-    pub fn nix_start(&self) -> Option<&crate::public_api::mutation_history::NixStartAdmissionCarrierV2> {
+    pub fn nix_start(
+        &self,
+    ) -> Option<&crate::public_api::mutation_history::NixStartAdmissionCarrierV2> {
         self.nix_start.as_ref()
     }
 
@@ -143,7 +152,6 @@ impl PublicMutationEffectHistoryV1 {
             .map_err(invalid_public_mutation_context)
     }
 }
-
 
 impl PublicMutationEffectHistoryV1 {
     /// Owns the supplied plain history without further validation or authority.
@@ -174,7 +182,8 @@ impl PublicMutationEffectHistoryV1 {
             &self.plain,
             self.fuse_admission.as_ref(),
             self.nix_start.as_ref(),
-        ).map_err(|error| EffectHistoryDataError::InvalidPlan(error.reason()));
+        )
+        .map_err(|error| EffectHistoryDataError::InvalidPlan(error.reason()));
         #[cfg(not(target_os = "linux"))]
         self.encode_plain()
     }
@@ -208,7 +217,10 @@ impl PublicMutationEffectHistoryV1 {
 
     /// Replaces only passive FUSE history after the caller's original checks.
     #[cfg(target_os = "linux")]
-    pub fn set_fuse_admission(&mut self, carrier: crate::public_api::mutation_history::ControllerFuseAdmissionCarrierV1) {
+    pub fn set_fuse_admission(
+        &mut self,
+        carrier: crate::public_api::mutation_history::ControllerFuseAdmissionCarrierV1,
+    ) {
         self.fuse_admission = Some(carrier);
     }
 
@@ -222,16 +234,21 @@ impl PublicMutationEffectHistoryV1 {
         carrier: crate::public_api::mutation_history::NixStartAdmissionCarrierV2,
     ) -> Result<Self, EffectHistoryDataError> {
         crate::public_api::mutation_history::require_nix_context(
-            &self.plain, self.fuse_admission.as_ref(), &carrier,
-        ).map_err(|error| EffectHistoryDataError::InvalidPlan(error.reason()))?;
+            &self.plain,
+            self.fuse_admission.as_ref(),
+            &carrier,
+        )
+        .map_err(|error| EffectHistoryDataError::InvalidPlan(error.reason()))?;
         self.nix_start = Some(carrier);
         Ok(self)
     }
 
     /// Replaces only passive Nix history after the caller's original checks.
     #[cfg(target_os = "linux")]
-    pub fn set_nix_start(&mut self, carrier: crate::public_api::mutation_history::NixStartAdmissionCarrierV2) {
+    pub fn set_nix_start(
+        &mut self,
+        carrier: crate::public_api::mutation_history::NixStartAdmissionCarrierV2,
+    ) {
         self.nix_start = Some(carrier);
     }
-
 }

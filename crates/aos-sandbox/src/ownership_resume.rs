@@ -22,8 +22,8 @@ use aos_sandbox_protocol::domain_ledger::ownership_gate::OwnershipGateStatusV1;
 
 use crate::{
     AuthorityPublicationError, AuthorityPublicationStore, OwnershipAuthorityVerifier,
-    OwnershipGateActivationOutcome, OwnershipLeaseAcquisitionError,
-    Reconciler, ReconcilerError, SingleNodeEffectExecutor,
+    OwnershipGateActivationOutcome, OwnershipLeaseAcquisitionError, Reconciler, ReconcilerError,
+    SingleNodeEffectExecutor,
 };
 
 const REQUIRED_METHODS: [OwnershipMethodV1; 3] = [
@@ -312,9 +312,9 @@ mod tests {
     use super::*;
     use crate::publication::tests::{activation_claim, descriptor_free_activation_fixture};
     use crate::{
-        ActivatedOperationCompiler, EffectFailure, EffectObservation,
-        IdempotencyKey, Journal, JournalLimits, NodeController, NodeControllerLimits,
-        OperationCompilationError, OperationPlan,
+        ActivatedOperationCompiler, EffectFailure, EffectObservation, IdempotencyKey, Journal,
+        JournalLimits, NodeController, NodeControllerLimits, OperationCompilationError,
+        OperationPlan,
     };
     use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
 

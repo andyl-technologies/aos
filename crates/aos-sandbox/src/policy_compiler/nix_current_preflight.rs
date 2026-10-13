@@ -95,17 +95,34 @@ const MAXIMUM_FRAME_HEADERS: usize = 22;
 const MAXIMUM_CANDIDATE_BYTES: usize = 8_388_608;
 
 type CurrentNixPeerCheck<'check> = dyn FnMut(
-    &aos_sandbox_linux::unix_stream::RetainedUnixStream,
-    Option<&aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk>,
-) -> Result<(), super::consumer_read_flight::TransportFault> + 'check;
+        &aos_sandbox_linux::unix_stream::RetainedUnixStream,
+        Option<&aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk>,
+    ) -> Result<(), super::consumer_read_flight::TransportFault>
+    + 'check;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CurrentNixPhaseV1 {
-    Hello = 1, Select = 2, RootArchive = 3, Deployment = 4,
-    Node = 5, Site = 6, Backend = 7, Catalog = 8, Project = 9,
-    ProjectInput = 10, RolePins = 11, Start = 12, Specification = 13,
-    Context = 15, Controller = 16, Source = 17, Derivation = 18,
-    Rejoin = 19, Finished = 20, Acknowledge = 21, Abort = 22,
+    Hello = 1,
+    Select = 2,
+    RootArchive = 3,
+    Deployment = 4,
+    Node = 5,
+    Site = 6,
+    Backend = 7,
+    Catalog = 8,
+    Project = 9,
+    ProjectInput = 10,
+    RolePins = 11,
+    Start = 12,
+    Specification = 13,
+    Context = 15,
+    Controller = 16,
+    Source = 17,
+    Derivation = 18,
+    Rejoin = 19,
+    Finished = 20,
+    Acknowledge = 21,
+    Abort = 22,
 }
 
 impl CurrentNixPhaseV1 {
@@ -176,7 +193,15 @@ impl CurrentNixCorrelationV1 {
 
 #[derive(Clone, Copy)]
 enum CurrentNixCarrierFailureV1 {
-    Correlation, Deadline, Open, Read(usize), Header(usize), Write(usize), Shutdown, Eof, Refusal,
+    Correlation,
+    Deadline,
+    Open,
+    Read(usize),
+    Header(usize),
+    Write(usize),
+    Shutdown,
+    Eof,
+    Refusal,
 }
 
 // One fixed frame vocabulary over the existing strict ancillary/native engine.
@@ -188,7 +213,8 @@ struct CurrentNixPreflightCarrierV1 {
     correlation: Option<Result<CurrentNixCorrelationV1, CurrentNixPreflightDataErrorV1>>,
     deadline: Option<Result<super::consumer_read_flight::Deadline, ConsumerReadFlightErrorV1>>,
     open: Option<Result<(), ConsumerReadFlightErrorV1>>,
-    reads: [Option<Result<usize, super::consumer_read_flight::TransportFault>>; MAXIMUM_FRAME_READS],
+    reads:
+        [Option<Result<usize, super::consumer_read_flight::TransportFault>>; MAXIMUM_FRAME_READS],
     headers: [Option<Result<usize, CurrentNixPreflightDataErrorV1>>; MAXIMUM_FRAME_HEADERS],
     sent_headers: [Option<[u8; FRAME_HEADER_BYTES]>; MAXIMUM_FRAME_HEADERS],
     writes: [Option<Result<(), super::consumer_read_flight::TransportFault>>; MAXIMUM_FRAME_WRITES],
@@ -364,8 +390,10 @@ pub struct CurrentNixRootArchiveAttemptV1 {
     pub(super) refusal: Option<SourceGenesisErrorV1>,
     pub(super) before: Option<Result<(), SourceGenesisErrorV1>>,
     pub(super) archive: Option<Result<CurrentNixRootArchiveDataV1, SourceGenesisErrorV1>>,
-    pub(super) controller: Option<Result<VerifiedCurrentNixControllerReceiptV1, CurrentNixPreflightDataErrorV1>>,
-    pub(super) source: Option<Result<VerifiedCurrentNixSourceObservationV1, CurrentNixPreflightDataErrorV1>>,
+    pub(super) controller:
+        Option<Result<VerifiedCurrentNixControllerReceiptV1, CurrentNixPreflightDataErrorV1>>,
+    pub(super) source:
+        Option<Result<VerifiedCurrentNixSourceObservationV1, CurrentNixPreflightDataErrorV1>>,
     pub(super) comparison: Option<Result<(), SourceGenesisErrorV1>>,
     pub(super) posts: [Option<Result<(), SourceGenesisErrorV1>>; 3],
     pub(super) used_posts: usize,
@@ -409,13 +437,15 @@ pub struct CurrentNixPreflightAttemptV1<'source> {
     paid_source_result: Option<Result<(), crate::ResourceReservationErrorV1>>,
     paid_source_refusal_first: bool,
     input: input::CurrentNixInputAttemptV1<'source>,
-    current_before: Option<Result<(), crate::production_operation_compiler::NixStartContinuationErrorV2>>,
+    current_before:
+        Option<Result<(), crate::production_operation_compiler::NixStartContinuationErrorV2>>,
     original_clock: Option<RawPairedClockSample>,
     original_deadline: u64,
     controller_sequence: u64,
     metadata: Option<Result<(), CurrentNixPreflightDataErrorV1>>,
     source_after_failed_entry: Option<Result<(), JournalError>>,
-    current_posts: [Option<Result<(), crate::production_operation_compiler::NixStartContinuationErrorV2>>; 3],
+    current_posts:
+        [Option<Result<(), crate::production_operation_compiler::NixStartContinuationErrorV2>>; 3],
     used_current_posts: usize,
     carrier: CurrentNixPreflightCarrierV1,
     context: Option<Result<CurrentNixPreflightContextV1, CurrentNixPreflightDataErrorV1>>,
@@ -434,13 +464,15 @@ pub struct CurrentNixPreflightOriginalsV1 {
     paid_source_result: Option<Result<(), crate::ResourceReservationErrorV1>>,
     paid_source_refusal_first: bool,
     input: input::CurrentNixInputOriginalsV1,
-    current_before: Option<Result<(), crate::production_operation_compiler::NixStartContinuationErrorV2>>,
+    current_before:
+        Option<Result<(), crate::production_operation_compiler::NixStartContinuationErrorV2>>,
     original_clock: Option<RawPairedClockSample>,
     original_deadline: u64,
     controller_sequence: u64,
     metadata: Option<Result<(), CurrentNixPreflightDataErrorV1>>,
     source_after_failed_entry: Option<Result<(), JournalError>>,
-    current_posts: [Option<Result<(), crate::production_operation_compiler::NixStartContinuationErrorV2>>; 3],
+    current_posts:
+        [Option<Result<(), crate::production_operation_compiler::NixStartContinuationErrorV2>>; 3],
     carrier: CurrentNixPreflightCarrierV1,
     context: Option<Result<CurrentNixPreflightContextV1, CurrentNixPreflightDataErrorV1>>,
     receipt: Option<PreparedCurrentNixControllerReceiptV1>,
@@ -454,13 +486,18 @@ struct CurrentNixPreflightFailureViewV1<'original> {
     paid_entry_refusal_first: bool,
     paid_source_result: &'original Option<Result<(), crate::ResourceReservationErrorV1>>,
     paid_source_refusal_first: bool,
-    current_before: &'original Option<Result<(), crate::production_operation_compiler::NixStartContinuationErrorV2>>,
+    current_before: &'original Option<
+        Result<(), crate::production_operation_compiler::NixStartContinuationErrorV2>,
+    >,
     metadata: &'original Option<Result<(), CurrentNixPreflightDataErrorV1>>,
     source_after_failed_entry: &'original Option<Result<(), JournalError>>,
     input_failure: Option<&'original (dyn std::error::Error + 'static)>,
     carrier: &'original CurrentNixPreflightCarrierV1,
-    context: &'original Option<Result<CurrentNixPreflightContextV1, CurrentNixPreflightDataErrorV1>>,
-    current_posts: &'original [Option<Result<(), crate::production_operation_compiler::NixStartContinuationErrorV2>>; 3],
+    context:
+        &'original Option<Result<CurrentNixPreflightContextV1, CurrentNixPreflightDataErrorV1>>,
+    current_posts: &'original [Option<
+        Result<(), crate::production_operation_compiler::NixStartContinuationErrorV2>,
+    >; 3],
     refusal: &'original Option<CurrentNixPreflightDataErrorV1>,
 }
 
@@ -556,11 +593,14 @@ impl<'source> CurrentNixPreflightAttemptV1<'source> {
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_core::source_tree_model::SandboxTreeRecordV1>()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(SandboxId, usize, [usize; 6])>()))
             .ok_or_else(refused)?;
-        let decoded_cells = controller.retained_bytes.checked_add(source.retained_bytes)
+        let decoded_cells = controller
+            .retained_bytes
+            .checked_add(source.retained_bytes)
             .and_then(|bytes| bytes.checked_add(1_048_576))
             .and_then(|bytes| bytes.checked_mul(4))
             .ok_or_else(refused)?;
-        let decoded_bytes = decoded_cells.checked_mul(decoded_cell_bytes)
+        let decoded_bytes = decoded_cells
+            .checked_mul(decoded_cell_bytes)
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(refused)?;
         let decoded_cells = u64::try_from(decoded_cells).map_err(|_| refused())?;
@@ -573,11 +613,41 @@ impl<'source> CurrentNixPreflightAttemptV1<'source> {
             .with(D::OpenFiles, 0)
             .with(D::StorageBytes, 0)
             .with(D::ConcurrentOperations, 0)
-            .with(D::MemoryBytes, copies.get(D::MemoryBytes).checked_add(decoded_bytes).ok_or_else(refused)?)
-            .with(D::MetadataEntries, copies.get(D::MetadataEntries).checked_add(decoded_cells).ok_or_else(refused)?)
-            .with(D::PublicationStagingBytes, copies.get(D::PublicationStagingBytes).checked_add(decoded_bytes).ok_or_else(refused)?)
-            .with(D::LogBytes, copies.get(D::LogBytes).checked_add(decoded_bytes).ok_or_else(refused)?)
-            .with(D::OutputBytes, copies.get(D::OutputBytes).checked_add(decoded_bytes).ok_or_else(refused)?))
+            .with(
+                D::MemoryBytes,
+                copies
+                    .get(D::MemoryBytes)
+                    .checked_add(decoded_bytes)
+                    .ok_or_else(refused)?,
+            )
+            .with(
+                D::MetadataEntries,
+                copies
+                    .get(D::MetadataEntries)
+                    .checked_add(decoded_cells)
+                    .ok_or_else(refused)?,
+            )
+            .with(
+                D::PublicationStagingBytes,
+                copies
+                    .get(D::PublicationStagingBytes)
+                    .checked_add(decoded_bytes)
+                    .ok_or_else(refused)?,
+            )
+            .with(
+                D::LogBytes,
+                copies
+                    .get(D::LogBytes)
+                    .checked_add(decoded_bytes)
+                    .ok_or_else(refused)?,
+            )
+            .with(
+                D::OutputBytes,
+                copies
+                    .get(D::OutputBytes)
+                    .checked_add(decoded_bytes)
+                    .ok_or_else(refused)?,
+            ))
     }
 
     /// Prearms original capture and flight destinations without any observation.
@@ -764,10 +834,17 @@ pub struct CurrentNixRootPreflightAttemptV1<'startup> {
     carrier: Option<CurrentNixPreflightCarrierV1>,
     bootstrap: Option<[u8; 32]>,
     startup: Option<Result<(), crate::normal_root::NormalRootStartupErrorV1>>,
-    peer: Option<Result<crate::normal_root::OriginalControllerPolicyPeerV1<'startup>,
-        crate::normal_root::NormalRootStartupErrorV1>>,
+    peer: Option<
+        Result<
+            crate::normal_root::OriginalControllerPolicyPeerV1<'startup>,
+            crate::normal_root::NormalRootStartupErrorV1,
+        >,
+    >,
     policy_opening: super::resolved_policy::CurrentNixPolicyOpeningV1,
-    policy: Option<(super::PolicyCompilerStateReadbackOwnerV1, crate::RecoveryReport)>,
+    policy: Option<(
+        super::PolicyCompilerStateReadbackOwnerV1,
+        crate::RecoveryReport,
+    )>,
     root_opening: super::RootFirstSourceSuccessorOpeningV2,
     root: Option<super::RootSourceGenesisAuthorityV1>,
     transport_root_check: Option<Result<(), SourceGenesisErrorV1>>,
@@ -776,12 +853,20 @@ pub struct CurrentNixRootPreflightAttemptV1<'startup> {
     archive: CurrentNixRootArchiveAttemptV1,
     selection: Option<Result<[u8; 48], CurrentNixPreflightDataErrorV1>>,
     context: Option<Result<CurrentNixPreflightContextV1, CurrentNixPreflightDataErrorV1>>,
-    start: Option<Result<Option<crate::production_operation_compiler::NixStartAdmissionCarrierV2>,
-        crate::production_operation_compiler::NixStartAdmissionErrorV2>>,
-    manifest: Option<Result<aos_sandbox_core::CanonicalAssignmentManifestV1,
-        aos_sandbox_core::CanonicalCborError>>,
-    received_specification: Option<Result<aos_sandbox_core::model::SandboxSpec,
-        aos_sandbox_core::CanonicalCborError>>,
+    start: Option<
+        Result<
+            Option<crate::production_operation_compiler::NixStartAdmissionCarrierV2>,
+            crate::production_operation_compiler::NixStartAdmissionErrorV2,
+        >,
+    >,
+    manifest: Option<
+        Result<
+            aos_sandbox_core::CanonicalAssignmentManifestV1,
+            aos_sandbox_core::CanonicalCborError,
+        >,
+    >,
+    received_specification:
+        Option<Result<aos_sandbox_core::model::SandboxSpec, aos_sandbox_core::CanonicalCborError>>,
     association: Option<Result<(), CurrentNixPreflightDataErrorV1>>,
     policy_posts: [Option<Result<(), super::PolicyCompilerJournalErrorV1>>; 4],
     root_posts: [Option<Result<(), SourceGenesisErrorV1>>; 4],

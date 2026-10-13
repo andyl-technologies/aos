@@ -13,7 +13,6 @@ pub struct BrokerDispatchAttemptHistoryV1 {
     pub(super) packet: Vec<u8>,
 }
 
-
 impl BrokerDispatchAttemptHistoryV1 {
     /// Returns the recorded template digest.
     #[must_use]
@@ -73,8 +72,6 @@ impl BrokerDispatchAttemptHistoryV1 {
     }
 }
 
-
-
 /// Owns retained dispatch commitments and preparation timing for an effect.
 #[derive(Clone, Eq, PartialEq)]
 pub struct PreparedAuthorityEffectHistoryV1 {
@@ -85,7 +82,6 @@ pub struct PreparedAuthorityEffectHistoryV1 {
     pub(super) preparation_host_boot_id: [u8; 16],
     pub(super) attempt: BrokerDispatchAttemptHistoryV1,
 }
-
 
 impl PreparedAuthorityEffectHistoryV1 {
     /// Owns supplied binding, publication, preparation timing and attempt history.
@@ -147,14 +143,16 @@ impl PreparedAuthorityEffectHistoryV1 {
     }
 }
 
-
 impl std::fmt::Debug for BrokerDispatchAttemptHistoryV1 {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut fields = formatter.debug_struct("BrokerDispatchAttemptV1");
         fields.field("template_digest", &self.template_digest);
         fields.field("lease_digest", &self.lease_digest);
         fields.field("lease_generation", &self.lease_generation);
-        fields.field("deadline_boottime_nanoseconds", &self.deadline_boottime_nanoseconds);
+        fields.field(
+            "deadline_boottime_nanoseconds",
+            &self.deadline_boottime_nanoseconds,
+        );
         fields.field("body", &self.body);
         fields.field("packet", &self.packet);
         fields.finish()
@@ -167,7 +165,10 @@ impl std::fmt::Debug for PreparedAuthorityEffectHistoryV1 {
         fields.field("binding_digest", &self.binding_digest);
         fields.field("publication_digest", &self.publication_digest);
         fields.field("preparation_wall_seconds", &self.preparation_wall_seconds);
-        fields.field("preparation_boottime_nanoseconds", &self.preparation_boottime_nanoseconds);
+        fields.field(
+            "preparation_boottime_nanoseconds",
+            &self.preparation_boottime_nanoseconds,
+        );
         fields.field("preparation_host_boot_id", &self.preparation_host_boot_id);
         fields.field("attempt", &self.attempt);
         fields.finish()

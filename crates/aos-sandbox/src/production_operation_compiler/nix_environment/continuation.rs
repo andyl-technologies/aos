@@ -22,8 +22,8 @@ use aos_proto::aos::sandbox::local::v1::{
 use super::*;
 use crate::cli_model::authorization_adapter::{
     CliAuthorizationAdapterError, CurrentCapabilityDecisionV1,
-    evaluate_current_protected_capability,
-    evaluate_current_protected_capability_retained, RetainedAuthorizationTimeFloorV1,
+    evaluate_current_protected_capability, evaluate_current_protected_capability_retained,
+    RetainedAuthorizationTimeFloorV1,
 };
 use crate::controller::ControllerProtectedClockV1;
 use crate::journal::controller::{ControllerJournalError, validate_controller_journal};

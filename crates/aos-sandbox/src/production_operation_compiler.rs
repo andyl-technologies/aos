@@ -50,12 +50,11 @@ mod nix_environment;
 #[cfg(target_os = "linux")]
 pub use nix_environment::{
     ControllerNixGenerationOriginalV1, NixGenerationOriginalErrorV1,
-    StorageGenerationPreparationDraftV1,
-    ControllerNixPublicDataLoanV2, ControllerNixSelectorAdmissionV2,
-    ControllerNixSelectorFailureRefV2,
+    StorageGenerationPreparationDraftV1, ControllerNixPublicDataLoanV2,
+    ControllerNixSelectorAdmissionV2, ControllerNixSelectorFailureRefV2,
     ControllerNixStartRecipeSelectorV2, CurrentRetainedNixStartV2, NixResolveAuthorizationDraftV2,
-    NixStartAdmissionErrorV2,
-    NixStartContinuationErrorV2, NixFixedDomainPinsDataV2, NixFixedDomainPinsDecodeErrorV2,
+    NixStartAdmissionErrorV2, NixStartContinuationErrorV2, NixFixedDomainPinsDataV2,
+    NixFixedDomainPinsDecodeErrorV2,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use nix_environment::{
@@ -1052,8 +1051,7 @@ mod renewal_replay_tests {
     use super::*;
     use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
     use crate::reconciler::{
-        AcceptOutcome, EffectFailure, EffectObservation, Reconciler,
-        SingleNodeEffectExecutor,
+        AcceptOutcome, EffectFailure, EffectObservation, Reconciler, SingleNodeEffectExecutor,
     };
     use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
     use crate::{IdempotencyKey, JournalLimits};

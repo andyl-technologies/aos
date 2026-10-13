@@ -5,9 +5,7 @@
 //! This is desired state only: later source-acquisition and Mount attachment
 //! transactions must prove the physical state before any public Ready result.
 
-use aos_proto::aos::sandbox::v1::{
-    AttachViewRequest, Attachment, ViewMutation as PublicViewMutation,
-};
+use aos_proto::aos::sandbox::v1::{AttachViewRequest, Attachment, ViewMutation as PublicViewMutation};
 use aos_sandbox::Journal;
 use aos_sandbox::attachment_effect_owner::ProtectedAttachmentEffectOwnerV1;
 use aos_sandbox::attachment_state::{AttachmentDesiredMutationV1, AttachmentDesiredPresenceV1};
@@ -28,9 +26,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::attachment_target::ControllerAttachmentTargetInputsV1;
 use super::view_mutations::portable_descriptor;
-use super::{
-    EffectFailure, ProductionEffectExecutor, sample_ownership_clock,
-};
+use super::{EffectFailure, ProductionEffectExecutor, sample_ownership_clock};
 use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 

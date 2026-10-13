@@ -24,9 +24,7 @@ use aos_sandbox_core::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::{
-    EffectFailure, EffectObservation, Journal, OperationId,
-};
+use super::{EffectFailure, EffectObservation, Journal, OperationId};
 use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
 use super::cache_directory_source::ProjectSealedViewObjectSourceV1;
@@ -278,7 +276,9 @@ fn release_receipt(
     bytes.extend_from_slice(RELEASE_RECEIPT_MAGIC);
     bytes.extend_from_slice(operation_id.as_bytes());
     bytes.extend_from_slice(revision_digest.as_bytes());
-    EffectReceipt::new(bytes).map_err(aos_sandbox::ReconcilerError::from).map_err(permanent)
+    EffectReceipt::new(bytes)
+        .map_err(aos_sandbox::ReconcilerError::from)
+        .map_err(permanent)
 }
 
 fn accepted_creation(
@@ -399,7 +399,9 @@ fn create_receipt(
     bytes.extend_from_slice(CREATE_RECEIPT_MAGIC);
     bytes.extend_from_slice(operation_id.as_bytes());
     bytes.extend_from_slice(revision_digest.as_bytes());
-    EffectReceipt::new(bytes).map_err(aos_sandbox::ReconcilerError::from).map_err(permanent)
+    EffectReceipt::new(bytes)
+        .map_err(aos_sandbox::ReconcilerError::from)
+        .map_err(permanent)
 }
 
 fn permanent(error: impl ToString) -> EffectFailure {

@@ -38,11 +38,14 @@ use crate::runtime_execution::no_apply_settlement::HostSettlementRecordV1;
 
 use prepare::{CreateFailurePrepareV1, load_floor, record_digest};
 
-use super::{ OperationRecord, OperationState, Reconciler, ReconcilerError,
-    SingleNodeEffectExecutor, decode_operation, effect_key,
-    encode_operation_record, recovered_public_operation_admission_v1, transition_operation,
+use super::{
+    OperationRecord, OperationState, Reconciler, ReconcilerError, SingleNodeEffectExecutor,
+    decode_operation, effect_key, encode_operation_record, recovered_public_operation_admission_v1,
+    transition_operation,
 };
-use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt, EffectState, decode_effect, encode_effect};
+use aos_sandbox_protocol::domain_ledger::effect_history::{
+    EffectReceipt, EffectState, decode_effect, encode_effect,
+};
 
 const MAGIC: &[u8; 8] = b"AOSCFB01";
 const DOMAIN: &[u8] = b"aos.sandbox.create-failed-before-commit.v1\0";
@@ -413,8 +416,10 @@ fn validate_accepted_create_identity(
     operation_id: OperationId,
     execution: &aos_proto::aos::sandbox::v1::Execution,
 ) -> Result<(), ReconcilerError> {
-    let context = effect.plan()
-        .public_mutation_context().map_err(ReconcilerError::from)?
+    let context = effect
+        .plan()
+        .public_mutation_context()
+        .map_err(ReconcilerError::from)?
         .ok_or_else(invalid_settlement)?;
     let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Exec(request) =
         context.validated_request().map_err(ReconcilerError::from)?
@@ -451,7 +456,9 @@ pub(super) fn validate_failed_create_operation(
             let bytes = journal
                 .get(RecordNamespace::Effect, &effect_key(operation_id, step))
                 .ok_or_else(invalid_settlement)?;
-            let effect = decode_effect(bytes).map_err(ReconcilerError::from)?.into_parts();
+            let effect = decode_effect(bytes)
+                .map_err(ReconcilerError::from)?
+                .into_parts();
             if let EffectState::Applied { receipt, .. } = effect.1 {
                 if super::create_failure_receipt(&receipt)
                     .map_err(|()| invalid_settlement())?
@@ -469,8 +476,7 @@ pub(super) fn validate_failed_create_operation(
     let effect = decode_effect(bytes).map_err(ReconcilerError::from)?;
     let (receipt, effect_attempt) = match effect.state() {
         EffectState::Applied { attempt, receipt } => (
-            super::create_failure_receipt(receipt)
-                .map_err(|()| invalid_settlement())?,
+            super::create_failure_receipt(receipt).map_err(|()| invalid_settlement())?,
             *attempt,
         ),
         _ => (None, 0),
@@ -776,7 +782,9 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
             // The old state dies before the remaining fields are reassembled.
             let mut parts = effect.into_parts();
             parts.1 = state;
-            aos_sandbox_protocol::domain_ledger::effect_history::EffectLedgerRecord::from_parts(parts)
+            aos_sandbox_protocol::domain_ledger::effect_history::EffectLedgerRecord::from_parts(
+                parts,
+            )
         };
         let (desired_key, desired_value) = successor.into_desired_state();
         let predecessor_desired = self

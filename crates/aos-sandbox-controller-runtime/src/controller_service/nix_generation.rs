@@ -12,9 +12,8 @@ use std::sync::Arc;
 
 use aos_proto::aos::sandbox::local::v1::{BrokerMethod, PrepareStorageCatalogResponse};
 use aos_sandbox::production_operation_compiler::{
-    ControllerNixGenerationOriginalV1, CurrentRetainedNixStartV2,
-    NixGenerationOriginalErrorV1, NixStartContinuationErrorV2,
-    StorageGenerationPreparationDraftV1,
+    ControllerNixGenerationOriginalV1, CurrentRetainedNixStartV2, NixGenerationOriginalErrorV1,
+    NixStartContinuationErrorV2, StorageGenerationPreparationDraftV1,
 };
 use aos_sandbox::{EffectFailure, EffectObservation};
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
@@ -65,10 +64,12 @@ pub(crate) struct NixGenerationAttemptV1 {
     draft: Option<StorageGenerationPreparationDraftV1>,
     signed: Option<Result<SignedBrokerPlan, ControllerBrokerPlanSignerError>>,
     exchange: ControllerStorageGenerationExchangeV1,
-    response: Option<Result<
-        aos_sandbox_protocol::semantics::CatalogBindingV1,
-        aos_sandbox_protocol::ProtocolValidationError,
-    >>,
+    response: Option<
+        Result<
+            aos_sandbox_protocol::semantics::CatalogBindingV1,
+            aos_sandbox_protocol::ProtocolValidationError,
+        >,
+    >,
     first: Option<GenerationFailureV1>,
     postcheck_debt: Option<GenerationFailureV1>,
     clock_debt: Option<NixStartContinuationErrorV2>,

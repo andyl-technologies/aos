@@ -11,12 +11,18 @@ mod context;
 mod dispatch;
 mod model;
 
-pub use codec::{decode_effect, encode_effect, effect_body_digest, effect_binding_digest, attempt_token_digest, audience_code, audience_from_code};
+pub use codec::{
+    decode_effect, encode_effect, effect_body_digest, effect_binding_digest, attempt_token_digest,
+    audience_code, audience_from_code,
+};
 #[cfg(target_os = "linux")]
 pub use codec::{decode_effect_with_q04, encode_q04_effect, q04_effect_subgate};
 pub use context::PublicMutationEffectHistoryV1;
 pub use dispatch::{BrokerDispatchAttemptHistoryV1, PreparedAuthorityEffectHistoryV1};
-pub use model::{AuthorityEffectBindingV1, EffectDomain, EffectPlan, EffectReceipt, EffectState, EffectLedgerRecord};
+pub use model::{
+    AuthorityEffectBindingV1, EffectDomain, EffectPlan, EffectReceipt, EffectState,
+    EffectLedgerRecord,
+};
 
 /// Bounds the complete encoded effect request to one MiB.
 pub const MAXIMUM_REQUEST_BYTES: usize = 1024 * 1024;
@@ -51,8 +57,12 @@ pub enum EffectHistoryDataError {
     InvalidExecutorOutput(&'static str),
 }
 
-impl From<crate::domain_ledger::project_admission_metadata::ProjectAdmissionMetadataDataErrorV1> for EffectHistoryDataError {
-    fn from(error: crate::domain_ledger::project_admission_metadata::ProjectAdmissionMetadataDataErrorV1) -> Self {
+impl From<crate::domain_ledger::project_admission_metadata::ProjectAdmissionMetadataDataErrorV1>
+    for EffectHistoryDataError
+{
+    fn from(
+        error: crate::domain_ledger::project_admission_metadata::ProjectAdmissionMetadataDataErrorV1,
+    ) -> Self {
         match error {
             crate::domain_ledger::project_admission_metadata::ProjectAdmissionMetadataDataErrorV1::InvalidMetadata =>
                 Self::CorruptLedger("invalid Controller project-admission metadata"),

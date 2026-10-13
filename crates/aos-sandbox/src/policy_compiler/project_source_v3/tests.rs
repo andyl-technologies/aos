@@ -296,7 +296,8 @@ fn admit_create(
     let effect = {
         let selected_method = PublicOperationMethodV1::CreateSandbox;
         (PublicMutationEffectV1::new(caller, project, 100, envelope)
-            .expect("original effect context")).into_plan(selected_method)
+            .expect("original effect context"))
+        .into_plan(selected_method)
     }
     .expect("exact Create effect");
     let timestamp = Timestamp {

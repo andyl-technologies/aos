@@ -27,17 +27,15 @@ use aos_sandbox_protocol::public_api::projection::{
 };
 use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 #[cfg(target_os = "linux")]
-use crate::public_attach_pending::{
-    PublicAttachHostQueryDraftV1, prepare_public_attach_host_query_v1,
-};
+use crate::public_attach_pending::{PublicAttachHostQueryDraftV1, prepare_public_attach_host_query_v1};
 #[cfg(target_os = "linux")]
 use crate::public_attach_pending::{PublicAttachPendingV1, reserve_public_attach_pending_v1};
 use crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1;
 #[cfg(target_os = "linux")]
 use crate::publication::AuthorityPublicationStore;
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
-use crate::{ IdempotencyOutcome, Journal, OperationCompilationError, OperationPlan,
-    PublicMutationEffectV1,
+use crate::{
+    IdempotencyOutcome, Journal, OperationCompilationError, OperationPlan, PublicMutationEffectV1,
 };
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, PublicMutationEffectHistoryV1};
 
@@ -698,29 +696,33 @@ fn replay_public_mutation(
     canonical_request: &[u8],
     request_digest: [u8; 32],
     operation_id: OperationId,
-    #[cfg(target_os = "linux")]
-    nix_start: Option<&super::ControllerNixStartRecipeSelectorV2>,
+    #[cfg(target_os = "linux")] nix_start: Option<&super::ControllerNixStartRecipeSelectorV2>,
 ) -> Result<OperationPlan, OperationCompilationError> {
     #[cfg(target_os = "linux")]
     if matches!(authorized.request().request(), Request::Start(_)) {
         // Read the retained original BEFORE any fresh selection or ordinary
         // replay fallback. A current decision cannot renew these originals.
-        if let Some(carrier) = crate::reconciler::accepted_nix_start_admission_v2(journal, operation_id)
-            .map_err(|_| OperationCompilationError::Rejected)?
+        if let Some(carrier) =
+            crate::reconciler::accepted_nix_start_admission_v2(journal, operation_id)
+                .map_err(|_| OperationCompilationError::Rejected)?
         {
             let selector = nix_start.ok_or(OperationCompilationError::Rejected)?;
-            let authority = authorized.checked_start_authority().map_err(|_| OperationCompilationError::Rejected)?;
+            let authority = authorized
+                .checked_start_authority()
+                .map_err(|_| OperationCompilationError::Rejected)?;
             if carrier.request_digest() != request_digest
                 || authority.original_request() != canonical_request
             {
                 return Err(OperationCompilationError::Rejected);
             }
-            selector.recheck_retained(journal, &carrier, authority)
+            selector
+                .recheck_retained(journal, &carrier, authority)
                 .map_err(|_| OperationCompilationError::Rejected)?;
             let (desired_key, desired_value) = carrier.desired();
             let desired_key = desired_key.to_vec();
             let desired_value = desired_value.to_vec();
-            let context = PublicMutationEffectHistoryV1::decode_plain(carrier.ordinary_effect()).map_err(crate::ReconcilerError::from)
+            let context = PublicMutationEffectHistoryV1::decode_plain(carrier.ordinary_effect())
+                .map_err(crate::ReconcilerError::from)
                 .map_err(|_| OperationCompilationError::Rejected)?
                 .ok_or(OperationCompilationError::Rejected)?
                 .with_nix_start(carrier).map_err(crate::ReconcilerError::from).map_err(|_| OperationCompilationError::Rejected)?;
@@ -730,10 +732,16 @@ fn replay_public_mutation(
                 .map_err(|_| OperationCompilationError::Rejected)?
                 .ok_or(OperationCompilationError::Rejected)?;
             return OperationPlan::new(
-                operation_id, authorized.request().idempotency_key().clone(), request_digest,
-                desired_key, desired_value, vec![effect],
-            ).map_err(|_| OperationCompilationError::Rejected)?
-                .with_public_operation(public).map_err(|_| OperationCompilationError::Rejected);
+                operation_id,
+                authorized.request().idempotency_key().clone(),
+                request_digest,
+                desired_key,
+                desired_value,
+                vec![effect],
+            )
+            .map_err(|_| OperationCompilationError::Rejected)?
+            .with_public_operation(public)
+            .map_err(|_| OperationCompilationError::Rejected);
         }
         if nix_start.is_some() {
             return Err(OperationCompilationError::Rejected);
@@ -764,7 +772,8 @@ fn replay_public_mutation(
         crate::reconciler::accepted_fuse_admission_v1(journal, operation_id)
             .map_err(|_| OperationCompilationError::Rejected)?
     {
-        let original = PublicMutationEffectHistoryV1::decode_plain(carrier.ordinary_effect()).map_err(crate::ReconcilerError::from)
+        let original = PublicMutationEffectHistoryV1::decode_plain(carrier.ordinary_effect())
+            .map_err(crate::ReconcilerError::from)
             .map_err(|_| OperationCompilationError::Rejected)?
             .ok_or(OperationCompilationError::Rejected)?;
         if original.caller() != authorized.caller()
@@ -788,7 +797,8 @@ fn replay_public_mutation(
         .into_history()
     };
     let effect =
-        EffectPlan::from_public_mutation_context(authorized.request().operation_method(), context).map_err(crate::ReconcilerError::from)
+        EffectPlan::from_public_mutation_context(authorized.request().operation_method(), context)
+            .map_err(crate::ReconcilerError::from)
             .map_err(|_| OperationCompilationError::Rejected)?;
 
     OperationPlan::new(
@@ -812,8 +822,7 @@ fn operation_plan(
     request_digest: [u8; 32],
     canonical_request: &[u8],
     desired: (Vec<u8>, Vec<u8>),
-    #[cfg(target_os = "linux")]
-    nix_start: Option<&super::ControllerNixStartRecipeSelectorV2>,
+    #[cfg(target_os = "linux")] nix_start: Option<&super::ControllerNixStartRecipeSelectorV2>,
 ) -> Result<OperationPlan, OperationCompilationError> {
     let context = PublicMutationEffectV1::new(
         authorized.caller(),
@@ -845,22 +854,30 @@ fn operation_plan(
     #[cfg(target_os = "linux")]
     let context = if matches!(authorized.request().request(), Request::Start(_)) {
         if let Some(selector) = nix_start {
-            let carrier = selector.prepare_vacant(
-                journal, authorized, operation_id, request_digest, &context, &desired,
-            ).map_err(|_| OperationCompilationError::Rejected)?;
-            context.with_nix_start(carrier).map_err(|_| OperationCompilationError::Rejected)?
+            let carrier = selector
+                .prepare_vacant(
+                    journal,
+                    authorized,
+                    operation_id,
+                    request_digest,
+                    &context,
+                    &desired,
+                )
+                .map_err(|_| OperationCompilationError::Rejected)?;
+            context
+                .with_nix_start(carrier)
+                .map_err(|_| OperationCompilationError::Rejected)?
         } else {
             context
         }
     } else {
         context
     };
-    let effect =
-        {
-            let method = authorized.request().operation_method();
-            context.into_plan(method)
-        }
-            .map_err(|_| OperationCompilationError::Rejected)?;
+    let effect = {
+        let method = authorized.request().operation_method();
+        context.into_plan(method)
+    }
+    .map_err(|_| OperationCompilationError::Rejected)?;
     let plan = OperationPlan::new(
         operation_id,
         authorized.request().idempotency_key().clone(),

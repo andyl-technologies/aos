@@ -293,8 +293,12 @@ impl BrokerDispatchAttemptV1 {
         )?;
         Ok(Self {
             history: BrokerDispatchAttemptHistoryV1::from_durable_parts(
-                template.digest(), lease.digest(), lease.generation(),
-                deadline_boottime_nanoseconds, body, packet,
+                template.digest(),
+                lease.digest(),
+                lease.generation(),
+                deadline_boottime_nanoseconds,
+                body,
+                packet,
             ),
         })
     }
@@ -385,8 +389,12 @@ impl BrokerDispatchAttemptV1 {
         )?;
         Ok(Self {
             history: BrokerDispatchAttemptHistoryV1::from_durable_parts(
-                template.digest(), lease.digest(), lease.generation(),
-                deadline_boottime_nanoseconds, body, packet,
+                template.digest(),
+                lease.digest(),
+                lease.generation(),
+                deadline_boottime_nanoseconds,
+                body,
+                packet,
             ),
         })
     }
@@ -471,8 +479,12 @@ impl BrokerDispatchAttemptV1 {
         )?;
         Ok(Self {
             history: BrokerDispatchAttemptHistoryV1::from_durable_parts(
-                template.digest(), lease.digest(), recovered_lease.lease_generation(),
-                deadline_boottime_nanoseconds, body, packet,
+                template.digest(),
+                lease.digest(),
+                recovered_lease.lease_generation(),
+                deadline_boottime_nanoseconds,
+                body,
+                packet,
             ),
         })
     }
@@ -604,8 +616,12 @@ impl BrokerDispatchAttemptV1 {
         )?;
         Ok(Self {
             history: BrokerDispatchAttemptHistoryV1::from_durable_parts(
-                template.digest(), lease.digest(), recovered_lease.lease_generation(),
-                deadline_boottime_nanoseconds, body, packet,
+                template.digest(),
+                lease.digest(),
+                recovered_lease.lease_generation(),
+                deadline_boottime_nanoseconds,
+                body,
+                packet,
             ),
         })
     }
@@ -645,9 +661,7 @@ impl BrokerDispatchAttemptV1 {
     pub fn packet(&self) -> &[u8] {
         self.history.packet()
     }
-
 }
-
 
 impl BrokerDispatchAttemptV1 {
     pub(crate) const fn history(&self) -> &BrokerDispatchAttemptHistoryV1 {
@@ -1529,9 +1543,6 @@ mod tests {
         assert_eq!(decoded.body(), attempt.body());
     }
 
-
-
-
     #[test]
     fn lease_context_expiry_and_deadline_are_fail_closed() {
         let base = fixture();
@@ -1594,5 +1605,4 @@ mod tests {
             Err(BrokerDispatchAttemptError::LeaseContextMismatch)
         );
     }
-
 }

@@ -365,7 +365,7 @@ impl ControllerExecutionIntentV1 {
 mod tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-    use aos_sandbox::{ JournalLimits};
+    use aos_sandbox::{JournalLimits};
     use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
     use aos_sandbox_core::{NodeId, ProjectId};
     use aos_sandbox_protocol::host_execution::HostExecutionTerminalResultV1;

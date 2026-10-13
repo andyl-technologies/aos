@@ -8,15 +8,15 @@
 //! joins the actual Root floor, fresh signatures and complete derivation.
 
 use aos_sandbox_core::{
-    CanonicalAssignmentManifestV1, ObjectDescriptor, ObjectDigest, PortableMediaType,
-    ProjectId, SandboxId, descriptor_for_bytes, MediaType,
+    CanonicalAssignmentManifestV1, ObjectDescriptor, ObjectDigest, PortableMediaType, ProjectId,
+    SandboxId, descriptor_for_bytes, MediaType,
 };
 
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox_core::source_tree_model::SandboxTreeRecordV1;
 use crate::hierarchy::protected_journal::{
-    CurrentNixSourceInventoryAttemptV1, CurrentNixSourceInventoryDataV1, HierarchyProtectedJournalErrorV1,
-    capture_current_nix_inventory_v1,
+    CurrentNixSourceInventoryAttemptV1, CurrentNixSourceInventoryDataV1,
+    HierarchyProtectedJournalErrorV1, capture_current_nix_inventory_v1,
 };
 use crate::journal::ProtectedJournalNamesV1;
 use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
@@ -210,7 +210,10 @@ impl<'source> CurrentNixInputAttemptV1<'source> {
 
         self.controller_names = Some(controller.protected_writer_physical_names_v1());
         self.carrier = Some(original.encode().map_err(NixStartAdmissionErrorV2::from));
-        self.context = Some(PublicMutationEffectHistoryV1::decode_plain(original.ordinary_effect()).map_err(ReconcilerError::from));
+        self.context = Some(
+            PublicMutationEffectHistoryV1::decode_plain(original.ordinary_effect())
+                .map_err(ReconcilerError::from),
+        );
         if let Some(Ok(Some(context))) = self.context.as_ref() {
             self.request = Some(context.validated_request().map_err(ReconcilerError::from));
         }
@@ -226,7 +229,11 @@ impl<'source> CurrentNixInputAttemptV1<'source> {
         }
 
         self.inventory = Some(capture_current_nix_inventory_v1(source));
-        if let Some(inventory) = self.inventory.as_ref().filter(|owner| owner.first_error().is_none()) {
+        if let Some(inventory) = self
+            .inventory
+            .as_ref()
+            .filter(|owner| owner.first_error().is_none())
+        {
             self.target = Some(select_parentless_target(
                 inventory,
                 original_binding.manifest(),
@@ -240,7 +247,11 @@ impl<'source> CurrentNixInputAttemptV1<'source> {
         if let Some(inventory) = self.inventory.as_ref() {
             self.source_post = Some(inventory.recheck());
         }
-        if self.failure().is_some() { Err(()) } else { Ok(()) }
+        if self.failure().is_some() {
+            Err(())
+        } else {
+            Ok(())
+        }
     }
 
     fn compare_original(

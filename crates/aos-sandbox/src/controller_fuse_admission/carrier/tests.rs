@@ -14,11 +14,13 @@ use super::*;
 use crate::controller_fuse_admission::AcceptedControllerFuseAdmissionV1;
 use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use crate::{
-    EffectFailure, EffectObservation, IdempotencyKey, JournalLimits,
-    JournalRecord, JournalTransaction, OperationPlan, PublicOperationAdmissionV1,
-    PublicOperationAuthorizationV1, Reconciler, RecordNamespace, SingleNodeEffectExecutor,
+    EffectFailure, EffectObservation, IdempotencyKey, JournalLimits, JournalRecord,
+    JournalTransaction, OperationPlan, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
+    Reconciler, RecordNamespace, SingleNodeEffectExecutor,
 };
-use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt, PublicMutationEffectHistoryV1};
+use aos_sandbox_protocol::domain_ledger::effect_history::{
+    EffectPlan, EffectReceipt, PublicMutationEffectHistoryV1,
+};
 
 use aos_sandbox_protocol as protocol;
 #[path = "../../../../aos-sandbox-protocol/src/public_api/mutation_history/fuse/tests/fixture.rs"]
@@ -62,16 +64,21 @@ fn admit(
     legacy: bool,
 ) -> Reconciler<NoDispatch> {
     let mut reconciler = Reconciler::new(journal, NoDispatch);
-    let context = PublicMutationEffectHistoryV1::decode_plain(carrier.ordinary_effect()).map_err(crate::ReconcilerError::from)
+    let context = PublicMutationEffectHistoryV1::decode_plain(carrier.ordinary_effect())
+        .map_err(crate::ReconcilerError::from)
         .unwrap()
         .unwrap();
     let context = if legacy {
         context
     } else {
-        context.with_fuse_admission(carrier.clone().into_history()).map_err(crate::ReconcilerError::from).unwrap()
+        context
+            .with_fuse_admission(carrier.clone().into_history())
+            .map_err(crate::ReconcilerError::from)
+            .unwrap()
     };
     let effect =
-        EffectPlan::from_public_mutation_context(PublicOperationMethodV1::AttachView, context).map_err(crate::ReconcilerError::from)
+        EffectPlan::from_public_mutation_context(PublicOperationMethodV1::AttachView, context)
+            .map_err(crate::ReconcilerError::from)
             .unwrap();
     let plan = OperationPlan::new(
         carrier.operation(),

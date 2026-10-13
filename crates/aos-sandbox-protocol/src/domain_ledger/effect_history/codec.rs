@@ -10,8 +10,9 @@ use aos_sandbox_core::{BrokerAudience, ObjectDigest, OperationId};
 use sha2::{Digest as _, Sha256};
 use super::*;
 use super::model::*;
-use crate::domain_ledger::project_admission_metadata::{MAXIMUM_RECORD_BYTES, ProjectAdmissionMetadataV1 as ProjectAdmissionMetadata};
-
+use crate::domain_ledger::project_admission_metadata::{
+    MAXIMUM_RECORD_BYTES, ProjectAdmissionMetadataV1 as ProjectAdmissionMetadata,
+};
 
 /// Checks the closed broker method against its fixed effect domain.
 ///
@@ -46,7 +47,9 @@ pub fn validate_broker_method_domain(
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => EffectDomain::Network,
         _ => {
-            return Err(EffectHistoryDataError::InvalidPlan("unknown broker effect method"));
+            return Err(EffectHistoryDataError::InvalidPlan(
+                "unknown broker effect method",
+            ));
         }
     };
     if domain != expected {
@@ -96,9 +99,7 @@ const fn broker_method_from_code(value: i32) -> Option<BrokerMethod> {
 /// # Errors
 ///
 /// Rejects violations of those encoding checks or a missing required method.
-pub fn encode_effect(
-    record: &EffectLedgerRecord,
-) -> Result<Vec<u8>, EffectHistoryDataError> {
+pub fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, EffectHistoryDataError> {
     encode_effect_with_q04(record, None)
 }
 
@@ -130,7 +131,9 @@ fn require_q04_effect_shape(record: &EffectLedgerRecord) -> Result<(), EffectHis
         || record.dispatch.is_some()
         || !matches!(record.state, EffectState::Applying { .. })
     {
-        return Err(EffectHistoryDataError::CorruptLedger("invalid Q04 policy-subgate Effect"));
+        return Err(EffectHistoryDataError::CorruptLedger(
+            "invalid Q04 policy-subgate Effect",
+        ));
     }
     Ok(())
 }
@@ -202,7 +205,9 @@ fn encode_effect_with_q04(
     } else if record.plan.method.is_some() {
         EFFECT_VERSION
     } else {
-        return Err(EffectHistoryDataError::InvalidPlan("broker effect has no method"));
+        return Err(EffectHistoryDataError::InvalidPlan(
+            "broker effect has no method",
+        ));
     };
     let metadata_bytes = record
         .project_admission
@@ -244,11 +249,15 @@ fn encode_effect_with_q04(
         let method = record
             .plan
             .method
-            .ok_or(EffectHistoryDataError::InvalidPlan("broker effect has no method"))?;
+            .ok_or(EffectHistoryDataError::InvalidPlan(
+                "broker effect has no method",
+            ))?;
         bytes.extend_from_slice(&(method as i32).to_be_bytes());
     } else if matches!(
         version,
-        CONTROLLER_EFFECT_VERSION | CONTROLLER_PROJECT_EFFECT_VERSION | CONTROLLER_Q04_EFFECT_VERSION
+        CONTROLLER_EFFECT_VERSION
+            | CONTROLLER_PROJECT_EFFECT_VERSION
+            | CONTROLLER_Q04_EFFECT_VERSION
     ) {
         let method = record
             .plan
@@ -256,13 +265,16 @@ fn encode_effect_with_q04(
             .ok_or(EffectHistoryDataError::InvalidPlan(
                 "controller effect has no method",
             ))?;
-        let method_code = crate::domain_ledger::public_operation::public_operation_method_record_code_v1(method);
+        let method_code =
+            crate::domain_ledger::public_operation::public_operation_method_record_code_v1(method);
         bytes.extend_from_slice(&i32::from(method_code).to_be_bytes());
     }
     if let Some(gate) = q04_gate {
         bytes.extend_from_slice(
             &u32::try_from(metadata_bytes.as_ref().map_or(0, Vec::len))
-                .map_err(|_| EffectHistoryDataError::InvalidPlan("project metadata exceeds bounds"))?
+                .map_err(|_| {
+                    EffectHistoryDataError::InvalidPlan("project metadata exceeds bounds")
+                })?
                 .to_be_bytes(),
         );
         bytes.extend_from_slice(
@@ -273,7 +285,9 @@ fn encode_effect_with_q04(
     } else if let Some(metadata) = &metadata_bytes {
         bytes.extend_from_slice(
             &u32::try_from(metadata.len())
-                .map_err(|_| EffectHistoryDataError::InvalidPlan("project metadata exceeds bounds"))?
+                .map_err(|_| {
+                    EffectHistoryDataError::InvalidPlan("project metadata exceeds bounds")
+                })?
                 .to_be_bytes(),
         );
     }
@@ -314,12 +328,16 @@ fn encode_effect_with_q04(
             bytes.extend_from_slice(&host_boot_id);
             bytes.extend_from_slice(
                 &u32::try_from(dispatch_body_length)
-                    .map_err(|_| EffectHistoryDataError::InvalidPlan("dispatch body exceeds bounds"))?
+                    .map_err(|_| {
+                        EffectHistoryDataError::InvalidPlan("dispatch body exceeds bounds")
+                    })?
                     .to_be_bytes(),
             );
             bytes.extend_from_slice(
                 &u32::try_from(dispatch_packet_length)
-                    .map_err(|_| EffectHistoryDataError::InvalidPlan("dispatch packet exceeds bounds"))?
+                    .map_err(|_| {
+                        EffectHistoryDataError::InvalidPlan("dispatch packet exceeds bounds")
+                    })?
                     .to_be_bytes(),
             );
             bytes.extend_from_slice(dispatch.attempt.body());
@@ -346,9 +364,7 @@ fn encode_effect_with_q04(
 ///
 /// Rejects unknown versions or flags, malformed or unbounded fields, inconsistent
 /// commitments, invalid metadata or extensions, and trailing bytes.
-pub fn decode_effect(
-    bytes: &[u8],
-) -> Result<EffectLedgerRecord, EffectHistoryDataError> {
+pub fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, EffectHistoryDataError> {
     decode_effect_with_extensions(bytes).map(|decoded| decoded.record)
 }
 
@@ -367,7 +383,10 @@ struct DecodedEffectWithExtensions {
 pub fn decode_effect_with_q04(
     bytes: &[u8],
 ) -> Result<
-    (EffectLedgerRecord, Option<crate::domain_ledger::create_q04_history::Q04EffectSubgateV1>),
+    (
+        EffectLedgerRecord,
+        Option<crate::domain_ledger::create_q04_history::Q04EffectSubgateV1>,
+    ),
     EffectHistoryDataError,
 > {
     let decoded = decode_effect_with_extensions(bytes)?;
@@ -416,16 +435,15 @@ fn decode_effect_with_extensions(
             .map_err(|_| EffectHistoryDataError::CorruptLedger("invalid diagnostic length"))?,
     ) as usize;
     let mut cursor = 18;
-    let method = if bytes[0] == EFFECT_VERSION {
-        let method_code = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
-        Some(
-            broker_method_from_code(method_code).ok_or(EffectHistoryDataError::CorruptLedger(
-                "unknown broker effect method",
-            ))?,
-        )
-    } else {
-        None
-    };
+    let method =
+        if bytes[0] == EFFECT_VERSION {
+            let method_code = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
+            Some(broker_method_from_code(method_code).ok_or(
+                EffectHistoryDataError::CorruptLedger("unknown broker effect method"),
+            )?)
+        } else {
+            None
+        };
     let controller_method = if matches!(
         bytes[0],
         CONTROLLER_EFFECT_VERSION
@@ -433,12 +451,16 @@ fn decode_effect_with_extensions(
             | CONTROLLER_Q04_EFFECT_VERSION
     ) {
         let method_code = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
-        let method_code = u8::try_from(method_code)
-            .map_err(|_| EffectHistoryDataError::CorruptLedger("unknown controller effect method"))?;
+        let method_code = u8::try_from(method_code).map_err(|_| {
+            EffectHistoryDataError::CorruptLedger("unknown controller effect method")
+        })?;
         Some(
-            crate::domain_ledger::public_operation::public_operation_method_from_record_code_v1(method_code).ok_or(
-                EffectHistoryDataError::CorruptLedger("unknown controller effect method"),
-            )?,
+            crate::domain_ledger::public_operation::public_operation_method_from_record_code_v1(
+                method_code,
+            )
+            .ok_or(EffectHistoryDataError::CorruptLedger(
+                "unknown controller effect method",
+            ))?,
         )
     } else {
         None
@@ -463,7 +485,9 @@ fn decode_effect_with_extensions(
         ));
         #[cfg(target_os = "linux")]
         if q04_length != crate::domain_ledger::create_q04_history::GATE_BYTES {
-            return Err(EffectHistoryDataError::CorruptLedger("invalid Q04 gate length"));
+            return Err(EffectHistoryDataError::CorruptLedger(
+                "invalid Q04 gate length",
+            ));
         }
     }
     if metadata_length > MAXIMUM_RECORD_BYTES
@@ -501,8 +525,9 @@ fn decode_effect_with_extensions(
         let semantic_digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
         let digest = ObjectDigest::from_bytes(take_array(bytes, &mut cursor)?);
         let descriptor_free = take_array::<1>(bytes, &mut cursor)?[0];
-        let expected_domain = EffectDomain::from_audience(audience)
-            .map_err(|_| EffectHistoryDataError::CorruptLedger("invalid authority effect audience"))?;
+        let expected_domain = EffectDomain::from_audience(audience).map_err(|_| {
+            EffectHistoryDataError::CorruptLedger("invalid authority effect audience")
+        })?;
         if take_array::<1>(bytes, &mut cursor)? != [0]
             || descriptor_free != 1
             || domain != expected_domain
@@ -612,8 +637,9 @@ fn decode_effect_with_extensions(
         (None, None)
     };
     if let Some(method) = method {
-        validate_broker_method_domain(domain, method)
-            .map_err(|_| EffectHistoryDataError::CorruptLedger("broker effect method/domain mismatch"))?;
+        validate_broker_method_domain(domain, method).map_err(|_| {
+            EffectHistoryDataError::CorruptLedger("broker effect method/domain mismatch")
+        })?;
     }
     let expected = cursor
         .checked_add(request_length)
@@ -621,14 +647,18 @@ fn decode_effect_with_extensions(
         .and_then(|n| n.checked_add(diagnostic_length))
         .and_then(|n| n.checked_add(metadata_length))
         .and_then(|n| n.checked_add(q04_length))
-        .ok_or(EffectHistoryDataError::CorruptLedger("effect length overflow"))?;
+        .ok_or(EffectHistoryDataError::CorruptLedger(
+            "effect length overflow",
+        ))?;
     if expected != bytes.len()
         || request_length == 0
         || request_length > MAXIMUM_REQUEST_BYTES
         || receipt_length > MAXIMUM_RECEIPT_BYTES
         || diagnostic_length > MAXIMUM_DIAGNOSTIC_BYTES
     {
-        return Err(EffectHistoryDataError::CorruptLedger("invalid effect lengths"));
+        return Err(EffectHistoryDataError::CorruptLedger(
+            "invalid effect lengths",
+        ));
     }
     let request_end = cursor + request_length;
     let receipt_end = request_end + receipt_length;
@@ -737,8 +767,12 @@ fn decode_effect_with_extensions(
     let q04 = if bytes[0] == CONTROLLER_Q04_EFFECT_VERSION {
         require_q04_effect_shape(&record)?;
         Some(
-            crate::domain_ledger::create_q04_history::Q04EffectSubgateV1::decode(&bytes[metadata_end..])
-                .map_err(|_| EffectHistoryDataError::CorruptLedger("invalid Q04 policy-subgate record"))?,
+            crate::domain_ledger::create_q04_history::Q04EffectSubgateV1::decode(
+                &bytes[metadata_end..],
+            )
+            .map_err(|_| {
+                EffectHistoryDataError::CorruptLedger("invalid Q04 policy-subgate record")
+            })?,
         )
     } else {
         None
@@ -762,7 +796,10 @@ fn decode_effect_with_extensions(
 /// decoding them.
 pub fn q04_effect_subgate(
     bytes: &[u8],
-) -> Result<Option<crate::domain_ledger::create_q04_history::Q04EffectSubgateV1>, EffectHistoryDataError> {
+) -> Result<
+    Option<crate::domain_ledger::create_q04_history::Q04EffectSubgateV1>,
+    EffectHistoryDataError,
+> {
     if bytes.first() != Some(&CONTROLLER_Q04_EFFECT_VERSION) {
         return Ok(None);
     }
@@ -814,7 +851,9 @@ fn validate_lengths(
         || receipt.len() > MAXIMUM_RECEIPT_BYTES
         || diagnostic.len() > MAXIMUM_DIAGNOSTIC_BYTES
     {
-        return Err(EffectHistoryDataError::InvalidPlan("effect record exceeds bounds"));
+        return Err(EffectHistoryDataError::InvalidPlan(
+            "effect record exceeds bounds",
+        ));
     }
     if let Some(method) = plan.method {
         validate_broker_method_domain(plan.domain, method)?;
@@ -884,19 +923,27 @@ fn take_array<const N: usize>(
     bytes: &[u8],
     cursor: &mut usize,
 ) -> Result<[u8; N], EffectHistoryDataError> {
-    let end = cursor.checked_add(N).ok_or(EffectHistoryDataError::CorruptLedger(
-        "effect binding length overflow",
-    ))?;
+    let end = cursor
+        .checked_add(N)
+        .ok_or(EffectHistoryDataError::CorruptLedger(
+            "effect binding length overflow",
+        ))?;
     let value = bytes
         .get(*cursor..end)
-        .ok_or(EffectHistoryDataError::CorruptLedger("truncated effect binding"))?;
+        .ok_or(EffectHistoryDataError::CorruptLedger(
+            "truncated effect binding",
+        ))?;
     *cursor = end;
     value
         .try_into()
         .map_err(|_| EffectHistoryDataError::CorruptLedger("truncated effect binding"))
 }
 
-fn take_vec(bytes: &[u8], cursor: &mut usize, length: usize) -> Result<Vec<u8>, EffectHistoryDataError> {
+fn take_vec(
+    bytes: &[u8],
+    cursor: &mut usize,
+    length: usize,
+) -> Result<Vec<u8>, EffectHistoryDataError> {
     let end = cursor
         .checked_add(length)
         .ok_or(EffectHistoryDataError::CorruptLedger(
@@ -904,7 +951,9 @@ fn take_vec(bytes: &[u8], cursor: &mut usize, length: usize) -> Result<Vec<u8>, 
         ))?;
     let value = bytes
         .get(*cursor..end)
-        .ok_or(EffectHistoryDataError::CorruptLedger("truncated effect dispatch"))?
+        .ok_or(EffectHistoryDataError::CorruptLedger(
+            "truncated effect dispatch",
+        ))?
         .to_vec();
     *cursor = end;
     Ok(value)

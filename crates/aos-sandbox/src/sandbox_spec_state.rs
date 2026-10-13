@@ -572,10 +572,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{
-        EffectFailure, EffectObservation, Reconciler,
-        SingleNodeEffectExecutor,
-    };
+    use crate::{EffectFailure, EffectObservation, Reconciler, SingleNodeEffectExecutor};
     use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
     use aos_sandbox_core::model::{
         IdentityProfile, NetworkKind, NetworkProfile, ResourceProfile, UnmappableIdentityPolicy,

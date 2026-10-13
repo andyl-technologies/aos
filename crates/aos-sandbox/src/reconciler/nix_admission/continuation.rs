@@ -15,14 +15,23 @@ pub(crate) fn require_current_effect_v2(
 ) -> Result<(), ReconcilerError> {
     journal.validate_held_protected_names()?;
     if step != 0 || carrier.operation() != operation_id {
-        return Err(ReconcilerError::CorruptLedger("unexpected retained Start step"));
+        return Err(ReconcilerError::CorruptLedger(
+            "unexpected retained Start step",
+        ));
     }
-    let readback = accepted_nix_start_readback_v2(journal, operation_id)?
-        .ok_or(ReconcilerError::CorruptLedger("missing retained Start admission"))?;
-    let original = readback.context.nix_start()
-        .ok_or(ReconcilerError::CorruptLedger("missing retained Start admission"))?;
+    let readback = accepted_nix_start_readback_v2(journal, operation_id)?.ok_or(
+        ReconcilerError::CorruptLedger("missing retained Start admission"),
+    )?;
+    let original = readback
+        .context
+        .nix_start()
+        .ok_or(ReconcilerError::CorruptLedger(
+            "missing retained Start admission",
+        ))?;
     if original != carrier {
-        return Err(ReconcilerError::CorruptLedger("retained Start original changed"));
+        return Err(ReconcilerError::CorruptLedger(
+            "retained Start original changed",
+        ));
     }
 
     // Later custody cuts read afresh; reuse is confined to this immutable phase.
@@ -33,7 +42,9 @@ pub(crate) fn require_current_effect_v2(
         || readback.effect.project_admission().is_some()
         || journal.get(RecordNamespace::DesiredState, desired_key) != Some(desired_value)
     {
-        return Err(ReconcilerError::CorruptLedger("retained Start effect or Desired changed"));
+        return Err(ReconcilerError::CorruptLedger(
+            "retained Start effect or Desired changed",
+        ));
     }
     journal.validate_held_protected_names()?;
     Ok(())
@@ -78,10 +89,12 @@ mod tests {
     #[test]
     fn completed_or_blocked_effect_cannot_continue() {
         let applied = EffectState::Applied {
-            attempt: 1, receipt: EffectReceipt::from_bytes_unchecked(vec![1]),
+            attempt: 1,
+            receipt: EffectReceipt::from_bytes_unchecked(vec![1]),
         };
         let blocked = EffectState::PermanentlyBlocked {
-            attempt: 1, diagnostic: String::new(),
+            attempt: 1,
+            diagnostic: String::new(),
         };
 
         for operation in [OperationState::Accepted, OperationState::Applying] {

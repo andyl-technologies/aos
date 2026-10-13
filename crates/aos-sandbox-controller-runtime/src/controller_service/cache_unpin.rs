@@ -125,5 +125,7 @@ fn cache_unpin_receipt(operation_id: OperationId) -> Result<EffectReceipt, Effec
     let mut receipt = Vec::with_capacity(24);
     receipt.extend_from_slice(b"AOSCUN01");
     receipt.extend_from_slice(operation_id.as_bytes());
-    EffectReceipt::new(receipt).map_err(aos_sandbox::ReconcilerError::from).map_err(|error| EffectFailure::Permanent(error.to_string()))
+    EffectReceipt::new(receipt)
+        .map_err(aos_sandbox::ReconcilerError::from)
+        .map_err(|error| EffectFailure::Permanent(error.to_string()))
 }

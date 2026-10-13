@@ -770,8 +770,8 @@ mod tests {
     use super::*;
     use crate::attachment_slot_state::{AttachmentSlotMutationV1, commit_for_test};
     use crate::{
-        EffectFailure, EffectObservation, JournalLimits, Reconciler,
-        ReconcilerError, SingleNodeEffectExecutor,
+        EffectFailure, EffectObservation, JournalLimits, Reconciler, ReconcilerError,
+        SingleNodeEffectExecutor,
     };
     use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
 

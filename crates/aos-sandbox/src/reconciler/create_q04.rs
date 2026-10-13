@@ -27,10 +27,9 @@ use super::{
 
 use crate::policy_compiler::create_q04::{
     OriginalCreateQ04InvocationV1, Q04AcknowledgementKindV1, Q04ControllerPhaseEventsV1,
-    Q04ControllerPreparationV1, Q04PhaseRecordV1, Q04RootDecisionV1,
-    controller_phase_recipe_v1, encode_q04_acknowledgement_data_v1,
-    lower_clearance_recipe_digest_v1, q04_controller_capacity_events_v1,
-    sign_original_q04_acknowledgement_v1,
+    Q04ControllerPreparationV1, Q04PhaseRecordV1, Q04RootDecisionV1, controller_phase_recipe_v1,
+    encode_q04_acknowledgement_data_v1, lower_clearance_recipe_digest_v1,
+    q04_controller_capacity_events_v1, sign_original_q04_acknowledgement_v1,
 };
 
 // The same installed invocation owns every returned compiler/native/signing
@@ -43,9 +42,13 @@ struct InstalledOriginalCreateQ04V1<'profile> {
     ledger: Option<Result<OriginalQ04ControllerLedgerV1, CreateQ04ErrorV1>>,
     preparation: Option<Result<Q04ControllerPreparationV1, CreateQ04ErrorV1>>,
     identity: Option<Result<Q04CutIdentityV1, CreateQ04ErrorV1>>,
-    resource_transfer: Option<Result<crate::controller_resource_reservation::Q04ResourceTransferV1, CreateQ04ErrorV1>>,
+    resource_transfer: Option<
+        Result<crate::controller_resource_reservation::Q04ResourceTransferV1, CreateQ04ErrorV1>,
+    >,
     resource_posts: [Option<Result<(), CreateQ04ErrorV1>>; 7],
-    terminal: Option<Result<crate::controller_resource_reservation::Q04TerminalDispositionV1, CreateQ04ErrorV1>>,
+    terminal: Option<
+        Result<crate::controller_resource_reservation::Q04TerminalDispositionV1, CreateQ04ErrorV1>,
+    >,
     commits: [Option<Result<crate::journal::CommitResult, CreateQ04ErrorV1>>; 8],
     acknowledgements: [Vec<u8>; 4],
     signatures: [Option<Result<(), CreateQ04ErrorV1>>; 4],
@@ -327,19 +330,36 @@ pub fn continue_original_create_q04_policy_subgate_v1(
     let Some(bank) = bank.filter(|_| pending_reservation.is_none()) else {
         std::process::exit(1);
     };
-    if resident.root.arm_resource_preparation(journal, source, bank, operation).is_err() {
+    if resident
+        .root
+        .arm_resource_preparation(journal, source, bank, operation)
+        .is_err()
+    {
         std::process::exit(1);
     }
     let source_original = source;
     let InstalledOriginalCreateQ04V1 {
-        root, credentials, ledger, preparation, identity, resource_transfer, resource_posts, terminal, commits, acknowledgements,
-        signatures, first, postcheck, complete,
+        root,
+        credentials,
+        ledger,
+        preparation,
+        identity,
+        resource_transfer,
+        resource_posts,
+        terminal,
+        commits,
+        acknowledgements,
+        signatures,
+        first,
+        postcheck,
+        complete,
     } = &mut resident;
 
     let continued = (|| -> Result<(), ()> {
         // Keep acquisition and terminal parent reborrows in one continuation.
         // These same short loans end only after their original clearance.
-        let mut source = crate::source_domain::OriginalQ04SourceOwnerCutV1::park(&mut *source_original);
+        let mut source =
+            crate::source_domain::OriginalQ04SourceOwnerCutV1::park(&mut *source_original);
         let mut cache = match initialization.begin_original_q04(cache_owner, physical) {
             Ok(cache) => cache,
             // The actual initializer, including its original result, is still
@@ -349,36 +369,87 @@ pub fn continue_original_create_q04_policy_subgate_v1(
         };
 
         retain_q04_data(first, profile.recheck().map_err(Into::into))?;
-        if credentials.capture().is_err() { return Err(()); }
-        let context = retain_q04_data(first, plan.public_mutation_context().map_err(ReconcilerError::from).map_err(Into::into))?
-            .ok_or(())?;
+        if credentials.capture().is_err() {
+            return Err(());
+        }
+        let context = retain_q04_data(
+            first,
+            plan.public_mutation_context()
+                .map_err(ReconcilerError::from)
+                .map_err(Into::into),
+        )?
+        .ok_or(())?;
         let project = context.project();
-        let (generation, signer) = retain_q04_data(first,
-            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
+        let (generation, signer) = retain_q04_data(
+            first,
+            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut),
+        )?;
         source.connect_original_root(root, journal, project, generation, signer)?;
         retain_q04_data(first, root.require_resource_preparation())?;
-        *ledger = Some(OriginalQ04ControllerLedgerV1::capture(journal, operation, scope, plan));
-        let ledger = match ledger.as_ref() { Some(Ok(ledger)) => ledger, _ => return Err(()) };
-        if ledger.project != project { return Err(()); }
+        *ledger = Some(OriginalQ04ControllerLedgerV1::capture(
+            journal, operation, scope, plan,
+        ));
+        let ledger = match ledger.as_ref() {
+            Some(Ok(ledger)) => ledger,
+            _ => return Err(()),
+        };
+        if ledger.project != project {
+            return Err(());
+        }
         cache.capture_prepare_readback(ledger.project)?;
         root.receive_preview()?;
-        if credentials.recheck().is_err() { return Err(()); }
-        source.capture_controller_preparation(root, journal, ledger, &mut cache, credentials, preparation)?;
-        let prepared = match preparation.as_ref() { Some(Ok(prepared)) => prepared, _ => return Err(()) };
-        let (generation, signer) = retain_q04_data(first,
-            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
-        root.sign_prehold_current(journal, ledger, prepared.staged(), prepared.proposed(), generation, signer)?;
-        root.sign_prehold_data(journal, ledger, prepared.metadata(), prepared.proposed(), generation, signer)?;
+        if credentials.recheck().is_err() {
+            return Err(());
+        }
+        source.capture_controller_preparation(
+            root,
+            journal,
+            ledger,
+            &mut cache,
+            credentials,
+            preparation,
+        )?;
+        let prepared = match preparation.as_ref() {
+            Some(Ok(prepared)) => prepared,
+            _ => return Err(()),
+        };
+        let (generation, signer) = retain_q04_data(
+            first,
+            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut),
+        )?;
+        root.sign_prehold_current(
+            journal,
+            ledger,
+            prepared.staged(),
+            prepared.proposed(),
+            generation,
+            signer,
+        )?;
+        root.sign_prehold_data(
+            journal,
+            ledger,
+            prepared.metadata(),
+            prepared.proposed(),
+            generation,
+            signer,
+        )?;
         root.exchange_prehold_data()?;
-        if credentials.recheck().is_err() { return Err(()); }
+        if credentials.recheck().is_err() {
+            return Err(());
+        }
         // End the actual compiler/owner loans before independent comparisons.
         // The complete owned Result was parked before these postchecks.
         source.recheck_controller_preparation(root, journal, ledger, &mut cache, prepared)?;
         *identity = Some(root.form_finalized_identity(ledger, prepared));
-        let identity = match identity.as_ref() { Some(Ok(identity)) => identity, _ => return Err(()) };
-        *resource_transfer = Some(crate::controller_resource_reservation::Q04ResourceTransferV1::prepare(
-            journal, root, ledger, prepared, identity,
-        ));
+        let identity = match identity.as_ref() {
+            Some(Ok(identity)) => identity,
+            _ => return Err(()),
+        };
+        *resource_transfer = Some(
+            crate::controller_resource_reservation::Q04ResourceTransferV1::prepare(
+                journal, root, ledger, prepared, identity,
+            ),
+        );
         let resource = match resource_transfer.as_ref() {
             Some(Ok(resource)) => Some(resource),
             _ => return Err(()),
@@ -387,190 +458,584 @@ pub fn continue_original_create_q04_policy_subgate_v1(
         source.preflight_original_suffix(&source_recipes)?;
         let mut cache_recipes = cache.capture_transaction_recipes(ledger, identity)?;
 
-        let controller_hold = retain_q04_data(first, crate::journal::ControllerPolicyHoldV1::new(
-            identity.operation(), identity.sandbox(), ledger.source_commitment(), identity.binding(), identity.epoch(),
-        ).map_err(Into::into))?;
+        let controller_hold = retain_q04_data(
+            first,
+            crate::journal::ControllerPolicyHoldV1::new(
+                identity.operation(),
+                identity.sandbox(),
+                ledger.source_commitment(),
+                identity.binding(),
+                identity.epoch(),
+            )
+            .map_err(Into::into),
+        )?;
         let source_pairs = retain_q04_data(first, source_recipes.terminal_pair_data())?;
         let cache_hold = cache_recipes.terminal_hold(crate::journal::Q04CacheTerminalPhaseV1::Held);
         let pairs = [
             retain_q04_data(first, controller_hold.record_digest().map_err(Into::into))?,
-            retain_q04_data(first, controller_hold.q04_released_record_digest().map_err(Into::into))?,
-            source_pairs[0], source_pairs[1],
+            retain_q04_data(
+                first,
+                controller_hold
+                    .q04_released_record_digest()
+                    .map_err(Into::into),
+            )?,
+            source_pairs[0],
+            source_pairs[1],
             retain_q04_data(first, cache_hold.record_digest().map_err(Into::into))?,
-            retain_q04_data(first, cache_hold.q04_released_record_digest().map_err(Into::into))?,
+            retain_q04_data(
+                first,
+                cache_hold.q04_released_record_digest().map_err(Into::into),
+            )?,
         ];
         let response = retain_q04_data(first, root.prehold_data())?;
-        let state_next = u64::from_be_bytes(response.bytes()[392..400].try_into()
-            .map_err(|_| ())?);
-        let authority_next = u64::from_be_bytes(response.bytes()[384..392].try_into()
-            .map_err(|_| ())?);
-        let (capacity_decision, mut events) = retain_q04_data(first,
-            q04_controller_capacity_events_v1(identity, pairs, state_next, authority_next))?;
-        let mut recipes = retain_q04_data(first,
-            ControllerQ04RecipesV1::encode(identity, &capacity_decision, &events))?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &capacity_decision, resource))?;
-        retain_q04_data(first, journal.preflight_controller_q04_suffix_v1(&transitions))?;
+        let state_next = u64::from_be_bytes(response.bytes()[392..400].try_into().map_err(|_| ())?);
+        let authority_next =
+            u64::from_be_bytes(response.bytes()[384..392].try_into().map_err(|_| ())?);
+        let (capacity_decision, mut events) = retain_q04_data(
+            first,
+            q04_controller_capacity_events_v1(identity, pairs, state_next, authority_next),
+        )?;
+        let mut recipes = retain_q04_data(
+            first,
+            ControllerQ04RecipesV1::encode(identity, &capacity_decision, &events),
+        )?;
+        let transitions = retain_q04_data(
+            first,
+            recipes.transitions(ledger, identity, &capacity_decision, resource),
+        )?;
+        retain_q04_data(
+            first,
+            journal.preflight_controller_q04_suffix_v1(&transitions),
+        )?;
         // Complete Controller/Source/Cache native suffixes and Root's own DATA
         // preflight have all passed before the first logical hold or Stage.
         let coheld = capture_controller_q04_commit(
-            journal, &transitions, 0, root, &mut commits[0], first, postcheck, resource_posts,
+            journal,
+            &transitions,
+            0,
+            root,
+            &mut commits[0],
+            first,
+            postcheck,
+            resource_posts,
         );
         // Controller native Err cannot suppress the available lower owners.
         // These are their existing closed comparisons, not new admission.
-        resource_posts[3] = Some(source.preflight_original_suffix(&source_recipes)
-            .map_err(|()| CreateQ04ErrorV1::ChangedCut));
+        resource_posts[3] = Some(
+            source
+                .preflight_original_suffix(&source_recipes)
+                .map_err(|()| CreateQ04ErrorV1::ChangedCut),
+        );
         let mut cache_metadata = [0; crate::policy_compiler::create_q04::PREHOLD_METADATA_BYTES];
-        resource_posts[4] = Some(cache.write_prepare_metadata(&mut cache_metadata)
-            .map_err(|()| CreateQ04ErrorV1::ChangedCut));
-        resource_posts[5] = Some(credentials.recheck().map_err(|_| CreateQ04ErrorV1::ChangedCut));
+        resource_posts[4] = Some(
+            cache
+                .write_prepare_metadata(&mut cache_metadata)
+                .map_err(|()| CreateQ04ErrorV1::ChangedCut),
+        );
+        resource_posts[5] = Some(
+            credentials
+                .recheck()
+                .map_err(|_| CreateQ04ErrorV1::ChangedCut),
+        );
         resource_posts[6] = Some(profile.recheck().map_err(Into::into));
-        let last_clock = match resource { Some(resource) => resource.capture_last_clock(), None => Err(()) };
-        if coheld.is_err() || last_clock.is_err()
-            || resource_posts.iter().any(|post| matches!(post, Some(Err(_))))
+        let last_clock = match resource {
+            Some(resource) => resource.capture_last_clock(),
+            None => Err(()),
+        };
+        if coheld.is_err()
+            || last_clock.is_err()
+            || resource_posts
+                .iter()
+                .any(|post| matches!(post, Some(Err(_))))
         {
             return Err(());
         }
-        let (generation, signer) = retain_q04_data(first,
-            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
-        source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
+        let (generation, signer) = retain_q04_data(
+            first,
+            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut),
+        )?;
+        source.refresh_original_root(
+            root,
+            journal,
+            ledger,
+            &transitions,
+            ledger.project,
+            generation,
+            signer,
+        )?;
         {
             let original = retain_q04_data(first, root.cache_terminal_loan(identity))?;
             source.append_original_phase(&source_recipes, 0, &original)?;
         }
-        source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
+        source.refresh_original_root(
+            root,
+            journal,
+            ledger,
+            &transitions,
+            ledger.project,
+            generation,
+            signer,
+        )?;
         {
             let original = retain_q04_data(first, root.cache_terminal_loan(identity))?;
             cache.append_original_phase(&original, &cache_recipes, 0)?;
-            cache.capture_terminal_readback(&original, &cache_recipes, crate::journal::Q04CacheTerminalPhaseV1::Held)?;
-            cache.capture_signed_held_readback(&original, &cache_recipes,
-                prepared.staged(), prepared.proposed(), credentials)?;
+            cache.capture_terminal_readback(
+                &original,
+                &cache_recipes,
+                crate::journal::Q04CacheTerminalPhaseV1::Held,
+            )?;
+            cache.capture_signed_held_readback(
+                &original,
+                &cache_recipes,
+                prepared.staged(),
+                prepared.proposed(),
+                credentials,
+            )?;
         }
-        let (generation, signer) = retain_q04_data(first,
-            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
-        root.sign_actual_held_controller(journal, &transitions, prepared.staged(), prepared.proposed(), generation, signer)?;
-        root.send_held_claim(ledger, identity, prepared.proposed(),
-            retain_q04_data(first, cache.signed_held_readback())?, signer)?;
+        let (generation, signer) = retain_q04_data(
+            first,
+            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut),
+        )?;
+        root.sign_actual_held_controller(
+            journal,
+            &transitions,
+            prepared.staged(),
+            prepared.proposed(),
+            generation,
+            signer,
+        )?;
+        root.send_held_claim(
+            ledger,
+            identity,
+            prepared.proposed(),
+            retain_q04_data(first, cache.signed_held_readback())?,
+            signer,
+        )?;
         root.receive_decision(identity)?;
         let decision = retain_q04_data(first, root.decision(identity))?;
         let consumed_gate = retain_q04_data(first, root.consumed_gate(identity))?;
         drop(transitions);
         events.decision = decision.digest();
         events.consumed_gate = consumed_gate.digest();
-        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &capacity_decision, &events, 1, resource, first)?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision, resource))?;
-        capture_controller_q04_commit(journal, &transitions, 1, root, &mut commits[1], first, postcheck, resource_posts)?;
-        source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
+        replace_controller_q04_suffix(
+            &mut recipes,
+            ledger,
+            identity,
+            &decision,
+            &capacity_decision,
+            &events,
+            1,
+            resource,
+            first,
+        )?;
+        let transitions = retain_q04_data(
+            first,
+            recipes.transitions(ledger, identity, &decision, resource),
+        )?;
+        capture_controller_q04_commit(
+            journal,
+            &transitions,
+            1,
+            root,
+            &mut commits[1],
+            first,
+            postcheck,
+            resource_posts,
+        )?;
+        source.refresh_original_root(
+            root,
+            journal,
+            ledger,
+            &transitions,
+            ledger.project,
+            generation,
+            signer,
+        )?;
 
         events.policy_ack = capture_controller_q04_acknowledgement(
-            journal, &transitions, 2, root, credentials, Q04AcknowledgementKindV1::Policy,
-            &events, None, &mut acknowledgements[0], &mut signatures[0], first, postcheck,
+            journal,
+            &transitions,
+            2,
+            root,
+            credentials,
+            Q04AcknowledgementKindV1::Policy,
+            &events,
+            None,
+            &mut acknowledgements[0],
+            &mut signatures[0],
+            first,
+            postcheck,
         )?;
-        root.exchange_acknowledgement(identity, Q04AcknowledgementKindV1::Policy, &acknowledgements[0])?;
+        root.exchange_acknowledgement(
+            identity,
+            Q04AcknowledgementKindV1::Policy,
+            &acknowledgements[0],
+        )?;
         drop(transitions);
-        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 2, resource, first)?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision, resource))?;
+        replace_controller_q04_suffix(
+            &mut recipes,
+            ledger,
+            identity,
+            &decision,
+            &decision,
+            &events,
+            2,
+            resource,
+            first,
+        )?;
+        let transitions = retain_q04_data(
+            first,
+            recipes.transitions(ledger, identity, &decision, resource),
+        )?;
         for index in 2..=3 {
-            capture_controller_q04_commit(journal, &transitions, index, root, &mut commits[index], first, postcheck, resource_posts)?;
-            let (generation, signer) = retain_q04_data(first,
-                credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
-            source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
+            capture_controller_q04_commit(
+                journal,
+                &transitions,
+                index,
+                root,
+                &mut commits[index],
+                first,
+                postcheck,
+                resource_posts,
+            )?;
+            let (generation, signer) = retain_q04_data(
+                first,
+                credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut),
+            )?;
+            source.refresh_original_root(
+                root,
+                journal,
+                ledger,
+                &transitions,
+                ledger.project,
+                generation,
+                signer,
+            )?;
         }
         events.release_ack = capture_controller_q04_acknowledgement(
-            journal, &transitions, 4, root, credentials, Q04AcknowledgementKindV1::Release,
-            &events, None, &mut acknowledgements[1], &mut signatures[1], first, postcheck,
+            journal,
+            &transitions,
+            4,
+            root,
+            credentials,
+            Q04AcknowledgementKindV1::Release,
+            &events,
+            None,
+            &mut acknowledgements[1],
+            &mut signatures[1],
+            first,
+            postcheck,
         )?;
-        root.exchange_acknowledgement(identity, Q04AcknowledgementKindV1::Release, &acknowledgements[1])?;
+        root.exchange_acknowledgement(
+            identity,
+            Q04AcknowledgementKindV1::Release,
+            &acknowledgements[1],
+        )?;
         events.release = retain_q04_data(first, root.observed_root_phase(identity, 1))?.digest();
         {
             let original = retain_q04_data(first, root.cache_terminal_loan(identity))?;
             cache.bind_observed_release(&original, &mut cache_recipes)?;
             source.bind_observed_release(&mut source_recipes, &original)?;
             cache.append_original_phase(&original, &cache_recipes, 1)?;
-            cache.capture_terminal_readback(&original, &cache_recipes, crate::journal::Q04CacheTerminalPhaseV1::Released)?;
+            cache.capture_terminal_readback(
+                &original,
+                &cache_recipes,
+                crate::journal::Q04CacheTerminalPhaseV1::Released,
+            )?;
             source.append_original_phase(&source_recipes, 1, &original)?;
         }
-        let (generation, signer) = retain_q04_data(first,
-            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
-        source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
+        let (generation, signer) = retain_q04_data(
+            first,
+            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut),
+        )?;
+        source.refresh_original_root(
+            root,
+            journal,
+            ledger,
+            &transitions,
+            ledger.project,
+            generation,
+            signer,
+        )?;
         drop(transitions);
-        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 4, resource, first)?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision, resource))?;
-        capture_controller_q04_commit(journal, &transitions, 4, root, &mut commits[4], first, postcheck, resource_posts)?;
-        source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
+        replace_controller_q04_suffix(
+            &mut recipes,
+            ledger,
+            identity,
+            &decision,
+            &decision,
+            &events,
+            4,
+            resource,
+            first,
+        )?;
+        let transitions = retain_q04_data(
+            first,
+            recipes.transitions(ledger, identity, &decision, resource),
+        )?;
+        capture_controller_q04_commit(
+            journal,
+            &transitions,
+            4,
+            root,
+            &mut commits[4],
+            first,
+            postcheck,
+            resource_posts,
+        )?;
+        source.refresh_original_root(
+            root,
+            journal,
+            ledger,
+            &transitions,
+            ledger.project,
+            generation,
+            signer,
+        )?;
 
         events.settlement_ack = capture_controller_q04_acknowledgement(
-            journal, &transitions, 5, root, credentials, Q04AcknowledgementKindV1::Settlement,
-            &events, None, &mut acknowledgements[2], &mut signatures[2], first, postcheck,
+            journal,
+            &transitions,
+            5,
+            root,
+            credentials,
+            Q04AcknowledgementKindV1::Settlement,
+            &events,
+            None,
+            &mut acknowledgements[2],
+            &mut signatures[2],
+            first,
+            postcheck,
         )?;
-        root.exchange_acknowledgement(identity, Q04AcknowledgementKindV1::Settlement, &acknowledgements[2])?;
+        root.exchange_acknowledgement(
+            identity,
+            Q04AcknowledgementKindV1::Settlement,
+            &acknowledgements[2],
+        )?;
         let root_six = retain_q04_data(first, root.observed_root_phase(identity, 2))?;
         events.settlement = root_six.digest();
         drop(transitions);
-        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 5, resource, first)?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision, resource))?;
-        capture_controller_q04_commit(journal, &transitions, 5, root, &mut commits[5], first, postcheck, resource_posts)?;
-        let (generation, signer) = retain_q04_data(first,
-            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
-        source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
+        replace_controller_q04_suffix(
+            &mut recipes,
+            ledger,
+            identity,
+            &decision,
+            &decision,
+            &events,
+            5,
+            resource,
+            first,
+        )?;
+        let transitions = retain_q04_data(
+            first,
+            recipes.transitions(ledger, identity, &decision, resource),
+        )?;
+        capture_controller_q04_commit(
+            journal,
+            &transitions,
+            5,
+            root,
+            &mut commits[5],
+            first,
+            postcheck,
+            resource_posts,
+        )?;
+        let (generation, signer) = retain_q04_data(
+            first,
+            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut),
+        )?;
+        source.refresh_original_root(
+            root,
+            journal,
+            ledger,
+            &transitions,
+            ledger.project,
+            generation,
+            signer,
+        )?;
         {
             let original = retain_q04_data(first, root.cache_terminal_loan(identity))?;
             cache.append_original_phase(&original, &cache_recipes, 2)?;
-            cache.capture_terminal_readback(&original, &cache_recipes, crate::journal::Q04CacheTerminalPhaseV1::Cleared)?;
+            cache.capture_terminal_readback(
+                &original,
+                &cache_recipes,
+                crate::journal::Q04CacheTerminalPhaseV1::Cleared,
+            )?;
             let clearance = cache.clearance_loan(&original, &cache_recipes)?;
             source.clear_after_original_cache(&source_recipes, clearance)?;
         }
-        source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
+        source.refresh_original_root(
+            root,
+            journal,
+            ledger,
+            &transitions,
+            ledger.project,
+            generation,
+            signer,
+        )?;
         let cache_clear = retain_q04_data(first, cache_recipes.clear_recipe_digest())?;
         let source_clear = retain_q04_data(first, source_recipes.clear_recipe_digest())?;
         let status_three_effect = retain_q04_data(first, ledger.effect_record(&recipes.gates[2]))?;
-        let status_three_bytes = retain_q04_data(first,
-            status_three_effect.value().ok_or(CreateQ04ErrorV1::ChangedCut))?;
-        events.clearance = retain_q04_data(first, lower_clearance_recipe_digest_v1(
-            identity, &root_six, cache_clear, source_clear, &recipes.phases[5],
-            status_three_bytes,
-        ))?;
+        let status_three_bytes = retain_q04_data(
+            first,
+            status_three_effect
+                .value()
+                .ok_or(CreateQ04ErrorV1::ChangedCut),
+        )?;
+        events.clearance = retain_q04_data(
+            first,
+            lower_clearance_recipe_digest_v1(
+                identity,
+                &root_six,
+                cache_clear,
+                source_clear,
+                &recipes.phases[5],
+                status_three_bytes,
+            ),
+        )?;
         drop(transitions);
-        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 6, resource, first)?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision, resource))?;
-        capture_controller_q04_commit(journal, &transitions, 6, root, &mut commits[6], first, postcheck, resource_posts)?;
-        source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
+        replace_controller_q04_suffix(
+            &mut recipes,
+            ledger,
+            identity,
+            &decision,
+            &decision,
+            &events,
+            6,
+            resource,
+            first,
+        )?;
+        let transitions = retain_q04_data(
+            first,
+            recipes.transitions(ledger, identity, &decision, resource),
+        )?;
+        capture_controller_q04_commit(
+            journal,
+            &transitions,
+            6,
+            root,
+            &mut commits[6],
+            first,
+            postcheck,
+            resource_posts,
+        )?;
+        source.refresh_original_root(
+            root,
+            journal,
+            ledger,
+            &transitions,
+            ledger.project,
+            generation,
+            signer,
+        )?;
 
         events.clearance_ack = capture_controller_q04_acknowledgement(
-            journal, &transitions, 7, root, credentials, Q04AcknowledgementKindV1::Clearance,
-            &events, Some([root_six.digest(), cache_clear, source_clear, events.clearance]),
-            &mut acknowledgements[3], &mut signatures[3], first, postcheck,
+            journal,
+            &transitions,
+            7,
+            root,
+            credentials,
+            Q04AcknowledgementKindV1::Clearance,
+            &events,
+            Some([
+                root_six.digest(),
+                cache_clear,
+                source_clear,
+                events.clearance,
+            ]),
+            &mut acknowledgements[3],
+            &mut signatures[3],
+            first,
+            postcheck,
         )?;
-        root.exchange_acknowledgement(identity, Q04AcknowledgementKindV1::Clearance, &acknowledgements[3])?;
+        root.exchange_acknowledgement(
+            identity,
+            Q04AcknowledgementKindV1::Clearance,
+            &acknowledgements[3],
+        )?;
         events.final_root = retain_q04_data(first, root.observed_root_phase(identity, 3))?.digest();
         drop(transitions);
-        replace_controller_q04_suffix(&mut recipes, ledger, identity, &decision, &decision, &events, 7, resource, first)?;
-        let transitions = retain_q04_data(first, recipes.transitions(ledger, identity, &decision, resource))?;
-        capture_controller_q04_commit(journal, &transitions, 7, root, &mut commits[7], first, postcheck, resource_posts)?;
-        let (generation, signer) = retain_q04_data(first,
-            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut))?;
-        source.refresh_original_root(root, journal, ledger, &transitions, ledger.project, generation, signer)?;
-        if credentials.recheck().is_err() { return Err(()); }
-        source.finish_original_clearance(root, journal, ledger, &transitions,
-            &source_recipes, &mut cache, &cache_recipes)?;
+        replace_controller_q04_suffix(
+            &mut recipes,
+            ledger,
+            identity,
+            &decision,
+            &decision,
+            &events,
+            7,
+            resource,
+            first,
+        )?;
+        let transitions = retain_q04_data(
+            first,
+            recipes.transitions(ledger, identity, &decision, resource),
+        )?;
+        capture_controller_q04_commit(
+            journal,
+            &transitions,
+            7,
+            root,
+            &mut commits[7],
+            first,
+            postcheck,
+            resource_posts,
+        )?;
+        let (generation, signer) = retain_q04_data(
+            first,
+            credentials.signer().ok_or(CreateQ04ErrorV1::ChangedCut),
+        )?;
+        source.refresh_original_root(
+            root,
+            journal,
+            ledger,
+            &transitions,
+            ledger.project,
+            generation,
+            signer,
+        )?;
+        if credentials.recheck().is_err() {
+            return Err(());
+        }
+        source.finish_original_clearance(
+            root,
+            journal,
+            ledger,
+            &transitions,
+            &source_recipes,
+            &mut cache,
+            &cache_recipes,
+        )?;
         if commits.iter().any(|result| !matches!(result, Some(Ok(_))))
-            || signatures.iter().any(|result| !matches!(result, Some(Ok(()))))
-            || first.is_some() || postcheck.is_some()
+            || signatures
+                .iter()
+                .any(|result| !matches!(result, Some(Ok(()))))
+            || first.is_some()
+            || postcheck.is_some()
         {
             return Err(());
         }
         // Prepare while all actual terminal originals and eight native results
         // are still held. The event is charged history, not a disposal proof.
-        *terminal = Some(root.resource_terminal_observation(identity).and_then(|final_root| {
-            crate::controller_resource_reservation::Q04TerminalDispositionV1::prepare(
-                journal, &final_root, resource.ok_or(CreateQ04ErrorV1::ChangedCut)?,
-                &transitions, commits,
-            )
-        }));
+        *terminal = Some(
+            root.resource_terminal_observation(identity)
+                .and_then(|final_root| {
+                    crate::controller_resource_reservation::Q04TerminalDispositionV1::prepare(
+                        journal,
+                        &final_root,
+                        resource.ok_or(CreateQ04ErrorV1::ChangedCut)?,
+                        &transitions,
+                        commits,
+                    )
+                }),
+        );
 
         // The same paid owner and ALL eight whole results move to the vacant
         // parent before the later native retention CAS or any projection.
         drop(transitions);
-        let original = match resource_transfer.take() { Some(Ok(original)) => original, _ => return Err(()) };
+        let original = match resource_transfer.take() {
+            Some(Ok(original)) => original,
+            _ => return Err(()),
+        };
         let native = std::mem::replace(commits, std::array::from_fn(|_| None));
         let posts = std::mem::replace(resource_posts, std::array::from_fn(|_| None));
         let disposition = terminal.take().ok_or(())?;
@@ -609,22 +1074,40 @@ pub fn continue_original_create_q04_policy_subgate_v1(
         reservation.append_terminal(journal, bank, profile);
         let source_post = (|| -> Result<(), CreateQ04ErrorV1> {
             source_recipes.require_named_owner(source_original)?;
-            source_original.journal().readback_source_q04_original_v1(&source_recipes, 3)?;
-            source_recipes.require_named_owner(source_original).map_err(Into::into)
+            source_original
+                .journal()
+                .readback_source_q04_original_v1(&source_recipes, 3)?;
+            source_recipes
+                .require_named_owner(source_original)
+                .map_err(Into::into)
         })();
         reservation.terminal_post(0, source_post)?;
-        reservation.terminal_post(1, initialization.recheck(cache_owner)
-            .map_err(|_| CreateQ04ErrorV1::ChangedCut))?;
-        reservation.terminal_post(2, match physical_original.as_ref() {
-            Some(original) => original.revalidate().map_err(Into::into),
-            None => Err(CreateQ04ErrorV1::ChangedCut),
-        })?;
-        reservation.terminal_post(3, match final_root.as_ref() {
-            Some(original) => original.recheck(),
-            None => Err(CreateQ04ErrorV1::ChangedCut),
-        })?;
-        reservation.terminal_post(4, credentials.recheck()
-            .map_err(|_| CreateQ04ErrorV1::ChangedCut))?;
+        reservation.terminal_post(
+            1,
+            initialization
+                .recheck(cache_owner)
+                .map_err(|_| CreateQ04ErrorV1::ChangedCut),
+        )?;
+        reservation.terminal_post(
+            2,
+            match physical_original.as_ref() {
+                Some(original) => original.revalidate().map_err(Into::into),
+                None => Err(CreateQ04ErrorV1::ChangedCut),
+            },
+        )?;
+        reservation.terminal_post(
+            3,
+            match final_root.as_ref() {
+                Some(original) => original.recheck(),
+                None => Err(CreateQ04ErrorV1::ChangedCut),
+            },
+        )?;
+        reservation.terminal_post(
+            4,
+            credentials
+                .recheck()
+                .map_err(|_| CreateQ04ErrorV1::ChangedCut),
+        )?;
         reservation.finish_terminal_posts(profile)?;
         *complete = true;
         Ok(())
@@ -672,13 +1155,23 @@ impl OriginalQ04ControllerLedgerV1 {
         let original_names = journal.protected_writer_physical_names_v1()?;
         let (revision, accepted_generation) =
             super::checked_live_create_sandbox_admission_revision_v1(
-                journal, operation, scope, expected_plan,
-            )?.ok_or(ReconcilerError::CorruptLedger("Q04 original admission is absent"))?;
-        let operation_bytes = journal.get(RecordNamespace::Operation, operation.as_bytes())
+                journal,
+                operation,
+                scope,
+                expected_plan,
+            )?
+            .ok_or(ReconcilerError::CorruptLedger(
+                "Q04 original admission is absent",
+            ))?;
+        let operation_bytes = journal
+            .get(RecordNamespace::Operation, operation.as_bytes())
             .ok_or(ReconcilerError::OperationNotFound)?;
         let operation_row = decode_operation(operation_bytes).map_err(ReconcilerError::from)?;
-        let effect_bytes = journal.get(RecordNamespace::Effect, &effect_key(operation, 0))
-            .ok_or(ReconcilerError::CorruptLedger("Q04 original Effect is absent"))?;
+        let effect_bytes = journal
+            .get(RecordNamespace::Effect, &effect_key(operation, 0))
+            .ok_or(ReconcilerError::CorruptLedger(
+                "Q04 original Effect is absent",
+            ))?;
         let (effect, gate) = decode_effect_with_q04(effect_bytes).map_err(ReconcilerError::from)?;
         if operation_row.state() != OperationState::Applying
             || operation_row.effect_count() != 1
@@ -691,20 +1184,33 @@ impl OriginalQ04ControllerLedgerV1 {
             || effect.project_admission().is_some()
             || gate.is_some()
             || encode_operation_record(operation_row).as_slice() != operation_bytes
-            || encode_effect(&effect).map_err(ReconcilerError::from)?.as_slice() != effect_bytes
+            || encode_effect(&effect)
+                .map_err(ReconcilerError::from)?
+                .as_slice()
+                != effect_bytes
         {
-            return Err(ReconcilerError::CorruptLedger("Q04 original applying rows changed").into());
+            return Err(
+                ReconcilerError::CorruptLedger("Q04 original applying rows changed").into(),
+            );
         }
 
-        let context = effect.plan().public_mutation_context().map_err(ReconcilerError::from)?
-            .ok_or(ReconcilerError::CorruptLedger("Q04 original Create context is absent"))?;
-        let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(create) = context.validated_request().map_err(ReconcilerError::from)?
+        let context = effect
+            .plan()
+            .public_mutation_context()
+            .map_err(ReconcilerError::from)?
+            .ok_or(ReconcilerError::CorruptLedger(
+                "Q04 original Create context is absent",
+            ))?;
+        let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(create) =
+            context.validated_request().map_err(ReconcilerError::from)?
         else {
             return Err(ReconcilerError::CorruptLedger("Q04 original method changed").into());
         };
         let project = context.project();
         if !create.parent_sandbox_id.is_empty() {
-            return Err(ReconcilerError::CorruptLedger("Q04 original Create is not parentless").into());
+            return Err(
+                ReconcilerError::CorruptLedger("Q04 original Create is not parentless").into(),
+            );
         }
         // Create's sandbox ID is the admitted projection, not a request field
         // or an independently re-derived identity recipe.
@@ -715,46 +1221,77 @@ impl OriginalQ04ControllerLedgerV1 {
         let projection = sandboxes.next()
             .ok_or(ReconcilerError::CorruptLedger("Q04 original sandbox projection is absent"))?;
         if sandboxes.next().is_some() {
-            return Err(ReconcilerError::CorruptLedger("Q04 original sandbox projection is ambiguous").into());
+            return Err(ReconcilerError::CorruptLedger(
+                "Q04 original sandbox projection is ambiguous",
+            )
+            .into());
         }
-        let sandbox_bytes: [u8; 16] = projection.resource().resource_id().try_into()
+        let sandbox_bytes: [u8; 16] = projection
+            .resource()
+            .resource_id()
+            .try_into()
             .map_err(|_| ReconcilerError::CorruptLedger("Q04 original sandbox is malformed"))?;
         let sandbox = SandboxId::from_bytes(sandbox_bytes);
         let desired_key = aos_sandbox_protocol::public_api::projection::projection_key(
-            PublicProjectionKindV1::Sandbox, sandbox_bytes,
+            PublicProjectionKindV1::Sandbox,
+            sandbox_bytes,
         );
-        let desired_bytes = journal.get(RecordNamespace::DesiredState, &desired_key)
-            .ok_or(ReconcilerError::CorruptLedger("Q04 original Desired is absent"))?;
+        let desired_bytes = journal
+            .get(RecordNamespace::DesiredState, &desired_key)
+            .ok_or(ReconcilerError::CorruptLedger(
+                "Q04 original Desired is absent",
+            ))?;
         if projection.operation() != operation || projection.project() != project {
-            return Err(ReconcilerError::CorruptLedger("Q04 original Desired owner changed").into());
+            return Err(
+                ReconcilerError::CorruptLedger("Q04 original Desired owner changed").into(),
+            );
         }
         let PublicProjectionResourceV1::Sandbox(resource) = projection.resource() else {
             return Err(ReconcilerError::CorruptLedger("Q04 original Desired kind changed").into());
         };
-        let desired = resource.desired.as_option()
-            .ok_or(ReconcilerError::CorruptLedger("Q04 original Desired is absent"))?;
+        let desired = resource
+            .desired
+            .as_option()
+            .ok_or(ReconcilerError::CorruptLedger(
+                "Q04 original Desired is absent",
+            ))?;
         if create.project_id.as_slice() != project.as_bytes()
             || create.specification.as_option() != desired.specification.as_option()
             || create.requested_policy.as_option() != desired.requested_policy.as_option()
         {
-            return Err(ReconcilerError::CorruptLedger("Q04 original Create/Desired changed").into());
+            return Err(
+                ReconcilerError::CorruptLedger("Q04 original Create/Desired changed").into(),
+            );
         }
 
-        let specification = create.specification.as_option()
+        let specification = create
+            .specification
+            .as_option()
             .ok_or(CreateQ04ErrorV1::ChangedCut)?;
         aos_sandbox_protocol::public_api::registry::validate_descriptor_media(
-            specification, "application/vnd.aos.sandbox.spec.v1+cbor",
-        ).map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
+            specification,
+            "application/vnd.aos.sandbox.spec.v1+cbor",
+        )
+        .map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
         let specification = aos_sandbox_core::ObjectDescriptor::new(
             aos_sandbox_core::MediaType::new(specification.media_type.clone())
                 .map_err(|_| CreateQ04ErrorV1::ChangedCut)?,
-            ObjectDigest::from_bytes(specification.sha256.as_slice().try_into()
-                .map_err(|_| CreateQ04ErrorV1::ChangedCut)?),
+            ObjectDigest::from_bytes(
+                specification
+                    .sha256
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| CreateQ04ErrorV1::ChangedCut)?,
+            ),
             specification.encoded_size,
         );
 
         let before_rows = crate::journal::q04_controller_before_rows_digest_v1(
-            operation, sandbox_bytes, operation_bytes, desired_bytes, effect_bytes,
+            operation,
+            sandbox_bytes,
+            operation_bytes,
+            desired_bytes,
+            effect_bytes,
         )?;
         let operation_bytes = copy_original_row(operation_bytes)?;
         let desired_bytes = copy_original_row(desired_bytes)?;
@@ -763,7 +1300,12 @@ impl OriginalQ04ControllerLedgerV1 {
             journal, operation, sandbox,
         )?;
         let retained = Self {
-            operation, sandbox, project, scope, revision, accepted_generation,
+            operation,
+            sandbox,
+            project,
+            scope,
+            revision,
+            accepted_generation,
             operation_bytes,
             desired_key,
             desired_bytes,
@@ -817,8 +1359,12 @@ impl OriginalQ04ControllerLedgerV1 {
 
     pub(crate) fn effect_plan_digest(&self) -> Result<ObjectDigest, CreateQ04ErrorV1> {
         let planned = encode_effect(&EffectLedgerRecord::from_parts((
-            self.effect.clone().into_parts().0, EffectState::Planned, None, None,
-        ))).map_err(ReconcilerError::from)?;
+            self.effect.clone().into_parts().0,
+            EffectState::Planned,
+            None,
+            None,
+        )))
+        .map_err(ReconcilerError::from)?;
         Ok(ObjectDigest::from_bytes(Sha256::digest(planned).into()))
     }
 
@@ -830,9 +1376,14 @@ impl OriginalQ04ControllerLedgerV1 {
         journal: &mut Journal,
     ) -> Result<crate::policy_compiler::CurrentCreateProjectPolicySourceV1, CreateQ04ErrorV1> {
         self.require_original(journal)?;
-        let current = crate::policy_compiler::current_parentless_create_project_source_for_operation_v1(
-            journal, self.operation, self.project, self.scope, self.effect.plan(),
-        )?;
+        let current =
+            crate::policy_compiler::current_parentless_create_project_source_for_operation_v1(
+                journal,
+                self.operation,
+                self.project,
+                self.scope,
+                self.effect.plan(),
+            )?;
         if current.commitment() != self.source.commitment()
             || current.operation_revision() != self.revision
             || current.accepted_generation() != self.accepted_generation
@@ -872,18 +1423,26 @@ impl OriginalQ04ControllerLedgerV1 {
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
-        let actual = journal.get(RecordNamespace::Effect, &effect_key(self.operation, 0))
-            .ok_or(ReconcilerError::CorruptLedger("Q04 original Effect is absent"))?;
+        let actual = journal
+            .get(RecordNamespace::Effect, &effect_key(self.operation, 0))
+            .ok_or(ReconcilerError::CorruptLedger(
+                "Q04 original Effect is absent",
+            ))?;
         let (effect, _) = decode_effect_with_q04(actual).map_err(ReconcilerError::from)?;
         if encode_effect(&effect).map_err(ReconcilerError::from)? != self.effect_bytes
             || super::checked_live_create_sandbox_admission_revision_v1(
-                journal, self.operation, self.scope, self.effect.plan(),
+                journal,
+                self.operation,
+                self.scope,
+                self.effect.plan(),
             )? != Some((self.revision, self.accepted_generation))
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
         let current = crate::policy_compiler::current_parentless_create_project_source_v1(
-            journal, self.operation, self.sandbox,
+            journal,
+            self.operation,
+            self.sandbox,
         )?;
         if current.commitment() != self.source.commitment() {
             return Err(CreateQ04ErrorV1::ChangedCut);
@@ -897,7 +1456,8 @@ impl OriginalQ04ControllerLedgerV1 {
         gate: &Q04EffectSubgateV1,
     ) -> Result<JournalRecord, CreateQ04ErrorV1> {
         Ok(JournalRecord::put(
-            RecordNamespace::Effect, effect_key(self.operation, 0).to_vec(),
+            RecordNamespace::Effect,
+            effect_key(self.operation, 0).to_vec(),
             encode_q04_effect(&self.effect, gate).map_err(ReconcilerError::from)?,
         ))
     }
@@ -909,16 +1469,23 @@ impl OriginalQ04ControllerLedgerV1 {
         &self,
         state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     ) -> Result<Option<Q04EffectSubgateV1>, ReconcilerError> {
-        if state.get(&(RecordNamespace::Operation, self.operation.as_bytes().to_vec()))
-                != Some(&self.operation_bytes)
+        if state.get(&(
+            RecordNamespace::Operation,
+            self.operation.as_bytes().to_vec(),
+        )) != Some(&self.operation_bytes)
             || state.get(&(RecordNamespace::DesiredState, self.desired_key.clone()))
                 != Some(&self.desired_bytes)
         {
-            return Err(ReconcilerError::CorruptLedger("Q04 original materialized rows changed"));
+            return Err(ReconcilerError::CorruptLedger(
+                "Q04 original materialized rows changed",
+            ));
         }
         let selected_key = effect_key(self.operation, 0);
-        let bytes = state.get(&(RecordNamespace::Effect, selected_key.to_vec()))
-            .ok_or(ReconcilerError::CorruptLedger("Q04 original materialized Effect is absent"))?;
+        let bytes = state
+            .get(&(RecordNamespace::Effect, selected_key.to_vec()))
+            .ok_or(ReconcilerError::CorruptLedger(
+                "Q04 original materialized Effect is absent",
+            ))?;
         let (effect, gate) = decode_effect_with_q04(bytes).map_err(ReconcilerError::from)?;
         if encode_effect(&effect).map_err(ReconcilerError::from)? != self.effect_bytes
             || state.iter().any(|((namespace, key), bytes)| {
@@ -927,7 +1494,9 @@ impl OriginalQ04ControllerLedgerV1 {
                     && key != selected_key.as_slice()
             })
         {
-            return Err(ReconcilerError::CorruptLedger("Q04 original materialized Effect changed"));
+            return Err(ReconcilerError::CorruptLedger(
+                "Q04 original materialized Effect changed",
+            ));
         }
         Ok(gate)
     }
@@ -993,8 +1562,12 @@ impl Q04OriginalRowDataV1 {
         // residual field until after hashing, without changing borrowed encoding.
         let effect = self.effect.into_parts();
         let admitted = encode_effect(&EffectLedgerRecord::from_parts((
-            effect.0, EffectState::Planned, None, None,
-        ))).map_err(ReconcilerError::from)?;
+            effect.0,
+            EffectState::Planned,
+            None,
+            None,
+        )))
+        .map_err(ReconcilerError::from)?;
         Ok(ObjectDigest::from_bytes(Sha256::digest(admitted).into()))
     }
 
@@ -1021,7 +1594,8 @@ pub(crate) fn read_original_q04_rows_v1(
         || operation.ownership_gated()
         || operation.runtime_intent_digest().is_some()
         || !operation.public_operation().is_some_and(|public| {
-            public.method() == aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox
+            public.method()
+                == aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox
                 && public.accepted_generation() == binding.accepted_generation
         })
         || encode_operation_record(operation).as_slice() != operation_bytes
@@ -1037,24 +1611,40 @@ pub(crate) fn read_original_q04_rows_v1(
         || effect.project_admission().is_some()
         || effect.plan().public_mutation_method()
             != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
-        || encode_effect(&effect).map_err(ReconcilerError::from)?.as_slice() != effect_bytes
+        || encode_effect(&effect)
+            .map_err(ReconcilerError::from)?
+            .as_slice()
+            != effect_bytes
     {
         return Err(ReconcilerError::CorruptLedger("Q04 Claim original Effect changed").into());
     }
-    let context = effect.plan().public_mutation_context().map_err(ReconcilerError::from)?
-        .ok_or(ReconcilerError::CorruptLedger("Q04 Claim Create context is absent"))?;
+    let context = effect
+        .plan()
+        .public_mutation_context()
+        .map_err(ReconcilerError::from)?
+        .ok_or(ReconcilerError::CorruptLedger(
+            "Q04 Claim Create context is absent",
+        ))?;
     let request = context.validated_request().map_err(ReconcilerError::from)?;
-    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(create) = request else {
+    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(create) =
+        request
+    else {
         return Err(ReconcilerError::CorruptLedger("Q04 Claim method changed").into());
     };
     let desired = PublicProjectionRecordV1::from_retained_record_bytes(
-        PublicProjectionKindV1::Sandbox, *binding.sandbox.as_bytes(), desired_bytes,
+        PublicProjectionKindV1::Sandbox,
+        *binding.sandbox.as_bytes(),
+        desired_bytes,
     )?;
     let PublicProjectionResourceV1::Sandbox(resource) = desired.resource() else {
         return Err(ReconcilerError::CorruptLedger("Q04 Claim Desired kind changed").into());
     };
-    let specification = resource.desired.as_option()
-        .ok_or(ReconcilerError::CorruptLedger("Q04 Claim Desired is absent"))?;
+    let specification = resource
+        .desired
+        .as_option()
+        .ok_or(ReconcilerError::CorruptLedger(
+            "Q04 Claim Desired is absent",
+        ))?;
     if desired.project() != binding.project
         || desired.operation() != binding.operation
         || desired.revision() != binding.desired_precondition
@@ -1068,8 +1658,11 @@ pub(crate) fn read_original_q04_rows_v1(
     }
 
     let before = crate::journal::q04_controller_before_rows_digest_v1(
-        binding.operation, *binding.sandbox.as_bytes(),
-        operation_bytes, desired_bytes, effect_bytes,
+        binding.operation,
+        *binding.sandbox.as_bytes(),
+        operation_bytes,
+        desired_bytes,
+        effect_bytes,
     )?;
 
     Ok(Q04OriginalRowDataV1 { before, effect })
@@ -1081,7 +1674,8 @@ pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, Reconc
     let has_history = journal.records(RecordNamespace::ControllerPolicyHold)
         .any(|(key, _)| key == CONTROLLER_IDENTITY_KEY || key.starts_with(CONTROLLER_PHASE_PREFIX)
             || key == aos_sandbox_protocol::domain_ledger::resource_bank::CONTROLLER_INPUT_ORIGIN_KEY);
-    let has_gate = journal.records(RecordNamespace::Effect)
+    let has_gate = journal
+        .records(RecordNamespace::Effect)
         .any(|(_, bytes)| bytes.first() == Some(&6));
     if !has_history && !has_gate {
         // No new-purpose byte means no new owner/name/ledger check. Ordinary
@@ -1098,10 +1692,13 @@ pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, Reconc
 
     journal.ensure_protected_authority()?;
     if journal.protected_owner_uid()? != history.identity.controller_uid() {
-        return Err(ReconcilerError::CorruptLedger("Q04 Controller owner changed"));
+        return Err(ReconcilerError::CorruptLedger(
+            "Q04 Controller owner changed",
+        ));
     }
     let operation_id = history.identity.operation();
-    let operation_bytes = journal.get(RecordNamespace::Operation, operation_id.as_bytes())
+    let operation_bytes = journal
+        .get(RecordNamespace::Operation, operation_id.as_bytes())
         .ok_or(ReconcilerError::CorruptLedger("Q04 Operation is absent"))?;
     let operation = decode_operation(operation_bytes)?;
     if operation.state() != OperationState::Applying
@@ -1110,20 +1707,26 @@ pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, Reconc
         || operation.runtime_intent_digest().is_some()
         || operation.public_operation().is_none()
     {
-        return Err(ReconcilerError::CorruptLedger("Q04 Operation is not sole Applying Create"));
+        return Err(ReconcilerError::CorruptLedger(
+            "Q04 Operation is not sole Applying Create",
+        ));
     }
 
     let selected_key = effect_key(operation_id, 0);
-    let effect_bytes = journal.get(RecordNamespace::Effect, &selected_key)
+    let effect_bytes = journal
+        .get(RecordNamespace::Effect, &selected_key)
         .ok_or(ReconcilerError::CorruptLedger("Q04 Effect is absent"))?;
-    let (effect, gate) = decode_effect_with_q04(effect_bytes).map_err(ReconcilerError::from)
+    let (effect, gate) = decode_effect_with_q04(effect_bytes)
+        .map_err(ReconcilerError::from)
         .map(|(effect, gate)| (effect.into_parts(), gate))?;
     if !matches!(effect.1, EffectState::Applying { .. })
         || effect.2.is_some()
         || effect.0.public_mutation_method()
             != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
     {
-        return Err(ReconcilerError::CorruptLedger("Q04 Effect is not Applying Create"));
+        return Err(ReconcilerError::CorruptLedger(
+            "Q04 Effect is not Applying Create",
+        ));
     }
     for (key, bytes) in journal.records(RecordNamespace::Effect) {
         if bytes.first() == Some(&6) && key != selected_key.as_slice() {
@@ -1133,40 +1736,63 @@ pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, Reconc
 
     // Reuse the original admitted Accepted/Planned-None reconstruction. The
     // actual Applying/v6 record is not rewritten into a counterfeit live cut.
-    let (revision, generation, _) = live_create_sandbox_admission_revision_v1(journal, operation_id)?
-        .ok_or(ReconcilerError::CorruptLedger("Q04 Create admission changed"))?;
+    let (revision, generation, _) =
+        live_create_sandbox_admission_revision_v1(journal, operation_id)?.ok_or(
+            ReconcilerError::CorruptLedger("Q04 Create admission changed"),
+        )?;
     if revision != history.identity.operation_revision()
         || generation != history.identity.accepted_generation()
     {
-        return Err(ReconcilerError::CorruptLedger("Q04 original admission changed"));
+        return Err(ReconcilerError::CorruptLedger(
+            "Q04 original admission changed",
+        ));
     }
     let admitted_effect = encode_effect(&EffectLedgerRecord::from_parts((
-        effect.0, EffectState::Planned, None, None,
-    ))).map_err(ReconcilerError::from)?;
+        effect.0,
+        EffectState::Planned,
+        None,
+        None,
+    )))
+    .map_err(ReconcilerError::from)?;
     let plan_digest = ObjectDigest::from_bytes(Sha256::digest(admitted_effect).into());
     if plan_digest != history.identity.effect_plan_digest() {
-        return Err(ReconcilerError::CorruptLedger("Q04 original Effect plan changed"));
+        return Err(ReconcilerError::CorruptLedger(
+            "Q04 original Effect plan changed",
+        ));
     }
     let projection = PublicProjectionStoreV1::new(journal)
-        .get(PublicProjectionKindV1::Sandbox, *history.identity.sandbox().as_bytes())
+        .get(
+            PublicProjectionKindV1::Sandbox,
+            *history.identity.sandbox().as_bytes(),
+        )
         .map_err(|_| ReconcilerError::CorruptLedger("Q04 Desired projection is corrupt"))?
-        .ok_or(ReconcilerError::CorruptLedger("Q04 Desired projection is absent"))?;
+        .ok_or(ReconcilerError::CorruptLedger(
+            "Q04 Desired projection is absent",
+        ))?;
     if projection.operation() != operation_id
         || projection.project() != history.identity.project()
         || projection.revision() != history.identity.desired_precondition()
     {
-        return Err(ReconcilerError::CorruptLedger("Q04 Desired precondition changed"));
+        return Err(ReconcilerError::CorruptLedger(
+            "Q04 Desired precondition changed",
+        ));
     }
 
-    let last = history.phases.last()
+    let last = history
+        .phases
+        .last()
         .ok_or(ReconcilerError::CorruptLedger("Q04 phase history is empty"))?;
     if last.phase() == 1 {
         if gate.is_some() {
-            return Err(ReconcilerError::CorruptLedger("Q04 gate precedes its consumed phase"));
+            return Err(ReconcilerError::CorruptLedger(
+                "Q04 gate precedes its consumed phase",
+            ));
         }
         return Ok(true);
     }
-    let gate = gate.ok_or(ReconcilerError::CorruptLedger("Q04 consumed gate is absent"))?;
+    let gate = gate.ok_or(ReconcilerError::CorruptLedger(
+        "Q04 consumed gate is absent",
+    ))?;
     gate.require_cut_identity(&history.identity)
         .map_err(crate::journal::JournalError::from)?;
     let expected_status = match last.phase() {
@@ -1185,7 +1811,9 @@ pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, Reconc
             .as_bytes()
             != &last.bytes()[128..160]
     {
-        return Err(ReconcilerError::CorruptLedger("Q04 consumed gate/phase relation changed"));
+        return Err(ReconcilerError::CorruptLedger(
+            "Q04 consumed gate/phase relation changed",
+        ));
     }
     let gate_ack_phase = match gate.status() {
         1 => None,
@@ -1195,10 +1823,16 @@ pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, Reconc
         _ => return Err(ReconcilerError::CorruptLedger("Q04 gate status is invalid")),
     };
     if let Some(phase) = gate_ack_phase {
-        let prior = history.phases.get(phase - 1)
-            .ok_or(ReconcilerError::CorruptLedger("Q04 gate acknowledgement phase is absent"))?;
+        let prior = history
+            .phases
+            .get(phase - 1)
+            .ok_or(ReconcilerError::CorruptLedger(
+                "Q04 gate acknowledgement phase is absent",
+            ))?;
         if gate.acknowledgement() != prior.acknowledgement() {
-            return Err(ReconcilerError::CorruptLedger("Q04 gate acknowledgement changed"));
+            return Err(ReconcilerError::CorruptLedger(
+                "Q04 gate acknowledgement changed",
+            ));
         }
     }
     Ok(true)

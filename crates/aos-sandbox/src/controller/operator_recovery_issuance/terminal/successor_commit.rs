@@ -28,7 +28,7 @@ use aos_sandbox_protocol::public_api::projection::{
 use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::production_operation_compiler::repair_sandbox_successor_projection_v1;
 use crate::reconciler::pending_operator_repair_ledger_v1;
-use crate::{ Journal, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
 
 const TERMINAL_RECEIPT_PREFIX: &[u8] = b"storage-repair-terminal-v1/";
@@ -144,10 +144,20 @@ impl PreparedRepairSuccessorV1 {
         completion_wall_seconds: i64,
     ) -> Result<Self, OperatorRecoveryIssuanceErrorV1> {
         let rows = self.transaction.records();
-        let derived = BoundRepairLedgerReceiptV1::decode(rows[5].value().ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?)?;
+        let derived = BoundRepairLedgerReceiptV1::decode(
+            rows[5]
+                .value()
+                .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?,
+        )?;
         let receipt = HeldRepairLedgerReceiptV2::bind(derived, held, self.predecessor_sequence)?;
-        let proof = super::StoredProofV2::decode(journal.get(RecordNamespace::OperatorRecovery,
-            &[super::PREFIX, derived.operation_id.as_slice()].concat()).ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?)?;
+        let proof = super::StoredProofV2::decode(
+            journal
+                .get(
+                    RecordNamespace::OperatorRecovery,
+                    &[super::PREFIX, derived.operation_id.as_slice()].concat(),
+                )
+                .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?,
+        )?;
         if held.request().owner_pair_digest() != proof.signed_pair_digest {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
@@ -165,13 +175,24 @@ impl PreparedRepairSuccessorV1 {
         ).map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
         let records = vec![
             JournalRecord::put(rows[0].namespace(), rows[0].key().to_vec(), archive),
-            ledger[0].clone(), ledger[1].clone(), rows[3].clone(), rows[4].clone(),
-            JournalRecord::put(rows[5].namespace(), rows[5].key().to_vec(), receipt.as_bytes().to_vec()),
+            ledger[0].clone(),
+            ledger[1].clone(),
+            rows[3].clone(),
+            rows[4].clone(),
+            JournalRecord::put(
+                rows[5].namespace(),
+                rows[5].key().to_vec(),
+                receipt.as_bytes().to_vec(),
+            ),
         ];
         let digest = hash(COMMIT_DOMAIN, &[&derived.operation_id, receipt.as_bytes()]);
         self.transaction = JournalTransaction::new(
-            digest[..16].try_into().map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?, records,
-        ).map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+            digest[..16]
+                .try_into()
+                .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?,
+            records,
+        )
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
         Ok(self)
     }
     /// Prepares all six terminal rows from retained public and physical proof.

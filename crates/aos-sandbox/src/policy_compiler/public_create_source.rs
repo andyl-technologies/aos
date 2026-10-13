@@ -45,7 +45,8 @@ use crate::journal::{
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
-use crate::reconciler::{ ReconcilerError, checked_live_create_sandbox_admission_revision_v1,
+use crate::reconciler::{
+    ReconcilerError, checked_live_create_sandbox_admission_revision_v1,
     live_create_sandbox_admission_revision_v1, recovered_public_operation_admission_v1,
 };
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan};
@@ -569,7 +570,8 @@ pub fn current_parentless_create_project_source_for_operation_v1(
         .one_parentless_create_sandbox(operation, project)?
         .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
     let context = effect_plan
-        .public_mutation_context().map_err(ReconcilerError::from)?
+        .public_mutation_context()
+        .map_err(ReconcilerError::from)?
         .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
     let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(request) =
         context.validated_request().map_err(ReconcilerError::from)?
@@ -1762,25 +1764,24 @@ fn current_source_domain_ancestry(
 mod tests {
     use std::cell::Cell;
 
-    use aos_sandbox_core::model::{
-        CacheDomainKind, LimitDimension, RevocationMode, RevocationPolicy,
-    };
+    use aos_sandbox_core::model::{CacheDomainKind, LimitDimension, RevocationMode, RevocationPolicy};
     use aos_sandbox_core::{CacheDomainId, ObjectDescriptor, ResourceDimension};
     use ed25519_dalek::{Signer as _, SigningKey};
 
     use super::*;
     use crate::policy_compiler::{
         ClosedPolicyRootCasBaseV2, PolicyDeploymentInputsV1, decode_policy_deployment_sources_v1,
-        propose_closed_current_create_explicit_policy_binding_v2,
-        verify_policy_deployment_head_v1, verify_signed_project_policy_source_v2,
+        propose_closed_current_create_explicit_policy_binding_v2, verify_policy_deployment_head_v1,
+        verify_signed_project_policy_source_v2,
     };
     use aos_sandbox_policy::{
-        AuthenticatedCacheDomainV1, AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1,
-        AuthenticatedSandboxProjectRelationV1, CacheDomainBindingV1, CacheDomainVerifierV1,
-        EndpointCatalogVerifierV1, HardLimitRequestV1, HardResourceKeyV1, HardResourceProfileV1,
-        NamespaceCatalogVerifierV1, PORTABLE_LIMIT_DIMENSIONS, PolicyCompilationError,
-        PolicyCompilerLimitsV1, PolicyCompilerV1, PolicyLayerV1, ProjectPolicyInputV1,
-        RequestPolicyInputV1, SandboxProjectRelationVerifierV1,
+        AuthenticatedCacheDomainV1, AuthenticatedEndpointCatalogV1,
+        AuthenticatedNamespaceCatalogV1, AuthenticatedSandboxProjectRelationV1,
+        CacheDomainBindingV1, CacheDomainVerifierV1, EndpointCatalogVerifierV1, HardLimitRequestV1,
+        HardResourceKeyV1, HardResourceProfileV1, NamespaceCatalogVerifierV1,
+        PORTABLE_LIMIT_DIMENSIONS, PolicyCompilationError, PolicyCompilerLimitsV1,
+        PolicyCompilerV1, PolicyLayerV1, ProjectPolicyInputV1, RequestPolicyInputV1,
+        SandboxProjectRelationVerifierV1,
     };
 
     struct FixtureVerifier;

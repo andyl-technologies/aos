@@ -38,7 +38,9 @@ impl EffectDomain {
             5 => Ok(Self::Guardian),
             6 => Ok(Self::Guest),
             7 => Ok(Self::Controller),
-            _ => Err(EffectHistoryDataError::CorruptLedger("unknown effect domain")),
+            _ => Err(EffectHistoryDataError::CorruptLedger(
+                "unknown effect domain",
+            )),
         }
     }
 
@@ -144,16 +146,22 @@ impl EffectPlan {
             ));
         }
         let authenticated = PublicMutationEffectHistoryV1::decode(&request)?.ok_or(
-            EffectHistoryDataError::InvalidPlan("controller effect lacks authenticated admission context"),
+            EffectHistoryDataError::InvalidPlan(
+                "controller effect lacks authenticated admission context",
+            ),
         )?;
         let canonical_request = authenticated.canonical_request();
         if method == crate::public_api::PublicOperationMethodV1::OperatorRecover {
-            let envelope = crate::public_api::mutation::PublicMutationRequestV1::decode(canonical_request)
-                .map_err(|_| EffectHistoryDataError::InvalidPlan("invalid controller effect request"))?;
-            let kind = envelope
-                .decode_validated_kind()
-                .map_err(|_| EffectHistoryDataError::InvalidPlan("invalid controller effect request"))?;
-            if envelope.method() != crate::public_api::method::PublicApiAuditMethodV1::OperatorRecover
+            let envelope =
+                crate::public_api::mutation::PublicMutationRequestV1::decode(canonical_request)
+                    .map_err(|_| {
+                        EffectHistoryDataError::InvalidPlan("invalid controller effect request")
+                    })?;
+            let kind = envelope.decode_validated_kind().map_err(|_| {
+                EffectHistoryDataError::InvalidPlan("invalid controller effect request")
+            })?;
+            if envelope.method()
+                != crate::public_api::method::PublicApiAuditMethodV1::OperatorRecover
                 || !matches!(
                     kind,
                     crate::public_api::request::DormantSandboxRequestKindV1::OperatorRecover(_)
@@ -164,11 +172,12 @@ impl EffectPlan {
                 ));
             }
         } else {
-            let resolved =
-                crate::public_api::mutation::ResolvedPublicMutationRequestV1::decode(
-                    canonical_request,
-                )
-                .map_err(|_| EffectHistoryDataError::InvalidPlan("invalid controller effect request"))?;
+            let resolved = crate::public_api::mutation::ResolvedPublicMutationRequestV1::decode(
+                canonical_request,
+            )
+            .map_err(|_| {
+                EffectHistoryDataError::InvalidPlan("invalid controller effect request")
+            })?;
             if resolved.operation_method() != method {
                 return Err(EffectHistoryDataError::InvalidPlan(
                     "controller effect method does not match its request",
@@ -349,10 +358,7 @@ impl EffectReceipt {
         }
         Ok(Some(ObjectDigest::from_bytes(digest)))
     }
-
-
 }
-
 
 impl EffectReceipt {
     /// Owns historical bytes without validating them or issuing a Native receipt.
@@ -367,7 +373,15 @@ impl EffectReceipt {
 impl EffectPlan {
     /// Assembles complete historical DATA without validation or Native authority.
     #[must_use]
-    pub fn from_parts(parts: (EffectDomain, Option<BrokerMethod>, Option<crate::public_api::PublicOperationMethodV1>, Vec<u8>, Option<AuthorityEffectBindingV1>)) -> Self {
+    pub fn from_parts(
+        parts: (
+            EffectDomain,
+            Option<BrokerMethod>,
+            Option<crate::public_api::PublicOperationMethodV1>,
+            Vec<u8>,
+            Option<AuthorityEffectBindingV1>,
+        ),
+    ) -> Self {
         let (domain, method, controller_method, request, authority) = parts;
         Self {
             domain,
@@ -380,16 +394,54 @@ impl EffectPlan {
 
     /// Consumes the complete DATA in original field and destruction order.
     #[must_use]
-    pub fn into_parts(self) -> (EffectDomain, Option<BrokerMethod>, Option<crate::public_api::PublicOperationMethodV1>, Vec<u8>, Option<AuthorityEffectBindingV1>) {
-        (self.domain, self.method, self.controller_method, self.request, self.authority)
+    pub fn into_parts(
+        self,
+    ) -> (
+        EffectDomain,
+        Option<BrokerMethod>,
+        Option<crate::public_api::PublicOperationMethodV1>,
+        Vec<u8>,
+        Option<AuthorityEffectBindingV1>,
+    ) {
+        (
+            self.domain,
+            self.method,
+            self.controller_method,
+            self.request,
+            self.authority,
+        )
     }
 }
 
 impl AuthorityEffectBindingV1 {
     /// Assembles complete historical DATA without validation or Native authority.
     #[must_use]
-    pub fn from_parts(parts: (OperationId, u32, ObjectDigest, BrokerAudience, BrokerMethod, ObjectDigest, ObjectDigest, ObjectDigest, bool, ObjectDigest)) -> Self {
-        let (operation_id, step, source_draft_digest, audience, method, template_digest, body_digest, semantic_digest, descriptor_free, digest) = parts;
+    pub fn from_parts(
+        parts: (
+            OperationId,
+            u32,
+            ObjectDigest,
+            BrokerAudience,
+            BrokerMethod,
+            ObjectDigest,
+            ObjectDigest,
+            ObjectDigest,
+            bool,
+            ObjectDigest,
+        ),
+    ) -> Self {
+        let (
+            operation_id,
+            step,
+            source_draft_digest,
+            audience,
+            method,
+            template_digest,
+            body_digest,
+            semantic_digest,
+            descriptor_free,
+            digest,
+        ) = parts;
         Self {
             operation_id,
             step,
@@ -403,7 +455,6 @@ impl AuthorityEffectBindingV1 {
             digest,
         }
     }
-
 }
 
 impl AuthorityEffectBindingV1 {
@@ -471,7 +522,14 @@ impl AuthorityEffectBindingV1 {
 impl EffectLedgerRecord {
     /// Assembles complete historical DATA without validation or Native authority.
     #[must_use]
-    pub fn from_parts(parts: (EffectPlan, EffectState, Option<PreparedAuthorityEffectHistoryV1>, Option<ProjectAdmissionMetadata>)) -> Self {
+    pub fn from_parts(
+        parts: (
+            EffectPlan,
+            EffectState,
+            Option<PreparedAuthorityEffectHistoryV1>,
+            Option<ProjectAdmissionMetadata>,
+        ),
+    ) -> Self {
         let (plan, state, dispatch, project_admission) = parts;
         Self {
             plan,
@@ -483,7 +541,14 @@ impl EffectLedgerRecord {
 
     /// Consumes the complete DATA in original field and destruction order.
     #[must_use]
-    pub fn into_parts(self) -> (EffectPlan, EffectState, Option<PreparedAuthorityEffectHistoryV1>, Option<ProjectAdmissionMetadata>) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        EffectPlan,
+        EffectState,
+        Option<PreparedAuthorityEffectHistoryV1>,
+        Option<ProjectAdmissionMetadata>,
+    ) {
         (self.plan, self.state, self.dispatch, self.project_admission)
     }
 }

@@ -38,8 +38,8 @@ use aos_sandbox::runtime_execution::{
 };
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{
-    AuthorityPublicationStore, EffectFailure, Journal, JournalRecord,
-    JournalTransaction, RecordNamespace,
+    AuthorityPublicationStore, EffectFailure, Journal, JournalRecord, JournalTransaction,
+    RecordNamespace,
 };
 use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt};
@@ -743,9 +743,10 @@ impl ControllerExecutionIntentV1 {
                 "execution specification differs from its admitted Create request".to_owned(),
             ));
         }
-        aos_sandbox_protocol::public_api::create_holder_proof::verify_create_holder_proof_v1(&request).map_err(
-            |_| EffectFailure::Permanent("execution holder proof is invalid".to_owned()),
-        )?;
+        aos_sandbox_protocol::public_api::create_holder_proof::verify_create_holder_proof_v1(
+            &request,
+        )
+        .map_err(|_| EffectFailure::Permanent("execution holder proof is invalid".to_owned()))?;
         read_execution_guest_identity_v1(journal, assignment, &specification)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
 

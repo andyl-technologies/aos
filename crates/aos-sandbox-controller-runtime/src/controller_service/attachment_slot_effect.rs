@@ -16,8 +16,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::attachment_target::ControllerAttachmentTargetInputsV1;
 use super::{
-    ControllerBrokerPlanSignerV1, EffectFailure, ProductionEffectExecutor,
-    sample_ownership_clock,
+    ControllerBrokerPlanSignerV1, EffectFailure, ProductionEffectExecutor, sample_ownership_clock,
 };
 use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;

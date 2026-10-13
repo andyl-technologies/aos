@@ -9,8 +9,7 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerAuthorizationArtifactsV1, BrokerMethod, BrokerRequestEnvelope,
 };
 use aos_sandbox::controller::{
-    OperatorStorageRepairBridgeV1, StorageRepairAdmissionPreparationV1,
-    StorageRepairAdmissionV1,
+    OperatorStorageRepairBridgeV1, StorageRepairAdmissionPreparationV1, StorageRepairAdmissionV1,
 };
 use aos_sandbox::public_api_session::PublicApiPeer;
 use buffa::Message as _;

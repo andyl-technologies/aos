@@ -25,9 +25,7 @@ use aos_sandbox_protocol::public_api::request::DormantPublicApiClientV1;
 use crate::RecordNamespace;
 
 #[cfg(target_os = "linux")]
-use crate::cli_model::{
-    AuditAuthorizationV1, PublicApiAuditMethodV1,
-};
+use crate::cli_model::{AuditAuthorizationV1, PublicApiAuditMethodV1};
 #[cfg(target_os = "linux")]
 use aos_sandbox_protocol::public_api::proto_json::CheckedPolicyPlanV1;
 #[cfg(target_os = "linux")]
@@ -41,8 +39,7 @@ use crate::publisher_authority::{
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use crate::{
     AcceptOutcome, OperationPlan, OwnershipAuthorityVerifier, OwnershipClockObservationError,
-    OwnershipResumeError,
-    OwnershipResumeOutcomeV1, ReconcileOutcome, Reconciler, ReconcilerError,
+    OwnershipResumeError, OwnershipResumeOutcomeV1, ReconcileOutcome, Reconciler, ReconcilerError,
     SingleNodeEffectExecutor, ValidatedUnfinishedOperationV1,
 };
 
@@ -80,18 +77,15 @@ mod operator_recovery_issuance;
 
 #[cfg(target_os = "linux")]
 pub(crate) use operator_recovery_issuance::{
-    RepairPublicTerminalV1,
-    has_operator_storage_repair_settlement_debt_v1,
-    verify_atomic_operator_storage_repair_terminal_v2,
-    verify_operator_storage_repair_failure_v1,
+    RepairPublicTerminalV1, has_operator_storage_repair_settlement_debt_v1,
+    verify_atomic_operator_storage_repair_terminal_v2, verify_operator_storage_repair_failure_v1,
 };
 
 #[cfg(target_os = "linux")]
 pub use operator_recovery_issuance::{
-    OperatorRecoveryIssuanceErrorV1 as OperatorStorageRepairErrorV1,
-    OperatorStorageRepairBridgeV1, StorageRepairAdmissionV1, StorageRepairProgressV1,
-    StorageRepairAdmissionDraftV1, StorageRepairAdmissionPreparationV1,
-    OperatorStorageRepairTerminalV1,
+    OperatorRecoveryIssuanceErrorV1 as OperatorStorageRepairErrorV1, OperatorStorageRepairBridgeV1,
+    StorageRepairAdmissionV1, StorageRepairProgressV1, StorageRepairAdmissionDraftV1,
+    StorageRepairAdmissionPreparationV1, OperatorStorageRepairTerminalV1,
 };
 
 #[cfg(target_os = "linux")]
@@ -3879,9 +3873,7 @@ mod tests {
 
     use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 
-    use crate::{ EffectFailure, EffectObservation, IdempotencyKey,
-        Journal, JournalLimits,
-    };
+    use crate::{EffectFailure, EffectObservation, IdempotencyKey, Journal, JournalLimits};
     use aos_sandbox_protocol::domain_ledger::effect_history::{EffectDomain, EffectPlan, EffectReceipt};
 
     use super::*;

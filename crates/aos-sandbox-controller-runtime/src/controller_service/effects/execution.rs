@@ -411,7 +411,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
     ) -> Result<EffectObservation, EffectFailure> {
         reject_unqualified_delete_effect(plan)?;
 
-        if plan.public_mutation_context()
+        if plan
+            .public_mutation_context()
             .map_err(aos_sandbox::ReconcilerError::from)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
             .is_some_and(|context| context.has_retained_nix_start())
@@ -475,7 +476,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     )
                 })
                 .transpose()?;
-            let observation = host.query_execution(&intent, authorization.as_ref(), context.project(), journal)?;
+            let observation =
+                host.query_execution(&intent, authorization.as_ref(), context.project(), journal)?;
             return match observation {
                 execution::ControllerExecutionObservationV1::Absent => {
                     Ok(EffectObservation::Absent)
@@ -579,7 +581,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
     ) -> Result<EffectReceipt, EffectFailure> {
         reject_unqualified_delete_effect(plan)?;
 
-        if plan.public_mutation_context()
+        if plan
+            .public_mutation_context()
             .map_err(aos_sandbox::ReconcilerError::from)
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
             .is_some_and(|context| context.has_retained_nix_start())
@@ -592,7 +595,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             return nix_environment::resolve(self, operation_id, step, plan, journal);
             #[cfg(not(feature = "online-nix"))]
             return Err(EffectFailure::Retryable(
-                "retained Nix Start awaits genuine session floor and recipe publication owners".to_owned(),
+                "retained Nix Start awaits genuine session floor and recipe publication owners"
+                    .to_owned(),
             ));
         }
 
@@ -683,7 +687,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     )
                 })
                 .transpose()?;
-            let completion = host.apply_execution(&intent, authorization.as_ref(), context.project(), journal)?;
+            let completion =
+                host.apply_execution(&intent, authorization.as_ref(), context.project(), journal)?;
             return Ok(completion.receipt);
         }
         if plan.public_mutation_method()

@@ -35,7 +35,8 @@ fn accepted_nix_start_readback_v2(
     operation_id: OperationId,
 ) -> Result<Option<DecodedNixStartLedgerV2>, ReconcilerError> {
     journal.validate_held_protected_names()?;
-    let Some(operation_bytes) = journal.get(RecordNamespace::Operation, operation_id.as_bytes()) else {
+    let Some(operation_bytes) = journal.get(RecordNamespace::Operation, operation_id.as_bytes())
+    else {
         return Ok(None);
     };
     let operation = decode_operation(operation_bytes)?;
@@ -45,36 +46,59 @@ fn accepted_nix_start_readback_v2(
     if public.method() != PublicOperationMethodV1::StartSandbox {
         return Ok(None);
     }
-    let effect_bytes = journal.get(RecordNamespace::Effect, &effect_key(operation_id, 0))
-        .ok_or(ReconcilerError::CorruptLedger("missing retained Start effect"))?;
+    let effect_bytes = journal
+        .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+        .ok_or(ReconcilerError::CorruptLedger(
+            "missing retained Start effect",
+        ))?;
     let effect = decode_effect(effect_bytes).map_err(ReconcilerError::from)?;
-    let context = effect.plan().public_mutation_context().map_err(ReconcilerError::from)?
-        .ok_or(ReconcilerError::CorruptLedger("missing retained Start context"))?;
+    let context = effect
+        .plan()
+        .public_mutation_context()
+        .map_err(ReconcilerError::from)?
+        .ok_or(ReconcilerError::CorruptLedger(
+            "missing retained Start context",
+        ))?;
     let Some(carrier) = context.nix_start() else {
         return Ok(None);
     };
-    let admission = recovered_public_operation_admission_v1(journal, operation_id)?
-        .ok_or(ReconcilerError::CorruptLedger("missing retained Start authorization"))?;
-    let request = crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(context.canonical_request())
-        .map_err(|_| ReconcilerError::CorruptLedger("invalid original Start request"))?;
+    let admission = recovered_public_operation_admission_v1(journal, operation_id)?.ok_or(
+        ReconcilerError::CorruptLedger("missing retained Start authorization"),
+    )?;
+    let request = crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(
+        context.canonical_request(),
+    )
+    .map_err(|_| ReconcilerError::CorruptLedger("invalid original Start request"))?;
     let expected_effect = EffectPlan::from_public_mutation_context(
-        PublicOperationMethodV1::StartSandbox, context.clone(),
-    ).map_err(ReconcilerError::from)?;
-    if operation.effect_count() != 1 || operation.ownership_gated() || operation.runtime_intent_digest().is_some()
+        PublicOperationMethodV1::StartSandbox,
+        context.clone(),
+    )
+    .map_err(ReconcilerError::from)?;
+    if operation.effect_count() != 1
+        || operation.ownership_gated()
+        || operation.runtime_intent_digest().is_some()
         || effect.plan() != &expected_effect
-        || !matches!(request.request(), aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Start(_))
+        || !matches!(
+            request.request(),
+            aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Start(_)
+        )
         || carrier.operation() != operation_id
         || admission.method() != PublicOperationMethodV1::StartSandbox
         || admission.project() != context.project()
         || admission.accepted_wall_seconds() != context.accepted_wall_seconds()
-        || public.accepted_generation() != carrier.original_generation().checked_add(1)
-            .ok_or(ReconcilerError::CorruptLedger("invalid Start generation"))?
+        || public.accepted_generation()
+            != carrier
+                .original_generation()
+                .checked_add(1)
+                .ok_or(ReconcilerError::CorruptLedger("invalid Start generation"))?
         || admission.authorization().resource_kind() != request.resource_kind()
         || request.selector() != Some(admission.authorization().selector())
         || journal.check_idempotency(request.idempotency_key(), carrier.request_digest())
             != IdempotencyOutcome::Replay(operation_id)
     {
-        return Err(ReconcilerError::CorruptLedger("retained Nix Start lineage disagrees"));
+        return Err(ReconcilerError::CorruptLedger(
+            "retained Nix Start lineage disagrees",
+        ));
     }
     // accept_inner does not compare every nonlocal Effect on replay. This exact
     // readback does so before the compiler is permitted to reconstruct a plan.
@@ -91,12 +115,32 @@ pub(super) fn require_exact_nix_replay_plan_v2(
     operation_id: OperationId,
     plan: &OperationPlan,
 ) -> Result<(), ReconcilerError> {
-    let recorded = journal.get(RecordNamespace::Effect, &effect_key(operation_id, 0))
-        .map(|bytes| decode_effect(bytes).map_err(ReconcilerError::from)).transpose()?;
-    let recorded_nix = recorded.as_ref().map(|effect| effect.plan().public_mutation_context().map_err(ReconcilerError::from))
-        .transpose()?.flatten().is_some_and(|context| context.has_retained_nix_start());
-    let planned_nix = plan.effects.first().map(|effect| effect.public_mutation_context().map_err(ReconcilerError::from))
-        .transpose()?.flatten().is_some_and(|context| context.has_retained_nix_start());
+    let recorded = journal
+        .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+        .map(|bytes| decode_effect(bytes).map_err(ReconcilerError::from))
+        .transpose()?;
+    let recorded_nix = recorded
+        .as_ref()
+        .map(|effect| {
+            effect
+                .plan()
+                .public_mutation_context()
+                .map_err(ReconcilerError::from)
+        })
+        .transpose()?
+        .flatten()
+        .is_some_and(|context| context.has_retained_nix_start());
+    let planned_nix = plan
+        .effects
+        .first()
+        .map(|effect| {
+            effect
+                .public_mutation_context()
+                .map_err(ReconcilerError::from)
+        })
+        .transpose()?
+        .flatten()
+        .is_some_and(|context| context.has_retained_nix_start());
     if !recorded_nix && !planned_nix {
         return Ok(());
     }

@@ -14,9 +14,13 @@ use crate::journal::{
     IdempotencyKey, IdempotencyOutcome, Journal, JournalRecord, JournalTransaction, RecordNamespace,
 };
 
-use super::{ OperationRecord, OperationState, ReconcilerError, decode_operation, effect_key, encode_operation_record,
+use super::{
+    OperationRecord, OperationState, ReconcilerError, decode_operation, effect_key,
+    encode_operation_record,
 };
-use aos_sandbox_protocol::domain_ledger::effect_history::{EffectLedgerRecord, EffectPlan, EffectState, decode_effect, encode_effect};
+use aos_sandbox_protocol::domain_ledger::effect_history::{
+    EffectLedgerRecord, EffectPlan, EffectState, decode_effect, encode_effect,
+};
 
 const CHILD_IDEMPOTENCY_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-child-key.v1\0";
 const CHILD_REQUEST_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-child-request.v1\0";
@@ -78,7 +82,11 @@ fn validate_child(
     }
 
     let effect_bytes = effect.ok_or_else(corrupt)?;
-    if effect_bytes.first() != Some(&aos_sandbox_protocol::domain_ledger::effect_history::RESERVED_OBSERVE_EFFECT_VERSION) {
+    if effect_bytes.first()
+        != Some(
+            &aos_sandbox_protocol::domain_ledger::effect_history::RESERVED_OBSERVE_EFFECT_VERSION,
+        )
+    {
         return Err(corrupt());
     }
     let effect = decode_effect(effect_bytes).map_err(ReconcilerError::from)?;
@@ -231,7 +239,10 @@ pub fn adopt_execution_observe_child_v1(
 
     let (key, request_digest) = observe_child_identity_v1(reservation)?;
     let effect = EffectLedgerRecord::from_parts((
-        EffectPlan::reserved_observe(reservation), EffectState::Planned, None, None,
+        EffectPlan::reserved_observe(reservation),
+        EffectState::Planned,
+        None,
+        None,
     ));
     let transaction_digest: [u8; 32] = Sha256::new()
         .chain_update(CHILD_TRANSACTION_DOMAIN)
@@ -261,8 +272,10 @@ pub fn adopt_execution_observe_child_v1(
         ),
         JournalRecord::idempotency(&key, request_digest, operation_id),
     ];
-    journal.commit(&JournalTransaction::new(transaction_id, records)
-        .map_err(crate::journal::JournalError::from)?)?;
+    journal.commit(
+        &JournalTransaction::new(transaction_id, records)
+            .map_err(crate::journal::JournalError::from)?,
+    )?;
     Ok(true)
 }
 
@@ -291,8 +304,9 @@ mod tests {
 
     use super::*;
     use crate::journal::JournalLimits;
-    use crate::reconciler::{ EffectFailure, EffectObservation, OperationPlan,
-        ReconcileOutcome, Reconciler, SingleNodeEffectExecutor,
+    use crate::reconciler::{
+        EffectFailure, EffectObservation, OperationPlan, ReconcileOutcome, Reconciler,
+        SingleNodeEffectExecutor,
     };
     use aos_sandbox_protocol::domain_ledger::effect_history::{EffectDomain, EffectReceipt};
 

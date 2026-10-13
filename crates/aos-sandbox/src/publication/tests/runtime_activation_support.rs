@@ -18,8 +18,8 @@ use crate::publication::{
 };
 use crate::runtime_authority::RuntimeAuthorityIntentV1;
 use crate::{
-    AuthorityBoundEffectPlanV1, EffectFailure, EffectObservation,
-    IdempotencyKey, Journal, JournalLimits, OperationPlan, Reconciler, SingleNodeEffectExecutor,
+    AuthorityBoundEffectPlanV1, EffectFailure, EffectObservation, IdempotencyKey, Journal,
+    JournalLimits, OperationPlan, Reconciler, SingleNodeEffectExecutor,
 };
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan, EffectReceipt};
 
