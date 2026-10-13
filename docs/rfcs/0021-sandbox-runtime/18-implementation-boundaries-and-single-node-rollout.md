@@ -285,12 +285,17 @@ authority crossings stay Native; lower constructors/observations grant no domain
 authority. Standalone default Journal remains portable. Protected opening,
 typed replay, compaction admission and protected role migrations are still partial.
 
-Protocol's `domain_ledger` owns complete transaction/Idempotency DATA, legacy
-capacity schema/identities and schema-bound record/reducer/replay DATA, reusing
-Journal framing/bounded mechanics. Role validators still borrow actual evidence.
-Decoded phases/projections are not sealed currentness, capacity, postcommit or
-physical admission. Native wrappers retain actual Journal/guards, writer/lock
-loans, causes, indexes, full capacity-family dispatch and closed factories.
+Protocol's `domain_ledger` owns complete transaction/Idempotency DATA,
+capacity schemas/identities and schema-bound record/reducer/replay DATA, reusing
+Journal framing/bounded mechanics. Its `capacity_family` owns all seven closed
+record families, shared accounting and complete-state selection. Original Source
+provenance stays typed through an explicit normal dependency on Source Ledger.
+Native suffix builders retain whole private graph/Journal geometry; lower DATA
+errors project to the original Journal variants at native caller frontiers.
+Role validators still borrow actual evidence. Decoded phases/projections are not
+sealed currentness, capacity, postcommit or physical admission. Native wrappers
+retain actual Journal/guards, writer/lock loans, causes, indexes and closed
+prepared/recovered capacity factories.
 
 Its `public_operation` owns immutable admission/authorization DATA, 64-byte
 durable metadata, a separate closed durable method registry, Operation state
@@ -327,7 +332,8 @@ protected currentness stay with original owners, not this DATA API.
 Protocol's `domain_ledger::effect_history` owns the complete V2-V6 Effect history
 codec, model, context and dispatch DATA. Native Effect retains signed/current
 and Guardian factories, private history enclosures and receipt validation;
-Native Reconciler retains full capacity-transfer and Delete relations. Actual
+Native Journal retains full capacity-transfer and Delete recipes, using
+Reconciler historical helpers. Actual
 Journal, descriptor, writer and clock loans remain with their original owners.
 Consumers use the canonical DATA owner directly; obsolete Native DATA exports
 and historical decoders are retired. Passive history DATA conveys no authority.
