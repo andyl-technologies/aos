@@ -241,8 +241,15 @@ the backend open's probes before Guard installation. The reviewed fixture
 correction stages that genuine open before its full physical refusal baseline,
 checks unchanged Guard, ref, session and Original controls across setup, and
 adds complete selected state, slot and logical-byte equality across the actual
-Guard-factory refusal. All paired retry oracles remain unchanged. Fresh
-qualification of that fixture and owning-gate acceptance remain pending.
+Guard-factory refusal. All paired retry oracles remain unchanged. Corrected
+frozen `885d8bb59c60` (tree `3a1025c85664`) passes all nine compiler and inventory
+phases and all twenty-four focused cases once. The occupied recovery case
+passes in 16.119 seconds; the index-rebuild closure matrix passes in 177.884
+seconds under its original 900-second bound. The other twenty-three cases keep
+their original 120-second bounds. Every actual one-case summary reports one
+pass, with unchanged source, compiler inputs and original and archived binaries.
+The six growing populations, full SDK, owning Nix gates, application targets
+and complete current T1 floor remain pending; scoped success advances no task.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
 Growing populations, full SDK and owning Nix qualification remain pending.
