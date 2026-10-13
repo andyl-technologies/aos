@@ -23,6 +23,7 @@
     (map (name: "ref_advance::disclosure_tests::${name}") names);
 
   boundaryTests = [
+    "occupied_recovery::disclosure_occupied_destination_recovers_interrupted_guard_transition_in_same_factory"
     "recorded::disclosure_recorded_authoring_survives_selected_ack_and_destination_only_reopen"
     "recorded::disclosure_active_three_refuses_malformed_later_properties_before_effects"
     "control_lock::disclosure_install_refuses_retained_original_reader_after_backend_release"

@@ -13,6 +13,9 @@ use terrane_core::identity::{IdentityKind, TERRANE_V1};
 use terrane_core::tree_builder::Tree;
 use terrane_core::tree_format::{ContentRef, Entry, EntryKind, LeafItem, Property, TreeUse};
 
+#[cfg(unix)]
+mod occupied_recovery;
+
 #[tokio::test]
 async fn disclosure_factory_checks_actual_source_and_destination_before_fresh_upload() {
     let unused = raw_fixture().await;
