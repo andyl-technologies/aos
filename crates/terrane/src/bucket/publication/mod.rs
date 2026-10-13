@@ -627,6 +627,53 @@ impl<
         Ok(Some(read))
     }
 
+    /// Captures the original protected lineage recipe before consuming bytes.
+    ///
+    /// The selected row fixes the record key and digest. Its retained physical
+    /// recipe supplies no history completion or source-preservation authority;
+    /// the owning reader must close it under the same actual holder.
+    ///
+    /// # Errors
+    /// Rejects foreign or changed observations, changed physical ancestry,
+    /// missing or malformed lineage bytes, digest or source-name disagreement,
+    /// and unavailable protected reads.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(crate) async fn selected_lineage_record_retained(
+        &self,
+        observed: &SelectedObservation<'_>,
+        name: &str,
+    ) -> Result<Option<receipts::RecordRead>, StoreFailure> {
+        let control = self.check_observation(observed).await?;
+        let Some(row) = observed.state().sources.iter().find(|row| row.name == name) else {
+            return Ok(None);
+        };
+        let suffix: String = row
+            .digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let batch = control
+            .held_reads(self.fs(), observed.identity())
+            .await?
+            .retaining_original();
+        let read = batch
+            .read_observed(&format!("publication/lineage/{suffix}"))
+            .await?;
+        let bytes = read.bytes().ok_or_else(corrupt)?;
+        if digest(bytes) != row.digest {
+            return Err(corrupt());
+        }
+        let lineage = terrane_core::gc::publication::evidence::CheckedLineage::decode(bytes)
+            .map_err(|_| corrupt())?;
+        if lineage.source_name != row.name {
+            return Err(corrupt());
+        }
+
+        batch.finish().await?;
+        self.check_observation(observed).await?;
+        Ok(Some(read))
+    }
+
     async fn check_observation(
         &self,
         observed: &SelectedObservation<'_>,
