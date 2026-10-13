@@ -16,6 +16,9 @@ use super::{ClientCustody, ClientSession};
 #[path = "reference/evidence.rs"]
 mod evidence;
 
+#[path = "reference/retirement.rs"]
+mod retirement;
+
 #[path = "reference/controller_preparation.rs"]
 mod controller_preparation;
 pub use controller_preparation::ReferenceControllerPreparationFailure;

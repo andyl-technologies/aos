@@ -53,6 +53,7 @@ fn reserve(
             owner,
             implementation: implementation.clone(),
             source_roots: vec![implementation],
+            source_custody: None,
             publication: None,
             connection_incident: Rc::new(RefCell::new(None)),
             private_launch: b"private original launch".to_vec(),

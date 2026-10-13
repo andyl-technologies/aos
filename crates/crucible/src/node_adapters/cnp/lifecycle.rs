@@ -17,6 +17,9 @@ impl CnpControlledReference {
         }
         if self.status != DeviceStatus::Quarantined {
             let graceful = self.close_native_application();
+            // Only this successful original native cleanup seals semantic release.
+            // Kernel reaping and the subsequent contained status cannot mint it.
+            self.semantic_release = graceful.is_ok();
             self.status = DeviceStatus::Quarantined;
             // A failed public cleanup is not reaping evidence. The actual
             // original group remains owned by the reserved supervisor slot.
@@ -61,7 +64,16 @@ impl CnpControlledReference {
             };
             self.verify_cleanup(&result.cleanup_receipt, &request_id, None)?;
         } else {
-            if self.windows.values().any(|window| !window.consumed) {
+            if self.input.is_some()
+                || self.pending.is_some()
+                || self.windows.values().any(|window| {
+                    !window.closed
+                        || !window.consumed
+                        || window.receipt.is_none()
+                        || window.result.is_none()
+                        || window.observations.is_none()
+                })
+            {
                 return Err(ProviderError::Correlation(
                     "public native output obligations remain unresolved",
                 ));

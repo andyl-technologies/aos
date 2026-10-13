@@ -21,6 +21,10 @@ pub use extensions::CnpExtensionAttachmentFailure;
 #[path = "process_attachment.rs"]
 mod original_attachment;
 
+#[path = "process_retirement.rs"]
+mod retirement;
+pub use retirement::CnpSemanticRetirement;
+
 pub(super) enum CnpRegistrar {
     Legacy(Handshake),
     Extensions(ExtensionHandshake),
@@ -55,6 +59,7 @@ pub trait CnpProcessCustodySlot {
 pub struct CnpPeerCustody {
     pub(super) child: Child,
     pub(super) directory: PathBuf,
+    directory_handle: Option<File>,
     pub(super) controller: Option<ReferenceController>,
     pub(super) handshake: Option<CnpRegistrar>,
     pub(super) companion: Option<u32>,
@@ -76,6 +81,23 @@ impl CnpPeerCustody {
     /// Returns the original private operational directory under native custody.
     pub fn private_directory(&self) -> &std::path::Path {
         &self.directory
+    }
+
+    /// Duplicates the actual directory retained with the original launched peer.
+    ///
+    /// The original descriptor remains in native custody. Later path replacement
+    /// cannot redirect private operational archival to another directory.
+    ///
+    /// # Errors
+    /// Refuses missing original directory custody or descriptor duplication failure.
+    pub fn duplicate_private_directory(&self) -> Result<File, ProviderError> {
+        Ok(self
+            .directory_handle
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "original private directory handle unavailable",
+            ))?
+            .try_clone()?)
     }
 
     /// Requests containment and reports only actual reaping plus an empty private group.
@@ -162,10 +184,11 @@ impl CnpLaunchGuard {
         slot: Box<dyn CnpProcessCustodySlot>,
     ) -> Result<Self, CnpLaunchFailure> {
         let group = i32::try_from(child.id()).ok().and_then(Pid::from_raw);
-        let guard = Self {
+        let mut guard = Self {
             custody: Some(Box::new(CnpPeerCustody {
                 child,
                 directory,
+                directory_handle: None,
                 controller: None,
                 handshake: None,
                 companion: None,
@@ -179,6 +202,27 @@ impl CnpLaunchGuard {
             })),
             slot,
         };
+        let directory_result = match guard.custody.as_mut() {
+            Some(custody) => rustix::fs::open(
+                &custody.directory,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .map(|directory| custody.directory_handle = Some(File::from(directory)))
+            .map_err(std::io::Error::from),
+            None => Err(std::io::Error::other(
+                "original launch guard custody unavailable",
+            )),
+        };
+        if let Err(error) = directory_result {
+            return Err(CnpLaunchFailure {
+                error: error.into(),
+                guard,
+            });
+        }
         let result = match group {
             Some(group) => match getpgid(Some(group)).map_err(std::io::Error::from) {
                 Ok(actual) if actual == group => Ok(()),

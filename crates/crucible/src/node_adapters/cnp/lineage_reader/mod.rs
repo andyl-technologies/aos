@@ -338,6 +338,7 @@ impl LineageControlledReference {
             gate,
             companion_pid: native_pid,
             status: DeviceStatus::Parked,
+            semantic_release: false,
             preparation_attempt: None,
             prepared: None,
             active: None,

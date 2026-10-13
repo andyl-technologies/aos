@@ -225,6 +225,7 @@ pub(super) fn prepare(
         owner: request.owner,
         implementation: installed.package.identity().clone(),
         source_roots: request.source_roots,
+        source_custody: Some(Rc::new(installed.package.retain_original_sources()?)),
         publication: None,
         connection_incident: incidents.clone(),
         private_launch,

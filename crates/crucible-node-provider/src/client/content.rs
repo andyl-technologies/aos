@@ -11,8 +11,10 @@ use crate::{ProviderError, bodies::*};
 #[path = "content_installation_tests.rs"]
 mod installation_tests;
 
+#[derive(serde::Serialize)]
 struct Transfer {
     reference: ContentRef,
+    #[serde(serialize_with = "serialize_shared_bytes")]
     bytes: Rc<Vec<u8>>,
     complete: bool,
 }
@@ -28,6 +30,24 @@ pub struct ClientContent {
 }
 
 impl ClientContent {
+    pub(super) fn retirement_objects(&self) -> Result<impl serde::Serialize + '_, ProviderError> {
+        if self.transfers.values().any(|transfer| !transfer.complete) {
+            return Err(ProviderError::Correlation(
+                "original content transfer unresolved",
+            ));
+        }
+        for (reference, bytes) in self.objects.values() {
+            reference.verify(bytes.as_slice())?;
+        }
+        Ok((
+            &self.transfers,
+            self.objects
+                .values()
+                .map(|(reference, bytes)| (reference, bytes.as_slice()))
+                .collect::<Vec<_>>(),
+        ))
+    }
+
     pub(super) fn preflight_capacity(
         &self,
         objects: usize,
@@ -381,4 +401,11 @@ mod tests {
         content.chunk(&chunk(0, b"abc")).unwrap();
         assert_eq!(content.get(&reference).unwrap(), b"abc");
     }
+}
+
+fn serialize_shared_bytes<S: serde::Serializer>(
+    bytes: &Rc<Vec<u8>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(bytes.as_slice(), serializer)
 }

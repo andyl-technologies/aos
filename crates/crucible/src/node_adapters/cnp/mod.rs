@@ -35,7 +35,7 @@ pub use lineage::{
 pub use preparation::{CnpPreparationFailure, CnpReferencePreparation, CnpReferenceQualification};
 pub use process::{
     CnpExtensionAttachmentFailure, CnpLaunchFailure, CnpLaunchGuard, CnpPeerCustody,
-    CnpProcessCustodySlot,
+    CnpProcessCustodySlot, CnpSemanticRetirement,
 };
 
 pub use semantic::{

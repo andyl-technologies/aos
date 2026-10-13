@@ -18,6 +18,10 @@ use super::super::{NodeObservedError, refused};
 #[path = "package_metadata_controls.rs"]
 mod metadata_controls;
 
+#[path = "source_artifact_custody.rs"]
+mod source_custody;
+pub(super) use source_custody::OriginalPackageSourceCustody;
+
 const MAXIMUM_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAXIMUM_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 const MAXIMUM_CLOSURE_BYTES: u64 = 4 * 1024 * 1024 * 1024;

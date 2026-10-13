@@ -2171,10 +2171,19 @@ a later outage cannot erase a positively committed original record. Duplicate
 or foreign owner rosters refuse before storage callbacks.
 
 Three affected crates compile their test targets, and all 16 scoped controls
-pass. These checks establish preparation and publication behavior. Complete
-singleton behavioral acceptance remains absent, and reclaimed peer journals
-still need positive semantic resolution before ordinary shutdown can finish.
-Native readiness and capture/restore qualification remain incomplete.
+pass. These checks establish preparation and publication behavior.
+
+Ordinary cleanup now requires positive native semantic resolution and a durable
+archive of the original peer, negotiation and complete control history. Reaping
+alone cannot authorize release. Package source descriptors are retained before
+child creation; their full bytes stream into the same private archive. Failed
+writes retain the original file and capsule, and retries authenticate its exact
+prefix, descriptor, directory, complete readback and synchronization before
+clearing the active slot. Nine filesystem and source-retention controls pass;
+three affected crates compile library and integration targets. Independent
+review verifies all 22 changed source bodies and the emitted control executable.
+The current ordinary package, complete singleton acceptance, end-to-end native
+cleanup, readiness and capture/restore qualification remain incomplete.
 
 ## Selected DMTCP writer package
 

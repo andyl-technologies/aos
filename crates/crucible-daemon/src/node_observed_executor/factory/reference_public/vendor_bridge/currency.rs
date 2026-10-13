@@ -73,6 +73,10 @@ pub(super) struct OriginalBirthCurrency {
 }
 
 impl OriginalBirthCurrency {
+    pub(super) fn scope(&self) -> &ProviderAuthorizationScope {
+        &self.scope
+    }
+
     fn authenticate(&self) -> Result<(), EvidenceError> {
         self.source
             .authenticate(&self.scope, ProviderAuthorityKind::Source)?;

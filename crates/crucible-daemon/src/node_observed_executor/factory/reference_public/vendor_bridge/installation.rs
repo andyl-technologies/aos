@@ -331,7 +331,8 @@ impl ReferenceVendorCleanup {
     pub(in crate::node_observed_executor::factory) fn poll(
         &self,
     ) -> Result<bool, crucible_node_provider::ProviderError> {
-        self.0.poll_reclamation()
+        self.0.poll_reclamation()?;
+        self.0.resolve_ordinary_reclaimed()
     }
 
     pub(in crate::node_observed_executor::factory) fn retained(&self) -> usize {

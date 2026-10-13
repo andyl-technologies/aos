@@ -29,6 +29,19 @@ impl OriginalLaunchUpload {
         })
     }
 
+    pub(super) fn completed_original(&self) -> Result<&[u8], ProviderError> {
+        if !self.frame.attempted
+            || self.frame.cursor != self.frame.bytes.len()
+            || self.frame.deadline.is_none()
+            || self.stdin.is_some()
+        {
+            return Err(ProviderError::Correlation(
+                "original launch upload remains unresolved",
+            ));
+        }
+        Ok(&self.frame.bytes)
+    }
+
     pub(super) fn is_unstarted(&self) -> bool {
         !self.frame.attempted && self.stdin.is_none()
     }

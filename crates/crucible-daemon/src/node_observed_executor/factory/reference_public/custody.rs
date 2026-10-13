@@ -15,12 +15,18 @@ use crucible::{
 use crucible_node_contract::{ContentRef, U64};
 use crucible_node_provider::{ProviderError, connection::ConnectionIncident};
 
+#[path = "custody_archive.rs"]
+mod archive;
+
+use archive::{OriginalArchiveAttempt, RetainedResolvedPeer};
+
 /// Retains the actual host reservation and all original source commitments.
 pub(super) struct PublicPeerScope {
     pub(super) activation: ActivationRecord,
     pub(super) owner: OwnerIdentity,
     pub(super) implementation: ContentRef,
     pub(super) source_roots: Vec<ContentRef>,
+    pub(super) source_custody: Option<Rc<super::package::OriginalPackageSourceCustody>>,
     pub(super) publication: Option<PublicationStatus>,
     pub(super) connection_incident: Rc<RefCell<Option<ConnectionIncident>>>,
     // These private originals may contain admission secrets and never become
@@ -38,11 +44,13 @@ struct Entry {
     custody: Option<CnpPeerCustody>,
     in_flight: bool,
     reclaimed: bool,
+    archive: Option<OriginalArchiveAttempt>,
 }
 
 struct Registry {
     entries: Vec<Option<Rc<RefCell<Entry>>>>,
     next_identity: u64,
+    resolved: Vec<RetainedResolvedPeer>,
     keep_alive: Option<Rc<RefCell<Self>>>,
 }
 
@@ -68,9 +76,14 @@ impl PublicReferenceCustodyQueue {
             .try_reserve_exact(maximum_peers)
             .map_err(|_| ProviderError::ResourceExhausted("public peer reservation allocation"))?;
         entries.resize_with(maximum_peers, || None);
+        let mut resolved = Vec::new();
+        resolved.try_reserve_exact(maximum_peers).map_err(|_| {
+            ProviderError::ResourceExhausted("resolved original peer custody reservation")
+        })?;
         Ok(Self(Rc::new(RefCell::new(Registry {
             entries,
             next_identity: 1,
+            resolved,
             keep_alive: None,
         }))))
     }
@@ -90,6 +103,11 @@ impl PublicReferenceCustodyQueue {
                 "public peer reservation scope differs",
             ));
         }
+        if scope.ordinary_negotiation.is_some() && scope.source_custody.is_none() {
+            return Err(ProviderError::Correlation(
+                "ordinary package source custody was not reserved",
+            ));
+        }
         if let Some(original) = &scope.ordinary_negotiation {
             let original = original.try_borrow().map_err(|_| {
                 ProviderError::Correlation("ordinary negotiation holder is already borrowed")
@@ -101,6 +119,13 @@ impl PublicReferenceCustodyQueue {
             }
         }
         let mut registry = self.0.borrow_mut();
+        if registry.resolved.len() + registry.entries.iter().flatten().count()
+            >= registry.entries.len()
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "original peer lifetime custody credit",
+            ));
+        }
         let index = registry.entries.iter().position(Option::is_none).ok_or(
             ProviderError::ResourceExhausted("public peer reservation unavailable"),
         )?;
@@ -118,6 +143,7 @@ impl PublicReferenceCustodyQueue {
             custody: None,
             in_flight: false,
             reclaimed: false,
+            archive: None,
         }));
         registry.entries[index] = Some(entry.clone());
         registry.keep_alive = Some(self.0.clone());
@@ -295,12 +321,87 @@ impl PublicReferenceCustodyQueue {
         Ok(false)
     }
 
+    /// Resolves one ordinary capsule only after its original semantic and durable seals.
+    pub(super) fn resolve_ordinary_reclaimed(&self) -> Result<bool, ProviderError> {
+        let mut registry = self.0.borrow_mut();
+        let candidate = registry.entries.iter().position(|entry| {
+            entry.as_ref().is_some_and(|entry| {
+                let state = entry.borrow();
+                state.reclaimed
+                    && !state.in_flight
+                    && state.custody.is_some()
+                    && state.scope.ordinary_negotiation.is_some()
+                    && Rc::strong_count(entry) == 1
+            })
+        });
+        let Some(index) = candidate else {
+            return Ok(registry.entries.iter().all(Option::is_none));
+        };
+        if let Some(entry) = &registry.entries[index] {
+            let mut state = entry.borrow_mut();
+            if state.archive.is_none() {
+                state.archive = Some(OriginalArchiveAttempt::prepare(&state)?);
+            }
+            let identity = state.identity;
+            let archive = state.archive.as_mut().ok_or(ProviderError::Correlation(
+                "original archive attempt absent",
+            ))?;
+            archive.poll()?;
+            if !archive.complete_for(identity) {
+                return Err(ProviderError::Correlation(
+                    "original archive acknowledgement differs",
+                ));
+            }
+        }
+        let original = registry.entries[index]
+            .take()
+            .ok_or(ProviderError::Correlation(
+                "original resolution slot absent",
+            ))?;
+        let mut entry = match Rc::try_unwrap(original) {
+            Ok(original) => original.into_inner(),
+            Err(original) => {
+                registry.entries[index] = Some(original);
+                return Ok(false);
+            }
+        };
+        // All private originals travel together after the SAME attempt's positive
+        // acknowledgement. They stay actor-owned; the durable file survives exit.
+        match (entry.archive.take(), entry.custody.take()) {
+            (Some(archive), Some(custody)) => {
+                registry
+                    .resolved
+                    .push(archive.acknowledge(ReclaimedPublicPeer {
+                        scope: entry.scope,
+                        custody,
+                    }))
+            }
+            (archive, custody) => {
+                entry.archive = archive;
+                entry.custody = custody;
+                registry.entries[index] = Some(Rc::new(RefCell::new(entry)));
+                return Err(ProviderError::Correlation(
+                    "sealed original capsule incomplete",
+                ));
+            }
+        }
+        if registry.entries.iter().all(Option::is_none) {
+            registry.keep_alive = None;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     pub(super) fn take_reclaimed(&self) -> Option<ReclaimedPublicPeer> {
         let mut registry = self.0.borrow_mut();
         let index = registry.entries.iter().position(|entry| {
             entry.as_ref().is_some_and(|entry| {
                 let state = entry.borrow();
-                state.reclaimed && !state.in_flight && state.custody.is_some()
+                state.reclaimed
+                    && !state.in_flight
+                    && state.custody.is_some()
+                    && state.archive.is_none()
             })
         })?;
         let original = registry.entries[index].take()?;

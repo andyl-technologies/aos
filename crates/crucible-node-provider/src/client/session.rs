@@ -42,7 +42,7 @@ pub struct ClientPeer {
 }
 
 /// Retains one immutable original request and its last authentic transport response.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize)]
 pub struct ClientOriginal {
     /// Contains the complete original method, IDs, scope and request body.
     pub request: Envelope,

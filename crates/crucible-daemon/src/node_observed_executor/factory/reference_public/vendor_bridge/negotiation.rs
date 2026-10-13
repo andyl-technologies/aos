@@ -67,6 +67,40 @@ impl OriginalReferenceNegotiation {
             && !self.controller_attempted
     }
 
+    pub(in crate::node_observed_executor::factory::reference_public) fn write_attached_originals(
+        &self,
+        output: &mut impl std::io::Write,
+    ) -> Result<(), ProviderError> {
+        if !self.controller_attempted
+            || self.handshake.is_some()
+            || self.session.is_some()
+            || self.journal.is_some()
+            || self.controller.is_some()
+            || self.failed_controller.is_some()
+            || !self.hello.attempted()
+        {
+            return Err(ProviderError::Correlation(
+                "original negotiation was not completely attached",
+            ));
+        }
+        let hello = self
+            .hello
+            .response()
+            .ok_or(ProviderError::Correlation("original Hello unresolved"))?;
+        let launch = self.upload.completed_original()?;
+        serde_json::to_writer(
+            output,
+            &(
+                self.hello.request(),
+                hello,
+                launch,
+                self.birth_currency.scope(),
+            ),
+        )
+        .map_err(crucible_node_contract::ContractError::from)?;
+        Ok(())
+    }
+
     /// Transfers the negotiated session only through the retaining constructor.
     ///
     /// The fixed source caller bounds and validates profile/bootstrap originals
