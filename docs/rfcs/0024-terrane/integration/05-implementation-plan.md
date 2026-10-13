@@ -186,8 +186,14 @@ returns no native record, which ordinary capture rejects. The reviewed fixture
 correction forwards genuine capture, read and check requests, counts actual
 DATA attempts and applies faults to real files. It also preserves ordinary
 configuration inputs separately from the genuine Original-authority factory.
-Fresh qualification uses `9eb165056748` (tree `fbb2974bc95e`); formatting and
-strict default Clippy pass, with SDK compilation and runtime still pending.
+Qualification of `9eb165056748` (tree `fbb2974bc95e`) passes formatting, both
+strict Clippy profiles, SDK test compilation, the default build and inventory.
+Its first case times out in 120.004 seconds at the unchanged limit; the other
+three remain unstarted. Source review identifies a surviving source adapter
+that retains a namespace exclusion duplicate across fresh authorization.
+The reviewed test-only correction releases that adapter while preserving
+every assertion and genuine first-control acquisition. The timeout log does
+not identify its unfinished await; renewed runtime qualification is pending.
 The submitted-closing cancellation regression now drops every caller hold
 and independently tests both exclusions while the actual native worker is
 paused before its unchanged physical checks. These source preparations and
