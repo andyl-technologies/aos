@@ -135,7 +135,7 @@ use aos_sandbox_protocol::domain_ledger::ownership_gate::{
 use aos_sandbox_protocol::domain_ledger::operation::{
     OPERATION_RECORD_V1_BYTES, OPERATION_RUNTIME_INTENT_DIGEST_BYTES, RECORD_VERSION_V1,
 };
-use aos_sandbox_protocol::domain_ledger::public_operation::{OperationState, resource_version};
+use aos_sandbox_protocol::domain_ledger::public_operation::OperationState;
 pub(crate) use aos_sandbox_protocol::domain_ledger::public_operation::{
     public_operation_method_from_record_code_v1, public_operation_method_record_code_v1,
 };

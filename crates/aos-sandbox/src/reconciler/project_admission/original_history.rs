@@ -774,7 +774,7 @@ pub(in crate::reconciler) fn validate_all(journal: &Journal) -> Result<(), Recon
     Ok(())
 }
 
-fn validate_original_projection(
+pub(super) fn validate_original_projection(
     journal: &Journal,
     operation: aos_sandbox_core::OperationId,
     metadata: &ProjectAdmissionMetadata,

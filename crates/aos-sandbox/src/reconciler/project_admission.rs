@@ -45,6 +45,8 @@ use original_history::{
 };
 #[cfg(test)]
 use original_history::dispatch_readback_from_original_graph;
+#[cfg(test)]
+use original_history::validate_original_projection;
 #[cfg(any(test, feature = "project-negative-recovery-vm-fixture"))]
 pub(super) use original_history::retained_create_sandbox_admission_revision_v1;
 
