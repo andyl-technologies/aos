@@ -133,6 +133,17 @@ Workers retain disjoint file ownership and separate worktrees. Independent
 review remains separate. One coordinated compiler serves build and Nix requests.
 T2 and branch worklines remain deferred.
 
+Current qualification uses frozen head `d1071dc9e1a2` (tree `04b7bc9ff9a1`).
+The exact formatter pair, strict SDK all-target Clippy, SDK all-target
+compilation and default native build pass. Its actual inventory contains
+1,116 tests across three AOS executables, with none ignored. The first 22
+focused cases pass with unchanged source, compiler inputs and executables;
+the remaining six cases and broader qualification remain pending. Full
+original task-diff review is complete for the 99 core-test, 58 ref-advance
+and 103 bucket paths. Two isolated bucket presentation corrections add a
+missing panic contract and method separation, with unchanged test bodies.
+The 158-path collector review and all formal task acceptance remain pending.
+
 The renewed frozen composition `342f1cf7114b` (tree `90fb7240d717`) passes
 the exact formatter pair, strict SDK all-target Clippy, SDK all-target test
 compilation and the default native build. Its actual inventory contains 1,113
