@@ -2944,6 +2944,17 @@ and extension dispatch remain present in the reviewed joins. Full selected
 codec/budget validation, unchanged model-generation proof, incoming native Hello,
 complete native settlement and fresh adoption remain separate unfinished steps.
 
+## Bound stopped-RR diagnostic driver
+
+The stopped-initialization example binds the signed native preparation-return
+source and complete 192-byte diagnostic patch while preserving the separate
+128-byte initialization profile. Its stdout marker now matches the selected
+profile and JSON result. Current all-target strict checks and fresh normal
+operator code generation pass. Historical FIFO/capsule/parser controls retain
+their original source scope. Actual native diagnostic execution still requires
+a genuinely realized matching native/plugin/source tuple; no installed pair,
+HOLD, readiness, guest execution or capture result is claimed.
+
 ## Six prepared directed-ring mapping hold
 
 The plugin constructor retains an opaque roster of its six original network,

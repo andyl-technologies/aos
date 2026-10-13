@@ -43,12 +43,14 @@ use rustix::time::{ClockId, clock_gettime};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
-const ROOT_SOURCE: &str = "259e5846aff2e688f9f82395ef25cbd5ff964b59";
+const ROOT_SOURCE: &str = "4fdf30a24c3c1424ac8ecc77f8b08d3bd14a36f0";
 const NATIVE_SOURCE: &str = "76a9f7c3d9b79154d751273ac308c0fb0edd4c86";
 const HOOK_SOURCE: &str = "38b8898a4ab64d6675a55ab747e970890e91156149e590a7b0860f4f2ed7ebe0";
-const RR_NATIVE_SOURCE: &str = "2d578074117056de32caecc9c72cf2fd21b1a955";
-// Planned record support grants no dispatch while its actual issuer is unfrozen.
-const RR_HOOK_SOURCE: Option<&str> = None;
+const RR_NATIVE_SOURCE: &str = "6695f4ba0c893044c0d2c969a866fd0304b1fe78";
+// The complete diagnostic patch binds the issuer and finite stdout hook.
+// A real matching package/plugin tuple is still required before dispatch.
+const RR_HOOK_SOURCE: Option<&str> =
+    Some("f81f5d86880e5993b3b40c8ecdc1a9e4dc4249b73c02deed1552991d96a6ffe0");
 const ASSET_SOURCE: &str = "93906e44fd95be6808cd84868b72f9bc0093cb1e9d068acbdf64698539ddaac1";
 const MAXIMUM_ASSET: u64 = 512 * 1024 * 1024;
 
@@ -584,7 +586,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err(refusal("original custody was not retained"));
     }
     let _retained_until_supervisor_exit = Box::leak(Box::new((host, factory, retained)));
-    println!("STOPPED_INIT_PASS pid={original_pid}");
+    println!("{status} pid={original_pid}");
     Ok(())
 }
 
