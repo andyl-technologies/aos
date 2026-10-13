@@ -2448,6 +2448,14 @@ source auditing and native Aio caller qualification remain unexecuted. The API
 itself grants no process, credit or dispatch authority and does not establish
 complete GLib context, poll, wakeup or thread backing ownership.
 
+An actual iPXE metadata evaluation exposed a missing package argument: the
+recipe requested `make`, while the AOS package catalog exposes `gnumake`.
+The corrected recipe uses `gnumake` consistently in its formal dependency,
+build dependency list and three command interpolations. Source syntax and
+format checks pass. The earlier successful metadata evaluation explicitly
+injected `make = gnumake` into the preceding recipe; its output identities
+remain separate from this correction. Package compilation remains pending.
+
 ## Selected plugin preparation and process fencing
 
 The selected plugin retains one original Unix socket, setup descriptor journal,

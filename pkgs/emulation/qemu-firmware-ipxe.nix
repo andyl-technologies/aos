@@ -7,7 +7,7 @@
   fetchurl,
   gccUnwrapped,
   binutils,
-  make,
+  gnumake,
   bash,
   perl,
   python3,
@@ -28,7 +28,7 @@ in
       hash = "sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=";
     };
 
-    buildDeps = [gccUnwrapped binutils make bash perl python3 xz];
+    buildDeps = [gccUnwrapped binutils gnumake bash perl python3 xz];
     runtimeDeps = [];
 
     phases = [
@@ -47,10 +47,10 @@ in
         script = ''
           # Hosted EfiRom and compression helpers use the AOS wrapper; firmware
           # uses raw GCC so no hosted loader or rpath enters freestanding code.
-          ${make}/bin/make -C roms/edk2/BaseTools/Source/C/Common \
+          ${gnumake}/bin/make -C roms/edk2/BaseTools/Source/C/Common \
             -j"$NIX_BUILD_CORES" HOST_ARCH=X64 CC="$CC" AR="${binutils}/bin/ar" \
             SHELL="${bash}/bin/bash"
-          ${make}/bin/make -C roms/edk2/BaseTools/Source/C/EfiRom \
+          ${gnumake}/bin/make -C roms/edk2/BaseTools/Source/C/EfiRom \
             -j"$NIX_BUILD_CORES" HOST_ARCH=X64 CC="$CC" AR="${binutils}/bin/ar" \
             SHELL="${bash}/bin/bash"
 
@@ -62,7 +62,7 @@ in
             for target in $targets; do
               set -- "$@" "$directory/$target.$extension"
             done
-            ${make}/bin/make -C roms/ipxe/src -j"$NIX_BUILD_CORES" \
+            ${gnumake}/bin/make -C roms/ipxe/src -j"$NIX_BUILD_CORES" \
               CONFIG=qemu V=1 HOST_CC="$CC" CC="${gccUnwrapped}/bin/gcc" \
               AS="${binutils}/bin/as" LD="${binutils}/bin/ld" \
               AR="${binutils}/bin/ar" OBJCOPY="${binutils}/bin/objcopy" \
