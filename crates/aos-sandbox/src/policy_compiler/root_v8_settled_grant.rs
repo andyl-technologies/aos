@@ -18,7 +18,7 @@ use std::time::Duration;
 use aos_sandbox_core::ObjectDigest;
 
 use super::binding_v2::RootV8SuccessorSettlementV1;
-use super::controller_readback_session::fresh_root_nonce;
+use super::root_nonce::fresh_root_nonce;
 use super::root_v8_released_proof::POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2;
 
 /// Identifies the distinct Root V8 successor-settlement query.

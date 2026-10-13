@@ -552,7 +552,7 @@ pub fn acknowledge_fixed_closed_root_v8_effect_v1(
         epoch,
         uid,
         credential,
-        super::super::controller_readback_session::fresh_root_nonce,
+        super::super::root_nonce::fresh_root_nonce,
         exchange,
     )
 }
@@ -588,8 +588,8 @@ pub fn acknowledge_and_verify_fixed_closed_root_v8_terminal_v1(
         epoch,
         uid,
         credential,
-        super::super::controller_readback_session::fresh_root_nonce,
-        super::super::controller_readback_session::fresh_root_nonce,
+        super::super::root_nonce::fresh_root_nonce,
+        super::super::root_nonce::fresh_root_nonce,
         exchange,
     )
 }
@@ -625,15 +625,15 @@ pub fn acknowledge_verify_and_release_fixed_closed_root_v8_terminal_v1(
         epoch,
         uid,
         credential,
-        super::super::controller_readback_session::fresh_root_nonce,
-        super::super::controller_readback_session::fresh_root_nonce,
+        super::super::root_nonce::fresh_root_nonce,
+        super::super::root_nonce::fresh_root_nonce,
         &mut exchange,
     )?;
     release_verified_terminal_after_command_in_authority(
         &mut authority,
         terminal,
         uid,
-        super::super::controller_readback_session::fresh_root_nonce,
+        super::super::root_nonce::fresh_root_nonce,
         |challenge, terminal_digest| {
             exchange(RootV8HeldTerminalStepV1::FinalRelease {
                 challenge,

@@ -76,7 +76,7 @@ where
     let deadline = Deadline::capture(cutoff)?;
     profile.recheck()?;
     deadline.require_current()?;
-    let nonce = super::super::controller_readback_session::fresh_root_nonce()?;
+    let nonce = super::super::root_nonce::fresh_root_nonce()?;
     let correlation = Correlation::from_bootstrap(
         &Correlation {
             nonce,

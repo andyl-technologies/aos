@@ -19,7 +19,7 @@ use crate::journal::{
 };
 
 use super::super::PinnedSourceHoldReadbackSignerV1;
-use super::super::controller_readback_session::fresh_root_nonce;
+use super::super::root_nonce::fresh_root_nonce;
 use super::super::deployment_head::{
     HEAD_KEY, SIGNER_PINS_KEY, decode_policy_signer_pins_v1, verify_historical_packet,
 };

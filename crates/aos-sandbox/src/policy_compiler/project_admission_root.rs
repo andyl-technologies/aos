@@ -67,7 +67,7 @@ use super::controller_hold_readback::PinnedControllerHoldSignerV1;
 use super::controller_project_admission_readback::{
     ControllerProjectAdmissionChallengeV1, verify_controller_project_admission_readback_v1,
 };
-use super::controller_readback_session::fresh_root_nonce;
+use super::root_nonce::fresh_root_nonce;
 use super::deployment_head::{
     HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1,
 };

@@ -333,7 +333,7 @@ pub fn verify_fixed_closed_root_v8_terminal_v1(
         epoch,
         uid,
         credential,
-        super::super::super::controller_readback_session::fresh_root_nonce,
+        super::super::super::root_nonce::fresh_root_nonce,
         exchange,
     )
 }

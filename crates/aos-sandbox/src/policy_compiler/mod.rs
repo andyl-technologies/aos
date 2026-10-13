@@ -5,7 +5,6 @@
 //! actual Root, Source, Cache and Controller custody. Extracting compiler DATA
 //! does not make those effect-owning continuations independent.
 
-mod all_owner_readback_session;
 mod binding_v2;
 mod cache_journal_readback;
 mod cache_readback_pin;
@@ -40,9 +39,8 @@ pub use controller_project_terminal_readback::{
     CONTROLLER_PROJECT_TERMINAL_READBACK_BYTES_V1,
     sign_fixed_controller_project_terminal_readback_v1,
 };
-mod controller_readback_session;
 #[cfg(target_os = "linux")]
-pub(crate) use controller_readback_session::fresh_root_nonce;
+pub(crate) use root_nonce::fresh_root_nonce;
 mod controller_root_receipt_readback_v8;
 mod controller_v8_readback_envelope;
 mod controller_v8_settlement_readback;
@@ -101,6 +99,7 @@ mod publisher_origin;
 mod resolved_policy;
 mod resource_read;
 mod root_challenge_record;
+mod root_nonce;
 mod root_project_admission_proof;
 mod root_startup_journal;
 pub use root_startup_journal::{RootPolicyStartupDeploymentV1, RootPolicyStartupJournalV1};
@@ -236,11 +235,6 @@ mod source_signer_readback;
 #[cfg(target_os = "linux")]
 mod v8_successor_clear;
 
-pub use all_owner_readback_session::{
-    ClosedAllOwnerExpectedHoldsV1, ClosedAllOwnerReadbackErrorV1, ClosedAllOwnerReadbackPacketsV1,
-    ClosedAllOwnerRootChallengeV1, ClosedAllOwnerRootObservationV1,
-    with_fixed_closed_all_owner_readback_session_v1,
-};
 pub use binding_v2::{
     CLOSED_POLICY_BINDING_BYTES_V2, CLOSED_SOURCE_TERMINAL_RECORD_BYTES_V1,
     CONTROLLER_V8_FINAL_RELEASE_BYTES_V1, ClosedPolicyBindingDecisionV2,
@@ -306,10 +300,6 @@ pub use controller_project_admission_readback::{
     ControllerProjectAdmissionReadbackErrorV1, VerifiedControllerProjectAdmissionV1,
     sign_fixed_controller_project_admission_readback_v1,
     verify_controller_project_admission_readback_v1,
-};
-pub use controller_readback_session::{
-    ClosedControllerReadbackSessionErrorV1, ClosedControllerRootChallengeV1,
-    ClosedControllerRootObservationV1, with_fixed_closed_controller_readback_session_v1,
 };
 pub use controller_root_receipt_readback_v8::{
     CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1,

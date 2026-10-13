@@ -30,7 +30,7 @@ use super::wire::{
 
 use crate::hierarchy::controller_genesis::HeldControllerSourceGenesisV1;
 use crate::normal_root::{OriginalNormalRootPeerV1, ProductionControllerNormalRootProfileV1};
-use crate::policy_compiler::controller_readback_session::fresh_root_nonce;
+use crate::policy_compiler::root_nonce::fresh_root_nonce;
 const MAXIMUM_FLIGHT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy)]
