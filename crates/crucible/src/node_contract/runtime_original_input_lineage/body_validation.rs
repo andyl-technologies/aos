@@ -70,6 +70,7 @@ impl OriginalLineageRuntimeRecord {
         }
         Ok(())
     }
+
     // This is a data-integrity check, never an ancestry authority. Only the
     // separate opaque exact restoration context invokes it after independently
     // requiring every actual source's native exact-ancestry validator.
