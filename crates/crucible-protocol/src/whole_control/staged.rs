@@ -90,7 +90,8 @@ impl StagedControlProfile {
     /// Native metadata and local reservation overhead require separate checks.
     pub fn validate(&self) -> Result<(), WholeControlError> {
         self.compute.validate()?;
-        if !(1..=WHOLE_OPERATION_MAX).contains(&self.input_stage_limit)
+        if self.compute.body_byte_limit < super::WHOLE_RESULT_HEADER_BYTES as u32 + 8
+            || !(1..=WHOLE_OPERATION_MAX).contains(&self.input_stage_limit)
             || self.stage_body_byte_limit < (STAGE_HEADER_BYTES + 8 + 4) as u32
             || self.stage_body_byte_limit > WHOLE_BODY_MAX_BYTES
         {

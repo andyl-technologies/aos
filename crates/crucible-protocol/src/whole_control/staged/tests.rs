@@ -388,6 +388,20 @@ fn staged_grammar_refuses_legacy_reserved_unknown_and_oversized_frames() {
 }
 
 #[test]
+fn staged_constructor_reserves_a_complete_empty_result_inventory() {
+    let mut profile = profile();
+    profile.compute.body_byte_limit = 343;
+    assert!(profile.validate().is_err());
+
+    profile.compute.body_byte_limit = 344;
+    assert!(profile.validate().is_ok());
+
+    // The original independently selected edition-one validator is preserved.
+    profile.compute.body_byte_limit = 337;
+    assert!(profile.compute.validate().is_ok());
+}
+
+#[test]
 fn complete_stage_preserves_original_evidence_and_actual_payload_counts() {
     let inventory = input_inventory();
     let body = stage(&inventory);

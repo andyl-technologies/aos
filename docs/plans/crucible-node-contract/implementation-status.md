@@ -2119,7 +2119,9 @@ using checked offsets; native pointers and callback objects remain private.
 The explicit launch selection retains four-vCPU, 50 ps SIM provenance and
 image commitments without granting native construction authority.
 
-All 198 protocol unit controls pass, with one preexisting ignored test. Strict
+The staged constructor reserves the full 344-byte minimum result, including
+its empty queue inventory, and rejects smaller capacities before construction.
+All 199 protocol unit controls pass, with one preexisting ignored test. Strict
 library/test compilation and Clippy pass. The ordinary composite setup encoding
 remains edition two; the staged selection uses an explicit edition three.
 Actual plugin producers, callback integration and complete native readiness
