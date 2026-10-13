@@ -1,7 +1,7 @@
 //! Host-verified all-VM boundary for one atomic network fault choice.
 
 use super::*;
-use crucible::NetworkFaultSelectable;
+use crucible::{NetworkFaultSelectable, SchedulerQuiescenceBlocker};
 
 /// Adds a network choice already proven at the initial scheduler boundary.
 ///
@@ -427,8 +427,21 @@ pub(super) fn validate_network_fault_boundary(
             reason: "scheduler quiescence evidence is unavailable",
         });
     };
-    if !quiescence.is_quiescent() {
-        return Err(not_quiescent_boundary(quiescence));
+    // Frames already inside World links are checkpointed fabric state: a
+    // parked VM consumes none, and the park join retimes any it missed to its
+    // resume instant. Every other blocker is unsettled work.
+    let unsettled = quiescence
+        .blockers
+        .iter()
+        .filter(|blocker| {
+            !matches!(
+                blocker,
+                SchedulerQuiescenceBlocker::NetworkFrameInFlight { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    if !unsettled.is_empty() {
+        return Err(not_quiescent_boundary(&unsettled));
     }
     if pending_network_outputs != 0 {
         return Err(QemuFreshModeledDriverError::NetworkFaultBoundary {
@@ -452,21 +465,22 @@ pub(super) fn validate_network_fault_boundary(
 }
 
 /// Names the leading blockers so a failed physical boundary stays diagnosable.
-fn not_quiescent_boundary(quiescence: &SchedulerQuiescence) -> QemuFreshModeledDriverError {
+fn not_quiescent_boundary(
+    unsettled: &[&SchedulerQuiescenceBlocker],
+) -> QemuFreshModeledDriverError {
     const SUMMARY_BLOCKERS: usize = 8;
 
-    let mut summary = quiescence
-        .blockers
+    let mut summary = unsettled
         .iter()
         .take(SUMMARY_BLOCKERS)
         .map(|blocker| format!("{blocker:?}"))
         .collect::<Vec<_>>()
         .join("; ");
-    if quiescence.blockers.len() > SUMMARY_BLOCKERS {
+    if unsettled.len() > SUMMARY_BLOCKERS {
         summary.push_str("; ...");
     }
     QemuFreshModeledDriverError::NetworkFaultBoundaryNotQuiescent {
-        count: quiescence.blockers.len(),
+        count: unsettled.len(),
         summary,
     }
 }

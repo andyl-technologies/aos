@@ -1383,7 +1383,7 @@ impl SingleScheduler {
         blockers.extend(
             network_targets
                 .into_iter()
-                .map(|target| SchedulerQuiescenceBlocker::DeviceCompletionInFlight { target }),
+                .map(|target| SchedulerQuiescenceBlocker::NetworkFrameInFlight { target }),
         );
 
         for node in &self.nodes {

@@ -251,3 +251,87 @@ fn network_fault_branch_commits_only_at_its_joined_boundary() {
         Err(SchedulerError::BoundaryViolation { .. })
     ));
 }
+
+#[test]
+fn join_resumes_frames_a_parked_vm_missed_at_its_first_deliverable_instant() {
+    let mut scheduler = test_scheduler(vec![runnable("a", 50), runnable("b", 30)], Vec::new());
+    let tick = |scheduler: &SingleScheduler, ticks: u64| {
+        scheduler.network_tick_for_time(SimInstant { ticks })
+    };
+    let (parked_at, missed_at, later_at, resume) = (
+        tick(&scheduler, 30),
+        tick(&scheduler, 45),
+        tick(&scheduler, 58),
+        tick(&scheduler, 50),
+    );
+
+    // Router `a` keeps sending toward `b` after `b` parked at 30: one frame
+    // falls due inside the interval `b` will skip, one after the join.
+    let link_id = scheduler_link_id_for_nodes(&vm("a"), &vm("b"));
+    let direction = NetworkLinkDirection::EndpointAToEndpointB;
+    let mut link = crucible_device::NetLink::new(0, 1, 1, crucible_device::LinkFaults::none())
+        .unwrap_or_else(|error| panic!("test link should build: {error}"));
+    link.advance_to(parked_at)
+        .unwrap_or_else(|error| panic!("receiver clock should reach its park: {error}"));
+    for (emit_icount, frame_id) in [(missed_at, 1), (later_at, 2)] {
+        link.emit(
+            &crucible_device::Frame::new(emit_icount, frame_id, vec![frame_id as u8]),
+            &crucible_device::FrameDraws::default(),
+            crucible_device::PastDeliveryPolicy::FailLoud,
+        )
+        .unwrap_or_else(|error| panic!("test frame should enter flight: {error}"));
+    }
+    let delivery_icounts = |scheduler: &SingleScheduler| {
+        scheduler.world_network_links[&(link_id.clone(), direction)]
+            .link
+            .snapshot()
+            .inflight()
+            .iter()
+            .map(|pending| pending.delivery_icount())
+            .collect::<Vec<_>>()
+    };
+    scheduler.world_network_links.insert(
+        (link_id.clone(), direction),
+        WorldNetworkLinkRuntime {
+            canonical_id: link_id.clone(),
+            endpoint_a: vm("a"),
+            endpoint_b: vm("b"),
+            direction,
+            scheduler_node: scheduler_node("link-a-b", SchedulingNodeKind::Network),
+            rng_stream: RngStreamId::for_link(link_id.name.clone()),
+            fault_id: crate::DeviceId::from_name("link-a-b"),
+            link,
+        },
+    );
+    let later_delivery = delivery_icounts(&scheduler)[1];
+    for node in ["a", "b"] {
+        scheduler
+            .park_campaign_marker_node(&vm(node))
+            .unwrap_or_else(|error| panic!("VM should park: {error}"));
+    }
+
+    let quiescence = scheduler
+        .quiescence()
+        .unwrap_or_else(|error| panic!("quiescence should project: {error}"));
+    assert!(
+        quiescence
+            .blockers
+            .contains(&SchedulerQuiescenceBlocker::NetworkFrameInFlight { target: vm("b") })
+    );
+    assert!(!quiescence.blockers.iter().any(|blocker| matches!(
+        blocker,
+        SchedulerQuiescenceBlocker::DeviceCompletionInFlight { .. }
+    )));
+
+    scheduler
+        .join_campaign_parks_to_frontier()
+        .unwrap_or_else(|error| panic!("all-parked world should join: {error}"));
+
+    assert_eq!(logical_time(&scheduler, "b"), 50);
+    assert_eq!(
+        delivery_icounts(&scheduler),
+        vec![resume + 1, later_delivery]
+    );
+    let link = &scheduler.world_network_links[&(link_id, direction)].link;
+    assert_eq!(link.current_icount(), resume);
+}

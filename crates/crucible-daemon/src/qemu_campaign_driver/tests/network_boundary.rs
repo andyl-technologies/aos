@@ -389,6 +389,43 @@ fn nonquiescent_boundary_names_its_scheduler_blockers() {
     assert!(summary.contains("traffic-west"));
 }
 
+/// Frames inside World links are checkpointed fabric state, so they do not
+/// hold the boundary open; device work beside them still does.
+#[test]
+fn boundary_admits_link_frames_but_not_device_work_beside_them() {
+    let frame = crucible::SchedulerQuiescenceBlocker::NetworkFrameInFlight {
+        target: node("router-b"),
+    };
+    let validate = |blockers: Vec<crucible::SchedulerQuiescenceBlocker>| {
+        validate_network_fault_boundary(
+            1,
+            VirtualTime { ticks: 10 },
+            VirtualTime { ticks: 10 },
+            Some(&SchedulerQuiescence { blockers }),
+            0,
+            &[],
+            &[],
+        )
+    };
+
+    validate(vec![frame.clone()]).expect("link frames alone settle the boundary");
+
+    let error = validate(vec![
+        frame,
+        crucible::SchedulerQuiescenceBlocker::DeviceCompletionInFlight {
+            target: node("traffic-west"),
+        },
+    ])
+    .expect_err("device work keeps the boundary open");
+    let QemuFreshModeledDriverError::NetworkFaultBoundaryNotQuiescent { count, summary } = &error
+    else {
+        panic!("unexpected boundary error: {error}");
+    };
+    assert_eq!(*count, 1);
+    assert!(!summary.contains("NetworkFrameInFlight"));
+    assert!(summary.contains("traffic-west"));
+}
+
 #[test]
 fn ready_marker_discovers_the_same_public_network_choice_on_repeat() {
     let scenario = network_choice_scenario(&["router-a"]);

@@ -202,6 +202,15 @@ pub enum SchedulerQuiescenceBlocker {
         /// The VM node that still owes the completion.
         target: NodeId,
     },
+    /// A World network link still carries a frame toward a VM.
+    ///
+    /// The frame is checkpointed link state rather than device work. A
+    /// network fault boundary may admit it while every VM is parked; any
+    /// other quiescence decision treats it as a future happening.
+    NetworkFrameInFlight {
+        /// The VM that will receive the frame.
+        target: NodeId,
+    },
 }
 
 /// Error returned while instantiating a production scheduler from a [`World`].
