@@ -11,7 +11,7 @@ use crate::{
     node_scheduling::{NativeInputAcknowledgement, RuntimeInputBatch},
 };
 
-use super::{control::CnpControlledReference, readiness::refused};
+use super::{control::CnpControlledReference, input_commit::InputCommitPeer, readiness::refused};
 use crate::node_adapters::reference_device::control::{ControlledReference, sealed};
 
 impl sealed::Sealed for CnpControlledReference {}

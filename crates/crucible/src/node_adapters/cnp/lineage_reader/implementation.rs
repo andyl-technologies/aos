@@ -11,6 +11,7 @@ use crate::{
     node_scheduling::{NativeInputAcknowledgement, RuntimeInputBatch},
 };
 
+use super::super::input_commit::InputCommitPeer;
 use super::{control::ReaderState, readiness::refused};
 use crate::node_adapters::reference_device::control::{ControlledReference, sealed};
 
@@ -19,25 +20,18 @@ impl sealed::Sealed for ReaderState {}
 impl ControlledReference for ReaderState {
     fn commit_runtime_input_custody(
         &mut self,
-        _original: &RuntimeInputBatch,
-        _commit: &crate::node_scheduling::InputCustodyCommit,
+        original: &RuntimeInputBatch,
+        commit: &crate::node_scheduling::InputCustodyCommit,
     ) -> Result<(), OperationFailure> {
-        // The public Input ACK establishes staged byte custody, not the
-        // later opaque coordinator commit. This source has no consumed-commit
-        // journal yet, so execution must remain closed on the original cut.
-        Err(super::readiness::refused(
-            "public source-consumed input commit is unsupported",
-        ))
+        self.consume_input_commit(original, commit)
     }
 
     fn validate_runtime_input_custody_commit(
         &self,
-        _original: &RuntimeInputBatch,
-        _commit: &crate::node_scheduling::InputCustodyCommit,
+        original: &RuntimeInputBatch,
+        commit: &crate::node_scheduling::InputCustodyCommit,
     ) -> Result<(), OperationFailure> {
-        Err(super::readiness::refused(
-            "public source-consumed input commit validation is unsupported",
-        ))
+        self.validate_consumed_input_commit(original, commit)
     }
 
     fn quantized_facet(&self) -> &str {

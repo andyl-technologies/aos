@@ -1,7 +1,10 @@
 //! Original opaque input commitments consumed by the actual public source journal.
 
 use crucible_node_contract::*;
-use crucible_node_provider::{ProviderError, bodies::*, envelope::Method, input_commit::*};
+use crucible_node_provider::{
+    ProviderError, bodies::*, input_commit::*, reference_service::ReferenceServiceBootstrap,
+};
+use serde::de::DeserializeOwned;
 
 use crate::{
     node_contract::OperationFailure,
@@ -9,19 +12,52 @@ use crate::{
 };
 
 use super::{
-    control::{CnpControlledReference, InputCommitAttempt, original_id},
+    control::{InputCommitAttempt, StagedInput, original_id},
     readiness::{after_native_effect, refused, unknown},
 };
 
-impl CnpControlledReference {
+mod peer;
+
+// Only the two owning reference adapters implement this private transport seam.
+// Their original controllers and source guards retain every native exchange.
+pub(super) trait InputCommitPeer {
+    fn staged_input(&self) -> Option<&StagedInput>;
+    fn staged_input_mut(&mut self) -> Option<&mut StagedInput>;
+    fn commit_owner_binding(&self) -> &OwnerBinding;
+    fn commit_bootstrap(&self) -> Result<ReferenceServiceBootstrap, ProviderError>;
+    fn commit_features(&self) -> Result<IdSet, ProviderError>;
+    fn commit_request_hash(
+        &self,
+        request: Id,
+        body: &InputRequest,
+        extensions: Extensions,
+    ) -> Result<HashRef, ProviderError>;
+    fn commit_upload(&mut self, reference: &ContentRef, bytes: &[u8]) -> Result<(), ProviderError>;
+    fn commit_call(
+        &mut self,
+        request: Id,
+        body: InputRequest,
+        extensions: Extensions,
+    ) -> Result<ResponseBody, ProviderError>;
+    fn commit_record<T: DeserializeOwned + Validate>(
+        &self,
+        reference: &ContentRef,
+    ) -> Result<T, ProviderError>;
+    fn commit_content(&self, reference: &ContentRef) -> Result<&[u8], ProviderError>;
+    fn commit_verify_native(&self) -> Result<(), ProviderError>;
+    fn commit_retain_boundary(
+        &mut self,
+        reference: &ContentRef,
+        dependencies: Vec<ContentRef>,
+    ) -> Result<(), OperationFailure>;
+
     fn check_original_input_commit(
         &self,
         original: &RuntimeInputBatch,
         commit: &InputCustodyCommit,
     ) -> Result<(), OperationFailure> {
         let staged = self
-            .input
-            .as_ref()
+            .staged_input()
             .ok_or_else(|| refused("original public input staging is absent"))?;
         if !std::rc::Rc::ptr_eq(
             &original.activation().authority,
@@ -69,24 +105,23 @@ impl CnpControlledReference {
         Ok(())
     }
 
-    pub(super) fn consume_input_commit(
+    fn consume_input_commit(
         &mut self,
         original: &RuntimeInputBatch,
         commit: &InputCustodyCommit,
     ) -> Result<(), OperationFailure> {
         self.check_original_input_commit(original, commit)?;
         if self
-            .input
-            .as_ref()
+            .staged_input()
             .is_some_and(|staged| staged.commitment.is_some())
         {
             // Every effect attempt owns one original request. Uncertain transfer,
             // receipt allocation or transport cannot be retried as new work.
             return self.validate_consumed_input_commit(original, commit);
         }
-        let controller = self.controller().map_err(unknown)?;
-        if !controller
-            .selected_features()
+        if !self
+            .commit_features()
+            .map_err(unknown)?
             .iter()
             .any(|feature| feature.as_str() == INPUT_COMMIT_FEATURE)
         {
@@ -94,10 +129,9 @@ impl CnpControlledReference {
                 "original public source did not negotiate consumed input commitments",
             ));
         }
-        let bootstrap = controller.bootstrap.clone();
+        let bootstrap = self.commit_bootstrap().map_err(unknown)?;
         let staged = self
-            .input
-            .as_ref()
+            .staged_input()
             .ok_or_else(|| refused("original public input disappeared"))?;
         let staging_receipt = staged
             .acknowledgement
@@ -137,7 +171,7 @@ impl CnpControlledReference {
         intent.validate().map_err(|error| unknown(error.into()))?;
         let public = staged.public.clone();
         let binding_hash = self
-            .owner_binding
+            .commit_owner_binding()
             .identity()
             .map_err(|error| unknown(error.into()))?;
         let request = original_id("input-commit", original.stage_operation()).map_err(unknown)?;
@@ -157,19 +191,9 @@ impl CnpControlledReference {
             extensions: public.extensions.clone(),
         };
         let request_hash = self
-            .controller()
-            .map_err(unknown)?
-            .request_hash_with_extensions(
-                request.clone(),
-                None,
-                Method::Input,
-                true,
-                &public_request,
-                extensions.clone(),
-            )
+            .commit_request_hash(request.clone(), &public_request, extensions.clone())
             .map_err(unknown)?;
-        self.input
-            .as_mut()
+        self.staged_input_mut()
             .ok_or_else(|| refused("original public input disappeared"))?
             .commitment = Some(InputCommitAttempt {
             original: commit.retained_copy(),
@@ -180,19 +204,10 @@ impl CnpControlledReference {
             receipt: None,
             record: None,
         });
-        let controller = self.controller_mut().map_err(unknown)?;
-        controller
-            .upload(original.inventory(), &inventory_bytes)
+        self.commit_upload(original.inventory(), &inventory_bytes)
             .map_err(unknown)?;
-        let response = controller
-            .call_with_extensions(
-                request.clone(),
-                None,
-                Method::Input,
-                true,
-                public_request,
-                extensions,
-            )
+        let response = self
+            .commit_call(request.clone(), public_request, extensions)
             .map_err(unknown)?;
         let Some(MethodResult::Input(result)) = response.result else {
             return Err(unknown(ProviderError::Correlation(
@@ -200,15 +215,10 @@ impl CnpControlledReference {
             )));
         };
         let receipt: ControlReceipt = self
-            .controller()
-            .map_err(unknown)?
-            .record(&result.custody_receipt)
+            .commit_record(&result.custody_receipt)
             .map_err(unknown)?;
-        let custody: InputCustodyRecord = self
-            .controller()
-            .map_err(unknown)?
-            .record(&receipt.record_ref)
-            .map_err(unknown)?;
+        let custody: InputCustodyRecord =
+            self.commit_record(&receipt.record_ref).map_err(unknown)?;
         if custody.execution_owner_id != bootstrap.owner_id
             || custody.owner_generation != bootstrap.authority.owner_generation
             || custody.input_epoch != public.input_epoch
@@ -223,11 +233,8 @@ impl CnpControlledReference {
             )));
         }
         let commit_record_ref = custody.evidence_refs[0].clone();
-        let record: InputCommitRecordV1 = self
-            .controller()
-            .map_err(unknown)?
-            .record(&commit_record_ref)
-            .map_err(unknown)?;
+        let record: InputCommitRecordV1 =
+            self.commit_record(&commit_record_ref).map_err(unknown)?;
         let expected_ids = public
             .events
             .iter()
@@ -236,8 +243,7 @@ impl CnpControlledReference {
             .into_iter()
             .collect::<Vec<_>>();
         let staged_bytes = self
-            .input
-            .as_ref()
+            .staged_input()
             .ok_or_else(|| {
                 unknown(ProviderError::Correlation(
                     "original staged input disappeared",
@@ -263,21 +269,16 @@ impl CnpControlledReference {
             || record.request_id != request
             || result.accepted_event_ids != expected_ids
             || result.input_watermark != public.batch_sequence
-            || self
-                .controller()
-                .map_err(unknown)?
-                .content(&record.staged_bytes)
-                .map_err(unknown)?
-                != staged_bytes
+            || self.commit_content(&record.staged_bytes).map_err(unknown)? != staged_bytes
         {
             return Err(unknown(ProviderError::Correlation(
                 "source commitment receipt changed original retained input",
             )));
         }
-        self.verify_native_custody().map_err(unknown)?;
-        self.retain_boundary_record(&intent.delivery_inventory, Vec::new())
+        self.commit_verify_native().map_err(unknown)?;
+        self.commit_retain_boundary(&intent.delivery_inventory, Vec::new())
             .map_err(after_native_effect)?;
-        self.retain_boundary_record(
+        self.commit_retain_boundary(
             &record.staged_bytes,
             public
                 .events
@@ -286,7 +287,7 @@ impl CnpControlledReference {
                 .collect(),
         )
         .map_err(after_native_effect)?;
-        self.retain_boundary_record(
+        self.commit_retain_boundary(
             &commit_record_ref,
             vec![
                 intent.delivery_inventory.clone(),
@@ -295,16 +296,15 @@ impl CnpControlledReference {
             ],
         )
         .map_err(after_native_effect)?;
-        self.retain_boundary_record(
+        self.commit_retain_boundary(
             &receipt.record_ref,
             vec![custody.pending_inventory, commit_record_ref],
         )
         .map_err(after_native_effect)?;
-        self.retain_boundary_record(&result.custody_receipt, vec![receipt.record_ref])
+        self.commit_retain_boundary(&result.custody_receipt, vec![receipt.record_ref])
             .map_err(after_native_effect)?;
         let attempt = self
-            .input
-            .as_mut()
+            .staged_input_mut()
             .and_then(|staged| staged.commitment.as_mut())
             .ok_or_else(|| {
                 unknown(ProviderError::Correlation(
@@ -316,15 +316,14 @@ impl CnpControlledReference {
         self.validate_consumed_input_commit(original, commit)
     }
 
-    pub(super) fn validate_consumed_input_commit(
+    fn validate_consumed_input_commit(
         &self,
         original: &RuntimeInputBatch,
         commit: &InputCustodyCommit,
     ) -> Result<(), OperationFailure> {
         self.check_original_input_commit(original, commit)?;
         let staged = self
-            .input
-            .as_ref()
+            .staged_input()
             .ok_or_else(|| refused("original public input absent"))?;
         let attempt = staged
             .commitment
@@ -344,16 +343,9 @@ impl CnpControlledReference {
             .staged_bytes
             .verify(&staged.bytes)
             .map_err(|error| unknown(error.into()))?;
-        let retained: ControlReceipt = self
-            .controller()
-            .map_err(unknown)?
-            .record(receipt)
-            .map_err(unknown)?;
-        let custody: InputCustodyRecord = self
-            .controller()
-            .map_err(unknown)?
-            .record(&retained.record_ref)
-            .map_err(unknown)?;
+        let retained: ControlReceipt = self.commit_record(receipt).map_err(unknown)?;
+        let custody: InputCustodyRecord =
+            self.commit_record(&retained.record_ref).map_err(unknown)?;
         if custody.evidence_refs.len() != 1
             || !custody.extensions.is_empty()
             || custody.execution_owner_id != attempt.intent.execution_owner_id
@@ -367,9 +359,7 @@ impl CnpControlledReference {
             )));
         }
         let actual: InputCommitRecordV1 = self
-            .controller()
-            .map_err(unknown)?
-            .record(&custody.evidence_refs[0])
+            .commit_record(&custody.evidence_refs[0])
             .map_err(unknown)?;
         if actual != *record
             || record.intent != attempt.intent
@@ -381,6 +371,6 @@ impl CnpControlledReference {
                 "retained source commitment changed original custody",
             )));
         }
-        self.verify_native_custody().map_err(unknown)
+        self.commit_verify_native().map_err(unknown)
     }
 }

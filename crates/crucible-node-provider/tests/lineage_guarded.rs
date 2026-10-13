@@ -48,6 +48,62 @@ impl LineageSourceCustodySlot for Slot {
 }
 
 #[test]
+fn owning_source_guard_retains_exact_commit_projection_before_native_execution() {
+    let provider = Path::new(env!("CARGO_BIN_EXE_crucible-reference-lineage-provider"));
+    let device = Path::new(env!("CARGO_BIN_EXE_crucible-reference-lineage-device"));
+    let retained = Rc::new(RefCell::new(None));
+    let slot = Box::new(Slot(Rc::clone(&retained)));
+    let (service, guard) = fixture::NativeService::launch(provider, device, false, slot);
+    let (handshake, controller) = client::connect(&service);
+    let mut guard = guard
+        .attach(controller, handshake)
+        .unwrap_or_else(|failure| panic!("actual guarded attachment: {}", failure.error));
+
+    let plan = lifecycle::native_window(&service);
+    let bindings = sdk_plan::execute(
+        &mut guard,
+        &service,
+        &plan,
+        service.private_bindings.clone(),
+    );
+
+    assert!(bindings.contains_key("stop-ref"));
+    assert!(bindings.contains_key("consumption-ref"));
+    assert!(
+        guard
+            .original_input_commit_features(&fixture::id("foreign-realization"))
+            .is_err()
+    );
+    drop(guard);
+    assert!(
+        retained.borrow().is_some(),
+        "whole original journal remains owned"
+    );
+    for _ in 0..300 {
+        if retained
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .poll_reclamation()
+            .unwrap()
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        retained
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .poll_reclamation()
+            .unwrap()
+    );
+    std::fs::remove_file(service.socket()).unwrap();
+    std::fs::remove_dir(service.directory).unwrap();
+}
+
+#[test]
 #[ignore = "Requires the controller-bound current source-built lineage implementation."]
 fn borrowed_installed_callback_unwind_keeps_original_window_and_both_groups() {
     let installation = installed::PackageSelection::from_environment().unwrap();

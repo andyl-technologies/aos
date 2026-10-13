@@ -34,7 +34,21 @@ Five actual provider/client/lineage targets pass 325 controls; 14 tests remain
 ignored. All targets of the three selected crates compile on the exact caller
 successor. These results preserve their separate compiler/source scope.
 
-The ordinary installed package, complete singleton conformance, and end-to-end
-cleanup still need qualification. Generic vendor and lineage-reader consumption hooks
-continue to refuse unsupported behavior. This stage does not qualify native
-backend readiness or mixed-machine state preservation.
+The lineage reader now uses the same private commitment verifier through its
+original two-group source guard. It checks the actual negotiated feature,
+realization and request hash, retains the original effect attempt, and refuses
+execution until the source has consumed the matching commitment and exclusive
+cut. Consumed attempts remain in its runtime history. The two reference
+adapters keep their distinct owning controllers and native custody guards.
+
+On the exact reader successor, all targets of the three selected crates compile;
+five actual provider/client/lineage targets pass 328 controls with 14 ignored.
+The added native source-guard control covers original staged bytes, changed
+realization refusal before execution, native acknowledgement and release, and
+authenticated process-group reclamation. It does not qualify the complete
+opaque reader route or its entire class population.
+
+The ordinary installed package and complete singleton conformance still need
+qualification. Generic vendor consumption remains unsupported by default.
+These stages do not qualify native backend readiness or mixed-machine state
+preservation. Raw compiler and execution evidence remains local.

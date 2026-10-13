@@ -107,3 +107,79 @@ impl ReaderState {
         }
     }
 }
+
+// The selected reader shares commitment validation with the ordinary reference,
+// while every source effect remains beneath its own original two-group guard.
+impl super::super::input_commit::InputCommitPeer for ReaderState {
+    fn staged_input(&self) -> Option<&super::super::control::StagedInput> {
+        self.input.as_ref()
+    }
+
+    fn staged_input_mut(&mut self) -> Option<&mut super::super::control::StagedInput> {
+        self.input.as_mut()
+    }
+
+    fn commit_owner_binding(&self) -> &OwnerBinding {
+        &self.owner_binding
+    }
+
+    fn commit_bootstrap(&self) -> Result<ReferenceServiceBootstrap, ProviderError> {
+        self.verify_native_custody()?;
+        Ok(self.bootstrap.clone())
+    }
+
+    fn commit_features(&self) -> Result<IdSet, ProviderError> {
+        self.verify_native_custody()?;
+        self.guard.original_input_commit_features(&self.realization)
+    }
+
+    fn commit_request_hash(
+        &self,
+        request: Id,
+        body: &crucible_node_provider::bodies::InputRequest,
+        extensions: Extensions,
+    ) -> Result<HashRef, ProviderError> {
+        self.verify_native_custody()?;
+        self.guard
+            .original_input_commit_request_hash(&self.realization, request, body, extensions)
+    }
+
+    fn commit_upload(&mut self, reference: &ContentRef, bytes: &[u8]) -> Result<(), ProviderError> {
+        self.controller_mut()?.upload(reference, bytes)
+    }
+
+    fn commit_call(
+        &mut self,
+        request: Id,
+        body: crucible_node_provider::bodies::InputRequest,
+        extensions: Extensions,
+    ) -> Result<crucible_node_provider::bodies::ResponseBody, ProviderError> {
+        self.controller_mut()?
+            .call_with_extensions(request, body, extensions)
+    }
+
+    fn commit_record<T: serde::de::DeserializeOwned + Validate>(
+        &self,
+        reference: &ContentRef,
+    ) -> Result<T, ProviderError> {
+        let record: T = self.controller()?.record(reference)?;
+        record.validate()?;
+        Ok(record)
+    }
+
+    fn commit_content(&self, reference: &ContentRef) -> Result<&[u8], ProviderError> {
+        self.guard.content(reference)
+    }
+
+    fn commit_verify_native(&self) -> Result<(), ProviderError> {
+        self.verify_native_custody()
+    }
+
+    fn commit_retain_boundary(
+        &mut self,
+        reference: &ContentRef,
+        dependencies: Vec<ContentRef>,
+    ) -> Result<(), crate::node_contract::OperationFailure> {
+        self.retain_boundary_record(reference, dependencies)
+    }
+}

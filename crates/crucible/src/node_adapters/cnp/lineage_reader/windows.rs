@@ -31,6 +31,24 @@ impl ReaderState {
         let input = self.input.as_ref().ok_or(ProviderError::Correlation(
             "public original input unavailable",
         ))?;
+        let committed = input
+            .commitment
+            .as_ref()
+            .filter(|attempt| attempt.receipt.is_some() && attempt.record.is_some())
+            .ok_or(ProviderError::Correlation(
+                "actual source-consumed input commitment unavailable",
+            ))?;
+        if committed.original.cutoff()
+            != Position::new(
+                grant.start.time_ps.checked_add(U64::new(1))?,
+                U64::new(0),
+                Phase::BoundaryControl,
+            )
+        {
+            return Err(ProviderError::Correlation(
+                "public grant changed original committed input cut",
+            ));
+        }
         let pending = self.pending.as_ref().ok_or(ProviderError::Correlation(
             "public original admission unavailable",
         ))?;
@@ -520,6 +538,14 @@ impl ReaderState {
         self.status = DeviceStatus::Parked;
 
         // Preserve the accepted input if duplicate observation became ambiguous.
+        if let Some(attempt) = self
+            .input
+            .as_mut()
+            .and_then(|input| input.commitment.take())
+        {
+            self.input_commit_history
+                .insert(attempt.original.batch().clone(), attempt);
+        }
         self.input = None;
         Ok(())
     }

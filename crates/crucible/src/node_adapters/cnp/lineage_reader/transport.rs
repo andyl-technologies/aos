@@ -91,4 +91,15 @@ impl<'a> OriginalSender<'a> {
         self.current()?;
         self.guard.call(id, operation, method, owned, body)
     }
+
+    pub(super) fn call_with_extensions(
+        &mut self,
+        id: Id,
+        body: crucible_node_provider::bodies::InputRequest,
+        extensions: Extensions,
+    ) -> Result<ResponseBody, ProviderError> {
+        self.current()?;
+        self.guard
+            .call_with_extensions(id, None, Method::Input, true, body, extensions)
+    }
 }

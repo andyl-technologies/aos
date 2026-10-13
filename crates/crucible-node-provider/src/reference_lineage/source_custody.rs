@@ -500,6 +500,65 @@ impl LineageSourceGuard {
             .content(reference)
     }
 
+    /// Reads selected commitment features from the surviving original native source.
+    ///
+    /// # Errors
+    /// Refuses changed provider/native identity, realization or typed registrar.
+    pub fn original_input_commit_features(
+        &self,
+        realization: &Id,
+    ) -> Result<crucible_node_contract::IdSet, ProviderError> {
+        self.with_original_realization(realization, |_| Ok(()))?;
+        let custody = self.custody.as_ref().ok_or(ProviderError::Correlation(
+            "original source custody unavailable",
+        ))?;
+        let controller = custody
+            .controller
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "original controller unavailable",
+            ))?;
+        if let Some(handshake) = &custody.extension_handshake {
+            controller.verify_extension_registrar(handshake)?;
+        }
+        let features = controller.selected_features().clone();
+        self.with_original_realization(realization, |_| Ok(()))?;
+        Ok(features)
+    }
+
+    /// Hashes the same original Input request under surviving native source custody.
+    ///
+    /// The digest is data; it grants no commitment or execution permission.
+    ///
+    /// # Errors
+    /// Refuses changed native identity, realization, registrar or request grammar.
+    pub fn original_input_commit_request_hash(
+        &self,
+        realization: &Id,
+        request: Id,
+        body: &crate::bodies::InputRequest,
+        extensions: crucible_node_contract::Extensions,
+    ) -> Result<crucible_node_contract::HashRef, ProviderError> {
+        self.original_input_commit_features(realization)?;
+        let controller = self
+            .custody
+            .as_ref()
+            .and_then(|custody| custody.controller.as_ref())
+            .ok_or(ProviderError::Correlation(
+                "original controller unavailable",
+            ))?;
+        let hash = controller.request_hash_with_extensions(
+            request,
+            None,
+            Method::Input,
+            true,
+            body,
+            extensions,
+        )?;
+        self.original_input_commit_features(realization)?;
+        Ok(hash)
+    }
+
     /// Sends one original public request while retaining unresolved native custody.
     ///
     /// Realize marks native custody unresolved before socket I/O. Only the actual

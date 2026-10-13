@@ -106,6 +106,36 @@ pub(super) fn execute(
                         crucible_node_provider::bodies::EffectCertainty::NotStarted
                     );
                 }
+                let commitment_hash = if id.as_str() == "commit-original-input-cut" {
+                    let realization = super::fixture::id("realize");
+                    assert!(
+                        controller
+                            .original_input_commit_features(&super::fixture::id(
+                                "foreign-realization"
+                            ))
+                            .is_err()
+                    );
+                    let selected = controller
+                        .original_input_commit_features(&realization)
+                        .unwrap();
+                    assert!(selected.iter().any(|feature| {
+                        feature.as_str()
+                            == crucible_node_provider::input_commit::INPUT_COMMIT_FEATURE
+                    }));
+                    let body = serde_json::from_value(request.body.clone().into()).unwrap();
+                    Some(
+                        controller
+                            .original_input_commit_request_hash(
+                                &realization,
+                                request.request_id.0.as_ref().unwrap().clone(),
+                                &body,
+                                request.extensions.clone(),
+                            )
+                            .unwrap(),
+                    )
+                } else {
+                    None
+                };
                 let response = controller
                     .call_with_extensions(
                         request.request_id.0.unwrap(),
@@ -116,6 +146,31 @@ pub(super) fn execute(
                         request.extensions,
                     )
                     .unwrap_or_else(|error| panic!("{id}: {error}"));
+                if let Some(expected) = commitment_hash {
+                    let crucible_node_provider::bodies::MethodResult::Input(result) =
+                        response.result.as_ref().unwrap()
+                    else {
+                        panic!("original guarded commitment did not complete");
+                    };
+                    let receipt: ControlReceipt = serde_json::from_slice(
+                        controller.content(&result.custody_receipt).unwrap(),
+                    )
+                    .unwrap();
+                    let custody: InputCustodyRecord =
+                        serde_json::from_slice(controller.content(&receipt.record_ref).unwrap())
+                            .unwrap();
+                    assert_eq!(custody.evidence_refs.len(), 1);
+                    let record: crucible_node_provider::input_commit::InputCommitRecordV1 =
+                        serde_json::from_slice(
+                            controller.content(&custody.evidence_refs[0]).unwrap(),
+                        )
+                        .unwrap();
+                    record.validate().unwrap();
+                    assert_eq!(record.request_hash, expected);
+                    let bytes = controller.content(&record.staged_bytes).unwrap();
+                    record.staged_bytes.verify(bytes).unwrap();
+                    assert_eq!(bytes, &[1, 2]);
+                }
                 let value = json!({"body":response.shape});
                 match expected {
                     Expectation::Completed => {
