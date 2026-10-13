@@ -3,6 +3,15 @@
 use super::*;
 
 /// Supplies purely synthetic canonical DATA to the selected codec tests.
+///
+/// This fixture carries no provenance, currentness or append permission. Callers
+/// supply a nonempty key of at most 1024 bytes and an ordinary retained sequence;
+/// unsupported inputs may produce malformed DATA.
+///
+/// # Panics
+///
+/// Panics if unchecked length arithmetic or synthetic row-layout indexing exceeds
+/// its representable bounds. The fixture retains its original unchecked recipe.
 pub fn fixture_batch_v1(key: &[u8], before: &[u8], sequence: u64) -> Vec<u8> {
     let length = 640 + 100 + key.len() + 17;
     let mut bytes = vec![0; length];

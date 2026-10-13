@@ -1,7 +1,7 @@
 //! Compares a complete historical Gate with its selected native Delete batch.
 //!
 //! Protocol owns the Gate model and V1 codec. This private relation retains
-//! Lifecycle's original batch view and projects errors before native callers
+//! Protocol's original checked batch view and projects errors before native callers
 //! receive a Result; it does not activate ownership or grant an effect.
 
 use aos_sandbox_core::OperationId;

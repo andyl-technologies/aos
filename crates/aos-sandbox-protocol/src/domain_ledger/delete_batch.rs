@@ -1,6 +1,6 @@
-//! Borrowed, non-authorizing Delete batch, tombstone and collection DATA.
+//! Owns the complete non-authorizing Delete batch and auxiliary DATA grammar.
 //!
-//! The one codec is shared by native Controller CAS and Source replay:
+//! Native Controller CAS and Source replay share this canonical codec:
 //!
 //! ```text
 //! AOSDEL01 | header608 | W | R | C | E36 | P17 | checksum32
@@ -20,9 +20,12 @@ use super::lifecycle_model::{
     canonical_dependency_postorder_is_complete,
 };
 
+/// Prefixes the historical Delete batch key family.
 pub const BATCH_PREFIX: &[u8] = b"aos.delete.batch.v1\0";
+/// Prefixes the historical pending-tombstone key family.
 pub const TOMBSTONE_PREFIX: &[u8] = b"aos.delete.tombstone.v1\0";
 pub(crate) const COLLECTION_PREFIX: &[u8] = b"aos.delete.collection.v1\0";
+/// Prefixes the historical Delete handoff key family.
 pub const HANDOFF_PREFIX: &[u8] = b"aos.delete.handoff.v1\0";
 
 const BATCH_DOMAIN: &[u8] = b"aos.sandbox.delete.batch.v1\0";
@@ -72,14 +75,22 @@ impl LifecycleDeleteBatchV1 {
         &self.bytes
     }
 
+    /// Returns the project recorded in the canonical batch DATA.
     pub const fn project(&self) -> ProjectId {
         self.project
     }
 
+    /// Returns the operation recorded in the canonical batch DATA.
     pub const fn operation(&self) -> OperationId {
         self.operation
     }
 
+    /// Borrows a completely checked view of the retained canonical bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an encoding/model error for invalid retained DATA or an allocation
+    /// error when checked graph allocation fails.
     pub fn view(&self) -> Result<DeleteBatchViewV1<'_>, LifecycleModelError> {
         DeleteBatchViewV1::decode(&self.bytes)
     }
@@ -102,6 +113,7 @@ impl LifecycleDeleteBatchRecordV1 {
     /// # Errors
     ///
     /// Rejects noncanonical length, batch, reserved bytes or proof fields.
+    /// Returns an allocation error when checked graph reservation or batch copying fails.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LifecycleModelError> {
         if bytes.len() < 72 || !matches!(bytes[0], 1..=3) || !zero(&bytes[1..4]) {
             return Err(corrupt());
@@ -171,10 +183,12 @@ impl LifecycleDeleteBatchRecordV1 {
         &self.native_proof
     }
 
+    /// Returns the exact state/proof payload length.
     pub fn encoded_length(&self) -> usize {
         72 + self.batch.as_bytes().len()
     }
 
+    /// Checks exact repetition or a planned record's terminal successor with the same batch.
     pub fn can_follow(&self, before: &Self) -> bool {
         self.batch == before.batch
             && (self == before || (before.state == 1 && matches!(self.state, 2 | 3)))
@@ -190,6 +204,12 @@ pub struct DeleteBatchViewV1<'bytes> {
 }
 
 impl<'bytes> DeleteBatchViewV1<'bytes> {
+    /// Checks and borrows the complete bounded five-section batch grammar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an encoding/model error for malformed or noncanonical DATA, or
+    /// an allocation error when checked graph allocation fails.
     pub fn decode(bytes: &'bytes [u8]) -> Result<Self, LifecycleModelError> {
         if bytes.len() < 640
             || bytes.len() > MAXIMUM_BYTES
@@ -287,34 +307,47 @@ impl<'bytes> DeleteBatchViewV1<'bytes> {
         Ok(view)
     }
 
+    /// Returns the project recorded in the canonical batch DATA.
     pub fn project(self) -> ProjectId {
         ProjectId::from_bytes(array16(&self.bytes[16..32]))
     }
 
+    /// Returns the operation recorded in the canonical batch DATA.
     pub fn operation(self) -> OperationId {
         OperationId::from_bytes(array16(&self.bytes[32..48]))
     }
 
+    /// Returns the historical transaction identity without authenticating it.
     pub fn transaction(self) -> [u8; 16] {
         array16(&self.bytes[48..64])
     }
 
+    /// Returns the retained predecessor sequence without selecting current state.
     pub fn before_sequence(self) -> u64 {
         raw64(&self.bytes[88..96])
     }
 
+    /// Returns the retained request commitment.
     pub fn request_digest(self) -> [u8; 32] {
         array32(&self.bytes[104..136])
     }
 
+    /// Returns the complete retained graph-plan commitment.
     pub fn graph_plan(self) -> [u8; 32] {
         array32(&self.bytes[264..296])
     }
 
+    /// Returns the established cascade/force DATA bits.
     pub fn flags(self) -> u8 {
         self.bytes[10]
     }
 
+    /// Decodes the retained typed root resource.
+    ///
+    /// # Errors
+    ///
+    /// Returns an encoding error for invalid root DATA; checked view construction
+    /// already excludes that condition.
     pub fn root(self) -> Result<LifecycleResourceV1, LifecycleModelError> {
         resource(&self.bytes[64..81])
     }
@@ -323,14 +356,25 @@ impl<'bytes> DeleteBatchViewV1<'bytes> {
         array32(&self.bytes[self.bytes.len() - 32..])
     }
 
+    /// Borrows the complete original canonical representation.
     pub fn bytes(self) -> &'bytes [u8] {
         self.bytes
     }
 
+    /// Returns the checked row count for one of the five sections.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `section` is greater than four.
     pub fn count(self, section: usize) -> usize {
         self.counts[section]
     }
 
+    /// Borrows the checked rows of one of the five sections.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `section` is greater than four.
     pub fn rows(self, section: usize) -> DeleteRowsV1<'bytes> {
         DeleteRowsV1 {
             remaining: self.sections[section],
@@ -465,6 +509,7 @@ impl<'bytes> DeleteBatchViewV1<'bytes> {
     }
 }
 
+/// Traverses only slices established by a completely checked batch view.
 pub struct DeleteRowsV1<'bytes> {
     remaining: &'bytes [u8],
     section: usize,
@@ -494,10 +539,17 @@ impl<'bytes> Iterator for DeleteRowsV1<'bytes> {
     }
 }
 
+/// Borrows the variable key from a checked W, R or C row.
+///
+/// # Panics
+///
+/// Panics for fewer than 56 bytes when `section == 1`, otherwise fewer than
+/// 100 bytes. Callers retain the checked row/section pairing.
 pub fn row_key(row: &[u8], section: usize) -> &[u8] {
     &row[if section == 1 { 56 } else { 100 }..]
 }
 
+/// Builds the established project/operation batch key.
 pub fn batch_key(project: ProjectId, operation: OperationId) -> Vec<u8> {
     let mut key = Vec::with_capacity(52);
     key.extend_from_slice(BATCH_PREFIX);
@@ -506,6 +558,10 @@ pub fn batch_key(project: ProjectId, operation: OperationId) -> Vec<u8> {
     key
 }
 
+/// Builds the pending-overlay key using the supplied resource encoding.
+///
+/// Canonical callers supply exactly 17 resource bytes; this helper does not
+/// validate that DATA or authenticate its owner.
 pub fn tombstone_key(project: ProjectId, value: &[u8]) -> Vec<u8> {
     let mut key = Vec::with_capacity(57);
     key.extend_from_slice(TOMBSTONE_PREFIX);
@@ -523,6 +579,7 @@ pub(crate) fn collection_key(project: ProjectId, owner: &[u8], class: u8) -> Vec
     key
 }
 
+/// Builds the fixed project/operation handoff key.
 pub fn handoff_key(project: ProjectId, operation: OperationId) -> [u8; 54] {
     let mut key = [0; 54];
     key[..22].copy_from_slice(HANDOFF_PREFIX);
@@ -532,6 +589,11 @@ pub fn handoff_key(project: ProjectId, operation: OperationId) -> [u8; 54] {
 }
 
 /// Validates retained handoff DATA without authenticating its Source reference.
+///
+/// # Errors
+///
+/// Returns an encoding error for malformed handoff shape, mismatched retained
+/// batch context, reserved fields or checksum.
 pub fn validate_handoff(
     bytes: &[u8],
     batch: DeleteBatchViewV1<'_>,
@@ -551,6 +613,13 @@ pub fn validate_handoff(
     checksum(bytes, HANDOFF_DOMAIN)
 }
 
+/// Encodes pending-tombstone DATA from a retained batch and checked W row.
+///
+/// The caller supplies the checked write row; this helper does not validate it.
+///
+/// # Panics
+///
+/// Panics when `row` contains fewer than 68 bytes.
 pub fn tombstone(batch: DeleteBatchViewV1<'_>, row: &[u8]) -> [u8; 160] {
     let mut bytes = [0; 160];
     bytes[..8].copy_from_slice(b"AOSDTS01");
@@ -584,6 +653,14 @@ pub(crate) fn validate_tombstone(bytes: &[u8]) -> Result<(), LifecycleModelError
     checksum(bytes, TOMBSTONE_DOMAIN)
 }
 
+/// Encodes the predecessor or successor collection DATA from a checked C row.
+///
+/// The caller supplies the checked collection row; this helper does not validate it.
+///
+/// # Panics
+///
+/// Panics for fewer than 60 bytes when `after` is false, or fewer than 100 bytes
+/// when `after` is true.
 pub fn collection(project: ProjectId, row: &[u8], after: bool) -> [u8; 128] {
     let mut bytes = [0; 128];
     bytes[..8].copy_from_slice(b"AOSDCG01");
@@ -667,6 +744,7 @@ pub(crate) fn collection_root(
     Ok(digest.finalize().into())
 }
 
+/// Recognizes the four established reserved Delete key prefixes.
 pub fn reserved_key(key: &[u8]) -> bool {
     key.starts_with(BATCH_PREFIX)
         || key.starts_with(TOMBSTONE_PREFIX)
@@ -674,10 +752,16 @@ pub fn reserved_key(key: &[u8]) -> bool {
         || key.starts_with(HANDOFF_PREFIX)
 }
 
+/// Hashes the complete supplied value DATA with SHA-256.
 pub fn native_value_digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
+/// Reads one fixed-width big-endian unsigned integer.
+///
+/// # Panics
+///
+/// Panics unless `bytes` contains exactly eight bytes.
 pub fn raw64(bytes: &[u8]) -> u64 {
     let mut value = [0; 8];
     value.copy_from_slice(bytes);

@@ -11,6 +11,8 @@
 //! scope DATA, the durable method/state registry and established resource projection.
 //! `operation` owns both established Operation record versions and their native
 //! Operation/Effect keys, without acquiring live admission or commit authority.
+//! [`delete_batch`] owns the complete borrowed/owned Delete grammar and auxiliary
+//! DATA; Native Journal admission and real COMMIT readback remain upper.
 //! [`lifecycle_model`] owns typed resources, dependency edges, both established
 //! postorder rules and their shared model errors; current graph admission stays upper.
 //! [`ownership_gate`] owns the complete plan/state and V1 historical Gate codec;

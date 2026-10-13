@@ -332,8 +332,12 @@ Native Delete retains its original batch/Gate relation and Reconciler error
 projection; live activation and current publication validation remain Native.
 Protocol's `domain_ledger::lifecycle_model` owns the complete typed resource/edge
 vocabulary, both postorder rules and the unchanged shared model-error declaration.
-Native wrappers retain their original causes; graph admission and the complete
-Delete grammar remain with their upper owners.
+Native wrappers retain their original causes; graph admission remains upper.
+Protocol owns the complete `domain_ledger::delete_batch` grammar, checked borrowed
+views, owned outcomes and tombstone/collection/handoff DATA. Native Journal
+admission, real-writer COMMIT readback and full Gate/Effect relations remain upper.
+One explicitly gated lower synthetic fixture serves codec and Native replay tests;
+its dev-only feature does not activate production defaults.
 Domain Journal owns whole capacity-transfer, settlement and Delete recipes, with
 fixed original row/error frontiers and opaque Effect/Gate histories
 that do not expose Native plans/drafts. Current admission, activation, clocks,
