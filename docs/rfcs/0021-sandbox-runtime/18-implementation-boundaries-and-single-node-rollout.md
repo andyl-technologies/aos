@@ -337,6 +337,11 @@ Reconciler historical helpers. Actual
 Journal, descriptor, writer and clock loans remain with their original owners.
 Consumers use the canonical DATA owner directly; obsolete Native DATA exports
 and historical decoders are retired. Passive history DATA conveys no authority.
+Protocol's `publication::bound_effect` owns the complete checked draft-to-effect
+binding DATA, including the private template recipe and consuming operation
+coordinates. Native gated admission, historical Delete and runtime-intent checks
+use that canonical owner directly, projecting errors at their original frontiers.
+Publication currentness, activation and effect custody remain Native.
 Protocol's `domain_ledger::ownership_gate` owns the complete Gate plan/state,
 V1 codec and immutable Claim/Draft context validation, using existing lower DATA.
 Native Delete retains its original batch/Gate relation and Reconciler error
