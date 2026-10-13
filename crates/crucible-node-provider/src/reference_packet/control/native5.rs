@@ -15,7 +15,36 @@ use super::super::{
     connected::{PacketConnectedNativeRecord, PacketConnectedProgram},
     coordinator::PacketNative5CoordinatorInstallation,
 };
+mod record;
+
+pub use record::PacketNative5UnderlyingRecord;
+
 use super::*;
+use crate::{handshake::Limits, reference_packet::service::PacketNative5StorageLimits};
+
+/// Retains one service-selected native storage and negotiated transport tuple.
+///
+/// This is inert correlation data. The original service must bind it before any
+/// public dispatch, after authenticating its actual connection and allocating
+/// its selected banks. Neither decoding nor validation proves those allocations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketNative5StorageSelection {
+    /// Retains every selected native snapshot, literal bank and journal ceiling.
+    pub storage: PacketNative5StorageLimits,
+    /// Retains the actual original negotiated receiving limits.
+    pub limits: Limits,
+}
+
+impl PacketNative5StorageSelection {
+    /// Checks the closed selected geometry against implementation hard ceilings.
+    ///
+    /// # Errors
+    /// Refuses unsupported, nonpositive, overflowing or incomplete data geometry.
+    pub fn validate(&self) -> Result<(), ProviderError> {
+        self.storage.validate(&self.limits)
+    }
+}
 
 /// Retains a live complete actor's exact original native-record association.
 ///
@@ -49,9 +78,49 @@ pub struct PacketNative5Record {
     pub world: HashRef,
     /// Names the separate complete original producer-two or reactive-four bytes.
     pub native_record: ContentRef,
+    /// Retains the original service-selected storage and negotiated limits.
+    pub storage_selection: PacketNative5StorageSelection,
 }
 
 impl PacketControl {
+    // This seam is available only to the original native service. It binds data,
+    // not capture permission, and refuses renewal once dispatch has begun.
+    pub(crate) fn bind_complete_original_storage(
+        &mut self,
+        storage: PacketNative5StorageLimits,
+        limits: Limits,
+    ) -> Result<(), ProviderError> {
+        if self.capture_creator != std::process::id() {
+            return Err(ProviderError::Correlation(
+                "native5 storage foreign creator",
+            ));
+        }
+        if self.complete_coordinator.is_none()
+            || self.complete_storage.is_some()
+            || self.realized
+            || self.admitted
+            || self.staged.is_some()
+            || self.active.is_some()
+            || self.fenced
+            || self.native_effect_attempted
+            || self.current_operation.is_some()
+            || !self.originals.is_empty()
+            || !self.begins.is_empty()
+            || !self.begin_requests.is_empty()
+            || !self.content.is_empty()
+            || self.content_bytes != 0
+            || !self.terminals.is_empty()
+        {
+            return Err(ProviderError::Conflict(
+                "native5 storage binding is not original unused birth",
+            ));
+        }
+        let selected = PacketNative5StorageSelection { storage, limits };
+        selected.validate()?;
+        self.complete_storage = Some(selected);
+        Ok(())
+    }
+
     /// Constructs a complete selected producer beneath its actual unopened gate.
     ///
     /// This route retains the original producer configuration and event IDs. The
@@ -211,6 +280,13 @@ impl PacketControl {
             input_epoch: binding.authority.input_epoch.clone(),
             world: self.selection.world.clone(),
             native_record,
+            storage_selection: self
+                .complete_storage
+                .as_ref()
+                .ok_or(ProviderError::Correlation(
+                    "native5 original storage birth is unbound",
+                ))?
+                .clone(),
         };
         let bytes = encode(&receipt)?;
         let root = reference(&bytes)?;

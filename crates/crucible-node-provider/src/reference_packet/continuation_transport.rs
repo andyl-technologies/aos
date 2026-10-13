@@ -81,7 +81,9 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
     ///
     /// The caller supplies an already source-authenticated prospective completed
     /// response. This method verifies syntax, references and finite transport
-    /// geometry, then registers only the first original window. It writes no
+    /// geometry, then registers only the first original window. The response sequence
+    /// supplies the next provider sequence; the completed response receives the
+    /// final sequence and its own window AFTER every actual Blob reply. It writes no
     /// bytes and performs no native effect. The journal leaf settling Capture is
     /// deliberately absent: it is retained locally after this prefix completes.
     ///

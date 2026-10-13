@@ -483,3 +483,6 @@ fn native5_original_fresh_codec_mapping_keeps_actual_policies_and_refuses_other_
     );
     assert_eq!(snapshot.literal_frames().unwrap().count(), 2);
 }
+
+#[path = "native5_endpoint_recovery_tests.rs"]
+mod endpoint_recovery_tests;

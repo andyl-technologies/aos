@@ -71,6 +71,12 @@ impl PacketControl {
                 "native5 complete birth foreign creator",
             ));
         }
+        self.complete_storage
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native5 complete storage birth absent",
+            ))?
+            .validate()?;
         let installed = self
             .complete_coordinator
             .as_ref()
@@ -79,6 +85,28 @@ impl PacketControl {
             ))?;
         installed.validate(&self.selection)?;
         self.endpoint_scope()?;
+        Ok(())
+    }
+
+    // Endpoint allocations must use the SAME storage/Hello tuple retained at
+    // original service birth, including after a recoverable constructor refusal.
+    pub(crate) fn authenticate_complete_storage(
+        &self,
+        storage: &super::super::service::PacketNative5StorageLimits,
+        limits: crate::handshake::Limits,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_complete_birth()?;
+        let original = self
+            .complete_storage
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native5 complete storage birth absent",
+            ))?;
+        if &original.storage != storage || original.limits != limits {
+            return Err(ProviderError::Correlation(
+                "native5 endpoint storage differs from original birth",
+            ));
+        }
         Ok(())
     }
 
@@ -97,11 +125,98 @@ impl PacketControl {
         &mut self,
         request: &Envelope,
     ) -> Result<PacketOriginalCaptureReservation, ProviderError> {
+        let (begin, arguments) = self.validate_original_capture(request)?;
+        let id = request
+            .request_id
+            .0
+            .as_ref()
+            .ok_or(ProviderError::Frame("native5 Capture request absent"))?;
+        let operation = request
+            .operation_id
+            .0
+            .as_ref()
+            .ok_or(ProviderError::Frame("native5 Capture operation absent"))?;
+
+        let retained_request = request.clone();
+        let identity = request.request_hash(RequestOrigin::Controller)?;
+        let unknown = object(ResponseShape::Error {
+            operation_state: OperationState::Unknown,
+            error: ErrorRecord {
+                code: "OUTCOME_UNKNOWN".into(),
+                message: "original native Capture remains unresolved".into(),
+                effect: EffectCertainty::Unknown,
+                retryable: false,
+                details: Map::new(),
+            },
+            extensions: Extensions::new(),
+        })?;
+        self.originals.insert(
+            id.clone(),
+            (
+                identity,
+                PacketControlReply {
+                    body: unknown,
+                    evidence: Vec::new(),
+                },
+            ),
+        );
+        self.begins.insert(operation.clone(), begin.clone());
+        self.begin_requests.insert(operation.clone(), id.clone());
+        self.current_operation = Some(operation.clone());
+        Ok(PacketOriginalCaptureReservation {
+            owner: std::rc::Rc::clone(&self.capture_identity),
+            creator: std::process::id(),
+            request: retained_request,
+            arguments,
+            begin,
+        })
+    }
+
+    /// Checks current complete control bytes before registering a Capture.
+    ///
+    /// The stopped model is read without advancing its cursor, gate or journals.
+    /// The additional bound covers the original pending request, Begin entry,
+    /// request association and unresolved reply that registration will retain.
+    /// This count grants no capture or protocol settlement authority.
+    ///
+    /// # Errors
+    /// Refuses the original scope or selected control byte credit without
+    /// inserting any request, consuming an operation ID or changing the model.
+    pub fn preflight_original_capture(
+        &self,
+        request: &Envelope,
+        maximum_bytes: usize,
+    ) -> Result<usize, ProviderError> {
+        let (_, arguments) = self.validate_original_capture(request)?;
+        let before = self.capture_control_state(arguments.cut, maximum_bytes)?;
+        let original = crate::connection::serialized_credit(request, FRAME)?;
+        let complete = original
+            .checked_mul(4)
+            .and_then(|pending| pending.checked_add(4096))
+            .and_then(|pending| before.bytes().len().checked_add(pending))
+            .filter(|bytes| *bytes <= maximum_bytes)
+            .ok_or(ProviderError::ResourceExhausted(
+                "native5 pending Capture control capacity",
+            ))?;
+        self.validate_original_capture(request)?;
+        Ok(complete)
+    }
+
+    fn validate_original_capture(
+        &self,
+        request: &Envelope,
+    ) -> Result<(BeginRequest, CaptureArguments), ProviderError> {
         if self.capture_creator != std::process::id() {
             return Err(ProviderError::Correlation(
                 "native5 Capture foreign creator",
             ));
         }
+        self.complete_storage
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native5 Capture storage birth absent",
+            ))?
+            .validate()?;
         encode(request)?;
         request.validate()?;
         let RequestBody::Begin(begin) = decode_request(request.method, &request.body)? else {
@@ -172,39 +287,7 @@ impl PacketControl {
             return Err(ProviderError::Correlation("native5 original Capture scope"));
         }
 
-        let retained_request = request.clone();
-        let identity = request.request_hash(RequestOrigin::Controller)?;
-        let unknown = object(ResponseShape::Error {
-            operation_state: OperationState::Unknown,
-            error: ErrorRecord {
-                code: "OUTCOME_UNKNOWN".into(),
-                message: "original native Capture remains unresolved".into(),
-                effect: EffectCertainty::Unknown,
-                retryable: false,
-                details: Map::new(),
-            },
-            extensions: Extensions::new(),
-        })?;
-        self.originals.insert(
-            id.clone(),
-            (
-                identity,
-                PacketControlReply {
-                    body: unknown,
-                    evidence: Vec::new(),
-                },
-            ),
-        );
-        self.begins.insert(operation.clone(), begin.clone());
-        self.begin_requests.insert(operation.clone(), id.clone());
-        self.current_operation = Some(operation.clone());
-        Ok(PacketOriginalCaptureReservation {
-            owner: std::rc::Rc::clone(&self.capture_identity),
-            creator: std::process::id(),
-            request: retained_request,
-            arguments,
-            begin,
-        })
+        Ok((begin, arguments))
     }
 
     /// Captures the registered original control/model and its unchanged-cut anchor.

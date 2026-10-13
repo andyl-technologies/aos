@@ -3257,6 +3257,37 @@ open. This source component grants no graph seal, BIOS writer, installed pair,
 package, native guest or Ready qualification. The separately evaluated d903
 package tuple retains its original source identity.
 
+## Complete endpoint refusal and original prepared banks
+
+Complete Native5 endpoint construction now returns an indivisible recovery
+owner containing the original native actor, connection, policy, supervisor,
+literal Hello and both independently prepared protocol snapshot banks. It
+compares the exact immutable native storage tuple, negotiated limits and actual
+connection-bank capacities before reservations or control input. Retry uses
+those same owners; compatible replacement tuples and changed bank geometry
+refuse without replacement allocation.
+
+All preparation callbacks run with borrowed originals inside an unwind boundary.
+A panic permanently poisons retry and retains its actual payload, whose destructor
+may itself have effects. The completed-Hello service retains the refusal capsule,
+Handshake and original deadline until its original supervisor reclaims the
+process. Earlier partial service-birth failures require a separate ownership
+correction; this stage does not cover them.
+
+The clean qualification source is the committed `fa2bbaa27d` tree plus exactly
+these 21 paths, preserving the previously committed codec correspondence tests.
+Its source index is `78466aa88dfd7770ac65e1015e4cd1698e06dac03b7dd31ec20126f8a442eb03`.
+The same retained provider executable passes 52 focused controls and all 373
+enabled unit tests; 13 existing tests remain ignored. All-target, all-feature
+checks with denied warnings pass, and independent review confirms the exact
+source, executable, dependency bodies and process/resource retirement. The
+handoff is `4cbf50e01b663458535a139669a51865de3ca5f6d44ede7b458cf43b75b923f8`;
+independent review is
+`158f4e1c3a531a3ed20e01487a868fcea97685eefb027bc5334e30940489ad76`.
+
+These component results grant no complete allocator qualification, native
+Capture, prefix settlement, fresh-world adoption or Ready permission.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

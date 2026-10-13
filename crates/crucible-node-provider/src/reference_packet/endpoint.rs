@@ -15,7 +15,9 @@ use crate::{
     ProviderError, blob::*, bodies::*, connection::*, envelope::*, handshake::ConnectionAuthority,
 };
 
+mod capture;
 mod complete;
+pub use complete::{PacketCompleteEndpointRecovery, PacketCompleteEndpointRefusal};
 mod prefix;
 
 const EXCHANGES: usize = 256;
@@ -75,6 +77,7 @@ pub struct PacketEndpoint<S: ProviderStream> {
     transport_credit: usize,
     held: bool,
     complete: Option<complete::CompleteEndpointState>,
+    capture: Option<capture::CaptureFlight<S>>,
 }
 
 /// Returns the same original unopened connection and native owner on refusal.
@@ -161,6 +164,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             transport_credit: 0,
             held: false,
             complete: None,
+            capture: None,
         })
     }
 
@@ -208,6 +212,16 @@ impl<S: ProviderStream> PacketEndpoint<S> {
     /// Refuses held scope, exhausted whole ledger, malformed traffic, unavailable
     /// source content, native disagreement or incomplete original publication.
     pub fn step(&mut self) -> Result<(), ProviderError> {
+        self.step_with_complete_context(None)
+    }
+
+    pub(crate) fn step_with_complete_context(
+        &mut self,
+        context: Option<(
+            &crate::handshake::Handshake,
+            &crate::client::ExchangeDeadline,
+        )>,
+    ) -> Result<(), ProviderError> {
         self.ensure_complete_origin()?;
         if self.held {
             return Err(ProviderError::Conflict("packet endpoint held"));
@@ -232,6 +246,14 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             ));
         };
         let request = frame.envelope;
+        if self.complete.is_some()
+            && matches!(body.as_ref(), RequestBody::Begin(begin) if begin.kind == BeginKind::Capture)
+        {
+            let (handshake, deadline) = context.ok_or(ProviderError::Correlation(
+                "native5 Capture requires original service negotiation custody",
+            ))?;
+            return self.capture_original(&request, handshake, deadline);
+        }
         if let Some(reply) = self.upload(&request, body.as_ref())? {
             self.prepare(&request, &reply)?;
         } else {

@@ -26,7 +26,9 @@ pub use capture::{PacketOriginalCaptureComponent, PacketOriginalCaptureReservati
 mod input;
 mod native5;
 
-pub use native5::PacketNative5Record;
+pub use native5::{
+    PacketNative5Record, PacketNative5StorageSelection, PacketNative5UnderlyingRecord,
+};
 
 pub use continuation::{
     PacketDecodedControlSnapshot, PacketOriginalControlSnapshot, decode_packet_control_snapshot,
@@ -146,6 +148,7 @@ pub struct PacketControl {
     world_coordinator: Option<super::coordinator::PacketWorldCoordinatorInstallation>,
     connected_coordinator: Option<super::coordinator::PacketConnectedCoordinatorInstallation>,
     complete_coordinator: Option<super::coordinator::PacketNative5CoordinatorInstallation>,
+    complete_storage: Option<native5::PacketNative5StorageSelection>,
 }
 
 impl PacketControl {
@@ -274,6 +277,7 @@ impl PacketControl {
             world_coordinator: None,
             connected_coordinator: None,
             complete_coordinator: None,
+            complete_storage: None,
         })
     }
 
@@ -597,6 +601,11 @@ impl PacketControl {
         if self.capture_creator != std::process::id() {
             return Err(ProviderError::Correlation(
                 "packet original dispatch foreign creator",
+            ));
+        }
+        if self.complete_coordinator.is_some() && self.complete_storage.is_none() {
+            return Err(ProviderError::Correlation(
+                "native5 original storage birth is unbound",
             ));
         }
         encode(request)?;

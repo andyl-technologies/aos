@@ -150,6 +150,7 @@ pub(in super::super) fn accept_complete(
             launch.initial_coordinator.bytes.as_slice(),
             &launch.selection,
         )?;
+    let negotiated_limits = authority.limits();
     let mut connection = Connection::new(
         stream,
         authority,
@@ -160,7 +161,7 @@ pub(in super::super) fn accept_complete(
     connection.install_native5_native_codec(&mut bank, policy.clone())?;
     let effect_socket = UnixDatagram::unbound()?;
     effect_socket.connect(&launch.effects)?;
-    let native = match launch.program {
+    let mut native = match launch.program {
         PacketConnectedSourceProgram::Producer { program } => PacketControl::new_complete_producer(
             launch.selection,
             PacketProgram::new(program.events, effect_socket)?,
@@ -172,15 +173,30 @@ pub(in super::super) fn accept_complete(
             coordinator,
         )?,
     };
-    let endpoint = super::super::super::endpoint::PacketEndpoint::new_complete(
+    native.bind_complete_original_storage(launch.storage.clone(), negotiated_limits)?;
+    let endpoint = match super::super::super::endpoint::PacketEndpoint::new_complete(
         connection,
         native,
         policy,
         supervisor.clone(),
         launch.storage,
         hello,
-    )
-    .map_err(|failure| failure.into_parts().2)?;
+    ) {
+        Ok(endpoint) => endpoint,
+        Err(mut failure) => {
+            // Hello has already completed. Retain the SAME failed native,
+            // connection, literal Hello and every prepared bank until its
+            // original host supervisor performs actual kernel reclamation.
+            let containment = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                failure.contain_original()
+            }));
+            let original = (failure, handshake, deadline, supervisor, containment);
+            loop {
+                std::hint::black_box(&original);
+                std::thread::park();
+            }
+        }
+    };
     Ok(PacketSourceService {
         endpoint,
         _handshake: handshake,

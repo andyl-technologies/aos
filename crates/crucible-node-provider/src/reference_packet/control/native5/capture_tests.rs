@@ -22,6 +22,26 @@ fn modeled_active_control() -> PacketControl {
         coordinator.clone(),
     )
     .unwrap();
+    native
+        .bind_complete_original_storage(
+            crate::reference_packet::service::PacketNative5StorageLimits {
+                snapshot_bytes: U64::new(8 * 1024 * 1024),
+                control_snapshot_bytes: U64::new(8 * 1024 * 1024),
+                protocol_snapshot_bytes: U64::new(32 * 1024 * 1024),
+                frame_bank_bytes: U64::new(8 * 1024 * 1024),
+                frames_per_direction: U64::new(4096),
+                hello_bytes: U64::new(1024 * 1024),
+                settlement_bytes: U64::new(32 * 1024 * 1024),
+            },
+            crate::handshake::Limits {
+                frame_bytes: U64::new(65536),
+                requests: U64::new(256),
+                journal_entries: U64::new(4096),
+                nesting: U64::new(64),
+                blob_chunk_bytes: U64::new(4096),
+            },
+        )
+        .unwrap();
     native.program.open_gate().unwrap();
     native.active = Some(WorldActivateRequest {
         transaction_id: native.selection.transaction.clone(),
@@ -195,4 +215,86 @@ fn capture_refuses_foreign_activation_and_equal_shaped_control_without_enrollmen
         "unknown"
     );
     assert!(native.current_operation.is_some());
+}
+
+#[test]
+fn capture_preflight_preserves_originals_on_credit_refusal_and_bounds_pending_state() {
+    let mut native = modeled_active_control();
+    let request = capture_request(&native);
+    let model = native.program.inventory_hash().unwrap();
+    let maximum = 8 * 1024 * 1024;
+
+    assert!(native.preflight_original_capture(&request, 1024).is_err());
+    assert!(native.originals.is_empty());
+    assert!(native.begins.is_empty());
+    assert!(native.begin_requests.is_empty());
+    assert!(native.current_operation.is_none());
+    assert_eq!(native.program.inventory_hash().unwrap(), model);
+
+    let bound = native
+        .preflight_original_capture(&request, maximum)
+        .unwrap();
+    assert!(native.originals.is_empty());
+    assert!(native.begins.is_empty());
+    assert!(native.begin_requests.is_empty());
+    assert!(native.current_operation.is_none());
+    assert_eq!(native.program.inventory_hash().unwrap(), model);
+
+    let reservation = native.reserve_original_capture(&request).unwrap();
+    let component = native
+        .capture_reserved_control(&reservation, maximum)
+        .unwrap();
+    assert!(component.snapshot().bytes().len() <= bound);
+    assert_eq!(native.program.inventory_hash().unwrap(), model);
+    assert!(
+        native
+            .preflight_original_capture(&request, maximum)
+            .is_err()
+    );
+}
+
+#[test]
+fn original_endpoint_storage_tuple_cannot_be_reselected_after_refusal() {
+    let coordinator = fixture::five();
+    let mut native = PacketControl::new_complete_producer(
+        coordinator.participants[0].clone(),
+        producer(),
+        coordinator,
+    )
+    .unwrap();
+    super::tests::bind_storage(&mut native);
+    let selected = super::tests::modeled_storage_selection();
+    let before = native.program.inventory_hash().unwrap();
+    native
+        .authenticate_complete_storage(&selected.storage, selected.limits)
+        .unwrap();
+
+    let mut other_storage = selected.storage.clone();
+    other_storage.protocol_snapshot_bytes =
+        U64::new(other_storage.protocol_snapshot_bytes.get() + 1);
+    other_storage.validate(&selected.limits).unwrap();
+    assert!(
+        native
+            .authenticate_complete_storage(&other_storage, selected.limits)
+            .is_err()
+    );
+
+    let mut other_limits = selected.limits;
+    other_limits.journal_entries = U64::new(other_limits.journal_entries.get() + 1);
+    selected.storage.validate(&other_limits).unwrap();
+    assert!(
+        native
+            .authenticate_complete_storage(&selected.storage, other_limits)
+            .is_err()
+    );
+
+    native
+        .authenticate_complete_storage(&selected.storage, selected.limits)
+        .unwrap();
+    assert_eq!(native.program.inventory_hash().unwrap(), before);
+    assert!(native.originals.is_empty());
+    assert!(native.begins.is_empty());
+    assert!(native.active.is_none());
+    assert!(!native.realized);
+    assert_eq!(native.complete_storage.as_ref(), Some(&selected));
 }

@@ -233,7 +233,8 @@ impl PacketSourceService {
         }
         self.endpoint.wait_for_request()?;
         self.deadline.reset(std::time::Duration::from_secs(5))?;
-        self.endpoint.step()
+        self.endpoint
+            .step_with_complete_context(Some((&self._handshake, &self.deadline)))
     }
 
     /// Borrows the retained endpoint for independent original data inspection.

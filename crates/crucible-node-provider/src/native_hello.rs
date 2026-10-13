@@ -64,6 +64,17 @@ impl OriginalNativeHelloJournal {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn original_test_identity(&self) -> impl Fn(&Self) -> bool + use<> {
+        // Weak identity cannot keep a dropped original bank alive and mask a
+        // constructor custody failure; it compares only same-allocation origin.
+        let original = Rc::downgrade(&self.bank);
+        move |journal| {
+            original.strong_count() != 0
+                && std::rc::Weak::ptr_eq(&original, &Rc::downgrade(&journal.bank))
+        }
+    }
+
     /// Reports the actual byte and descriptor allocation for source admission.
     pub fn allocated_bytes(&self) -> usize {
         self.bank.borrow().allocated_bytes()

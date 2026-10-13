@@ -101,13 +101,10 @@ pub(super) fn plan(
         .try_reserve_exact(count)
         .map_err(|_| ProviderError::ResourceExhausted("capture original frame slots"))?;
     let mut charged_bytes = 0usize;
-    append(
-        &mut frames,
-        &mut charged_bytes,
-        maximum_frame,
-        response.clone(),
-    )?;
-    let mut sequence = response.sequence.get() + 1;
+    // The caller supplies the next original provider sequence. The completed
+    // response is built at the terminal sequence before any frame is enrolled.
+    // Every snapshot/anchor acknowledgement must precede that response.
+    let mut sequence = response.sequence.get();
     let mut contents = BTreeMap::new();
     for (reference, bytes) in [&source.snapshot, &source.anchor] {
         let transfer = Id::new(format!("packet-capture-transfer-{sequence}"))?;
@@ -154,12 +151,16 @@ pub(super) fn plan(
             })?,
         )?;
     }
+    let mut completion = response.clone();
+    completion.sequence = U64::new(sequence);
+    append(&mut frames, &mut charged_bytes, maximum_frame, completion)?;
+    sequence += 1;
     if sequence != next_sequence {
         return Err(ProviderError::Conflict(
             "capture complete sequence accounting",
         ));
     }
-    let window_count = (count - 1).div_ceil(simultaneous);
+    let window_count = (count - 1).div_ceil(simultaneous) + 1;
     let mut windows = VecDeque::new();
     windows
         .try_reserve_exact(window_count)
@@ -170,6 +171,16 @@ pub(super) fn plan(
         .map_err(|_| ProviderError::ResourceExhausted("capture window frame slots"))?;
     let mut requests = 0usize;
     for frame in frames {
+        // Keep the terminal response in its own original window. Its issuance
+        // therefore witnesses completion of all actual preceding Blob replies.
+        if frame.message == MessageKind::Response && !window.is_empty() {
+            windows.push_back(window);
+            window = Vec::new();
+            window
+                .try_reserve_exact(1)
+                .map_err(|_| ProviderError::ResourceExhausted("capture terminal response slot"))?;
+            requests = 0;
+        }
         if frame.message == MessageKind::Request && requests == simultaneous {
             windows.push_back(window);
             window = Vec::new();

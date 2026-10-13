@@ -6,6 +6,9 @@
 
 use super::*;
 
+#[path = "exchange_snapshot.rs"]
+mod snapshot;
+
 const MAXIMUM_EXCHANGE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Retains complete planned frames and actual acknowledgement progress.

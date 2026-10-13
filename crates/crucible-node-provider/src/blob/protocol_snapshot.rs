@@ -5,6 +5,82 @@ use crate::protocol_snapshot::Sequence;
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 use std::cell::Ref;
 
+/// Holds the original operation wrapper and its receiver ledger under one borrow.
+///
+/// This is capture data only. Keeping the borrow prevents settlement or ledger
+/// replacement during the caller's bounded count-and-encode pass.
+pub(crate) struct OperationPinProtocolView<'a> {
+    pin: &'a OperationContentPin,
+    _original: Ref<'a, ReceiverState>,
+}
+
+impl OperationContentPin {
+    /// Borrows this wrapper only with the exact original receiver and pin entry.
+    ///
+    /// No byte allocation, settlement or source-currentness authority is issued.
+    /// The enclosing source authenticates its process and charges serialization.
+    ///
+    /// # Errors
+    /// Refuses a foreign receiver, concurrent mutation, or inconsistent wrapper
+    /// and original ledger identities or settlement state.
+    pub(crate) fn original_protocol_view<'a>(
+        &'a self,
+        receiver: &'a BlobReceiver,
+    ) -> Result<OperationPinProtocolView<'a>, ProviderError> {
+        if !Rc::ptr_eq(&self.receiver, &receiver.state)
+            || self.key.session != receiver.session
+            || self.key.incarnation != receiver.incarnation
+        {
+            return Err(ProviderError::Correlation(
+                "operation pin belongs to another original receiver",
+            ));
+        }
+        let original = self.receiver.try_borrow().map_err(|_| {
+            ProviderError::Correlation("original pin ledger is already mutably borrowed")
+        })?;
+        let entry = original
+            .records
+            .get(&self.key)
+            .and_then(|record| record.pins.get(&self.pin))
+            .ok_or(ProviderError::Correlation(
+                "original operation pin is unavailable",
+            ))?;
+        if entry.owner != self.owner
+            || entry.schema != self.schema
+            || self.settled != (entry.state == PinState::Settled)
+        {
+            return Err(ProviderError::Correlation(
+                "operation pin wrapper conflicts with its original ledger",
+            ));
+        }
+        Ok(OperationPinProtocolView {
+            pin: self,
+            _original: original,
+        })
+    }
+}
+
+impl Serialize for OperationPinProtocolView<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let pin = self.pin;
+        let mut view = serializer.serialize_struct("Native5OperationContentPin", 5)?;
+        view.serialize_field(
+            "key",
+            &(
+                &pin.key.origin,
+                &pin.key.session,
+                &pin.key.incarnation,
+                &pin.key.transfer,
+            ),
+        )?;
+        view.serialize_field("pin", &U64::new(pin.pin))?;
+        view.serialize_field("owner", &pin.owner)?;
+        view.serialize_field("schema", &pin.schema)?;
+        view.serialize_field("settled", &pin.settled)?;
+        view.end()
+    }
+}
+
 pub(crate) struct BlobProtocolOwner(Rc<RefCell<ReceiverState>>);
 
 impl BlobReceiver {
@@ -215,5 +291,52 @@ mod tests {
         assert!(original.original_protocol_view(&authority).is_err());
         drop(lock);
         original.original_protocol_view(&authority).unwrap();
+    }
+    #[test]
+    fn native5_original_pin_wrapper_preserves_exact_owner_and_borrow() {
+        let (_handshake, authority) = crate::handshake::tests::authority();
+        let mut blob = receiver(&authority);
+        let foreign = receiver(&authority);
+        let key = TransferKey {
+            origin: RequestOrigin::Controller,
+            session: authority.session_id().clone(),
+            incarnation: authority.incarnation_id().clone(),
+            transfer: Id::new("original-pin-transfer").unwrap(),
+        };
+        let content = canonical::content_ref(b"abc", "application/octet-stream").unwrap();
+        blob.begin(key.clone(), content.clone()).unwrap();
+        blob.chunk(&key, U64::new(0), &Bytes::new(b"abc".to_vec()))
+            .unwrap();
+        let verified = blob.finish(&key).unwrap();
+        let mut pin = blob
+            .pin_operation(
+                &verified,
+                Id::new("original-operation").unwrap(),
+                content.clone(),
+                &Schema,
+            )
+            .unwrap();
+
+        assert!(pin.original_protocol_view(&foreign).is_err());
+        let view = pin.original_protocol_view(&blob).unwrap();
+        let data = serde_json::to_value(&view).unwrap();
+        assert_eq!(data["pin"], "1");
+        assert_eq!(data["owner"], "original-operation");
+        assert_eq!(data["settled"], false);
+        assert_eq!(data["key"][3], "original-pin-transfer");
+        assert!(blob.state.try_borrow_mut().is_err());
+        drop(view);
+
+        let lock = blob.state.borrow_mut();
+        assert!(pin.original_protocol_view(&blob).is_err());
+        drop(lock);
+        pin.settled = true;
+        assert!(pin.original_protocol_view(&blob).is_err());
+        pin.settled = false;
+        pin.schema = canonical::content_ref(b"other", "application/octet-stream").unwrap();
+        assert!(pin.original_protocol_view(&blob).is_err());
+        pin.schema = content;
+        assert_eq!(pin.with_bytes(|bytes| bytes.to_vec()).unwrap(), b"abc");
+        assert_eq!(blob.reserved_bytes().unwrap(), 3);
     }
 }

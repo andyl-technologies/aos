@@ -18,6 +18,8 @@ pub(super) struct CompleteEndpointState {
     pub(super) hello: OriginalNativeHelloJournal,
     pub(super) before: Option<ProtocolSnapshotReservation>,
     pub(super) after: Option<ProtocolSnapshotReservation>,
+    poisoned: bool,
+    unwind_payload: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl CompleteEndpointState {
@@ -68,63 +70,248 @@ impl CompleteEndpointState {
     }
 }
 
+/// Retains every original complete-source owner after constructor refusal.
+///
+/// The original Hello and both independently prepared snapshot banks remain
+/// beside the same connection and native actor. Legacy endpoint refusal owns
+/// no complete-state resources and keeps its existing recovery interface.
+#[must_use = "retain the complete original owner until authenticated reclamation"]
+pub struct PacketCompleteEndpointRefusal<S: ProviderStream> {
+    original: PacketCompleteEndpointRecovery<S>,
+    error: ProviderError,
+}
+
+impl<S: ProviderStream> PacketCompleteEndpointRefusal<S> {
+    /// Borrows the retained local refusal without releasing its native owner.
+    pub fn error(&self) -> &ProviderError {
+        &self.error
+    }
+
+    /// Transfers the same original owner and all original prepared banks together.
+    pub fn into_original(self) -> PacketCompleteEndpointRecovery<S> {
+        self.original
+    }
+
+    /// Fences the same original connection while retaining every original object.
+    ///
+    /// # Errors
+    /// Refuses a copied creator process or thread before transport callbacks.
+    pub fn contain_original(&mut self) -> Result<(), ProviderError> {
+        self.original.state.ensure_origin()?;
+        self.original.connection.close();
+        Ok(())
+    }
+}
+
+/// Owns the indivisible original resources needed for a complete endpoint retry.
+///
+/// Recovery cannot replace its Hello, native actor, connection, installed source
+/// policy or supervisor. A supplied storage candidate still requires exact
+/// equality with the immutable native birth tuple before any allocation.
+#[must_use = "recover or supervise the entire original complete-source owner"]
+pub struct PacketCompleteEndpointRecovery<S: ProviderStream> {
+    connection: Connection<S>,
+    native: PacketControl,
+    policy: Rc<dyn PacketEndpointPolicy>,
+    supervisor: Rc<dyn BlobSupervisor>,
+    state: CompleteEndpointState,
+}
+
+impl<S: ProviderStream> PacketCompleteEndpointRecovery<S> {
+    /// Borrows the same original literal Hello for independent inert inspection.
+    pub fn hello(&self) -> &OriginalNativeHelloJournal {
+        &self.state.hello
+    }
+
+    /// Returns retained snapshot-bank allocations without releasing either bank.
+    pub fn snapshot_allocations(&self) -> (Option<usize>, Option<usize>) {
+        (
+            self.state
+                .before
+                .as_ref()
+                .map(ProtocolSnapshotReservation::allocated_bytes),
+            self.state
+                .after
+                .as_ref()
+                .map(ProtocolSnapshotReservation::allocated_bytes),
+        )
+    }
+
+    /// Retries the same original endpoint without replacing owners or prepared banks.
+    ///
+    /// # Errors
+    /// Returns this complete owner on changed origin, storage, negotiated limits,
+    /// source policy, actual Hello credit or unavailable original allocation.
+    pub fn retry(
+        self,
+        storage: PacketNative5StorageLimits,
+    ) -> Result<PacketEndpoint<S>, Box<PacketCompleteEndpointRefusal<S>>> {
+        PacketEndpoint::complete_from_original(self, storage)
+    }
+}
+
 impl<S: ProviderStream> PacketEndpoint<S> {
     /// Takes complete native source owners on the same unused archived connection.
     ///
-    /// Actual selected allocations precede control input. The enclosing source
-    /// factory separately charges both endpoints and whole-world peak geometry;
-    /// this constructor cannot manufacture that admission from portable limits.
+    /// Actual selected allocations precede control input. Every refusal retains
+    /// the same Hello, connection, native actor and all banks already prepared.
+    /// The enclosing source factory separately charges whole-world geometry.
     ///
     /// # Errors
-    /// Returns the original connection/native owner on legacy construction,
-    /// invalid finite storage, absent codec bank or failed original blob binding.
+    /// Returns complete original custody on foreign origin, changed immutable
+    /// storage/limits, invalid credit, unavailable allocation or failed source
+    /// authentication. No failure releases a completed Hello or prepared bank.
     pub fn new_complete(
-        mut connection: Connection<S>,
+        connection: Connection<S>,
         native: PacketControl,
         policy: Rc<dyn PacketEndpointPolicy>,
         supervisor: Rc<dyn BlobSupervisor>,
         storage: PacketNative5StorageLimits,
         hello: OriginalNativeHelloJournal,
-    ) -> Result<Self, Box<PacketEndpointRefusal<S>>> {
-        let prepare = || -> Result<CompleteEndpointState, ProviderError> {
-            let authority = connection.provider_authority()?;
-            storage.validate(&authority.limits())?;
-            native.authenticate_complete_birth()?;
-            let maximum = usize::try_from(storage.protocol_snapshot_bytes.get())
-                .map_err(|_| ProviderError::ResourceExhausted("native5 protocol snapshot bytes"))?;
-            let before = ProtocolSnapshotReservation::reserve(maximum)?;
-            let after = ProtocolSnapshotReservation::reserve(maximum)?;
-            Ok(CompleteEndpointState {
+    ) -> Result<Self, Box<PacketCompleteEndpointRefusal<S>>> {
+        let original = PacketCompleteEndpointRecovery {
+            connection,
+            native,
+            policy,
+            supervisor,
+            state: CompleteEndpointState {
                 creator: std::process::id(),
                 thread: std::thread::current().id(),
                 storage: storage.clone(),
                 hello,
-                before: Some(before),
-                after: Some(after),
-            })
+                before: None,
+                after: None,
+                poisoned: false,
+                unwind_payload: None,
+            },
         };
-        let state = match prepare() {
-            Ok(state) => state,
-            Err(error) => {
-                return Err(Box::new(PacketEndpointRefusal {
-                    connection,
-                    native,
-                    error,
+        Self::complete_from_original(original, storage)
+    }
+
+    fn complete_from_original(
+        mut original: PacketCompleteEndpointRecovery<S>,
+        storage: PacketNative5StorageLimits,
+    ) -> Result<Self, Box<PacketCompleteEndpointRefusal<S>>> {
+        // Every callback sees borrowed originals inside one unwind boundary.
+        // The recovery capsule itself remains owned by this outer frame.
+        let preparation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            original.state.ensure_origin()?;
+            if original.state.poisoned {
+                return Err(ProviderError::Correlation(
+                    "native5 original constructor unwound",
+                ));
+            }
+            let authority = original.connection.provider_authority()?.clone();
+            storage.validate(&authority.limits())?;
+            original
+                .native
+                .authenticate_complete_storage(&storage, authority.limits())?;
+
+            let history = usize::try_from(storage.frame_bank_bytes.get())
+                .map_err(|_| ProviderError::ResourceExhausted("native5 original history bytes"))?;
+            let frames = usize::try_from(storage.frames_per_direction.get())
+                .map_err(|_| ProviderError::ResourceExhausted("native5 original history slots"))?;
+            let frame_bytes = usize::try_from(authority.limits().frame_bytes.get())
+                .map_err(|_| ProviderError::ResourceExhausted("native5 negotiated frame bytes"))?;
+            let descriptors = frames
+                .checked_mul(2)
+                .ok_or(ProviderError::ResourceExhausted(
+                    "native5 original descriptor population",
+                ))?;
+            let facts = original.connection.original_native5_storage_facts()?;
+            if facts.maximum_frame_bytes != frame_bytes
+                || facts.maximum_history_bytes != history
+                || facts.maximum_frames_per_direction != frames
+                || facts.byte_capacity != history
+                || facts.descriptor_capacity != descriptors
+                || !facts.all_io_complete
+            {
+                return Err(ProviderError::Correlation(
+                    "native5 original bank differs from selected birth storage",
+                ));
+            }
+
+            // A wrong compatible candidate never changes selected storage or
+            // creates a replacement bank. Already prepared original banks stay.
+            original.state.storage = storage;
+            let maximum = usize::try_from(original.state.storage.protocol_snapshot_bytes.get())
+                .map_err(|_| ProviderError::ResourceExhausted("native5 protocol snapshot bytes"))?;
+            let history = usize::try_from(original.state.storage.frame_bank_bytes.get())
+                .map_err(|_| ProviderError::ResourceExhausted("native5 frozen history bytes"))?;
+            let frames = usize::try_from(original.state.storage.frames_per_direction.get())
+                .map_err(|_| ProviderError::ResourceExhausted("native5 frozen history slots"))?;
+            if original.state.before.is_none() {
+                original.state.before = Some(ProtocolSnapshotReservation::reserve_complete(
+                    maximum, history, frames,
+                )?);
+            }
+            if original.state.after.is_none() {
+                original.state.after = Some(ProtocolSnapshotReservation::reserve_complete(
+                    maximum, history, frames,
+                )?);
+            }
+            original.state.preflight_birth(&authority)?;
+
+            original
+                .policy
+                .authenticate_source(&authority, original.native.endpoint_scope()?)?;
+            let chunk = usize::try_from(authority.limits().blob_chunk_bytes.get())
+                .map_err(|_| ProviderError::ResourceExhausted("packet chunk allowance"))?
+                .min(4096);
+            let uploads = BlobReceiver::new(
+                authority.session_id().clone(),
+                authority.incarnation_id().clone(),
+                BlobLimits {
+                    reserved_bytes: STORED_CONTENT,
+                    content_bytes: CONTENT,
+                    chunk_bytes: chunk,
+                    transfers_per_origin: 256,
+                    tombstones_per_origin: 256,
+                    chunks_per_transfer: 256,
+                    operation_pins: EXCHANGES,
+                },
+                original.supervisor.clone(),
+            )?;
+            let authority = authority.clone();
+            original.connection.bind_native5_blob_receiver(&uploads)?;
+            Ok::<_, ProviderError>((authority, uploads))
+        }));
+        let (authority, uploads) = match preparation {
+            Ok(Ok(prepared)) => prepared,
+            Ok(Err(error)) => {
+                return Err(Box::new(PacketCompleteEndpointRefusal { original, error }));
+            }
+            Err(payload) => {
+                original.state.poisoned = true;
+                // An arbitrary panic payload can run code when dropped. Retain
+                // it beside original custody until authenticated reclamation.
+                original.state.unwind_payload = Some(payload);
+                return Err(Box::new(PacketCompleteEndpointRefusal {
+                    original,
+                    error: ProviderError::Correlation("native5 original constructor unwound"),
                 }));
             }
         };
-        let validate = connection
-            .provider_authority()
-            .and_then(|authority| state.preflight_birth(authority));
-        if let Err(error) = validate {
-            return Err(Box::new(PacketEndpointRefusal {
-                connection,
-                native,
-                error,
-            }));
-        }
-        let mut endpoint = Self::new(connection, native, policy, supervisor)?;
-        endpoint.complete = Some(state);
-        Ok(endpoint)
+        let PacketCompleteEndpointRecovery {
+            connection,
+            native,
+            policy,
+            supervisor: _,
+            state,
+        } = original;
+        Ok(Self {
+            transport: Some(Transport::Connected(connection)),
+            native,
+            authority,
+            policy,
+            uploads,
+            pins: Vec::new(),
+            records: Vec::new(),
+            next_sequence: 2,
+            transport_credit: 0,
+            held: false,
+            complete: Some(state),
+            capture: None,
+        })
     }
 }

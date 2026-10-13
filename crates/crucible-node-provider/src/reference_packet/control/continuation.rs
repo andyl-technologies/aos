@@ -72,6 +72,7 @@ struct ControlView<'a> {
         &'a Option<super::super::coordinator::PacketConnectedCoordinatorInstallation>,
     complete_coordinator:
         &'a Option<super::super::coordinator::PacketNative5CoordinatorInstallation>,
+    complete_storage: &'a Option<super::native5::PacketNative5StorageSelection>,
 }
 
 #[derive(Serialize)]
@@ -177,6 +178,7 @@ impl PacketControl {
                 world_coordinator: &self.world_coordinator,
                 connected_coordinator: &self.connected_coordinator,
                 complete_coordinator: &self.complete_coordinator,
+                complete_storage: &self.complete_storage,
             },
         };
         crate::connection::serialized_credit(&view, maximum_bytes)?;
@@ -254,6 +256,7 @@ struct ControlState {
     connected_coordinator:
         Option<super::super::coordinator::PacketConnectedCoordinatorInstallation>,
     complete_coordinator: Option<super::super::coordinator::PacketNative5CoordinatorInstallation>,
+    complete_storage: Option<super::native5::PacketNative5StorageSelection>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -399,6 +402,15 @@ impl ControlState {
         }
         if let Some(request) = &self.active {
             request.validate()?;
+        }
+        match (&self.complete_coordinator, &self.complete_storage) {
+            (Some(_), Some(selected)) => selected.validate()?,
+            (None, None) => {}
+            _ => {
+                return Err(ProviderError::Correlation(
+                    "native5 captured storage/coordinator mixture",
+                ));
+            }
         }
         if let Some(installed) = &self.complete_coordinator {
             if self.common_coordinator.is_some()

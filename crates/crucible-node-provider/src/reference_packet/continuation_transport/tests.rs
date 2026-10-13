@@ -200,7 +200,6 @@ fn complete_original_prefix_crosses_windows_without_resetting_sequences() {
     );
     peer.set_nonblocking(false).unwrap();
     let worker = thread::spawn(move || {
-        assert_eq!(read_frame(&mut peer), response);
         let mut contents = BTreeMap::new();
         let mut originals = Vec::new();
         for sequence in 3..11 {
@@ -209,12 +208,15 @@ fn complete_original_prefix_crosses_windows_without_resetting_sequences() {
             write_frame(&mut peer, &serde_json::to_value(response).unwrap(), 4096).unwrap();
             originals.push(original);
         }
+        let mut expected = response;
+        expected.sequence = U64::new(10);
+        assert_eq!(read_frame(&mut peer), expected);
         originals
     });
     prefix.publish().unwrap();
     let originals = worker.join().unwrap();
     assert!(prefix.is_complete());
-    assert_eq!(prefix.records().len(), 4);
+    assert_eq!(prefix.records().len(), 5);
     assert_eq!(prefix.next_sequence(), 11);
     assert_eq!(
         prefix
@@ -252,7 +254,6 @@ fn changed_ack_retains_completed_and_active_original_windows_without_retry() {
     } = source(&original);
     prefix.prepare(response, snapshot, anchor).unwrap();
     let worker = thread::spawn(move || {
-        read_frame(&mut peer);
         let mut contents = BTreeMap::new();
         for sequence in 3..6 {
             let original = read_frame(&mut peer);
@@ -285,7 +286,6 @@ fn changed_full_finish_reference_is_retained_before_source_refusal() {
     } = source(&original);
     prefix.prepare(response, snapshot, anchor).unwrap();
     let worker = thread::spawn(move || {
-        read_frame(&mut peer);
         let mut contents = BTreeMap::new();
         for sequence in 3..8 {
             let original = read_frame(&mut peer);
@@ -343,5 +343,55 @@ fn oversized_source_bodies_refuse_before_any_original_publication() {
             peer.read(&mut [0]).unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
         );
+    }
+}
+
+#[test]
+fn final_anchor_ack_refusal_keeps_completed_capture_response_unsent() {
+    let (_handshake, mut prefix, mut peer, _supervisor, original) = fixture();
+    let CaptureBodies {
+        response,
+        snapshot,
+        anchor,
+    } = source(&original);
+    prefix.prepare(response, snapshot, anchor).unwrap();
+    let worker = thread::spawn(move || {
+        let mut contents = BTreeMap::new();
+        for sequence in 3..11 {
+            let original = read_frame(&mut peer);
+            assert_eq!(original.message, MessageKind::Request);
+            let response = reply(&original, sequence, &mut contents, sequence == 10);
+            write_frame(&mut peer, &serde_json::to_value(response).unwrap(), 4096).unwrap();
+        }
+        peer
+    });
+
+    assert!(prefix.publish().is_err());
+    let mut peer = worker.join().unwrap();
+    assert_eq!(prefix.records().len(), 3);
+    let current = prefix.incomplete_window().unwrap();
+    assert_eq!(current.sent(), 2);
+    assert_eq!(current.acknowledgements().len(), 2);
+    assert!(
+        prefix
+            .records()
+            .iter()
+            .flat_map(ExchangeRecord::originals)
+            .chain(current.originals())
+            .all(|frame| frame.message == MessageKind::Request)
+    );
+    let terminal = prefix.windows.back().unwrap();
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0].message, MessageKind::Response);
+    assert_eq!(terminal[0].sequence, U64::new(10));
+    assert!(!prefix.is_complete());
+    assert!(prefix.publish().is_err());
+    assert!(prefix.take_completed_connection().is_err());
+
+    peer.set_nonblocking(true).unwrap();
+    match peer.read(&mut [0]) {
+        Ok(0) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+        other => panic!("completed Capture response escaped after refused final ACK: {other:?}"),
     }
 }
