@@ -90,3 +90,18 @@ component test. Its source is retained in the corresponding-source output.
 It checks original debit, body, peer and descriptor preservation and source
 selected kernel identity; parsed records and component checks do not authorize
 source issuance, operative restored-account adoption, or node readiness.
+
+The distinct `selected-source-custody.patch` preserves the original notices in
+`src/dmtcp_coordinator.cpp` and `src/crucible_exec_state.h`. It adds
+`src/crucible_source_capsule.h`, `src/crucible_source_custody.h`, and
+`src/crucible_source_capsule_reader.h` under LGPL-3.0-or-later; no native file is
+removed. These implementation files run solely inside the native toolkit.
+The separate Apache host neither links them nor includes their headers.
+
+`source-capsule-controls.cpp` is an independently authored LGPL-3.0-or-later
+component test retained in the corresponding-source output. It checks the
+bounded capsule, original export charges, complete script/final storage and
+coordinator account validation. Exported or parsed preservation data does not
+issue whole guest/device/clock/image source permission, operative restored-account
+adoption, or node readiness. The ordinary toolkit application/checkpoint/two
+fresh reconstruction checks remain mandatory and separate from these controls.

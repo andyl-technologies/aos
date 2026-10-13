@@ -2263,6 +2263,17 @@ Independent review reads back the installed binary and corresponding-source
 artifacts. These results exclude the later source-custody patch and do not
 establish semantic issuance, complete gem5 restoration or node readiness.
 
+The source-custody successor retains the original coordinator's complete log,
+control/account banks, restart script and final-request acknowledgement in a
+versioned capsule before parking. Its ordinary package passes the unchanged
+application, checkpoint and two fresh-restore comparisons; a separate check
+passes five capsule/account control groups. The matching source preserves all
+546 preceding files with exactly two modified and three added native files,
+the complete patch sequence, control source and additive LGPL inventory.
+Independent review verifies the installed binary/source tuple. This package
+excludes the subsequent map-envelope work and does not authorize native
+issuance or operational whole-node restore adoption.
+
 The host archive importer verifies complete original writer histories, final
 debits, control delivery and terminal-park framing against retained typed
 dependencies before consulting the installed source verifier. The default
