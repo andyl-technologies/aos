@@ -171,9 +171,24 @@ prepares a private per-authorization held reader: every authorization retains
 its original purpose, runs a full owning-history walk and closes complete
 physical, Original and current inputs before returning permission. Four exact
 regressions are registered in `integration.native-held-owner-history` and
-`gate:prov-commit-verify`; their absent implementation does not qualify either
+`gate:prov-commit-verify`; their implementation remains unqualified for either
 check. No store trait, identity, encoding, bucket key or dependency changes are
 required. The frozen diagnostic remains separate from this preparation.
+
+The held reader and four regression cases now pass complete source review;
+the first composition passes both formatters, strict SDK all-target Clippy,
+SDK all-target test compilation and the default build. Its actual inventory
+contains 1,120 nonignored tests across three executables; no test runs yet.
+Independent coverage review identifies
+and corrects a fixture that declined genuine native closing projections.
+It also identifies a missing submitted-closing cancellation witness: retaining
+the caller's locks during a scalar pause cannot establish worker ownership.
+A reviewed test-only projection-entry observer now runs inside the existing
+native worker, before its unchanged physical checks. The isolated regression
+workline will drop every caller hold and independently test both exclusions
+while that real worker is paused. These preparations advance no task, gate,
+milestone or freeze; existing import, trust, active-index and deadline suites
+remain required.
 
 The renewed frozen composition `342f1cf7114b` (tree `90fb7240d717`) passes
 the exact formatter pair, strict SDK all-target Clippy, SDK all-target test
