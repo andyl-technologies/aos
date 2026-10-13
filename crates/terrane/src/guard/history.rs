@@ -23,6 +23,10 @@ pub(crate) struct HistoryObservation<'a> {
     #[cfg(feature = "std")]
     consumed: Option<&'a super::consumed::ConsumedResolver>,
     lifetime: std::marker::PhantomData<&'a ()>,
+    /// Borrows a privately checked paired Guard transition without granting authority.
+    #[cfg(all(feature = "std", feature = "tokio", unix))]
+    paired_transition:
+        Option<&'a crate::selected_bridge::native_guard::disclosure::GuardTransition<'a>>,
 }
 
 impl<'a> HistoryObservation<'a> {
@@ -38,6 +42,8 @@ impl<'a> HistoryObservation<'a> {
             held: Some(identity),
             consumed: None,
             lifetime: std::marker::PhantomData,
+            #[cfg(all(feature = "std", feature = "tokio", unix))]
+            paired_transition: None,
         }
     }
 
@@ -109,6 +115,37 @@ impl<'a> HistoryObservation<'a> {
             consumed.pending_view(&pending)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(all(feature = "std", feature = "tokio", unix))]
+impl<'a> HistoryObservation<'a> {
+    /// Borrows the actual paired producer's checked transition input.
+    ///
+    /// This supplies no current permission or completed history. The native
+    /// reader must independently close this input with its owning invocation.
+    pub(crate) fn paired_transition(
+        mut self,
+        transition: &'a crate::selected_bridge::native_guard::disclosure::GuardTransition<'a>,
+    ) -> Self {
+        self.paired_transition = Some(transition);
+        self
+    }
+
+    /// Borrows the transition attached by the actual paired producer.
+    pub(crate) fn paired_transition_purpose(
+        self,
+    ) -> Option<&'a crate::selected_bridge::native_guard::disclosure::GuardTransition<'a>> {
+        self.paired_transition
+    }
+
+    /// Compares actual transition input identity without completing its checks.
+    pub(crate) fn same_paired_transition(self, other: Self) -> bool {
+        match (self.paired_transition, other.paired_transition) {
+            (None, None) => true,
+            (Some(left), Some(right)) => std::ptr::eq(left, right),
+            _ => false,
+        }
     }
 }
 
