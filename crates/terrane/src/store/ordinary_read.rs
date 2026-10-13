@@ -16,6 +16,8 @@ use std::path::PathBuf;
 pub struct NativeOrdinaryRead {
     #[cfg(all(feature = "tokio", unix))]
     recipe: Recipe,
+    #[cfg(all(test, feature = "tokio", unix))]
+    observation: Option<Box<dyn FnMut(TestStage) + Send>>,
 }
 
 #[cfg(all(feature = "tokio", unix))]
@@ -49,6 +51,8 @@ impl NativeOrdinaryRead {
     pub(crate) fn for_leaf(path: &Path) -> Self {
         Self {
             recipe: Recipe::Leaf(path.to_owned()),
+            #[cfg(test)]
+            observation: None,
         }
     }
 
@@ -59,6 +63,8 @@ impl NativeOrdinaryRead {
     ) -> Self {
         Self {
             recipe: Recipe::Projection(projection),
+            #[cfg(test)]
+            observation: None,
         }
     }
 
@@ -74,11 +80,28 @@ impl NativeOrdinaryRead {
     /// Returns metadata, open, descriptor inspection and whole-read errors.
     /// NotFound during before metadata or body read is observed absence;
     /// NotFound after successful body reading remains an I/O error.
+    ///
+    /// # Panics
+    /// In test builds, panics if a configured test observer panics.
     #[cfg(all(feature = "tokio", unix))]
     pub(super) fn execute(self) -> std::io::Result<NativeOrdinaryRecord> {
-        match self.recipe {
-            Recipe::Leaf(path) => Self::execute_leaf(&path),
+        let Self {
+            recipe,
+            #[cfg(test)]
+            mut observation,
+        } = self;
+        match recipe {
+            Recipe::Leaf(path) => Self::execute_leaf(
+                &path,
+                #[cfg(test)]
+                &mut observation,
+            ),
             Recipe::Projection(projection) => {
+                // Entry runs inside the submitted worker, while it owns every
+                // real exclusion; the observer never supplies a checked result.
+                #[cfg(test)]
+                Self::observe(&mut observation, TestStage::ProjectionEntered);
+
                 projection.check()?;
                 Ok(NativeOrdinaryRecord {
                     outcome: OrdinaryReadOutcome::ProjectionChecked,
@@ -89,9 +112,17 @@ impl NativeOrdinaryRead {
 
     /// Preserves the ordinary leaf's ordered metadata and whole-body checks.
     #[cfg(all(feature = "tokio", unix))]
-    fn execute_leaf(path: &Path) -> std::io::Result<NativeOrdinaryRecord> {
+    fn execute_leaf(
+        path: &Path,
+        #[cfg(test)] observation: &mut Option<Box<dyn FnMut(TestStage) + Send>>,
+    ) -> std::io::Result<NativeOrdinaryRecord> {
         use std::io::Read;
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+        // This local diagnostic measures actual worker execution, separately
+        // from caller dispatch and parent observations. It grants no evidence.
+        #[cfg(test)]
+        let trace = crate::ref_advance::NativeTrace::new(path, "ordinary-leaf-worker");
 
         let before = match std::fs::symlink_metadata(path) {
             Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata,
@@ -108,6 +139,9 @@ impl NativeOrdinaryRead {
             Err(error) => return Err(error),
         };
 
+        #[cfg(test)]
+        Self::observe(observation, TestStage::BeforeOpen);
+
         let body = (|| {
             let mut file = std::fs::OpenOptions::new()
                 .read(true)
@@ -119,8 +153,15 @@ impl NativeOrdinaryRead {
                     "path is not a regular file",
                 ));
             }
+            #[cfg(test)]
+            Self::observe(observation, TestStage::BeforeBody);
+
+            #[cfg(test)]
+            trace.mark("descriptor-regular-before-whole-body");
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes)?;
+            #[cfg(test)]
+            trace.mark("whole-body-returned");
             Ok(bytes)
         })();
         let bytes = match body {
@@ -133,6 +174,9 @@ impl NativeOrdinaryRead {
             Err(error) => return Err(error),
         };
 
+        #[cfg(test)]
+        Self::observe(observation, TestStage::AfterBody);
+
         let after = std::fs::symlink_metadata(path)?;
         if !after.is_file()
             || after.file_type().is_symlink()
@@ -142,6 +186,11 @@ impl NativeOrdinaryRead {
                 outcome: OrdinaryReadOutcome::InvalidLayout,
             });
         }
+        #[cfg(test)]
+        Self::observe(observation, TestStage::Finished);
+        #[cfg(test)]
+        trace.mark("named-after-incarnation-accepted");
+
         Ok(NativeOrdinaryRecord {
             outcome: OrdinaryReadOutcome::Present(bytes, after),
         })
@@ -154,3 +203,66 @@ impl NativeOrdinaryRecord {
         self.outcome
     }
 }
+
+// Leaf observations change real filesystem nodes at their original boundaries.
+// Projection entry observes the actual closing worker without a body path.
+#[cfg(all(test, feature = "tokio", unix))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TestStage {
+    ProjectionEntered,
+    BeforeOpen,
+    BeforeBody,
+    AfterBody,
+    Finished,
+}
+
+#[cfg(all(test, feature = "tokio", unix))]
+impl NativeOrdinaryRead {
+    /// Borrows the actual leaf for operation-local physical test changes.
+    ///
+    /// Physical projections have several fixed inputs and no single leaf path.
+    pub(crate) fn path_for_test(&self) -> Option<&Path> {
+        match &self.recipe {
+            Recipe::Leaf(path) => Some(path),
+            Recipe::Projection(_) => None,
+        }
+    }
+
+    /// Attaches one entry observer to a genuine native closing projection.
+    ///
+    /// The observer runs inside the existing native worker before the unchanged
+    /// physical checks. It cannot replace the recipe or manufacture its result.
+    ///
+    /// # Errors
+    /// Returns an invalid-input error for a leaf recipe or an existing observer.
+    pub(crate) fn observe_projection_entry_for_test(
+        &mut self,
+        action: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<()> {
+        if !matches!(&self.recipe, Recipe::Projection(_)) || self.observation.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "projection entry requires an unobserved closing recipe",
+            ));
+        }
+
+        let mut action = Some(action);
+        self.observation = Some(Box::new(move |stage| {
+            if stage == TestStage::ProjectionEntered
+                && let Some(action) = action.take()
+            {
+                action();
+            }
+        }));
+        Ok(())
+    }
+
+    fn observe(observation: &mut Option<Box<dyn FnMut(TestStage) + Send>>, stage: TestStage) {
+        if let Some(observation) = observation.as_mut() {
+            observation(stage);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod tests;
