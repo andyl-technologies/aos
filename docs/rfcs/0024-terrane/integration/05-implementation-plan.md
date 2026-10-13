@@ -250,10 +250,11 @@ their original 120-second bounds. Every actual one-case summary reports one
 pass, with unchanged source, compiler inputs and original and archived binaries.
 The renewed 1,024-entry ordinary and adversarial populations pass once in
 766.455 and 722.203 seconds under their original 1,800-second bounds. The
-2,048-entry ordinary population also passes once in 1,375.060 seconds under
-its original bound, with unchanged source, inputs and executables. The three
-later populations, full SDK, owning Nix gates, application targets and complete
-current T1 floor remain pending; scoped success advances no task.
+2,048-entry ordinary and adversarial populations also pass once in 1,375.060
+and 1,380.228 seconds under their original bounds, with unchanged source,
+inputs and executables. The two 4,096-entry populations, full SDK, owning Nix
+gates, application targets and the complete current T1 floor remain pending;
+scoped success advances no task.
 The unfiltered SDK qualification must retain all 1,121 actual cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
 cases. Application test-target compilation and strict Clippy/private rustdoc for
@@ -266,6 +267,11 @@ A partial task merge would omit implementations and exact selectors required
 by the current floor; qualification must cover the actual proposed trunk tree
 with those owners and corrections present. Composition success cannot qualify
 a different partial trunk tree or advance its task checkboxes.
+Preparatory trunk commit `cc99279fc0` now contains all 706 reviewed source
+paths, matching the frozen composition's modes and blobs while preserving
+this progress plan. The original task branch histories remain separate and
+unchanged. This source preparation advances no task; each formal merge still
+requires its task gates and the complete floor on the actual trunk candidate.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
 Growing populations, full SDK and owning Nix qualification remain pending.
