@@ -29,6 +29,9 @@ mod controlled;
 #[cfg(target_os = "linux")]
 pub(crate) use controlled::ControlledInstallerIdentityError;
 
+#[cfg(target_os = "linux")]
+pub(crate) use controlled::installer_verifier_extent;
+
 /// Describes one configured shared allocation without granting its capacity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InstallerControlAllocation {
@@ -76,6 +79,8 @@ pub struct InstallerControlIdentity {
     requested_bytes: u64,
     launch_binding: Option<[u8; 32]>,
     path_binding: Option<[u8; 32]>,
+    #[cfg(target_os = "linux")]
+    standing_constructor: Option<super::standing_constructor::StandingConstructorArtifact>,
 }
 
 impl InstallerControlIdentity {
@@ -101,6 +106,21 @@ impl InstallerControlIdentity {
     #[must_use]
     pub fn requested_bytes(&self) -> u64 {
         self.requested_bytes
+    }
+
+    /// Reports only the preinit requests observed in the bound final QEMU.
+    ///
+    /// # Errors
+    /// Refuses missing actual file provenance or checked request overflow. This
+    /// observation cannot authorize activation, allocation or process birth.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn native_preinit_requested_bytes(
+        &self,
+    ) -> Result<u64, InstallerControlIdentityError> {
+        self.standing_constructor
+            .as_ref()
+            .and_then(super::standing_constructor::StandingConstructorArtifact::requested_bytes)
+            .ok_or(InstallerControlIdentityError::Unavailable)
     }
 
     pub(crate) fn belongs_to(&self, artifact: &QemuLaunchArtifactIdentity) -> bool {
@@ -228,6 +248,8 @@ fn parse(
         requested_bytes: 0,
         launch_binding: None,
         path_binding: None,
+        #[cfg(target_os = "linux")]
+        standing_constructor: None,
     };
     identity.plugin_sha256.copy_from_slice(&bytes[248..280]);
     for (index, allocation) in identity.allocations.iter_mut().enumerate() {

@@ -155,6 +155,7 @@ impl InstalledProcessState {
         source
             .guest_ram_bytes
             .checked_add(controls.requested_bytes())
+            .and_then(|bytes| bytes.checked_add(controls.native_preinit_requested_bytes().ok()?))
             .and_then(|bytes| bytes.checked_add(crucible_protocol::DEVICE_DIGEST_WORKSPACE_BYTES))
             .filter(|bytes| *bytes <= local)
             .ok_or(InstalledProcessPurposeError::Capacity)?;
@@ -540,6 +541,7 @@ impl NativeAccountAttempt {
             purpose.process_bytes / u64::from(super::MAX_ORIGINAL_NATIVE_NODE_GENERATIONS);
         guest_ram_bytes
             .checked_add(controls.requested_bytes())
+            .and_then(|bytes| bytes.checked_add(controls.native_preinit_requested_bytes().ok()?))
             .and_then(|bytes| bytes.checked_add(crucible_protocol::DEVICE_DIGEST_WORKSPACE_BYTES))
             .filter(|bytes| guest_ram_bytes != 0 && *bytes <= native_incarnation_bytes)
             .ok_or(InstalledProcessPurposeError::Capacity)?;
@@ -547,6 +549,12 @@ impl NativeAccountAttempt {
             .checked_add(
                 controls
                     .requested_bytes()
+                    .checked_add(
+                        controls
+                            .native_preinit_requested_bytes()
+                            .map_err(|_| InstalledProcessPurposeError::Identity)?,
+                    )
+                    .ok_or(InstalledProcessPurposeError::Capacity)?
                     .checked_mul(u64::from(next_loans))
                     .ok_or(InstalledProcessPurposeError::Capacity)?,
             )

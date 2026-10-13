@@ -141,6 +141,7 @@ impl NativeAccountAttempt {
             generation: self.generation,
             installed_process: None,
             issued_process_record: None,
+            source_host: None,
         };
         drop(state);
         binding.installed_process = Some(loan);

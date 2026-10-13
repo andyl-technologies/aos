@@ -37,6 +37,83 @@ struct InstalledSourceState {
 }
 
 impl OriginalNativeNodeBinding {
+    /// Prepays the actual artifact verifier before entering its fixed read frame.
+    ///
+    /// The same nominal owner is retained in this binding and reused by later
+    /// Source admission. Target and repeated reservations refuse before effects.
+    ///
+    /// # Errors
+    /// Refuses foreign original/contract, absent genuine Main/family, repeated
+    /// Source funding or exhausted containing control capacity.
+    pub(crate) fn prepare_source_artifact_controls(
+        &mut self,
+        contract: &QemuChildProcessContract,
+        original: &Arc<crucible_linux_resource::host_supervision::HostOperationGuard>,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::SourceHostControlLease,
+        InstalledProcessPurposeError,
+    > {
+        if self.source_host.is_some() || self.installed_process.is_some() {
+            return Err(InstalledProcessPurposeError::Identity);
+        }
+        let roster = self
+            .roster
+            .upgrade()
+            .ok_or(InstalledProcessPurposeError::Identity)?;
+        let state = roster
+            .lock()
+            .map_err(|_| InstalledProcessPurposeError::Identity)?;
+        let slot = state
+            .slots
+            .get(self.index)
+            .filter(|slot| {
+                slot.active == Some(self.generation)
+                    && slot.launch_in_flight
+                    && !slot.launch_abandoned
+                    && slot.launch_refusal.is_none()
+                    && slot.unsettled.is_none()
+            })
+            .ok_or(InstalledProcessPurposeError::Identity)?;
+        let credit = slot
+            .credit
+            .as_ref()
+            .ok_or(InstalledProcessPurposeError::Identity)?;
+        credit.verify_preparation(original)?;
+        let purpose = slot
+            .installed_process
+            .as_ref()
+            .filter(|purpose| {
+                purpose.ready
+                    && purpose.sound
+                    && purpose.matches_launch_contract(contract)
+                    && purpose.journal.loans == 0
+                    && purpose.journal.incarnations.iter().all(Option::is_none)
+            })
+            .ok_or(InstalledProcessPurposeError::Identity)?;
+        purpose
+            .family
+            .as_ref()
+            .ok_or(InstalledProcessPurposeError::Identity)?
+            .verify_envelope(0, &purpose.envelope)?;
+        let normal = credit
+            .original
+            .as_ref()
+            .and_then(|retained| retained.normal.as_ref())
+            .ok_or(InstalledProcessPurposeError::Identity)?;
+        let (_, peak, descriptors) = source_host_peak()?;
+        let host = normal
+            .reserve_source_host_purpose(peak, descriptors)
+            .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
+        let control = host
+            .reserve_controls(3, crate::artifact_identity::installer_verifier_extent())
+            .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
+        control
+            .verify_original(original)
+            .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
+        self.source_host = Some(host);
+        Ok(control)
+    }
+
     /// Enrolls this already issued Source0 before startup or descriptor birth.
     ///
     /// # Errors
@@ -92,42 +169,13 @@ impl OriginalNativeNodeBinding {
             .as_ref()
             .and_then(|retained| retained.normal.as_ref())
             .ok_or(InstalledProcessPurposeError::Identity)?;
-        let (layout, _) = std::alloc::Layout::new::<(
-            std::sync::atomic::AtomicUsize,
-            std::sync::atomic::AtomicUsize,
-        )>()
-        .extend(std::alloc::Layout::new::<InstalledSourceState>())
-        .map_err(|_| InstalledProcessPurposeError::Capacity)?;
-        let supervisor_extent =
-            crucible_linux_resource::host_supervision::HostSupervisionBootstrap::structure_bytes()
-                .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
-        let source_extent = u64::try_from(layout.pad_to_align().size())
-            .ok()
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<InstalledSourceState>() as u64))
-            .and_then(|bytes| bytes.checked_add(supervisor_extent))
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::QemuNodeChild>() as u64))
-            .and_then(|bytes| {
-                bytes.checked_add(std::mem::size_of::<crate::QemuSpawnError>() as u64)
-            })
-            .ok_or(InstalledProcessPurposeError::Capacity)?;
-        let peak = crate::spawn::OriginalPluginStartup::host_allocation_extent()
-            .map_err(|_| InstalledProcessPurposeError::Capacity)?
-            .checked_add(
-                crate::spawn::preexec_setup::PreparedPreexecSetup::host_allocation_extent()
-                    .ok_or(InstalledProcessPurposeError::Capacity)?,
-            )
-            .and_then(|bytes| {
-                bytes.checked_add(crate::launch_cleanup::LaunchCleanup::retained_control_bytes()?)
-            })
-            .and_then(|bytes| bytes.checked_add(source_extent))
-            .and_then(|bytes| bytes.checked_add(crate::spawn::source_supervision::OriginalSourceSupervision::host_allocation_extent()?))
-            .ok_or(InstalledProcessPurposeError::Capacity)?;
-        let host = normal
-            .reserve_source_host_purpose(
-                peak,
-                22 + crate::spawn::preexec_setup::PreparedPreexecSetup::descriptor_peak(),
-            )
-            .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
+        let (source_extent, _, _) = source_host_peak()?;
+        let host = self
+            .source_host
+            .as_ref()
+            .filter(|host| host.belongs_to(normal))
+            .ok_or(InstalledProcessPurposeError::Identity)?
+            .clone();
         host.verify_supervisor(supervisor)
             .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
         // The actual Source payer exists before the new node roster or its Arc.
@@ -227,6 +275,10 @@ impl OriginalNativeNodeBinding {
             .as_ref()
             .ok_or(InstalledProcessPurposeError::Identity)?;
         if !admission.held.host.belongs_to(normal)
+            || !self
+                .source_host
+                .as_ref()
+                .is_some_and(|host| host.same_owner(&admission.held.host))
             || admission.held.subject
                 != (InstalledSourceSubject {
                     containing_cap: cap,
@@ -241,6 +293,44 @@ impl OriginalNativeNodeBinding {
         }
         family.verify_envelope(0, &purpose.envelope)
     }
+}
+
+/// Describes the one Main-paid peak shared across verification and process birth.
+fn source_host_peak() -> Result<(u64, u64, u64), InstalledProcessPurposeError> {
+    let (layout, _) = std::alloc::Layout::new::<(
+        std::sync::atomic::AtomicUsize,
+        std::sync::atomic::AtomicUsize,
+    )>()
+    .extend(std::alloc::Layout::new::<InstalledSourceState>())
+    .map_err(|_| InstalledProcessPurposeError::Capacity)?;
+    let supervisor_extent =
+        crucible_linux_resource::host_supervision::HostSupervisionBootstrap::structure_bytes()
+            .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
+    let source_extent = u64::try_from(layout.pad_to_align().size())
+        .ok()
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<InstalledSourceState>() as u64))
+        .and_then(|bytes| bytes.checked_add(supervisor_extent))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::QemuNodeChild>() as u64))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::QemuSpawnError>() as u64))
+        .ok_or(InstalledProcessPurposeError::Capacity)?;
+    let peak = crate::spawn::OriginalPluginStartup::host_allocation_extent()
+            .map_err(|_| InstalledProcessPurposeError::Capacity)?
+            .checked_add(
+                crate::spawn::preexec_setup::PreparedPreexecSetup::host_allocation_extent()
+                    .ok_or(InstalledProcessPurposeError::Capacity)?,
+            )
+            .and_then(|bytes| {
+                bytes.checked_add(crate::launch_cleanup::LaunchCleanup::retained_control_bytes()?)
+            })
+            .and_then(|bytes| bytes.checked_add(source_extent))
+            .and_then(|bytes| bytes.checked_add(crate::spawn::source_supervision::OriginalSourceSupervision::host_allocation_extent()?))
+            .and_then(|bytes| bytes.checked_add(crate::artifact_identity::installer_verifier_extent()))
+            .ok_or(InstalledProcessPurposeError::Capacity)?;
+    Ok((
+        source_extent,
+        peak,
+        22 + crate::spawn::preexec_setup::PreparedPreexecSetup::descriptor_peak(),
+    ))
 }
 
 /// Builds the retained candidate only after its actual Main body peak is paid.

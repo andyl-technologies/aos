@@ -12,6 +12,12 @@ use thiserror::Error;
 
 mod installer_controls;
 
+#[cfg(target_os = "linux")]
+mod standing_constructor;
+
+#[cfg(target_os = "linux")]
+pub(crate) use installer_controls::installer_verifier_extent;
+
 pub use installer_controls::{
     InstallerControlAllocation, InstallerControlIdentity, InstallerControlIdentityError,
 };

@@ -813,6 +813,9 @@ pub(crate) struct OriginalNativeNodeBinding {
     generation: u64,
     installed_process: Option<InstalledProcessPurposeLoan>,
     issued_process_record: Option<process_purpose::IssuedInstalledProcessRecord>,
+    source_host: Option<
+        crucible_linux_resource::host_services::process_birth::AuthenticatedSourceHostPurpose,
+    >,
 }
 
 pub(crate) struct NativeAccountAttempt {
@@ -1555,6 +1558,7 @@ impl NativeAccountAttempt {
             generation: self.generation,
             installed_process: None,
             issued_process_record: None,
+            source_host: None,
         };
         drop(state);
         if let Err(error) = self.require_original() {

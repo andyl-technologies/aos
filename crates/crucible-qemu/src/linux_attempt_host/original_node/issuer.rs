@@ -158,13 +158,18 @@ impl InstalledNodeLaunchIssuer {
             let mut binding = attempt
                 .prepare_node_binding(original)
                 .map_err(FreshLaunchCause::Binding)?;
+            let artifact_control = binding
+                .prepare_source_artifact_controls(contract, original)
+                .map_err(FreshLaunchCause::Purpose)?;
             let controls =
                 crate::artifact_identity::InstallerControlIdentity::authenticate_original_paths(
                     config.qemu_executable(),
                     config.original_plugin_path(),
                     original,
+                    &artifact_control,
                 )
                 .map_err(FreshLaunchCause::Artifact)?;
+            drop(artifact_control);
             let guest_bytes = u64::from(config.memory_mib())
                 .checked_mul(1024 * 1024)
                 .ok_or(FreshLaunchCause::Purpose(

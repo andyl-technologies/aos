@@ -28,12 +28,26 @@ pub(crate) enum ControlledInstallerIdentityError {
     Original(#[from] HostSupervisionError),
     #[error("installed artifact authentication refused: {0}")]
     Artifact(#[from] InstallerControlIdentityError),
+    #[error("standing constructor artifact refused: {0}")]
+    Standing(#[from] super::super::standing_constructor::StandingConstructorReadError),
+    #[error("actual Source verifier funding refused: {0}")]
+    Funding(#[from] crucible_linux_resource::host_services::process_birth::ServiceBirthError),
 }
 
 impl From<std::io::Error> for ControlledInstallerIdentityError {
     fn from(error: std::io::Error) -> Self {
         InstallerControlIdentityError::Io(error).into()
     }
+}
+
+/// Prices a conservative fixed verifier/streaming peak before helper entry.
+///
+/// The conservative 64 KiB covers both 4096-byte markers, fixed package paths,
+/// existing plugin streaming, declaration/header/name scratch, QEMU streaming,
+/// hash/candidate/error and file bodies. All loops borrow the same Original;
+/// no additional task, mapping or descriptor alias is created by hashing.
+pub(crate) const fn installer_verifier_extent() -> u64 {
+    64 * 1024
 }
 
 impl InstallerControlIdentity {
@@ -44,56 +58,76 @@ impl InstallerControlIdentity {
     /// Every read, including hashing the complete plugin tail, checks the real
     /// retained original. The caller retains the initiating error separately
     /// from its independent final original check.
+    ///
+    /// # Errors
+    /// Refuses the same Source payer/original, malformed immutable package
+    /// inputs, changed complete artifacts or unsupported constructor geometry.
     pub(crate) fn authenticate_original_paths(
         qemu: &Path,
         plugin: &Path,
         original: &HostOperationGuard,
+        control: &crucible_linux_resource::host_services::process_birth::SourceHostControlLease,
     ) -> Result<Self, ControlledInstallerIdentityError> {
-        original.wait_slice()?;
-        let qemu_package = Package::from_selected(qemu, SelectedKind::Qemu)?;
-        let plugin_package = Package::from_selected(plugin, SelectedKind::Plugin)?;
-
-        let mut qemu_marker = [0; MARKER_BYTES];
-        let qemu_length = read_marker(
-            &qemu_package,
-            c"share/aos/crucible/qemu-build-identity.env",
-            &mut qemu_marker,
-            original,
-        )?;
-        let mut plugin_marker = [0; MARKER_BYTES];
-        let plugin_length = read_marker(
-            &plugin_package,
-            c"nix-support/crucible-qemu-plugin-build-info",
-            &mut plugin_marker,
-            original,
-        )?;
-        validate_markers(&qemu_marker[..qemu_length], &plugin_marker[..plugin_length])?;
-        drop(qemu_package);
-
-        let mut sidecar = plugin_package.file(c"nix-support/crucible-installer-control-layouts")?;
-        let mut bytes = [0; IDENTITY_BYTES];
-        read_exact_original(&mut sidecar, &mut bytes, original)?;
-        original.wait_slice()?;
-        if sidecar.read(&mut [0])? != 0 {
-            return Err(InstallerControlIdentityError::Invalid("tail").into());
-        }
-        drop(sidecar);
-        let mut identity = super::parse(&bytes)?;
-        let mut source = plugin_package.file(c"lib/libcrucible_qemu_plugin.so")?;
-        let selected_source = plugin_package.file_follow_selected()?;
-        let actual = source.metadata()?;
-        let selected = selected_source.metadata()?;
-        if (actual.dev(), actual.ino()) != (selected.dev(), selected.ino()) {
-            return Err(InstallerControlIdentityError::ArtifactMismatch.into());
-        }
-        drop(selected_source);
-        // Close the selected alias before streaming; the pinned canonical file
-        // remains the sole source whose complete digest authenticates the record.
-        authenticate_plugin(&mut source, &identity, original)?;
-        original.wait_slice()?;
-        identity.path_binding = Some(super::path_binding(qemu, plugin));
-        Ok(identity)
+        control.verify_original_capacity(original, 3, installer_verifier_extent())?;
+        authenticate_original_paths(qemu, plugin, original)
     }
+}
+
+// Enter the complete fixed artifact frame only after the real same-Main loan.
+fn authenticate_original_paths(
+    qemu: &Path,
+    plugin: &Path,
+    original: &HostOperationGuard,
+) -> Result<InstallerControlIdentity, ControlledInstallerIdentityError> {
+    original.wait_slice()?;
+    let qemu_package = Package::from_selected(qemu, SelectedKind::Qemu)?;
+    let plugin_package = Package::from_selected(plugin, SelectedKind::Plugin)?;
+
+    let mut qemu_marker = [0; MARKER_BYTES];
+    let qemu_length = read_marker(
+        &qemu_package,
+        c"share/aos/crucible/qemu-build-identity.env",
+        &mut qemu_marker,
+        original,
+    )?;
+    let mut plugin_marker = [0; MARKER_BYTES];
+    let plugin_length = read_marker(
+        &plugin_package,
+        c"nix-support/crucible-qemu-plugin-build-info",
+        &mut plugin_marker,
+        original,
+    )?;
+    validate_markers(&qemu_marker[..qemu_length], &plugin_marker[..plugin_length])?;
+    let final_qemu = qemu_package.file_follow_selected()?;
+    let standing =
+        super::super::standing_constructor::authenticate_final_elf(&final_qemu, original)?;
+    drop(final_qemu);
+    drop(qemu_package);
+
+    let mut sidecar = plugin_package.file(c"nix-support/crucible-installer-control-layouts")?;
+    let mut bytes = [0; IDENTITY_BYTES];
+    read_exact_original(&mut sidecar, &mut bytes, original)?;
+    original.wait_slice()?;
+    if sidecar.read(&mut [0])? != 0 {
+        return Err(InstallerControlIdentityError::Invalid("tail").into());
+    }
+    drop(sidecar);
+    let mut identity = super::parse(&bytes)?;
+    let mut source = plugin_package.file(c"lib/libcrucible_qemu_plugin.so")?;
+    let selected_source = plugin_package.file_follow_selected()?;
+    let actual = source.metadata()?;
+    let selected = selected_source.metadata()?;
+    if (actual.dev(), actual.ino()) != (selected.dev(), selected.ino()) {
+        return Err(InstallerControlIdentityError::ArtifactMismatch.into());
+    }
+    drop(selected_source);
+    // Close the selected alias before streaming; the pinned canonical file
+    // remains the sole source whose complete digest authenticates the record.
+    authenticate_plugin(&mut source, &identity, original)?;
+    original.wait_slice()?;
+    identity.path_binding = Some(super::path_binding(qemu, plugin));
+    identity.standing_constructor = Some(standing);
+    Ok(identity)
 }
 
 enum SelectedKind {

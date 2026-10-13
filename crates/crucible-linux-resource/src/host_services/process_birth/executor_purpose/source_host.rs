@@ -378,6 +378,43 @@ impl Drop for SourceHostState {
 }
 
 impl SourceHostControlLease {
+    /// Checks that this actual borrower covers an original's required peak.
+    ///
+    /// # Errors
+    /// Refuses an undersized recorded borrower before effects, another Main,
+    /// uncertain physical custody or the actual entered original's refusal.
+    pub fn verify_original_capacity(
+        &self,
+        original: &HostOperationGuard,
+        descriptors: u64,
+        bytes: u64,
+    ) -> Result<(), ServiceBirthError> {
+        if self.descriptors < descriptors || self.bytes < bytes {
+            return Err(ServiceBirthError::policy(
+                "Source control borrower is undersized",
+            ));
+        }
+        self.verify_original(original)
+    }
+
+    /// Checks a running original under this same authenticated containing Main.
+    ///
+    /// # Errors
+    /// Refuses stale physical custody, another containing cap, or the actual
+    /// original's cancellation/deadline before borrowing verifier storage.
+    pub fn verify_original(&self, original: &HostOperationGuard) -> Result<(), ServiceBirthError> {
+        self.purpose.check()?;
+        if !original.shares_outer_cap(&self.purpose.held.issuer.supervisor) {
+            return Err(ServiceBirthError::policy(
+                "Source original belongs to another Main",
+            ));
+        }
+        original
+            .wait_slice()
+            .map(|_| ())
+            .map_err(ServiceBirthError::from)
+    }
+
     /// Checks that this physical control belongs to the same actual supervisor.
     ///
     /// # Errors
