@@ -989,10 +989,15 @@ impl QemuLaunchCommandBuilder {
                 QEMU_RUNTIME_LIVENESS_TRACE_SELECTION.to_owned(),
             ]);
         }
+        let plugin_setup_plan = self.plugin.plugin_setup_plan();
+        if plugin_setup_plan.whole_constructor().is_some() {
+            args.extend([
+                "-crucible-whole-setup-fd".to_owned(),
+                crate::spawn::QEMU_WHOLE_SETUP_LAUNCH_FD.to_string(),
+            ]);
+        }
         validate_pre_spawn_qemu_launch_args(&args)
             .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
-
-        let plugin_setup_plan = self.plugin.plugin_setup_plan();
         let plugin_setup_plan_bytes = plugin_setup_plan
             .encode()
             .map_err(|_source| QemuLaunchCommandError::InvalidPluginSetupPlan)?;

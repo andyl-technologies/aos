@@ -1269,7 +1269,10 @@ fn pinned_pre_exec_rejects_vmstate_replacement() -> Result<(), Box<dyn Error>> {
         child_resources,
         &image_pins,
         &[],
-        None,
+        ChildLaunchBindings {
+            process_contract: None,
+            whole_setup: None,
+        },
     ) {
         Err(error) => error,
         Ok(_) => panic!("pre-exec must reject a replaced VMState inode"),
@@ -1330,7 +1333,10 @@ fn pinned_run_directory_survives_diagnostic_path_replacement() -> Result<(), Box
             ),
             (SOURCE_FDS_ENV, &source_fds),
         ],
-        None,
+        ChildLaunchBindings {
+            process_contract: None,
+            whole_setup: None,
+        },
     )?;
 
     assert!(child.wait()?.success());
@@ -1445,7 +1451,10 @@ fn inherited_block_roots_survive_names_replaced_after_exec() -> Result<(), Box<d
             (PINNED_BLOCK_PROBE_ENV, probe_path),
             (SOURCE_FDS_ENV, &source_fds),
         ],
-        None,
+        ChildLaunchBindings {
+            process_contract: None,
+            whole_setup: None,
+        },
     )?;
 
     wait_for_probe_file(&probe_root.path().join("ready"))?;

@@ -32,6 +32,14 @@ mod control_delivery_trace;
 mod image_launch;
 mod materialization;
 mod run_directory;
+mod selected_launch;
+mod whole_mapping;
+mod whole_setup;
+pub use selected_launch::{
+    QemuOriginalWholeLaunch, QemuWholeLaunchCustody, QemuWholeLaunchCustodySlot,
+    spawn_selected_qemu_child_in_directory_guarded,
+};
+pub(crate) use whole_setup::QemuEarlyWholeSetup;
 
 pub(crate) use control_delivery_trace::valid_control_delivery_row;
 pub(crate) use run_directory::valid_rr_control_boundary_row;
@@ -49,7 +57,9 @@ const QEMU_VMSTATE_LAUNCH_FD: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
 const QEMU_ROOT_OVERLAY_READ_LAUNCH_FD: RawFd = QEMU_VMSTATE_LAUNCH_FD + 1;
 const QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD: RawFd = QEMU_ROOT_OVERLAY_READ_LAUNCH_FD + 1;
 // Every inherited source is relocated above all fixed exec targets before dup2.
-const CHILD_SOURCE_FD_MIN: RawFd = QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD + 1;
+pub(crate) const QEMU_WHOLE_SETUP_LAUNCH_FD: RawFd = QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD + 1;
+const QEMU_WHOLE_IMAGE_LAUNCH_FD_BASE: RawFd = QEMU_WHOLE_SETUP_LAUNCH_FD + 1;
+const CHILD_SOURCE_FD_MIN: RawFd = QEMU_WHOLE_IMAGE_LAUNCH_FD_BASE + 4;
 const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
 const MAX_SUPERVISOR_GROUPS: usize = 65_536;
 const VMSTATE_FILE_NAME_C: &[u8] = b"crucible-vmstate.qcow2\0";
@@ -512,6 +522,7 @@ pub struct QemuSpawnHostResources {
     wake_fd: OwnedFd,
     region_len: u64,
     fault_node_hash: [u8; 32],
+    whole_setup: Option<whole_setup::QemuEarlyWholeSetup>,
 }
 
 impl QemuSpawnHostResources {
@@ -548,6 +559,7 @@ impl QemuSpawnHostResources {
             wake_fd: self.wake_fd,
             region_len: self.region_len,
             fault_node_hash: self.fault_node_hash,
+            whole_setup: self.whole_setup,
         }
     }
 }
@@ -560,6 +572,7 @@ pub struct QemuSpawnSetupResources {
     wake_fd: OwnedFd,
     region_len: u64,
     fault_node_hash: [u8; 32],
+    whole_setup: Option<whole_setup::QemuEarlyWholeSetup>,
 }
 
 impl QemuSpawnSetupResources {
@@ -591,6 +604,10 @@ impl QemuSpawnSetupResources {
     #[must_use]
     pub const fn fault_node_hash(&self) -> [u8; 32] {
         self.fault_node_hash
+    }
+
+    pub(crate) fn take_whole_setup(&mut self) -> Option<whole_setup::QemuEarlyWholeSetup> {
+        self.whole_setup.take()
     }
 
     /// Consumes the setup resources into their owned parts.
@@ -941,6 +958,12 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     region_len: u64,
     contract: &QemuChildProcessContract,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
+    if command.plugin_setup_plan().whole_constructor().is_some() {
+        return Err(invalid_input(
+            "spawn ordinary QEMU constructor",
+            "whole selection requires the original prepared mapping and socket actor",
+        ));
+    }
     run_directory.validate_launch_basis(command, contract)?;
     run_directory.revalidate()?;
     let image_pins = GuardedLaunchImagePins::new(run_directory)?;
@@ -951,6 +974,12 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     )?;
     let (mut resources, child_resources) = create_spawn_resources(region_len)?;
     resources.fault_node_hash = command.plugin_fault_node_hash();
+    let whole_setup =
+        whole_setup::QemuEarlyWholeSetup::from_command(command, run_directory.path())?;
+    let launch_args = match &whole_setup {
+        Some(setup) => setup.pinned_launch_args(&launch_args)?,
+        None => launch_args,
+    };
     let child = spawn_process_with_resources(
         command.executable(),
         &launch_args,
@@ -958,8 +987,12 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
         child_resources,
         &image_pins,
         command.diagnostic_envs(),
-        Some(contract),
+        ChildLaunchBindings {
+            process_contract: Some(contract),
+            whole_setup: whole_setup.as_ref(),
+        },
     )?;
+    resources.whole_setup = whole_setup;
     Ok(QemuSpawnedChild {
         child: QemuNodeChild::new(child),
         resources,
@@ -1014,6 +1047,7 @@ fn create_spawn_resources(
             wake_fd: host_wake,
             region_len,
             fault_node_hash: [0; 32],
+            whole_setup: None,
         },
         QemuSpawnChildResources {
             control_socket: child_control,
@@ -1041,6 +1075,11 @@ pub(crate) fn create_test_spawn_resource_pair(
     ))
 }
 
+struct ChildLaunchBindings<'a> {
+    process_contract: Option<&'a QemuChildProcessContract>,
+    whole_setup: Option<&'a whole_setup::QemuEarlyWholeSetup>,
+}
+
 fn spawn_process_with_resources(
     executable: &str,
     args: &[String],
@@ -1048,8 +1087,14 @@ fn spawn_process_with_resources(
     child_resources: QemuSpawnChildResources,
     image_pins: &GuardedLaunchImagePins,
     envs: &[(&str, &str)],
-    process_contract: Option<&QemuChildProcessContract>,
+    bindings: ChildLaunchBindings<'_>,
 ) -> Result<Child, QemuSpawnError> {
+    let ChildLaunchBindings {
+        process_contract,
+        whole_setup,
+    } = bindings;
+    let whole_descriptors =
+        whole_setup.map(whole_setup::QemuEarlyWholeSetup::child_descriptor_pins);
     let control_fd = child_resources.control_socket.as_raw_fd();
     let shmem_fd = child_resources.shmem_fd.as_raw_fd();
     let wake_fd = child_resources.wake_fd.as_raw_fd();
@@ -1090,7 +1135,11 @@ fn spawn_process_with_resources(
                 install_child_credentials(credentials)?;
             }
             install_child_process_contract(control_fd, shmem_fd, wake_fd, expected_parent_pid)?;
-            install_guarded_launch_image_pins(vmstate_fd, overlay_fds)
+            install_guarded_launch_image_pins(vmstate_fd, overlay_fds)?;
+            if let Some(descriptors) = whole_descriptors {
+                whole_setup::install_child_descriptor_pins(descriptors)?;
+            }
+            Ok(())
         });
     }
 

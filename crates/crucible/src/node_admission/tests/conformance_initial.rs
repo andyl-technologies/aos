@@ -22,6 +22,7 @@ struct CollectionNode {
     initial_current: Rc<Cell<bool>>,
     scope_revoke: Rc<Cell<bool>>,
     authority: Rc<Authority>,
+    retained_inputs: std::collections::BTreeMap<Id, (crate::node_scheduling::RuntimeInputBatch, crate::node_scheduling::NativeInputAcknowledgement)>,
 }
 
 impl SimulationNode for CollectionNode {
@@ -213,7 +214,9 @@ impl SimulationNode for CollectionNode {
             .dispatch
             .stage
             .set(self.authority.dispatch.stage.get() + 1);
-        Ok(dispatch::model_ack(batch))
+        let acknowledgement = dispatch::model_ack(batch);
+        self.retained_inputs.insert(batch.stage_operation().clone(), (batch.retained_copy(), acknowledgement.clone()));
+        Ok(acknowledgement)
     }
 
     fn validate_input_acknowledgement(
@@ -223,12 +226,34 @@ impl SimulationNode for CollectionNode {
     ) -> Result<(), OperationFailure> {
         if batch.deliveries().is_empty()
             && batch.payloads().is_empty()
-            && ack == &dispatch::model_ack(batch)
+            && self.retained_inputs.get(batch.stage_operation()).is_some_and(|(original, retained)| {
+                retained == ack && original.activation().same_authority(batch.activation())
+                    && original.node() == batch.node() && original.batch() == batch.batch()
+                    && original.inventory() == batch.inventory() && original.cutoff() == batch.cutoff()
+            })
         {
             Ok(())
         } else {
             Err(native_refusal())
         }
+    }
+
+    // This explicit in-process model owns only retained empty input cuts.
+    // It does not represent source-consumed socket or guest input authority.
+    fn commit_input_custody(&mut self, commit: &crate::node_scheduling::InputCustodyCommit) -> Result<(), OperationFailure> {
+        self.validate_input_custody_commit(commit)
+    }
+
+    fn validate_input_custody_commit(&self, commit: &crate::node_scheduling::InputCustodyCommit) -> Result<(), OperationFailure> {
+        let (original, acknowledgement) = self.retained_inputs.get(commit.stage_operation()).ok_or_else(native_refusal)?;
+        self.validate_input_acknowledgement(original, acknowledgement)?;
+        if !original.activation().same_authority(commit.activation())
+            || original.node() != commit.node() || original.batch() != commit.batch()
+            || original.inventory() != commit.inventory() || original.cutoff() != commit.cutoff()
+        {
+            return Err(native_refusal());
+        }
+        Ok(())
     }
 
     fn quarantine_resources(&mut self) {
@@ -381,6 +406,7 @@ fn runtime_with_mode(
                 initial_current: current.clone(),
                 scope_revoke: scope_revoke.clone(),
                 authority: authority.clone(),
+                retained_inputs: std::collections::BTreeMap::new(),
             }) as Box<dyn SimulationNode>
         })
         .collect::<Vec<_>>();

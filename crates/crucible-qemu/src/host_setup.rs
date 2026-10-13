@@ -53,6 +53,7 @@ use admission::{
 #[derive(Debug)]
 pub struct QemuHostPluginSetup {
     control: ControlLifecycleStream<UnixStream>,
+    original_whole_setup: Option<crate::spawn::QemuEarlyWholeSetup>,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
     negotiated: NegotiatedHandshake,
@@ -72,6 +73,14 @@ pub struct QemuHostPluginSetup {
 }
 
 impl QemuHostPluginSetup {
+    /// Reports whether the same pre-spawn whole constructor capsule is retained.
+    ///
+    /// Retention is not native readiness or a complete source-class attestation.
+    #[must_use]
+    pub fn retains_original_whole_constructor(&self) -> bool {
+        self.original_whole_setup.is_some()
+    }
+
     /// Returns the host control lifecycle state after setup.
     #[must_use]
     pub fn control_state(&self) -> ControlLifecycleState {
@@ -355,12 +364,33 @@ pub fn complete_qemu_host_plugin_setup(
 /// [`complete_qemu_host_plugin_setup`], or when the selected canonical plan
 /// body cannot be encoded, populated, or sealed before descriptor handoff.
 pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
-    resources: QemuSpawnSetupResources,
+    mut resources: QemuSpawnSetupResources,
     config: RegionConfig,
     slot_index: u32,
     required_capabilities: &QemuFaultCapabilityRequirement,
     plugin_setup_plan: &PluginSetupPlan,
 ) -> Result<QemuHostPluginSetup, QemuHostPluginSetupError> {
+    // A selected whole constructor must already own its exact sealed plan and
+    // image objects before the child can construct native state. Never recreate
+    // the descriptor after boot and present it as the original early input.
+    let original_whole_setup = resources.take_whole_setup();
+    if plugin_setup_plan.whole_constructor().is_some() != original_whole_setup.is_some() {
+        return Err(setup_io_error(
+            "validate original early whole constructor",
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "whole setup lacks the original pre-spawn descriptor",
+            ),
+        ));
+    }
+    if let Some(original) = &original_whole_setup {
+        original
+            .validate_plan(plugin_setup_plan)
+            .map_err(|source| {
+                setup_io_error("validate same original whole constructor bytes", source)
+            })?;
+    }
+
     let allocation = RegionAllocation::new(config)
         .map_err(|source| QemuHostPluginSetupError::RegionLayout { source })?;
     let layout = allocation.layout();
@@ -456,14 +486,33 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
     let setup_plan_bytes = plugin_setup_plan
         .encode()
         .map_err(|source| QemuHostPluginSetupError::PluginSetupPlan { source })?;
-    let plugin_setup_plan_fd = sealed_plugin_setup_plan_fd(&setup_plan_bytes)?;
+    let late_setup_plan_fd = if original_whole_setup.is_none() {
+        Some(sealed_plugin_setup_plan_fd(&setup_plan_bytes)?)
+    } else {
+        None
+    };
+    let plugin_setup_plan_fd = match (&original_whole_setup, &late_setup_plan_fd) {
+        (Some(original), None) => original
+            .plan_fd()
+            .map_err(|source| setup_io_error("borrow original setup descriptor", source))?,
+        (None, Some(ordinary)) => ordinary.as_raw_fd(),
+        _ => {
+            return Err(setup_io_error(
+                "retain original setup descriptor",
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "setup descriptor custody is inconsistent",
+                ),
+            ));
+        }
+    };
     control
         .host_send_setup_with_descriptors(
             region_len,
             SetupDescriptorFds {
                 shmem_fd: shmem_fd.as_raw_fd(),
                 wake_fd: wake_fd.as_raw_fd(),
-                plugin_setup_plan_fd: plugin_setup_plan_fd.as_raw_fd(),
+                plugin_setup_plan_fd,
             },
         )
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
@@ -549,6 +598,7 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
 
     Ok(QemuHostPluginSetup {
         control,
+        original_whole_setup,
         shmem_fd,
         wake_fd,
         negotiated,
@@ -568,7 +618,9 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
     })
 }
 
-fn sealed_plugin_setup_plan_fd(bytes: &[u8]) -> Result<OwnedFd, QemuHostPluginSetupError> {
+pub(crate) fn sealed_plugin_setup_plan_fd(
+    bytes: &[u8],
+) -> Result<OwnedFd, QemuHostPluginSetupError> {
     let name = c"crucible-plugin-setup-plan";
     let raw_fd = unsafe {
         // SAFETY: `name` is a live NUL-terminated C string and memfd_create
@@ -622,7 +674,10 @@ fn sealed_plugin_setup_plan_fd(bytes: &[u8]) -> Result<OwnedFd, QemuHostPluginSe
     Ok(fd)
 }
 
-fn write_shmem_setup_region(fd: RawFd, bytes: &[u8]) -> Result<(), QemuHostPluginSetupError> {
+pub(crate) fn write_shmem_setup_region(
+    fd: RawFd,
+    bytes: &[u8],
+) -> Result<(), QemuHostPluginSetupError> {
     let mut written = 0;
     while written < bytes.len() {
         let offset = libc::off_t::try_from(written).map_err(|_error| {
