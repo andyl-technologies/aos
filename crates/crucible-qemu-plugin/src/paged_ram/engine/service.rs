@@ -447,6 +447,7 @@ impl FaultService {
                 // A prior service of another queued accessor already installed
                 // this page; no removal is admitted while this service is active.
                 self.check_placement_dependency()?;
+                operation.wait_slice().map_err(RamError::from)?;
                 self.registration.wake(address).map_err(RamError::from)?;
                 return Ok(());
             }

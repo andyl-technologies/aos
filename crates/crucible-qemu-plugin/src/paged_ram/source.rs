@@ -811,7 +811,10 @@ impl<const BORROWED: bool> DeadlineTransport<'_, BORROWED> {
                     self.static_error(io::ErrorKind::TimedOut, "RAM page source deadline expired")
                 );
             }
-            let milliseconds = remaining.as_millis().clamp(1, 10) as libc::c_int;
+            let timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: remaining.min(Duration::from_millis(10)).subsec_nanos() as libc::c_long,
+            };
             let mut descriptors = [
                 libc::pollfd {
                     fd: self.stream.as_raw_fd(),
@@ -824,9 +827,12 @@ impl<const BORROWED: bool> DeadlineTransport<'_, BORROWED> {
                     revents: 0,
                 },
             ];
-            // SAFETY: Both descriptors remain owned for the call and the array
-            // contains exactly the number of initialized pollfd entries passed.
-            let result = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, milliseconds) };
+            // Preserve sub-millisecond supervision slices instead of rounding
+            // them up. Readiness and interruptions still recheck the same operation.
+            // SAFETY: Both descriptors remain owned for the call. The array has
+            // two initialized entries, the timeout is valid, and no mask is supplied.
+            let result =
+                unsafe { libc::ppoll(descriptors.as_mut_ptr(), 2, &timeout, std::ptr::null()) };
             if result < 0 {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::Interrupted {

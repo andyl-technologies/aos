@@ -69,6 +69,14 @@ impl PausedPagingOwner {
             if service.failed.load(Ordering::Acquire) {
                 return Err(RamError::Invariant("failed activation authority"));
             }
+            if service.source.is_some() {
+                // A prepared restore owns this inactive source-backed service
+                // until commit or abort. Policy placement must wait for that cut.
+                return Err(RamError::Native {
+                    operation: "prepared restore excludes resident activation",
+                    status: -libc::EBUSY,
+                });
+            }
             return self.activate_service(service, operation, completed_work);
         }
         let (generation, regions, budget, _inventory) =
@@ -176,6 +184,12 @@ impl PausedPagingOwner {
             return Err(RamError::Invariant(
                 "failed paging authority cannot reclaim",
             ));
+        }
+        if !service.activated.load(Ordering::Acquire) {
+            return Err(RamError::Native {
+                operation: "inactive paging arenas exclude reclaim",
+                status: -libc::EBUSY,
+            });
         }
         let mut action = PhysicalPlacement {
             owner: self,
