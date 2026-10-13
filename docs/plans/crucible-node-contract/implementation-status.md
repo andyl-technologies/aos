@@ -2288,6 +2288,15 @@ singleton execution witness yet. Six additional adverse branches, complete
 independent clause reviews and factory acceptance remain unfinished. The
 separate ordinary package build uses the preceding frozen source cohort.
 
+The singleton's pre-realization plan additionally declares two valid requests
+with insufficient process and descriptor budgets. It regenerates the exact
+selected plan before execution while preserving the baseline probe population.
+Strict all-target checks pass for all three affected crates, and retained
+compiler metadata and dependency files bind the three changed source roles.
+These are compiled probe definitions; their actual native collection and
+memory or journal exhaustion remain unexecuted. They confer no full adverse
+case or clause acceptance.
+
 ## Selected DMTCP writer package
 
 The source-built `dmtcp-selected-writer-park` package passes its normal

@@ -50,7 +50,7 @@ pub(super) fn collect(
     plan: &SourceProbePlan,
     observations: &ObservationHandle,
 ) -> Result<(OriginalSourceProbeObservation, Vec<u8>), ProviderError> {
-    let expected = SourceProbePlan::build(installed)?;
+    let expected = plan.regenerate(installed)?;
     if expected.reference != plan.reference
         || expected.bytes != plan.bytes
         || expected.objects != plan.objects

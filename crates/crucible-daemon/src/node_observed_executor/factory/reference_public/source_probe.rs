@@ -33,10 +33,17 @@ pub(super) struct SourceProbePlan {
     pub(super) bytes: Vec<u8>,
     pub(super) objects: BTreeMap<ContentRef, Vec<u8>>,
     cases: Vec<OriginalProbeCase>,
+    selection: ProbeSelection,
     session: Id,
     incarnation: Id,
     binding_hash: crucible_node_contract::HashRef,
     provider: ContentRef,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ProbeSelection {
+    Baseline,
+    SingletonResourceDeclarations,
 }
 
 /// Retains one pre-materialized original request under its immutable case ID.
@@ -182,6 +189,7 @@ impl SourceProbePlan {
             bytes,
             objects,
             cases,
+            selection: ProbeSelection::Baseline,
             session: installed.bootstrap.authority.session_id.clone(),
             incarnation: installed.bootstrap.authority.incarnation_id.clone(),
             binding_hash: binding.identity()?,
@@ -191,6 +199,88 @@ impl SourceProbePlan {
                 .map_err(|error| ProviderError::Io(std::io::Error::other(error.to_string())))?
                 .clone(),
         })
+    }
+
+    /// Adds valid but insufficient singleton resource declarations before Child.
+    ///
+    /// These exact native refusals exercise immutable process/descriptor budget
+    /// admission. They do not claim actual memory or operation-journal exhaustion.
+    ///
+    /// # Errors
+    /// Refuses another source topology, malformed portable requests or a fixture
+    /// outside the existing finite body and request credits.
+    pub(super) fn build_singleton_resources(
+        installed: &SourcePublicReferenceInstallation,
+    ) -> Result<Self, ProviderError> {
+        if installed.profile.descriptor.id.as_str() != "singleton"
+            || installed.profile.owner.id.as_str() != "singleton-owner"
+            || installed.profile.owner.participant_ids != [installed.profile.descriptor.id.clone()]
+        {
+            return Err(ProviderError::Correlation(
+                "resource probes require the original singleton",
+            ));
+        }
+        let mut plan = Self::build(installed)?;
+        let original = RealizeRequest {
+            realization_id: installed.bootstrap.authority.realization_id.clone(),
+            configuration: installed.profile.configuration_ref.clone(),
+            requested_node_ids: installed.profile.owner.participant_ids.clone(),
+            resource_limits: installed.bootstrap.resource_limits.clone(),
+            extensions: Extensions::new(),
+        };
+        for name in ["one-process-budget", "three-descriptor-budget"] {
+            let mut request = original.clone();
+            if name == "one-process-budget" {
+                request.resource_limits.processes = crucible_node_contract::U64::new(1);
+            } else {
+                request.resource_limits.descriptors = crucible_node_contract::U64::new(3);
+            }
+            let body = object(request)?;
+            decode_request(Method::Realize, &body)?;
+            plan.cases.push(OriginalProbeCase {
+                case: Id::new(format!("reference/singleton/resource/{name}"))?,
+                request_id: Id::new(format!("singleton-resource/{name}"))?,
+                method: Method::Realize,
+                body,
+            });
+        }
+        let bytes = canonical::canonical_json(&serde_json::json!({
+            "schema":"crucible.reference.singleton-resource-probe-plan.v1",
+            "implementation":installed.package.identity(),"baseline":plan.reference,
+            "node":installed.profile.descriptor.id,"owner":installed.profile.owner.id,
+            "original_resources":installed.bootstrap.resource_limits,
+            "cases":[{"name":"one-process-budget","processes":"1"},{"name":"three-descriptor-budget","descriptors":"3"}],
+            "oracle":{"error":"CONFLICT","effect":"not_started","operation_state":"not_started","retryable":false},
+            "native_premise":"same original provider-only enrollment before and after; no companion before refused Realize",
+            "scope":"insufficient declared native process/descriptor budgets; actual exhaustion and whole-clause review remain separate"
+        }))?;
+        if bytes.len() > MAXIMUM_FIXTURE_BYTES {
+            return Err(ProviderError::ResourceExhausted(
+                "singleton resource fixture bytes",
+            ));
+        }
+        let reference = canonical::content_ref(&bytes, "application/json")?;
+        plan.objects.insert(reference.clone(), bytes.clone());
+        plan.bytes = bytes;
+        plan.reference = reference;
+        plan.selection = ProbeSelection::SingletonResourceDeclarations;
+        Ok(plan)
+    }
+
+    /// Regenerates the same sealed source selection for an owning collector.
+    ///
+    /// # Errors
+    /// Propagates failure to regenerate the exact installed original fixture.
+    pub(super) fn regenerate(
+        &self,
+        installed: &SourcePublicReferenceInstallation,
+    ) -> Result<Self, ProviderError> {
+        match self.selection {
+            ProbeSelection::Baseline => Self::build(installed),
+            ProbeSelection::SingletonResourceDeclarations => {
+                Self::build_singleton_resources(installed)
+            }
+        }
     }
 
     /// Borrows originals for a guard-owned caller using `owned=false`/no operation.

@@ -84,7 +84,7 @@ impl SingletonAdversePopulation {
                 "adverse population is not the original singleton",
             ));
         }
-        let pre_realization = SourceProbePlan::build(installed)?;
+        let pre_realization = SourceProbePlan::build_singleton_resources(installed)?;
         let prepared = SourcePreActivationProbePlan::build(installed)?;
         let bytes = canonical::canonical_json(&json!({
             "schema":"crucible.reference.singleton-adverse-population.v1",
