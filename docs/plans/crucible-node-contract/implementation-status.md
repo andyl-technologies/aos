@@ -2354,8 +2354,12 @@ oversized dynamic image; explicit supported linker flags correct it. The final
 recipe passes Nix parsing and formatting, and its component products pass
 readback. Independent review reconstructs every allocated ELF section at its
 original load address and reproduces the complete raw image, including zero
-gaps. Hermetic package/source-output construction, QEMU installation and
-guest behavior remain unqualified.
+gaps. The ordinary hermetic binary and corresponding-source build subsequently
+passes in 9.03 seconds. Installed-byte and complete-output audits verify all
+39 original sources, 19 compiler/link products, both full NARs and the retained
+source reference. All 25 prerequisite NARs, references and actual derivers remain
+unchanged. QEMU installation, guest behavior and the complete firmware roster
+remain unqualified.
 
 ## Selected plugin preparation and process fencing
 
