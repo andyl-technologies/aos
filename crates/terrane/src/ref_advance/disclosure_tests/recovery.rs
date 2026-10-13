@@ -432,6 +432,29 @@ pub(super) async fn refuse_cross_kind_pair() {
         .begin(reference, destination_authority.token(), "sdk")
         .await
         .unwrap();
+    // Preliminary destination admission retains this authorized session's epoch
+    // baseline before checking the paired principals. Complete that genuine
+    // setup before measuring refusal, preserving the full physical-state oracle.
+    let guard = destination.guard();
+    let retention = crate::repository::local_authority::NativeRetention {
+        authority: guard.configured_original_authority().unwrap(),
+        owner_uid: destination.store().publication_operator_uid().unwrap(),
+        authoring_acl: guard.config().initial_acl.clone(),
+    };
+    retention
+        .retain_baseline(guard, &TokioLocalFs, &session)
+        .await
+        .unwrap();
+    let baseline = guard
+        .original_bootstrap(reference, session.epoch())
+        .unwrap();
+    assert_eq!(baseline.authority(), &retention.authority);
+    assert_eq!(baseline.reference(), reference);
+    assert_eq!(baseline.epoch(), session.epoch());
+    assert!(session.record().is_none());
+    assert_eq!(destination.store().ref_get(reference).await.unwrap(), None);
+    assert!(destination.guard().original_commit(&head.commit).is_err());
+
     let before = super::witness_support::physical_snapshot(destination.store().root()).await;
     let failure = destination
         .advance_disclosure(
