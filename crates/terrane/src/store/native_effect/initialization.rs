@@ -1,9 +1,11 @@
-//! Owns opaque requests and genuine native fresh-root activation receipts.
+//! Owns opaque requests and genuine native root or portable-copy activation receipts.
 //!
-//! A request contains configured inputs only. The private native creator must
-//! retain actual opened directories, acquire the stable coordination exclusion,
-//! and durably stage the exact Pending registration and genesis before returning
-//! its receipt. Decoded records and an existing root cannot construct a receipt.
+//! A request fixes configuration and, for an explicit copy, verified ordinary
+//! data under an existing actual exclusion. The native factory retains actual
+//! opened directories and performs a genuine administrative create-new event
+//! before staging Pending and genesis. Decoded records and an existing root
+//! cannot construct that receipt. D-108 fixes the copied proposal's exact
+//! nonauthoritative staging locator independently of its selected slot.
 //!
 //! ```text
 //! configured request -> native creator -> durable Pending + exact staged genesis
@@ -26,18 +28,18 @@ use terrane_core::gc::publication::{BackendBinding, PublicationTransaction};
 // The programs are descendants of both the opaque carriers and the native
 // mechanics. Other crate modules can submit requests but cannot fabricate the
 // successful creator event, descriptors, or exact physical staging transcript.
-/// Creates genuinely absent roots and activates their exact retained genesis.
+/// Creates absent roots or registers explicit copies and activates retained genesis.
 #[path = "../../bucket/publication/activation/fresh.rs"]
 pub(crate) mod fresh;
 /// Recovers the same exact existing Pending registration under retained exclusion.
 #[path = "../../bucket/publication/activation/pending.rs"]
 pub(crate) mod pending;
 
-/// Fixes configured inputs for one native fresh-root initialization attempt.
+/// Fixes configured inputs for one native root or portable-copy initialization.
 ///
 /// Possessing this request grants no freshness or registration authority. It
-/// has no public constructor; the file-bucket opener fixes its canonical inputs
-/// before a binding submits the private creator program.
+/// has no public constructor; the file-bucket opener or explicit administrative
+/// copy initializer fixes its canonical inputs before native factory dispatch.
 pub struct NativePublicationInitialization {
     // Keep unsupported configurations opaque too; the unit is no authority.
     _private: (),
@@ -51,13 +53,22 @@ pub struct NativePublicationInitialization {
     profile: StoreProfile,
     #[cfg(unix)]
     timestamp: u64,
+    #[cfg(unix)]
+    copy: Option<CopyInputs>,
+}
+
+/// Retains verified copy data and actual exclusion, without registration authority.
+#[cfg(unix)]
+struct CopyInputs {
+    payload: crate::bucket::publication::copy_payload::CopyPayload,
+    exclusion: NativeExclusion,
 }
 
 /// Reports existing-root observation or an actual retained native creator event.
 pub enum NativePublicationInitializationOutcome {
     /// Requires complete existing registration and selected-chain verification.
     Existing,
-    /// Retains the actual creator's opened directories, exclusion and staging.
+    /// Retains the actual native factory's directories, exclusion and staging.
     Fresh(Box<NativePendingRoot>),
 }
 
@@ -138,6 +149,7 @@ pub(crate) fn request_for_open(
             operator_uid,
             profile,
             timestamp,
+            copy: None,
         })
     }
 
@@ -146,6 +158,24 @@ pub(crate) fn request_for_open(
         let _ = (operator_uid, profile, timestamp);
         Err(StoreFailure::new(StoreErrorKind::Unsupported))
     }
+}
+
+/// Fixes verified portable data under the independently acquired existing lock.
+///
+/// # Errors
+/// Rejects unsupported configuration. Data and exclusion alone do not authorize
+/// registration; the native worker must perform the administrative create event.
+#[cfg(unix)]
+pub(crate) fn request_for_copy(
+    mut request: NativePublicationInitialization,
+    payload: crate::bucket::publication::copy_payload::CopyPayload,
+    exclusion: NativeExclusion,
+) -> Result<NativePublicationInitialization, StoreFailure> {
+    if request.copy.is_some() {
+        return Err(corrupt());
+    }
+    request.copy = Some(CopyInputs { payload, exclusion });
+    Ok(request)
 }
 
 #[cfg(unix)]

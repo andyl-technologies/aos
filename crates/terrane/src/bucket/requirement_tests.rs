@@ -97,7 +97,7 @@ async fn opaque_metadata_callback_verifies_real_chunks_before_every_dedup() {
     assert_eq!(bucket.put(ContentUpload::Meta(meta)).await.unwrap(), stored);
     assert_eq!(
         *bucket.inner.validator.trace.lock().unwrap(),
-        vec!["metadata", "requirements"]
+        vec!["metadata", "requirements", "metadata"]
     );
     assert_eq!(
         tokio::fs::read(bucket.root().join("CAPABILITIES"))
@@ -107,11 +107,16 @@ async fn opaque_metadata_callback_verifies_real_chunks_before_every_dedup() {
     );
 
     for (mode, rule_id) in [(1, "CDC-12"), (2, "CDC-15"), (4, "TEST-META-CHUNK")] {
+        bucket.inner.validator.trace.lock().unwrap().clear();
         bucket.inner.validator.mode.store(mode, Ordering::Relaxed);
         let error = bucket.put(ContentUpload::Meta(meta)).await.unwrap_err();
         assert!(
             matches!(error.kind(), StoreErrorKind::Invalid(InvalidReason::Upload { rule_id: actual })
             if *actual == rule_id)
+        );
+        assert_eq!(
+            *bucket.inner.validator.trace.lock().unwrap(),
+            vec!["metadata", "requirements"]
         );
         assert_eq!(
             tokio::fs::read(bucket.root().join("CAPABILITIES"))
@@ -120,6 +125,7 @@ async fn opaque_metadata_callback_verifies_real_chunks_before_every_dedup() {
             capabilities
         );
     }
+    bucket.inner.validator.trace.lock().unwrap().clear();
     bucket.inner.validator.mode.store(3, Ordering::Relaxed);
     assert!(matches!(
         bucket
@@ -129,5 +135,9 @@ async fn opaque_metadata_callback_verifies_real_chunks_before_every_dedup() {
             .kind(),
         StoreErrorKind::Invalid(InvalidReason::MalformedRequest)
     ));
+    assert_eq!(
+        *bucket.inner.validator.trace.lock().unwrap(),
+        vec!["metadata", "requirements"]
+    );
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }

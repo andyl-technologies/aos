@@ -6,12 +6,19 @@ use terrane_core::auth::Verb;
 use terrane_core::identity::{Digest, IdentityKind, TERRANE_V1};
 use terrane_core::tree_format::{ContentRef, EntryKind};
 
-use super::admission::{CandidateRequest, CandidateValidation};
+use super::admission::{
+    CandidateInterpretation, CandidatePrevious, CandidateRequest, CandidateValidation,
+};
 use super::{AdmittedCommit, Guard, TreeEvidence, denied, invalid};
 use crate::domain::DomainRecord;
 use crate::store::{Clock, Store, StoreFailure};
 
 impl<S: Store, C: Clock> Guard<S, C> {
+    /// Admits a verified ancestor as the destination under current root policy.
+    ///
+    /// # Errors
+    /// Rejects non-ancestors, current authority or policy failures and preserves
+    /// complete history, Original, attribute-producer and storage failures.
     pub(crate) async fn admit_rollback(
         &self,
         reference: &str,
@@ -19,13 +26,19 @@ impl<S: Store, C: Clock> Guard<S, C> {
         token: &[u8],
         surface: &str,
     ) -> Result<AdmittedCommit, StoreFailure> {
-        let authorization = self
-            .authorize(reference, token, Verb::Commit, &[], surface)
-            .await?;
-        let expected = authorization
-            .record()
-            .cloned()
+        terrane_core::refs::RefName::parse(reference)
+            .map_err(|_| denied(reference, Verb::Commit))?;
+        let now = self.now(reference, Verb::Commit)?;
+        let authenticated = terrane_core::auth::verify(token, self.keys(), now)
+            .map_err(|_| denied(reference, Verb::Commit))?;
+        let expected = self
+            .store()
+            .ref_get(reference)
+            .await?
             .ok_or_else(|| denied(reference, Verb::Commit))?;
+        if expected.home != self.config().home {
+            return Err(denied(reference, Verb::Commit));
+        }
         let history = self.verified_history(expected.commit).await?;
         let mut pending = history
             .commit(&expected.commit)
@@ -50,43 +63,95 @@ impl<S: Store, C: Clock> Guard<S, C> {
             return Err(denied(reference, Verb::Commit));
         }
 
-        let previous = self.verified_tree(expected.commit).await?.evidence;
+        let previous = self.verified_tree(expected.commit).await?;
         let selected = self.verified_tree(target).await?;
         let records = self.existing_records(&selected.evidence).await?;
         let request = CandidateRequest {
+            commit: selected.commit.commit(),
             uploads: &[],
             token,
             surface,
             reference_records: &records,
         };
+        let previous_interpretation = self.select_view(
+            expected.commit,
+            previous.evidence.root,
+            super::HistoryObservation::default(),
+        )?;
+        let admission_interpretation = self.select_view(
+            selected.commit.identity(),
+            selected.evidence.root,
+            super::HistoryObservation::default(),
+        )?;
+        let admission_profile = super::history::completion::profile_inputs(
+            self,
+            &selected.commit,
+            &admission_interpretation,
+        )?;
         let CandidateValidation {
             requirements,
             admin_checks,
+            root_claims,
         } = self
-            .validate_candidate(reference, request, &selected.evidence, Some(&previous))
+            .validate_candidate(
+                reference,
+                request,
+                &selected.evidence,
+                CandidateInterpretation::Existing {
+                    selected: &admission_interpretation,
+                    profile: &admission_profile,
+                },
+                Some(CandidatePrevious {
+                    evidence: &previous.evidence,
+                    interpretation: &previous_interpretation,
+                    commit: Some(&previous.commit),
+                }),
+            )
             .await?;
         let timestamp = self.now(reference, Verb::Commit)?;
         Ok(AdmittedCommit {
+            tree_usage: terrane_core::tree_format::TreeUse::Ordinary,
+            overlay_sources: Vec::new(),
             #[cfg(unix)]
             cold_fork: None,
-            completion_inputs: self.completion_inputs()?,
+            completion_inputs: self.completion_inputs_for(
+                admission_interpretation.selection(),
+                admission_profile.attribute_revision,
+            )?,
+            existing_owner_references: None,
+            index_work: super::admission::IndexPublicationWork::default(),
             commit: selected.commit,
+            #[cfg(feature = "std")]
+            admission_interpretation,
+            #[cfg(feature = "std")]
+            admission_profile,
             requirements,
             admin_checks,
             publication_reference: reference.to_owned(),
+            publication_paths: root_claims
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
             uploads: Vec::new(),
             observed_current: Some(expected.clone()),
             expected: Some(expected),
             surface: surface.to_owned(),
             source_authorization: None,
             token: token.to_vec(),
-            principal: authorization.subject().to_owned(),
+            principal: authenticated.authority().subject.clone(),
             timestamp,
             publication_verb: Verb::Commit,
             policy_override: None,
         })
     }
 
+    /// Admits a ref-policy replacement after current Admin checks on every root.
+    ///
+    /// # Errors
+    /// Rejects denied Admin, missing current heads or invalid policy combinations
+    /// and preserves complete history, selected-profile and storage failures.
     pub(crate) async fn admit_policy(
         &self,
         reference: &str,
@@ -119,14 +184,42 @@ impl<S: Store, C: Clock> Guard<S, C> {
             }
             policy.conflicted = selected.commit.commit().profile_pair.conflicted;
         }
+        let admission_interpretation = self.select_view(
+            selected.commit.identity(),
+            selected.evidence.root,
+            super::HistoryObservation::default(),
+        )?;
+        let admission_profile = super::history::completion::profile_inputs(
+            self,
+            &selected.commit,
+            &admission_interpretation,
+        )?;
+        let publication_paths = selected
+            .evidence
+            .occurrences(self.config().min_chunk_size)?
+            .into_iter()
+            .map(|root| root.path)
+            .collect();
         Ok(AdmittedCommit {
+            tree_usage: terrane_core::tree_format::TreeUse::Ordinary,
+            overlay_sources: Vec::new(),
             #[cfg(unix)]
             cold_fork: None,
-            completion_inputs: self.completion_inputs()?,
+            completion_inputs: self.completion_inputs_for(
+                admission_interpretation.selection(),
+                admission_profile.attribute_revision,
+            )?,
+            existing_owner_references: None,
+            index_work: super::admission::IndexPublicationWork::default(),
             commit: selected.commit,
+            #[cfg(feature = "std")]
+            admission_interpretation,
+            #[cfg(feature = "std")]
+            admission_profile,
             requirements: Vec::new(),
             admin_checks: Vec::new(),
             publication_reference: reference.to_owned(),
+            publication_paths,
             uploads: Vec::new(),
             observed_current: Some(expected.clone()),
             expected: Some(expected),
@@ -141,6 +234,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
     }
 
     /// Confirms namespace membership through actual pinned backend reads.
+    ///
+    /// # Errors
+    /// Preserves canonical tree, identity and pinned backend read failures.
     pub(super) async fn existing_records(
         &self,
         evidence: &TreeEvidence,

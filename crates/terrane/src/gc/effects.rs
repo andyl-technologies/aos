@@ -58,6 +58,7 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
     let mut frame = Frame {
         exclusions: exclusions.into(),
         names: Vec::new(),
+        pairs: Vec::new(),
         reads: Vec::new(),
         parents: BTreeMap::new(),
         writes: Some(super::CompletedWrites {

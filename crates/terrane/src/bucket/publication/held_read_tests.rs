@@ -121,6 +121,14 @@ impl LocalFs for ReadFs {
         TokioLocalFs.lock_existing_exclusive(path).await
     }
 
+    async fn try_lock_existing_shared(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_shared(path).await
+    }
+
+    async fn try_lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        TokioLocalFs.try_lock_existing_exclusive(path).await
+    }
+
     async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.random_bytes(length).await
     }
@@ -706,12 +714,20 @@ async fn record_parent_batches_preserve_entries_duplicates_and_exact_gets() {
 
     fs.scalar_batches.store(true, Ordering::SeqCst);
     fs.reset_read_counters();
-    let scalar = reads.read(protected_key).await.unwrap();
+    let scalar = reads
+        .read_observed(protected_key)
+        .await
+        .unwrap()
+        .into_bytes();
     let scalar_counts = fs.read_counters();
 
     fs.scalar_batches.store(false, Ordering::SeqCst);
     fs.reset_read_counters();
-    let batched = reads.read(protected_key).await.unwrap();
+    let batched = reads
+        .read_observed(protected_key)
+        .await
+        .unwrap()
+        .into_bytes();
     let batched_counts = fs.read_counters();
     assert_eq!(scalar, batched);
     assert_eq!(scalar_counts, (6, 6, 1));
@@ -778,7 +794,11 @@ async fn record_parent_short_batches_refuse_before_exact_reads_or_effects() {
 
     *fs.short_batch_path.lock().unwrap() = Some(control.path.join("publication"));
     fs.reset_read_counters();
-    let error = reads.read("publication/commits/0").await.unwrap_err();
+    let error = reads
+        .read_observed("publication/commits/0")
+        .await
+        .map(|read| read.into_bytes())
+        .unwrap_err();
     assert!(matches!(error.kind(), StoreErrorKind::Corrupt(_)));
     assert!(fs.short_batch_path.lock().unwrap().is_none());
     assert_eq!(fs.read_counters(), (4, 1, 0));

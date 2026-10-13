@@ -1,4 +1,6 @@
-//! Verifies fresh held content reads and every direct artifact boundary.
+//! Verifies fresh held content reads, uploads and every direct artifact boundary.
+
+mod uploads;
 
 use super::*;
 use crate::bucket::content_tests::{chunk_identity, raw, upload};
