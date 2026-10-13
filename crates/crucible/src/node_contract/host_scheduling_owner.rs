@@ -15,13 +15,19 @@ use crucible_node_contract::{
     ContentRef, HashRef, Id, NodeBinding, NodeDescriptor, OwnerBinding, SchemaRef, Validate,
     canonical,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::node_admission::ConformanceGraph;
 
 use super::runtime::scheduling_state::OriginalSchedulingSource;
 use super::{ActivationRecord, NodeRoute, OperationFailure, OwnerIdentity, RuntimeError};
+
+mod continuation;
+pub use continuation::{
+    HostSchedulingContinuationLimits, HostSchedulingContinuationRecord,
+    HostSchedulingContinuationV2, HostSchedulingRuntimeRecord,
+};
 
 mod node;
 pub use node::PreparedHostSchedulingNode;
@@ -62,7 +68,8 @@ fn definition_ref() -> Result<ContentRef, OperationFailure> {
 }
 
 /// Names the host-owned state domain for one original world connection.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostSchedulingConnectionDomain {
     /// Names the exact connection selected by the complete world.
     pub connection: Id,
@@ -71,7 +78,8 @@ pub struct HostSchedulingConnectionDomain {
 }
 
 /// Binds semantic host state roles without interpreting caller-selected labels.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostSchedulingDomains {
     /// Names the common scheduler's complete coordinator-state domain.
     pub coordinator: Id,
@@ -121,7 +129,8 @@ fn validate_domains(domains: &HostSchedulingDomains) -> Result<(), OperationFail
 /// Retains the exact source-selected public host descriptor and ownership tuple.
 ///
 /// These immutable records contain no private pointers or source authority.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostSchedulingSelection {
     /// Names the actual source-selected host coordinator view, with no ports.
     pub descriptor: NodeDescriptor,
@@ -697,7 +706,7 @@ mod tests {
 
     use super::*;
 
-    fn source_owner() -> HostSchedulingOwner {
+    pub(super) fn source_owner() -> HostSchedulingOwner {
         let (graph, _) = crate::node_admission::test_fixture_isolated_execution(false);
         let node = graph.node_ids().next().unwrap();
         let mut descriptor = graph.descriptor(node).unwrap().clone();

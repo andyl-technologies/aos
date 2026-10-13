@@ -659,6 +659,30 @@ pub trait SimulationNode {
         })
     }
 
+    /// Authenticates source-selected exact ancestry under actual fresh native custody.
+    ///
+    /// This additional conjunction preserves each captured source's original
+    /// ExactRun or BoundarySettle permission, publication coordinates, consumed
+    /// inputs and native parent encoding. The ordinary restoration hook remains
+    /// mandatory. Archive hashes and matching parent positions are insufficient.
+    /// The callback is read-only and retains original custody on refusal.
+    ///
+    /// # Errors
+    /// Refuses unsupported exact codecs, unavailable original native journals or
+    /// ancestry that differs from the complete source-selected native history.
+    fn validate_exact_original_lineage_restoration(
+        &self,
+        _source_record: &crucible_node_contract::ContentRef,
+        _record: &super::OriginalLineageRuntimeRecord,
+        _scope: &super::OriginalLineageNativeScope,
+        _content: &crate::node_state::VerifiedStateContent,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "exact original lineage native restoration is unsupported".into(),
+        })
+    }
+
     /// Admits one core-authenticated lineage context before restored readiness.
     ///
     /// The context is opaque and bound to the actual inactive owning runtime.

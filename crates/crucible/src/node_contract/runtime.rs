@@ -997,8 +997,20 @@ impl NodeRuntime {
         source.authenticate_runtime(state)
     }
 
-    pub(super) fn host_scheduler_preflight(&self, maximum_bytes: usize) -> Result<(), RuntimeError> {
-        self.scheduling_origin()?.retained()?.snapshot_preflight(maximum_bytes)
+    // Presence selects the explicit ledger codec; it grants no source authority.
+    pub(super) fn host_original_lineage_present(&self) -> bool {
+        self.input_batches
+            .values()
+            .any(|input| input.lineage.is_some())
+    }
+
+    pub(super) fn host_scheduler_preflight(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<(), RuntimeError> {
+        self.scheduling_origin()?
+            .retained()?
+            .snapshot_preflight(maximum_bytes)
     }
 
     pub(super) fn host_scheduler_snapshot(
@@ -1467,6 +1479,8 @@ pub enum RuntimePollFailure {
 #[cfg(test)]
 #[path = "runtime_tests.rs"]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::host_continuation_runtime_fixture;
 
 #[cfg(test)]
 pub(crate) fn test_original_admission(name: &str) -> OperationAdmission {

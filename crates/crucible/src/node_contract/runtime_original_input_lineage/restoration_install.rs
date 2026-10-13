@@ -157,11 +157,21 @@ impl NodeRuntime {
 }
 
 fn preflight_copies(context: &OriginalLineageRestoration<'_>) -> Result<(), RuntimeError> {
-    context.record.validate_original_bodies(
-        context.content,
-        context.limits.lineage,
-        context.limits.maximum_record_bytes,
-    )?;
+    match context.ancestry {
+        RestorationAncestry::Legacy => context.record.validate_original_bodies(
+            context.content,
+            context.limits.lineage,
+            context.limits.maximum_record_bytes,
+        )?,
+        RestorationAncestry::Exact => {
+            context
+                .record
+                .validate_metadata(context.limits.lineage, context.limits.maximum_record_bytes)?;
+            context
+                .record
+                .check_exact_original_bodies(|reference| context.content.get(reference))?;
+        }
+    }
     let mut remaining = context.limits.lineage.maximum_bytes;
     for input in &context.record.inputs {
         // One payload copy belongs to the current shared batch; the second is

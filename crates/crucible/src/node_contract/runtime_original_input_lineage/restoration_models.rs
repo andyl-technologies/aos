@@ -64,7 +64,28 @@ fn original_lineage_context_refuses_other_typed_role_before_original_body_read()
 
 impl Model {
     fn new() -> Self {
-        let (_, lineage, record) = preservation_record();
+        Self::from_record(preservation_record())
+    }
+
+    fn new_exact() -> Self {
+        Self::from_record(super::super::original_exact_lineage_models::preservation_record())
+    }
+
+    fn from_record(
+        source: (
+            NodeRuntime,
+            OriginalInputLineage,
+            OriginalLineageRuntimeRecord,
+        ),
+    ) -> Self {
+        let (original_runtime, lineage, record) = source;
+        // The fresh modeled endpoint keeps the original execution contract;
+        // restoring exact history into a quantized model is not this control.
+        let mode = original_runtime.nodes[&id("a")]
+            .binding()
+            .compatibility
+            .operating_contract
+            .mode;
         let mut objects = lineage.publications()[0].objects.clone();
         // crucible-lint: allow panic-shortcut -- the finite typed synthetic record must serialize so malformed authority is tested separately.
         let bytes = canonical::canonical_json(&serde_json::to_value(&record).unwrap()).unwrap();
@@ -81,7 +102,7 @@ impl Model {
         // crucible-lint: allow panic-shortcut -- the explicitly generated typed fixture bodies must authenticate before this authority control.
         let content = synthetic_typed_content(&objects).unwrap();
 
-        let (mut runtime, states) = runtime(OperatingMode::Quantized);
+        let (mut runtime, states) = runtime(mode);
         let mut target = runtime.barrier.record().clone();
         target.generation = 2.into();
         target.activation_id = id("fresh-restoration");
@@ -886,5 +907,237 @@ fn foreign_fresh_input_ack_roster_refuses_before_endpoint_validation() -> Result
             .all(|state| state.borrow().lineage_restoration_calls == 0)
     );
     model.no_native_effects();
+    Ok(())
+}
+
+#[test]
+fn exact_restoration_requires_additional_native_history_even_for_empty_parents()
+-> Result<(), RuntimeError> {
+    let model = Model::new();
+    let mut verifier = Verifier::new(&model);
+    assert!(
+        model
+            .runtime
+            .prepare_exact_original_lineage_restoration(
+                &model.source,
+                &model.content,
+                &model.scheduling,
+                &model.target,
+                &mut verifier,
+                OriginalLineageRestorationLimits {
+                    lineage: OriginalInputLineageLimits::default(),
+                    maximum_record_bytes: 1024 * 1024,
+                },
+            )
+            .is_err()
+    );
+    assert_eq!(model.states[0].borrow().exact_restoration_calls, 1);
+    model
+        .prepare(&mut verifier)?
+        .validate_current(&model.runtime)?;
+    model.no_native_effects();
+    Ok(())
+}
+
+#[test]
+fn exact_restoration_preserves_nonempty_original_parents_but_legacy_refuses()
+-> Result<(), RuntimeError> {
+    let model = Model::new_exact();
+    let mut verifier = Verifier::new(&model);
+    assert!(model.prepare(&mut verifier).is_err());
+    assert_eq!(verifier.calls, 0);
+    for state in &model.states {
+        state.borrow_mut().exact_restoration_record = Some(model.record.clone());
+    }
+    let context = model.runtime.prepare_exact_original_lineage_restoration(
+        &model.source,
+        &model.content,
+        &model.scheduling,
+        &model.target,
+        &mut verifier,
+        OriginalLineageRestorationLimits {
+            lineage: OriginalInputLineageLimits::default(),
+            maximum_record_bytes: 1024 * 1024,
+        },
+    )?;
+    assert_eq!(context.record(), &model.record);
+    assert_eq!(
+        context.record().inputs[0].deliveries[0]
+            .causal_parents
+            .len(),
+        1
+    );
+    context.validate_current(&model.runtime)?;
+    model.states[1].borrow_mut().exact_restoration_record = None;
+    assert!(context.validate_current(&model.runtime).is_err());
+    model.no_native_effects();
+    Ok(())
+}
+
+#[test]
+fn exact_restoration_install_keeps_original_input_custody_when_native_install_refuses()
+-> Result<(), RuntimeError> {
+    let mut model = Model::new_exact();
+    model.record.operations[0].result = SavedRuntimeResult::Pending;
+    model.reauthenticate_record();
+    for state in &model.states {
+        let mut native = state.borrow_mut();
+        native.exact_restoration_record = Some(model.record.clone());
+        native.lineage_restoration_admit = true;
+    }
+    let mut verifier = Verifier::new(&model);
+    let Model {
+        mut runtime,
+        states,
+        record,
+        source,
+        content,
+        scheduling,
+        target,
+    } = model;
+    let context = runtime.prepare_exact_original_lineage_restoration(
+        &source,
+        &content,
+        &scheduling,
+        &target,
+        &mut verifier,
+        OriginalLineageRestorationLimits {
+            lineage: OriginalInputLineageLimits::default(),
+            maximum_record_bytes: 1024 * 1024,
+        },
+    )?;
+    runtime.arm_original_lineage_restoration(&context)?;
+    let activation = runtime.activate(&mut Publisher {
+        disposition: PublicationStatus::Committed,
+        calls: 0,
+    })?;
+    assert!(
+        runtime
+            .install_original_lineage_restoration(&context, &activation)
+            .is_err()
+    );
+    let saved = &record.inputs[0];
+    let retained = runtime
+        .input_batches
+        .get(&saved.stage_operation)
+        .ok_or(RuntimeError::InvalidReceipt)?;
+    assert_eq!(retained.batch.deliveries(), saved.deliveries);
+    assert_eq!(
+        retained.batch.payloads()[0].bytes.as_slice(),
+        content
+            .get(&saved.payloads[0])
+            .ok_or(RuntimeError::InvalidReceipt)?
+    );
+    assert!(retained.lineage.is_some());
+    assert!(
+        runtime
+            .owners
+            .values()
+            .all(|owner| owner.lifecycle == Lifecycle::Quarantined)
+    );
+    for state in states {
+        let native = state.borrow();
+        assert_eq!(
+            (
+                native.begin_calls,
+                native.poll_calls,
+                native.close_calls,
+                native.ack_calls
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn exact_restoration_rebinds_original_input_ledgers_without_native_replay()
+-> Result<(), RuntimeError> {
+    let mut model = Model::new_exact();
+    model.record.operations[0].result = SavedRuntimeResult::Pending;
+    model.reauthenticate_record();
+    for state in &model.states {
+        let mut native = state.borrow_mut();
+        native.exact_restoration_record = Some(model.record.clone());
+        native.lineage_restoration_admit = true;
+        native.lineage_install_supported = true;
+    }
+    let mut verifier = Verifier::new(&model);
+    let Model {
+        mut runtime,
+        states,
+        record,
+        source,
+        content,
+        scheduling,
+        target,
+    } = model;
+    let context = runtime.prepare_exact_original_lineage_restoration(
+        &source,
+        &content,
+        &scheduling,
+        &target,
+        &mut verifier,
+        OriginalLineageRestorationLimits {
+            lineage: OriginalInputLineageLimits::default(),
+            maximum_record_bytes: 1024 * 1024,
+        },
+    )?;
+    runtime.arm_original_lineage_restoration(&context)?;
+    let activation = runtime.activate(&mut Publisher {
+        disposition: PublicationStatus::Committed,
+        calls: 0,
+    })?;
+    runtime.install_original_lineage_restoration(&context, &activation)?;
+    let saved = &record.inputs[0];
+    let retained = runtime
+        .input_batches
+        .get(&saved.stage_operation)
+        .ok_or(RuntimeError::InvalidReceipt)?;
+    assert!(retained.batch.activation().same_authority(&activation));
+    assert_eq!(retained.batch.owners(), activation.record().owners);
+    assert_eq!(retained.batch.deliveries(), saved.deliveries);
+    assert_eq!(retained.batch.inventory(), &saved.inventory);
+    let original = retained
+        .lineage
+        .as_ref()
+        .ok_or(RuntimeError::InvalidReceipt)?;
+    assert_eq!(
+        &original.source_scope().source_activation.activation_id,
+        &record.source_activation.activation_id
+    );
+    assert_ne!(
+        original.source_scope().source_activation.activation_id,
+        activation.record().activation_id
+    );
+    assert_eq!(
+        original.publications()[0].event.causal_parent_ids,
+        vec![id("model-reaction")]
+    );
+    assert_eq!(
+        original.publications()[0].origin.operation_id,
+        record.operations[0].operation
+    );
+    assert_eq!(
+        retained.batch.payloads()[0].bytes.as_slice(),
+        content
+            .get(&saved.payloads[0])
+            .ok_or(RuntimeError::InvalidReceipt)?
+    );
+    assert_eq!(runtime.operations.len(), record.operations.len());
+    for state in states {
+        let native = state.borrow();
+        assert_eq!(native.lineage_install_calls, 1);
+        assert_eq!(
+            (
+                native.begin_calls,
+                native.poll_calls,
+                native.close_calls,
+                native.ack_calls
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    context.validate_current(&runtime)?;
     Ok(())
 }

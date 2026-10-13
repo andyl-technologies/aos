@@ -61,6 +61,8 @@ struct NativeState {
     lineage_validations: usize,
     exact_lineage_supported: bool,
     exact_lineage_validations: usize,
+    exact_restoration_record: Option<OriginalLineageRuntimeRecord>,
+    exact_restoration_calls: usize,
     lineage_restoration_supported: bool,
     lineage_restoration_calls: usize,
     lineage_restoration_refuse: bool,
@@ -260,12 +262,16 @@ impl SimulationNode for TestNode {
             vec![id("model-reaction")]
         };
         if !state.exact_lineage_supported
-            || !state.admission.as_ref().is_some_and(|admission|
-                admission.token().same_authority(original.token()))
+            || !state
+                .admission
+                .as_ref()
+                .is_some_and(|admission| admission.token().same_authority(original.token()))
             || claim.origin.grant_id != *original.token().operation()
             || claim.event.causal_parent_ids != expected_parents
-            || !outcome.scheduling.as_ref().is_some_and(|observation|
-                observation.publications.contains(publication))
+            || !outcome
+                .scheduling
+                .as_ref()
+                .is_some_and(|observation| observation.publications.contains(publication))
         {
             return Err(OperationFailure {
                 effects: EffectKnowledge::None,
@@ -288,6 +294,28 @@ impl SimulationNode for TestNode {
             return Err(OperationFailure {
                 effects: EffectKnowledge::None,
                 reason: "synthetic native journals unavailable".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_exact_original_lineage_restoration(
+        &self,
+        source_record: &ContentRef,
+        record: &OriginalLineageRuntimeRecord,
+        scope: &OriginalLineageNativeScope,
+        _content: &crate::node_state::VerifiedStateContent,
+    ) -> Result<(), OperationFailure> {
+        // This fixture models a retained whole native journal, never a real
+        // installed source codec. Exact history must match its original record.
+        let mut state = self.state.borrow_mut();
+        state.exact_restoration_calls += 1;
+        if state.exact_restoration_record.as_ref() != Some(record)
+            || &scope.source_record != source_record
+        {
+            return Err(OperationFailure {
+                effects: EffectKnowledge::None,
+                reason: "modeled exact native restoration history differs".into(),
             });
         }
         Ok(())
@@ -2050,3 +2078,24 @@ fn original_scheduling_views_cannot_reanchor_after_revocation_or_authority_loss(
 
 #[path = "runtime_original_exact_lineage_models.rs"]
 mod original_exact_lineage_models;
+
+/// Forms an actual core runtime with explicitly modeled native peers for codec controls.
+pub(crate) fn host_continuation_runtime_fixture() -> (
+    crate::node_admission::AdmittedGraph,
+    NodeRuntime,
+    WorldActivation,
+) {
+    let (graph, _) = crate::node_admission::test_fixture_isolated_execution(false);
+    let (graph, nodes, _, record) = admitted_parts_from_graph(graph);
+    let mut runtime = NodeRuntime::new(
+        &graph,
+        nodes,
+        record,
+        RuntimeLimits::default(),
+        crate::node_contract::test_custody_slot(),
+    )
+    .unwrap_or_else(|failure| panic!("original core fixture preparation: {}", failure.error));
+    let activation = activate(&mut runtime);
+    let _ = runtime.scheduler(&graph, &activation).unwrap();
+    (graph, runtime, activation)
+}

@@ -70,6 +70,52 @@ impl OriginalLineageRuntimeRecord {
         }
         Ok(())
     }
+    // This is a data-integrity check, never an ancestry authority. Only the
+    // separate opaque exact restoration context invokes it after independently
+    // requiring every actual source's native exact-ancestry validator.
+    pub(in crate::node_contract::runtime) fn check_exact_original_bodies<'a>(
+        &self,
+        mut body: impl FnMut(&ContentRef) -> Option<&'a [u8]>,
+    ) -> Result<(), RuntimeError> {
+        for input in &self.inputs {
+            for reference in &input.payloads {
+                verify_body(reference, &mut body)?;
+            }
+            if let Some(provenance) = &input.provenance {
+                for reference in &provenance.objects {
+                    verify_body(reference, &mut body)?;
+                }
+            }
+            let Some(lineage) = &input.lineage else {
+                continue;
+            };
+            for (publication, delivery) in lineage.publications.iter().zip(&input.deliveries) {
+                for reference in &publication.objects {
+                    verify_body(reference, &mut body)?;
+                }
+                if publication.published.media_type != "application/json" {
+                    return Err(RuntimeError::UnsupportedFacet);
+                }
+                let bytes = body(&publication.published).ok_or(RuntimeError::InvalidReceipt)?;
+                let event: Event = canonical::decode(bytes, bytes.len())
+                    .map_err(|_| RuntimeError::InvalidReceipt)?;
+                if event.id != delivery.publication_id
+                    || event.source != delivery.producer_endpoint
+                    || event.source_sequence != delivery.native_sequence
+                    || event.payload != delivery.payload
+                    || event.provenance_ref != delivery.provenance_ref
+                    || event.publication_position != delivery.publication
+                    || event.position != delivery.publication
+                    || event.stage != EventStage::Publication
+                    || event.delivery_position.is_some()
+                    || !event.extensions.is_empty()
+                {
+                    return Err(RuntimeError::InvalidReceipt);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn verify_body<'a>(

@@ -2442,6 +2442,23 @@ executable and dependency files bind all 14 changed source paths. Production
 Source2/4 codecs and complete connected native execution require separate
 qualification; this stage confers no native readiness or capture guarantee.
 
+Continuation edition two reads the actual attached host scheduler and complete
+runtime ledger through an opaque observation. Its portable record retains
+Runtime7 input associations, original bodies, scheduler queues and credits.
+Restoration requires the same fresh runtime, attached host source and opaque
+native restoration context. It prepares and installs into the original scheduler
+slot without replaying Begin, Stage, Poll or ACK. A separate exact-ancestry route
+requires every native participant's additional validator; the legacy route
+continues to reject nonempty parent ancestry.
+
+The 11-file component passes 21 distinct controls on its final executable:
+17 restoration controls, including four new exact cases, and four portable
+codec controls. Strict all-feature, all-target Clippy and formatting pass.
+The tests use actual core runtime and restoration ledgers with modeled native
+participants. A genuine live host producer, native child capture and fresh
+journal installation remain unqualified; Source1 capture and unsupported
+native restoration callbacks retain their existing refusals.
+
 ## KVM constructor descriptor
 
 The permissive protocol now decodes a distinct bounded KVM descriptor before

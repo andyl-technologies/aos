@@ -343,3 +343,71 @@ fn exact_lineage_provenance_precharges_complete_retained_inventory() {
     ));
     assert_eq!(states[1].borrow().begin_calls, 0);
 }
+
+pub(super) fn preservation_record() -> (
+    NodeRuntime,
+    OriginalInputLineage,
+    OriginalLineageRuntimeRecord,
+) {
+    let (mut runtime, states, _, batch) = exact_fixture(true);
+    states[0].borrow_mut().exact_lineage_supported = true;
+    let lineage = runtime
+        .prepare_original_input_lineage(&batch)
+        // crucible-lint: allow panic-shortcut -- Synthetic preservation setup and exact ledger assertions deliberately panic at the first invalid original fixture.
+        .unwrap()
+        // crucible-lint: allow panic-shortcut -- Synthetic preservation setup and exact ledger assertions deliberately panic at the first invalid original fixture.
+        .unwrap();
+    let legacy = runtime
+        .runtime_snapshot(position(2000), 1.into(), 1024 * 1024)
+        // crucible-lint: allow panic-shortcut -- Synthetic preservation setup and exact ledger assertions deliberately panic at the first invalid original fixture.
+        .unwrap();
+    let saved = lineage
+        .saved_reference_view(OriginalInputLineageLimits::default())
+        // crucible-lint: allow panic-shortcut -- Synthetic preservation setup and exact ledger assertions deliberately panic at the first invalid original fixture.
+        .unwrap();
+    let mut objects: Vec<_> = lineage.publications()[0]
+        .objects
+        .iter()
+        .map(|object| object.reference.clone())
+        .collect();
+    objects.sort();
+    objects.dedup();
+    let input = OriginalLineageInputRecord {
+        node: batch.node().clone(),
+        stage_operation: batch.stage_operation().clone(),
+        batch: batch.batch().clone(),
+        owners: batch.owners().to_vec(),
+        cutoff: batch.cutoff(),
+        inventory: batch.inventory().clone(),
+        deliveries: batch.deliveries().to_vec(),
+        payloads: batch
+            .payloads()
+            .iter()
+            .map(|object| object.reference.clone())
+            .collect(),
+        provenance: Some(OriginalLineageProvenanceRecord {
+            schema_version: 1,
+            node: batch.node().clone(),
+            stage_operation: batch.stage_operation().clone(),
+            batch: batch.batch().clone(),
+            inventory: batch.inventory().clone(),
+            roots: vec![lineage.publications()[0].origin.measurement.clone()],
+            objects,
+        }),
+        lineage: Some(saved),
+        acknowledgement: None,
+        failure: None,
+        committed: false,
+        coordinator_committed: false,
+    };
+    let record = OriginalLineageRuntimeRecord {
+        schema_version: 7,
+        source_activation: legacy.source_activation,
+        capture_cut: legacy.capture_cut,
+        capture_ordinal: legacy.capture_ordinal,
+        owners: legacy.owners,
+        operations: legacy.operations,
+        inputs: vec![input],
+    };
+    (runtime, lineage, record)
+}

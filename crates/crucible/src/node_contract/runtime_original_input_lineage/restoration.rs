@@ -90,6 +90,13 @@ pub struct OriginalLineageRestoration<'a> {
     scope: OriginalLineageNativeScope,
     content: &'a VerifiedStateContent,
     limits: OriginalLineageRestorationLimits,
+    ancestry: RestorationAncestry,
+}
+
+#[derive(Clone, Copy)]
+enum RestorationAncestry {
+    Legacy,
+    Exact,
 }
 
 impl OriginalLineageRestoration<'_> {
@@ -149,13 +156,22 @@ impl OriginalLineageRestoration<'_> {
         {
             return Err(RuntimeError::ForeignAuthority);
         }
-        validate_nodes(
-            runtime,
-            &self.source,
-            &self.record,
-            &self.scope,
-            self.content,
-        )
+        match self.ancestry {
+            RestorationAncestry::Legacy => validate_nodes(
+                runtime,
+                &self.source,
+                &self.record,
+                &self.scope,
+                self.content,
+            ),
+            RestorationAncestry::Exact => validate_exact_nodes(
+                runtime,
+                &self.source,
+                &self.record,
+                &self.scope,
+                self.content,
+            ),
+        }
     }
 }
 
@@ -277,6 +293,87 @@ impl NodeRuntime {
             scope,
             content,
             limits,
+            ancestry: RestorationAncestry::Legacy,
+        })
+    }
+    /// Authenticates exact Runtime7 ancestry through each original native source.
+    ///
+    /// This distinct route requires the ordinary native restoration validation
+    /// and an additional source-selected exact ancestry validator for every
+    /// actual node. Core checks complete typed bodies and Event coordinates but
+    /// never interprets source-specific parent IDs as permission. The resulting
+    /// opaque context belongs to this same inactive runtime; no work, capture
+    /// capability or readiness is installed.
+    ///
+    /// # Errors
+    /// Refuses unsupported native exact codecs, malformed or foreign source,
+    /// changed original ancestry, missing journals/bodies or finite credits.
+    pub fn prepare_exact_original_lineage_restoration<'a>(
+        &self,
+        source: &ContentRef,
+        content: &'a VerifiedStateContent,
+        scheduling: &SchedulingSnapshot,
+        target: &ActivationRecord,
+        verifier: &mut dyn NativeRuntimeContinuationVerifier,
+        limits: OriginalLineageRestorationLimits,
+    ) -> Result<OriginalLineageRestoration<'a>, RuntimeError> {
+        let maximum_record_bytes = limits.maximum_record_bytes;
+
+        // Target identity is actual local custody, not an expected caller label.
+        if self.activated
+            || !self.operations.is_empty()
+            || !self.input_batches.is_empty()
+            || self.terminal.is_some()
+            || self.condition_stop.is_some()
+            || self.barrier.record() != target
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        source
+            .validate()
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        if source.media_type != "application/vnd.crucible.runtime-original-lineage+json;version=7" {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+        let extent =
+            usize::try_from(source.length.get()).map_err(|_| RuntimeError::ResourceLimit)?;
+        if extent > maximum_record_bytes {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        let bytes = content.get(source).ok_or(RuntimeError::InvalidReceipt)?;
+        let value = canonical::parse_json(bytes, maximum_record_bytes)
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        if canonical::canonical_json(&value).map_err(|_| RuntimeError::InvalidReceipt)? != bytes {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+        let record: OriginalLineageRuntimeRecord =
+            serde_json::from_value(value).map_err(|_| RuntimeError::InvalidReceipt)?;
+        record.validate_metadata(limits.lineage, maximum_record_bytes)?;
+        record.check_exact_original_bodies(|reference| content.get(reference))?;
+        scope_validation::validate_source(self, &record, scheduling, target)?;
+        let scope = verifier.verify_original_lineage_scope(
+            source,
+            &record,
+            scheduling,
+            target,
+            self.limits,
+        )?;
+        scope_validation::validate_native_scope(self, source, &record, target, &scope)?;
+        // A scope proof does not substitute for either endpoint's actual journals.
+        validate_exact_nodes(self, source, &record, &scope, content)?;
+        record.check_exact_original_bodies(|reference| content.get(reference))?;
+        validate_exact_nodes(self, source, &record, &scope, content)?;
+        Ok(OriginalLineageRestoration {
+            authority: Rc::clone(&self.authority),
+            source: source.clone(),
+            scheduling: scheduling
+                .continuation_hash()
+                .map_err(|_| RuntimeError::InvalidReceipt)?,
+            record,
+            scope,
+            content,
+            limits,
+            ancestry: RestorationAncestry::Exact,
         })
     }
 }
@@ -295,6 +392,27 @@ fn validate_nodes(
             .ok_or(RuntimeError::UnknownNode)?;
         snapshot.validate_current(node.as_ref())?;
         node.validate_original_lineage_restoration(source, record, scope, content)
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        snapshot.validate_current(node.as_ref())?;
+    }
+    Ok(())
+}
+
+fn validate_exact_nodes(
+    runtime: &NodeRuntime,
+    source: &ContentRef,
+    record: &OriginalLineageRuntimeRecord,
+    scope: &OriginalLineageNativeScope,
+    content: &VerifiedStateContent,
+) -> Result<(), RuntimeError> {
+    validate_nodes(runtime, source, record, scope, content)?;
+    for (node_id, snapshot) in &runtime.snapshots {
+        let node = runtime
+            .nodes
+            .get(node_id)
+            .ok_or(RuntimeError::UnknownNode)?;
+        snapshot.validate_current(node.as_ref())?;
+        node.validate_exact_original_lineage_restoration(source, record, scope, content)
             .map_err(|_| RuntimeError::InvalidReceipt)?;
         snapshot.validate_current(node.as_ref())?;
     }
