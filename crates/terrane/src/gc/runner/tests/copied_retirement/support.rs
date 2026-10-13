@@ -671,6 +671,10 @@ impl CopiedFixture {
     ///
     /// # Errors
     /// Returns the exact production acquisition, qualification or native error.
+    ///
+    /// # Panics
+    /// Panics if fixture observation state is poisoned or fixture diagnostics
+    /// cannot write to standard error.
     pub(crate) async fn attempt(
         &self,
     ) -> Result<PermanentDeleteOperation, crate::gc::runner::CollectionError> {
