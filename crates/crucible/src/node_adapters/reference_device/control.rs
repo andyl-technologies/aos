@@ -318,6 +318,56 @@ pub trait ControlledReference: sealed::Sealed {
         Ok(None)
     }
 
+    /// Selects the explicitly supported host-owned immutable input transfer.
+    ///
+    /// Socket-backed implementations keep the default. Returning `None` from
+    /// input staging does not by itself select host-owned custody.
+    fn uses_host_owned_input_custody(&self) -> bool {
+        false
+    }
+
+    /// Authenticates the exact original host-owned immutable transfer.
+    ///
+    /// # Errors
+    /// Refuses unsupported custody, foreign commits or changed native ownership.
+    fn validate_host_owned_input_custody(
+        &self,
+        _original: &RuntimeInputBatch,
+        _commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        Err(super::no_effect(
+            "controlled host-owned input custody is unsupported",
+        ))
+    }
+
+    /// Consumes the same opaque coordinator commit in the actual external child.
+    ///
+    /// # Errors
+    /// Refuses unsupported source journals or unresolved original consumption.
+    fn commit_runtime_input_custody(
+        &mut self,
+        _original: &RuntimeInputBatch,
+        _commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        Err(super::no_effect(
+            "controlled external input commit is unsupported",
+        ))
+    }
+
+    /// Authenticates the actual child's consumed original coordinator commit.
+    ///
+    /// # Errors
+    /// Refuses unsupported validation, foreign commits or uncertain consumption.
+    fn validate_runtime_input_custody_commit(
+        &self,
+        _original: &RuntimeInputBatch,
+        _commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        Err(super::no_effect(
+            "controlled external input commit validation is unsupported",
+        ))
+    }
+
     /// Reports whether the selected input needs an opaque original producer view.
     fn requires_original_input_lineage(&self, _batch: &RuntimeInputBatch) -> bool {
         false
@@ -382,6 +432,37 @@ pub trait ControlledReference: sealed::Sealed {
 impl sealed::Sealed for ReferenceDevice {}
 
 impl ControlledReference for ReferenceDevice {
+    fn uses_host_owned_input_custody(&self) -> bool {
+        true
+    }
+
+    fn validate_host_owned_input_custody(
+        &self,
+        original: &RuntimeInputBatch,
+        commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        let identity = original
+            .owners()
+            .iter()
+            .find(|owner| owner.owner == *self.owner_id());
+        if self.status() != DeviceStatus::Parked
+            || identity.is_none_or(|owner| {
+                owner.incarnation != *self.incarnation_id() || owner.generation != self.generation()
+            })
+            || !original.activation().same_authority(commit.activation())
+            || original.node() != commit.node()
+            || original.stage_operation() != commit.stage_operation()
+            || original.batch() != commit.batch()
+            || original.inventory() != commit.inventory()
+            || original.cutoff() != commit.cutoff()
+        {
+            return Err(super::no_effect(
+                "reference host-owned transfer changed original custody",
+            ));
+        }
+        Ok(())
+    }
+
     fn status(&self) -> DeviceStatus {
         ReferenceDevice::status(self)
     }

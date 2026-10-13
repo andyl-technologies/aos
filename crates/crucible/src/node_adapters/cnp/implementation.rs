@@ -17,6 +17,29 @@ use crate::node_adapters::reference_device::control::{ControlledReference, seale
 impl sealed::Sealed for CnpControlledReference {}
 
 impl ControlledReference for CnpControlledReference {
+    fn commit_runtime_input_custody(
+        &mut self,
+        _original: &RuntimeInputBatch,
+        _commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        // The public Input ACK establishes staged byte custody, not the
+        // later opaque coordinator commit. This source has no consumed-commit
+        // journal yet, so execution must remain closed on the original cut.
+        Err(super::readiness::refused(
+            "public source-consumed input commit is unsupported",
+        ))
+    }
+
+    fn validate_runtime_input_custody_commit(
+        &self,
+        _original: &RuntimeInputBatch,
+        _commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        Err(super::readiness::refused(
+            "public source-consumed input commit validation is unsupported",
+        ))
+    }
+
     fn status(&self) -> DeviceStatus {
         self.status
     }

@@ -53,7 +53,14 @@ pub trait ReferenceDeviceQualification {
     ) -> Result<(), OperationFailure>;
 }
 
+#[derive(Clone, Copy)]
+enum InputCustodyPath {
+    HostOwned,
+    ExternalChild,
+}
+
 struct Staged {
+    custody_path: InputCustodyPath,
     original: Rc<RuntimeInputBatch>,
     bytes: Vec<u8>,
     acknowledgement: NativeInputAcknowledgement,

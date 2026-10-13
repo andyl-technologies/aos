@@ -206,38 +206,35 @@ impl<C: ControlledReference> SimulationNode for ControlledReferenceNode<C> {
         self.stage_inputs_inner(batch, Some(provenance), Some(lineage))
     }
 
-    // This in-process adapter already owns the complete original immutable
-    // buffers. Commitment validates that actual retained transfer and never
-    // infers a consumed socket exchange from a staging acknowledgement.
     fn commit_input_custody(
         &mut self,
         commit: &crate::node_scheduling::InputCustodyCommit,
     ) -> Result<(), OperationFailure> {
-        self.validate_input_custody_commit(commit)
+        let staged = self.validate_retained_input_commit(commit)?;
+        let original = Rc::clone(&staged.original);
+        match staged.custody_path {
+            InputCustodyPath::HostOwned => self
+                .child
+                .validate_host_owned_input_custody(&original, commit),
+            InputCustodyPath::ExternalChild => {
+                self.child.commit_runtime_input_custody(&original, commit)
+            }
+        }
     }
 
     fn validate_input_custody_commit(
         &self,
         commit: &crate::node_scheduling::InputCustodyCommit,
     ) -> Result<(), OperationFailure> {
-        let staged = self
-            .staged
-            .as_ref()
-            .ok_or_else(|| no_effect("reference original input custody is absent"))?;
-        self.validate_input_acknowledgement(&staged.original, &staged.acknowledgement)?;
-        let original = &staged.original;
-        if !original.activation().same_authority(commit.activation())
-            || original.node() != commit.node()
-            || original.stage_operation() != commit.stage_operation()
-            || original.batch() != commit.batch()
-            || original.inventory() != commit.inventory()
-            || original.cutoff() != commit.cutoff()
-        {
-            return Err(no_effect(
-                "reference synchronous custody commit changed original input",
-            ));
+        let staged = self.validate_retained_input_commit(commit)?;
+        match staged.custody_path {
+            InputCustodyPath::HostOwned => self
+                .child
+                .validate_host_owned_input_custody(&staged.original, commit),
+            InputCustodyPath::ExternalChild => self
+                .child
+                .validate_runtime_input_custody_commit(&staged.original, commit),
         }
-        Ok(())
     }
 
     fn validate_input_acknowledgement(
@@ -1001,6 +998,28 @@ impl<C: ControlledReference> SimulationNode for ControlledReferenceNode<C> {
 }
 
 impl<C: ControlledReference> ControlledReferenceNode<C> {
+    fn validate_retained_input_commit(
+        &self,
+        commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<&Staged, OperationFailure> {
+        let staged = self
+            .staged
+            .as_ref()
+            .ok_or_else(|| no_effect("reference original input custody is absent"))?;
+        self.validate_input_acknowledgement(&staged.original, &staged.acknowledgement)?;
+        let original = &staged.original;
+        if !original.activation().same_authority(commit.activation())
+            || original.node() != commit.node()
+            || original.stage_operation() != commit.stage_operation()
+            || original.batch() != commit.batch()
+            || original.inventory() != commit.inventory()
+            || original.cutoff() != commit.cutoff()
+        {
+            return Err(no_effect("reference custody commit changed original input"));
+        }
+        Ok(staged)
+    }
+
     fn stage_inputs_inner(
         &mut self,
         batch: &RuntimeInputBatch,
@@ -1101,6 +1120,15 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
                 .stage_runtime_inputs_with_provenance(batch, provenance)?,
             (None, None) => self.child.stage_runtime_inputs(batch)?,
         };
+        let custody_path = if public_acknowledgement.is_some() {
+            InputCustodyPath::ExternalChild
+        } else if self.child.uses_host_owned_input_custody() {
+            InputCustodyPath::HostOwned
+        } else {
+            return Err(native_failure(
+                "controlled child did not select genuine host-owned input custody",
+            ));
+        };
         if public_acknowledgement.is_none() {
             self.retain_boundary_evidence(batch.activation(), fallback)
                 .map_err(|error| native_failure(&error.reason))?;
@@ -1119,6 +1147,7 @@ impl<C: ControlledReference> ControlledReferenceNode<C> {
         }
         self.activation_authority = Some(Rc::clone(&batch.activation.authority));
         self.staged = Some(Staged {
+            custody_path,
             original: Rc::new(batch.retained_copy()),
             bytes,
             acknowledgement: acknowledgement.clone(),

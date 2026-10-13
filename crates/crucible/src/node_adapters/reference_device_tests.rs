@@ -267,3 +267,6 @@ fn actual_child_runs_two_admitted_quantums_with_original_input_and_publication_c
     // Actual child guards retain native kill/reap supervision on runtime drop.
     drop(runtime);
 }
+
+#[path = "reference_device/input_commit_tests.rs"]
+mod input_commit_tests;

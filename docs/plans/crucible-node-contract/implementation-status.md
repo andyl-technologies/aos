@@ -2144,7 +2144,7 @@ with the original host and plugin actors before native readiness is qualified.
 
 The runtime now requires an authenticated consumer commitment before releasing
 input ownership or issuing execution grants. Both new adapter hooks refuse by
-default. In-process adapters explicitly validate their retained original input;
+default. Host-owned adapters explicitly validate their retained original input;
 socket adapters remain closed until their consumed-commit journal is integrated.
 Pending retries preserve the original stage, commit and ownership reservation.
 Snapshots distinguish pending from consumed commitment with an explicit custody
@@ -2157,6 +2157,24 @@ The existing ignored reference control remains ignored. Independent review
 verifies the 15 affected source bodies and emitted test executable. Test-support
 fixtures, complete application gates and native continuation qualification
 remain separate requirements.
+
+The controlled reference wrapper now retains whether the original staging
+transfer is host-owned or child-staged. An external staging acknowledgement
+always selects the child path; the later original coordinator commit and its
+validation must reach that actual child. Missing staging acknowledgement cannot
+select host custody unless the implementation explicitly supports it. The
+genuine reference device validates its parked owner, incarnation, generation
+and exact original transfer before the host releases input ownership. Public
+CNP and lineage readers refuse until their source-consumed commitment journal
+is implemented.
+
+All targets of the three affected crates compile on the final frozen source.
+Three separately executed real-child controls verify refusal with a staging-only
+ACK, refusal with an unsupported absent ACK, and successful execution of two
+admitted reference-device quantums. The executed test source differs from the
+final typechecked test only by five inserted blank lines; the production changes
+are identical. These controls do not qualify public vendor acceptance or native
+readiness.
 
 ## Process-private shared-memory ownership
 

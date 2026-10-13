@@ -15,6 +15,30 @@ use crucible_node_provider::{
 impl sealed::Sealed for LineageControlledReference {}
 
 impl ControlledReference for LineageControlledReference {
+    fn commit_runtime_input_custody(
+        &mut self,
+        original: &RuntimeInputBatch,
+        commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        ControlledReference::commit_runtime_input_custody(
+            self.state_mut().map_err(super::readiness::unknown)?,
+            original,
+            commit,
+        )
+    }
+
+    fn validate_runtime_input_custody_commit(
+        &self,
+        original: &RuntimeInputBatch,
+        commit: &crate::node_scheduling::InputCustodyCommit,
+    ) -> Result<(), OperationFailure> {
+        ControlledReference::validate_runtime_input_custody_commit(
+            self.state().map_err(super::readiness::unknown)?,
+            original,
+            commit,
+        )
+    }
+
     fn collection_scope(&self) -> Option<&crate::node_admission::InstalledConformancePlan> {
         self.state
             .as_ref()
