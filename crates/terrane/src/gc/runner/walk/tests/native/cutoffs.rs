@@ -60,7 +60,7 @@ async fn publish_cutoffs(
         kind: IdentityKind::Manifest,
         bytes,
     });
-    let count_name = "refs/heads/_/a-count";
+    let count_name = "refs/heads/_/main";
     let forever_name = "refs/heads/_/z-forever";
     let mut writer = repository
         .begin(count_name, &token(fixture), "sdk")
@@ -160,12 +160,12 @@ pub(super) async fn broader_cutoff_reuses_full_occurrence_expansion() {
         initial.pending[index].clone()
     };
     let narrow = select(
-        "refs/heads/_/a-count",
+        "refs/heads/_/main",
         RootReason::Current,
         ParentCutoff::RootsOnly,
     );
     let repeat_narrow = select(
-        "refs/heads/_/a-count",
+        "refs/heads/_/main",
         RootReason::ReflogCount,
         ParentCutoff::RootsOnly,
     );
