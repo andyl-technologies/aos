@@ -558,6 +558,48 @@ fn is_campaign_boundary_marker(node: &NodeId, event: &ObservableEvent) -> bool {
     )
 }
 
+/// Writes one diagnostic row for a step that retired a campaign marker.
+///
+/// Marker steps are rare, and an unproven marker beside a horizon stop is
+/// otherwise silent, so the row records what the proof compared.
+fn report_campaign_marker_stop(
+    node: &NodeId,
+    physical_icount: Icount,
+    calibration: QemuLogicalTimeCalibration,
+    events: &[ObservableEvent],
+    unproven: UnprovenCampaignMarker,
+    stop: &Result<Option<QemuParkedCampaignMarker>, BackendError>,
+) {
+    use std::io::Write as _;
+
+    let markers = events
+        .iter()
+        .filter(|event| is_campaign_boundary_marker(node, event))
+        .filter_map(|event| match event.payload() {
+            ObservableEventPayload::GuestMarker {
+                retired_icount,
+                marker,
+                ..
+            } => Some(format!("{}@{}", marker.name, retired_icount.retired)),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let result = match stop {
+        Ok(Some(_)) => String::from("parked"),
+        Ok(None) => String::from("unproven"),
+        Err(error) => format!("refused({error})"),
+    };
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "CRUCIBLE-QEMU-CAMPAIGN-MARKER-STOP-V1 node={} stop_tick={} unproven={unproven:?} calibration_logical={} calibration_raw={} markers={markers} result={result}",
+        node.name,
+        physical_icount.retired,
+        calibration.logical_icount,
+        calibration.raw_icount,
+    );
+}
+
 /// Applies `unproven` to the exact campaign-marker proof of one stop.
 fn campaign_marker_stop(
     node: &NodeId,
@@ -1299,7 +1341,16 @@ impl QemuNodeSet {
             .any(|event| is_campaign_boundary_marker(node, event))
         {
             let calibration = backend.boundary_logical_time_calibration()?;
-            campaign_marker_stop(node, physical_icount, calibration, &events, unproven)?
+            let stop = campaign_marker_stop(node, physical_icount, calibration, &events, unproven);
+            report_campaign_marker_stop(
+                node,
+                physical_icount,
+                calibration,
+                &events,
+                unproven,
+                &stop,
+            );
+            stop?
         } else {
             None
         };

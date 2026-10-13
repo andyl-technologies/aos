@@ -66,9 +66,50 @@ in {
     ) > /tmp/crucible-host-stack-samples.txt 2>&1 &
   '';
 
+  # Samples every QEMU thread once the host reports a pending-advance stall.
+  #
+  # Attaching stops a QEMU child, which can perturb host wall-clock deadlines,
+  # so nothing attaches until the service has already waited on an advance.
+  # Thread stacks are not filtered: a stalled vCPU is itself a parked waiter.
+  startQemuStall = envoyLog: ''
+    (
+      qemu_stall_waited=0
+      until ${pkgs.grep}/bin/grep -q '^CRUCIBLE-HOST-WAIT-V1 phase=advance-pending ' "${envoyLog}" 2>/dev/null; do
+        if [ "$qemu_stall_waited" -ge 3600 ]; then
+          exit 0
+        fi
+        ${pkgs.coreutils}/bin/sleep 5
+        qemu_stall_waited=$((qemu_stall_waited + 5))
+      done
+      ${pkgs.coreutils}/bin/sleep 20
+      for qemu_stall_sample in 1 2; do
+        for qemu_stall_proc in /proc/[0-9]*; do
+          qemu_stall_argv=$(${pkgs.coreutils}/bin/tr '\0' ' ' < "$qemu_stall_proc/cmdline" 2>/dev/null || true)
+          case "$qemu_stall_argv" in
+            *qemu-system*) ;;
+            *) continue ;;
+          esac
+          qemu_stall_pid=''${qemu_stall_proc#/proc/}
+          printf 'qemu_stall_sample=%s pid=%s uptime=%s\n' "$qemu_stall_sample" "$qemu_stall_pid" \
+            "$(${pkgs.coreutils}/bin/cut -d' ' -f1 /proc/uptime)"
+          ${pkgs.coreutils}/bin/timeout -k 2 40 ${pkgs.gdb}/bin/gdb -nx -nh -batch \
+            -iex 'set auto-load off' -iex 'set debuginfod enabled off' \
+            -ex 'set pagination off' -ex 'set print frame-arguments none' \
+            -ex 'thread apply all bt 32' -p "$qemu_stall_pid" 2>&1 \
+            | ${pkgs.grep}/bin/grep -E '^(Thread |#)' \
+            | ${pkgs.coreutils}/bin/head -c 16384
+        done
+        ${pkgs.coreutils}/bin/sleep 15
+      done
+    ) > /tmp/crucible-qemu-stall-stacks.txt 2>&1 &
+  '';
+
   report = ''
     printf '%s\n' 'host-stack-samples-begin max_bytes=262144'
     ${pkgs.coreutils}/bin/head -c 262144 /tmp/crucible-host-stack-samples.txt 2>/dev/null || true
     printf '%s\n' 'host-stack-samples-end'
+    printf '%s\n' 'qemu-stall-stacks-begin max_bytes=262144'
+    ${pkgs.coreutils}/bin/head -c 262144 /tmp/crucible-qemu-stall-stacks.txt 2>/dev/null || true
+    printf '%s\n' 'qemu-stall-stacks-end'
   '';
 }

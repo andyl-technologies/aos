@@ -948,6 +948,7 @@ assert !interruptedTransfer
             "$envoy_selector" --nocapture > "$envoy_log" 2>&1 &
           envoy_test=$!
           ${lib.optionalString hostStackSamples (hostStacks.start "${flight}/bin/crucible")}
+          ${lib.optionalString hostStackSamples (hostStacks.startQemuStall "$envoy_log")}
           ${pkgs.coreutils}/bin/timeout -k 5 3610 \
             ${pkgs.coreutils}/bin/tail --pid="$envoy_test" -n +1 -F "$envoy_log" \
             | ${pkgs.grep}/bin/grep --line-buffered '^CRUCIBLE-ENVOY-WAIT-V1 ' \
