@@ -7,6 +7,7 @@ use crate::repository::{
     LocalRepositoryPolicy, MetadataValidator, Repository,
 };
 use crate::store::{LocalFs, RefStore};
+use std::error::Error as _;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use terrane_core::auth::{Authority, Grant, Token, Verb, Verbs};
 use terrane_core::refs::{Locality, PrincipalKind};
@@ -77,6 +78,15 @@ async fn factory() -> (
     (repository, authority, location)
 }
 
+/// Checks fresh paired recovery and destination-only reopening after source erasure.
+///
+/// Drops the interrupted destination factory, checks current authorization and
+/// exact retained trust, then recovers through a new factory and reads the
+/// certified file after deleting the source bucket and authority records.
+///
+/// # Panics
+/// Panics if fixture setup, retained-file I/O, source erasure, or any refusal,
+/// recovery, reopening, or content assertion fails.
 pub(super) async fn recover_fresh_transition() {
     let (source, source_authority, source_location) = factory().await;
     let (destination, destination_authority, destination_location) = factory().await;
@@ -179,6 +189,21 @@ pub(super) async fn recover_fresh_transition() {
         .await
         .is_err()
     );
+    // Compare the actual retained files, rather than the cached Original handle.
+    let retained_control = || {
+        let mut files = std::fs::read_dir(&destination_location.authority)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = std::fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect::<Vec<_>>();
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        files
+    };
+    let before_denial = retained_control();
+
     let mut source_denied = request();
     source_denied.selections[0].source_token = super::recovery::restricted_token(
         source_authority.token(),
@@ -210,10 +235,12 @@ pub(super) async fn recover_fresh_transition() {
     .await;
     assert!(
         matches!(&denied, Err(crate::repository::Error::Advance(crate::ref_advance::AdvanceError::Store(error)))
-        if matches!(error.kind(), crate::store::StoreErrorKind::Denied { verb: "read", .. })),
+        if error.kind() == &crate::store::StoreErrorKind::Denied { verb: "read", pattern: reference.into() }
+            && error.source().is_none()),
         "fresh paired recovery must preserve source Read refusal: {:?}",
         denied.as_ref().err(),
     );
+    assert_eq!(retained_control(), before_denial);
 
     let mut destination_denied = request();
     destination_denied.proposal.token = super::recovery::restricted_token(
@@ -246,10 +273,12 @@ pub(super) async fn recover_fresh_transition() {
     .await;
     assert!(
         matches!(&denied, Err(crate::repository::Error::Advance(crate::ref_advance::AdvanceError::Store(error)))
-        if matches!(error.kind(), crate::store::StoreErrorKind::Denied { verb: "commit", .. })),
+        if error.kind() == &crate::store::StoreErrorKind::Denied { verb: "commit", pattern: reference.into() }
+            && error.source().is_none()),
         "fresh paired recovery must preserve destination Commit refusal: {:?}",
         denied.as_ref().err(),
     );
+    assert_eq!(retained_control(), before_denial);
 
     // The fresh destination must compare exact expected trust, even when a
     // changed row remains well formed and uses the genuine historical key.

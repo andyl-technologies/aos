@@ -496,7 +496,17 @@ async fn recorded_disclosure_requires_complete_dependencies_and_exact_current_fe
         let failure = result
             .err()
             .ok_or("missing actual Original dependency completed")?;
-        assert_ne!(failure.kind(), &StoreErrorKind::Unsupported);
+        assert_eq!(
+            failure.kind(),
+            &StoreErrorKind::Unavailable { retry_after: None },
+        );
+        assert_eq!(
+            failure
+                .source()
+                .and_then(|source| source.downcast_ref::<std::io::Error>())
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::NotFound),
+        );
         assert!(
             consumed
                 .observed_completed_view_contexts_for_tests()?
