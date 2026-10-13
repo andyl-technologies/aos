@@ -133,7 +133,7 @@ pub(super) async fn recorded_preservation_keeps_inert_index_bindings() {
         .selected_view_context_for_tests(head.commit, root.root_identity())
         .assert_success();
     assert_eq!(
-        selected.selection(),
+        selected,
         Selection::Recorded(RecordedContext::new(1, 3, &["index-roots"]).assert_success())
     );
     drop(repository);
@@ -344,8 +344,7 @@ pub(super) async fn recorded_preservation_keeps_inert_index_bindings() {
         guard
             .selected_view_context_for_tests(active_head.commit, active.0.root_identity())
             .assert_success()
-            .0
-            .selection(),
+            .0,
         Selection::Recorded(RecordedContext::new(3, 3, &[]).assert_success())
     );
 
