@@ -139,6 +139,12 @@ or native observation. Current-Nix preflight DATA and the native observation
 owner remain in `aos-sandbox`; this removal does not issue a paid receiving
 origin or establish the protected Source Cargo boundary.
 
+The unused Controller-only and all-owner receipt-comparison sessions are
+retired with their exclusive challenge producer. Their detached observations
+never supplied the required simultaneous writer cut. Shared Root entropy
+has one private mechanics owner; fixed binding, original Q04 and genesis
+continuations retain their custody. The complete read barrier remains closed.
+
 The local ownership extraction follows the actual protected owners, not their
 current names: leases and inventory used for local recovery move below the
 coordinator boundary; remote transfer planning does not. An ownership crate

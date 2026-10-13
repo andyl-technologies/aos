@@ -38,15 +38,12 @@ The closed-CAS client still verifies exact V2 signatures and rejects an
 submission. All-owner currentness and crash-safe release are required before
 that path can open; V2 bindings remain unavailable as publication authority.
 
-A library-only root `AOSCTH01` session can now durably spend a fresh challenge
-under the policy journal writer and verify an exact `AOSCTW01` Controller hold
-receipt against the optional root-pinned Controller key. It checks the held
-operation, sandbox, source, binding, and epoch, then rechecks the protected root
-journal name. There is no production receipt transport or proof that this
-Controller statement overlaps a Source or physical Cache hold. Source signer
-provisioning and its authenticated carrier, the Cache journal and signed-name
-join, and crash-safe all-owner release still have to compose before Q04 can
-accept a proposal. This root session cannot publish Create or dispatch effects.
+The unused library-only Controller and all-owner receipt-comparison sessions
+are retired. The `AOSCTW01` verifier and root-pinned Controller credential
+remain. Source authentication, the Cache journal and signed-name join, and
+crash-safe all-owner release must still compose under an ordered held cut
+before Q04 can accept a proposal. Public Create, publication and effects
+remain closed.
 
 Provision the paired `project-head-v2.packet` and `project-layer-v2.json`
 credentials for the normal policy authority. The retired `project-head.packet`
