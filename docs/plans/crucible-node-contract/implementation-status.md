@@ -2326,6 +2326,25 @@ The firmware audit also finds that the existing package installs 55 upstream
 blobs without compiling them; complete source-built firmware providers and their
 source/license closure remain part of package qualification.
 
+The signed successor `4b403bd3bb67ea2471b8ca25990a34af05640496`
+retains original RAM lifetimes, firmware metadata allocation credit, QOM property
+retirement and authenticated callback entry. Its 19 changed source roles include
+five new GPL-compatible files. Eleven complete configured translation units pass
+strict compilation; component controls preserve their explicitly modeled peers.
+Independent reconstruction checks the signed tree, DCO, license inventory and
+matching patch/source bundle. Complete ROM reset copying, physical backing,
+installed callback execution and readiness remain unqualified.
+
+The additive `qemu-firmware-x86` provider builds three BIOS images, nine VGA ROMs
+and four option ROMs from the original QEMU source archive. Its actual package
+and corresponding-source build passes in 32.47 seconds. Independent readback
+checks all 16 installed products against retained compiler/linker products and
+1,952 retained source members. The package retains the source archive, interpreter
+edits, configurations, build products, recipe and licenses; its binary output
+references the matching source output. It has not yet been integrated into
+QEMU's firmware installation. The remaining 39 blob inputs and 12 EDK2 images,
+guest boot and complete firmware/device qualification remain required.
+
 ## Selected plugin preparation and process fencing
 
 The selected plugin retains one original Unix socket, setup descriptor journal,
