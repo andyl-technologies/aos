@@ -2875,6 +2875,26 @@ formatting layers. Nix shape/equality controls, full Kbuild, installed output
 and nested guest qualification remain pending. Active clock, RUN and readiness
 remain unavailable.
 
+## Canonical native preparation return getter
+
+The signed QEMU source now supplies the five common native changes required by
+the GPL return observer: a read-only 144-byte getter, same-loaded-module observer
+binding and validation of the pointer-free 88-byte response after a fresh source
+read. Setter, HOLD and guest permissions remain revoked during observation.
+Both system targets and `qemu-img` link through 2,482 recorded AOS Bash commands;
+four complete affected units, three helper controls and nine return-context
+controls pass with modeled source authority peers. Independent review verifies
+the ABI, exact five functional changes and consumed build dependencies.
+
+The configured component tree includes inherited shebang rewrites, three mode
+changes and nested export omissions; it is not a complete corresponding-source
+inventory. Canonical reconstruction uses the complete signed Git tree and the
+five exact posts, preserving the omitted files. The stale original build scope
+label has a separate retained erratum. The 192-byte issuer/FIFO hook remains a
+separate qualification change. Genuine normal/diagnostic packages and matching
+plugins, full native seals, HOLD, readiness and guest/state qualification remain
+unfinished.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
