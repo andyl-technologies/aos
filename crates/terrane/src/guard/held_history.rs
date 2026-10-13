@@ -155,6 +155,9 @@ impl<'scope, 'history, 'held> CheckedHeldHistoryInputs<'scope, 'history, 'held> 
         controls: &[super::RetainedControls],
         original_reads: &[RecordRead],
     ) -> Result<Self, StoreFailure> {
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::HeldClosing);
         purpose.check(purpose.record.commit, purpose.observation)?;
         scope.check_holder(purpose.observation.identity().ok_or_else(invalid)?)?;
         scope.check_selection(observed)?;
@@ -212,6 +215,8 @@ impl<'scope, 'history, 'held> CheckedHeldHistoryInputs<'scope, 'history, 'held> 
         };
         checked.check_reader_scope(scope)?;
         scope.complete_held_closing(&checked)?;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.complete();
         Ok(checked)
     }
 
@@ -263,6 +268,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
         pending: PendingHeldHistory<'scope, 'history, 'held>,
         checked: CheckedHeldHistoryInputs<'scope, 'history, 'held>,
     ) -> Result<VerifiedHistory, StoreFailure> {
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::HeldPromotion);
         if !std::ptr::eq(pending.purpose, checked.purpose) {
             return Err(invalid());
         }
@@ -276,6 +284,8 @@ impl<S: Store, C: Clock> Guard<S, C> {
             pending.pending_uses,
             &pending.history,
         )?;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.complete();
         Ok(*pending.history)
     }
 }

@@ -356,13 +356,13 @@ async fn late_expiry(source_expires: bool) {
         tokio::pin!(publication);
         // This real-runtime bound observes complete paired preparation only.
         // The authenticated clock and production publication limits are separate.
-        let event_started = tokio::time::Instant::now();
+        let event_started = crate::diagnostic_clock::tick();
         tokio::select! {
             arrived = tokio::time::timeout(Duration::from_secs(15), barrier.entered()) => {
                 arrived.unwrap();
                 eprintln!(
                     "candidate slot source_expiry={source_expires} arrived after {:?}",
-                    event_started.elapsed()
+                    crate::diagnostic_clock::elapsed(event_started)
                 );
             }
             completed = &mut publication => {

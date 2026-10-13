@@ -44,7 +44,7 @@ pub(super) struct FaultFs {
     metadata_batches: Arc<AtomicUsize>,
     protected_read_calls: Arc<AtomicUsize>,
     retained_effect_calls: Arc<AtomicUsize>,
-    ref_install_profile: Arc<Mutex<Option<std::time::Instant>>>,
+    ref_install_profile: Arc<Mutex<Option<crate::diagnostic_clock::Tick>>>,
     ref_install_barrier: Arc<Mutex<Option<Arc<RefInstallBarrier>>>>,
     candidate_slot_pause: Arc<Mutex<Option<CandidateSlotPause>>>,
     #[cfg(unix)]
@@ -440,10 +440,6 @@ impl FaultFs {
         Ok(())
     }
 
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "Native test diagnostics measure preparation only; host time never enters authored or Crucible state."
-    )]
     fn pause_ref_install(&self) -> Arc<RefInstallBarrier> {
         let barrier = Arc::new(RefInstallBarrier {
             entered: tokio::sync::Notify::new(),
@@ -454,7 +450,7 @@ impl FaultFs {
         self.metadata_batches.store(0, Ordering::SeqCst);
         self.protected_read_calls.store(0, Ordering::SeqCst);
         self.retained_effect_calls.store(0, Ordering::SeqCst);
-        *self.ref_install_profile.lock().unwrap() = Some(std::time::Instant::now());
+        *self.ref_install_profile.lock().unwrap() = Some(crate::diagnostic_clock::tick());
         barrier
     }
 
@@ -495,10 +491,6 @@ impl LocalFs for FaultFs {
         TokioLocalFs.retain_native_exclusion(held)
     }
 
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "Native test diagnostics report elapsed preparation only; effect authorization uses the actual retained clock."
-    )]
     async fn execute_retained_effect(
         &self,
         effect: crate::store::NativeFsEffect,
@@ -544,7 +536,7 @@ impl LocalFs for FaultFs {
             };
             eprintln!(
                 "actual preparation {:?}: effect {count} ({phase}), {} metadata paths in {} ordered batches, {} protected reads",
-                started.elapsed(),
+                crate::diagnostic_clock::elapsed(started),
                 self.metadata_calls.load(Ordering::SeqCst),
                 self.metadata_batches.load(Ordering::SeqCst),
                 self.protected_read_calls.load(Ordering::SeqCst),

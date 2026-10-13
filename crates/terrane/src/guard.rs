@@ -465,6 +465,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
         surface: &str,
         observation: HistoryObservation<'_>,
     ) -> Result<(AuthorizedRef, Option<TreeEvidence>), StoreFailure> {
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::Authorization);
         RefName::parse(reference).map_err(|_| denied(reference, verb))?;
         let now = self.now(reference, verb)?;
         let verified = auth::verify(token, &self.keys, now).map_err(|_| denied(reference, verb))?;
@@ -482,15 +485,32 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 // inputs before returning history. Its refusals propagate; only
                 // absence before dispatch preserves the generic history path.
                 #[cfg(all(feature = "std", feature = "tokio", unix))]
-                let current = self
-                    .current_history_native(reference, token, verb, record, observation)
-                    .await?;
+                let current = {
+                    #[cfg(all(test, feature = "std", feature = "tokio"))]
+                    let mut dispatch = crate::diagnostic_clock::span(
+                        crate::diagnostic_clock::Group::OrdinaryDispatch,
+                    );
+                    let result = self
+                        .current_history_native(reference, token, verb, record, observation)
+                        .await;
+                    #[cfg(all(test, feature = "std", feature = "tokio"))]
+                    dispatch.finish_result(&result);
+                    result?
+                };
                 #[cfg(all(feature = "std", feature = "tokio", unix))]
                 let current = match current {
                     Some(tree) => Some(tree),
                     None => {
-                        self.held_history_native(reference, token, verb, record, observation)
-                            .await?
+                        #[cfg(all(test, feature = "std", feature = "tokio"))]
+                        let mut dispatch = crate::diagnostic_clock::span(
+                            crate::diagnostic_clock::Group::HeldDispatch,
+                        );
+                        let result = self
+                            .held_history_native(reference, token, verb, record, observation)
+                            .await;
+                        #[cfg(all(test, feature = "std", feature = "tokio"))]
+                        dispatch.finish_result(&result);
+                        result?
                     }
                 };
                 #[cfg(not(all(feature = "std", feature = "tokio", unix)))]
@@ -499,8 +519,16 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 let tree = match current {
                     Some(tree) => tree,
                     None => {
-                        self.verified_tree_observed(record.commit, observation)
-                            .await?
+                        #[cfg(all(test, feature = "std", feature = "tokio"))]
+                        let mut dispatch = crate::diagnostic_clock::span(
+                            crate::diagnostic_clock::Group::FallbackDispatch,
+                        );
+                        let result = self
+                            .verified_tree_observed(record.commit, observation)
+                            .await;
+                        #[cfg(all(test, feature = "std", feature = "tokio"))]
+                        dispatch.finish_result(&result);
+                        result?
                     }
                 };
                 Some(tree.evidence)
@@ -592,6 +620,8 @@ impl<S: Store, C: Clock> Guard<S, C> {
             token_bytes: token.to_vec(),
         };
         self.refresh_authorized_time(&authorized)?;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.complete();
         Ok((authorized, evidence))
     }
 

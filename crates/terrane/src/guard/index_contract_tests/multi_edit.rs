@@ -53,6 +53,17 @@ struct Model {
 /// # Panics
 /// Panics if immutable output, independently derived logical delta or stream work differs.
 pub(super) async fn exercise(population: usize, adversarial: bool) -> TestResult {
+    let mut diagnostic = crate::diagnostic_clock::FixtureScope::new(population, adversarial);
+    let result = exercise_observed(population, adversarial, &mut diagnostic).await;
+    diagnostic.finish_result(&result);
+    result
+}
+
+async fn exercise_observed(
+    population: usize,
+    adversarial: bool,
+    diagnostic: &mut crate::diagnostic_clock::FixtureScope,
+) -> TestResult {
     eprintln!("multi-edit population={population} adversarial={adversarial} phase=factory");
     let fixture = Fixture::new_capacity().await?;
     let repository = &fixture.repository;
@@ -70,10 +81,11 @@ pub(super) async fn exercise(population: usize, adversarial: bool) -> TestResult
     eprintln!(
         "multi-edit population={population} adversarial={adversarial} phase=baseline-publication"
     );
-    let first = publish(repository, &mut baseline).await?;
+    let first = publish(repository, &mut baseline, None).await?;
     eprintln!("multi-edit population={population} adversarial={adversarial} phase=baseline-output");
     assert_outputs(repository, &first, &baseline).await?;
     trace_subphase("baseline-output-complete");
+    diagnostic.phase(crate::diagnostic_clock::Phase::Oracle);
     trace_subphase("replacement-model-before");
     let mut replacement = model(population, adversarial, true, Some((&first, &baseline)))?;
     trace_subphase("replacement-model-after");
@@ -84,16 +96,20 @@ pub(super) async fn exercise(population: usize, adversarial: bool) -> TestResult
     eprintln!(
         "multi-edit population={population} adversarial={adversarial} phase=maintained-publication"
     );
-    let second = publish(repository, &mut replacement).await?;
+    diagnostic.phase(crate::diagnostic_clock::Phase::MaintainedBegin);
+    let second = publish(repository, &mut replacement, Some(diagnostic)).await?;
+    diagnostic.phase(crate::diagnostic_clock::Phase::Reopen);
     trace_subphase("maintained-reopen-before");
     let reopened = fixture.reopen().await?;
     trace_subphase("maintained-reopen-after");
+    diagnostic.phase(crate::diagnostic_clock::Phase::Output);
     trace_subphase("maintained-output-before");
     assert_outputs(&reopened, &second, &replacement).await?;
     trace_subphase("maintained-output-after");
     eprintln!(
         "multi-edit population={population} adversarial={adversarial} phase=independent-accounting"
     );
+    diagnostic.phase(crate::diagnostic_clock::Phase::Accounting);
     assert_work(&second, &oracle, adversarial)?;
     for (root, expected) in &oracle {
         let boundary = expected.source.boundary
@@ -581,14 +597,24 @@ async fn prepare_initial_inputs(repository: &NativeRepository, model: &mut Model
     Ok(())
 }
 
-async fn publish(repository: &NativeRepository, model: &mut Model) -> TestResult<CommitReport> {
+async fn publish(
+    repository: &NativeRepository,
+    model: &mut Model,
+    mut diagnostic: Option<&mut crate::diagnostic_clock::FixtureScope>,
+) -> TestResult<CommitReport> {
     let token = crate::ref_advance::tests::token();
     trace_subphase("publication-begin-before");
     let mut session = repository.begin(REFERENCE, &token, "sdk").await?;
     trace_subphase("publication-begin-after");
+    if let Some(diagnostic) = diagnostic.as_deref_mut() {
+        diagnostic.phase(crate::diagnostic_clock::Phase::MaintainedTree);
+    }
     trace_subphase("publication-tree-before");
     let tree = PreparedTree::from_tree(&model.tree.tree()?)?;
     trace_subphase("publication-tree-after");
+    if let Some(diagnostic) = diagnostic {
+        diagnostic.phase(crate::diagnostic_clock::Phase::MaintainedCommit);
+    }
     trace_subphase("publication-commit-before");
     let report = repository
         .commit_with_report(

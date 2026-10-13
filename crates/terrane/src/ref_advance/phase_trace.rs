@@ -79,17 +79,13 @@ impl<C: Clock> Drop for PhaseTrace<'_, C> {
 /// This clock never supplies deadline input. Scope exit describes the observed
 /// object lifetime, not release of all duplicated native exclusion descriptors.
 pub(crate) struct NativeTrace {
-    started: Option<std::time::Instant>,
+    started: Option<crate::diagnostic_clock::Tick>,
     scope: u64,
     path: std::path::PathBuf,
     role: &'static str,
     owner_task: String,
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Opt-in test diagnostic timestamps only report observations; they never enter request deadlines, injected-clock state, publication evidence or identity."
-)]
 impl NativeTrace {
     /// Opens an opt-in observation without acquiring a filesystem capability.
     ///
@@ -104,7 +100,7 @@ impl NativeTrace {
         let owner_task = "unavailable".to_owned();
         let trace = Self {
             owner_task,
-            started: enabled.then(std::time::Instant::now),
+            started: enabled.then(crate::diagnostic_clock::tick),
             scope: NEXT_SCOPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             path: path.to_path_buf(),
             role,
@@ -132,8 +128,8 @@ impl NativeTrace {
             self.path,
             self.owner_task,
             std::thread::current().id(),
-            std::time::Instant::now(),
-            started.elapsed(),
+            crate::diagnostic_clock::tick(),
+            crate::diagnostic_clock::elapsed(started),
         );
     }
 }

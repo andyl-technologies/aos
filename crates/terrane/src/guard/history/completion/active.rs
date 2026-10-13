@@ -267,15 +267,11 @@ impl<S: crate::store::Store, C: crate::store::Clock> Guard<S, C> {
 /// Observes ordinary history phases without providing deadline or authority input.
 #[cfg(all(test, feature = "tokio", unix))]
 pub(in crate::guard) struct HistoryTrace {
-    started: Option<std::time::Instant>,
+    started: Option<crate::diagnostic_clock::Tick>,
     subject: String,
 }
 
 #[cfg(all(test, feature = "tokio", unix))]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Opt-in test observations use an independent monotonic clock; timestamps never enter deadlines, validation, identity or publication evidence."
-)]
 impl HistoryTrace {
     /// Starts an opt-in phase observation.
     ///
@@ -285,7 +281,7 @@ impl HistoryTrace {
         let trace = Self {
             started: std::env::var_os("TERRANE_REF_PHASE_TRACE")
                 .is_some()
-                .then(std::time::Instant::now),
+                .then(crate::diagnostic_clock::tick),
             subject,
         };
         trace.mark("entry");
@@ -302,7 +298,7 @@ impl HistoryTrace {
                 "history-phase subject={} task={:?} elapsed={:?} phase={phase}",
                 self.subject,
                 tokio::task::try_id(),
-                started.elapsed(),
+                crate::diagnostic_clock::elapsed(started),
             );
         }
     }
@@ -310,7 +306,7 @@ impl HistoryTrace {
     /// Samples elapsed diagnostic time without consulting the request clock.
     pub(in crate::guard) fn elapsed(&self) -> std::time::Duration {
         self.started
-            .map_or(std::time::Duration::ZERO, |started| started.elapsed())
+            .map_or(std::time::Duration::ZERO, crate::diagnostic_clock::elapsed)
     }
 }
 

@@ -521,9 +521,16 @@ impl<S: Store, C: Clock> Guard<S, C> {
         identity: Digest,
         observation: HistoryObservation<'_>,
     ) -> Result<VerifiedTree, StoreFailure> {
-        self.verified_tree_history_observed(identity, observation)
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::DirectTree);
+        let result = self
+            .verified_tree_history_observed(identity, observation)
             .await
-            .map(|(verified, _)| verified)
+            .map(|(verified, _)| verified);
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.finish_result(&result);
+        result
     }
 
     /// Retains the complete history freshly checked for this exact target tree.
@@ -539,10 +546,19 @@ impl<S: Store, C: Clock> Guard<S, C> {
         identity: Digest,
         observation: HistoryObservation<'_>,
     ) -> Result<(VerifiedTree, VerifiedHistory), StoreFailure> {
-        let verified = self.signed_tree(identity, observation).await?;
-        let history = self
-            .verified_history_observed(identity, observation)
-            .await?;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::DirectHistory);
+        let verified = self.signed_tree(identity, observation).await;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if verified.is_err() {
+            diagnostic.finish_result(&verified);
+        }
+        let verified = verified?;
+        let history = self.verified_history_observed(identity, observation).await;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.finish_result(&history);
+        let history = history?;
         Ok((verified, history))
     }
 

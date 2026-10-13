@@ -283,9 +283,17 @@ where
             let reads = source.current_node_reads(&observed, &current).await?;
             let store = HeldHistoryStore::new(&source, &reads)?;
             let reader_guard = guard.current_history_guard(store, current.retained_clock()?)?;
-            let (tree, pending) = reader_guard
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            let mut preparation =
+                crate::diagnostic_clock::span(crate::diagnostic_clock::Group::HeldPreparation);
+            let prepared = reader_guard
                 .prepare_held_tree_with_node_reads(record.commit, history, &purpose, &reads)
-                .await?;
+                .await;
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            preparation.finish_result(&prepared);
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            drop(preparation);
+            let (tree, pending) = prepared?;
 
             let mut controls = vec![early];
             if let Some(exclusion) = exclusion.as_mut() {

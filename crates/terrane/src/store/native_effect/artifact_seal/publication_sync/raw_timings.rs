@@ -32,20 +32,28 @@ impl RawTimings {
     }
 
     /// Starts an inclusive group without consulting the injected clock.
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "Opt-in test-only process timing never enters authority or publication evidence."
-    )]
     pub(super) fn span(&self, group: &'static str) -> Span<'_> {
         Span {
             timings: self,
             group,
-            started: self.enabled.then(std::time::Instant::now),
+            started: self.enabled.then(crate::diagnostic_clock::tick),
+            #[cfg(feature = "tokio")]
+            diagnostic: crate::diagnostic_clock::native_group(
+                crate::diagnostic_clock::NativeKind::Raw,
+                group,
+            )
+            .map(crate::diagnostic_clock::span),
         }
     }
 
     /// Counts attempted work without recording paths or body contents.
     pub(super) fn count(&self, group: &'static str, amount: usize) {
+        #[cfg(feature = "tokio")]
+        if let Some(group) =
+            crate::diagnostic_clock::native_group(crate::diagnostic_clock::NativeKind::Raw, group)
+        {
+            crate::diagnostic_clock::count(group, amount);
+        }
         if self.enabled {
             *self.counts.borrow_mut().entry(group).or_default() += amount;
         }
@@ -82,19 +90,19 @@ impl Drop for RawTimings {
 pub(super) struct Span<'a> {
     timings: &'a RawTimings,
     group: &'static str,
-    started: Option<std::time::Instant>,
+    started: Option<crate::diagnostic_clock::Tick>,
+    #[cfg(feature = "tokio")]
+    diagnostic: Option<crate::diagnostic_clock::Span>,
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Opt-in test-only process timing never enters authority or publication evidence."
-)]
 impl Drop for Span<'_> {
     fn drop(&mut self) {
+        #[cfg(feature = "tokio")]
+        drop(self.diagnostic.take());
         if let Some(started) = self.started {
             let mut groups = self.timings.groups.borrow_mut();
             let (duration, calls) = groups.entry(self.group).or_default();
-            *duration += started.elapsed();
+            *duration += crate::diagnostic_clock::elapsed(started);
             *calls += 1;
         }
     }

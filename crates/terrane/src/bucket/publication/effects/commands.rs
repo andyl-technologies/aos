@@ -16,7 +16,7 @@ const MAX_IMMUTABLE_INSTALLS_PER_COHORT: usize = 8;
 #[cfg(test)]
 struct BatchTimings {
     trace: crate::ref_advance::NativeTrace,
-    started: Option<std::time::Instant>,
+    started: Option<crate::diagnostic_clock::Tick>,
     phase: usize,
     durations: [std::time::Duration; 3],
     rows: usize,
@@ -25,17 +25,13 @@ struct BatchTimings {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Opt-in test-only process timing never enters authority or publication evidence."
-)]
 impl BatchTimings {
     fn new(root: &Path, rows: usize) -> Self {
         Self {
             trace: crate::ref_advance::NativeTrace::new(root, "raw-immutable-batch-aggregate"),
             started: std::env::var_os("TERRANE_REF_PHASE_TRACE")
                 .is_some()
-                .then(std::time::Instant::now),
+                .then(crate::diagnostic_clock::tick),
             phase: 0,
             durations: [std::time::Duration::ZERO; 3],
             rows,
@@ -46,24 +42,20 @@ impl BatchTimings {
 
     fn phase(&mut self, next: usize) {
         if let Some(started) = self.started {
-            self.durations[self.phase] += started.elapsed();
-            self.started = Some(std::time::Instant::now());
+            self.durations[self.phase] += crate::diagnostic_clock::elapsed(started);
+            self.started = Some(crate::diagnostic_clock::tick());
         }
         self.phase = next;
     }
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Opt-in test-only process timing never enters authority or publication evidence."
-)]
 impl Drop for BatchTimings {
     fn drop(&mut self) {
         let Some(started) = self.started else {
             return;
         };
-        self.durations[self.phase] += started.elapsed();
+        self.durations[self.phase] += crate::diagnostic_clock::elapsed(started);
         self.trace.mark(&format!(
             "aggregate preparation={:?} ack-await={:?} recapture={:?} rows={} prepared-installs={} recapture-attempts={}",
             self.durations[0], self.durations[1], self.durations[2],

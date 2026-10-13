@@ -8,7 +8,7 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 #[derive(Default)]
@@ -33,15 +33,11 @@ impl LoadTimings {
     }
 
     /// Starts a test-local span that never borrows the Fetcher across an await.
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "Opt-in test-only process timing never enters authority or publication evidence."
-    )]
     pub(super) fn span(&self, group: &'static str) -> Option<Span> {
         self.groups.as_ref().map(|groups| Span {
             groups: Arc::clone(groups),
             group,
-            started: Instant::now(),
+            started: crate::diagnostic_clock::tick(),
         })
     }
 
@@ -86,18 +82,14 @@ impl Drop for LoadTimings {
 pub(super) struct Span {
     groups: Arc<Mutex<Groups>>,
     group: &'static str,
-    started: Instant,
+    started: crate::diagnostic_clock::Tick,
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Opt-in test-only process timing never enters authority or publication evidence."
-)]
 impl Drop for Span {
     fn drop(&mut self) {
         if let Ok(mut groups) = self.groups.lock() {
             let (duration, calls) = groups.durations.entry(self.group).or_default();
-            *duration += self.started.elapsed();
+            *duration += crate::diagnostic_clock::elapsed(self.started);
             *calls += 1;
         }
     }

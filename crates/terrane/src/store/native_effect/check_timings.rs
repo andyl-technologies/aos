@@ -160,6 +160,8 @@ impl Drop for Scope {
 
 /// Counts expected bytes for each actual body-read attempt, including failures.
 pub(super) fn expected_bytes(amount: usize) {
+    #[cfg(feature = "tokio")]
+    crate::diagnostic_clock::count(crate::diagnostic_clock::Group::CheckExpectedBytes, amount);
     ACTIVE.with(|active| {
         if let Some(totals) = active.borrow().as_ref() {
             let mut totals = totals.borrow_mut();
@@ -169,17 +171,16 @@ pub(super) fn expected_bytes(amount: usize) {
 }
 
 /// Starts an optional span without retaining a mutable borrow across native work.
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Opt-in test-only process timing never enters authority or publication evidence."
-)]
 pub(super) fn span(group: Group) -> Span {
     let totals = ACTIVE.with(|active| active.borrow().clone());
-    let started = totals.as_ref().map(|_| std::time::Instant::now());
+    let started = totals.as_ref().map(|_| crate::diagnostic_clock::tick());
     Span {
         totals,
         group,
         started,
+        #[cfg(feature = "tokio")]
+        diagnostic: crate::diagnostic_clock::check_group(group as usize)
+            .map(crate::diagnostic_clock::span),
     }
 }
 
@@ -187,19 +188,21 @@ pub(super) fn span(group: Group) -> Span {
 pub(super) struct Span {
     totals: Option<Rc<RefCell<Totals>>>,
     group: Group,
-    started: Option<std::time::Instant>,
+    started: Option<crate::diagnostic_clock::Tick>,
+    // The growth collector is thread-safe numeric state; the existing local
+    // sink remains confined to this synchronous native operation.
+    #[cfg(feature = "tokio")]
+    diagnostic: Option<crate::diagnostic_clock::Span>,
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Opt-in test-only process timing never enters authority or publication evidence."
-)]
 impl Drop for Span {
     fn drop(&mut self) {
+        #[cfg(feature = "tokio")]
+        drop(self.diagnostic.take());
         if let (Some(totals), Some(started)) = (&self.totals, self.started) {
             let mut totals = totals.borrow_mut();
             let (duration, calls) = &mut totals.groups[self.group as usize];
-            *duration = duration.saturating_add(started.elapsed());
+            *duration = duration.saturating_add(crate::diagnostic_clock::elapsed(started));
             *calls = calls.saturating_add(1);
         }
     }

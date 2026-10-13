@@ -119,10 +119,6 @@ struct LeafTimings {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Opt-in test diagnostic intervals use process monotonic time only; they never enter deadlines, receipts, injected-clock state or authority."
-)]
 impl LeafTimings {
     fn new() -> Self {
         Self {
@@ -133,13 +129,16 @@ impl LeafTimings {
         }
     }
 
-    fn start(&self) -> Option<std::time::Instant> {
-        self.enabled.then(std::time::Instant::now)
+    fn start(&self) -> Option<crate::diagnostic_clock::Tick> {
+        self.enabled.then(crate::diagnostic_clock::tick)
     }
 
-    fn record(started: Option<std::time::Instant>, accumulated: &mut std::time::Duration) {
+    fn record(
+        started: Option<crate::diagnostic_clock::Tick>,
+        accumulated: &mut std::time::Duration,
+    ) {
         if let Some(started) = started {
-            *accumulated += started.elapsed();
+            *accumulated += crate::diagnostic_clock::elapsed(started);
         }
     }
 

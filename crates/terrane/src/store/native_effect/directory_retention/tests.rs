@@ -375,19 +375,15 @@ fn queued_aborted_waiter_retains_actual_directories_and_namespace_lock() {
     });
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Test-only teardown deadline never enters authority or publication evidence."
-)]
 async fn wait_for_directory_release(
     retained: &std::sync::Weak<[NativeOpenedDirectory]>,
     descriptor: &std::sync::Weak<File>,
 ) {
     // A cohort's last strong count reaches zero before its fields finish dropping.
     // The queued-worker fixture deliberately has no Tokio timer driver.
-    let started = std::time::Instant::now();
+    let started = crate::diagnostic_clock::tick();
     while retained.upgrade().is_some() || descriptor.upgrade().is_some() {
-        assert!(started.elapsed() < Duration::from_secs(30));
+        assert!(crate::diagnostic_clock::elapsed(started) < Duration::from_secs(30));
         tokio::task::yield_now().await;
     }
 }

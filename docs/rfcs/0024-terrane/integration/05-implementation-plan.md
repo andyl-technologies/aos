@@ -260,8 +260,15 @@ verifies the complete failure packet, unchanged source, compiler inputs and
 executables, archived temporary files and terminated owned processes.
 DRV-29 remains blocked; the full SDK, owning Nix gates, application targets
 and complete current T1 floor remain pending. Scoped success advances no task.
-Bounded test diagnostics are being prepared in a separate worktree to measure
-the unfinished publication, preserving its assertions and original deadline.
+Two disjoint worktrees now provide reviewed bounded test diagnostics and
+diagnostic Clock caller corrections. The diagnostic requires an explicit
+opt-in for the unchanged 4,096-entry ordinary fixture, reports fixed numeric
+phase and native groups, and retains all assertions and the original deadline.
+Periodic output is limited to nine snapshots at absolute 200-second intervals.
+The caller corrections route existing test timing through the private Clock,
+preserving diagnostic enablement, aggregation, actual clocks and test bounds.
+These sources are staged for fresh trunk qualification; compilation and the
+diagnostic invocation remain unrun, with no performance fix or task acceptance.
 The unfiltered SDK qualification must retain all 1,121 actual cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
 cases. Application test-target compilation and strict Clippy/private rustdoc for
@@ -285,8 +292,9 @@ The focused source-identity evaluation and actual registry build pass on
 `0825118b1cb9`; the Rust formatter reports declaration ordering in the new
 test-only scaffold, before the all-format command starts. The shared scaffold
 correction also makes diagnostic clock helpers available to std-only tests;
-collection and reporting remain confined to Tokio tests. The corrected source
-requires renewed formatting. This preparation changes no normative
+collection and reporting remain confined to Tokio tests. The exact formatter
+pair passes on corrected `c6a9ad7e687c`, with unchanged source. The newly
+composed diagnostic sources require fresh qualification. This preparation changes no normative
 specification, manifest or dependency and accepts no task.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.

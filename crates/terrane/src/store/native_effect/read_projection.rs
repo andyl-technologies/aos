@@ -60,30 +60,101 @@ impl NativeReadProjection {
     /// Refuses changed ancestors, names, descriptors, protection, whole bodies
     /// or absence observations, and unavailable actual filesystem reads.
     pub(in crate::store) fn check(self) -> io::Result<()> {
-        if let Some(current) = &self.current {
-            current.recheck().map_err(io::Error::other)?;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::ReadProjection);
+        {
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            let mut component =
+                crate::diagnostic_clock::span(crate::diagnostic_clock::Group::ReadCurrent);
+            if let Some(current) = &self.current {
+                current.recheck().map_err(io::Error::other)?;
+            }
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            component.complete();
         }
 
-        for name in &self.names {
-            name.check(&self.exclusions)?;
+        {
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            let mut component =
+                crate::diagnostic_clock::span(crate::diagnostic_clock::Group::ReadNamesBefore);
+            // Inventory describes the whole batch, including a refused suffix.
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            crate::diagnostic_clock::count(
+                crate::diagnostic_clock::Group::ReadNamesBefore,
+                self.names.len(),
+            );
+            for name in &self.names {
+                name.check(&self.exclusions)?;
+            }
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            component.complete();
         }
 
-        for preimage in &self.preimages {
-            preimage.check()?;
+        {
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            let mut component =
+                crate::diagnostic_clock::span(crate::diagnostic_clock::Group::ReadPreimages);
+            // Inventory describes the whole batch, including a refused suffix.
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            crate::diagnostic_clock::count(
+                crate::diagnostic_clock::Group::ReadPreimages,
+                self.preimages.len(),
+            );
+            for preimage in &self.preimages {
+                preimage.check()?;
+            }
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            component.complete();
         }
 
-        for ordinary in &self.ordinary {
-            ordinary.check_ranges()?;
+        {
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            let mut component =
+                crate::diagnostic_clock::span(crate::diagnostic_clock::Group::ReadRanges);
+            // Inventory describes the whole batch, including a refused suffix.
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            crate::diagnostic_clock::count(
+                crate::diagnostic_clock::Group::ReadRanges,
+                self.ordinary.len(),
+            );
+            for ordinary in &self.ordinary {
+                ordinary.check_ranges()?;
+            }
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            component.complete();
         }
 
-        for name in &self.names {
-            name.check(&self.exclusions)?;
+        {
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            let mut component =
+                crate::diagnostic_clock::span(crate::diagnostic_clock::Group::ReadNamesAfter);
+            // Inventory describes the whole batch, including a refused suffix.
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            crate::diagnostic_clock::count(
+                crate::diagnostic_clock::Group::ReadNamesAfter,
+                self.names.len(),
+            );
+            for name in &self.names {
+                name.check(&self.exclusions)?;
+            }
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            component.complete();
         }
 
-        if let Some(current) = &self.current {
-            current.recheck().map_err(io::Error::other)?;
+        {
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            let mut component =
+                crate::diagnostic_clock::span(crate::diagnostic_clock::Group::ReadCurrentAfter);
+            if let Some(current) = &self.current {
+                current.recheck().map_err(io::Error::other)?;
+            }
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            component.complete();
         }
 
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.complete();
         Ok(())
     }
 }
