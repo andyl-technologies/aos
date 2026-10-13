@@ -10,12 +10,11 @@
 
 pub(crate) mod callback_quiescence;
 mod checkpoint;
-pub(crate) use checkpoint::fingerprint::{
-    FingerprintApi, FingerprintBorrowContext, FingerprintLoan,
-};
+mod fingerprint;
 pub(crate) use checkpoint::reader::{
     CaptureLoan, HeldClaimCleanup, HeldReadContext, HeldReaderIdentity,
 };
+pub(crate) use fingerprint::{FingerprintApi, FingerprintBorrowContext, FingerprintLoan};
 
 pub(crate) use checkpoint::{LocalDisposition, NativeMailbox, NativeRoot, RootStage};
 mod device_workspace;
@@ -378,6 +377,7 @@ pub(crate) struct OwnedCallbackRuntimeState {
     startup_failure: Option<crate::StartupSourceError>,
     plugin_id: Option<QemuPluginId>,
     original_owner: Option<crate::ram_fingerprint::NativeOriginalOwner>,
+    original_userdata_retained: AtomicBool,
     owner_process: u32,
     workspace_disarmed: bool,
     claimed_workspace_fd: i32,
@@ -455,6 +455,7 @@ impl OwnedCallbackRuntimeState {
             startup_failure: None,
             plugin_id: None,
             original_owner: None,
+            original_userdata_retained: AtomicBool::new(false),
             owner_process: std::process::id(),
             workspace_disarmed: false,
             claimed_workspace_fd: -1,
@@ -507,13 +508,13 @@ impl OwnedCallbackRuntimeState {
     /// # Errors
     /// Refuses missing runtime purpose, duplicate initialization or unmatched SDK.
     fn prepare_original_owner(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         plugin_id: QemuPluginId,
+        placement: crate::ram_fingerprint::FingerprintPlacement,
     ) -> Result<crate::ram_fingerprint::NativeOriginalOwnerRef, crate::ram_error::RamError> {
-        // SAFETY: initialization occurs once under exclusive registration. The
-        // configured runtime Box layout includes the entire inline component;
+        // The configured runtime Box includes the entire inline component;
         // the actual Source reserved that layout before this Box was born.
-        let state = unsafe { self.get_unchecked_mut() };
+        let state = self.as_ref().get_ref();
         state
             .setup
             .check_runtime_allocations()
@@ -523,9 +524,12 @@ impl OwnedCallbackRuntimeState {
                 "Original owner already initialized",
             ));
         }
-        let userdata = std::ptr::from_mut(state).cast();
+        let userdata = self.as_mut().retain_original_userdata();
+        // SAFETY: the exclusive installer initializes the inline member in place;
+        // exposure retention already protects this Box on refusal or panic.
+        let state = unsafe { self.get_unchecked_mut() };
         state.original_owner = Some(crate::ram_fingerprint::NativeOriginalOwner::prepare(
-            plugin_id, userdata,
+            plugin_id, userdata, placement,
         )?);
         let owner = state
             .original_owner
@@ -533,10 +537,21 @@ impl OwnedCallbackRuntimeState {
             .ok_or(crate::ram_error::RamError::Invariant(
                 "Original owner absent",
             ))?;
-        // SAFETY: the registration guard retains this pinned Box after any
-        // published callback; RequiredOwnedCallbacksRegistered.state and the
-        // outer runtime resources are ManuallyDrop, including on refusal.
+        // SAFETY: exposure retention precedes this reference and prevents the
+        // owning proof from freeing the pinned Box, including after refusal.
         Ok(unsafe { crate::ram_fingerprint::NativeOriginalOwnerRef::from_retained_runtime(owner) })
+    }
+
+    /// Retains the pinned allocation before exposing Original callback userdata.
+    ///
+    /// This records reference lifetime, not successful native registration.
+    /// A fallible preparation may retain the pointer, so retention is permanent.
+    fn retain_original_userdata(self: Pin<&mut Self>) -> *mut std::ffi::c_void {
+        let state = self.as_ref().get_ref();
+        state
+            .original_userdata_retained
+            .store(true, Ordering::Release);
+        std::ptr::from_ref(state).cast_mut().cast()
     }
 
     /// Returns the stable opaque pointer supplied as QEMU callback userdata.
@@ -864,6 +879,7 @@ impl Drop for RequiredOwnedCallbacksRegistered {
             .checkpoint_registration_retained
             .load(Ordering::Acquire)
             && !state.checkpoint_owner_retained.load(Ordering::Acquire)
+            && !state.original_userdata_retained.load(Ordering::Acquire)
             && !state.parent_park_retained.load(Ordering::Acquire)
             && !state
                 .parent_park_registration_retained
@@ -1985,12 +2001,14 @@ where
         maybe_inject_post_registration_panic(post_registration_stage);
         // Registration retains this same pinned allocation before the RAM
         // actor can be born. It acquires no controller or service proof here.
-        if let Err(status) = checkpoint::register(plugin_id, retained.registering_mut()?) {
-            return Err(fail_post_registration_before_ready_ack_lifecycle(
-                &mut control_stream,
-                PluginRuntimeInstallError::CheckpointPagerRejected { status },
-                &mut acknowledgement_state,
-            ));
+        if args.ram_control().is_some() {
+            if let Err(status) = checkpoint::register(plugin_id, retained.registering_mut()?) {
+                return Err(fail_post_registration_before_ready_ack_lifecycle(
+                    &mut control_stream,
+                    PluginRuntimeInstallError::CheckpointPagerRejected { status },
+                    &mut acknowledgement_state,
+                ));
+            }
         }
         let registration_mask =
             match callback_registrar.register(&args, retained.registering_mut()?) {

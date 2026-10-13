@@ -145,10 +145,25 @@ struct State {
     pending_facts: Option<publication::Identity>,
 }
 
+/// Selects the registered realization without granting capture authority.
+///
+/// Native validates the selected Source/runtime registrar and its actual
+/// writer/inventory loan before invoking any module borrower.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FingerprintPlacement {
+    /// Retains the actual installed controller, service and page-state gate.
+    Paging,
+    /// Uses genuine native nonpaging inventory and writer custody.
+    Resident,
+}
+
 /// Keeps one paid module view without owning or issuing the Source clock.
 pub(crate) struct Owner {
     plugin_id: u64,
     runtime_userdata: usize,
+    owner_process: u32,
+    placement: FingerprintPlacement,
+    fingerprint: crate::runtime::FingerprintApi,
     apis: Apis,
     state: Mutex<State>,
     active: AtomicBool,
@@ -159,14 +174,27 @@ impl Owner {
     ///
     /// # Errors
     /// Refuses absent runtime identity or unavailable matching native exports.
-    pub(crate) fn prepare(plugin_id: u64, runtime_userdata: *mut c_void) -> Result<Self, RamError> {
+    pub(crate) fn prepare(
+        plugin_id: u64,
+        runtime_userdata: *mut c_void,
+        placement: FingerprintPlacement,
+    ) -> Result<Self, RamError> {
         if runtime_userdata.is_null() {
             return Err(RamError::Invariant("Original runtime userdata absent"));
         }
         let apis = Apis::resolve()?;
+        let fingerprint = crate::runtime::FingerprintApi::resolve(placement).map_err(|status| {
+            RamError::Native {
+                operation: "resolve fingerprint retirement",
+                status,
+            }
+        })?;
         Ok(Self {
             plugin_id,
             runtime_userdata: runtime_userdata as usize,
+            owner_process: std::process::id(),
+            placement,
+            fingerprint,
             apis,
             state: Mutex::new(State::default()),
             active: AtomicBool::new(false),
@@ -191,7 +219,14 @@ impl Owner {
             selector.get_mut(),
             publication.get_mut(),
         );
-        status(result, "register prepaid fingerprint owner")
+        status(result, "register prepaid fingerprint owner")?;
+        drop(state);
+        self.fingerprint
+            .register(self.plugin_id, self.runtime_userdata as *mut c_void)
+            .map_err(|status| RamError::Native {
+                operation: "register fingerprint retirement",
+                status,
+            })
     }
 
     /// Borrows only the actual operation entered before this observer callback.
@@ -720,10 +755,26 @@ fn registered_owner(id: u64, userdata: *mut c_void) -> Result<&'static Owner, c_
         .and_then(|observer| observer.original)
         .ok_or(-libc::ENODEV)?
         .owner();
-    if owner.plugin_id != id || owner.runtime_userdata != userdata as usize || userdata.is_null() {
+    if owner.plugin_id != id
+        || owner.owner_process != std::process::id()
+        || owner.runtime_userdata != userdata as usize
+        || userdata.is_null()
+    {
         return Err(-libc::ESTALE);
     }
     Ok(owner)
+}
+
+/// Returns only the narrow API enrolled by the same retained Runtime owner.
+///
+/// # Errors
+/// Refuses a foreign process, installer or actual userdata allocation. The
+/// returned table issues no loan; its native observer authenticates invocation.
+pub(crate) fn retirement_api(
+    id: u64,
+    userdata: *mut c_void,
+) -> Result<crate::runtime::FingerprintApi, c_int> {
+    Ok(registered_owner(id, userdata)?.fingerprint)
 }
 
 /// Returns only the producing class previously observed from a real Source view.

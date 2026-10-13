@@ -408,11 +408,16 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         let userdata = std::ptr::from_ref(state.as_ref().get_ref())
             .cast_mut()
             .cast();
+        let placement = if args.ram_control().is_some() {
+            crate::ram_fingerprint::FingerprintPlacement::Paging
+        } else {
+            crate::ram_fingerprint::FingerprintPlacement::Resident
+        };
         #[cfg(not(test))]
         let original = Some(
             state
                 .as_mut()
-                .prepare_original_owner(self.plugin_id)
+                .prepare_original_owner(self.plugin_id, placement)
                 .map_err(|message| {
                     live_callback_registration_error(LiveVcpuTimeCallbackError::RamObserverSetup {
                         message,
@@ -426,7 +431,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             Some(
                 state
                     .as_mut()
-                    .prepare_original_owner(self.plugin_id)
+                    .prepare_original_owner(self.plugin_id, placement)
                     .map_err(|message| {
                         live_callback_registration_error(
                             LiveVcpuTimeCallbackError::RamObserverSetup { message },

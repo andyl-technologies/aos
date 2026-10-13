@@ -72,12 +72,14 @@ pub(crate) fn install(
         "RAM metadata allowance was not admitted",
     ))?;
     let native = NativeLifecycle::resolve()?;
-    let status = (native.request)();
-    if status != 0 {
-        return Err(RamError::Native {
-            operation: "audited native RAM access admission rejected",
-            status,
-        });
+    if args.ram_control().is_some() {
+        let status = (native.request)();
+        if status != 0 {
+            return Err(RamError::Native {
+                operation: "audited native RAM access admission rejected",
+                status,
+            });
+        }
     }
     let status = (native.budget)(budget);
     if status != 0 {

@@ -8,7 +8,6 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-pub(crate) mod fingerprint;
 mod provider;
 pub(crate) mod reader;
 mod root;
@@ -77,7 +76,6 @@ pub(super) struct NativeApi {
     root: root::RootApi,
     provider: provider::ProviderApi,
     reader: reader::ReaderApi,
-    fingerprint: fingerprint::FingerprintApi,
 }
 
 /// Keeps an entered owner and its first refusal in the pinned runtime allocation.
@@ -186,7 +184,6 @@ pub(super) fn register(
     let root = root::RootApi::resolve()?;
     let provider = provider::ProviderApi::resolve()?;
     let reader = reader::ReaderApi::resolve()?;
-    let fingerprint = fingerprint::FingerprintApi::resolve()?;
     // SAFETY: both non-null symbols have exactly the native declarations bound
     // by the checkpoint receiving disposition SDK. No public process protocol
     // carries these functions or their userdata.
@@ -197,7 +194,6 @@ pub(super) fn register(
             root,
             provider,
             reader,
-            fingerprint,
         }
     };
     // SAFETY: these inline assignments do not move the pinned allocation; the
@@ -227,8 +223,6 @@ pub(super) fn register(
     api.provider
         .register(plugin_id, std::ptr::from_mut(state).cast())?;
     api.reader
-        .register(plugin_id, std::ptr::from_mut(state).cast())?;
-    api.fingerprint
         .register(plugin_id, std::ptr::from_mut(state).cast())
 }
 

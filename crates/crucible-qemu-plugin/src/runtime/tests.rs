@@ -36,6 +36,7 @@ fn eventfd_identity_token_accepts_kernel_zero_and_rejects_overflow() -> std::io:
 }
 
 mod coverage_cases;
+mod original_retention_cases;
 mod parent_park_cases;
 mod reservation_cases;
 

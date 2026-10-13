@@ -1,16 +1,18 @@
-//! Retains genuine Main pager custody independently of its borrowed observer.
+//! Retains genuine Main resident or paging custody outside its borrowed observer.
 //!
 //! Native phase one issues the Source view; phase two checks that same live
 //! Original. Page exclusion and the durable view return only at physical end.
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 use super::*;
-use crate::paged_ram::engine::OrdinaryPagingCustody;
 use crate::runtime::FingerprintBorrowContext;
+
+mod placement;
+use placement::PhysicalCustody;
 
 pub(super) struct Custody {
     pub(super) loan: usize,
-    paging: OrdinaryPagingCustody,
+    physical: PhysicalCustody,
     rearm_attempted: bool,
     checked: bool,
     failure: Option<RamError>,
@@ -129,7 +131,7 @@ fn signed(error: RamError) -> c_int {
     }
 }
 
-/// Retains the issued Source view and installed pager before observer entry.
+/// Retains the issued Source view and actual realization before observer entry.
 pub(crate) fn borrow(
     context: &FingerprintBorrowContext,
     id: u64,
@@ -143,12 +145,8 @@ pub(crate) fn borrow(
     if let Err(error) = owner.synchronize() {
         return signed(error);
     }
-    let paging_owner = match crate::paged_ram::controller::registered_current_owner(id, userdata) {
-        Ok(owner) => owner,
-        Err(error) => return signed(error),
-    };
-    let paging = match OrdinaryPagingCustody::retain(paging_owner, context) {
-        Ok(paging) => paging,
+    let physical = match PhysicalCustody::retain(owner.placement, context, id, userdata) {
+        Ok(physical) => physical,
         Err(error) => return signed(error),
     };
     let mut state = match owner.state.try_lock() {
@@ -163,7 +161,7 @@ pub(crate) fn borrow(
     }
     state.retirement = Some(Custody {
         loan: context.key(),
-        paging,
+        physical,
         rearm_attempted: false,
         checked: false,
         failure: None,
@@ -217,11 +215,11 @@ pub(crate) fn borrow(
         5 => crate::paged_ram::source::SourceOperationClass::FingerprintUpdate,
         _ => return -libc::EPROTO,
     };
-    if let Err(error) = custody.paging.bind_original(evidence.serial, class) {
+    if let Err(error) = custody.physical.bind_original(evidence.serial, class) {
         custody.failure = Some(error);
         return -libc::EPROTO;
     }
-    match custody.paging.settle(&operation) {
+    match custody.physical.settle(&operation) {
         Ok(()) => 0,
         Err(error) => {
             let status = match &error {
@@ -234,7 +232,7 @@ pub(crate) fn borrow(
     }
 }
 
-/// Protects actual held pages under the same live Source Original.
+/// Rearms actual page work or checks the genuine resident Source Original.
 pub(crate) fn rearm(
     context: &FingerprintBorrowContext,
     id: u64,
@@ -265,7 +263,7 @@ pub(crate) fn rearm(
     }
     custody.rearm_attempted = true;
     match custody
-        .paging
+        .physical
         .rearm(context.status.topology_generation, &operation)
     {
         Ok(()) => 0,
@@ -317,7 +315,7 @@ pub(crate) fn check(
     }
 }
 
-/// Returns pager and saved view fields without renewing semantic authority.
+/// Returns actual physical custody and saved view without renewing its clock.
 pub(crate) fn end(
     context: &FingerprintBorrowContext,
     id: u64,
@@ -340,7 +338,7 @@ pub(crate) fn end(
         Some(custody) => custody,
         None => return -libc::ESTALE,
     };
-    if custody.paging.return_identity().is_err() {
+    if custody.physical.return_identity().is_err() {
         return -libc::EBUSY;
     }
     let returned = if owner.is_active() {

@@ -1,10 +1,12 @@
-//! Enrolls Main fingerprint pager custody under the genuine native Source.
+//! Enrolls Main fingerprint custody independently of checkpoint callbacks.
 //!
 //! The actual registered invocation issues the borrower. Module callbacks reuse
 //! Source time and return physical pager/view custody; they create no local clock.
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-use super::*;
+use std::ffi::c_void;
+
+use crate::ram_fingerprint::FingerprintPlacement;
 
 /// Names the opaque native-issued ordinary retirement borrower.
 #[repr(C)]
@@ -43,6 +45,7 @@ type Register = extern "C" fn(
 ) -> i32;
 type Observe = extern "C" fn(u64, *mut FingerprintLoan, *mut FingerprintStatus) -> i32;
 
+/// Retains the matched registrar and identity observer for one realization.
 #[derive(Clone, Copy)]
 pub(crate) struct FingerprintApi {
     register: Register,
@@ -50,14 +53,21 @@ pub(crate) struct FingerprintApi {
 }
 
 impl FingerprintApi {
-    pub(super) fn resolve() -> Result<Self, i32> {
-        // SAFETY: symbol lookup reads the retained process export table only.
-        let register = unsafe {
-            libc::dlsym(
-                libc::RTLD_DEFAULT,
-                c"qemu_plugin_crucible_register_fingerprint_retirement_v1".as_ptr(),
-            )
+    /// Resolves only the registrar for the selected actual realization.
+    ///
+    /// # Errors
+    /// Refuses an absent matching native registrar or identity observer.
+    pub(crate) fn resolve(placement: FingerprintPlacement) -> Result<Self, i32> {
+        let registrar = match placement {
+            FingerprintPlacement::Paging => {
+                c"qemu_plugin_crucible_register_fingerprint_retirement_v1"
+            }
+            FingerprintPlacement::Resident => {
+                c"qemu_plugin_crucible_register_resident_fingerprint_retirement_v1"
+            }
         };
+        // SAFETY: the selected frozen symbol has this same four-callback ABI.
+        let register = unsafe { libc::dlsym(libc::RTLD_DEFAULT, registrar.as_ptr()) };
         // SAFETY: symbol lookup reads the retained process export table only.
         let observe = unsafe {
             libc::dlsym(
@@ -77,7 +87,11 @@ impl FingerprintApi {
         }
     }
 
-    pub(super) fn register(self, id: u64, userdata: *mut c_void) -> Result<(), i32> {
+    /// Enrolls callbacks only after the Source observer and durable fields.
+    ///
+    /// # Errors
+    /// Preserves the real native refusal; no alternate registrar is retried.
+    pub(crate) fn register(self, id: u64, userdata: *mut c_void) -> Result<(), i32> {
         let status = (self.register)(
             id,
             Some(borrow),
@@ -116,14 +130,9 @@ fn invoke(
     if loan.is_null() || userdata.is_null() {
         return -libc::EINVAL;
     }
-    // SAFETY: native retains the same pinned registered Runtime, and callback
-    // entry occurs after installation. No borrow escapes this synchronous call.
-    let runtime = unsafe { &*userdata.cast::<OwnedCallbackRuntimeState>() };
-    if runtime.plugin_id != Some(id) || runtime.owner_process != std::process::id() {
-        return -libc::ESTALE;
-    }
-    let Some(api) = runtime.checkpoint_api.map(|api| api.fingerprint) else {
-        return -libc::ENOSYS;
+    let api = match crate::ram_fingerprint::retirement_api(id, userdata) {
+        Ok(api) => api,
+        Err(status) => return status,
     };
     let mut status = FingerprintStatus::default();
     let observed = (api.observe)(id, loan, &mut status);
