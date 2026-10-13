@@ -1,6 +1,6 @@
-From 87c118c8ed955952fab3e4283b29c4662899d7d4 Mon Sep 17 00:00:00 2001
+From 76a9f7c3d9b79154d751273ac308c0fb0edd4c86 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 13 Oct 2026 13:38:20 +0000
+Date: Tue, 13 Oct 2026 15:55:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -479,6 +479,23 @@ retain their original sources and explicit modeled authority boundaries.
 SourceReady and guest entry remain closed. Installed plugin participation,
 complete physical state closure, ordinary package, ABI/license gates and
 Linux/device/capture/restoration qualification remain required.
+
+Retain genuine firmware callback contexts and finite ACPI builder
+storage in the original source-owned arena. Bind source-advertised
+ACPI RAM maxima and original ROM memory-region births before native
+backing allocation, with immutable owner, callback and payload lineage.
+Preserve ordinary GLib behavior and architecture-provider absence.
+
+Both x86_64 and AArch64 emulator compilation and linking produced
+actual source and AOS compiler feedback with ordinary feature and
+dependency settings. The prior Ninja command dispatcher used
+/bin/sh without retained AOS shell provenance; these results do
+not establish hermetic command dispatch. Direct recorded command
+qualification remains separate. Local source controls preserve
+their explicitly modeled authority boundaries. Runtime ACPI
+resize, full source seals, SourceReady, first guest clock and
+complete physical ownership remain refused. Installed package
+and ABI/license qualification remain separate.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -38295,6 +38312,466 @@ index 20fa118f3a666bd01cb7fd4e5004a6bac23d1830..4a59b7df57f0b5a3577ca308c9a89313
 +int ninep_endpoint_whole_roots_verify(void);
 +
  #endif
+diff --git a/hw/acpi/aml-build.c b/hw/acpi/aml-build.c
+index 990abc64cd8b7510b1194e4cf956ca92a20e6f43..ca46e998738b4ce66521a206a251ea5e8a65ac02 100644
+--- a/hw/acpi/aml-build.c
++++ b/hw/acpi/aml-build.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "hw/acpi/crucible-whole-storage.h"
+ #include <glib/gprintf.h>
+ #include "hw/acpi/aml-build.h"
+ #include "hw/acpi/acpi.h"
+@@ -37,24 +38,26 @@
+ #include "hw/core/cpu.h"
+ #include "hw/acpi/wdat.h"
+ 
++#include "crucible-whole-storage.inc.c"
++
+ static GArray *build_alloc_array(void)
+ {
+-    return g_array_new(false, true /* clear */, 1);
++    return acpi_array_new(false, true /* clear */, 1);
+ }
+ 
+ static void build_free_array(GArray *array)
+ {
+-    g_array_free(array, true);
++    acpi_array_free(array, true);
+ }
+ 
+ static void build_prepend_byte(GArray *array, uint8_t val)
+ {
+-    g_array_prepend_val(array, val);
++    acpi_array_prepend_val(array, val);
+ }
+ 
+ static void build_append_byte(GArray *array, uint8_t val)
+ {
+-    g_array_append_val(array, val);
++    acpi_array_append_val(array, val);
+ }
+ 
+ static void build_append_padded_str(GArray *array, const char *str,
+@@ -64,15 +67,15 @@ static void build_append_padded_str(GArray *array, const char *str,
+     size_t len = strlen(str);
+ 
+     g_assert(len <= maxlen);
+-    g_array_append_vals(array, str, len);
++    acpi_array_append_vals(array, str, len);
+     for (i = maxlen - len; i > 0; i--) {
+-        g_array_append_val(array, pad);
++        acpi_array_append_val(array, pad);
+     }
+ }
+ 
+ static void build_append_array(GArray *array, GArray *val)
+ {
+-    g_array_append_vals(array, val->data, val->len);
++    acpi_array_append_vals(array, val->data, val->len);
+ }
+ 
+ #define ACPI_NAMESEG_LEN 4
+@@ -81,32 +84,32 @@ void crs_range_insert(GPtrArray *ranges, uint64_t base, uint64_t limit)
+ {
+     CrsRangeEntry *entry;
+ 
+-    entry = g_malloc(sizeof(*entry));
++    entry = acpi_whole_new(sizeof(*entry));
+     entry->base = base;
+     entry->limit = limit;
+ 
+-    g_ptr_array_add(ranges, entry);
++    acpi_ptr_array_add(ranges, entry);
+ }
+ 
+ static void crs_range_free(gpointer data)
+ {
+     CrsRangeEntry *entry = (CrsRangeEntry *)data;
+-    g_free(entry);
++    acpi_whole_free(entry);
+ }
+ 
+ void crs_range_set_init(CrsRangeSet *range_set)
+ {
+-    range_set->io_ranges = g_ptr_array_new_with_free_func(crs_range_free);
+-    range_set->mem_ranges = g_ptr_array_new_with_free_func(crs_range_free);
++    range_set->io_ranges = acpi_ptr_array_new_with_free_func(crs_range_free);
++    range_set->mem_ranges = acpi_ptr_array_new_with_free_func(crs_range_free);
+     range_set->mem_64bit_ranges =
+-            g_ptr_array_new_with_free_func(crs_range_free);
++            acpi_ptr_array_new_with_free_func(crs_range_free);
+ }
+ 
+ void crs_range_set_free(CrsRangeSet *range_set)
+ {
+-    g_ptr_array_free(range_set->io_ranges, true);
+-    g_ptr_array_free(range_set->mem_ranges, true);
+-    g_ptr_array_free(range_set->mem_64bit_ranges, true);
++    acpi_ptr_array_free(range_set->io_ranges, true);
++    acpi_ptr_array_free(range_set->mem_ranges, true);
++    acpi_ptr_array_free(range_set->mem_64bit_ranges, true);
+ }
+ 
+ static gint crs_range_compare(gconstpointer a, gconstpointer b)
+@@ -132,11 +135,11 @@ static gint crs_range_compare(gconstpointer a, gconstpointer b)
+ void crs_replace_with_free_ranges(GPtrArray *ranges,
+                                   uint64_t start, uint64_t end)
+ {
+-    GPtrArray *free_ranges = g_ptr_array_new();
++    GPtrArray *free_ranges = acpi_ptr_array_new();
+     uint64_t free_base = start;
+     int i;
+ 
+-    g_ptr_array_sort(ranges, crs_range_compare);
++    acpi_ptr_array_sort(ranges, crs_range_compare);
+     for (i = 0; i < ranges->len; i++) {
+         CrsRangeEntry *used = g_ptr_array_index(ranges, i);
+ 
+@@ -151,12 +154,12 @@ void crs_replace_with_free_ranges(GPtrArray *ranges,
+         crs_range_insert(free_ranges, free_base, end);
+     }
+ 
+-    g_ptr_array_set_size(ranges, 0);
++    acpi_ptr_array_set_size(ranges, 0);
+     for (i = 0; i < free_ranges->len; i++) {
+-        g_ptr_array_add(ranges, g_ptr_array_index(free_ranges, i));
++        acpi_ptr_array_add(ranges, g_ptr_array_index(free_ranges, i));
+     }
+ 
+-    g_ptr_array_free(free_ranges, true);
++    acpi_ptr_array_free(free_ranges, true);
+ }
+ 
+ /*
+@@ -165,7 +168,7 @@ void crs_replace_with_free_ranges(GPtrArray *ranges,
+  */
+ static void crs_range_merge(GPtrArray *range)
+ {
+-    g_autoptr(GPtrArray) tmp = g_ptr_array_new_with_free_func(crs_range_free);
++    g_autoptr(AcpiBuilderPtrArray) tmp = acpi_ptr_array_new_with_free_func(crs_range_free);
+     CrsRangeEntry *entry;
+     uint64_t range_base, range_limit;
+     int i;
+@@ -174,7 +177,7 @@ static void crs_range_merge(GPtrArray *range)
+         return;
+     }
+ 
+-    g_ptr_array_sort(range, crs_range_compare);
++    acpi_ptr_array_sort(range, crs_range_compare);
+ 
+     entry = g_ptr_array_index(range, 0);
+     range_base = entry->base;
+@@ -191,7 +194,7 @@ static void crs_range_merge(GPtrArray *range)
+     }
+     crs_range_insert(tmp, range_base, range_limit);
+ 
+-    g_ptr_array_set_size(range, 0);
++    acpi_ptr_array_set_size(range, 0);
+     for (i = 0; i < tmp->len; i++) {
+         entry = g_ptr_array_index(tmp, i);
+         crs_range_insert(range, entry->base, entry->limit);
+@@ -206,9 +209,9 @@ build_append_nameseg(GArray *array, const char *seg)
+     len = strlen(seg);
+     assert(len <= ACPI_NAMESEG_LEN);
+ 
+-    g_array_append_vals(array, seg, len);
++    acpi_array_append_vals(array, seg, len);
+     /* Pad up to ACPI_NAMESEG_LEN characters if necessary. */
+-    g_array_append_vals(array, "____", ACPI_NAMESEG_LEN - len);
++    acpi_array_append_vals(array, "____", ACPI_NAMESEG_LEN - len);
+ }
+ 
+ static void G_GNUC_PRINTF(2, 0)
+@@ -219,9 +222,9 @@ build_append_namestringv(GArray *array, const char *format, va_list ap)
+     char **segs_iter;
+     int seg_count = 0;
+ 
+-    s = g_strdup_vprintf(format, ap);
++    s = acpi_whole_strdup_vprintf(format, ap);
+     segs = g_strsplit(s, ".", 0);
+-    g_free(s);
++    acpi_whole_free(s);
+ 
+     /* count segments */
+     segs_iter = segs;
+@@ -451,9 +454,9 @@ static GPtrArray *alloc_list;
+ 
+ static Aml *aml_alloc(void)
+ {
+-    Aml *var = g_new0(typeof(*var), 1);
++    Aml *var = acpi_whole_new0(sizeof(*var));
+ 
+-    g_ptr_array_add(alloc_list, var);
++    acpi_ptr_array_add(alloc_list, var);
+     var->block_flags = AML_NO_OPCODE;
+     var->buf = build_alloc_array();
+     return var;
+@@ -481,20 +484,20 @@ static void aml_free(gpointer data, gpointer user_data)
+ {
+     Aml *var = data;
+     build_free_array(var->buf);
+-    g_free(var);
++    acpi_whole_free(var);
+ }
+ 
+ Aml *init_aml_allocator(void)
+ {
+     assert(!alloc_list);
+-    alloc_list = g_ptr_array_new();
++    alloc_list = acpi_ptr_array_new();
+     return aml_alloc();
+ }
+ 
+ void free_aml_allocator(void)
+ {
+-    g_ptr_array_foreach(alloc_list, aml_free, NULL);
+-    g_ptr_array_free(alloc_list, true);
++    acpi_ptr_array_foreach(alloc_list, aml_free, NULL);
++    acpi_ptr_array_free(alloc_list, true);
+     alloc_list = 0;
+ }
+ 
+@@ -504,7 +507,7 @@ static void build_buffer(GArray *array, uint8_t op)
+     GArray *data = build_alloc_array();
+ 
+     build_append_int(data, array->len);
+-    g_array_prepend_vals(array, data->data, data->len);
++    acpi_array_prepend_vals(array, data->data, data->len);
+     build_free_array(data);
+     build_package(array, op);
+ }
+@@ -941,7 +944,7 @@ static Aml *aml_gpio_connection(AmlGpioConnectionType type,
+ 
+     /* Vendor-defined Data */
+     if (vendor_data != NULL) {
+-        g_array_append_vals(var->buf, vendor_data, vendor_data_len);
++        acpi_array_append_vals(var->buf, vendor_data, vendor_data_len);
+     }
+ 
+     return var;
+@@ -1311,11 +1314,11 @@ Aml *aml_string(const char *name_format, ...)
+     int len;
+ 
+     va_start(ap, name_format);
+-    len = g_vasprintf(&s, name_format, ap);
++    len = acpi_whole_vasprintf(&s, name_format, ap);
+     va_end(ap);
+ 
+-    g_array_append_vals(var->buf, s, len + 1);
+-    g_free(s);
++    acpi_array_append_vals(var->buf, s, len + 1);
++    acpi_whole_free(s);
+ 
+     return var;
+ }
+@@ -1746,7 +1749,7 @@ void acpi_table_begin(AcpiTable *desc, GArray *array)
+      * 5.2.3 System Description Table Header
+      */
+     g_assert(strlen(desc->sig) == 4);
+-    g_array_append_vals(array, desc->sig, 4); /* Signature */
++    acpi_array_append_vals(array, desc->sig, 4); /* Signature */
+     /*
+      * reserve space for Length field, which will be patched by
+      * acpi_table_end() when the table creation is finished.
+@@ -1758,7 +1761,7 @@ void acpi_table_begin(AcpiTable *desc, GArray *array)
+     /* OEM Table ID */
+     build_append_padded_str(array, desc->oem_table_id, 8, '\0');
+     build_append_int_noprefix(array, 1, 4); /* OEM Revision */
+-    g_array_append_vals(array, ACPI_BUILD_APPNAME8, 4); /* Creator ID */
++    acpi_array_append_vals(array, ACPI_BUILD_APPNAME8, 4); /* Creator ID */
+     build_append_int_noprefix(array, 1, 4); /* Creator Revision */
+ }
+ 
+@@ -1794,40 +1797,40 @@ void acpi_table_end(BIOSLinker *linker, AcpiTable *desc)
+ void *acpi_data_push(GArray *table_data, unsigned size)
+ {
+     unsigned off = table_data->len;
+-    g_array_set_size(table_data, off + size);
++    acpi_array_set_size(table_data, off + size);
+     return table_data->data + off;
+ }
+ 
+ unsigned acpi_data_len(GArray *table)
+ {
+-    assert(g_array_get_element_size(table) == 1);
++    assert(acpi_array_get_element_size(table) == 1);
+     return table->len;
+ }
+ 
+ void acpi_add_table(GArray *table_offsets, GArray *table_data)
+ {
+     uint32_t offset = table_data->len;
+-    g_array_append_val(table_offsets, offset);
++    acpi_array_append_val(table_offsets, offset);
+ }
+ 
+ void acpi_build_tables_init(AcpiBuildTables *tables)
+ {
+-    tables->rsdp = g_array_new(false, true /* clear */, 1);
+-    tables->table_data = g_array_new(false, true /* clear */, 1);
+-    tables->tcpalog = g_array_new(false, true /* clear */, 1);
+-    tables->vmgenid = g_array_new(false, true /* clear */, 1);
+-    tables->hardware_errors = g_array_new(false, true /* clear */, 1);
++    tables->rsdp = acpi_array_new(false, true /* clear */, 1);
++    tables->table_data = acpi_array_new(false, true /* clear */, 1);
++    tables->tcpalog = acpi_array_new(false, true /* clear */, 1);
++    tables->vmgenid = acpi_array_new(false, true /* clear */, 1);
++    tables->hardware_errors = acpi_array_new(false, true /* clear */, 1);
+     tables->linker = bios_linker_loader_init();
+ }
+ 
+ void acpi_build_tables_cleanup(AcpiBuildTables *tables, bool mfre)
+ {
+     bios_linker_loader_cleanup(tables->linker);
+-    g_array_free(tables->rsdp, true);
+-    g_array_free(tables->table_data, true);
+-    g_array_free(tables->tcpalog, mfre);
+-    g_array_free(tables->vmgenid, mfre);
+-    g_array_free(tables->hardware_errors, mfre);
++    acpi_array_free(tables->rsdp, true);
++    acpi_array_free(tables->table_data, true);
++    acpi_array_free(tables->tcpalog, mfre);
++    acpi_array_free(tables->vmgenid, mfre);
++    acpi_array_free(tables->hardware_errors, mfre);
+ }
+ 
+ /*
+@@ -1856,9 +1859,9 @@ build_rsdp(GArray *tbl, BIOSLinker *linker, AcpiRsdpData *rsdp_data)
+     bios_linker_loader_alloc(linker, ACPI_BUILD_RSDP_FILE, tbl, 16,
+                              true /* fseg memory */);
+ 
+-    g_array_append_vals(tbl, "RSD PTR ", 8); /* Signature */
++    acpi_array_append_vals(tbl, "RSD PTR ", 8); /* Signature */
+     build_append_int_noprefix(tbl, 0, 1); /* Checksum */
+-    g_array_append_vals(tbl, rsdp_data->oem_id, 6); /* OEMID */
++    acpi_array_append_vals(tbl, rsdp_data->oem_id, 6); /* OEMID */
+     build_append_int_noprefix(tbl, rsdp_data->revision, 1); /* Revision */
+     build_append_int_noprefix(tbl, 0, 4); /* RsdtAddress */
+     if (rsdp_data->rsdt_tbl_offset) {
+@@ -2175,7 +2178,7 @@ void build_spcr(GArray *table_data, BIOSLinker *linker,
+         /* NameSpaceStringOffset */
+         build_append_int_noprefix(table_data, f->namespace_string_offset, 2);
+         /* NamespaceString[] */
+-        g_array_append_vals(table_data, name, f->namespace_string_length);
++        acpi_array_append_vals(table_data, name, f->namespace_string_length);
+     }
+     acpi_table_end(linker, &table);
+ }
+@@ -2632,7 +2635,7 @@ void build_tpm2(GArray *table_data, BIOSLinker *linker, GArray *tcpalog,
+     build_append_int_noprefix(table_data, start_method, 4);
+ 
+     /* Platform Specific Parameters */
+-    g_array_append_vals(table_data, &start_method_params,
++    acpi_array_append_vals(table_data, &start_method_params,
+                         ARRAY_SIZE(start_method_params));
+ 
+     /* Log Area Minimum Length */
+@@ -2850,7 +2853,7 @@ Aml *aml_i2c_serial_bus_device(uint16_t address, const char *resource_source)
+     build_append_int_noprefix(var->buf, address, sizeof(address));
+ 
+     /* This is a string, not a name, so just copy it directly in. */
+-    g_array_append_vals(var->buf, resource_source, resource_source_len);
++    acpi_array_append_vals(var->buf, resource_source, resource_source_len);
+ 
+     return var;
+ }
+diff --git a/hw/acpi/bios-linker-loader.c b/hw/acpi/bios-linker-loader.c
+index c9ffe449aac9d6fce0a2d5e9791916c694d70d49..b6491f1caaaeb508c39c512b0b81cb69b9daaf23 100644
+--- a/hw/acpi/bios-linker-loader.c
++++ b/hw/acpi/bios-linker-loader.c
+@@ -19,6 +19,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "hw/acpi/crucible-whole-storage.h"
+ #include "hw/acpi/bios-linker-loader.h"
+ #include "hw/nvram/fw_cfg.h"
+ 
+@@ -126,10 +127,10 @@ typedef struct BiosLinkerFileEntry {
+  */
+ BIOSLinker *bios_linker_loader_init(void)
+ {
+-    BIOSLinker *linker = g_new(BIOSLinker, 1);
++    BIOSLinker *linker = acpi_whole_new(sizeof(BIOSLinker));
+ 
+-    linker->cmd_blob = g_array_new(false, true /* clear */, 1);
+-    linker->file_list = g_array_new(false, true /* clear */,
++    linker->cmd_blob = acpi_array_new(false, true /* clear */, 1);
++    linker->file_list = acpi_array_new(false, true /* clear */,
+                                     sizeof(BiosLinkerFileEntry));
+     return linker;
+ }
+@@ -140,14 +141,14 @@ void bios_linker_loader_cleanup(BIOSLinker *linker)
+     int i;
+     BiosLinkerFileEntry *entry;
+ 
+-    g_array_free(linker->cmd_blob, true);
++    acpi_array_free(linker->cmd_blob, true);
+ 
+     for (i = 0; i < linker->file_list->len; i++) {
+         entry = &g_array_index(linker->file_list, BiosLinkerFileEntry, i);
+-        g_free(entry->name);
++        acpi_whole_free(entry->name);
+     }
+-    g_array_free(linker->file_list, true);
+-    g_free(linker);
++    acpi_array_free(linker->file_list, true);
++    acpi_whole_free(linker);
+ }
+ 
+ static const BiosLinkerFileEntry *
+@@ -193,12 +194,12 @@ void bios_linker_loader_alloc(BIOSLinker *linker,
+                               bool alloc_fseg)
+ {
+     BiosLinkerLoaderEntry entry;
+-    BiosLinkerFileEntry file = { g_strdup(file_name), file_blob};
++    BiosLinkerFileEntry file = { acpi_whole_strdup(file_name), file_blob};
+ 
+     assert(!(alloc_align & (alloc_align - 1)));
+ 
+     assert(!bios_linker_find_file(linker, file_name));
+-    g_array_append_val(linker->file_list, file);
++    acpi_array_append_val(linker->file_list, file);
+ 
+     memset(&entry, 0, sizeof entry);
+     strncpy(entry.alloc.file, file_name, sizeof entry.alloc.file - 1);
+@@ -208,7 +209,7 @@ void bios_linker_loader_alloc(BIOSLinker *linker,
+                                     BIOS_LINKER_LOADER_ALLOC_ZONE_HIGH;
+ 
+     /* Alloc entries must come first, so prepend them */
+-    g_array_prepend_vals(linker->cmd_blob, &entry, sizeof entry);
++    acpi_array_prepend_vals(linker->cmd_blob, &entry, sizeof entry);
+ }
+ 
+ /*
+@@ -247,7 +248,7 @@ void bios_linker_loader_add_checksum(BIOSLinker *linker, const char *file_name,
+     entry.cksum.start = cpu_to_le32(start_offset);
+     entry.cksum.length = cpu_to_le32(size);
+ 
+-    g_array_append_vals(linker->cmd_blob, &entry, sizeof entry);
++    acpi_array_append_vals(linker->cmd_blob, &entry, sizeof entry);
+ }
+ 
+ /*
+@@ -301,7 +302,7 @@ void bios_linker_loader_add_pointer(BIOSLinker *linker,
+     memcpy(dst_file->blob->data + dst_patched_offset,
+            &le_src_offset, dst_patched_size);
+ 
+-    g_array_append_vals(linker->cmd_blob, &entry, sizeof entry);
++    acpi_array_append_vals(linker->cmd_blob, &entry, sizeof entry);
+ }
+ 
+ /*
+@@ -345,5 +346,5 @@ void bios_linker_loader_write_pointer(BIOSLinker *linker,
+     assert(dst_patched_size == 1 || dst_patched_size == 2 ||
+            dst_patched_size == 4 || dst_patched_size == 8);
+ 
+-    g_array_append_vals(linker->cmd_blob, &entry, sizeof entry);
++    acpi_array_append_vals(linker->cmd_blob, &entry, sizeof entry);
+ }
 diff --git a/hw/acpi/core.c b/hw/acpi/core.c
 index a6a62a742d11833b1001738e2d4e776fc4e594a0..865a5713e99f9b25ccc6ca4b9778ec674135fbb7 100644
 --- a/hw/acpi/core.c
@@ -38782,6 +39259,653 @@ index a6a62a742d11833b1001738e2d4e776fc4e594a0..865a5713e99f9b25ccc6ca4b9778ec67
      timer_del(ar->tmr.timer);
  }
  
+diff --git a/hw/acpi/cpu.c b/hw/acpi/cpu.c
+index d63ca83c1bcd4e6d2b892696ca7f542c68284faa..31cc19bac0599e23fc26cbe3d5eb52b0c95a61cf 100644
+--- a/hw/acpi/cpu.c
++++ b/hw/acpi/cpu.c
+@@ -1,4 +1,5 @@
+ #include "qemu/osdep.h"
++#include "hw/acpi/crucible-whole-storage.h"
+ #include "migration/vmstate.h"
+ #include "hw/acpi/cpu.h"
+ #include "hw/core/cpu.h"
+@@ -354,7 +355,7 @@ void build_cpus_aml(Aml *table, MachineState *machine, CPUHotplugFeatures opts,
+     Aml *sb_scope = aml_scope("_SB");
+     MachineClass *mc = MACHINE_GET_CLASS(machine);
+     const CPUArchIdList *arch_ids = mc->possible_cpu_arch_ids(machine);
+-    char *cphp_res_path = g_strdup_printf("%s." CPUHP_RES_DEVICE, res_root);
++    char *cphp_res_path = acpi_whole_strdup_printf("%s." CPUHP_RES_DEVICE, res_root);
+ 
+     cpu_ctrl_dev = aml_device("%s", cphp_res_path);
+     {
+@@ -670,7 +671,7 @@ void build_cpus_aml(Aml *table, MachineState *machine, CPUHotplugFeatures opts,
+         for (i = 0; i < arch_ids->len; i++) {
+             Aml *dev;
+             Aml *uid = aml_int(i);
+-            GArray *madt_buf = g_array_new(0, 1, 1);
++            GArray *madt_buf = acpi_array_new(0, 1, 1);
+             int arch_id = arch_ids->cpus[i].arch_id;
+ 
+             if (opts.acpi_1_compatible && arch_id < 255) {
+@@ -689,7 +690,7 @@ void build_cpus_aml(Aml *table, MachineState *machine, CPUHotplugFeatures opts,
+             build_madt_cpu(i, arch_ids, madt_buf, true); /* set enabled flag */
+             aml_append(dev, aml_name_decl("_MAT",
+                 aml_buffer(madt_buf->len, (uint8_t *)madt_buf->data)));
+-            g_array_free(madt_buf, true);
++            acpi_array_free(madt_buf, true);
+ 
+             if (CPU(arch_ids->cpus[i].cpu) != first_cpu) {
+                 method = aml_method("_EJ0", 1, AML_NOTSERIALIZED);
+@@ -723,5 +724,5 @@ void build_cpus_aml(Aml *table, MachineState *machine, CPUHotplugFeatures opts,
+     aml_append(method, aml_call0("\\_SB.CPUS." CPU_SCAN_METHOD));
+     aml_append(table, method);
+ 
+-    g_free(cphp_res_path);
++    acpi_whole_free(cphp_res_path);
+ }
+diff --git a/hw/acpi/crucible-whole-storage.inc.c b/hw/acpi/crucible-whole-storage.inc.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..dfb3267d1d850df35eeea9c62982937bea9ea3f8
+--- /dev/null
++++ b/hw/acpi/crucible-whole-storage.inc.c
+@@ -0,0 +1,543 @@
++/* Original ACPI builder storage; GPL-2.0-or-later. */
++#include "system/crucible-whole-early.h"
++#include "hw/acpi/crucible-whole-storage.h"
++
++#pragma weak acpi_whole_allocation_context_current
++
++/* Implemented by the original constructor/RR owner. The producer predicate is
++ * checked again before it advances the same retained, nonrenewing arena. */
++typedef enum AcpiStorageKind {
++    ACPI_STORAGE_BYTES,
++    ACPI_STORAGE_ARRAY,
++    ACPI_STORAGE_POINTERS,
++} AcpiStorageKind;
++
++typedef struct AcpiStorageRow {
++    struct AcpiStorageRow *next;
++    void *original;
++    void *data;
++    size_t extent;
++    guint count;
++    guint capacity;
++    guint element_size;
++    AcpiStorageKind kind;
++    GDestroyNotify destroy;
++    bool terminated;
++    bool clear;
++    bool retired;
++} AcpiStorageRow;
++
++static AcpiStorageRow *acpi_storage_rows;
++static pid_t acpi_storage_process;
++
++static G_NORETURN void acpi_storage_fault(void)
++{
++    /* Refusal never follows a foreign pointer or enters a inherited logger. */
++    _exit(125);
++}
++
++static bool acpi_storage_selected(void)
++{
++    if (acpi_storage_process && acpi_storage_process != getpid()) {
++        acpi_storage_fault();
++    }
++    if (!crucible_whole_setup_selected()) {
++        return false;
++    }
++    if (!crucible_whole_setup_source_current() ||
++        !acpi_whole_allocation_context_current ||
++        !acpi_whole_allocation_context_current()) {
++        acpi_storage_fault();
++    }
++    return true;
++}
++
++static void *acpi_storage_allocate(size_t extent)
++{
++    void *allocation;
++
++    if (!extent || !acpi_storage_selected()) {
++        acpi_storage_fault();
++    }
++    allocation = crucible_whole_setup_acpi_history_allocate(extent);
++    if (!allocation) {
++        acpi_storage_fault();
++    }
++    memset(allocation, 0, extent);
++    acpi_storage_process = getpid();
++    return allocation;
++}
++
++static AcpiStorageRow *acpi_storage_find(const void *original,
++                                        AcpiStorageKind kind)
++{
++    AcpiStorageRow *row;
++
++    /* Membership precedes every supplied public-header dereference. */
++    if (!acpi_storage_selected()) {
++        acpi_storage_fault();
++    }
++    for (row = acpi_storage_rows; row; row = row->next) {
++        if (row->original == original) {
++            if (row->retired || row->kind != kind) {
++                acpi_storage_fault();
++            }
++            return row;
++        }
++    }
++    acpi_storage_fault();
++}
++
++static AcpiStorageRow *acpi_storage_birth(size_t extent, AcpiStorageKind kind)
++{
++    size_t total;
++    AcpiStorageRow *row;
++
++    if (__builtin_add_overflow(sizeof(*row), extent, &total)) {
++        acpi_storage_fault();
++    }
++    row = acpi_storage_allocate(total);
++    row->original = row + 1;
++    row->extent = extent;
++    row->kind = kind;
++    row->next = acpi_storage_rows;
++    acpi_storage_rows = row;
++    return row;
++}
++
++void *acpi_whole_new(size_t extent)
++{
++    if (!acpi_storage_selected()) {
++        return g_malloc(extent);
++    }
++    return acpi_storage_birth(extent, ACPI_STORAGE_BYTES)->original;
++}
++
++void *acpi_whole_new0(size_t extent)
++{
++    if (!acpi_storage_selected()) {
++        return g_malloc0(extent);
++    }
++    return acpi_storage_birth(extent, ACPI_STORAGE_BYTES)->original;
++}
++
++void acpi_whole_free(void *allocation)
++{
++    if (!acpi_storage_selected()) {
++        g_free(allocation);
++        return;
++    }
++    if (allocation) {
++        acpi_storage_find(allocation, ACPI_STORAGE_BYTES)->retired = true;
++    }
++}
++
++static AcpiStorageRow *acpi_array_current(GArray *array)
++{
++    AcpiStorageRow *row = acpi_storage_find(array, ACPI_STORAGE_ARRAY);
++
++    if (array->data != row->data || array->len != row->count) {
++        acpi_storage_fault();
++    }
++    return row;
++}
++
++static void acpi_array_reserve(AcpiStorageRow *row, guint count)
++{
++    size_t elements, bytes, old_bytes;
++    guint capacity;
++    void *data;
++
++    if (count <= row->capacity && row->data) {
++        return;
++    }
++    capacity = MAX(count, row->capacity);
++    if (capacity <= G_MAXUINT / 2) {
++        capacity = MAX(capacity * 2, 16);
++    }
++    if (__builtin_add_overflow((size_t)capacity,
++                               (size_t)row->terminated, &elements) ||
++        __builtin_mul_overflow(elements, (size_t)row->element_size, &bytes) ||
++        __builtin_mul_overflow((size_t)row->count,
++                               (size_t)row->element_size, &old_bytes)) {
++        acpi_storage_fault();
++    }
++    /* Old backing is retained; growth spends fresh bytes before copying and
++     * never refunds the retired slice or silently reallocates it. */
++    data = acpi_storage_allocate(bytes);
++    if (old_bytes) {
++        memcpy(data, row->data, old_bytes);
++    }
++    row->data = data;
++    row->capacity = capacity;
++    ((GArray *)row->original)->data = data;
++}
++
++GArray *acpi_array_new(gboolean terminated, gboolean clear, guint element_size)
++{
++    AcpiStorageRow *row;
++
++    if (!acpi_storage_selected()) {
++        return g_array_new(terminated, clear, element_size);
++    }
++    if (!element_size) {
++        acpi_storage_fault();
++    }
++    row = acpi_storage_birth(sizeof(GArray), ACPI_STORAGE_ARRAY);
++    row->element_size = element_size;
++    row->terminated = terminated;
++    row->clear = clear;
++    if (terminated) {
++        acpi_array_reserve(row, 0);
++    }
++    return row->original;
++}
++
++GArray *acpi_array_set_size(GArray *array, guint count)
++{
++    AcpiStorageRow *row;
++
++    if (!acpi_storage_selected()) {
++        return g_array_set_size(array, count);
++    }
++    row = acpi_array_current(array);
++    acpi_array_reserve(row, count);
++    if (row->clear && count > row->count) {
++        memset(array->data + (size_t)row->count * row->element_size, 0,
++               (size_t)(count - row->count) * row->element_size);
++    }
++    row->count = count;
++    array->len = count;
++    if (row->terminated) {
++        memset(array->data + (size_t)count * row->element_size, 0,
++               row->element_size);
++    }
++    return array;
++}
++
++GArray *acpi_array_insert_vals(GArray *array, guint index,
++                              gconstpointer data, guint count)
++{
++    AcpiStorageRow *row;
++    guint total, old_count;
++    size_t bytes;
++
++    if (!acpi_storage_selected()) {
++        return g_array_insert_vals(array, index, data, count);
++    }
++    row = acpi_array_current(array);
++    old_count = row->count;
++    if (__builtin_add_overflow(MAX(index, old_count), count, &total) ||
++        __builtin_mul_overflow((size_t)count,
++                               (size_t)row->element_size, &bytes) ||
++        (count && !data)) {
++        acpi_storage_fault();
++    }
++    acpi_array_set_size(array, total);
++    if (index < old_count) {
++        memmove(array->data + (size_t)(index + count) * row->element_size,
++                array->data + (size_t)index * row->element_size,
++                (size_t)(old_count - index) * row->element_size);
++    }
++    if (bytes) {
++        memcpy(array->data + (size_t)index * row->element_size, data, bytes);
++    }
++    return array;
++}
++
++GArray *acpi_array_append_vals(GArray *array, gconstpointer data, guint count)
++{
++    if (!acpi_storage_selected()) {
++        return g_array_append_vals(array, data, count);
++    }
++    acpi_array_current(array);
++    return acpi_array_insert_vals(array, array->len, data, count);
++}
++
++GArray *acpi_array_prepend_vals(GArray *array, gconstpointer data, guint count)
++{
++    if (!acpi_storage_selected()) {
++        return g_array_prepend_vals(array, data, count);
++    }
++    return acpi_array_insert_vals(array, 0, data, count);
++}
++
++guint acpi_array_get_element_size(GArray *array)
++{
++    if (!acpi_storage_selected()) {
++        return g_array_get_element_size(array);
++    }
++    return acpi_array_current(array)->element_size;
++}
++
++/* Stable insertion order matches GLib for equal keys. ACPI sorts small source
++ * range lists; the one-element scratch is charged to the original arena. */
++static void acpi_storage_sort(void *data, guint count, guint size,
++                              GCompareFunc compare)
++{
++    uint8_t *bytes = data;
++    void *temporary;
++
++    if (!compare || !size) {
++        acpi_storage_fault();
++    }
++    if (count < 2) {
++        return;
++    }
++    temporary = acpi_storage_allocate(size);
++    for (guint index = 1; index < count; index++) {
++        guint destination = index;
++
++        memcpy(temporary, bytes + (size_t)index * size, size);
++        while (destination &&
++               compare(bytes + (size_t)(destination - 1) * size,
++                       temporary) > 0) {
++            memcpy(bytes + (size_t)destination * size,
++                   bytes + (size_t)(destination - 1) * size, size);
++            destination--;
++        }
++        memcpy(bytes + (size_t)destination * size, temporary, size);
++    }
++}
++
++void acpi_array_sort(GArray *array, GCompareFunc compare)
++{
++    AcpiStorageRow *row;
++
++    if (!acpi_storage_selected()) {
++        g_array_sort(array, compare);
++        return;
++    }
++    row = acpi_array_current(array);
++    acpi_storage_sort(row->data, row->count, row->element_size, compare);
++}
++
++gchar *acpi_array_free(GArray *array, gboolean free_segment)
++{
++    AcpiStorageRow *row;
++
++    if (!acpi_storage_selected()) {
++        return g_array_free(array, free_segment);
++    }
++    row = acpi_array_current(array);
++    row->retired = true;
++    return free_segment ? NULL : row->data;
++}
++
++void acpi_array_unref(GArray *array)
++{
++    if (array) {
++        if (acpi_storage_selected()) {
++            acpi_array_free(array, true);
++        } else {
++            g_array_unref(array);
++        }
++    }
++}
++
++static AcpiStorageRow *acpi_ptr_array_current(GPtrArray *array)
++{
++    AcpiStorageRow *row = acpi_storage_find(array, ACPI_STORAGE_POINTERS);
++
++    if (array->pdata != row->data || array->len != row->count) {
++        acpi_storage_fault();
++    }
++    return row;
++}
++
++GPtrArray *acpi_ptr_array_new_with_free_func(GDestroyNotify destroy)
++{
++    AcpiStorageRow *row;
++
++    if (!acpi_storage_selected()) {
++        return g_ptr_array_new_with_free_func(destroy);
++    }
++    row = acpi_storage_birth(sizeof(GPtrArray), ACPI_STORAGE_POINTERS);
++    row->element_size = sizeof(gpointer);
++    row->destroy = destroy;
++    return row->original;
++}
++
++GPtrArray *acpi_ptr_array_new(void)
++{
++    return acpi_ptr_array_new_with_free_func(NULL);
++}
++
++void acpi_ptr_array_set_size(GPtrArray *array, gint count)
++{
++    AcpiStorageRow *row;
++    gpointer *data;
++    size_t bytes;
++
++    if (!acpi_storage_selected()) {
++        g_ptr_array_set_size(array, count);
++        return;
++    }
++    row = acpi_ptr_array_current(array);
++    if (count < 0) {
++        acpi_storage_fault();
++    }
++    if ((guint)count > row->capacity) {
++        guint capacity = MAX((guint)count, row->capacity);
++
++        if (capacity <= G_MAXINT / 2) {
++            capacity = MAX(capacity * 2, 16);
++        }
++        if (__builtin_mul_overflow((size_t)capacity,
++                                   sizeof(gpointer), &bytes)) {
++            acpi_storage_fault();
++        }
++        data = acpi_storage_allocate(bytes);
++        if (row->count) {
++            memcpy(data, row->data, row->count * sizeof(gpointer));
++        }
++        row->data = data;
++        row->capacity = capacity;
++        array->pdata = data;
++    }
++    if ((guint)count < row->count && row->destroy) {
++        for (guint index = count; index < row->count; index++) {
++            row->destroy(array->pdata[index]);
++        }
++    }
++    if ((guint)count > row->count) {
++        memset(array->pdata + row->count, 0,
++               ((guint)count - row->count) * sizeof(gpointer));
++    }
++    row->count = count;
++    array->len = count;
++}
++
++void acpi_ptr_array_add(GPtrArray *array, gpointer value)
++{
++    guint count;
++
++    if (!acpi_storage_selected()) {
++        g_ptr_array_add(array, value);
++        return;
++    }
++    count = acpi_ptr_array_current(array)->count;
++    if (count == G_MAXINT) {
++        acpi_storage_fault();
++    }
++    acpi_ptr_array_set_size(array, count + 1);
++    array->pdata[count] = value;
++}
++
++void acpi_ptr_array_sort(GPtrArray *array, GCompareFunc compare)
++{
++    AcpiStorageRow *row;
++
++    if (!acpi_storage_selected()) {
++        g_ptr_array_sort(array, compare);
++        return;
++    }
++    row = acpi_ptr_array_current(array);
++    acpi_storage_sort(row->data, row->count, sizeof(gpointer), compare);
++}
++
++void acpi_ptr_array_foreach(GPtrArray *array, GFunc callback, gpointer opaque)
++{
++    AcpiStorageRow *row;
++
++    if (!acpi_storage_selected()) {
++        g_ptr_array_foreach(array, callback, opaque);
++        return;
++    }
++    row = acpi_ptr_array_current(array);
++    if (!callback) {
++        acpi_storage_fault();
++    }
++    for (guint index = 0; index < row->count; index++) {
++        callback(array->pdata[index], opaque);
++    }
++}
++
++gpointer *acpi_ptr_array_free(GPtrArray *array, gboolean free_segment)
++{
++    AcpiStorageRow *row;
++
++    if (!acpi_storage_selected()) {
++        return g_ptr_array_free(array, free_segment);
++    }
++    row = acpi_ptr_array_current(array);
++    if (free_segment && row->destroy) {
++        for (guint index = 0; index < row->count; index++) {
++            row->destroy(array->pdata[index]);
++        }
++    }
++    row->retired = true;
++    return free_segment ? NULL : row->data;
++}
++
++void acpi_ptr_array_unref(GPtrArray *array)
++{
++    if (array) {
++        if (acpi_storage_selected()) {
++            acpi_ptr_array_free(array, true);
++        } else {
++            g_ptr_array_unref(array);
++        }
++    }
++}
++
++char *acpi_whole_strdup(const char *string)
++{
++    size_t extent;
++    char *copy;
++
++    if (!acpi_storage_selected()) {
++        return g_strdup(string);
++    }
++    if (!string || __builtin_add_overflow(strlen(string), (size_t)1, &extent)) {
++        acpi_storage_fault();
++    }
++    copy = acpi_whole_new0(extent);
++    memcpy(copy, string, extent);
++    return copy;
++}
++
++char *acpi_whole_strdup_vprintf(const char *format, va_list arguments)
++{
++    va_list copy;
++    int length, written;
++    char *string;
++
++    if (!acpi_storage_selected()) {
++        return g_strdup_vprintf(format, arguments);
++    }
++    va_copy(copy, arguments);
++    length = vsnprintf(NULL, 0, format, copy);
++    va_end(copy);
++    if (length < 0) {
++        acpi_storage_fault();
++    }
++    string = acpi_whole_new0((size_t)length + 1);
++    va_copy(copy, arguments);
++    written = vsnprintf(string, (size_t)length + 1, format, copy);
++    va_end(copy);
++    if (written != length) {
++        acpi_storage_fault();
++    }
++    return string;
++}
++
++int acpi_whole_vasprintf(char **output, const char *format, va_list arguments)
++{
++    if (!acpi_storage_selected()) {
++        return g_vasprintf(output, format, arguments);
++    }
++    *output = acpi_whole_strdup_vprintf(format, arguments);
++    return strlen(*output);
++}
++
++char *acpi_whole_strdup_printf(const char *format, ...)
++{
++    va_list arguments;
++    char *string;
++
++    va_start(arguments, format);
++    string = acpi_whole_strdup_vprintf(format, arguments);
++    va_end(arguments);
++    return string;
++}
+diff --git a/hw/acpi/cxl.c b/hw/acpi/cxl.c
+index f92f7fa3d558ff38dca7c59284024c06acc11253..746c35037d9f92839eace06c7d9904113a0d1fa1 100644
+--- a/hw/acpi/cxl.c
++++ b/hw/acpi/cxl.c
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "hw/acpi/crucible-whole-storage.h"
+ #include "hw/core/sysbus.h"
+ #include "hw/pci/pci_bridge.h"
+ #include "hw/pci/pci_host.h"
+@@ -220,7 +221,7 @@ void cxl_build_cedt(GArray *table_offsets, GArray *table_data,
+     g_slist_free(cfmws_list);
+ 
+     /* copy AML table into ACPI tables blob and patch header there */
+-    g_array_append_vals(table_data, cedt->buf->data, cedt->buf->len);
++    acpi_array_append_vals(table_data, cedt->buf->data, cedt->buf->len);
+     free_aml_allocator();
+ 
+     acpi_table_end(linker, &table);
+diff --git a/hw/acpi/erst.c b/hw/acpi/erst.c
+index b6c1942e30893bd23250f41656f1bb5213169afe..61d196c95cf394531154626241f5b760290a5630 100644
+--- a/hw/acpi/erst.c
++++ b/hw/acpi/erst.c
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "hw/acpi/crucible-whole-storage.h"
+ #include "qapi/error.h"
+ #include "hw/core/qdev.h"
+ #include "system/memory.h"
+@@ -236,7 +237,7 @@ void build_erst(GArray *table_data, BIOSLinker *linker, Object *erst_dev,
+      * Instruction Entry Count field.
+      */
+     unsigned action;
+-    GArray *table_instruction_data = g_array_new(FALSE, FALSE, sizeof(char));
++    GArray *table_instruction_data = acpi_array_new(FALSE, FALSE, sizeof(char));
+     pcibus_t bar0 = pci_get_bar_addr(PCI_DEVICE(erst_dev), 0);
+     AcpiTable table = { .sig = "ERST", .rev = 1, .oem_id = oem_id,
+                         .oem_table_id = oem_table_id };
+@@ -365,9 +366,9 @@ void build_erst(GArray *table_data, BIOSLinker *linker, Object *erst_dev,
+         (table_instruction_data->len / 32), 4);
+ 
+     /* Serialization Instruction Entries */
+-    g_array_append_vals(table_data, table_instruction_data->data,
++    acpi_array_append_vals(table_data, table_instruction_data->data,
+         table_instruction_data->len);
+-    g_array_free(table_instruction_data, TRUE);
++    acpi_array_free(table_instruction_data, TRUE);
+ 
+     acpi_table_end(linker, &table);
+ }
 diff --git a/hw/acpi/generic_event_device.c b/hw/acpi/generic_event_device.c
 index 9e9416d4067d2a34cca8b391d863ee53845675c8..407aa9aed68e2adf2c885d1f4167ca0fbeeeeb78 100644
 --- a/hw/acpi/generic_event_device.c
@@ -38869,18 +39993,19 @@ index 5f9313cce94ed2b9359abc8238e260eb0014d3e8..fb83368a4c1022799860f020c56b5e08
 +    return -1;
 +}
 diff --git a/hw/acpi/ghes.c b/hw/acpi/ghes.c
-index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..48da57eb7f7be29510c81c0276f5a361f8743ade 100644
+index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..bd0bad831d8648f0a490e257b961689ede767a47 100644
 --- a/hw/acpi/ghes.c
 +++ b/hw/acpi/ghes.c
-@@ -20,6 +20,7 @@
+@@ -20,6 +20,8 @@
   */
  
  #include "qemu/osdep.h"
++#include "hw/acpi/crucible-whole-storage.h"
 +#include "qemu/accel.h"
  #include "qemu/units.h"
  #include "hw/acpi/ghes.h"
  #include "hw/acpi/aml-build.h"
-@@ -60,7 +61,9 @@
+@@ -60,7 +62,9 @@
  #define ACPI_GHES_MEM_CPER_LENGTH           80
  
  /* Masks for block_status flags */
@@ -38891,7 +40016,7 @@ index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..48da57eb7f7be29510c81c0276f5a361
  
  /*
   * Total size for Generic Error Status Block except Generic Error Data Entries
-@@ -119,8 +122,9 @@ static void build_ghes_hw_error_notification(GArray *table, const uint8_t type)
+@@ -119,8 +123,9 @@ static void build_ghes_hw_error_notification(GArray *table, const uint8_t type)
      build_append_int_noprefix(table, 28, 1);
      /* Configuration Write Enable */
      build_append_int_noprefix(table, 0, 2);
@@ -38903,7 +40028,29 @@ index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..48da57eb7f7be29510c81c0276f5a361
      /* Vector */
      build_append_int_noprefix(table, 0, 4);
      /* Switch To Polling Threshold Value */
-@@ -191,49 +195,83 @@ static void acpi_ghes_generic_error_status(GArray *table, uint32_t block_status,
+@@ -146,7 +151,7 @@ static void acpi_ghes_generic_error_data(GArray *table,
+     const uint8_t fru_text[20] = {0};
+ 
+     /* Section Type */
+-    g_array_append_vals(table, section_type, 16);
++    acpi_array_append_vals(table, section_type, 16);
+ 
+     /* Error Severity */
+     build_append_int_noprefix(table, error_severity, 4);
+@@ -160,10 +165,10 @@ static void acpi_ghes_generic_error_data(GArray *table,
+     build_append_int_noprefix(table, error_data_length, 4);
+ 
+     /* FRU Id */
+-    g_array_append_vals(table, fru_id.data, ARRAY_SIZE(fru_id.data));
++    acpi_array_append_vals(table, fru_id.data, ARRAY_SIZE(fru_id.data));
+ 
+     /* FRU Text */
+-    g_array_append_vals(table, fru_text, sizeof(fru_text));
++    acpi_array_append_vals(table, fru_text, sizeof(fru_text));
+ 
+     /* Timestamp */
+     build_append_int_noprefix(table, time_stamp, 8);
+@@ -191,49 +196,83 @@ static void acpi_ghes_generic_error_status(GArray *table, uint32_t block_status,
  
  /* UEFI 2.6: N.2.5 Memory Error Section */
  static void acpi_ghes_build_append_mem_cper(GArray *table,
@@ -38998,7 +40145,7 @@ index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..48da57eb7f7be29510c81c0276f5a361
  /*
   * Build table for the hardware error fw_cfg blob.
   * Initialize "etc/hardware_errors" and "etc/hardware_errors_addr" fw_cfg blobs.
-@@ -379,17 +417,28 @@ void acpi_build_hest(AcpiGhesState *ags, GArray *table_data,
+@@ -379,17 +418,28 @@ void acpi_build_hest(AcpiGhesState *ags, GArray *table_data,
                          .oem_id = oem_id, .oem_table_id = oem_table_id };
      uint32_t hest_offset;
      int i;
@@ -39030,7 +40177,7 @@ index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..48da57eb7f7be29510c81c0276f5a361
      }
  
      acpi_table_end(linker, &table);
-@@ -514,6 +563,27 @@ static bool get_ghes_source_offsets(uint16_t source_id,
+@@ -514,6 +564,27 @@ static bool get_ghes_source_offsets(uint16_t source_id,
  NotifierList acpi_generic_error_notifiers =
      NOTIFIER_LIST_INITIALIZER(acpi_generic_error_notifiers);
  
@@ -39058,7 +40205,7 @@ index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..48da57eb7f7be29510c81c0276f5a361
  bool ghes_record_cper_errors(AcpiGhesState *ags, const void *cper, size_t len,
                               uint16_t source_id, Error **errp)
  {
-@@ -524,13 +594,9 @@ bool ghes_record_cper_errors(AcpiGhesState *ags, const void *cper, size_t len,
+@@ -524,13 +595,9 @@ bool ghes_record_cper_errors(AcpiGhesState *ags, const void *cper, size_t len,
          return false;
      }
  
@@ -39075,7 +40222,16 @@ index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..48da57eb7f7be29510c81c0276f5a361
      }
  
      physical_memory_read(read_ack_register_addr,
-@@ -578,15 +644,48 @@ bool acpi_ghes_memory_errors(AcpiGhesState *ags, uint16_t source_id,
+@@ -568,7 +635,7 @@ bool acpi_ghes_memory_errors(AcpiGhesState *ags, uint16_t source_id,
+           UUID_LE(0xA5BC1114, 0x6F64, 0x4EDE, 0xB8, 0x63, 0x3E, 0x83, \
+                   0xED, 0x7C, 0x83, 0xB1);
+     int data_length;
+-    g_autoptr(GArray) block = g_array_new(false, true /* clear */, 1);
++    g_autoptr(AcpiBuilderArray) block = acpi_array_new(false, true /* clear */, 1);
+ 
+     data_length = ACPI_GHES_DATA_LENGTH + ACPI_GHES_MEM_CPER_LENGTH;
+     /*
+@@ -578,15 +645,48 @@ bool acpi_ghes_memory_errors(AcpiGhesState *ags, uint16_t source_id,
      assert((data_length + ACPI_GHES_GESB_SIZE) <=
              ACPI_GHES_MAX_RAW_DATA_LENGTH);
  
@@ -39099,7 +40255,7 @@ index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..48da57eb7f7be29510c81c0276f5a361
 +    const uint8_t guid[] =
 +          UUID_LE(0xA5BC1114, 0x6F64, 0x4EDE, 0xB8, 0x63, 0x3E, 0x83,
 +                  0xED, 0x7C, 0x83, 0xB1);
-+    g_autoptr(GArray) block = g_array_new(false, true, 1);
++    g_autoptr(AcpiBuilderArray) block = acpi_array_new(false, true, 1);
 +    Error *local_err = NULL;
 +    AcpiGhesState *ags = acpi_ghes_get_state();
 +    int data_length = ACPI_GHES_DATA_LENGTH + ACPI_GHES_MEM_CPER_LENGTH;
@@ -39126,7 +40282,7 @@ index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..48da57eb7f7be29510c81c0276f5a361
  AcpiGhesState *acpi_ghes_get_state(void)
  {
      AcpiGedState *acpi_ged_state;
-@@ -605,3 +704,80 @@ AcpiGhesState *acpi_ghes_get_state(void)
+@@ -605,3 +705,80 @@ AcpiGhesState *acpi_ghes_get_state(void)
      }
      return ags;
  }
@@ -39713,6 +40869,71 @@ index 5b1c9101566047783ea09faf1ac2c13f119dd902..09943728997de3c00c79d23c112bd93a
      } else {
          timer_del(pm->periodic_timer);
      }
+diff --git a/hw/acpi/nvdimm.c b/hw/acpi/nvdimm.c
+index 703e854951e8d1f99fca6afd44d863b3fb011015..90107b8027bc48a8a5af9197e90fac83301fd716 100644
+--- a/hw/acpi/nvdimm.c
++++ b/hw/acpi/nvdimm.c
+@@ -27,6 +27,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "hw/acpi/crucible-whole-storage.h"
+ #include "qemu/uuid.h"
+ #include "qapi/error.h"
+ #include "hw/acpi/acpi.h"
+@@ -343,7 +344,7 @@ nvdimm_build_structure_caps(GArray *structures, uint32_t capabilities)
+ static GArray *nvdimm_build_device_structure(NVDIMMState *state)
+ {
+     GSList *device_list, *list = nvdimm_get_device_list();
+-    GArray *structures = g_array_new(false, true /* clear */, 1);
++    GArray *structures = acpi_array_new(false, true /* clear */, 1);
+ 
+     for (device_list = list; device_list; device_list = device_list->next) {
+         DeviceState *dev = device_list->data;
+@@ -371,14 +372,14 @@ static GArray *nvdimm_build_device_structure(NVDIMMState *state)
+ 
+ static void nvdimm_init_fit_buffer(NvdimmFitBuffer *fit_buf)
+ {
+-    fit_buf->fit = g_array_new(false, true /* clear */, 1);
++    fit_buf->fit = acpi_array_new(false, true /* clear */, 1);
+ }
+ 
+ static void nvdimm_build_fit_buffer(NVDIMMState *state)
+ {
+     NvdimmFitBuffer *fit_buf = &state->fit_buf;
+ 
+-    g_array_free(fit_buf->fit, true);
++    acpi_array_free(fit_buf->fit, true);
+     fit_buf->fit = nvdimm_build_device_structure(state);
+     fit_buf->dirty = true;
+ }
+@@ -413,7 +414,7 @@ static void nvdimm_build_nfit(NVDIMMState *state, GArray *table_offsets,
+     /* Reserved */
+     build_append_int_noprefix(table_data, 0, 4);
+     /* NVDIMM device structures. */
+-    g_array_append_vals(table_data, fit_buf->fit->data, fit_buf->fit->len);
++    acpi_array_append_vals(table_data, fit_buf->fit->data, fit_buf->fit->len);
+     acpi_table_end(linker, &table);
+ }
+ 
+@@ -903,7 +904,7 @@ void nvdimm_init_acpi_state(NVDIMMState *state, MemoryRegion *io,
+                           "nvdimm-acpi-io", dsm_io.bit_width >> 3);
+     memory_region_add_subregion(io, dsm_io.address, &state->io_mr);
+ 
+-    state->dsm_mem = g_array_new(false, true /* clear */, 1);
++    state->dsm_mem = acpi_array_new(false, true /* clear */, 1);
+     acpi_data_push(state->dsm_mem, sizeof(NvdimmDsmIn));
+     fw_cfg_add_file(fw_cfg, NVDIMM_DSM_MEM_FILE, state->dsm_mem->data,
+                     state->dsm_mem->len);
+@@ -1410,7 +1411,7 @@ static void nvdimm_build_ssdt(GArray *table_offsets, GArray *table_data,
+     aml_append(ssdt, sb_scope);
+ 
+     /* copy AML table into ACPI tables blob and patch header there */
+-    g_array_append_vals(table_data, ssdt->buf->data, ssdt->buf->len);
++    acpi_array_append_vals(table_data, ssdt->buf->data, ssdt->buf->len);
+     mem_addr_offset = build_append_named_dword(table_data,
+                                                NVDIMM_ACPI_MEM_ADDR);
+ 
 diff --git a/hw/acpi/pcihp.c b/hw/acpi/pcihp.c
 index 87162ff2c0b15c7045c3344a37c53d528489fb6f..ae8ad9a77207e88c0aed7ca91375a37eb091f18f 100644
 --- a/hw/acpi/pcihp.c
@@ -39964,6 +41185,184 @@ index 9b7f50c7afac81f0d0991cdf5de55d9612da59dd..c657de5272ad68db9d8d87ea2384337e
           NULL
      }
  };
+diff --git a/hw/acpi/utils.c b/hw/acpi/utils.c
+index b7cab6f5ca12c885708a0862a743446848117eb2..99cdbad3fe5663dabf35cf3fb4ffa73da54d0af0 100644
+--- a/hw/acpi/utils.c
++++ b/hw/acpi/utils.c
+@@ -22,27 +22,62 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "hw/acpi/crucible-whole-storage.h"
++#include "system/crucible-whole-early.h"
+ #include "hw/acpi/aml-build.h"
+ #include "hw/acpi/utils.h"
+ #include "hw/core/loader.h"
+ 
++#pragma weak acpi_whole_allocation_context_current
++#pragma weak acpi_whole_rom_offer
++#pragma weak acpi_whole_rom_complete
++
++/* These are the same advertised maxima consumed by the literal three ROM
++ * routes below. Reading geometry has no allocation or source-ready effect. */
++int acpi_whole_rom_source_maxima(uint64_t maxima[3])
++{
++    if (!maxima) {
++        return -EINVAL;
++    }
++    maxima[0] = ACPI_WHOLE_TABLE_MAX;
++    maxima[1] = ACPI_WHOLE_LINKER_MAX;
++    maxima[2] = ACPI_WHOLE_RSDP_MAX;
++    return 0;
++}
++
+ MemoryRegion *acpi_add_rom_blob(FWCfgCallback update, void *opaque,
+                                 GArray *blob, const char *name)
+ {
+     uint64_t max_size;
++    MemoryRegion *region;
++
++    bool selected = crucible_whole_setup_selected();
++
++    if (selected && (!acpi_whole_allocation_context_current ||
++        !acpi_whole_rom_offer || !acpi_whole_rom_complete ||
++        !acpi_whole_allocation_context_current())) {
++        _exit(125);
++    }
+ 
+     /* Reserve RAM space for tables: add another order of magnitude. */
+     if (!strcmp(name, ACPI_BUILD_TABLE_FILE)) {
+-        max_size = 0x200000;
++        max_size = ACPI_WHOLE_TABLE_MAX;
+     } else if (!strcmp(name, ACPI_BUILD_LOADER_FILE)) {
+-        max_size = 0x10000;
++        max_size = ACPI_WHOLE_LINKER_MAX;
+     } else if (!strcmp(name, ACPI_BUILD_RSDP_FILE)) {
+-        max_size = 0x1000;
++        max_size = ACPI_WHOLE_RSDP_MAX;
+     } else {
+         g_assert_not_reached();
+     }
++    if (selected) {
++        acpi_whole_rom_offer(update, opaque, blob, max_size);
++    }
+     g_assert(acpi_data_len(blob) <= max_size);
+ 
+-    return rom_add_blob(name, blob->data, acpi_data_len(blob), max_size, -1,
+-                        name, update, opaque, NULL, true);
++    region = rom_add_blob(name, blob->data, acpi_data_len(blob), max_size, -1,
++                          name, update, opaque, NULL, true);
++    if (selected) {
++        acpi_whole_rom_complete(region);
++    }
++    return region;
+ }
+diff --git a/hw/acpi/viot.c b/hw/acpi/viot.c
+index 4e0bf6906738f6b29991944c3479cb27b1bb87ab..2b14d6d15ab0b86723f58d3783f2dfadb96c09cf 100644
+--- a/hw/acpi/viot.c
++++ b/hw/acpi/viot.c
+@@ -4,6 +4,7 @@
+  * SPDX-License-Identifier: GPL-2.0-or-later
+  */
+ #include "qemu/osdep.h"
++#include "hw/acpi/crucible-whole-storage.h"
+ #include "hw/acpi/acpi.h"
+ #include "hw/acpi/aml-build.h"
+ #include "hw/acpi/viot.h"
+@@ -57,7 +58,7 @@ static int enumerate_pci_host_bridges(Object *obj, void *opaque)
+                 .min_bus = min_bus,
+                 .max_bus = max_bus,
+             };
+-            g_array_append_val(pci_host_ranges, pci_host_range);
++            acpi_array_append_val(pci_host_ranges, pci_host_range);
+         }
+     }
+ 
+@@ -92,7 +93,7 @@ void build_viot(MachineState *ms, GArray *table_data, BIOSLinker *linker,
+     int viommu_off = 48;
+     AcpiTable table = { .sig = "VIOT", .rev = 0,
+                         .oem_id = oem_id, .oem_table_id = oem_table_id };
+-    GArray *pci_host_ranges =  g_array_new(false, true,
++    GArray *pci_host_ranges =  acpi_array_new(false, true,
+                                            sizeof(struct viot_pci_host_range));
+     struct viot_pci_host_range *pci_host_range;
+     int i;
+@@ -102,7 +103,7 @@ void build_viot(MachineState *ms, GArray *table_data, BIOSLinker *linker,
+                                    pci_host_ranges);
+ 
+     /* Sort the pci host ranges by min_bus */
+-    g_array_sort(pci_host_ranges, pci_host_range_compare);
++    acpi_array_sort(pci_host_ranges, pci_host_range_compare);
+ 
+     /* ACPI table header */
+     acpi_table_begin(&table, table_data);
+@@ -136,7 +137,7 @@ void build_viot(MachineState *ms, GArray *table_data, BIOSLinker *linker,
+                              pci_host_range->max_bus, viommu_off);
+     }
+ 
+-    g_array_free(pci_host_ranges, true);
++    acpi_array_free(pci_host_ranges, true);
+ 
+     acpi_table_end(linker, &table);
+ }
+diff --git a/hw/acpi/vmclock.c b/hw/acpi/vmclock.c
+index d51cab2e20a1f779d32a8b2b438370d19ace6ee8..05565bd2d2684bf58c770cbad6e66073b3a1ab71 100644
+--- a/hw/acpi/vmclock.c
++++ b/hw/acpi/vmclock.c
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "hw/acpi/crucible-whole-storage.h"
+ #include "qapi/error.h"
+ #include "qemu/module.h"
+ #include "hw/i386/e820_memory_layout.h"
+@@ -56,7 +57,7 @@ void vmclock_build_acpi(VmclockState *vms, GArray *table_data,
+     aml_append(scope, dev);
+     aml_append(ssdt, scope);
+ 
+-    g_array_append_vals(table_data, ssdt->buf->data, ssdt->buf->len);
++    acpi_array_append_vals(table_data, ssdt->buf->data, ssdt->buf->len);
+     acpi_table_end(linker, &table);
+     free_aml_allocator();
+ }
+diff --git a/hw/acpi/vmgenid.c b/hw/acpi/vmgenid.c
+index 27cc0128d117596ad7dd6d60c58d0c771764a84b..39909a8e1f1830927b4fe786165c6c5361229ac7 100644
+--- a/hw/acpi/vmgenid.c
++++ b/hw/acpi/vmgenid.c
+@@ -11,6 +11,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "hw/acpi/crucible-whole-storage.h"
+ #include "qapi/error.h"
+ #include "qemu/module.h"
+ #include "hw/acpi/acpi.h"
+@@ -36,13 +37,13 @@ void vmgenid_build_acpi(VmGenIdState *vms, GArray *table_data, GArray *guid,
+     /* Fill in the GUID values.  These need to be converted to little-endian
+      * first, since that's what the guest expects
+      */
+-    g_array_set_size(guid, VMGENID_FW_CFG_SIZE - ARRAY_SIZE(guid_le.data));
++    acpi_array_set_size(guid, VMGENID_FW_CFG_SIZE - ARRAY_SIZE(guid_le.data));
+     guid_le = qemu_uuid_bswap(vms->guid);
+     /* The GUID is written at a fixed offset into the fw_cfg file
+      * in order to implement the "OVMF SDT Header probe suppressor"
+      * see docs/specs/vmgenid.rst for more details
+      */
+-    g_array_insert_vals(guid, VMGENID_GUID_OFFSET, guid_le.data,
++    acpi_array_insert_vals(guid, VMGENID_GUID_OFFSET, guid_le.data,
+                         ARRAY_SIZE(guid_le.data));
+ 
+     /* Put VMGNEID into a separate SSDT table */
+@@ -92,7 +93,7 @@ void vmgenid_build_acpi(VmGenIdState *vms, GArray *table_data, GArray *guid,
+     aml_append(method, aml_notify(aml_name("\\_SB.VGEN"), aml_int(0x80)));
+     aml_append(ssdt, method);
+ 
+-    g_array_append_vals(table_data, ssdt->buf->data, ssdt->buf->len);
++    acpi_array_append_vals(table_data, ssdt->buf->data, ssdt->buf->len);
+ 
+     /* Allocate guest memory for the Data fw_cfg blob */
+     bios_linker_loader_alloc(linker, VMGENID_GUID_FW_CFG_FILE, guid, 4096,
 diff --git a/hw/adc/npcm7xx_adc.c b/hw/adc/npcm7xx_adc.c
 index 3584c27c75a4fa6e23ea23f501e5133202c78c30..d4154210cf649d8de1168d982acdc713c426797f 100644
 --- a/hw/adc/npcm7xx_adc.c
@@ -45142,10 +46541,10 @@ index 0000000000000000000000000000000000000000..3d8fb8c4d2f7e150f5c93c5241fbe506
 +}
 diff --git a/hw/core/crucible-whole-rom.inc.c b/hw/core/crucible-whole-rom.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a0cd122ee59416b5993ade6c8fdf0e7890ada1e1
+index 0000000000000000000000000000000000000000..749ea2c216718eefdcf7cf94a47084b50c8b29c1
 --- /dev/null
 +++ b/hw/core/crucible-whole-rom.inc.c
-@@ -0,0 +1,849 @@
+@@ -0,0 +1,1008 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Source-born loader objects and payloads in the original finite arena. */
 +
@@ -45160,6 +46559,15 @@ index 0000000000000000000000000000000000000000..a0cd122ee59416b5993ade6c8fdf0e78
 +    uint8_t digest[32];
 +    FWCfgCallback callback;
 +    void *callback_opaque;
++    MachineState *mr_machine;
++    FWCfgState *mr_owner;
++    MemoryRegion *mr_original;
++    const void *acpi_body;
++    size_t acpi_initial;
++    uint64_t acpi_maximum;
++    bool acpi_source;
++    bool mr_begun;
++    bool mr_published;
 +    int source_fd;
 +    bool borrowed_fd;
 +    unsigned builtin_kind;
@@ -45214,6 +46622,14 @@ index 0000000000000000000000000000000000000000..a0cd122ee59416b5993ade6c8fdf0e78
 +} whole_rom;
 +
 +static void rom_reset(void *unused);
++static void fw_cfg_resized(const char *id, uint64_t length, void *host);
++#pragma weak acpi_whole_rom_source_maxima
++extern bool acpi_whole_rom_blob_current(const void *, size_t, uint64_t,
++                                       void (*)(void *), void *) __attribute__((weak));
++extern int acpi_whole_rom_region_begin(MemoryRegion *, uint64_t)
++    __attribute__((weak));
++extern bool acpi_whole_rom_region_geometry(MemoryRegion *, uint64_t *, uint64_t *)
++    __attribute__((weak));
 +static int rom_whole_rows_current(void);
 +
 +static G_NORETURN void rom_whole_fault(const char *reason)
@@ -45274,7 +46690,7 @@ index 0000000000000000000000000000000000000000..a0cd122ee59416b5993ade6c8fdf0e78
 +
 +uint64_t crucible_whole_rom_storage_bytes(void)
 +{
-+    uint64_t extent, payload_bound, row_bound, minimum;
++    uint64_t extent, payload_bound, row_bound, minimum, acpi_maxima[3];
 +    bool present;
 +    int status = crucible_whole_setup_candidate_asset_extent(3, &present, &extent);
 +
@@ -45296,6 +46712,16 @@ index 0000000000000000000000000000000000000000..a0cd122ee59416b5993ade6c8fdf0e78
 +            (uint64_t)sizeof(WholeRomRow) * WHOLE_ROM_MAX_ROWS +
 +            _Alignof(max_align_t) - 1, &minimum)) {
 +        return UINT64_MAX;
++    }
++    if (acpi_whole_rom_source_maxima) {
++        if (acpi_whole_rom_source_maxima(acpi_maxima)) {
++            return UINT64_MAX;
++        }
++        for (unsigned index = 0; index < 3; index++) {
++            if (__builtin_add_overflow(minimum, acpi_maxima[index], &minimum)) {
++                return UINT64_MAX;
++            }
++        }
 +    }
 +    return minimum;
 +}
@@ -45563,9 +46989,32 @@ index 0000000000000000000000000000000000000000..a0cd122ee59416b5993ade6c8fdf0e78
 +        rom_whole_fault("invalid original blob geometry");
 +    }
 +    /* Callback owners need a literal source-born join before any acceptance. */
-+    if (callback || opaque) {
++    if ((callback || opaque) &&
++        (!acpi_whole_rom_blob_current ||
++         !acpi_whole_rom_blob_current(blob, extent, maximum, callback, opaque))) {
 +        rom_whole_fault("original blob callback owner is not enrolled");
 +    }
++}
++
++static void rom_whole_blob_bind(Rom *rom, const void *body, size_t extent,
++                                uint64_t maximum, FWCfgCallback callback,
++                                void *opaque)
++{
++    WholeRomRow *row = rom_whole_row(rom);
++
++    if (!row || (!callback && !opaque)) {
++        return;
++    }
++    if (!acpi_whole_rom_blob_current || row->acpi_source ||
++        !acpi_whole_rom_blob_current(body, extent, maximum, callback, opaque)) {
++        rom_whole_fault("original ACPI producer changed before ROM binding");
++    }
++    row->callback = callback;
++    row->callback_opaque = opaque;
++    row->acpi_body = body;
++    row->acpi_initial = extent;
++    row->acpi_maximum = maximum;
++    row->acpi_source = true;
 +}
 +
 +static void rom_whole_insert(Rom *rom)
@@ -45895,6 +47344,115 @@ index 0000000000000000000000000000000000000000..a0cd122ee59416b5993ade6c8fdf0e78
 +        }
 +    }
 +    return true;
++}
++
++/* The actual ROM row owns this MR before its native constructor can follow
++ * it. Equality with a supplied pointer is checked before the MR is touched. */
++static WholeRomRow *rom_whole_acpi_region_row(MachineState *machine,
++                                             MemoryRegion *region)
++{
++    if (!rom_whole_source_active() || !machine || !region ||
++        !crucible_whole_setup_machine_current(machine) ||
++        whole_rom.count > WHOLE_ROM_MAX_ROWS ||
++        !crucible_whole_setup_history_span_current(whole_rom.rows,
++            sizeof(WholeRomRow) * WHOLE_ROM_MAX_ROWS)) {
++        return NULL;
++    }
++    for (unsigned index = 0; index < whole_rom.count; index++) {
++        WholeRomRow *row = &whole_rom.rows[index];
++
++        if (row->mr_original != region) {
++            continue;
++        }
++        if (!row->acpi_source || !row->mr_begun || row->retired ||
++            row->mr_machine != machine || row->mr_owner != whole_rom.fwcfg ||
++            !row->mr_owner || row->payload_retired ||
++            !crucible_whole_setup_q35_instance_span_current(
++                (Object *)row->mr_owner, row->mr_owner, sizeof(Object)) ||
++            !crucible_whole_setup_history_span_current(region, sizeof(*region)) ||
++            !crucible_whole_setup_history_span_current(row->original,
++                                                      sizeof(*row->original)) ||
++            row->original->mr != region ||
++            row->original->datasize != row->acpi_initial ||
++            row->original->romsize != row->acpi_maximum) {
++            return NULL;
++        }
++        return row;
++    }
++    return NULL;
++}
++
++int crucible_whole_rom_acpi_region_birth(MachineState *machine,
++    MemoryRegion *region, FWCfgState **owner, uint64_t *initial,
++    uint64_t *maximum, CrucibleWholeRamResize *resized)
++{
++    WholeRomRow *row = rom_whole_acpi_region_row(machine, region);
++    uint64_t actual_initial, actual_maximum;
++
++    if (!row || !owner || !initial || !maximum || !resized || row->mr_published ||
++        !crucible_whole_setup_constructor_current() ||
++        !acpi_whole_rom_region_geometry ||
++        !acpi_whole_rom_region_geometry(region, &actual_initial, &actual_maximum) ||
++        actual_initial != row->acpi_initial || actual_maximum != row->acpi_maximum ||
++        !acpi_whole_rom_blob_current ||
++        !acpi_whole_rom_blob_current(row->acpi_body, row->acpi_initial,
++            row->acpi_maximum, row->callback, row->callback_opaque)) {
++        return -ESTALE;
++    }
++    *owner = row->mr_owner;
++    *initial = row->acpi_initial;
++    *maximum = row->acpi_maximum;
++    *resized = fw_cfg_resized;
++    return 0;
++}
++
++bool crucible_whole_rom_acpi_region_current(MachineState *machine,
++    MemoryRegion *region, FWCfgState *owner, uint64_t initial,
++    uint64_t maximum, CrucibleWholeRamResize resized)
++{
++    WholeRomRow *row = rom_whole_acpi_region_row(machine, region);
++
++    if (!row || owner != row->mr_owner || initial != row->acpi_initial ||
++        maximum != row->acpi_maximum || resized != fw_cfg_resized) {
++        return false;
++    }
++    if (!row->complete) {
++        /* Native backing and FW publication precede rom_whole_complete. This
++         * observation stays bound to the same live original producer ticket;
++         * it neither repeats the RAM birth nor advances the source lifetime. */
++        return crucible_whole_setup_constructor_current() &&
++            acpi_whole_rom_blob_current &&
++            acpi_whole_rom_blob_current(row->acpi_body, row->acpi_initial,
++                row->acpi_maximum, row->callback, row->callback_opaque);
++    }
++    return row->mr_published && rom_whole_fields_current(row);
++}
++
++static void rom_whole_acpi_region_begin(Rom *rom, Object *owner)
++{
++    WholeRomRow *row = rom_whole_row(rom);
++    MachineState *machine;
++
++    if (!row) {
++        return;
++    }
++    machine = (MachineState *)qdev_get_machine();
++    if (!row->acpi_source || row->mr_begun ||
++        owner != (Object *)whole_rom.fwcfg || !whole_rom.fwcfg ||
++        !crucible_whole_setup_machine_current(machine) ||
++        !crucible_whole_setup_history_span_current(rom->mr, sizeof(*rom->mr)) ||
++        !acpi_whole_rom_region_begin) {
++        rom_whole_fault("resizable ROM lacks its original ACPI MR owner");
++    }
++    row->mr_machine = machine;
++    row->mr_owner = whole_rom.fwcfg;
++    row->mr_original = rom->mr;
++    row->mr_begun = true;
++    if (acpi_whole_rom_region_begin(rom->mr, row->acpi_maximum) ||
++        qemu_ram_whole_acpi_begin(machine, rom->mr, row->acpi_initial,
++                                   row->acpi_maximum)) {
++        rom_whole_fault("original ACPI RAM birth ticket refused");
++    }
 +}
 +
 +static int rom_whole_rows_current(void)
@@ -46971,7 +48529,7 @@ index 1b610e75e15d2924f7f7faf82c5bcb9e1e732f63..63c5e4d88c7d2208395a91ec8b2ee651
          gpio_in[i]->observer = handler;
      }
 diff --git a/hw/core/loader.c b/hw/core/loader.c
-index 5cbfba0a86d24569923c863d6ecda125ce43bceb..98d08b5f54ae5029dc4dbe1d3760ab521bdc5811 100644
+index 5cbfba0a86d24569923c863d6ecda125ce43bceb..3a508f44a6362eee7d24db250fc657089c847f25 100644
 --- a/hw/core/loader.c
 +++ b/hw/core/loader.c
 @@ -65,9 +65,15 @@
@@ -47275,17 +48833,40 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..98d08b5f54ae5029dc4dbe1d3760ab52
      /* The user didn't specify an address space, this is the default */
      if (!rom->as) {
          rom->as = &address_space_memory;
-@@ -1062,7 +1319,8 @@ static void *rom_set_mr(Rom *rom, Object *owner, const char *name, bool ro)
+@@ -1062,7 +1319,9 @@ static void *rom_set_mr(Rom *rom, Object *owner, const char *name, bool ro)
  {
      void *data;
  
 -    rom->mr = g_malloc(sizeof(*rom->mr));
 +    rom->mr = rom_whole_owns(rom) ?
 +        rom_whole_allocate(sizeof(*rom->mr)) : g_malloc(sizeof(*rom->mr));
++    rom_whole_acpi_region_begin(rom, owner);
      memory_region_init_resizeable_ram(rom->mr, owner, name,
                                        rom->datasize, rom->romsize,
                                        fw_cfg_resized,
-@@ -1096,24 +1354,32 @@ ssize_t rom_add_file(const char *file, const char *fw_dir,
+@@ -1070,7 +1329,20 @@ static void *rom_set_mr(Rom *rom, Object *owner, const char *name, bool ro)
+     memory_region_set_readonly(rom->mr, ro);
+     vmstate_register_ram_global(rom->mr);
+ 
+-    data = memory_region_get_ram_ptr(rom->mr);
++    if (rom_whole_owns(rom)) {
++        WholeRomRow *row = rom_whole_row(rom);
++        RAMBlock *block;
++        uint64_t extent;
++
++        if (!row || qemu_ram_whole_backing_current(rom->mr, &block, &data,
++                                                   &extent) ||
++            extent < row->acpi_maximum) {
++            rom_whole_fault("original ACPI RAM publication changed");
++        }
++        row->mr_published = true;
++    } else {
++        data = memory_region_get_ram_ptr(rom->mr);
++    }
+     if (!cpr_is_incoming()) {
+         memcpy(data, rom->data, rom->datasize);
+     }
+@@ -1096,24 +1368,32 @@ ssize_t rom_add_file(const char *file, const char *fw_dir,
          return -1;
      }
  
@@ -47325,7 +48906,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..98d08b5f54ae5029dc4dbe1d3760ab52
      }
      rom->addr     = addr;
      rom->romsize  = size;
-@@ -1150,6 +1416,7 @@ ssize_t rom_add_file(const char *file, const char *fw_dir,
+@@ -1150,6 +1430,7 @@ ssize_t rom_add_file(const char *file, const char *fw_dir,
          }
      }
  
@@ -47333,7 +48914,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..98d08b5f54ae5029dc4dbe1d3760ab52
      add_boot_device_path(bootindex, NULL, devpath);
      return 0;
  
-@@ -1167,14 +1434,20 @@ MemoryRegion *rom_add_blob(const char *name, const void *blob, size_t len,
+@@ -1167,15 +1448,22 @@ MemoryRegion *rom_add_blob(const char *name, const void *blob, size_t len,
      Rom *rom;
      MemoryRegion *mr = NULL;
  
@@ -47355,9 +48936,11 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..98d08b5f54ae5029dc4dbe1d3760ab52
 +    rom->data     = rom_whole_owns(rom) ?
 +        rom_whole_allocate(MAX(rom->datasize, 1)) : g_malloc0(rom->datasize);
      memcpy(rom->data, blob, len);
++    rom_whole_blob_bind(rom, blob, len, max_len, fw_callback, callback_opaque);
      rom_insert(rom);
      if (fw_file_name && fw_cfg) {
-@@ -1198,6 +1471,7 @@ MemoryRegion *rom_add_blob(const char *name, const void *blob, size_t len,
+         char devpath[100];
+@@ -1198,6 +1486,7 @@ MemoryRegion *rom_add_blob(const char *name, const void *blob, size_t len,
                                   fw_callback, NULL, callback_opaque,
                                   data, rom->datasize, read_only);
      }
@@ -47365,7 +48948,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..98d08b5f54ae5029dc4dbe1d3760ab52
      return mr;
  }
  
-@@ -1210,6 +1484,8 @@ int rom_add_elf_program(const char *name, GMappedFile *mapped_file, void *data,
+@@ -1210,6 +1499,8 @@ int rom_add_elf_program(const char *name, GMappedFile *mapped_file, void *data,
                          size_t datasize, size_t romsize, hwaddr addr,
                          AddressSpace *as)
  {
@@ -47374,7 +48957,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..98d08b5f54ae5029dc4dbe1d3760ab52
      Rom *rom;
  
      rom           = g_malloc0(sizeof(*rom));
-@@ -1236,11 +1512,14 @@ ssize_t rom_add_vga(const char *file)
+@@ -1236,11 +1527,14 @@ ssize_t rom_add_vga(const char *file)
  
  ssize_t rom_add_option(const char *file, int32_t bootindex)
  {
@@ -47389,7 +48972,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..98d08b5f54ae5029dc4dbe1d3760ab52
      Rom *rom;
  
      QTAILQ_FOREACH(rom, &roms, next) {
-@@ -1266,16 +1545,20 @@ static void rom_reset(void *unused)
+@@ -1266,16 +1560,20 @@ static void rom_reset(void *unused)
          if (rom->data == NULL) {
              continue;
          }
@@ -47415,7 +48998,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..98d08b5f54ae5029dc4dbe1d3760ab52
          }
          if (rom->isrom) {
              /* rom needs to be written only once */
-@@ -1291,6 +1574,7 @@ static void rom_reset(void *unused)
+@@ -1291,6 +1589,7 @@ static void rom_reset(void *unused)
  
          trace_loader_write_rom(rom->name, rom->addr, rom->datasize, rom->isrom);
      }
@@ -47423,7 +49006,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..98d08b5f54ae5029dc4dbe1d3760ab52
  }
  
  /* Return true if two consecutive ROMs in the ROM list overlap */
-@@ -1357,7 +1641,10 @@ int rom_check_and_register_reset(void)
+@@ -1357,7 +1656,10 @@ int rom_check_and_register_reset(void)
          }
          section = memory_region_find(rom->mr ? rom->mr : get_system_memory(),
                                       rom->addr, 1);
@@ -47435,7 +49018,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..98d08b5f54ae5029dc4dbe1d3760ab52
          memory_region_unref(section.mr);
      }
      if (found_overlap) {
-@@ -1371,21 +1658,30 @@ int rom_check_and_register_reset(void)
+@@ -1371,21 +1673,30 @@ int rom_check_and_register_reset(void)
  
  void rom_set_fw(FWCfgState *f)
  {
@@ -47466,7 +49049,7 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..98d08b5f54ae5029dc4dbe1d3760ab52
      Rom *rom;
      Rom *tmp;
  
-@@ -1394,6 +1690,7 @@ void rom_transaction_end(bool commit)
+@@ -1394,6 +1705,7 @@ void rom_transaction_end(bool commit)
              continue;
          }
          if (commit) {
@@ -52005,10 +53588,18 @@ index 51513e73fdec284abe0e068711c6397804b7fdd1..c4e4e37ada29e4d249a1d29aecbea486
          VMSTATE_PCI_DEVICE(dev, ICH9SMBState),
          VMSTATE_BOOL(irq_enabled, ICH9SMBState),
 diff --git a/hw/i386/acpi-build.c b/hw/i386/acpi-build.c
-index 8837b69687d13ede3c2a809f2cec7a1d5583384e..e9c79954f161fd440a43ca67537509fd8e27f344 100644
+index 8837b69687d13ede3c2a809f2cec7a1d5583384e..db1d746c54e73fd5870f7405b655d870bf9b4734 100644
 --- a/hw/i386/acpi-build.c
 +++ b/hw/i386/acpi-build.c
-@@ -50,6 +50,7 @@
+@@ -21,6 +21,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "hw/acpi/crucible-whole-storage.h"
+ #include "qapi/error.h"
+ #include "qobject/qnum.h"
+ #include "acpi-build.h"
+@@ -50,6 +51,7 @@
  #include "system/tpm_backend.h"
  #include "hw/rtc/mc146818rtc_regs.h"
  #include "migration/vmstate.h"
@@ -52016,7 +53607,250 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..e9c79954f161fd440a43ca67537509fd
  #include "hw/mem/memory-device.h"
  #include "hw/mem/nvdimm.h"
  #include "hw/mem/sp-mem.h"
-@@ -2261,10 +2262,28 @@ static void acpi_build_reset(void *build_opaque)
+@@ -323,7 +325,7 @@ static void acpi_align_size(GArray *blob, unsigned align)
+     /* Align size to multiple of given size. This reduces the chance
+      * we need to change size in the future (breaking cross version migration).
+      */
+-    g_array_set_size(blob, ROUND_UP(acpi_data_len(blob), align));
++    acpi_array_set_size(blob, ROUND_UP(acpi_data_len(blob), align));
+ }
+ 
+ /*
+@@ -336,13 +338,13 @@ build_facs(GArray *table_data)
+     const char *sig = "FACS";
+     const uint8_t reserved[40] = {};
+ 
+-    g_array_append_vals(table_data, sig, 4); /* Signature */
++    acpi_array_append_vals(table_data, sig, 4); /* Signature */
+     build_append_int_noprefix(table_data, 64, 4); /* Length */
+     build_append_int_noprefix(table_data, 0, 4); /* Hardware Signature */
+     build_append_int_noprefix(table_data, 0, 4); /* Firmware Waking Vector */
+     build_append_int_noprefix(table_data, 0, 4); /* Global Lock */
+     build_append_int_noprefix(table_data, 0, 4); /* Flags */
+-    g_array_append_vals(table_data, reserved, 40); /* Reserved */
++    acpi_array_append_vals(table_data, reserved, 40); /* Reserved */
+ }
+ 
+ /*
+@@ -681,7 +683,7 @@ static void append_q35_prt_entry(Aml *ctx, uint32_t nr, const char *name)
+     int head;
+     Aml *pkg;
+     char base = name[3] < 'E' ? 'A' : 'E';
+-    char *s = g_strdup(name);
++    char *s = acpi_whole_strdup(name);
+     Aml *a_nr = aml_int((nr << 16) | 0xffff);
+ 
+     assert(strlen(s) == 4);
+@@ -699,14 +701,14 @@ static void append_q35_prt_entry(Aml *ctx, uint32_t nr, const char *name)
+         aml_append(pkg, aml_int(0));
+         aml_append(ctx, pkg);
+     }
+-    g_free(s);
++    acpi_whole_free(s);
+ }
+ 
+ static Aml *build_q35_routing_table(const char *str)
+ {
+     int i;
+     Aml *pkg;
+-    char *name = g_strdup_printf("%s ", str);
++    char *name = acpi_whole_strdup_printf("%s ", str);
+ 
+     pkg = aml_package(128);
+     for (i = 0; i < 0x18; i++) {
+@@ -729,7 +731,7 @@ static Aml *build_q35_routing_table(const char *str)
+     name[3] = 'A';
+     append_q35_prt_entry(pkg, 0x1f, name);
+ 
+-    g_free(name);
++    acpi_whole_free(name);
+     return pkg;
+ }
+ 
+@@ -1282,7 +1284,7 @@ build_dsdt(GArray *table_data, BIOSLinker *linker,
+     }
+ 
+     /* copy AML table into ACPI tables blob and patch header there */
+-    g_array_append_vals(table_data, dsdt->buf->data, dsdt->buf->len);
++    acpi_array_append_vals(table_data, dsdt->buf->data, dsdt->buf->len);
+     acpi_table_end(linker, &table);
+     free_aml_allocator();
+ }
+@@ -1374,7 +1376,7 @@ static int sp_mem_collect_ranges_cb(Object *obj, void *opaque)
+     r.size = memory_region_size(
+                  host_memory_backend_get_memory(spm->hostmem));
+     r.node = spm->node;
+-    g_array_append_val(ranges, r);
++    acpi_array_append_val(ranges, r);
+     return 0;
+ }
+ 
+@@ -1403,7 +1405,7 @@ static gint sp_mem_range_compare(gconstpointer a, gconstpointer b)
+  */
+ static void build_srat_device_memory(GArray *table_data, MachineState *ms)
+ {
+-    g_autoptr(GArray) ranges = g_array_new(FALSE, TRUE, sizeof(SpMemRange));
++    g_autoptr(AcpiBuilderArray) ranges = acpi_array_new(FALSE, TRUE, sizeof(SpMemRange));
+     uint32_t hotplug_pxm = ms->numa_state->num_nodes - 1;
+     uint64_t region_start, region_end;
+     guint i;
+@@ -1413,7 +1415,7 @@ static void build_srat_device_memory(GArray *table_data, MachineState *ms)
+ 
+     object_child_foreach_recursive(qdev_get_machine(),
+                                    sp_mem_collect_ranges_cb, ranges);
+-    g_array_sort(ranges, sp_mem_range_compare);
++    acpi_array_sort(ranges, sp_mem_range_compare);
+ 
+     for (i = 0; i < ranges->len; i++) {
+         SpMemRange *r = &g_array_index(ranges, SpMemRange, i);
+@@ -1649,7 +1651,7 @@ build_dmar_q35(GArray *table_data, BIOSLinker *linker, const char *oem_id,
+                                      2 /* 1 path entry */;
+     X86IOMMUState *iommu = x86_iommu_get_default();
+     IntelIOMMUState *intel_iommu = INTEL_IOMMU_DEVICE(iommu);
+-    GArray *scope_blob = g_array_new(false, true, 1);
++    GArray *scope_blob = acpi_array_new(false, true, 1);
+ 
+     AcpiTable table = { .sig = "DMAR", .rev = 1, .oem_id = oem_id,
+                         .oem_table_id = oem_table_id };
+@@ -1671,7 +1673,7 @@ build_dmar_q35(GArray *table_data, BIOSLinker *linker, const char *oem_id,
+     /* Host Address Width */
+     build_append_int_noprefix(table_data, intel_iommu->aw_bits - 1, 1);
+     build_append_int_noprefix(table_data, dmar_flags, 1); /* Flags */
+-    g_array_append_vals(table_data, rsvd10, sizeof(rsvd10)); /* Reserved */
++    acpi_array_append_vals(table_data, rsvd10, sizeof(rsvd10)); /* Reserved */
+ 
+     /* 8.3 DMAR Remapping Hardware Unit Definition structure */
+     build_append_int_noprefix(table_data, 0, 2); /* Type */
+@@ -1700,8 +1702,8 @@ build_dmar_q35(GArray *table_data, BIOSLinker *linker, const char *oem_id,
+     build_append_int_noprefix(table_data, PCI_FUNC(Q35_PSEUDO_DEVFN_IOAPIC), 1);
+ 
+     /* Add scope found above */
+-    g_array_append_vals(table_data, scope_blob->data, scope_blob->len);
+-    g_array_free(scope_blob, true);
++    acpi_array_append_vals(table_data, scope_blob->data, scope_blob->len);
++    acpi_array_free(scope_blob, true);
+ 
+     if (iommu->dt_supported) {
+         /* 8.5 Root Port ATS Capability Reporting Structure */
+@@ -1844,7 +1846,7 @@ build_amd_iommu(GArray *table_data, BIOSLinker *linker, const char *oem_id,
+                 const char *oem_table_id)
+ {
+     AMDVIState *s = AMD_IOMMU_DEVICE(x86_iommu_get_default());
+-    GArray *ivhd_blob = g_array_new(false, true, 1);
++    GArray *ivhd_blob = acpi_array_new(false, true, 1);
+     AcpiTable table = { .sig = "IVRS", .rev = 1, .oem_id = oem_id,
+                         .oem_table_id = oem_table_id };
+     uint64_t feature_report;
+@@ -1930,7 +1932,7 @@ build_amd_iommu(GArray *table_data, BIOSLinker *linker, const char *oem_id,
+     build_append_int_noprefix(table_data, feature_report, 4);
+ 
+     /* IVHD entries as found above */
+-    g_array_append_vals(table_data, ivhd_blob->data, ivhd_blob->len);
++    acpi_array_append_vals(table_data, ivhd_blob->data, ivhd_blob->len);
+ 
+    /* IVHD definition - type 11h */
+     build_append_int_noprefix(table_data, 0x11, 1);
+@@ -1968,9 +1970,9 @@ build_amd_iommu(GArray *table_data, BIOSLinker *linker, const char *oem_id,
+     build_append_int_noprefix(table_data, 0, 8);
+ 
+     /* IVHD entries as found above */
+-    g_array_append_vals(table_data, ivhd_blob->data, ivhd_blob->len);
++    acpi_array_append_vals(table_data, ivhd_blob->data, ivhd_blob->len);
+ 
+-    g_array_free(ivhd_blob, TRUE);
++    acpi_array_free(ivhd_blob, TRUE);
+     acpi_table_end(linker, &table);
+ }
+ 
+@@ -1984,6 +1986,8 @@ struct AcpiBuildState {
+     MemoryRegion *linker_mr;
+ } AcpiBuildState;
+ 
++#include "crucible-whole-acpi.inc.c"
++
+ static bool acpi_get_mcfg(AcpiMcfgInfo *mcfg)
+ {
+     Object *pci_host;
+@@ -2014,6 +2018,14 @@ static bool acpi_get_mcfg(AcpiMcfgInfo *mcfg)
+ static
+ void acpi_build(AcpiBuildTables *tables, MachineState *machine)
+ {
++    if (crucible_whole_setup_selected() &&
++        (!acpi_whole_allocation_context_current() ||
++         !crucible_whole_setup_machine_current(machine) || acpi_table_first())) {
++        /* The canonical selected launch has no user-table constructor. Check
++         * the actual source list before SLIC parsing can allocate copied IDs. */
++        _exit(125);
++    }
++
+     PCMachineState *pcms = PC_MACHINE(machine);
+     X86MachineState *x86ms = X86_MACHINE(machine);
+     DeviceState *iommu = pcms->iommu;
+@@ -2047,7 +2059,7 @@ void acpi_build(AcpiBuildTables *tables, MachineState *machine)
+         oem_table_id = x86ms->oem_table_id;
+     }
+ 
+-    table_offsets = g_array_new(false, true /* clear */,
++    table_offsets = acpi_array_new(false, true /* clear */,
+                                         sizeof(uint32_t));
+     ACPI_BUILD_DPRINTF("init ACPI tables\n");
+ 
+@@ -2183,7 +2195,7 @@ void acpi_build(AcpiBuildTables *tables, MachineState *machine)
+         unsigned len = acpi_table_len(u);
+ 
+         acpi_add_table(table_offsets, tables_blob);
+-        g_array_append_vals(tables_blob, u, len);
++        acpi_array_append_vals(tables_blob, u, len);
+     }
+ 
+     /* RSDT is pointed to by RSDP */
+@@ -2216,13 +2228,18 @@ void acpi_build(AcpiBuildTables *tables, MachineState *machine)
+     acpi_align_size(tables->linker->cmd_blob, ACPI_BUILD_ALIGN_SIZE);
+ 
+     /* Cleanup memory that's no longer used. */
+-    g_array_free(table_offsets, true);
++    acpi_array_free(table_offsets, true);
+     g_free(slic_oem.id);
+     g_free(slic_oem.table_id);
+ }
+ 
+ static void acpi_ram_update(MemoryRegion *mr, GArray *data)
+ {
++    if (crucible_whole_setup_selected()) {
++        /* Original lazy rebuilding is preserved, but native resize, FW entry
++         * mutation and copy tickets must join before selected RAM effects. */
++        acpi_whole_fault();
++    }
+     uint32_t size = acpi_data_len(data);
+ 
+     /* Make sure RAM size is correct - in case it got changed e.g. by migration */
+@@ -2234,11 +2251,14 @@ static void acpi_ram_update(MemoryRegion *mr, GArray *data)
+ 
+ static void acpi_build_update(void *build_opaque)
+ {
++    acpi_whole_update_enter(build_opaque);
++
+     AcpiBuildState *build_state = build_opaque;
+     AcpiBuildTables tables;
+ 
+     /* No state to update or already patched? Nothing to do. */
+     if (!build_state || build_state->patched) {
++        acpi_whole_update_leave();
+         return;
+     }
+     build_state->patched = 1;
+@@ -2253,18 +2273,49 @@ static void acpi_build_update(void *build_opaque)
+ 
+     acpi_ram_update(build_state->linker_mr, tables.linker->cmd_blob);
+     acpi_build_tables_cleanup(&tables, true);
++    acpi_whole_update_leave();
+ }
+ 
+ static void acpi_build_reset(void *build_opaque)
+ {
++    acpi_whole_reset_guard(build_opaque);
++
+     AcpiBuildState *build_state = build_opaque;
      build_state->patched = 0;
  }
  
@@ -52024,7 +53858,17 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..e9c79954f161fd440a43ca67537509fd
 +                                              const void *opaque,
 +                                              Error **errp)
 +{
++    if (crucible_whole_setup_selected() &&
++        (!acpi_whole_source_current() || opaque != acpi_whole_producer.state)) {
++        _exit(125);
++    }
++
 +    const AcpiBuildState *build_state = opaque;
++
++    if (crucible_whole_setup_selected() &&
++        build_state->patched != acpi_whole_producer.patched) {
++        _exit(125);
++    }
 +
 +    (void)errp;
 +    qemu_put_byte(f, build_state->patched);
@@ -52045,6 +53889,440 @@ index 8837b69687d13ede3c2a809f2cec7a1d5583384e..e9c79954f161fd440a43ca67537509fd
      .fields = (const VMStateField[]) {
          VMSTATE_UINT8(patched, AcpiBuildState),
          VMSTATE_END_OF_LIST()
+@@ -2273,7 +2324,13 @@ static const VMStateDescription vmstate_acpi_build = {
+ 
+ void acpi_setup(void)
+ {
+-    PCMachineState *pcms = PC_MACHINE(qdev_get_machine());
++    acpi_whole_constructor_process_guard();
++
++    MachineState *machine = (MachineState *)qdev_get_machine();
++
++    acpi_whole_constructor_enter(machine);
++
++    PCMachineState *pcms = PC_MACHINE(machine);
+     X86MachineState *x86ms = X86_MACHINE(pcms);
+     AcpiBuildTables tables;
+     AcpiBuildState *build_state;
+@@ -2285,23 +2342,34 @@ void acpi_setup(void)
+ 
+     if (!x86ms->fw_cfg) {
+         ACPI_BUILD_DPRINTF("No fw cfg. Bailing out.\n");
++        acpi_whole_constructor_disabled();
+         return;
+     }
+ 
+     if (!pcms->acpi_build_enabled) {
+         ACPI_BUILD_DPRINTF("ACPI build disabled. Bailing out.\n");
++        acpi_whole_constructor_disabled();
+         return;
+     }
+ 
+     if (!x86_machine_is_acpi_enabled(X86_MACHINE(pcms))) {
+         ACPI_BUILD_DPRINTF("ACPI disabled. Bailing out.\n");
++        acpi_whole_constructor_disabled();
+         return;
+     }
+ 
+-    build_state = g_malloc0(sizeof *build_state);
++    build_state = acpi_whole_new0(sizeof *build_state);
++    acpi_whole_state_bind(build_state, x86ms->fw_cfg);
+ 
+     acpi_build_tables_init(&tables);
+     acpi_build(&tables, MACHINE(pcms));
++    acpi_whole_tables_bind(&tables);
++
++    if (crucible_whole_setup_selected() &&
++        crucible_whole_fwcfg_acpi_inputs(x86ms->fw_cfg,
++                                        acpi_crucible_whole_payload_current)) {
++        acpi_whole_fault();
++    }
+ 
+     /* Now expose it all to Guest */
+     build_state->table_mr = acpi_add_rom_blob(acpi_build_update,
+@@ -2347,12 +2415,13 @@ void acpi_setup(void)
+      * in build_state.
+      */
+     acpi_build_tables_cleanup(&tables, false);
++    acpi_whole_constructor_leave();
+ }
+ 
+ GArray *acpi_build_madt_standalone(MachineState *machine)
+ {
+   X86MachineState *x86ms = X86_MACHINE(machine);
+-  GArray *table = g_array_new(false, true, 1);
++  GArray *table = acpi_array_new(false, true, 1);
+   acpi_build_madt(table, NULL, x86ms, x86ms->oem_id,
+                   x86ms->oem_table_id);
+   return table;
+diff --git a/hw/i386/crucible-whole-acpi.inc.c b/hw/i386/crucible-whole-acpi.inc.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..1600b6ff71f6d9d2ef206c7947aa0e1211202e97
+--- /dev/null
++++ b/hw/i386/crucible-whole-acpi.inc.c
+@@ -0,0 +1,362 @@
++/* Original lazy x86 ACPI producer; GPL-2.0-or-later. */
++#include "system/crucible-whole-early.h"
++
++static void acpi_build_update(void *opaque);
++static void acpi_build_reset(void *opaque);
++
++typedef struct AcpiWholeRom {
++    GArray *array;
++    const void *body;
++    size_t initial_extent;
++    uint64_t maximum;
++    MemoryRegion *region;
++    bool offered;
++    bool begun;
++    bool published;
++} AcpiWholeRom;
++
++typedef struct AcpiWholeProducer {
++    pid_t process;
++    MachineState *machine;
++    AcpiBuildState *state;
++    FWCfgState *fwcfg;
++    uint8_t patched;
++    bool attempted;
++    bool constructing;
++    bool building;
++    bool failed;
++    AcpiWholeRom roms[3];
++    AcpiWholeRom *pending_rom;
++} AcpiWholeProducer;
++
++static AcpiWholeProducer acpi_whole_producer;
++
++static G_NORETURN void acpi_whole_fault(void)
++{
++    /* The source process guard precedes retained state, QOM and logger access. */
++    _exit(125);
++}
++
++static void acpi_whole_constructor_process_guard(void)
++{
++    if (acpi_whole_producer.attempted &&
++        acpi_whole_producer.process != getpid()) {
++        acpi_whole_fault();
++    }
++    if (crucible_whole_setup_selected() &&
++        !crucible_whole_setup_constructor_current()) {
++        acpi_whole_fault();
++    }
++}
++
++static bool acpi_whole_source_current(void)
++{
++    if (acpi_whole_producer.attempted &&
++        acpi_whole_producer.process != getpid()) {
++        acpi_whole_fault();
++    }
++    if (!crucible_whole_setup_selected()) {
++        return false;
++    }
++    if (!acpi_whole_producer.attempted || acpi_whole_producer.failed ||
++        !crucible_whole_setup_source_current() ||
++        !crucible_whole_setup_machine_current(acpi_whole_producer.machine)) {
++        acpi_whole_fault();
++    }
++    return true;
++}
++
++bool acpi_whole_allocation_context_current(void)
++{
++    if (!acpi_whole_source_current()) {
++        return false;
++    }
++    if (acpi_whole_producer.constructing) {
++        return crucible_whole_setup_constructor_current();
++    }
++    if (!acpi_whole_producer.building || !acpi_whole_producer.state ||
++        !crucible_whole_fwcfg_acpi_callback_current(acpi_build_update,
++                                                   acpi_whole_producer.state)) {
++        return false;
++    }
++    return true;
++}
++
++static void acpi_whole_constructor_enter(MachineState *machine)
++{
++    if (acpi_whole_producer.attempted &&
++        acpi_whole_producer.process != getpid()) {
++        acpi_whole_fault();
++    }
++    if (!crucible_whole_setup_selected()) {
++        return;
++    }
++    if (acpi_whole_producer.attempted ||
++        !crucible_whole_setup_constructor_current() ||
++        !crucible_whole_setup_machine_current(machine)) {
++        acpi_whole_fault();
++    }
++    acpi_whole_producer = (AcpiWholeProducer) {
++        .process = getpid(),
++        .machine = machine,
++        .attempted = true,
++        .constructing = true,
++    };
++}
++
++static void acpi_whole_state_bind(AcpiBuildState *state, FWCfgState *fwcfg)
++{
++    if (!crucible_whole_setup_selected()) {
++        return;
++    }
++    if (!acpi_whole_allocation_context_current() ||
++        acpi_whole_producer.state || !state || !fwcfg) {
++        acpi_whole_fault();
++    }
++    acpi_whole_producer.state = state;
++    acpi_whole_producer.fwcfg = fwcfg;
++    acpi_whole_producer.patched = 0;
++}
++
++static void acpi_whole_constructor_leave(void)
++{
++    if (!crucible_whole_setup_selected()) {
++        return;
++    }
++    if (!acpi_whole_allocation_context_current() ||
++        !acpi_whole_producer.state) {
++        acpi_whole_fault();
++    }
++    acpi_whole_producer.constructing = false;
++}
++
++static void acpi_whole_constructor_disabled(void)
++{
++    if (crucible_whole_setup_selected()) {
++        /* The selected Q35 closure requires its original ACPI producer. A
++         * disabled early return must not leave an allocation scope open. */
++        acpi_whole_fault();
++    }
++}
++
++static void acpi_whole_tables_bind(AcpiBuildTables *tables)
++{
++    GArray *arrays[3];
++    const uint64_t maxima[3] = {ACPI_WHOLE_TABLE_MAX, ACPI_WHOLE_LINKER_MAX,
++                                ACPI_WHOLE_RSDP_MAX};
++
++    if (!crucible_whole_setup_selected()) {
++        return;
++    }
++    if (!acpi_whole_allocation_context_current() ||
++        !acpi_whole_producer.constructing || !acpi_whole_producer.state) {
++        acpi_whole_fault();
++    }
++    arrays[0] = tables->table_data;
++    arrays[1] = tables->linker->cmd_blob;
++    arrays[2] = tables->rsdp;
++    for (unsigned index = 0; index < 3; index++) {
++        AcpiWholeRom *row = &acpi_whole_producer.roms[index];
++        GArray *array = arrays[index];
++
++        /* The array helper authenticates original membership before following
++         * its header; the producer retains the exact completed build body. */
++        if (row->array || acpi_array_get_element_size(array) != 1 ||
++            !array->data || !array->len || array->len > maxima[index]) {
++            acpi_whole_fault();
++        }
++        *row = (AcpiWholeRom) {
++            .array = array,
++            .body = array->data,
++            .initial_extent = array->len,
++            .maximum = maxima[index],
++        };
++    }
++}
++
++void acpi_whole_rom_offer(void (*callback)(void *), void *opaque,
++                          GArray *array, uint64_t maximum)
++{
++    if (!crucible_whole_setup_selected()) {
++        return;
++    }
++    if (!acpi_whole_allocation_context_current() ||
++        !acpi_whole_producer.constructing || acpi_whole_producer.pending_rom ||
++        opaque != acpi_whole_producer.state || callback != acpi_build_update) {
++        acpi_whole_fault();
++    }
++    for (unsigned index = 0; index < 3; index++) {
++        AcpiWholeRom *row = &acpi_whole_producer.roms[index];
++
++        if (array != row->array) {
++            continue;
++        }
++        if (row->offered || maximum != row->maximum ||
++            acpi_array_get_element_size(array) != 1 ||
++            array->data != row->body || array->len != row->initial_extent) {
++            acpi_whole_fault();
++        }
++        row->offered = true;
++        acpi_whole_producer.pending_rom = row;
++        return;
++    }
++    acpi_whole_fault();
++}
++
++int acpi_whole_rom_region_begin(MemoryRegion *region, uint64_t maximum)
++{
++    AcpiWholeRom *row;
++
++    if (!acpi_whole_allocation_context_current() ||
++        !acpi_whole_producer.constructing) {
++        return -ESTALE;
++    }
++    row = acpi_whole_producer.pending_rom;
++    if (!row || row->begun || row->published || !region ||
++        maximum != row->maximum) {
++        return -ESTALE;
++    }
++    /* Consumption precedes the allocator's MR/RAMBlock birth. The allocator
++     * still has to authenticate the literal ROM owner and actual allocation. */
++    row->begun = true;
++    row->region = region;
++    return 0;
++}
++
++bool acpi_whole_rom_blob_current(const void *body, size_t extent,
++                                uint64_t maximum,
++                                void (*callback)(void *), void *opaque)
++{
++    AcpiWholeRom *row;
++
++    if (!acpi_whole_allocation_context_current() ||
++        !acpi_whole_producer.constructing ||
++        callback != acpi_build_update || opaque != acpi_whole_producer.state) {
++        return false;
++    }
++    row = acpi_whole_producer.pending_rom;
++    if (!row || row->published || body != row->body ||
++        extent != row->initial_extent || maximum != row->maximum) {
++        return false;
++    }
++    /* Pointer equality is correlation to this literal producer's original
++     * allocation. Validate its owned header before any consumer copies bytes. */
++    return acpi_array_get_element_size(row->array) == 1 &&
++        row->array->data == row->body && row->array->len == row->initial_extent;
++}
++
++void acpi_whole_rom_complete(MemoryRegion *region)
++{
++    AcpiWholeRom *row;
++
++    if (!crucible_whole_setup_selected()) {
++        return;
++    }
++    if (!acpi_whole_allocation_context_current()) {
++        acpi_whole_fault();
++    }
++    row = acpi_whole_producer.pending_rom;
++    if (!row || !row->begun || row->published || region != row->region) {
++        acpi_whole_fault();
++    }
++    row->published = true;
++    acpi_whole_producer.pending_rom = NULL;
++}
++
++bool acpi_whole_rom_region_geometry(MemoryRegion *region,
++                                   uint64_t *initial_extent, uint64_t *maximum)
++{
++    if (!initial_extent || !maximum || !acpi_whole_source_current()) {
++        return false;
++    }
++    for (unsigned index = 0; index < 3; index++) {
++        AcpiWholeRom *row = &acpi_whole_producer.roms[index];
++
++        if (row->begun && row->region == region) {
++            *initial_extent = row->initial_extent;
++            *maximum = row->maximum;
++            return true;
++        }
++    }
++    return false;
++}
++
++static void acpi_whole_update_enter(void *opaque)
++{
++    if (!crucible_whole_setup_selected()) {
++        return;
++    }
++    if (!acpi_whole_source_current() || acpi_whole_producer.constructing ||
++        acpi_whole_producer.building || opaque != acpi_whole_producer.state ||
++        !crucible_whole_fwcfg_acpi_callback_current(acpi_build_update, opaque)) {
++        acpi_whole_fault();
++    }
++    /* The actual native dispatcher authenticates the opaque before it is
++     * followed. Lazy rebuilding remains inside that same invocation. */
++    if (acpi_whole_producer.state->patched != acpi_whole_producer.patched) {
++        acpi_whole_fault();
++    }
++    acpi_whole_producer.building = true;
++}
++
++static void acpi_whole_update_leave(void)
++{
++    if (!crucible_whole_setup_selected()) {
++        return;
++    }
++    if (!acpi_whole_allocation_context_current()) {
++        acpi_whole_fault();
++    }
++    acpi_whole_producer.patched = acpi_whole_producer.state->patched;
++    acpi_whole_producer.building = false;
++}
++
++static void acpi_whole_reset_guard(void *opaque)
++{
++    if (!crucible_whole_setup_selected()) {
++        return;
++    }
++    if (!acpi_whole_source_current() || opaque != acpi_whole_producer.state ||
++        acpi_whole_producer.building ||
++        (!acpi_whole_producer.constructing &&
++         !qemu_reset_whole_q35_callback_current(acpi_build_reset, opaque))) {
++        acpi_whole_fault();
++    }
++    acpi_whole_producer.patched = 0;
++}
++
++bool acpi_crucible_whole_payload_current(const void *body, size_t extent,
++                                        void (*callback)(void *), void *opaque)
++{
++    if (!acpi_whole_source_current() ||
++        opaque != acpi_whole_producer.state || callback != acpi_build_update) {
++        return false;
++    }
++    if (!body || !extent || !acpi_whole_producer.state ||
++        !crucible_whole_setup_history_span_current(acpi_whole_producer.state,
++            sizeof(*acpi_whole_producer.state)) ||
++        acpi_whole_producer.state->patched != acpi_whole_producer.patched ||
++        acpi_whole_producer.patched || acpi_whole_producer.building) {
++        return false;
++    }
++    for (unsigned index = 0; index < 3; index++) {
++        AcpiWholeRom *row = &acpi_whole_producer.roms[index];
++        RAMBlock *block;
++        void *backing;
++        uint64_t maximum;
++
++        if (!row->begun || !row->region || extent != row->initial_extent ||
++            !crucible_whole_setup_history_span_current(row->body,
++                                                       row->initial_extent) ||
++            qemu_ram_whole_backing_current(row->region, &block, &backing,
++                                            &maximum) ||
++            body != backing || maximum < row->maximum) {
++            continue;
++        }
++        /* The native RAM ledger authenticates the original MR/block/base
++         * before any bytes are read. This query never calls the FW callback
++         * getter: native dispatch uses it to authenticate that callback. */
++        return !memcmp(backing, row->body, extent);
++    }
++    return false;
++}
 diff --git a/hw/i386/crucible-whole-linux-input.inc.c b/hw/i386/crucible-whole-linux-input.inc.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..79bb42fdb3b16661df99205af5a935f78e193537
@@ -67956,10 +70234,10 @@ index 43e3c916f73fa3bda638e170895ec0421fedfeef..da2b831f4822ba0424d76606dc9617b9
      uint32_t    conf_msix_qsize;
 diff --git a/hw/nvram/crucible-whole-fwcfg.inc.c b/hw/nvram/crucible-whole-fwcfg.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..0c1d3f109db4576d8e7b03cea47d8b0530b83fc3
+index 0000000000000000000000000000000000000000..5afe675061e1a38b796cd54c6aaf79419ad0a45d
 --- /dev/null
 +++ b/hw/nvram/crucible-whole-fwcfg.inc.c
-@@ -0,0 +1,562 @@
+@@ -0,0 +1,678 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Original finite table allocations and pre-effect native entry history. */
 +
@@ -68003,6 +70281,16 @@ index 0000000000000000000000000000000000000000..0c1d3f109db4576d8e7b03cea47d8b05
 +    uint8_t bytes[16];
 +} WholeFwStaticPayload;
 +
++typedef struct WholeFwCallbackScope {
++    FWCfgState *owner;
++    FWCfgEntry *entry;
++    FWCfgEntry original;
++    uint64_t thread;
++    unsigned arch;
++    unsigned key;
++    bool active;
++} WholeFwCallbackScope;
++
 +static struct {
 +    pid_t process;
 +    bool begun;
@@ -68017,6 +70305,7 @@ index 0000000000000000000000000000000000000000..0c1d3f109db4576d8e7b03cea47d8b05
 +    int *entry_order;
 +    WholeFwAllocation *allocations;
 +    WholeFwEvent *events;
++    WholeFwCallbackScope *callback_scope;
 +    CrucibleWholeFwPayloadCurrent linux_inputs;
 +    CrucibleWholeAcpiPayloadCurrent acpi_inputs;
 +    bool boot_reader_registered;
@@ -68047,7 +70336,8 @@ index 0000000000000000000000000000000000000000..0c1d3f109db4576d8e7b03cea47d8b05
 +uint64_t crucible_whole_fwcfg_storage_bytes(void)
 +{
 +    return sizeof(WholeFwAllocation) * WHOLE_FWCFG_MAX_ALLOCATIONS +
-+        sizeof(WholeFwEvent) * WHOLE_FWCFG_MAX_EVENTS;
++        sizeof(WholeFwEvent) * WHOLE_FWCFG_MAX_EVENTS +
++        sizeof(WholeFwCallbackScope);
 +}
 +
 +int crucible_whole_fwcfg_begin(void)
@@ -68068,6 +70358,9 @@ index 0000000000000000000000000000000000000000..0c1d3f109db4576d8e7b03cea47d8b05
 +    whole_fwcfg.allocations = (WholeFwAllocation *)backing;
 +    whole_fwcfg.events = (WholeFwEvent *)(backing +
 +        sizeof(WholeFwAllocation) * WHOLE_FWCFG_MAX_ALLOCATIONS);
++    whole_fwcfg.callback_scope = (WholeFwCallbackScope *)(backing +
++        sizeof(WholeFwAllocation) * WHOLE_FWCFG_MAX_ALLOCATIONS +
++        sizeof(WholeFwEvent) * WHOLE_FWCFG_MAX_EVENTS);
 +    whole_fwcfg.begun = true;
 +    return 0;
 +}
@@ -68087,10 +70380,10 @@ index 0000000000000000000000000000000000000000..0c1d3f109db4576d8e7b03cea47d8b05
 +/* Read-only source currentness cannot authorize device effects. Initial
 + * signature selection needs the literal modern reset dispatch; later guest
 + * accesses require the sealed native source and the original RR grant. */
-+static void fwcfg_whole_effect_guard(FWCfgState *owner, bool reset_selection)
++static bool fwcfg_whole_effect_guard(FWCfgState *owner, bool reset_selection)
 +{
 +    if (!fwcfg_whole_active()) {
-+        return;
++        return false;
 +    }
 +    if (!owner || owner != whole_fwcfg.owner ||
 +        object_get_class(OBJECT(owner)) != whole_fwcfg.owner_class) {
@@ -68099,7 +70392,7 @@ index 0000000000000000000000000000000000000000..0c1d3f109db4576d8e7b03cea47d8b05
 +    if (reset_selection && crucible_whole_setup_constructor_current() &&
 +        qemu_reset_whole_q35_device_callback_current(DEVICE(owner),
 +                                                     fw_cfg_reset)) {
-+        return;
++        return false;
 +    }
 +    /* The incomplete seal deliberately keeps this path closed. Native source
 +     * observers and constructor membership never substitute for a guest grant. */
@@ -68109,6 +70402,7 @@ index 0000000000000000000000000000000000000000..0c1d3f109db4576d8e7b03cea47d8b05
 +        icount_crucible_whole_event_admit()) {
 +        fwcfg_whole_fault("firmware effect has no sealed native RR authority");
 +    }
++    return true;
 +}
 +
 +static void *fwcfg_whole_allocate(size_t extent)
@@ -68368,6 +70662,106 @@ index 0000000000000000000000000000000000000000..0c1d3f109db4576d8e7b03cea47d8b05
 +    return fwcfg_whole_payload_source(owner, entry->data, entry->len);
 +}
 +
++static bool fwcfg_whole_entry_equal(const FWCfgEntry *left,
++                                    const FWCfgEntry *right)
++{
++    return left->data == right->data && left->len == right->len &&
++        left->allow_write == right->allow_write &&
++        left->select_cb == right->select_cb &&
++        left->write_cb == right->write_cb &&
++        left->callback_opaque == right->callback_opaque;
++}
++
++static bool fwcfg_whole_acpi_entry_current(FWCfgState *owner, unsigned arch,
++                                           unsigned key, const FWCfgEntry *entry)
++{
++    if (!owner || owner != whole_fwcfg.owner || arch > 1 ||
++        key >= whole_fwcfg.maximum ||
++        object_get_class(OBJECT(owner)) != whole_fwcfg.owner_class ||
++        owner->entries[0] != whole_fwcfg.tables[0] ||
++        owner->entries[1] != whole_fwcfg.tables[1] ||
++        owner->entry_order != whole_fwcfg.entry_order ||
++        entry != &whole_fwcfg.tables[arch][key] ||
++        !whole_fwcfg.acpi_inputs) {
++        return false;
++    }
++    /* The latest native entry event supplies lineage. Directory snapshots do
++     * not substitute for that event or bless a replaced callback/payload. */
++    for (unsigned index = whole_fwcfg.event_count; index; index--) {
++        WholeFwEvent *event = &whole_fwcfg.events[index - 1];
++
++        if (!event->directory && event->arch == arch && event->key == key) {
++            return event->owner == owner &&
++                event->source_kind == WHOLE_FW_PAYLOAD_ACPI &&
++                fwcfg_whole_entry_equal(entry, &event->intended) &&
++                !entry->allow_write && !entry->write_cb && entry->select_cb &&
++                whole_fwcfg.acpi_inputs(entry->data, entry->len,
++                                        entry->select_cb, entry->callback_opaque);
++        }
++    }
++    return false;
++}
++
++static void fwcfg_whole_callback_begin(FWCfgState *owner, unsigned arch,
++                                       unsigned key, FWCfgEntry *entry,
++                                       bool admitted)
++{
++    if (!fwcfg_whole_active()) {
++        return;
++    }
++    if (!admitted || whole_fwcfg.callback_scope->active ||
++        icount_crucible_whole_event_current() ||
++        !fwcfg_whole_acpi_entry_current(owner, arch, key, entry)) {
++        fwcfg_whole_fault("selection callback has no original ACPI effect scope");
++    }
++    *whole_fwcfg.callback_scope = (WholeFwCallbackScope) {
++        .owner = owner, .entry = entry, .original = *entry,
++        .thread = qemu_get_thread_id(), .arch = arch, .key = key, .active = true,
++    };
++}
++
++bool crucible_whole_fwcfg_acpi_callback_current(void (*callback)(void *),
++                                                void *opaque)
++{
++    WholeFwCallbackScope *scope;
++
++    /* Source/PID/BQL checks precede arena, entry or opaque access. */
++    if (!fwcfg_whole_active()) {
++        return false;
++    }
++    scope = whole_fwcfg.callback_scope;
++    if (!scope || !scope->active ||
++        scope->thread != qemu_get_thread_id() ||
++        !crucible_whole_setup_guest_start_allowed() ||
++        icount_crucible_whole_event_current() ||
++        callback != scope->original.select_cb ||
++        opaque != scope->original.callback_opaque) {
++        return false;
++    }
++    return fwcfg_whole_acpi_entry_current(scope->owner, scope->arch, scope->key,
++                                          scope->entry) &&
++        fwcfg_whole_entry_equal(scope->entry, &scope->original);
++}
++
++static void fwcfg_whole_callback_end(void)
++{
++    WholeFwCallbackScope original;
++
++    if (!fwcfg_whole_active()) {
++        return;
++    }
++    original = *whole_fwcfg.callback_scope;
++    /* Revoke before a fallible observer; no lingering callback allocation loan. */
++    whole_fwcfg.callback_scope->active = false;
++    if (!original.active || original.thread != qemu_get_thread_id() ||
++        icount_crucible_whole_event_current() ||
++        !fwcfg_whole_acpi_entry_current(original.owner, original.arch,
++                                         original.key, original.entry) ||
++        !fwcfg_whole_entry_equal(original.entry, &original.original)) {
++        fwcfg_whole_fault("original ACPI callback changed before return");
++    }
++}
++
 +static WholeFwEvent *fwcfg_whole_event(FWCfgState *owner,
 +                                      unsigned arch, unsigned key)
 +{
@@ -68523,7 +70917,7 @@ index 0000000000000000000000000000000000000000..0c1d3f109db4576d8e7b03cea47d8b05
 +    return -ENOTSUP;
 +}
 diff --git a/hw/nvram/fw_cfg.c b/hw/nvram/fw_cfg.c
-index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da325d3a0b2e 100644
+index b057d870c004110fdfbe4b34da55719acbf69c7a..6891b161acc8051ce33c6f4bbf8cd28e1d8f5e2a 100644
 --- a/hw/nvram/fw_cfg.c
 +++ b/hw/nvram/fw_cfg.c
 @@ -23,6 +23,7 @@
@@ -68785,16 +71179,29 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      /* nothing, write support removed in QEMU v2.4+ */
  }
  
-@@ -271,6 +486,8 @@ static int fw_cfg_select(FWCfgState *s, uint16_t key)
+@@ -269,8 +484,11 @@ static inline uint32_t fw_cfg_max_entry(const FWCfgState *s)
+ static int fw_cfg_select(FWCfgState *s, uint16_t key)
+ {
      int arch, ret;
++    bool admitted;
      FWCfgEntry *e;
  
-+    fwcfg_whole_effect_guard(s, true);
++    admitted = fwcfg_whole_effect_guard(s, true);
 +
      s->cur_offset = 0;
      if ((key & FW_CFG_ENTRY_MASK) >= fw_cfg_max_entry(s)) {
          s->cur_entry = FW_CFG_INVALID;
-@@ -293,11 +510,15 @@ static int fw_cfg_select(FWCfgState *s, uint16_t key)
+@@ -282,7 +500,9 @@ static int fw_cfg_select(FWCfgState *s, uint16_t key)
+         arch = !!(key & FW_CFG_ARCH_LOCAL);
+         e = &s->entries[arch][key & FW_CFG_ENTRY_MASK];
+         if (e->select_cb) {
++            fwcfg_whole_callback_begin(s, arch, key & FW_CFG_ENTRY_MASK, e, admitted);
+             e->select_cb(e->callback_opaque);
++            fwcfg_whole_callback_end();
+         }
+     }
+ 
+@@ -293,11 +513,15 @@ static int fw_cfg_select(FWCfgState *s, uint16_t key)
  static uint64_t fw_cfg_data_read(void *opaque, hwaddr addr, unsigned size)
  {
      FWCfgState *s = opaque;
@@ -68813,7 +71220,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      assert(size > 0 && size <= sizeof(value));
      if (s->cur_entry != FW_CFG_INVALID && e->data && s->cur_offset < e->len) {
          /* The least significant 'size' bytes of the return value are
-@@ -331,6 +552,173 @@ static void fw_cfg_data_mem_write(void *opaque, hwaddr addr,
+@@ -331,6 +555,173 @@ static void fw_cfg_data_mem_write(void *opaque, hwaddr addr,
      } while (i);
  }
  
@@ -68987,7 +71394,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
  static void fw_cfg_dma_transfer(FWCfgState *s)
  {
      dma_addr_t len;
-@@ -340,6 +728,8 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
+@@ -340,6 +731,8 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
      int read = 0, write = 0;
      dma_addr_t dma_addr;
  
@@ -68996,7 +71403,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      /* Reset the address before the next access */
      dma_addr = s->dma_addr;
      s->dma_addr = 0;
-@@ -355,14 +745,6 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
+@@ -355,14 +748,6 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
      dma.length = be32_to_cpu(dma.length);
      dma.control = be32_to_cpu(dma.control);
  
@@ -69011,7 +71418,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      if (dma.control & FW_CFG_DMA_CTL_READ) {
          read = 1;
          write = 0;
-@@ -376,6 +758,70 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
+@@ -376,6 +761,70 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
          dma.length = 0;
      }
  
@@ -69082,7 +71489,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      dma.control = 0;
  
      while (dma.length > 0 && !(dma.control & FW_CFG_DMA_CTL_ERROR)) {
-@@ -450,6 +896,8 @@ static void fw_cfg_dma_mem_write(void *opaque, hwaddr addr,
+@@ -450,6 +899,8 @@ static void fw_cfg_dma_mem_write(void *opaque, hwaddr addr,
  {
      FWCfgState *s = opaque;
  
@@ -69091,7 +71498,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      if (size == 4) {
          if (addr == 0) {
              /* FWCfgDmaAccess high address */
-@@ -554,8 +1002,18 @@ static const MemoryRegionOps fw_cfg_dma_mem_ops = {
+@@ -554,8 +1005,18 @@ static const MemoryRegionOps fw_cfg_dma_mem_ops = {
  
  static void fw_cfg_reset(DeviceState *d)
  {
@@ -69111,7 +71518,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      /* we never register a read callback for FW_CFG_SIGNATURE */
      fw_cfg_select(s, FW_CFG_SIGNATURE);
  }
-@@ -622,6 +1080,8 @@ static void fw_cfg_update_mr(FWCfgState *s, uint16_t key, size_t size)
+@@ -622,6 +1083,8 @@ static void fw_cfg_update_mr(FWCfgState *s, uint16_t key, size_t size)
      int arch = !!(key & FW_CFG_ARCH_LOCAL);
      void *ptr;
  
@@ -69120,7 +71527,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      key &= FW_CFG_ENTRY_MASK;
      assert(key < fw_cfg_max_entry(s));
  
-@@ -636,6 +1096,9 @@ static int fw_cfg_acpi_mr_restore_post_load(void *opaque, int version_id)
+@@ -636,6 +1099,9 @@ static int fw_cfg_acpi_mr_restore_post_load(void *opaque, int version_id)
      FWCfgState *s = opaque;
      int i, index;
  
@@ -69130,7 +71537,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      assert(s->files);
  
      index = be32_to_cpu(s->files->count);
-@@ -662,6 +1125,171 @@ static const VMStateDescription vmstate_fw_cfg_dma = {
+@@ -662,6 +1128,171 @@ static const VMStateDescription vmstate_fw_cfg_dma = {
      },
  };
  
@@ -69302,7 +71709,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
  static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
      .name = "fw_cfg/acpi_mr",
      .version_id = 1,
-@@ -676,10 +1304,57 @@ static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
+@@ -676,10 +1307,57 @@ static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
      },
  };
  
@@ -69360,7 +71767,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      .fields = (const VMStateField[]) {
          VMSTATE_UINT16(cur_entry, FWCfgState),
          VMSTATE_UINT16_HACK(cur_offset, FWCfgState, is_version_1),
-@@ -704,9 +1379,12 @@ static void fw_cfg_add_bytes_callback(FWCfgState *s, uint16_t key,
+@@ -704,9 +1382,12 @@ static void fw_cfg_add_bytes_callback(FWCfgState *s, uint16_t key,
  
      key &= FW_CFG_ENTRY_MASK;
  
@@ -69373,7 +71780,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      s->entries[arch][key].data = data;
      s->entries[arch][key].len = (uint32_t)len;
      s->entries[arch][key].select_cb = select_cb;
-@@ -723,9 +1401,11 @@ static void *fw_cfg_modify_bytes_read(FWCfgState *s, uint16_t key,
+@@ -723,9 +1404,11 @@ static void *fw_cfg_modify_bytes_read(FWCfgState *s, uint16_t key,
  
      key &= FW_CFG_ENTRY_MASK;
  
@@ -69385,7 +71792,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      ptr = s->entries[arch][key].data;
      s->entries[arch][key].data = data;
      s->entries[arch][key].len = len;
-@@ -736,32 +1416,41 @@ static void *fw_cfg_modify_bytes_read(FWCfgState *s, uint16_t key,
+@@ -736,32 +1419,41 @@ static void *fw_cfg_modify_bytes_read(FWCfgState *s, uint16_t key,
  
  void fw_cfg_add_bytes(FWCfgState *s, uint16_t key, void *data, size_t len)
  {
@@ -69433,7 +71840,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      *copy = cpu_to_le16(value);
      trace_fw_cfg_add_i16(key, trace_key_name(key), value);
      fw_cfg_add_bytes(s, key, copy, sizeof(value));
-@@ -771,17 +1460,21 @@ void fw_cfg_modify_i16(FWCfgState *s, uint16_t key, uint16_t value)
+@@ -771,17 +1463,21 @@ void fw_cfg_modify_i16(FWCfgState *s, uint16_t key, uint16_t value)
  {
      uint16_t *copy, *old;
  
@@ -69458,7 +71865,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      *copy = cpu_to_le32(value);
      trace_fw_cfg_add_i32(key, trace_key_name(key), value);
      fw_cfg_add_bytes(s, key, copy, sizeof(value));
-@@ -791,17 +1484,21 @@ void fw_cfg_modify_i32(FWCfgState *s, uint16_t key, uint32_t value)
+@@ -791,17 +1487,21 @@ void fw_cfg_modify_i32(FWCfgState *s, uint16_t key, uint32_t value)
  {
      uint32_t *copy, *old;
  
@@ -69483,7 +71890,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      *copy = cpu_to_le64(value);
      trace_fw_cfg_add_i64(key, trace_key_name(key), value);
      fw_cfg_add_bytes(s, key, copy, sizeof(value));
-@@ -811,10 +1508,12 @@ void fw_cfg_modify_i64(FWCfgState *s, uint16_t key, uint64_t value)
+@@ -811,10 +1511,12 @@ void fw_cfg_modify_i64(FWCfgState *s, uint16_t key, uint64_t value)
  {
      uint64_t *copy, *old;
  
@@ -69498,7 +71905,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
  }
  
  /*
-@@ -843,10 +1542,15 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
+@@ -843,10 +1545,15 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
      int i, index, count;
      size_t dsize;
      int order = 0;
@@ -69515,7 +71922,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
          fw_cfg_add_bytes(s, FW_CFG_FILE_DIR, s->files, dsize);
      }
  
-@@ -899,6 +1603,7 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
+@@ -899,6 +1606,7 @@ void fw_cfg_add_file_callback(FWCfgState *s,  const char *filename,
  
      s->files->count = cpu_to_be32(count+1);
      fw_cfg_acpi_mr_save(s, filename, len);
@@ -69523,7 +71930,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
  }
  
  void fw_cfg_add_file(FWCfgState *s,  const char *filename,
-@@ -913,16 +1618,20 @@ void *fw_cfg_modify_file(FWCfgState *s, const char *filename,
+@@ -913,16 +1621,20 @@ void *fw_cfg_modify_file(FWCfgState *s, const char *filename,
      int i, index;
      void *ptr = NULL;
  
@@ -69544,7 +71951,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
              return ptr;
          }
      }
-@@ -944,6 +1653,8 @@ bool fw_cfg_add_file_from_generator(FWCfgState *s,
+@@ -944,6 +1656,8 @@ bool fw_cfg_add_file_from_generator(FWCfgState *s,
      Object *obj;
      gsize size;
  
@@ -69553,7 +71960,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      obj = object_resolve_path_component(parent, part);
      if (!obj) {
          error_setg(errp, "Cannot find object ID '%s'", part);
-@@ -972,19 +1683,26 @@ static void fw_cfg_machine_reset(void *opaque)
+@@ -972,19 +1686,26 @@ static void fw_cfg_machine_reset(void *opaque)
      size_t len;
      char *buf;
  
@@ -69583,7 +71990,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
  }
  
  static const Property fw_cfg_properties[] = {
-@@ -996,13 +1714,16 @@ static void fw_cfg_common_realize(DeviceState *dev, Error **errp)
+@@ -996,13 +1717,16 @@ static void fw_cfg_common_realize(DeviceState *dev, Error **errp)
      FWCfgState *s = FW_CFG(dev);
      MachineState *machine = MACHINE(qdev_get_machine());
      uint32_t version = FW_CFG_VERSION;
@@ -69601,7 +72008,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
      fw_cfg_add_bytes(s, FW_CFG_UUID, &qemu_uuid, 16);
      fw_cfg_add_i16(s, FW_CFG_NOGRAPHIC, (uint16_t)!machine->enable_graphics);
      fw_cfg_add_i16(s, FW_CFG_BOOT_MENU, (uint16_t)(machine->boot_config.has_menu && machine->boot_config.menu));
-@@ -1199,9 +1920,13 @@ static void fw_cfg_file_slots_allocate(FWCfgState *s, Error **errp)
+@@ -1199,9 +1923,13 @@ static void fw_cfg_file_slots_allocate(FWCfgState *s, Error **errp)
          return;
      }
  
@@ -69618,7 +72025,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..f4eb74963a135b9b3021d0d0c626da32
  }
  
  static const Property fw_cfg_io_properties[] = {
-@@ -1317,6 +2042,23 @@ static void fw_cfg_register_types(void)
+@@ -1317,6 +2045,23 @@ static void fw_cfg_register_types(void)
      type_register_static(&fw_cfg_info);
      type_register_static(&fw_cfg_io_info);
      type_register_static(&fw_cfg_mem_info);
@@ -88104,6 +90511,81 @@ index dc3672db5213598aee32de2e66f08f6216757fe4..361d1d78a4b27e16ba5e767a68bcd763
  
  /* PM1a_EVT: piix and ich9 don't implement PM1b. */
  uint16_t acpi_pm1_evt_get_sts(ACPIREGS *ar);
+diff --git a/include/hw/acpi/crucible-whole-storage.h b/include/hw/acpi/crucible-whole-storage.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..63b286eda17721c16ea913a043b07b1de41fc076
+--- /dev/null
++++ b/include/hw/acpi/crucible-whole-storage.h
+@@ -0,0 +1,69 @@
++/* Original ACPI builder storage; GPL-2.0-or-later. */
++#ifndef HW_ACPI_CRUCIBLE_WHOLE_STORAGE_H
++#define HW_ACPI_CRUCIBLE_WHOLE_STORAGE_H
++
++/* These helpers preserve GLib behavior for ordinary builders. Selected arrays
++ * expose only GLib's public data/length shape; their storage belongs to the
++ * original native history arena and never enters GLib's private array ABI. */
++GArray *acpi_array_new(gboolean terminated, gboolean clear, guint element_size);
++GArray *acpi_array_append_vals(GArray *array, gconstpointer data, guint count);
++GArray *acpi_array_prepend_vals(GArray *array, gconstpointer data, guint count);
++GArray *acpi_array_insert_vals(GArray *array, guint index,
++                              gconstpointer data, guint count);
++GArray *acpi_array_set_size(GArray *array, guint count);
++guint acpi_array_get_element_size(GArray *array);
++void acpi_array_sort(GArray *array, GCompareFunc compare);
++gchar *acpi_array_free(GArray *array, gboolean free_segment);
++void acpi_array_unref(GArray *array);
++
++#define acpi_array_append_val(array, value) \
++    acpi_array_append_vals((array), &(value), 1)
++#define acpi_array_prepend_val(array, value) \
++    acpi_array_prepend_vals((array), &(value), 1)
++
++GPtrArray *acpi_ptr_array_new(void);
++GPtrArray *acpi_ptr_array_new_with_free_func(GDestroyNotify free_func);
++void acpi_ptr_array_add(GPtrArray *array, gpointer value);
++void acpi_ptr_array_set_size(GPtrArray *array, gint count);
++void acpi_ptr_array_sort(GPtrArray *array, GCompareFunc compare);
++void acpi_ptr_array_foreach(GPtrArray *array, GFunc callback, gpointer opaque);
++gpointer *acpi_ptr_array_free(GPtrArray *array, gboolean free_segment);
++void acpi_ptr_array_unref(GPtrArray *array);
++
++void *acpi_whole_new(size_t extent);
++void *acpi_whole_new0(size_t extent);
++void acpi_whole_free(void *allocation);
++char *acpi_whole_strdup(const char *string);
++char *acpi_whole_strdup_vprintf(const char *format, va_list arguments)
++    G_GNUC_PRINTF(1, 0);
++char *acpi_whole_strdup_printf(const char *format, ...) G_GNUC_PRINTF(1, 2);
++int acpi_whole_vasprintf(char **output, const char *format, va_list arguments)
++    G_GNUC_PRINTF(2, 0);
++
++/* The original producer, not an arbitrary caller, establishes this scope. */
++bool acpi_whole_allocation_context_current(void);
++
++/* Source-advertised maxima of the three literal acpi_add_rom_blob routes. */
++#define ACPI_WHOLE_TABLE_MAX UINT64_C(0x200000)
++#define ACPI_WHOLE_LINKER_MAX UINT64_C(0x10000)
++#define ACPI_WHOLE_RSDP_MAX UINT64_C(0x1000)
++
++struct MemoryRegion;
++void acpi_whole_rom_offer(void (*callback)(void *), void *opaque,
++                          GArray *array, uint64_t maximum);
++void acpi_whole_rom_complete(struct MemoryRegion *region);
++bool acpi_whole_rom_blob_current(const void *body, size_t extent,
++                                uint64_t maximum,
++                                void (*callback)(void *), void *opaque);
++/* The literal ROM producer calls begin only after authenticating its original
++ * preallocated MR. This ticket supplies source geometry, not RAM ownership. */
++int acpi_whole_rom_region_begin(struct MemoryRegion *region, uint64_t maximum);
++bool acpi_whole_rom_region_geometry(struct MemoryRegion *region,
++                                   uint64_t *initial_extent, uint64_t *maximum);
++
++typedef GArray AcpiBuilderArray;
++typedef GPtrArray AcpiBuilderPtrArray;
++G_DEFINE_AUTOPTR_CLEANUP_FUNC(AcpiBuilderArray, acpi_array_unref)
++G_DEFINE_AUTOPTR_CLEANUP_FUNC(AcpiBuilderPtrArray, acpi_ptr_array_unref)
++
++#endif
 diff --git a/include/hw/acpi/generic-event-device-fingerprint.h b/include/hw/acpi/generic-event-device-fingerprint.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..a9fca903cb2a618764bc63b6b4480c4a156b9cc5
@@ -104133,10 +106615,10 @@ index 0000000000000000000000000000000000000000..7fdbaf05a28166efade32274a1e3845b
 +#endif /* SYSTEM_CRUCIBLE_SIM_PREEMPTION_H */
 diff --git a/include/system/crucible-whole-early.h b/include/system/crucible-whole-early.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..656449bfe1bd0d639a423b72e03d7e9dfd9e7f7f
+index 0000000000000000000000000000000000000000..b54853595bb0e136bfa70d26dc25fa71ff23b295
 --- /dev/null
 +++ b/include/system/crucible-whole-early.h
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,222 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Original native setup provenance. No declaration here is a wire layout. */
 +#ifndef SYSTEM_CRUCIBLE_WHOLE_EARLY_H
@@ -104159,6 +106641,10 @@ index 0000000000000000000000000000000000000000..656449bfe1bd0d639a423b72e03d7e9d
 +/* Literal constructor context and borrowed source-owned asset custody. Neither
 + * query opens a runtime effect, a loader callback, or the first-clock hold. */
 +bool crucible_whole_setup_source_current(void);
++/* Read-only used-arena membership; typed producer lineage remains separate. */
++bool crucible_whole_setup_history_span_current(const void *body, size_t extent);
++/* Only the authentic ACPI build/callback context may spend the original bank. */
++void *crucible_whole_setup_acpi_history_allocate(size_t extent);
 +bool crucible_whole_setup_constructor_current(void);
 +/* Opaque original native constructor identity; no eligibility or effect. */
 +const void *crucible_whole_setup_callback_constructor(void);
@@ -104253,6 +106739,9 @@ index 0000000000000000000000000000000000000000..656449bfe1bd0d639a423b72e03d7e9d
 +                                               void (*)(void *), void *);
 +int crucible_whole_fwcfg_acpi_inputs(struct FWCfgState *fwcfg,
 +                                     CrucibleWholeAcpiPayloadCurrent current);
++/* Valid only across literal selection of the original read-only ACPI entry. */
++bool crucible_whole_fwcfg_acpi_callback_current(void (*callback)(void *),
++                                                void *opaque);
 +bool acpi_crucible_whole_payload_current(const void *body, size_t extent,
 +                                          void (*callback)(void *), void *opaque);
 +uint64_t crucible_whole_fwcfg_storage_bytes(void);
@@ -104354,10 +106843,10 @@ index 0000000000000000000000000000000000000000..656449bfe1bd0d639a423b72e03d7e9d
 +#endif
 diff --git a/include/system/crucible-whole-ram.h b/include/system/crucible-whole-ram.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ec1aa8f4b0bbaccd4bb7712610cb7d6ba3730602
+index 0000000000000000000000000000000000000000..7c264f676500629bfa482ebbe4bc084ea16abee3
 --- /dev/null
 +++ b/include/system/crucible-whole-ram.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,45 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Source-owned RAM births. These declarations are not a process protocol. */
 +#ifndef SYSTEM_CRUCIBLE_WHOLE_RAM_H
@@ -104371,6 +106860,20 @@ index 0000000000000000000000000000000000000000..ec1aa8f4b0bbaccd4bb7712610cb7d6b
 +struct MachineState;
 +struct MemoryRegion;
 +struct RAMBlock;
++struct FWCfgState;
++/* Native-only callback type, identical to qemu_ram_resize_cb. */
++typedef void (*CrucibleWholeRamResize)(const char *, uint64_t, void *);
++/* The producer supplies pure maxima, then an original ROM-owned MR proof.
++ * None of these observations alone grants allocation or a runtime write. */
++int acpi_whole_rom_source_maxima(uint64_t maxima[3]);
++int crucible_whole_rom_acpi_region_birth(struct MachineState *machine,
++    struct MemoryRegion *region, struct FWCfgState **owner, uint64_t *initial,
++    uint64_t *maximum, CrucibleWholeRamResize *resized);
++bool crucible_whole_rom_acpi_region_current(struct MachineState *machine,
++    struct MemoryRegion *region, struct FWCfgState *owner, uint64_t initial,
++    uint64_t maximum, CrucibleWholeRamResize resized);
++int qemu_ram_whole_acpi_begin(struct MachineState *machine,
++    struct MemoryRegion *region, uint64_t initial, uint64_t maximum);
 +
 +uint64_t qemu_ram_whole_storage_bytes(void);
 +int qemu_ram_whole_begin(void);
@@ -178390,10 +180893,10 @@ index 0000000000000000000000000000000000000000..cd0157b178d1371b5231e54a6d89ca40
 +}
 diff --git a/system/crucible-whole-early.inc.c b/system/crucible-whole-early.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..81b86361c686d042c481b10e29952fe8ebdbe4bc
+index 0000000000000000000000000000000000000000..985b0f23202aca45b3d1e4822fb45da7e488da48
 --- /dev/null
 +++ b/system/crucible-whole-early.inc.c
-@@ -0,0 +1,1638 @@
+@@ -0,0 +1,1680 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Source-owned sealed setup before subsystem, board and guest construction.
 + * A pinned descriptor is a request and original provenance, never Ready. */
@@ -179331,6 +181834,48 @@ index 0000000000000000000000000000000000000000..81b86361c686d042c481b10e29952fe8
 +    }
 +    whole_setup_original.history_used = end;
 +    return whole_setup_original.history_backing + aligned;
++}
++
++/* The architecture producer is absent on other targets. Absence cannot open
++ * a selected allocation path or replace an authenticated callback context. */
++extern bool acpi_whole_allocation_context_current(void) __attribute__((weak));
++
++bool crucible_whole_setup_history_span_current(const void *body, size_t extent)
++{
++    uintptr_t start, end, requested = (uintptr_t)body, requested_end;
++
++    if (!crucible_whole_setup_source_current() || !body || !extent) {
++        return false;
++    }
++    start = (uintptr_t)whole_setup_original.history_backing;
++    if (!start ||
++        __builtin_add_overflow(start, whole_setup_original.history_used, &end) ||
++        __builtin_add_overflow(requested, extent, &requested_end)) {
++        return false;
++    }
++    /* Padding and interior spans are observations, never allocation tickets. */
++    return requested >= start && requested_end <= end;
++}
++
++void *crucible_whole_setup_acpi_history_allocate(size_t extent)
++{
++    bool constructor;
++
++    /* Authenticate source before invoking a producer or touching the bank. */
++    if (!crucible_whole_setup_source_current() || !extent ||
++        !acpi_whole_allocation_context_current ||
++        !acpi_whole_allocation_context_current()) {
++        return NULL;
++    }
++    constructor = crucible_whole_setup_constructor_current();
++    if (!constructor &&
++        (!crucible_whole_setup_guest_start_allowed() ||
++         icount_crucible_whole_event_current() ||
++         icount_crucible_whole_event_admit())) {
++        return NULL;
++    }
++    /* Failed attempts cannot renew the retained arena or the native debit. */
++    return whole_setup_history_allocate(extent, constructor);
 +}
 +
 +void *crucible_whole_setup_history_allocate(size_t extent)
@@ -180724,10 +183269,10 @@ index 0000000000000000000000000000000000000000..090737ccf7fa898c85f134ffa0573d5c
 +}
 diff --git a/system/crucible-whole-ram.inc.c b/system/crucible-whole-ram.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69809c74fb
+index 0000000000000000000000000000000000000000..03a09885017777847797385b97ba22693bc780ef
 --- /dev/null
 +++ b/system/crucible-whole-ram.inc.c
-@@ -0,0 +1,637 @@
+@@ -0,0 +1,758 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Included by physmem.c, beside the actual RAM and dirty-directory owners. */
 +
@@ -180735,6 +183280,14 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 + * The early quota reader runs before target_page is finalized; the actual
 + * allocator separately verifies the installed native exponent before effects. */
 +#define WHOLE_RAM_X86_PAGE_BITS 12
++#define WHOLE_RAM_ACPI_REGIONS 3
++#define WHOLE_RAM_BIRTHS (2 + WHOLE_RAM_ACPI_REGIONS)
++
++/* Architecture producers are optional at link time; absent source never
++ * supplies an ACPI birth. The shared declarations keep the actual types. */
++#pragma weak acpi_whole_rom_source_maxima
++#pragma weak crucible_whole_rom_acpi_region_birth
++#pragma weak crucible_whole_rom_acpi_region_current
 +
 +typedef enum WholeRamPhase {
 +    WHOLE_RAM_UNUSED,
@@ -180742,6 +183295,7 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +    WHOLE_RAM_ALLOCATING,
 +    WHOLE_RAM_PUBLISHED,
 +    WHOLE_RAM_RETIRED,
++    WHOLE_RAM_FAILED,
 +} WholeRamPhase;
 +
 +typedef struct WholeRamBirth {
@@ -180749,6 +183303,12 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +    Object *owner;
 +    ObjectClass *owner_class;
 +    MemoryRegion *region;
++    ObjectClass *region_class;
++    MachineState *machine;
++    uint64_t maximum;
++    uint64_t used_extent;
++    CrucibleWholeRamResize resized;
++    bool acpi;
 +    uint64_t selected_extent;
 +    uint64_t requested_extent;
 +    RAMBlock block;
@@ -180768,10 +183328,13 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +    unsigned dirty_capacity;
 +    uint64_t main_extent;
 +    uint64_t bios_extent;
++    uint64_t acpi_extents[WHOLE_RAM_ACPI_REGIONS];
++    uint64_t acpi_maxima[WHOLE_RAM_ACPI_REGIONS];
++    uint64_t total_extent;
 +    uint64_t resident;
 +    uint64_t peak;
-+    WholeRamBirth births[2];
-+    DirtyMemoryBlocks *directories[2][DIRTY_MEMORY_NUM];
++    WholeRamBirth births[WHOLE_RAM_BIRTHS];
++    DirtyMemoryBlocks *directories[WHOLE_RAM_BIRTHS][DIRTY_MEMORY_NUM];
 +    unsigned long **bitmaps[DIRTY_MEMORY_NUM];
 +} WholeRamOwners;
 +
@@ -180820,18 +183383,39 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +}
 +
 +static int whole_ram_geometry(uint64_t *main_extent, uint64_t *bios_extent,
++                              uint64_t acpi_extents[WHOLE_RAM_ACPI_REGIONS],
++                              uint64_t source_maxima[WHOLE_RAM_ACPI_REGIONS],
 +                              unsigned *bitmap_count)
 +{
 +    uint64_t main, bios, total, pages, count;
++    uint64_t maxima[WHOLE_RAM_ACPI_REGIONS] = { 0 };
 +    int status = crucible_whole_setup_candidate_ram_geometry(&main, &bios);
 +
 +    if (status) {
 +        return status;
 +    }
++    /* Absent architectural producer has no ACPI capacity. The actual producer
++     * advertises its literal maxima before the arena/backing reservation; an
++     * opened filename or host-provided number never supplies these bounds. */
++    if (acpi_whole_rom_source_maxima) {
++        status = acpi_whole_rom_source_maxima(maxima);
++        if (status) {
++            return status;
++        }
++    }
 +    if (!whole_ram_round(main, main_extent) ||
 +        !whole_ram_round(bios, bios_extent) ||
 +        __builtin_add_overflow(*main_extent, *bios_extent, &total)) {
 +        return -EOVERFLOW;
++    }
++    for (unsigned index = 0; index < WHOLE_RAM_ACPI_REGIONS; index++) {
++        source_maxima[index] = maxima[index];
++        acpi_extents[index] = 0;
++        if (maxima[index] &&
++            (!whole_ram_round(maxima[index], &acpi_extents[index]) ||
++             __builtin_add_overflow(total, acpi_extents[index], &total))) {
++            return -EOVERFLOW;
++        }
 +    }
 +    pages = total >> WHOLE_RAM_X86_PAGE_BITS;
 +    count = DIV_ROUND_UP(pages, DIRTY_MEMORY_BLOCK_SIZE);
@@ -180845,21 +183429,22 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +uint64_t qemu_ram_whole_storage_bytes(void)
 +{
 +    uint64_t main, bios, bytes, directories, bitmap_bytes;
++    uint64_t acpi[WHOLE_RAM_ACPI_REGIONS], maxima[WHOLE_RAM_ACPI_REGIONS];
 +    unsigned count;
 +
-+    if (whole_ram_geometry(&main, &bios, &count)) {
++    if (whole_ram_geometry(&main, &bios, acpi, maxima, &count)) {
 +        return UINT64_MAX;
 +    }
-+    directories = 2 * DIRTY_MEMORY_NUM *
++    directories = WHOLE_RAM_BIRTHS * DIRTY_MEMORY_NUM *
 +        (sizeof(DirtyMemoryBlocks) + count * sizeof(unsigned long *));
 +    bitmap_bytes = DIRTY_MEMORY_NUM * (uint64_t)count *
 +        BITS_TO_LONGS(DIRTY_MEMORY_BLOCK_SIZE) * sizeof(unsigned long);
-+    /* Two actual source categories, each with one retained RAMBlock/name.
++    /* Each admitted source category has one retained RAMBlock/name.
 +     * Every alignment allowance covers an actual arena allocation below. */
 +    bytes = sizeof(WholeRamOwners) + directories + bitmap_bytes +
-+        DIRTY_MEMORY_NUM * count * sizeof(unsigned long *) + 2 * 256;
++        DIRTY_MEMORY_NUM * count * sizeof(unsigned long *) + WHOLE_RAM_BIRTHS * 256;
 +    if (__builtin_add_overflow(bytes,
-+            (uint64_t)(1 + 4 * DIRTY_MEMORY_NUM + 2) *
++            (uint64_t)(1 + (WHOLE_RAM_BIRTHS + 2) * DIRTY_MEMORY_NUM + WHOLE_RAM_BIRTHS) *
 +            (_Alignof(max_align_t) - 1), &bytes)) {
 +        return UINT64_MAX;
 +    }
@@ -180870,6 +183455,7 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +{
 +    WholeRamOwners *owners;
 +    uint64_t main, bios, total, allowance;
++    uint64_t acpi[WHOLE_RAM_ACPI_REGIONS], maxima[WHOLE_RAM_ACPI_REGIONS];
 +    unsigned count;
 +    int status;
 +
@@ -180885,14 +183471,20 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +            return -ESTALE;
 +        }
 +    }
-+    status = whole_ram_geometry(&main, &bios, &count);
++    status = whole_ram_geometry(&main, &bios, acpi, maxima, &count);
 +    if (status) {
 +        return status;
 +    }
++    total = main + bios;
++    for (unsigned index = 0; index < WHOLE_RAM_ACPI_REGIONS; index++) {
++        if (__builtin_add_overflow(total, acpi[index], &total)) {
++            return -EOVERFLOW;
++        }
++    }
 +    allowance = ldq_be_p(crucible_whole_setup_profile() + 56);
-+    if (__builtin_add_overflow(main, bios, &total) ||
-+        __builtin_add_overflow(total, allowance, &total) ||
-+        __builtin_add_overflow(total, 2 * qemu_real_host_page_size(), &total)) {
++    uint64_t external = total;
++    if (__builtin_add_overflow(total, allowance, &total) ||
++        __builtin_add_overflow(total, WHOLE_RAM_BIRTHS * qemu_real_host_page_size(), &total)) {
 +        return -EOVERFLOW;
 +    }
 +    owners = crucible_whole_setup_constructor_history_allocate(sizeof(*owners));
@@ -180904,6 +183496,9 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +    owners->process = whole_ram_process;
 +    owners->main_extent = main;
 +    owners->bios_extent = bios;
++    memcpy(owners->acpi_extents, acpi, sizeof(acpi));
++    memcpy(owners->acpi_maxima, maxima, sizeof(maxima));
++    owners->total_extent = external;
 +    owners->dirty_capacity = count;
 +    owners->resident = total;
 +    if (__builtin_add_overflow(total,
@@ -180927,7 +183522,7 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +            owners->bitmaps[client][index] =
 +                maps + index * BITS_TO_LONGS(DIRTY_MEMORY_BLOCK_SIZE);
 +        }
-+        for (unsigned generation = 0; generation < 2; generation++) {
++        for (unsigned generation = 0; generation < WHOLE_RAM_BIRTHS; generation++) {
 +            DirtyMemoryBlocks *directory =
 +                crucible_whole_setup_constructor_history_allocate(
 +                    sizeof(*directory) + count * sizeof(directory->blocks[0]));
@@ -180969,6 +183564,8 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +    birth->region = region;
 +    birth->selected_extent = rounded;
 +    birth->requested_extent = extent;
++    birth->maximum = extent;
++    birth->used_extent = rounded;
 +    return 0;
 +}
 +
@@ -181005,9 +183602,65 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +    return whole_ram_birth(1, OBJECT(machine), region, extent);
 +}
 +
++int qemu_ram_whole_acpi_begin(MachineState *machine, MemoryRegion *region,
++                              uint64_t initial, uint64_t maximum)
++{
++    struct FWCfgState *owner = NULL;
++    uint64_t source_initial, source_maximum, rounded_initial, rounded_maximum;
++    CrucibleWholeRamResize resized = NULL;
++    WholeRamBirth *birth = NULL;
++
++    if (!whole_ram_selected() || !crucible_whole_setup_constructor_current() ||
++        !crucible_whole_setup_machine_current(machine) ||
++        !crucible_whole_rom_acpi_region_birth ||
++        !crucible_whole_rom_acpi_region_current ||
++        crucible_whole_rom_acpi_region_birth(machine, region, &owner,
++            &source_initial, &source_maximum, &resized) || !owner || !resized ||
++        source_initial > source_maximum ||
++        !whole_ram_round(source_initial, &rounded_initial) ||
++        !whole_ram_round(source_maximum, &rounded_maximum)) {
++        return -ESTALE;
++    }
++    for (unsigned index = 0; index < WHOLE_RAM_ACPI_REGIONS; index++) {
++        if (whole_ram_owners->acpi_maxima[index] == source_maximum) {
++            if (birth) {
++                return -ESTALE;
++            }
++            birth = &whole_ram_owners->births[index + 2];
++        }
++    }
++    if (!birth || birth->phase != WHOLE_RAM_UNUSED) {
++        return -ESTALE;
++    }
++    /* Source proof precedes owner access; this one original bank slot is spent
++     * before MR initialization, RAMBlock allocation or backing publication. */
++    birth->phase = WHOLE_RAM_REQUESTED;
++    birth->owner = OBJECT(owner);
++    birth->owner_class = object_get_class(birth->owner);
++    if (!birth->owner_class) {
++        whole_ram_refuse();
++    }
++    birth->region = region;
++    birth->machine = machine;
++    birth->acpi = true;
++    birth->selected_extent = rounded_maximum;
++    birth->requested_extent = source_initial;
++    birth->maximum = source_maximum;
++    birth->used_extent = rounded_initial;
++    birth->resized = resized;
++    object_ref(birth->owner);
++    if (initial != source_initial || maximum != source_maximum) {
++        /* A genuine issued source attempt is retained even when its caller's
++         * geometry is refused. It cannot retry into this original bank slot. */
++        birth->phase = WHOLE_RAM_FAILED;
++        return -EINVAL;
++    }
++    return 0;
++}
++
 +static WholeRamBirth *whole_ram_region(MemoryRegion *region)
 +{
-+    for (unsigned index = 0; index < 2; index++) {
++    for (unsigned index = 0; index < WHOLE_RAM_BIRTHS; index++) {
 +        WholeRamBirth *birth = &whole_ram_owners->births[index];
 +
 +        if (birth->phase != WHOLE_RAM_UNUSED && birth->region == region) {
@@ -181073,8 +183726,9 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +    birth = whole_ram_region(region);
 +    if (!crucible_whole_setup_constructor_current() || !birth ||
 +        birth->phase != WHOLE_RAM_REQUESTED ||
-+        size != birth->requested_extent || max_size != size || host || resized ||
-+        (flags & ~RAM_PRIVATE) || TARGET_PAGE_BITS != WHOLE_RAM_X86_PAGE_BITS) {
++        size != birth->requested_extent || max_size != birth->maximum || host ||
++        resized != birth->resized ||
++        (flags & ~RAM_PRIVATE) != (birth->acpi ? RAM_RESIZEABLE : 0) || TARGET_PAGE_BITS != WHOLE_RAM_X86_PAGE_BITS) {
 +        whole_ram_refuse();
 +    }
 +}
@@ -181089,23 +183743,29 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +        return NULL;
 +    }
 +    birth = whole_ram_region(region);
-+    /* Unsupported source categories and fd/shared/preallocated/resizeable
-+     * constructors refuse before their original allocator or publication. */
++    /* Only an issued ACPI bank admits its original resizeable callback. Other
++     * unsupported categories refuse before allocation or publication. */
 +    if (!crucible_whole_setup_constructor_current() || !birth ||
 +        birth->phase != WHOLE_RAM_REQUESTED ||
-+        TARGET_PAGE_BITS != WHOLE_RAM_X86_PAGE_BITS || host || flags || resized ||
-+        size != max_size || size != birth->selected_extent ||
++        TARGET_PAGE_BITS != WHOLE_RAM_X86_PAGE_BITS || host ||
++        flags != (birth->acpi ? RAM_RESIZEABLE : 0) || resized != birth->resized ||
++        size != birth->used_extent || max_size != birth->selected_extent ||
 +        !birth->name || region->name != birth->name ||
 +        region->owner != (birth == &whole_ram_owners->births[1] ? NULL : birth->owner)) {
 +        whole_ram_refuse();
 +    }
++    birth->region_class = object_get_class(OBJECT(region));
++    if (!birth->region_class) {
++        whole_ram_refuse();
++    }
++    birth->expected_flags = flags;
 +    birth->phase = WHOLE_RAM_ALLOCATING;
 +    return &birth->block;
 +}
 +
 +static WholeRamBirth *whole_ram_block(RAMBlock *block)
 +{
-+    for (unsigned index = 0; index < 2; index++) {
++    for (unsigned index = 0; index < WHOLE_RAM_BIRTHS; index++) {
 +        WholeRamBirth *birth = &whole_ram_owners->births[index];
 +
 +        if (birth->phase != WHOLE_RAM_UNUSED && &birth->block == block) {
@@ -181188,9 +183848,9 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +    birth = whole_ram_block(block);
 +    if (!birth || birth->phase != WHOLE_RAM_ALLOCATING || !block->host ||
 +        block->mr != birth->region || block->max_length != birth->selected_extent ||
-+        block->used_length != birth->selected_extent || block->flags ||
-+        block->fd != -1 || block->guest_memfd != -1 || block->resized ||
-+        block->offset > whole_ram_owners->main_extent + whole_ram_owners->bios_extent -
++        block->used_length != birth->used_extent || block->flags != birth->expected_flags ||
++        block->fd != -1 || block->guest_memfd != -1 || block->resized != birth->resized ||
++        block->offset > whole_ram_owners->total_extent -
 +                        block->max_length) {
 +        whole_ram_refuse();
 +    }
@@ -181212,10 +183872,10 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +        unsigned index;
 +
 +        /* Authenticate membership before following any native list link. */
-+        if (!birth || birth->phase != WHOLE_RAM_PUBLISHED || visited++ == 2) {
++        if (!birth || birth->phase != WHOLE_RAM_PUBLISHED || visited++ == WHOLE_RAM_BIRTHS) {
 +            return false;
 +        }
-+        index = birth == &owners->births[1];
++        index = birth - owners->births;
 +        if ((seen & (1U << index)) || cursor->next.le_prev != previous_link) {
 +            return false;
 +        }
@@ -181223,13 +183883,13 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +        previous_link = &cursor->next.le_next;
 +        cursor = cursor->next.le_next;
 +    }
-+    for (unsigned index = 0; index < 2; index++) {
++    for (unsigned index = 0; index < WHOLE_RAM_BIRTHS; index++) {
 +        if ((owners->births[index].phase == WHOLE_RAM_PUBLISHED) !=
 +            !!(seen & (1U << index))) {
 +            return false;
 +        }
 +    }
-+    if (!owners->dirty_generations || owners->dirty_generations > 2 ||
++    if (!owners->dirty_generations || owners->dirty_generations > WHOLE_RAM_BIRTHS ||
 +        ram_list.num_dirty_blocks > owners->dirty_capacity) {
 +        return false;
 +    }
@@ -181265,22 +183925,28 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +    }
 +    if (!birth->name_extent || birth->name_extent > sizeof(birth->original_name) ||
 +        object_get_class(birth->owner) != birth->owner_class ||
-+        !crucible_whole_setup_q35_instance_span_current(birth->owner, region,
-+                                                        sizeof(*region))) {
++        (birth->acpi ?
++            !crucible_whole_rom_acpi_region_current(birth->machine, region,
++                (struct FWCfgState *)birth->owner, birth->requested_extent,
++                birth->maximum, birth->resized) :
++            !crucible_whole_setup_q35_instance_span_current(birth->owner, region,
++                                                            sizeof(*region)))) {
 +        return -ESTALE;
 +    }
 +    original = &birth->block;
 +    /* Membership precedes all region/block dereferences. No generic MR or
 +     * copied pointer tuple can substitute this literal original allocation. */
-+    if (region->ram_block != original || region->name != birth->name ||
++    if (object_get_class(OBJECT(region)) != birth->region_class ||
++        region->ram_block != original || region->name != birth->name ||
 +        region->owner != (birth == &whole_ram_owners->births[1] ? NULL : birth->owner) || original->mr != region ||
 +        original->host != birth->host || original->offset != birth->offset ||
-+        original->used_length != birth->selected_extent ||
++        original->used_length != birth->used_extent ||
 +        original->max_length != birth->selected_extent ||
 +        original->flags != birth->expected_flags ||
 +        memcmp(original->idstr, birth->original_id, sizeof(original->idstr)) ||
 +        memcmp(birth->name, birth->original_name, birth->name_extent) ||
-+        original->fd != -1 || original->guest_memfd != -1 || original->resized) {
++        original->fd != -1 || original->guest_memfd != -1 ||
++        original->resized != birth->resized) {
 +        return -ESTALE;
 +    }
 +    *block = original;
@@ -181308,7 +183974,7 @@ index 0000000000000000000000000000000000000000..39ca3ea3cd6a048ee5c7b29b5b9a7a69
 +    }
 +    owners = whole_ram_owners;
 +    if (!crucible_whole_setup_constructor_current() ||
-+        owners->dirty_generations == 2 || new_count > owners->dirty_capacity) {
++        owners->dirty_generations == WHOLE_RAM_BIRTHS || new_count > owners->dirty_capacity) {
 +        whole_ram_refuse();
 +    }
 +    for (unsigned client = 0; client < DIRTY_MEMORY_NUM; client++) {
@@ -182220,7 +184886,7 @@ index cd3193d170b2b5759cb34e4087a6d0ebfa805287..c9270db4087e6983acedb08d42183332
 +  ))
  endif
 diff --git a/system/physmem.c b/system/physmem.c
-index c21ea929153e5b67efa47432b1db0993e2690f9c..cd1266663fe2c701cae8b2d8a2c323c76a8eda9c 100644
+index c21ea929153e5b67efa47432b1db0993e2690f9c..9b7228974638c4d489e424861739c2e054394ced 100644
 --- a/system/physmem.c
 +++ b/system/physmem.c
 @@ -18,6 +18,9 @@
@@ -182646,7 +185312,7 @@ index c21ea929153e5b67efa47432b1db0993e2690f9c..cd1266663fe2c701cae8b2d8a2c323c7
      int align, share_flags;
  
 +    if (crucible_whole_setup_selected() &&
-+        ((ram_flags & ~RAM_PRIVATE) || host || resized)) {
++        ((ram_flags & ~(RAM_PRIVATE | RAM_RESIZEABLE)) || host)) {
 +        whole_ram_refuse();
 +    }
      share_flags = ram_flags & (RAM_PRIVATE | RAM_SHARED);

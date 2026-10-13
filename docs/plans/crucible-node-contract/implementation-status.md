@@ -2638,6 +2638,26 @@ Capability 43 and selected RUN remain unavailable. The source-only check output
 is a verification report; complete corresponding-source distribution remains
 a separate requirement before publishing the patched kernel.
 
+## Firmware, RAM and ACPI construction lineage
+
+The canonical QEMU source revision `76a9f7c3d9` adds 24 reviewed source changes,
+including three explicitly licensed GPL files. It retains original firmware
+callback contexts and payloads in finite source-owned storage, binds five RAM
+banks and their source-advertised maxima, and preserves the ordinary ACPI
+builders while retaining their initial storage and ROM memory-region lineage.
+The patch, signed source bundle, descriptor and license inventory agree on the
+same complete source tree.
+
+Independent review verifies the 24 source postimages and their original
+preimages. Fresh compilation produced 2,133 object files and linked both x86_64
+and AArch64 emulators. Review also found that the AOS-built Ninja dispatcher
+invoked `/bin/sh` without retained AOS shell provenance. These outputs provide
+compiler and linker feedback; they do not qualify hermetic command dispatch.
+Direct replay through AOS Bash and ordinary package qualification remain open.
+Runtime ACPI resize, complete source seals, guest execution and readiness remain
+separate requirements. No ABI or license-boundary gate result is inferred from
+this source stage.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

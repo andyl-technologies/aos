@@ -282,6 +282,9 @@ The atomic integration patch creates these QEMU source files:
 | `qom/crucible-property-release.inc` | GPL-2.0-or-later | Original QOM finalizer/property-release native dispatch custody; SPDX notice. |
 | `include/qemu/crucible-whole-callback-origin.h` | GPL-2.0-or-later | Hidden original callback/controller source identity; SPDX notice. |
 | `plugins/whole-callback-origin.inc.c` | GPL-2.0-or-later | Selected original four-CPU VCPU callback origin observation; SPDX notice. |
+| `hw/acpi/crucible-whole-storage.inc.c` | GPL-2.0-or-later | Explicit original ACPI builder source notice. |
+| `hw/i386/crucible-whole-acpi.inc.c` | GPL-2.0-or-later | Explicit original ACPI builder source notice. |
+| `include/hw/acpi/crucible-whole-storage.h` | GPL-2.0-or-later | Explicit original ACPI builder source notice. |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated
