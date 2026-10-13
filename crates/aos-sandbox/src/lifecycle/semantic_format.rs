@@ -12,6 +12,10 @@
 //! exact manifest and post-retention ledger, suspend, boot, and initial-
 //! incarnation commitments.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
+};
+
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, IncarnationId, NamespaceGeneration, ObjectDigest,
     OperationId, ResourceId, Revision, SandboxId, SnapshotId,
@@ -30,7 +34,7 @@ use super::evidence::{
     LifecycleIncarnationOriginV1, LifecycleRetentionCommitFactV1, LifecycleRetentionLedgerDigestV1,
     LifecycleSemanticEvidenceV1,
 };
-use super::intent::{DesiredStateCasV1, LifecycleResourceV1, ResourceExpectedStateV1};
+use super::intent::{DesiredStateCasV1, ResourceExpectedStateV1};
 use super::intent::{DesiredStateFenceV1, LiveRuntimeFenceV1};
 use super::model::{
     DesiredStateCasDigestV1, LifecycleResourceStateDigestV1, LifecycleSemanticCommitV1,
@@ -38,7 +42,7 @@ use super::model::{
 };
 use super::semantic::{
     LifecycleAssignmentCommitFactV1, LifecycleCascadePlanDigestV1, LifecycleCascadeTombstonePlanV1,
-    LifecycleCommittedResourceV1, LifecycleDependencyEdgeV1, LifecycleMethodSemanticCommitV1,
+    LifecycleCommittedResourceV1, LifecycleMethodSemanticCommitV1,
     LifecycleReadCommitFactV1, LifecycleReservationCommitFactV1,
     LifecycleRetentionAcknowledgementV1, LifecycleRetentionClaimDigestV1,
     LifecycleSemanticCommitFactV1, LifecycleSnapshotManifestDigestV1,
@@ -52,7 +56,7 @@ const HOST_BOOT_SEMANTIC_EVIDENCE_BYTES: usize = 872;
 const CURRENT_SEMANTIC_EVIDENCE_BYTES: usize = 936;
 const LIVE_FENCE_BYTES: usize = 104;
 
-use super::LifecycleModelError;
+
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum LifecycleSemanticFactLayoutV1 {

@@ -11,6 +11,10 @@
 //! substitutes for omitted state, and every variable count/length is
 //! preflighted before allocation.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1,
+};
+
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, IncarnationId, NamespaceGeneration, ObjectDigest,
     OperationId, PrincipalId, ProjectId, ResourceId, Revision, SandboxId,
@@ -21,8 +25,8 @@ use super::{
     DesiredStateFenceV1, LifecycleAuxiliaryKindV1, LifecycleBootInventoryDigestV1,
     LifecycleBootInventoryV1, LifecycleCancelIdempotencyDigestV1, LifecycleCancelOutcomeV1,
     LifecycleCancelRequestV1, LifecycleCancellationRecordV1, LifecycleCoordinationPhaseV1,
-    LifecycleCoordinationTransactionV1, LifecycleDatasetTransactionDigestV1, LifecycleModelError,
-    LifecycleOperationV1, LifecycleQuiesceDigestV1, LifecycleRecordDigestV1, LifecycleResourceV1,
+    LifecycleCoordinationTransactionV1, LifecycleDatasetTransactionDigestV1, 
+    LifecycleOperationV1, LifecycleQuiesceDigestV1, LifecycleRecordDigestV1, 
     LifecycleRetentionLedgerDigestV1, LifecycleRetentionLedgerEntryV1, LifecycleRetentionLedgerV1,
     LifecycleSnapshotManifestDigestV1, LifecycleStepResultDigestV1,
     LifecycleSuspendObservationDigestV1, LifecycleSuspendObservationV1,
@@ -418,7 +422,7 @@ pub(crate) fn decode_lifecycle_auxiliary_payload_with_layout_v1(
                 .try_reserve_exact(edge_count)
                 .map_err(|_| LifecycleModelError::Allocation)?;
             for _ in 0..edge_count {
-                dependency_edges.push(super::LifecycleDependencyEdgeV1::new(
+                dependency_edges.push(LifecycleDependencyEdgeV1::new(
                     decode_resource(&mut bytes)?,
                     decode_resource(&mut bytes)?,
                 )?);

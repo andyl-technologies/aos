@@ -29,6 +29,10 @@
 //! commit. Its kind5 fact owns the separate batch/native DATA layout; the
 //! ordinary encoder still emits D3 and never infers D4 from Delete intent.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError, LifecycleResourceV1,
+};
+
 use super::attempt::{
     LifecycleAttemptStateV1, LifecycleEffectAttemptV1, LifecycleEffectDirectionV1,
     MAXIMUM_LIFECYCLE_ATTEMPTS_PER_STEP,
@@ -36,7 +40,7 @@ use super::attempt::{
 use super::codec::{take, take_slice, usize_from_u32};
 use super::intent::{
     DesiredStateCasV1, DesiredStateFenceV1, LifecycleFailureClassV1, LifecycleFailureV1,
-    LifecycleIntentV1, LifecycleResourceV1, LifecycleResumeSourceV1, LifecycleRetryV1,
+    LifecycleIntentV1, LifecycleResumeSourceV1, LifecycleRetryV1,
     LifecycleStepClassV1, LifecycleStepDomainV1, LifecycleStepStateV1, LifecycleTargetFenceV1,
     LifecycleTimeV1, LiveRuntimeFenceV1, ResourceExpectationV1, ResourceExpectedStateV1,
 };
@@ -49,10 +53,10 @@ use super::model::{
     LifecycleStepRequestDigestV1, LifecycleStepResultDigestV1, LifecycleStepV1,
     LifecycleTerminalResultV1, MAXIMUM_LIFECYCLE_EXPECTATIONS, MAXIMUM_LIFECYCLE_STEPS,
 };
-use super::projection::LifecycleModelError;
+
 use super::semantic::{
     LifecycleAssignmentCommitFactV1, LifecycleCascadeTombstonePlanV1, LifecycleCommittedResourceV1,
-    LifecycleDependencyEdgeV1, LifecycleMethodSemanticCommitV1, LifecycleReadCommitFactV1,
+    LifecycleMethodSemanticCommitV1, LifecycleReadCommitFactV1,
     LifecycleReservationCommitFactV1, LifecycleRetentionAcknowledgementV1,
     LifecycleSemanticCommitFactV1, LifecycleSnapshotManifestDigestV1, LifecycleTransactionIdV1,
 };

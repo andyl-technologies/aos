@@ -3,11 +3,15 @@
 //! These records preserve transaction inputs and observations. They contain no
 //! live handle, credential, effect request, or permission to contact a guest.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1, dependency_postorder_is_complete,
+};
+
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, ResourceId, Revision, SandboxId};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    LifecycleModelError, LifecycleRecordDigestV1, LifecycleResourceV1,
+    LifecycleRecordDigestV1, 
     LifecycleRetentionLedgerDigestV1, LifecycleSnapshotManifestDigestV1,
     LifecycleStepResultDigestV1, LifecycleTimeV1, LifecycleTransactionIdV1, LiveRuntimeFenceV1,
     MAXIMUM_LIFECYCLE_EXPECTATIONS,
@@ -228,7 +232,7 @@ pub struct LifecycleControllerDependencySnapshotV1 {
     sandbox: SandboxId,
     live_fence: LiveRuntimeFenceV1,
     dependencies: Vec<LifecycleResourceV1>,
-    dependency_edges: Vec<super::LifecycleDependencyEdgeV1>,
+    dependency_edges: Vec<LifecycleDependencyEdgeV1>,
     postorder: Vec<LifecycleResourceV1>,
     manifest: LifecycleSnapshotManifestDigestV1,
     retention_ledger: LifecycleRetentionLedgerDigestV1,
@@ -241,7 +245,7 @@ impl LifecycleControllerDependencySnapshotV1 {
         sandbox: SandboxId,
         live_fence: LiveRuntimeFenceV1,
         dependencies: Vec<LifecycleResourceV1>,
-        dependency_edges: Vec<super::LifecycleDependencyEdgeV1>,
+        dependency_edges: Vec<LifecycleDependencyEdgeV1>,
         postorder: Vec<LifecycleResourceV1>,
         manifest: LifecycleSnapshotManifestDigestV1,
         retention_ledger: LifecycleRetentionLedgerDigestV1,
@@ -292,7 +296,7 @@ pub struct LifecycleCoordinationTransactionV1 {
     sandbox: SandboxId,
     live_fence: LiveRuntimeFenceV1,
     dependencies: Vec<LifecycleResourceV1>,
-    dependency_edges: Vec<super::LifecycleDependencyEdgeV1>,
+    dependency_edges: Vec<LifecycleDependencyEdgeV1>,
     postorder: Vec<LifecycleResourceV1>,
     dependency_snapshot: ObjectDigest,
     manifest: LifecycleSnapshotManifestDigestV1,
@@ -516,7 +520,7 @@ impl LifecycleCoordinationTransactionV1 {
         sandbox: SandboxId,
         live_fence: LiveRuntimeFenceV1,
         dependencies: Vec<LifecycleResourceV1>,
-        dependency_edges: Vec<super::LifecycleDependencyEdgeV1>,
+        dependency_edges: Vec<LifecycleDependencyEdgeV1>,
         postorder: Vec<LifecycleResourceV1>,
         dependency_snapshot: ObjectDigest,
         manifest: LifecycleSnapshotManifestDigestV1,
@@ -604,7 +608,7 @@ impl LifecycleCoordinationTransactionV1 {
 
     /// Borrows the complete controller-verified dependency edge set.
     #[must_use]
-    pub fn dependency_edges(&self) -> &[super::LifecycleDependencyEdgeV1] {
+    pub fn dependency_edges(&self) -> &[LifecycleDependencyEdgeV1] {
         &self.dependency_edges
     }
 
@@ -1456,11 +1460,11 @@ impl LifecycleBootInventoryV1 {
 
 fn controller_graph_is_closed(
     dependencies: &[LifecycleResourceV1],
-    edges: &[super::LifecycleDependencyEdgeV1],
+    edges: &[LifecycleDependencyEdgeV1],
     postorder: &[LifecycleResourceV1],
 ) -> bool {
     dependencies.len() == postorder.len()
-        && super::semantic::dependency_postorder_is_complete(edges, postorder)
+        && dependency_postorder_is_complete(edges, postorder)
         && postorder.iter().enumerate().all(|(index, resource)| {
             dependencies.binary_search(resource).is_ok() && !postorder[..index].contains(resource)
         })
@@ -1483,7 +1487,7 @@ fn controller_dependency_snapshot_digest(
     manifest: LifecycleSnapshotManifestDigestV1,
     retention: LifecycleRetentionLedgerDigestV1,
     dependencies: &[LifecycleResourceV1],
-    edges: &[super::LifecycleDependencyEdgeV1],
+    edges: &[LifecycleDependencyEdgeV1],
     postorder: &[LifecycleResourceV1],
 ) -> ObjectDigest {
     let desired = fence.desired();

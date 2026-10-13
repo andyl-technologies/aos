@@ -3,9 +3,13 @@
 //! Callers retain their actual remaining slices and own all format, count-limit,
 //! canonicality, digest and replay validation. Failed reads never advance them.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError,
+};
+
 use aos_sandbox_core::bounded_codec::BoundedReader;
 
-use super::LifecycleModelError;
+
 
 /// Copies one fixed-width field and advances the original remaining slice.
 ///

@@ -6,6 +6,10 @@
 //! journal custody and returns a non-authorizing lifecycle fence. Dispatch
 //! still requires fresh ownership, broker-plan, clock, and live-runtime proof.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError, LifecycleResourceV1,
+};
+
 use aos_sandbox_core::{NodeId, ProjectId, Revision, SandboxId};
 
 use crate::Journal;
@@ -18,7 +22,7 @@ use crate::runtime_authority::{
 };
 
 use super::{
-    DesiredStateFenceV1, LifecycleModelError, LifecycleResourceStateDigestV1, LifecycleResourceV1,
+    DesiredStateFenceV1, LifecycleResourceStateDigestV1, 
     LiveRuntimeFenceV1, ResourceExpectationV1,
 };
 

@@ -3,12 +3,16 @@
 //! These facts are canonical commitments to separately replayed coordination,
 //! retention, suspend, and boot records. They contain no live authority.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError, LifecycleResourceV1,
+};
+
 use aos_sandbox_core::{ObjectDigest, Revision, SandboxId, SnapshotId};
 use sha2::{Digest as _, Sha256};
 
 use super::{
     LifecycleBootInventoryV1, LifecycleCoordinationPhaseV1, LifecycleCoordinationTransactionV1,
-    LifecycleDatasetTransactionDigestV1, LifecycleIntentV1, LifecycleModelError,
+    LifecycleDatasetTransactionDigestV1, LifecycleIntentV1, 
     LifecycleQuiesceDigestV1, LifecycleRetentionLedgerV1, LifecycleSnapshotManifestDigestV1,
     LifecycleSuspendObservationV1, LifecycleThawCompensationDigestV1, LifecycleTimeV1,
     LifecycleTransactionIdV1, LifecycleWriterFenceDigestV1, LiveRuntimeFenceV1,
@@ -454,21 +458,21 @@ impl LifecycleSemanticEvidenceV1 {
                 self.incarnation,
                 Some(fact) if fact.fence().sandbox() == *sandbox
                     && fact.fence().desired().expected_generation() == cas.successor_generation()
-                    && cas.resource() == super::LifecycleResourceV1::Sandbox(*sandbox)
+                    && cas.resource() == LifecycleResourceV1::Sandbox(*sandbox)
                     && fact.origin() == LifecycleIncarnationOriginV1::Created
             ),
             LifecycleIntentV1::Fork { source, target } => matches!(
                 self.incarnation,
                 Some(fact) if fact.fence().sandbox() == *target
                     && fact.fence().desired().expected_generation() == cas.successor_generation()
-                    && cas.resource() == super::LifecycleResourceV1::Sandbox(*target)
+                    && cas.resource() == LifecycleResourceV1::Sandbox(*target)
                     && fact.origin() == LifecycleIncarnationOriginV1::Forked(*source)
             ),
             LifecycleIntentV1::Restore { snapshot, sandbox } => matches!(
                 self.incarnation,
                 Some(fact) if fact.fence().sandbox() == *sandbox
                     && fact.fence().desired().expected_generation() == cas.successor_generation()
-                    && cas.resource() == super::LifecycleResourceV1::Sandbox(*sandbox)
+                    && cas.resource() == LifecycleResourceV1::Sandbox(*sandbox)
                     && fact.origin() == LifecycleIncarnationOriginV1::Restored(*snapshot)
             ),
             _ => self.incarnation.is_none(),

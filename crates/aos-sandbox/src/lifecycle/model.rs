@@ -5,6 +5,10 @@
 //! monotone witness: no successor may remove or replace it, even when the
 //! operation later becomes residual or permanently blocked.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError, LifecycleResourceV1,
+};
+
 use super::attempt::{
     LifecycleAttemptHistoryV1, LifecycleAttemptStateV1, LifecycleEffectAttemptV1,
     LifecycleEffectDirectionV1, MAXIMUM_LIFECYCLE_ATTEMPTS_PER_STEP,
@@ -18,11 +22,11 @@ pub use super::digest::{
 };
 use super::intent::{
     DesiredStateCasV1, DesiredStateFenceV1, LifecycleFailureV1, LifecycleIntentV1,
-    LifecycleMethodV1, LifecycleResourceV1, LifecycleResumeSourceV1, LifecycleRetryV1,
+    LifecycleMethodV1, LifecycleResumeSourceV1, LifecycleRetryV1,
     LifecycleStepClassV1, LifecycleStepDomainV1, LifecycleStepStateV1, LifecycleTimeV1,
     LiveRuntimeFenceV1, ResourceExpectationV1, ResourceExpectedStateV1,
 };
-use super::projection::LifecycleModelError;
+
 use super::semantic::LifecycleMethodSemanticCommitV1;
 use aos_sandbox_core::{
     DesiredGeneration, ObjectDigest, OperationId, PrincipalId, ProjectId, Revision, SandboxId,

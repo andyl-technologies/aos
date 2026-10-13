@@ -1,8 +1,12 @@
 //! Opaque journal verification for lifecycle records and checkpoints.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError,
+};
+
 use aos_sandbox_core::ObjectDigest;
 
-use super::{LifecycleModelError, MAXIMUM_LIFECYCLE_AUXILIARY_RECORDS};
+use super::{MAXIMUM_LIFECYCLE_AUXILIARY_RECORDS};
 
 /// Proves a journal verifier admitted an exact replay/checkpoint set.
 ///

@@ -1,5 +1,9 @@
 //! Exact method-family facts retained beside an irreversible semantic witness.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1, dependency_postorder_is_complete,
+};
+
 use aos_sandbox_core::{
     AssignmentEpoch, ObjectDigest, ResourceId, Revision, SandboxId, SnapshotId,
     model::snapshot::RetentionClaim,
@@ -18,9 +22,9 @@ pub use super::semantic_digest::{
 
 use super::{
     DesiredStateCasDigestV1, DesiredStateCasV1, LifecycleCoordinationRecordDigestV1,
-    LifecycleDatasetTransactionDigestV1, LifecycleIntentV1, LifecycleModelError,
+    LifecycleDatasetTransactionDigestV1, LifecycleIntentV1, 
     LifecycleProtectedCoordinationV1, LifecycleProtectedRetentionLedgerV1,
-    LifecycleResourceStateDigestV1, LifecycleResourceV1, LifecycleRetentionCommitFactV1,
+    LifecycleResourceStateDigestV1, LifecycleRetentionCommitFactV1,
     LifecycleRetentionLedgerDigestV1, LifecycleRetentionLedgerReceiptV1,
     LifecycleRetentionLedgerV1, LifecycleSemanticCommitV1, MAXIMUM_LIFECYCLE_EXPECTATIONS,
     ResourceExpectationV1, ResourceExpectedStateV1,
@@ -615,46 +619,6 @@ pub struct LifecycleCascadeTombstonePlanV1 {
     postorder: Vec<LifecycleResourceV1>,
 }
 
-/// Retains one dependency edge used to derive a cascade-delete postorder.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct LifecycleDependencyEdgeV1 {
-    dependent: LifecycleResourceV1,
-    dependency: LifecycleResourceV1,
-}
-
-impl LifecycleDependencyEdgeV1 {
-    /// Constructs a non-reflexive typed dependency edge.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleModelError::InvalidModel`] for a self edge.
-    pub fn new(
-        dependent: LifecycleResourceV1,
-        dependency: LifecycleResourceV1,
-    ) -> Result<Self, LifecycleModelError> {
-        if dependent == dependency {
-            Err(LifecycleModelError::InvalidModel)
-        } else {
-            Ok(Self {
-                dependent,
-                dependency,
-            })
-        }
-    }
-
-    /// Returns the resource that must be deleted first.
-    #[must_use]
-    pub const fn dependent(self) -> LifecycleResourceV1 {
-        self.dependent
-    }
-
-    /// Returns the retained resource on which it depends.
-    #[must_use]
-    pub const fn dependency(self) -> LifecycleResourceV1 {
-        self.dependency
-    }
-}
-
 impl LifecycleCascadeTombstonePlanV1 {
     /// Constructs a cascade plan from an authoritative closed coordination record.
     ///
@@ -801,91 +765,6 @@ impl LifecycleCascadeTombstonePlanV1 {
                     | super::LifecycleCoordinationPhaseV1::Thawed
             )
     }
-}
-
-pub(super) fn dependency_postorder_is_complete(
-    edges: &[LifecycleDependencyEdgeV1],
-    postorder: &[LifecycleResourceV1],
-) -> bool {
-    let Some(root) = postorder.last().copied() else {
-        return false;
-    };
-    if edges.iter().any(|edge| {
-        let dependent = postorder.iter().position(|item| *item == edge.dependent());
-        let dependency = postorder.iter().position(|item| *item == edge.dependency());
-        !matches!((dependent, dependency), (Some(left), Some(right)) if left < right)
-    }) || postorder.iter().any(|resource| {
-        let outgoing = edges
-            .iter()
-            .filter(|edge| edge.dependent() == *resource)
-            .count();
-        (*resource == root && outgoing != 0) || (*resource != root && outgoing == 0)
-    }) {
-        return false;
-    }
-    postorder.iter().all(|start| {
-        let mut current = *start;
-        for _ in 0..postorder.len() {
-            if current == root {
-                return true;
-            }
-            let Some(next) = edges
-                .iter()
-                .find(|edge| edge.dependent() == current)
-                .map(|edge| edge.dependency())
-            else {
-                return false;
-            };
-            current = next;
-        }
-        false
-    })
-}
-
-/// Adds deterministic ready-node ordering to the existing complete-graph check.
-///
-/// Only the new batch codec selects this rule. Snapshot-bound kind3 keeps its
-/// original postorder contract and traversal. This is a topological tie check,
-/// not a second reachability or graph-inventory engine.
-pub(super) fn canonical_dependency_postorder_is_complete(
-    edges: &[LifecycleDependencyEdgeV1],
-    postorder: &[LifecycleResourceV1],
-) -> bool {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    if !dependency_postorder_is_complete(edges, postorder) {
-        return false;
-    }
-
-    let mut incoming: BTreeMap<_, usize> = postorder.iter().map(|item| (*item, 0)).collect();
-    for edge in edges {
-        let Some(count) = incoming.get_mut(&edge.dependency()) else {
-            return false;
-        };
-        *count += 1;
-    }
-    let mut ready: BTreeSet<_> = incoming.iter()
-        .filter_map(|(item, count)| (*count == 0).then_some(*item))
-        .collect();
-
-    for actual in postorder {
-        if ready.pop_first() != Some(*actual) {
-            return false;
-        }
-        for edge in edges.iter().filter(|edge| edge.dependent() == *actual) {
-            let Some(count) = incoming.get_mut(&edge.dependency()) else {
-                return false;
-            };
-            let Some(next) = count.checked_sub(1) else {
-                return false;
-            };
-            *count = next;
-            if next == 0 {
-                ready.insert(edge.dependency());
-            }
-        }
-    }
-    ready.is_empty()
 }
 
 fn cascade_plan_digest(

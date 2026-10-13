@@ -1,9 +1,13 @@
 //! Monotone lifecycle-operation and per-step transition checks.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError,
+};
+
 use aos_sandbox_core::Revision;
 
 use super::{
-    LifecycleFailureV1, LifecycleMethodSemanticCommitV1, LifecycleModelError, LifecycleOperationV1,
+    LifecycleFailureV1, LifecycleMethodSemanticCommitV1, LifecycleOperationV1,
     LifecyclePhaseV1, LifecycleRecordDigestV1, LifecycleRetryV1, LifecycleStepV1,
     LifecycleTerminalResultV1, LifecycleTimeV1,
 };

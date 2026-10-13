@@ -6,10 +6,14 @@
 //! proves exact equality with every owned Dataset row before any backend may
 //! receive the single grouped transaction.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleResourceV1,
+};
+
 use std::collections::BTreeSet;
 
 use aos_sandbox::lifecycle::{
-    LifecycleAtomicDatasetSnapshotPlanV1, LifecyclePhase6ErrorV1, LifecycleResourceV1,
+    LifecycleAtomicDatasetSnapshotPlanV1, LifecyclePhase6ErrorV1, 
 };
 use aos_sandbox_core::{ObjectDigest, SandboxId};
 use sha2::{Digest as _, Sha256};

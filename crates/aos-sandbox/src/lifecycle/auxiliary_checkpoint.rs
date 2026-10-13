@@ -5,12 +5,16 @@
 //! materialized-digest:32 | (length:4 | auxiliary-record)* | digest:32
 //! ```
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError,
+};
+
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use super::codec::{take, take_slice};
 use super::{
-    LifecycleAuxiliaryCheckpointV1, LifecycleAuxiliaryHistoryV1, LifecycleModelError,
+    LifecycleAuxiliaryCheckpointV1, LifecycleAuxiliaryHistoryV1, 
     LifecycleReplayVerificationV1, MAXIMUM_LIFECYCLE_AUXILIARY_BYTES,
     MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES, MAXIMUM_LIFECYCLE_AUXILIARY_RECORDS,
     decode_lifecycle_auxiliary_record_v1, encode_lifecycle_auxiliary_record_v1,

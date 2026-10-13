@@ -12,10 +12,14 @@
 //! Canonical bytes describe dependencies; neither a checksum nor a decoded
 //! inventory authenticates a current graph, an owner, a floor or retirement.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1, canonical_dependency_postorder_is_complete,
+};
+
 use aos_sandbox_core::{OperationId, ProjectId};
 use sha2::{Digest as _, Sha256};
 
-use super::{LifecycleDependencyEdgeV1, LifecycleModelError, LifecycleResourceV1};
+
 
 pub(crate) const BATCH_PREFIX: &[u8] = b"aos.delete.batch.v1\0";
 pub(crate) const TOMBSTONE_PREFIX: &[u8] = b"aos.delete.tombstone.v1\0";
@@ -333,7 +337,7 @@ impl<'bytes> DeleteBatchViewV1<'bytes> {
             postorder.push(value);
         }
         if postorder.last().copied() != Some(self.root()?)
-            || !super::semantic::canonical_dependency_postorder_is_complete(&edges, &postorder)
+            || !canonical_dependency_postorder_is_complete(&edges, &postorder)
         {
             return Err(corrupt());
         }
@@ -932,8 +936,8 @@ mod tests {
             LifecycleDependencyEdgeV1::new(second, root).unwrap(),
         ];
 
-        assert!(super::super::semantic::canonical_dependency_postorder_is_complete(&edges, &[first, second, root]));
-        assert!(!super::super::semantic::canonical_dependency_postorder_is_complete(&edges, &[second, first, root]));
+        assert!(canonical_dependency_postorder_is_complete(&edges, &[first, second, root]));
+        assert!(!canonical_dependency_postorder_is_complete(&edges, &[second, first, root]));
     }
 
     #[test]

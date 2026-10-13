@@ -4,13 +4,17 @@
 //! proves that every embedded retention claim has one position-matched durable
 //! acknowledgement. The resulting value carries no lease token or authority.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError,
+};
+
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_core::format::{DecodeLimits, decode_snapshot, encode_snapshot};
 use aos_sandbox_core::model::snapshot::{RetentionClaim, Snapshot};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    LifecycleModelError, LifecycleProtectedRetentionLedgerV1, LifecycleRetentionAcknowledgementV1,
+    LifecycleProtectedRetentionLedgerV1, LifecycleRetentionAcknowledgementV1,
     LifecycleRetentionClaimDigestV1, LifecycleSnapshotManifestDigestV1,
     MAXIMUM_LIFECYCLE_EXPECTATIONS,
 };

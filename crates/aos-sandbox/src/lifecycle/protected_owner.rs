@@ -1,5 +1,9 @@
 //! Dormant lifecycle protected-journal ownership and cold replay.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleDependencyEdgeV1, LifecycleResourceV1,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox_core::{
@@ -34,12 +38,12 @@ use super::{
     LifecycleBootInventoryDomainsV1, LifecycleBootInventoryV1, LifecycleCancelIdempotencyDigestV1,
     LifecycleCancelOutcomeV1, LifecycleCancelRequestV1, LifecycleCancellationRecordV1,
     LifecycleCoordinationTransactionV1, LifecycleDatasetTransactionDigestV1,
-    LifecycleDeferredEffectCursorV1, LifecycleDependencyEdgeV1, LifecycleEffectAttemptV1,
+    LifecycleDeferredEffectCursorV1, LifecycleEffectAttemptV1,
     LifecycleEffectDirectionV1, LifecycleEffectDomainV1, LifecycleEffectObservationV1,
     LifecycleInventoryDigestV1, LifecycleJournalVerifierV1, LifecycleMethodSemanticCommitV1,
     LifecycleOperationV1, LifecyclePhaseV1, LifecycleProtectedCoordinationV1,
     LifecycleProtectedRetentionLedgerV1, LifecycleQuiesceDigestV1, LifecycleRecordDigestV1,
-    LifecycleResourceV1, LifecycleRetentionLedgerEntryV1, LifecycleRetentionLedgerV1,
+    LifecycleRetentionLedgerEntryV1, LifecycleRetentionLedgerV1,
     LifecycleRetentionPurposeV1, LifecycleSnapshotManifestDigestV1, LifecycleStepAdmissionDigestV1,
     LifecycleStepClassV1, LifecycleStepResultDigestV1, LifecycleStepStateV1, LifecycleStepV1,
     LifecycleSuspendObservationDigestV1, LifecycleSuspendObservationV1, LifecycleTerminalResultV1,

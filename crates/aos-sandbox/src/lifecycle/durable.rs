@@ -15,6 +15,10 @@
 //! Selected Delete DATA uses `AOSLIFA5` version 3 and its own join domain;
 //! full Planned history remains retained and is not a current floor proof.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError,
+};
+
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, ResourceId, Revision};
@@ -29,7 +33,7 @@ use super::auxiliary_payload::{
 use super::codec::{take, take_slice};
 use super::{
     LifecycleCancelIdempotencyIndexV1, LifecycleCancelOutcomeV1, LifecycleCancelRequestV1,
-    LifecycleCancellationRecordV1, LifecycleHistoryV1, LifecycleModelError, LifecycleOperationV1,
+    LifecycleCancellationRecordV1, LifecycleHistoryV1, LifecycleOperationV1,
     LifecycleProtectedRetentionLedgerV1, LifecycleRecordDigestV1, LifecycleReplayVerificationV1,
     LifecycleSemanticCommitFactV1, MAXIMUM_LIFECYCLE_EXPECTATIONS, encode_operation_record_v1,
 };

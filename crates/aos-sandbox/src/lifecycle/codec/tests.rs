@@ -1,5 +1,9 @@
 //! Borrow and failure-position invariants for lifecycle prefix reads.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError,
+};
+
 use super::*;
 
 #[test]

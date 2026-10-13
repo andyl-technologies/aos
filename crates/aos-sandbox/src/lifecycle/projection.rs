@@ -113,22 +113,3 @@ impl LifecycleTerminalProjectionV1 {
     }
 }
 
-/// Reports invalid lifecycle input, transition, or encoded state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum LifecycleModelError {
-    /// Caller data is invalid or non-canonical.
-    #[error("lifecycle model is invalid or non-canonical")]
-    InvalidModel,
-    /// Encoded state violates schema, bounds, or digest.
-    #[error("lifecycle record encoding is corrupt")]
-    CorruptEncoding,
-    /// A successor violates monotone progress.
-    #[error("lifecycle transition is invalid")]
-    InvalidTransition,
-    /// Replay conflicts with immutable intent or predecessor state.
-    #[error("lifecycle history conflicts with durable state")]
-    Conflict,
-    /// Preflighted bounded allocation failed.
-    #[error("lifecycle decode allocation failed")]
-    Allocation,
-}

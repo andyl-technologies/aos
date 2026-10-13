@@ -1,8 +1,12 @@
 //! Method-specific lifecycle intent, fences, expectations, and typed observations.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleModelError, LifecycleResourceV1,
+};
+
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, ExecutionId, IncarnationId, NamespaceGeneration,
-    ObjectDigest, ProjectId, ResourceId, Revision, SandboxId, SnapshotId, ViewId,
+    ObjectDigest, ResourceId, Revision, SandboxId, SnapshotId, ViewId,
 };
 
 use super::attempt::MAXIMUM_LIFECYCLE_ATTEMPTS;
@@ -10,7 +14,7 @@ use super::model::{
     DesiredStateCasDigestV1, DesiredStateDocumentDigestV1, LifecycleFailureDigestV1,
     LifecycleResourceStateDigestV1,
 };
-use super::projection::LifecycleModelError;
+
 
 /// Stores a nonzero Unix timestamp in nanoseconds.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -235,78 +239,6 @@ impl LiveRuntimeFenceV1 {
     #[must_use]
     pub const fn namespace_generation(self) -> NamespaceGeneration {
         self.namespace_generation
-    }
-}
-
-/// Selects a logical resource with a type-preserving identity.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum LifecycleResourceV1 {
-    /// A durable sandbox.
-    Sandbox(SandboxId),
-    /// One admitted execution.
-    Execution(ExecutionId),
-    /// One durable snapshot.
-    Snapshot(SnapshotId),
-    /// One filesystem view.
-    View(ViewId),
-    /// One sandbox filesystem attachment.
-    Attachment(ResourceId),
-    /// One delegated capability.
-    Capability(ResourceId),
-    /// One immutable environment generation identity.
-    Environment(ResourceId),
-    /// One sandbox project authority domain.
-    Project(ProjectId),
-    /// Another registered controller resource.
-    Other(ResourceId),
-}
-
-impl LifecycleResourceV1 {
-    pub(super) const fn code(self) -> u8 {
-        match self {
-            Self::Sandbox(_) => 1,
-            Self::Execution(_) => 2,
-            Self::Snapshot(_) => 3,
-            Self::View(_) => 4,
-            Self::Attachment(_) => 5,
-            Self::Capability(_) => 6,
-            Self::Environment(_) => 7,
-            Self::Project(_) => 8,
-            Self::Other(_) => 9,
-        }
-    }
-
-    pub(super) fn from_code(code: u8, bytes: [u8; 16]) -> Result<Self, LifecycleModelError> {
-        let resource = match code {
-            1 => Self::Sandbox(SandboxId::from_bytes(bytes)),
-            2 => Self::Execution(ExecutionId::from_bytes(bytes)),
-            3 => Self::Snapshot(SnapshotId::from_bytes(bytes)),
-            4 => Self::View(ViewId::from_bytes(bytes)),
-            5 => Self::Attachment(ResourceId::from_bytes(bytes)),
-            6 => Self::Capability(ResourceId::from_bytes(bytes)),
-            7 => Self::Environment(ResourceId::from_bytes(bytes)),
-            8 => Self::Project(ProjectId::from_bytes(bytes)),
-            9 => Self::Other(ResourceId::from_bytes(bytes)),
-            _ => return Err(LifecycleModelError::CorruptEncoding),
-        };
-        if resource.as_bytes() == &[0; 16] {
-            Err(LifecycleModelError::CorruptEncoding)
-        } else {
-            Ok(resource)
-        }
-    }
-
-    pub(super) const fn as_bytes(&self) -> &[u8; 16] {
-        match self {
-            Self::Sandbox(v) => v.as_bytes(),
-            Self::Execution(v) => v.as_bytes(),
-            Self::Snapshot(v) => v.as_bytes(),
-            Self::View(v) => v.as_bytes(),
-            Self::Attachment(v) | Self::Capability(v) | Self::Environment(v) | Self::Other(v) => {
-                v.as_bytes()
-            }
-            Self::Project(v) => v.as_bytes(),
-        }
     }
 }
 

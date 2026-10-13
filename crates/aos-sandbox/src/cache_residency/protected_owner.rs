@@ -6,6 +6,10 @@
 //! clock journal prevents a copied or expired manifest from becoming current
 //! merely because a process restarted or the wall clock moved backwards.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleResourceV1,
+};
+
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -1457,7 +1461,7 @@ impl CacheResidencyProtectedOwnerV1 {
                     ) {
                         entries.push(
                             crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
-                                crate::lifecycle::LifecycleResourceV1::Capability(
+                                LifecycleResourceV1::Capability(
                                     aos_sandbox_core::ResourceId::from_bytes(
                                         *payload.reservation.id.as_bytes(),
                                     ),
@@ -1476,7 +1480,7 @@ impl CacheResidencyProtectedOwnerV1 {
                         environment.copy_from_slice(&catalog.descriptor.digest().as_bytes()[..16]);
                         entries.push(
                             crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
-                                crate::lifecycle::LifecycleResourceV1::Environment(
+                                LifecycleResourceV1::Environment(
                                     aos_sandbox_core::ResourceId::from_bytes(environment),
                                 ),
                                 catalog.digest,
@@ -1487,11 +1491,11 @@ impl CacheResidencyProtectedOwnerV1 {
 
                     for pin in payload.pins {
                         let resource = if let Some(attachment) = pin.attachment {
-                            crate::lifecycle::LifecycleResourceV1::Attachment(
+                            LifecycleResourceV1::Attachment(
                                 aos_sandbox_core::ResourceId::from_bytes(*attachment.as_bytes()),
                             )
                         } else {
-                            crate::lifecycle::LifecycleResourceV1::View(pin.view)
+                            LifecycleResourceV1::View(pin.view)
                         };
                         // Physical obligations remain distinct across disclosure partitions.
                         let identity = ObjectDigest::from_bytes(

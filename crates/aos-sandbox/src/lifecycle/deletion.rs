@@ -1,5 +1,9 @@
 //! LIFE-05 iterative leaf-first deletion, deferred reap, and terminal receipts.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleResourceV1,
+};
+
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
@@ -7,7 +11,7 @@ use super::{
     CurrentLifecycleCoordinationV1, CurrentLifecycleEffectV1, CurrentLifecycleOperationV1,
     LifecycleCascadeTombstonePlanV1, LifecycleEffectDomainV1, LifecycleEffectObservationV1,
     LifecycleEffectRequestV1, LifecycleIntentV1, LifecycleMethodV1, LifecyclePhase6ErrorV1,
-    LifecycleResourceV1,
+    
 };
 
 /// Selects one ordered cleanup edge for the current postorder resource.

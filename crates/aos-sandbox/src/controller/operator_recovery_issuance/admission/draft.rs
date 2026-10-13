@@ -5,6 +5,10 @@
 //! admitted here; the existing admission owner later verifies the signed plan
 //! and atomically commits the original request and dedicated intent together.
 
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleResourceV1,
+};
+
 use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, Audience, RepairStorageWorkspacePinRequest, RequestHeader,
 };
@@ -18,7 +22,7 @@ use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSeman
 use buffa::Message as _;
 
 use super::*;
-use crate::lifecycle::{LifecycleResourceV1, LifecycleStorageInventoryKindV1};
+use crate::lifecycle::{LifecycleStorageInventoryKindV1};
 
 /// Distinguishes authorized original replay from unsigned new admission DATA.
 pub enum StorageRepairAdmissionPreparationV1 {
