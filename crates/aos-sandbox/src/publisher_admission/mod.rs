@@ -15,7 +15,6 @@
 //! protocol, replay, and recovery models remain available on every target.
 
 mod accounting;
-mod controller_adapter;
 #[cfg(target_os = "linux")]
 mod controller_authority;
 mod decision;
@@ -48,9 +47,6 @@ mod service;
 mod settlement;
 mod source;
 
-pub(crate) use controller_adapter::{
-    PublisherAdmissionControllerCommitV1, publisher_admission_controller_commit_v1,
-};
 #[cfg(target_os = "linux")]
 pub(crate) use decision::CommittedArtifactPreparationIntent;
 pub(crate) use decision::{

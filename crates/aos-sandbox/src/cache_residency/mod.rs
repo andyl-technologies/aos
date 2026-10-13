@@ -21,7 +21,7 @@
 //! reclamation evidence.
 
 pub mod admission;
-mod controller_adapter;
+mod authority_record;
 mod controller_bootstrap;
 pub mod domain;
 #[cfg(target_os = "linux")]
@@ -55,10 +55,7 @@ pub use admission::{
     CacheAdmissionStateV1, ImmutableAdmissionPlanV1, PreparedArtifactV1, PublicationCommitV1,
     SourceAuthorizationV1, WatermarkRequirementV1, initial_pin_set_digest,
 };
-pub use controller_adapter::{
-    CacheResidencyAuthorityRequestV1, CacheResidencyControllerCommitV1,
-    CacheResidencyControllerRecordV1, cache_residency_controller_commit_v1,
-};
+pub use authority_record::{CacheResidencyAuthorityRequestV1, CacheResidencyControllerRecordV1};
 pub use controller_bootstrap::{
     CacheReplayControllerBootstrapErrorV1, CacheReplayControllerBootstrapOwnerV1,
     encode_cache_replay_controller_bundle_v1, encode_cache_replay_genesis_manifest_v1,

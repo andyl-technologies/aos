@@ -10,7 +10,6 @@ mod cache_journal_readback;
 mod cache_readback_pin;
 mod cache_readback_session;
 mod cache_root_settlement;
-mod controller_adapter;
 mod controller_effect_ack_readback;
 mod controller_effect_ack_readback_v8;
 mod controller_hold_pin;
@@ -277,9 +276,6 @@ pub use cache_readback_session::{
     record_fixed_cache_signer_root_settlement_v2, recover_fixed_cache_signer_abandonment_v2,
     recover_fixed_cache_signer_root_history_v2, recover_fixed_cache_signer_root_settlement_v2,
     stage_fixed_cache_signer_challenge_v2, verify_fixed_staged_cache_signer_packet_v2,
-};
-pub use controller_adapter::{
-    PolicyCompilerControllerCommitV1, policy_compiler_controller_commit_v1,
 };
 pub use controller_effect_ack_readback::{
     ControllerEffectAckChallengeV1, ControllerEffectAckReadbackErrorV1,

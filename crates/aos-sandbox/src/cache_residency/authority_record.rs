@@ -1,13 +1,11 @@
-//! Dormant controller-result conversion for cache residency.
+//! Protected Cache record selection and session-branded reducer inputs.
 //!
-//! Conversion consumes the exact-readback result. It does not dispatch an
-//! effect or publish a catalog; callers must explicitly consume the returned
-//! one-shot capability in a future activated controller path.
+//! Requests select bounded authority keys; records remain tied to the
+//! session that authenticated them. Construction stays with the Cache owner.
 
 use super::{
-    AppliedCacheResidencyTransactionV1, CacheAtomicObjectPayloadV1, CacheAuthorityError,
-    CacheAuthorityPurposeV1, CacheResidencyPostcommitCapabilityV1,
-    CacheResidencyProtectedRecordKindV1, CacheResidencyTransactionKindV1,
+    CacheAtomicObjectPayloadV1, CacheAuthorityError, CacheAuthorityPurposeV1,
+    CacheResidencyProtectedRecordKindV1,
 };
 
 /// Selects one exact protected authority record for an owner-scoped operation.
@@ -78,37 +76,5 @@ impl<'session> CacheResidencyControllerRecordV1<'session> {
         aos_sandbox_core::ObjectDigest,
     ) {
         (self.kind, self.payload, self.authority_record)
-    }
-}
-
-/// Carries the closed controller-visible result of one durable cache transaction.
-#[must_use = "cache controller authority must be consumed or deliberately discarded"]
-pub struct CacheResidencyControllerCommitV1 {
-    kind: CacheResidencyTransactionKindV1,
-    postcommit: Option<CacheResidencyPostcommitCapabilityV1>,
-}
-
-impl CacheResidencyControllerCommitV1 {
-    /// Returns the semantic transition committed by the adapter.
-    #[must_use]
-    pub const fn kind(&self) -> CacheResidencyTransactionKindV1 {
-        self.kind
-    }
-
-    /// Takes the composite capability for one exact journal revalidation.
-    #[must_use]
-    pub fn take_postcommit(&mut self) -> Option<CacheResidencyPostcommitCapabilityV1> {
-        self.postcommit.take()
-    }
-}
-
-/// Converts exact journal readback into dormant controller capabilities.
-#[must_use]
-pub fn cache_residency_controller_commit_v1(
-    mut applied: AppliedCacheResidencyTransactionV1,
-) -> CacheResidencyControllerCommitV1 {
-    CacheResidencyControllerCommitV1 {
-        kind: applied.kind(),
-        postcommit: applied.take_postcommit(),
     }
 }
