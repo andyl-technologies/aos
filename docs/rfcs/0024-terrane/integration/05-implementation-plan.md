@@ -223,7 +223,15 @@ formatters, strict default and SDK all-target Clippy, SDK all-target test
 compilation, the default build and actual inventory validation. Its 1,121
 tests across three AOS executables include all twenty-four exact focused
 selectors, with none ignored. Source, compiler inputs and original and
-archived executables remain unchanged. Focused runtime and acceptance remain
+archived executables remain unchanged. The first focused case fails in 4.920
+seconds during destination disclosure advance with source-free `Unsupported`;
+the remaining twenty-three cases are unstarted. Source review identifies an
+ordinary source reflog recipe passed to the later Guard mutation's protected
+effect boundary. The narrow correction captures genuine effect-compatible
+original selected recipes under the existing read-only source holder; it
+performs no source repair and leaves ordinary history DATA reads unchanged.
+Its observed runtime failure location is not established by that source
+finding. Fresh compiler and runtime qualification and acceptance remain
 pending; these compiler results qualify no owning gate.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
