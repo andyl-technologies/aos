@@ -99,12 +99,24 @@ async fn namespace_request(fixture: &Fixture, root: &Tree<'_>, child: &Tree<'_>)
 /// # Panics
 /// Panics if genuine native publication, current collection or any oracle fails.
 pub(super) async fn recorded_preservation_keeps_inert_index_bindings() {
-    let mut fixture = Fixture::new().await;
-    // These are operator-owned inputs installed on a fresh Guard before native
-    // reopening. They neither create nor replace protected Original evidence.
+    // Initialize the protected current vocabulary as revision 3 before any
+    // native Guard installation. Historical authoring inputs may vary without
+    // replacing that current configuration or its genuine Original evidence.
+    let mut fixture = Fixture::new_indexed().await;
+    let current_snapshot = ConsumedResolver::new(fixture.guard(), &fixture.authority)
+        .assert_success()
+        .snapshot_bytes()
+        .assert_success();
     fixture.authoring =
         Some(AuthoringNamespaceProfile::new(1, 3, &["index-roots"], 2).assert_success());
     let repository = production_repository(&fixture).await;
+    assert_eq!(
+        ConsumedResolver::new(repository.coordinator().guard(), &fixture.authority)
+            .assert_success()
+            .snapshot_bytes()
+            .assert_success(),
+        current_snapshot
+    );
     let (root, child) = namespace(Some(b"\x00"), Some(b"\x00"), Some(b"\x00"));
     let mut request = namespace_request(&fixture, &root, &child).await;
     request.commit.parents.clear();
@@ -138,11 +150,18 @@ pub(super) async fn recorded_preservation_keeps_inert_index_bindings() {
     );
     drop(repository);
 
-    // Current configuration and new authoring now use revision 3. Historical
-    // interpretation still comes from each independently captured view row.
+    // New authoring now uses revision 3 while protected current inputs stay
+    // exact. Historical interpretation comes from independently captured rows.
     fixture.authoring = Some(AuthoringNamespaceProfile::new(3, 3, &[], 2).assert_success());
     let repository = production_repository_with_selections(&fixture, selections).await;
     let guard = repository.coordinator().guard();
+    assert_eq!(
+        ConsumedResolver::new(guard, &fixture.authority)
+            .assert_success()
+            .snapshot_bytes()
+            .assert_success(),
+        current_snapshot
+    );
     assert_eq!(
         guard.semantic_selection(),
         Selection::Recorded(RecordedContext::new(3, 3, &[]).assert_success())
