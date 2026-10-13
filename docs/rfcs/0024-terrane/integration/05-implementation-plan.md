@@ -200,8 +200,18 @@ cases once, with unchanged source, compiler inputs, executables and original
 seconds. The first of fifteen independently reviewed owning regressions,
 `recorded_disclosure_completes_actual_history_and_context`, fails in 3.481
 seconds with `Invalid(MalformedRequest)` beneath a store-error wrapper; the
-other fourteen remain unstarted. Test-only error context will distinguish its
-actual publication and completion stages without changing requests or oracles.
+other fourteen remain unstarted. Frozen diagnostic `de1d420ead4c` (tree
+`8c41f63786cf`) passes the scoped compiler pipeline and localizes the same
+refusal to destination disclosure advance in 3.567 seconds; the reader and
+completion stages remain unstarted. Its test-only error context preserves
+the actual requests and error chain. Source review identifies a transition
+ordering conflict: an imported trust role enters the actual resolver before
+the selected Guard snapshot changes. Strict snapshot equality remains required.
+A closed private paired-transition purpose is being implemented with genuine
+source and destination retention, full owning-history authorization and native
+final checks. An occupied-destination, same-factory interrupted-import recovery
+case is separately registered in both owning provenance gates; ordinary reopen
+must continue to refuse the pending mismatch.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
 Growing populations, full SDK and owning Nix qualification remain pending.
