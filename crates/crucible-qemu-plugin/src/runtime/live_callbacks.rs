@@ -616,6 +616,11 @@ pub(super) struct LiveDirectedRingPair {
 }
 
 impl LiveDirectedRingPair {
+    /// Returns the original registration-fixed public ring descriptors.
+    pub(super) fn descriptors(&self) -> (DirectedRing, DirectedRing) {
+        (self.outbound.descriptor, self.inbound.descriptor)
+    }
+
     pub(super) fn new(
         outbound: MappedDirectedRingMut<'_>,
         inbound: MappedDirectedRingMut<'_>,

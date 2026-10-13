@@ -2728,6 +2728,15 @@ pins. These compiler records do not establish original process-group cleanup
 custody. The installed plugin pair, native HOLD, complete source seals, guest
 release, capture and restoration remain separate unfinished requirements.
 
+The plugin caller retains a one-shot RR-local endpoint engine constructed from
+the same original mapping, ending all Rust mapping borrows before native bind
+and five pointer-exact setters. A fresh joined build consumes the committed
+mutable-loan implementation; strict all-target checks and two affected controls
+pass. Native getter, permit and registration peers are modeled in these Rust
+controls. Endpoint callbacks refuse service until actual native dispatch and
+staged membership are installed. This qualifies construction mechanics, not
+the real installed QEMU/plugin pair or execution.
+
 The corrected ordinary Ninja package and matching complete source build pass
 in 24.40 seconds. Installed audits verify all 185 original and patched files,
 the sole launcher content change, exact source-built Bash argument, normal

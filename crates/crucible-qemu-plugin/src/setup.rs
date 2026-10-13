@@ -302,6 +302,23 @@ impl PluginSetupCompletion {
         self.mapped_region.prepare_whole_intent_retention()
     }
 
+    /// Lends the same original mapping for authenticated stopped-RR construction.
+    ///
+    /// Native permission must be captured before calling this method. The
+    /// closure performs only Rust construction; no borrow or guard may cross a
+    /// native setter, binding, HOLD or service callback.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign, unprepared, failed, selected, busy or shared ownership.
+    /// Current-generation refusal retains the same prepared mapping ticket.
+    pub(crate) fn with_whole_ordinary_preparation<T, E>(
+        &self,
+        construct: impl FnOnce(&mut MappedSetupRegion) -> Result<T, E>,
+    ) -> Result<Result<T, E>, WholeMappingCustodyError> {
+        self.mapped_region.with_ordinary_preparation(construct)
+    }
+
     /// Fences ordinary aliases before observing the real native constructor.
     ///
     /// The literal source callback establishes native HOLD first, then calls

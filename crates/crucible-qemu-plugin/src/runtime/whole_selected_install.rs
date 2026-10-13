@@ -29,6 +29,8 @@ use super::{
     PostRegistrationFatalPolicy,
 };
 
+mod preparation;
+
 // The original birth PID is published before callback registration. Callback
 // entry checks this lock-free scalar before any copied TLS or userdata access.
 static ORIGINAL_PROCESS: AtomicU32 = AtomicU32::new(0);
@@ -120,6 +122,7 @@ struct SharedCallbackCustody {
     ready: Mutex<OriginalWholeReadyExchange>,
     failed: AtomicBool,
     callback_entry: AtomicBool,
+    preparation_attempted: AtomicBool,
     observed_vcpus: AtomicU8,
     constructor_identity: AtomicUsize,
     cpu_identities: [AtomicUsize; 4],
@@ -156,6 +159,7 @@ struct SelectedRegistrationApis {
     barrier: crate::QemuRegisterHotForkBarrierFn,
     control: crate::QemuRegisterControlBoundaryCbFn,
     origin: NativeCallbackOriginApi,
+    preparation: preparation::PreparationApis,
 }
 
 /// Installs the bounded original Setup/ACK and a closed native controller.
@@ -184,6 +188,8 @@ fn install_inner(
 ) -> Result<SelectedRuntimeOwner, SelectedInstallError> {
     let apis = NativeWholeApis::resolve().ok_or(SelectedInstallError::Native(-libc::ENOTSUP))?;
     let callbacks = SelectedRegistrationApis {
+        preparation: preparation::PreparationApis::resolve(capabilities)
+            .ok_or(SelectedInstallError::Native(-libc::ENOTSUP))?,
         vcpu_init: capabilities
             .register_vcpu_init
             .ok_or(SelectedInstallError::Native(-libc::ENOTSUP))?,
@@ -228,6 +234,7 @@ fn install_preowned(
         std::mem::size_of::<PluginSetupCompletion>(),
         std::mem::size_of::<OriginalWholeInitialSetup>(),
         std::mem::size_of::<OriginalWholeReadyExchange>(),
+        preparation::required_bytes(),
         // Four constructor-owned Rc/Arc allocations retain their control words.
         8 * std::mem::size_of::<usize>(),
     ]
@@ -282,6 +289,7 @@ fn install_preowned(
         ready: Mutex::new(ready),
         failed: AtomicBool::new(false),
         callback_entry: AtomicBool::new(false),
+        preparation_attempted: AtomicBool::new(false),
         observed_vcpus: AtomicU8::new(0),
         constructor_identity: AtomicUsize::new(0),
         cpu_identities: std::array::from_fn(|_| AtomicUsize::new(0)),
@@ -397,6 +405,13 @@ fn install_preowned(
             &CLOSED_OPS,
             Arc::as_ptr(&original.shared).cast_mut().cast(),
         );
+        if status != 0 {
+            return Err(SelectedInstallError::Native(status));
+        }
+        // This retains a callback only. The genuine source dispatches it once
+        // on the stopped RR thread after all four original INIT observations.
+        // It is not a HOLD, adoption, execution or Ready transition.
+        let status = preparation::register(&original.shared, callbacks.preparation);
         if status != 0 {
             return Err(SelectedInstallError::Native(status));
         }
@@ -1161,6 +1176,7 @@ mod tests {
             &mut reservation,
             modeled_apis(),
             SelectedRegistrationApis {
+                preparation: preparation::PreparationApis::modeled(),
                 vcpu_init: register_vcpu_init,
                 barrier: register_barrier,
                 control: register_control,
@@ -1260,6 +1276,7 @@ mod tests {
             assert!(!original.failed.load(Ordering::Acquire));
         });
         let shared = Arc::clone(ORIGINAL_CALLBACK.get().unwrap());
+        preparation::exercise_preparation(Arc::clone(&shared));
         std::thread::spawn(move || {
             let setup = shared.setup.get().unwrap();
             let mapping = setup.mapped_region().unwrap();
@@ -1282,6 +1299,7 @@ mod tests {
                 assert!(!shared.failed.load(Ordering::Acquire));
                 modeled_observe(0, std::ptr::dangling_mut::<c_void>());
                 assert!(shared.failed.load(Ordering::Acquire));
+                preparation::exercise_refusal(&shared);
                 assert!(!compute.is_uncertain());
                 for mode in [1, 2, 3] {
                     MODELED_ORIGIN_MODE.with(|slot| slot.set(mode));
