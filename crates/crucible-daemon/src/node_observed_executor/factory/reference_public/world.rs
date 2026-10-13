@@ -311,8 +311,12 @@ impl CandidateWorldDefinition {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let expected = match self.topology {
-            CandidateTopology::DirectPair => Self::build(package, quantum_ps, host_budget_ns, Bytes::new(nonce))?,
-            CandidateTopology::OrdinarySingleton => Self::build_singleton(package, quantum_ps, host_budget_ns, Bytes::new(nonce))?,
+            CandidateTopology::DirectPair => {
+                Self::build(package, quantum_ps, host_budget_ns, Bytes::new(nonce))?
+            }
+            CandidateTopology::OrdinarySingleton => {
+                Self::build_singleton(package, quantum_ps, host_budget_ns, Bytes::new(nonce))?
+            }
         };
         if self.world != expected.world
             || self.descriptors != expected.descriptors
@@ -603,7 +607,12 @@ impl AdmissionEvidence for Evidence<'_> {
                 proof_ref,
             } => {
                 world_binding_hash == &world
-                    && self.definition.world.connections.iter().any(|connection| &connection.id == connection_id)
+                    && self
+                        .definition
+                        .world
+                        .connections
+                        .iter()
+                        .any(|connection| &connection.id == connection_id)
                     && proof_ref == &self.definition.qualification
             }
             QualificationClaim::Capture {

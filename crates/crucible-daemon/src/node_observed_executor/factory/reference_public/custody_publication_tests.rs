@@ -59,7 +59,7 @@ fn reserve(
             private_launch: b"private original launch".to_vec(),
             original_hello: b"private original Hello".to_vec(),
             ordinary_negotiation: None,
-        collecting_negotiation: None,
+            collecting_negotiation: None,
         })
         .unwrap()
 }
