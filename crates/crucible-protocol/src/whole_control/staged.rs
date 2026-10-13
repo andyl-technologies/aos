@@ -31,6 +31,9 @@ pub mod launch2;
 #[path = "staged/administrative.rs"]
 pub mod administrative;
 
+#[path = "staged/source_ready.rs"]
+pub mod source_ready;
+
 #[cfg(test)]
 #[path = "staged/tests.rs"]
 pub(crate) mod tests;
@@ -74,6 +77,12 @@ pub enum StagedFrameKind {
     ExecutionResult = 8,
     /// Confirms the same original complete native compute result.
     ExecutionAcknowledgement = 9,
+    /// Offers one source-issued complete closure receipt.
+    SourceReady = 10,
+    /// Confirms that exact retained source receipt and original source cut.
+    SourceReadyAcknowledgement = 11,
+    /// Confirms native consumption of the same readiness acknowledgement.
+    SourceReadyAcknowledgementConsumed = 12,
 }
 
 /// Selects separate nonrenewing stage and compute constructor capacities.
@@ -120,12 +129,13 @@ impl StagedControlProfile {
         Ok(())
     }
 
-    /// Checks one preowned source-readiness exchange for explicit Launch2.
+    /// Checks one preowned source-readiness exchange for a selected backend.
     ///
     /// The constructor reserves a body at its selected compute ceiling, two
     /// acknowledgements and three frame headers. This capacity check neither
-    /// defines a receipt nor supplies source ownership or readiness authority.
-    /// Historical Launch1 profiles retain their original capacity rules.
+    /// supplies source ownership or readiness authority. Any backend using the
+    /// readiness grammar checks this before effects; historical constructors
+    /// that do not select this grammar retain their original capacity rules.
     ///
     /// # Errors
     /// Rejects malformed profiles or insufficient nonrenewing administrative
@@ -283,6 +293,9 @@ pub fn decode_frame_header(
         7 => StagedFrameKind::ExecutionRequest,
         8 => StagedFrameKind::ExecutionResult,
         9 => StagedFrameKind::ExecutionAcknowledgement,
+        10 => StagedFrameKind::SourceReady,
+        11 => StagedFrameKind::SourceReadyAcknowledgement,
+        12 => StagedFrameKind::SourceReadyAcknowledgementConsumed,
         _ => return Err(WholeControlError::Envelope),
     };
     let extent = read_u32(header, 16) as usize;
@@ -295,6 +308,15 @@ fn check_extent(
     extent: usize,
     profile: &StagedControlProfile,
 ) -> Result<(), WholeControlError> {
+    if matches!(
+        kind,
+        StagedFrameKind::SourceReady
+            | StagedFrameKind::SourceReadyAcknowledgement
+            | StagedFrameKind::SourceReadyAcknowledgementConsumed
+    ) {
+        profile.validate_ready_exchange_capacity()?;
+    }
+
     let valid = match kind {
         StagedFrameKind::QueuePlan => {
             (QUEUE_PLAN_HEADER_BYTES..=profile.compute.body_byte_limit as usize).contains(&extent)
@@ -303,6 +325,7 @@ fn check_extent(
             (STAGE_HEADER_BYTES + 8 + 4..=profile.stage_body_byte_limit as usize).contains(&extent)
         }
         StagedFrameKind::StageReceipt => extent == STAGE_RECEIPT_BYTES,
+        StagedFrameKind::SourceReady => extent == source_ready::SOURCE_READY_BYTES,
         StagedFrameKind::ExecutionRequest => {
             (256 + 8..=profile.compute.body_byte_limit as usize).contains(&extent)
         }
@@ -312,7 +335,9 @@ fn check_extent(
         StagedFrameKind::QueuePlanAcknowledgement
         | StagedFrameKind::StageCommit
         | StagedFrameKind::StageCommitAcknowledgement
-        | StagedFrameKind::ExecutionAcknowledgement => extent == WHOLE_ACK_BYTES,
+        | StagedFrameKind::ExecutionAcknowledgement
+        | StagedFrameKind::SourceReadyAcknowledgement
+        | StagedFrameKind::SourceReadyAcknowledgementConsumed => extent == WHOLE_ACK_BYTES,
     };
     if valid {
         Ok(())
