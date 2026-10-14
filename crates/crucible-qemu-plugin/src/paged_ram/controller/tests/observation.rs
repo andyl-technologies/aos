@@ -239,6 +239,56 @@ fn placement_status_preserves_full_execution_peak_across_advisory_and_strict_mod
 }
 
 #[test]
+fn policy_admission_bounds_target_by_retained_logical_geometry() {
+    let controller = observed_controller();
+    let state = controller.state.lock().unwrap();
+    let owner = state.owner.as_ref().unwrap().clone();
+    let mut policy = RamControlPolicy {
+        mode: RamControlMode::Managed,
+        resident_target_bytes: 0,
+        eviction_preference: 100,
+        writeback_bytes_per_second: 4096,
+        maximum_paging_io_in_flight: 1,
+        prefetch_on_increase: false,
+        budgets: state.budgets,
+    };
+    drop(state);
+    owner.seal_geometry(1, 8192).unwrap();
+    let before = owner.authority_snapshot().unwrap();
+
+    for mode in [RamControlMode::Managed, RamControlMode::DiskOriented] {
+        policy.mode = mode;
+        for target in [0, 8192] {
+            policy.resident_target_bytes = target;
+            owner.admit_policy(&policy).unwrap();
+        }
+    }
+    for mode in [
+        RamControlMode::Managed,
+        RamControlMode::DiskOriented,
+        RamControlMode::ResidentRequired,
+    ] {
+        policy.mode = mode;
+        for target in [8193, u64::MAX] {
+            policy.resident_target_bytes = target;
+            assert!(matches!(
+                owner.admit_policy(&policy),
+                Err(RamError::Invariant("resident target exceeds logical RAM"))
+            ));
+        }
+    }
+
+    // Admission checks geometry without a placement or native activation effect.
+    let after = owner.authority_snapshot().unwrap();
+    assert_eq!(after.logical_bytes, before.logical_bytes);
+    assert_eq!(after.topology_generation, before.topology_generation);
+    assert_eq!(after.full_peak_bytes, before.full_peak_bytes);
+    assert!(!after.activated);
+    assert!(!after.failed);
+    assert_eq!(controller.operations.capacity.load(Ordering::Acquire), 0);
+}
+
+#[test]
 fn unknown_inventory_does_not_advertise_a_low_execution_peak_or_strict_size() {
     let (controller, mut policy, _) = applied_controller();
     policy.mode = RamControlMode::ResidentRequired;

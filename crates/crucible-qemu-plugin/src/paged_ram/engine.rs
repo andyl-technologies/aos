@@ -476,7 +476,8 @@ impl PausedPagingOwner {
     /// Validates initial paused-backend placement without claiming convergence.
     ///
     /// # Errors
-    /// Refuses unsound execution capacity, unsupported modes, or invalid I/O controls.
+    /// Refuses oversized targets, unsound execution capacity, unsupported modes,
+    /// or invalid I/O controls.
     pub(crate) fn admit_policy(
         &self,
         policy: &crucible_protocol::ram_control::RamControlPolicy,
@@ -487,6 +488,9 @@ impl PausedPagingOwner {
             return Err(RamError::Invariant(
                 "paging geometry/authority is unavailable",
             ));
+        }
+        if policy.resident_target_bytes > snapshot.logical_bytes {
+            return Err(RamError::Invariant("resident target exceeds logical RAM"));
         }
         if self.resources.resident_peak_bytes < snapshot.full_peak_bytes {
             return Err(RamError::MetadataAdmission {
