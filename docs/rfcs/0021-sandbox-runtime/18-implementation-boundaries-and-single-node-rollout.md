@@ -402,6 +402,12 @@ two retained-effect recovery paths share one private helper; original transactio
 identity and actual reservation/Journal custody stay Native. These are private
 source responsibilities, not protected Cargo owners.
 
+Private `publisher_admission::protected_journal::record_codec` owns complete
+mutation, current-head, completion-effect and capacity-settlement grammars,
+reducer framing and checkpoint commitments. Semantic replay, key selection,
+resident types and all protected Journal/capacity/postcommit custody stay
+with the journal owner. This private organization is not a Cargo boundary.
+
 `source_domain` owns the live fixed Source Journal, paid opening originals and
 original Q04 loans in private `fixed_writer`. Individual protected recovery remains
 with each domain owner; Lifecycle retains its schemas, accepted identities and
