@@ -4623,7 +4623,15 @@ copying a repeated read-only compiler source into an already copied directory.
 The native build uses the same compiler for both roles: 28 source occurrences
 resolve to 21 distinct paths. A reviewed deduplication copies each distinct
 source once. The failed attempts and generated outputs remain retained;
-completed context recording, provider and emulator realization remain pending.
+the next build completes generation, installation, fixup, scrubbing and metadata.
+Nix registration then rejects a mutual reference between the binary and source
+outputs. The binary context names generated source paths, while the retained
+source context and configure output name the binary output. This is a failed
+realization, not an installed context. The reviewed correction generates directly
+inside the source output and uses source-local GNU configure prefixes. The
+recorder and provider consume those same source roots; metadata references source
+in one direction. Actual output-reference inspection and successful registration,
+provider and emulator realization remain pending.
 
 ## Full gem5 production build and ownership check
 
@@ -4639,6 +4647,32 @@ case: phase zero reports Refused rather than Walked, with unchanged before/after
 queues. The complete invocation exits unsuccessfully. Its source, product and
 failure remain retained for diagnosis; linking and the base checks do not qualify
 the complete native backend, readiness, Linux boot or exact preservation.
+
+Two bounded diagnostic flights reuse this exact simulator without recompiling
+it. They preserve the original failing assertion, refusal tuple and unchanged
+event queues. Permanent ownership records correlate the first visiting leaf
+with the ARM instruction TLB. The second diagnostic also observes zero registered
+table banks, placing the refusal before the first successful table-entry check.
+This does not identify which earlier TLB guard fails. The selected configuration
+also contains a 1,280-entry L2 TLB, exceeding the current 1,024-entry account;
+that distinct later obstacle requires an explicit account and profile correction
+without reducing the configured TLB.
+
+## Complete SDK composition qualification
+
+The first combined complete-protocol SDK candidate overlays 155 provider and
+Cargo roles on `ca0dc85c22bad8bba9c63d231b00faae2fbb9879`. Its actual strict
+all-target/all-feature provider compilation fails with 31 diagnostics in
+16.05 seconds. These include missing exports and imports, duplicate metadata
+implementations, incomplete typed collection decoders and endpoint construction
+fields. The original compiler result, exact before/after source identity and
+released process group are retained. The corrected candidate, including two
+independent legacy and selected-field serialization controls, reduces the next
+compilation to one borrow error in 15.56 seconds. Its process group also releases
+without signals and its source remains exact. The remaining observer call uses
+a mutable authority accessor through a shared connection reference. This
+uncommitted candidate has no passing compiler or preservation claim and does not
+replace the earlier passing 29-control admission cohort.
 
 ## Performance evidence
 

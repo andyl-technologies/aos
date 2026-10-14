@@ -166,8 +166,8 @@ in
         {
           name = "build";
           script = ''
-            mkdir -p "$out/context" "$out/share/qom-private-unwind" "$source/recipe"
-            export TMPDIR="$out/context"
+            mkdir -p "$source/generated-context" "$out/share/qom-private-unwind" "$source/recipe"
+            export TMPDIR="$source/generated-context"
             ${bash}/bin/bash --noprofile --norc "$qomConfigureScriptPath" \
               > "$out/share/qom-private-unwind/configure.stdout" \
               2> "$out/share/qom-private-unwind/configure.stderr"
@@ -180,7 +180,6 @@ in
               cp -a "$recipe" "$source/recipe/$(basename "$recipe")"
             done
             cp "$qomConfigureScriptPath" "$source/recipe/configure-command.bash"
-            cp -a "$out/context" "$source/generated-context"
             ${python3}/bin/python3 -I -B ${./record-qom-unwind-context.py} \
               --output "$out" --source "$source" --compiler ${compilerExecutable} --binutils ${binutils}/bin \
               --target ${target} --build ${build} --elf-machine ${toString elfMachine} --build-word-bytes ${toString buildWordBytes} \

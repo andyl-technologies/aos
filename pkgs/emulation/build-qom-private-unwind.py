@@ -80,9 +80,12 @@ def verify_context(args):
     if Path(context["binutils"]).resolve(strict=True) != args.binutils.resolve(strict=True):
         raise ValueError("The context and selected target binutils differ")
 
-    gcc_build = contained(Path(context["gcc_build_root"]), [context_root])
-    local = contained(Path(context["libgcc_context_root"]), [context_root])
-    sysroot = contained(Path(context["sysroot"]), [context_root])
+    # Generated headers and sysroot belong to complete corresponding source.
+    # The separate metadata output references them in one direction only.
+    generated_roots = [source_root]
+    gcc_build = contained(Path(context["gcc_build_root"]), generated_roots)
+    local = contained(Path(context["libgcc_context_root"]), generated_roots)
+    sysroot = contained(Path(context["sysroot"]), generated_roots)
     source = contained(Path(context["source_root"]), [source_root])
     expected = [gcc_build / name for name in GENERATED]
     expected += [local / "libgcc_tm.h", local / "auto-target.h", *[local / name for name in LINKED]]

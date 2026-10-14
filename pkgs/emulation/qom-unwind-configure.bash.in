@@ -142,7 +142,7 @@ CC="$TMPDIR/ccwrap/gcc" \
         CXXFLAGS="-O2 -static" \
         LDFLAGS="-L@glibcStatic@/lib -L@glibc@/lib -static" \
 "$CONFIG_SHELL" "$source/gcc-16.2.0/configure" \
-  --prefix="$out" \
+  --prefix="$TMPDIR/prefix" \
           --build=@build@ \
           --host=@build@ \
           --target=@target@ \
@@ -209,7 +209,7 @@ RANLIB="@targetRanlib@" STRIP="@targetStrip@" \
 "$CONFIG_SHELL" "$source/gcc-16.2.0/libgcc/configure" \
   --build=@build@ --host=@target@ --target=@target@ \
   --with-target-subdir=@target@ --enable-threads=posix \
-  --enable-shared --disable-multilib --prefix="$out"
+  --enable-shared --disable-multilib --prefix="$TMPDIR/prefix"
 make SHELL="$CONFIG_SHELL" gcc_objdir="$TMPDIR/build/gcc" -j1 libgcc_tm.h unwind.h md-unwind-def.h md-unwind-support.h gthr-default.h
 for member in unwind-dw2 unwind-dw2-fde-dip; do
   make SHELL="$CONFIG_SHELL" gcc_objdir="$TMPDIR/build/gcc" --no-print-directory -n "$member.o" > "$member.command"

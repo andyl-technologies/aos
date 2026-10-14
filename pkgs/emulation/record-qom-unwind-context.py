@@ -109,9 +109,12 @@ def main():
     output = args.output.resolve(strict=True)
     source_output = args.source.resolve(strict=True)
     source = source_output / "gcc-16.2.0"
-    generated = output / "context/build/gcc"
-    local = output / "context/build" / args.target / "libgcc"
-    sysroot = output / "context/target-sysroot"
+    # Generated source data owns its original paths. Metadata may reference
+    # this source output; the source output must never reference metadata.
+    generated_root = source_output / "generated-context"
+    generated = generated_root / "build/gcc"
+    local = generated_root / "build" / args.target / "libgcc"
+    sysroot = generated_root / "target-sysroot"
     dependencies = [root.resolve(strict=True) for root in args.dependency_root]
     compiler = args.compiler.resolve(strict=True)
     recorder = Recorder([output, source_output, *dependencies])
@@ -137,7 +140,7 @@ def main():
             or member_plan.get("elf_machine") != args.elf_machine
             or Path(member_plan["compiler_executable"]).resolve(strict=True) != compiler):
         raise ValueError("The actual GNU Make command tuple differs")
-    probe = output / "context/target-abi.o"
+    probe = generated_root / "target-abi.o"
     header = probe.read_bytes()[:64]
     if (len(header) != 64 or header[:6] != b"\x7fELF\x02\x01"
             or struct.unpack_from("<H", header, 18)[0] != args.elf_machine):
@@ -165,7 +168,7 @@ def main():
         return recorder.pin(path)
 
     source_inventory = emit("source-inventory.json", recorder.inventory(source_output))
-    generated_inventory = emit("generated-inventory.json", recorder.inventory(output / "context"))
+    generated_inventory = emit("generated-inventory.json", recorder.inventory(generated_root))
     sysroot_inventory = emit("sysroot-inventory.json", recorder.inventory(sysroot))
     # Follow each raw sysroot entry to its actual complete source-built input.
     targets = {path.resolve(strict=True) for path in sysroot.rglob("*") if path.is_symlink()}
