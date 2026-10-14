@@ -21,6 +21,7 @@ use terrane_core::bucket::{BucketCapabilities, GenerationManifest};
 use terrane_core::gc::publication::{PublicationCommit, PublicationProof, PublicationTransaction};
 
 #[cfg(all(test, feature = "tokio", unix))]
+#[path = "retirement_barrier/sync_observation.rs"]
 mod sync_observation;
 
 /// Reports actual original-descriptor capture and successful synchronization.
