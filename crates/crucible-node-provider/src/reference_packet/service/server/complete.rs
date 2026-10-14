@@ -175,6 +175,7 @@ pub(in super::super) fn accept_complete(
         )?,
     };
     native.bind_complete_original_storage(launch.storage.clone(), negotiated_limits)?;
+    native.bind_complete_original_capture_profile(launch.capture_profile.clone())?;
     let endpoint = match super::super::super::endpoint::PacketEndpoint::new_complete(
         connection,
         native,

@@ -9,7 +9,10 @@ use crucible_node_provider::{
     bodies::RealizeResult,
     reference_packet::{
         control::PacketControlSelection,
-        coordinator::{PacketConnectedCoordinatorInstallation, PacketWorldCoordinatorInstallation},
+        coordinator::{
+            PacketConnectedCoordinatorInstallation, PacketNative5CoordinatorInstallation,
+            PacketWorldCoordinatorInstallation,
+        },
     },
 };
 
@@ -38,7 +41,21 @@ impl PacketWorldSourceScope {
             &coordinator,
             crucible_node_provider::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES,
         )?;
-        Self::new_selected(installation, InstalledCoordinator::Connected(Box::new(coordinator)))
+        Self::new_selected(
+            installation,
+            InstalledCoordinator::Connected(Box::new(coordinator)),
+        )
+    }
+
+    pub(super) fn new_complete(
+        installation: &CnpSemanticInstallation,
+        coordinator: PacketNative5CoordinatorInstallation,
+    ) -> Result<Self, OperationFailure> {
+        budget::serialized_size(&coordinator,crucible_node_provider::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES)?;
+        Self::new_selected(
+            installation,
+            InstalledCoordinator::Complete(Box::new(coordinator)),
+        )
     }
 
     fn new_selected(
@@ -68,6 +85,10 @@ impl PacketWorldSourceScope {
                 crucible_node_provider::reference_packet::contracts::connected_ingress_contract()
                     .map_err(unknown)?,
             ),
+            InstalledCoordinator::Complete(_) => (
+                "source-owned.packet-ingress/5",5,
+                crucible_node_provider::reference_packet::continuation_contracts::complete_ingress_contract().map_err(unknown)?,
+            ),
         };
         let definition = canonical::content_ref(&contract, "application/json").map_err(unknown)?;
         let formats = &installation.provider.implementation.formats;
@@ -83,6 +104,7 @@ impl PacketWorldSourceScope {
                         | "source-owned.packet-ingress/2"
                         | "source-owned.packet-ingress/3"
                         | "source-owned.packet-ingress/4"
+                        | "source-owned.packet-ingress/5"
                 ) && format.id.as_str() != identifier)
                     || (format.id.as_str() == identifier
                         && (format.version != version
@@ -145,8 +167,30 @@ impl PacketWorldSourceScope {
         Ok(())
     }
 
+    pub(super) fn is_complete(&self) -> bool {
+        matches!(&self.coordinator, InstalledCoordinator::Complete(_))
+    }
+
+    pub(super) fn selection(&self) -> &PacketControlSelection {
+        &self.coordinator.participants()[self.local]
+    }
+
+    pub(super) fn authenticate_complete_installation(
+        &self,
+        coordinator: &PacketNative5CoordinatorInstallation,
+    ) -> Result<(), OperationFailure> {
+        if !matches!(&self.coordinator,InstalledCoordinator::Complete(original) if original.as_ref()==coordinator)
+        {
+            return Err(refused("packet complete original coordinator changed"));
+        }
+        Ok(())
+    }
+
     pub(super) fn is_connected(&self) -> bool {
-        matches!(&self.coordinator, InstalledCoordinator::Connected(_))
+        matches!(
+            &self.coordinator,
+            InstalledCoordinator::Connected(_) | InstalledCoordinator::Complete(_)
+        )
     }
 
     pub(super) fn owners(&self) -> &[OwnerIdentity] {
@@ -215,9 +259,8 @@ impl PacketWorldSourceScope {
             }
             actual.ready_receipt.validate().map_err(unknown)?;
         }
-        if let InstalledCoordinator::Connected(scope) = &self.coordinator {
-            let actual = &owners[scope.participants.len()];
-            let host = &scope.host;
+        if let Some(host) = self.coordinator.host() {
+            let actual = &owners[self.coordinator.participants().len()];
             if actual.owner_id != host.owner.owner.id
                 || actual.incarnation_id != host.binding.authority.incarnation_id
                 || actual.owner_generation != host.binding.authority.owner_generation
@@ -245,13 +288,26 @@ impl PacketWorldSourceScope {
 enum InstalledCoordinator {
     OutputOnly(PacketWorldCoordinatorInstallation),
     Connected(Box<PacketConnectedCoordinatorInstallation>),
+    Complete(Box<PacketNative5CoordinatorInstallation>),
 }
 
 impl InstalledCoordinator {
+    fn host(
+        &self,
+    ) -> Option<&crucible_node_provider::reference_packet::coordinator::PacketConnectedHostSelection>
+    {
+        match self {
+            Self::OutputOnly(_) => None,
+            Self::Connected(scope) => Some(&scope.host),
+            Self::Complete(scope) => Some(&scope.host),
+        }
+    }
+
     fn participants(&self) -> &[PacketControlSelection] {
         match self {
             Self::OutputOnly(scope) => &scope.participants,
             Self::Connected(scope) => &scope.participants,
+            Self::Complete(scope) => &scope.participants,
         }
     }
 
@@ -259,6 +315,7 @@ impl InstalledCoordinator {
         match self {
             Self::OutputOnly(scope) => &scope.template,
             Self::Connected(scope) => &scope.template,
+            Self::Complete(scope) => &scope.template,
         }
     }
 
@@ -269,6 +326,7 @@ impl InstalledCoordinator {
         match self {
             Self::OutputOnly(scope) => scope.validate(local),
             Self::Connected(scope) => scope.validate(local),
+            Self::Complete(scope) => scope.validate(local),
         }
     }
 
@@ -276,6 +334,7 @@ impl InstalledCoordinator {
         match self {
             Self::OutputOnly(scope) => scope.validate_body(bytes),
             Self::Connected(scope) => scope.validate_body(bytes),
+            Self::Complete(scope) => scope.validate_body(bytes),
         }
     }
 }

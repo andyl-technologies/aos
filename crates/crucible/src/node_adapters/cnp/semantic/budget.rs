@@ -14,6 +14,10 @@ pub(super) struct SemanticCredit {
 }
 
 impl SemanticCredit {
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.retained
+    }
+
     pub(super) fn reserve_bytes(
         &mut self,
         bytes: usize,

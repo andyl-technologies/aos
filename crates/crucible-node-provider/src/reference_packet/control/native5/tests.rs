@@ -433,3 +433,67 @@ fn live_record_codec_refuses_incomplete_selected_storage() {
     );
     assert_eq!(control.complete_storage, Some(modeled_storage_selection()));
 }
+
+#[test]
+fn complete_capture_profile_is_original_birth_data() {
+    let coordinator = fixture::five();
+    let selected = coordinator.participants[0].clone();
+    let mut control = PacketControl::new_complete_producer(
+        selected.clone(), producer(), coordinator,
+    ).unwrap();
+    let profile = PacketNative5CaptureProfile::CompactBytes7 {
+        native_before_protocol_bytes: U64::new(1024 * 1024),
+        native_after_protocol_bytes: U64::new(2 * 1024 * 1024),
+        host_protocol_bytes: U64::new(3 * 1024 * 1024),
+    };
+
+    assert!(control.bind_complete_original_capture_profile(profile.clone()).is_err());
+    assert!(control.complete_capture_profile.is_none());
+    bind_storage(&mut control);
+    control.bind_complete_original_capture_profile(profile.clone()).unwrap();
+    assert!(control.bind_complete_original_capture_profile(profile.clone()).is_err());
+    assert_eq!(control.complete_capture_profile.as_ref(), Some(&profile));
+    control.authenticate_complete_capture_profile(&profile).unwrap();
+    assert!(control.authenticate_complete_capture_profile(
+        &PacketNative5CaptureProfile::OriginalArrays6,
+    ).is_err());
+
+    let original = request(&control);
+    let proof = control.proof(&original, None).unwrap();
+    let evidence = control.record_evidence(proof).unwrap();
+    let receipt: PacketNative5Record = decode_record(&evidence[1].1).unwrap();
+    assert_eq!(receipt.capture_profile, profile);
+    receipt.verify_original_record_data(
+        &selected, std::process::id(), &original, &evidence[0].1,
+    ).unwrap();
+}
+
+#[test]
+fn complete_capture_profile_refuses_invalid_and_dispatched_birth() {
+    let coordinator = fixture::five();
+    let mut control = PacketControl::new_complete_producer(
+        coordinator.participants[0].clone(), producer(), coordinator,
+    ).unwrap();
+    bind_storage(&mut control);
+    let invalid = PacketNative5CaptureProfile::CompactBytes7 {
+        native_before_protocol_bytes: U64::new(0),
+        native_after_protocol_bytes: U64::new(1024),
+        host_protocol_bytes: U64::new(1024),
+    };
+    assert!(control.bind_complete_original_capture_profile(invalid).is_err());
+    assert!(control.complete_capture_profile.is_none());
+
+    let original = request(&control);
+    let proof = control.proof(&original, None).unwrap();
+    let evidence = control.record_evidence(proof).unwrap();
+    let value: Value = serde_json::from_slice(&evidence[1].1).unwrap();
+    assert!(value.get("capture_profile").is_none());
+    let receipt: PacketNative5Record = decode_record(&evidence[1].1).unwrap();
+    assert_eq!(receipt.capture_profile, PacketNative5CaptureProfile::OriginalArrays6);
+
+    control.realized = true;
+    assert!(control.bind_complete_original_capture_profile(
+        PacketNative5CaptureProfile::OriginalArrays6,
+    ).is_err());
+    assert!(control.complete_capture_profile.is_none());
+}

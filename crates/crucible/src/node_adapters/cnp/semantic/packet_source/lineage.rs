@@ -43,18 +43,50 @@ impl PacketSemanticSource {
             }
             // The full source record and original grant remain present after
             // output ACK; no regenerated observation can replace this root.
-            rows.add(
-                &root,
-                scope.controller.content(&root).map_err(unknown)?,
-                dependencies,
-            )?;
+            if self
+                .world_scope
+                .as_ref()
+                .is_some_and(|world| world.is_complete())
+            {
+                let wrapper:crucible_node_provider::reference_packet::control::PacketNative5Record=serde_json::from_value(
+                    canonical::parse_json(scope.controller.content(&root).map_err(unknown)?,65_536).map_err(unknown)?).map_err(unknown)?;
+                // The complete native_record check above authenticated the
+                // exact wrapper/raw association under this original source.
+                rows.add(
+                    &wrapper.native_record,
+                    scope
+                        .controller
+                        .content(&wrapper.native_record)
+                        .map_err(unknown)?,
+                    dependencies,
+                )?;
+                rows.add(
+                    &root,
+                    scope.controller.content(&root).map_err(unknown)?,
+                    vec![wrapper.native_record],
+                )?;
+            } else {
+                rows.add(
+                    &root,
+                    scope.controller.content(&root).map_err(unknown)?,
+                    dependencies,
+                )?;
+            }
             packet_lineage::claim(
                 &self.installation,
                 original,
                 outcome,
                 publication,
                 &root,
-                2,
+                if self
+                    .world_scope
+                    .as_ref()
+                    .is_some_and(|world| world.is_complete())
+                {
+                    5
+                } else {
+                    2
+                },
                 rows,
             )
         })();

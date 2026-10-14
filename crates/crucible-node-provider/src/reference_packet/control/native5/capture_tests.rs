@@ -15,6 +15,12 @@ fn id(value: &str) -> Id {
 }
 
 fn modeled_active_control() -> PacketControl {
+    modeled_active_control_with_profile(None)
+}
+
+fn modeled_active_control_with_profile(
+    profile: Option<crate::reference_packet::service::PacketNative5CaptureProfile>,
+) -> PacketControl {
     let coordinator = fixture::five();
     let mut native = PacketControl::new_complete_producer(
         coordinator.participants[0].clone(),
@@ -25,8 +31,8 @@ fn modeled_active_control() -> PacketControl {
     native
         .bind_complete_original_storage(
             crate::reference_packet::service::PacketNative5StorageLimits {
-                snapshot_bytes: U64::new(8 * 1024 * 1024),
-                control_snapshot_bytes: U64::new(4 * 1024 * 1024),
+                snapshot_bytes: U64::new(4 * 1024 * 1024),
+                control_snapshot_bytes: U64::new(1024 * 1024),
                 protocol_snapshot_bytes: U64::new(32 * 1024 * 1024),
                 frame_bank_bytes: U64::new(8 * 1024 * 1024),
                 frames_per_direction: U64::new(4096),
@@ -42,6 +48,11 @@ fn modeled_active_control() -> PacketControl {
             },
         )
         .unwrap();
+    if let Some(profile) = profile {
+        native
+            .bind_complete_original_capture_profile(profile)
+            .unwrap();
+    }
     native.program.open_gate().unwrap();
     native.active = Some(WorldActivateRequest {
         transaction_id: native.selection.transaction.clone(),
@@ -297,4 +308,30 @@ fn original_endpoint_storage_tuple_cannot_be_reselected_after_refusal() {
     assert!(native.active.is_none());
     assert!(!native.realized);
     assert_eq!(native.complete_storage.as_ref(), Some(&selected));
+}
+
+#[test]
+fn control_snapshot_retains_closed_compact_profile_and_rejects_unbound_data() {
+    use crate::reference_packet::service::PacketNative5CaptureProfile;
+
+    let profile = PacketNative5CaptureProfile::CompactBytes7 {
+        native_before_protocol_bytes: U64::new(1024 * 1024),
+        native_after_protocol_bytes: U64::new(2 * 1024 * 1024),
+        host_protocol_bytes: U64::new(32 * 1024 * 1024),
+    };
+    let native = modeled_active_control_with_profile(Some(profile.clone()));
+    let cut = Position::new(U64::new(0), U64::new(0), Phase::BoundaryControl);
+    let snapshot = native.capture_control_state(cut, 8 * 1024 * 1024).unwrap();
+    decode_packet_control_snapshot(snapshot.bytes(), snapshot.reference(), 8 * 1024 * 1024)
+        .unwrap();
+    let mut value = canonical::parse_json(snapshot.bytes(), 8 * 1024 * 1024).unwrap();
+    assert_eq!(
+        value["control"]["complete_capture_profile"],
+        serde_json::to_value(profile).unwrap()
+    );
+
+    value["control"]["complete_storage"] = Value::Null;
+    let bytes = canonical::canonical_json(&value).unwrap();
+    let reference = canonical::content_ref(&bytes, "application/json").unwrap();
+    assert!(decode_packet_control_snapshot(&bytes, &reference, 8 * 1024 * 1024).is_err());
 }

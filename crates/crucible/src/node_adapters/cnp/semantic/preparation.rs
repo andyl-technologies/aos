@@ -93,6 +93,7 @@ impl CnpSemanticPreparation {
         installed: InstalledCnpSemanticRole,
     ) -> Result<Self, CnpSemanticPreparationFailure> {
         let InstalledCnpSemanticRole {
+            kind,
             policy,
             identity,
             source,
@@ -101,7 +102,7 @@ impl CnpSemanticPreparation {
             collection_plan,
         } = installed;
         let result = (|| {
-            validate_installation(source.installation())?;
+            kind.authenticate(source.installation())?;
             policy.authenticate(source.installation())?;
             if super::registry::installation_identity(source.installation())? != identity {
                 return Err(refused(
@@ -129,6 +130,7 @@ impl CnpSemanticPreparation {
             {
                 return Err(refused("generic original realization is already reserved"));
             }
+            custody.installation_kind = Some(kind);
             custody.registration = Some(policy);
             custody.installed_identity = Some(identity);
             custody.source = Some(source);
@@ -311,7 +313,10 @@ impl CnpSemanticPreparation {
             .source
             .as_ref()
             .ok_or_else(|| refused("generic source is absent"))?;
-        validate_installation(source.installation())?;
+        native
+            .installation_kind
+            .ok_or_else(|| refused("generic original registration kind absent"))?
+            .authenticate(source.installation())?;
         if native.installed_identity.as_ref()
             != Some(&super::registry::installation_identity(
                 source.installation(),
@@ -379,6 +384,21 @@ pub(super) fn authenticate_collection_selection(
 
 pub(super) fn validate_installation(
     install: &CnpSemanticInstallation,
+) -> Result<(), OperationFailure> {
+    validate_installation_selected(install, false)
+}
+
+// Only the concrete Source5 conformance registration chooses this validator.
+// Ordinary registry/prepare entry points retain the exact-only selector above.
+pub(super) fn validate_complete_installation(
+    install: &CnpSemanticInstallation,
+) -> Result<(), OperationFailure> {
+    validate_installation_selected(install, true)
+}
+
+fn validate_installation_selected(
+    install: &CnpSemanticInstallation,
+    complete_packet: bool,
 ) -> Result<(), OperationFailure> {
     if install.maximum_semantic_bytes == 0 || install.maximum_semantic_bytes > 256 * 1024 * 1024 {
         return Err(refused(
@@ -462,16 +482,7 @@ pub(super) fn validate_installation(
         || install.binding.authority.activation_id.is_some()
         || install.binding.authority.realization_id != install.realize.realization_id
         || install.binding.compatibility.operating_contract.mode != OperatingMode::Exact
-        || install.facets.as_slice() != [FacetKind::ExactExecution]
-        || install
-            .binding
-            .compatibility
-            .operating_contract
-            .facets
-            .as_slice()
-            != std::slice::from_ref(&install.exact_facet)
-        || install.profile.operation_facets.as_slice() != std::slice::from_ref(&install.exact_facet)
-        || install.capabilities.facets.as_slice() != std::slice::from_ref(&install.exact_facet)
+        || selected_facets_changed(install, complete_packet)
         || install.binding.compatibility.implementation != install.provider.implementation
         || !install
             .provider
@@ -489,20 +500,72 @@ pub(super) fn validate_installation(
             "generic source installation or exact single-owner selection is unsupported",
         ));
     }
-    // The initial generic implementation has no native preservation adapter.
-    // A source table cannot advertise a facet merely because its JSON decodes.
+    // Ordinary generic installations cannot select preservation. The concrete
+    // complete packet path validates its declaration but still requires actual
+    // source callbacks and installed capture authority before any effect.
     let guarantees = &install.guarantees;
-    if guarantees.capture_scope != CaptureScope::None
-        || guarantees.continuation != Continuation::Unsupported
-        || guarantees.durable_restart
-        || guarantees.isolated_fork
-        || guarantees.conditional_replay
-    {
+    if if complete_packet {
+        guarantees.capture_scope != CaptureScope::CompleteModel
+            || guarantees.continuation != Continuation::Exact
+            || !guarantees.durable_restart
+            || guarantees.repeatability != crucible_node_contract::Repeatability::Unqualified
+            || guarantees.isolated_fork || guarantees.conditional_replay
+            || install.provider.implementation.implementation_id.as_str()!="source-owned.packet-native/5"
+            || install.profile.profile_id.as_str()!="source-owned.packet-complete-original-lineage/5"
+            || install.exact_facet.id.as_str()!="source-owned.packet-exact/5"
+            || install.exact_facet.version!=5
+            || install.receipt_schema != crucible_node_provider::reference_packet::continuation_contracts::complete_packet_receipt_schema().map_err(unknown)?
+    } else {
+        guarantees.capture_scope != CaptureScope::None
+            || guarantees.continuation != Continuation::Unsupported
+            || guarantees.durable_restart
+            || guarantees.isolated_fork
+            || guarantees.conditional_replay
+    } {
         return Err(refused(
             "generic initial source scope has no qualified preservation or replay",
         ));
     }
     Ok(())
+}
+
+fn selected_facets_changed(install: &CnpSemanticInstallation, complete_packet: bool) -> bool {
+    if !complete_packet {
+        return install.facets.as_slice() != [FacetKind::ExactExecution]
+            || install
+                .binding
+                .compatibility
+                .operating_contract
+                .facets
+                .as_slice()
+                != std::slice::from_ref(&install.exact_facet)
+            || install.profile.operation_facets.as_slice()
+                != std::slice::from_ref(&install.exact_facet)
+            || install.capabilities.facets.as_slice()
+                != std::slice::from_ref(&install.exact_facet);
+    }
+
+    let facets = &install.binding.compatibility.operating_contract.facets;
+    let source_table_changed = install.facets.as_slice()
+        != [FacetKind::ExactExecution, FacetKind::Preservation]
+        || facets.len() != 2
+        || !facets.contains(&install.exact_facet)
+        || install.profile.operation_facets != *facets
+        || install.capabilities.facets != *facets;
+    if source_table_changed {
+        return true;
+    }
+
+    facets.iter().any(|facet| {
+        facet.version != 5
+            || facet.configuration_ref != install.binding.compatibility.configuration_ref
+            || facet.guarantees_ref != install.binding.compatibility.guarantees_ref
+            || !facet.extensions.is_empty()
+            || !matches!(
+                facet.id.as_str(),
+                "source-owned.packet-exact/5" | "source-owned.packet-complete-original-lineage/5"
+            )
+    })
 }
 
 pub(super) fn request_id(prefix: &str, original: &Id) -> Result<Id, OperationFailure> {

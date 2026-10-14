@@ -57,6 +57,7 @@ impl CnpSemanticLaunchReservation {
             controller: None,
             handshake: None,
             expected_executable: executable,
+            installation_kind: None,
             registration: None,
             installed_identity: None,
             source: None,

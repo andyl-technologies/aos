@@ -68,6 +68,51 @@ impl SimulationNode for CnpSemanticNode {
             .map_or(&[], |source| source.installation().facets.as_slice())
     }
 
+    fn preflight_complete_original_lineage_capture(
+        &self,
+        activation: &WorldActivation,
+        record: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
+        limits: crate::node_state::NativeArchiveLimits,
+    ) -> Result<crate::node_state::CompleteOriginalOwnerCapturePreflight, OperationFailure> {
+        // Refuse a copied process capsule before reading any inherited owner.
+        self.preparation.guard.custody().map_err(unknown)?;
+        self.current()?;
+        let source = self.source()?;
+        let active = self
+            .state()?
+            .active
+            .as_ref()
+            .ok_or_else(|| refused("complete capture has no original active world"))?;
+        if !active.same_authority(activation) {
+            return Err(refused("complete capture preflight has another activation"));
+        }
+
+        let result = source.preflight_complete_original_lineage_capture(
+            self.scope()?,
+            active,
+            record,
+            runtime_object,
+            limits,
+        );
+        // A callback may return in a copied process. Authenticate origin before
+        // reading cells or publishing a result from the original owner loan.
+        self.preparation.guard.custody().map_err(unknown)?;
+        self.current()?;
+        result
+    }
+
+    fn capture_original_lineage_continuation_with_ticket(
+        &mut self,
+        ticket: &OriginalLineageOwnerCaptureTicket<'_>,
+        activation: &WorldActivation,
+        record: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
+        limits: NativeCaptureLimits,
+    ) -> Result<InstalledOriginalLineageCapture, OperationFailure> {
+        self.capture_with_original_ticket(ticket, activation, record, runtime_object, limits)
+    }
+
     fn status(&mut self) -> Result<NodeStatus, OperationFailure> {
         self.current()?;
         self.source()?.status(self.scope()?)

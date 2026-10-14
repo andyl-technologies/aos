@@ -39,6 +39,7 @@ impl PacketNative5Record {
         bytes: &[u8],
     ) -> Result<PacketNative5UnderlyingRecord, ProviderError> {
         self.storage_selection.validate()?;
+        self.capture_profile.validate()?;
         selection.provider.validate()?;
         selection.realization.validate()?;
         original.validate()?;

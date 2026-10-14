@@ -17,7 +17,9 @@ use crucible_node_provider::{
             PacketCommitRecord, PacketConnectedDefinition, PacketConnectedInventory,
             PacketConnectedNativeRecord, PacketStageRecord,
         },
-        coordinator::PacketConnectedCoordinatorInstallation,
+        coordinator::{
+            PacketConnectedCoordinatorInstallation, PacketNative5CoordinatorInstallation,
+        },
         input::{PACKET_INPUT_FEATURE, PacketInputContext, PacketInputCut},
     },
 };
@@ -30,6 +32,7 @@ use super::{
     CnpSemanticSource, CnpSemanticTransition, budget, refused, unknown,
 };
 
+mod ancestry;
 mod credit;
 mod evidence;
 mod deferred;
@@ -56,6 +59,10 @@ pub struct PacketConnectedSemanticSource {
     process: u32,
     thread: std::thread::ThreadId,
     current_native: RefCell<Option<super::process::CnpSemanticSourceRead>>,
+    pub(super) complete_capture_profile:
+        Option<crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile>,
+    complete_storage:
+        Option<crucible_node_provider::reference_packet::control::PacketNative5StorageSelection>,
 }
 
 /// Borrows complete original native edition-four bytes and their checked record.
@@ -87,6 +94,39 @@ impl PacketConnectedNativeWitness<'_> {
 }
 
 impl PacketConnectedSemanticSource {
+
+    // Complete-source authorities join the retained original allocation, never
+    // only equal installation fields or an independently live foreign child.
+    // Immutable selection data; the complete wrapper authenticates origin first.
+    pub(super) fn complete_selected_storage(
+        &self,
+    ) -> Option<&crucible_node_provider::reference_packet::control::PacketNative5StorageSelection> {
+        self.complete_storage.as_ref()
+    }
+
+    pub(super) fn authenticate_complete_native_owner(
+        &self,
+        native: &CnpSemanticProcessCustody,
+    ) -> Result<(), OperationFailure> {
+        native.authenticate_process().map_err(unknown)?;
+        let original = self.current_native.try_borrow().map_err(|_| {
+            refused("complete source original native read is already borrowed")
+        })?;
+        let original = original.as_ref().ok_or_else(|| {
+            refused("complete source original native read is absent")
+        })?;
+        if !original.same_native_owner(native) {
+            return Err(refused("complete source belongs to another original native owner"));
+        }
+        original.ensure_current().map_err(unknown)?;
+        let supplied = native.original_source_read().map_err(unknown)?;
+        if !original.same_original(&supplied) {
+            return Err(refused("complete source original registrar allocation changed"));
+        }
+        supplied.ensure_current().map_err(unknown)?;
+        original.ensure_current().map_err(unknown)
+    }
+
     /// Retains an exact connected source and complete original collecting world.
     ///
     /// Construction validates static source selection only. Actual original
@@ -100,12 +140,55 @@ impl PacketConnectedSemanticSource {
         definition: PacketConnectedDefinition,
         coordinator: PacketConnectedCoordinatorInstallation,
     ) -> Result<Self, OperationFailure> {
-        super::preparation::validate_installation(&installation)?;
+        Self::new_selected(
+            installation,
+            definition,
+            SelectedConnectedCoordinator::Four(coordinator),
+        )
+    }
+
+    pub(super) fn complete_preparation_unbound(&self) -> Result<bool, OperationFailure> {
+        self.local_owner()?;
+        self.current_native.try_borrow()
+            .map(|original| original.is_none())
+            .map_err(|_| refused("complete source native association is busy"))
+    }
+
+    pub(super) fn new_complete_collecting(
+        installation: CnpSemanticInstallation,
+        definition: PacketConnectedDefinition,
+        coordinator: PacketNative5CoordinatorInstallation,
+        storage_selection:crucible_node_provider::reference_packet::control::PacketNative5StorageSelection,
+    ) -> Result<Self, OperationFailure> {
+        storage_selection.validate().map_err(unknown)?;
+        let mut source = Self::new_selected(
+            installation,
+            definition,
+            SelectedConnectedCoordinator::Complete(coordinator),
+        )?;
+        source.complete_storage = Some(storage_selection);
+        Ok(source)
+    }
+
+    fn new_selected(
+        installation: CnpSemanticInstallation,
+        definition: PacketConnectedDefinition,
+        coordinator: SelectedConnectedCoordinator,
+    ) -> Result<Self, OperationFailure> {
+        let complete = matches!(&coordinator, SelectedConnectedCoordinator::Complete(_));
+        if complete {
+            super::preparation::validate_complete_installation(&installation)?;
+        } else {
+            super::preparation::validate_installation(&installation)?;
+        }
         budget::serialized_size(&definition, 8192)?;
-        budget::serialized_size(&coordinator, crucible_node_provider::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES)?;
-        let contract =
+        coordinator.precharge()?;
+        let contract = if complete {
+            crucible_node_provider::reference_packet::continuation_contracts::complete_packet_contract().map_err(unknown)?
+        } else {
             crucible_node_provider::reference_packet::contracts::connected_packet_contract()
-                .map_err(unknown)?;
+                .map_err(unknown)?
+        };
         let contract = canonical::content_ref(&contract, "application/json").map_err(unknown)?;
         let octets =
             crucible_node_provider::reference_packet::contracts::immediate_packet_contract()
@@ -119,17 +202,36 @@ impl PacketConnectedSemanticSource {
             .implementation
             .implementation_id
             .as_str()
-            != "source-owned.packet-native/4"
-            || installation.profile.profile_id.as_str() != "source-owned.packet-connected/4"
-            || installation.receipt_schema.id.as_str() != "source-owned.packet-receipt/4"
-            || installation.receipt_schema.version != 4
+            != if complete {
+                "source-owned.packet-native/5"
+            } else {
+                "source-owned.packet-native/4"
+            }
+            || installation.profile.profile_id.as_str()
+                != if complete {
+                    "source-owned.packet-complete-original-lineage/5"
+                } else {
+                    "source-owned.packet-connected/4"
+                }
+            || installation.receipt_schema.id.as_str()
+                != if complete {
+                    "source-owned.packet-receipt/5"
+                } else {
+                    "source-owned.packet-receipt/4"
+                }
+            || installation.receipt_schema.version != if complete { 5 } else { 4 }
             || installation.receipt_schema.definition != contract
             || installation.profile.configuration_schema.id.as_str()
                 != "source-owned.packet-connected-program/4"
             || installation.profile.configuration_schema.version != 4
             || installation.profile.configuration_schema.definition != contract
-            || installation.exact_facet.id.as_str() != "source-owned.packet-exact/4"
-            || installation.exact_facet.version != 4
+            || installation.exact_facet.id.as_str()
+                != if complete {
+                    "source-owned.packet-exact/5"
+                } else {
+                    "source-owned.packet-exact/4"
+                }
+            || installation.exact_facet.version != if complete { 5 } else { 4 }
             || installation.descriptor.roles.as_slice()
                 != [Id::new("external_device").map_err(unknown)?]
             || installation.profile.roles != installation.descriptor.roles
@@ -138,10 +240,25 @@ impl PacketConnectedSemanticSource {
             || installation.realize.configuration != configuration
             || definition.schema != "source-owned.packet-connected-program/4"
             || !(1..=4).contains(&definition.connections.len())
-            || installation.guarantees.repeatability != Repeatability::Nondeterministic
-            || installation.guarantees.capture_scope != CaptureScope::None
-            || installation.guarantees.continuation != Continuation::Unsupported
-            || installation.guarantees.durable_restart
+            || installation.guarantees.repeatability
+                != if complete {
+                    Repeatability::Unqualified
+                } else {
+                    Repeatability::Nondeterministic
+                }
+            || installation.guarantees.capture_scope
+                != if complete {
+                    CaptureScope::CompleteModel
+                } else {
+                    CaptureScope::None
+                }
+            || installation.guarantees.continuation
+                != if complete {
+                    Continuation::Exact
+                } else {
+                    Continuation::Unsupported
+                }
+            || installation.guarantees.durable_restart != complete
             || installation.guarantees.isolated_fork
             || installation.guarantees.conditional_replay
             || installation.maximum_operations > 64
@@ -201,7 +318,7 @@ impl PacketConnectedSemanticSource {
             return Err(refused("connected packet foreign original output"));
         }
         let selected_world: WorldBinding =
-            serde_json::from_value(coordinator.template["world"].clone()).map_err(unknown)?;
+            serde_json::from_value(coordinator.template()["world"].clone()).map_err(unknown)?;
         selected_world.validate().map_err(unknown)?;
         let incoming = selected_world
             .connections
@@ -225,7 +342,7 @@ impl PacketConnectedSemanticSource {
                 "connected native definition differs from original full world routes",
             ));
         }
-        let world = world::PacketConnectedWorldScope::new(&installation, coordinator)?;
+        let world = coordinator.into_scope(&installation)?;
         // Share immutable runtime-issued lineage allocations in a bounded
         // original Stage roster. All slots exist before native effects.
         let mut input_lineage = Vec::new();
@@ -240,6 +357,8 @@ impl PacketConnectedSemanticSource {
             process: std::process::id(),
             thread: std::thread::current().id(),
             current_native: RefCell::new(None),
+            complete_storage: None,
+            complete_capture_profile: None,
         })
     }
 
@@ -445,9 +564,55 @@ fn controller_originals(
     controller.originals_by_origin(crucible_node_provider::envelope::RequestOrigin::Controller)
 }
 
-#[cfg(test)]
 pub(super) fn native_result_root(
     result: Option<&MethodResult>,
 ) -> Result<Option<ContentRef>, OperationFailure> {
     native::result_root(result)
+}
+
+// Only an explicit entry point chooses this closed internal dialect. It keeps
+// the actual selected coordinator and never fabricates a four-tuple for five.
+enum SelectedConnectedCoordinator {
+    Four(PacketConnectedCoordinatorInstallation),
+    Complete(PacketNative5CoordinatorInstallation),
+}
+
+impl SelectedConnectedCoordinator {
+    fn precharge(&self) -> Result<(), OperationFailure> {
+        let maximum=crucible_node_provider::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES;
+        match self {
+            Self::Four(value) => budget::serialized_size(value, maximum),
+            Self::Complete(value) => budget::serialized_size(value, maximum),
+        }
+        .map(|_| ())
+    }
+
+    fn template(&self) -> &serde_json::Value {
+        match self {
+            Self::Four(value) => &value.template,
+            Self::Complete(value) => &value.template,
+        }
+    }
+
+    fn into_scope(
+        self,
+        installation: &CnpSemanticInstallation,
+    ) -> Result<world::PacketConnectedWorldScope, OperationFailure> {
+        match self {
+            Self::Four(value) => world::PacketConnectedWorldScope::new(installation, value),
+            Self::Complete(value) => {
+                world::PacketConnectedWorldScope::new_complete(installation, value)
+            }
+        }
+    }
+}
+
+impl PacketConnectedSemanticSource {
+    pub(super) fn authenticate_complete_world_scope(
+        &self,
+        coordinator: &PacketNative5CoordinatorInstallation,
+    ) -> Result<(), OperationFailure> {
+        self.local_owner()?;
+        self.world.authenticate_complete_installation(coordinator)
+    }
 }

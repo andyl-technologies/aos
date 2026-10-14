@@ -53,6 +53,7 @@ pub struct CnpSemanticProcessCustody {
     pub(super) controller: Option<CnpController>,
     pub(super) handshake: Option<Handshake>,
     pub(super) expected_executable: ContentRef,
+    pub(super) installation_kind: Option<super::registry::SemanticInstallationKind>,
     pub(super) registration: Option<Rc<dyn super::CnpSemanticRegistrationPolicy>>,
     pub(super) installed_identity: Option<crucible_node_contract::HashRef>,
     pub(super) source: Option<Rc<dyn super::CnpSemanticSource>>,
@@ -70,7 +71,7 @@ pub struct CnpSemanticProcessCustody {
 }
 
 impl CnpSemanticProcessCustody {
-    fn ensure_origin(&self) -> Result<(), ProviderError> {
+    pub(super) fn ensure_origin(&self) -> Result<(), ProviderError> {
         if self.creator_process != std::process::id() {
             return Err(ProviderError::Correlation(
                 "generic original custody belongs to another process",
@@ -300,6 +301,7 @@ impl CnpSemanticLaunchGuard {
                 controller: None,
                 handshake: None,
                 expected_executable: executable,
+                installation_kind: None,
                 registration: None,
                 installed_identity: None,
                 source: None,

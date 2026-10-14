@@ -3982,6 +3982,37 @@ issuer and selected CREATE refused before descriptor allocation. These component
 and source-replay checks do not qualify full Kbuild, linking, native workqueue
 execution, physical peak, RUN or Ready.
 
+## Original source preconstruction and protocol receiver association
+
+The complete source retains its original native read, allocated source banks,
+controller geometry and immutable capture profile through realization. A
+separate original three-socket group is created before the Source Rc and child;
+the sole consuming reader authenticates the same group before inspecting it.
+Source, factory and oracle rechecks cannot replace the group with copied data or
+derive active Capture authority from an empty socket observation.
+
+Seven explicit provider prerequisites retain the original capture profile in
+control records and continuation data. One-shot binding requires unused original
+storage/coordinator state and precedes endpoint construction; captured profile
+data without that original storage is refused. The existing compact prelistener
+refusal remains. This closes the two missing fields found in the earlier
+Source59 combined compilation without importing unrelated phased-service code.
+
+Independent receipt
+`d50b65f023f8ffd46b96f493677492bd839733b57ffca22361d01db14cd74c54`
+verifies 50 production and twelve required test/fixture roles against current
+preimages, all 9,617 actual compilation source bodies and matching artifacts.
+Three-crate strict checks, twelve Source controls and three modeled provider
+controls pass. Separate original three-child preparation, recorder, receiver
+group and reap flights retain their own Source41/48 identities; they are not
+retagged as Source60 native execution. Earlier failed cohorts remain evidence.
+
+Capture preflight checks the original authority and demand, then refuses absent
+local settlement and ancestry codecs. Both Core42 refusals remain. Source-local
+journal issuance, the fourth native-after transfer/confirmation, complete
+physical admission, genuine factory/adopter activation and fresh restoration
+remain required; this association does not qualify Arm, Capture or Ready.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

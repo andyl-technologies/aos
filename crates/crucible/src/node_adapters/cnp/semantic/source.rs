@@ -474,6 +474,53 @@ pub trait CnpSemanticSource {
         sequence: crucible_node_contract::U64,
     ) -> Result<crucible_node_contract::InputBatch, OperationFailure>;
 
+    /// Preflights complete capture on the same original readonly controller.
+    ///
+    /// The owning scope carries live custody and storage, not registrar mirrors.
+    /// This callback performs no administrative registration or modeled effect.
+    /// Its inert result still requires the runtime's occurrence seal and factory
+    /// admission before a capture ticket can be issued.
+    ///
+    /// # Errors
+    /// Refuses unsupported mechanisms, foreign original activation, unsettled
+    /// custody or unavailable complete source-selected allocation demand.
+    fn preflight_complete_original_lineage_capture(
+        &self,
+        _scope: CnpSemanticRealizationScope<'_>,
+        _activation: &WorldActivation,
+        _record: &crate::node_contract::OriginalLineageRuntimeRecord,
+        _runtime_object: &InputPayload,
+        _limits: crate::node_state::NativeArchiveLimits,
+    ) -> Result<crate::node_state::CompleteOriginalOwnerCapturePreflight, OperationFailure> {
+        Err(super::refused(
+            "generic source complete capture preflight is unsupported",
+        ))
+    }
+
+    /// Captures one complete original native owner under its runtime-issued ticket.
+    ///
+    /// The callback receives exclusive access to the same actual capsule. It
+    /// must precharge the complete original administrative prefix, authenticate
+    /// its installed native mechanism, and return only a settled full snapshot
+    /// and request/response journal. Legacy adapters refuse by default.
+    ///
+    /// # Errors
+    /// Refuses unsupported mechanisms, changed original custody, finite excess
+    /// or uncertain/unsettled capture. No DTO or live inventory grants capture.
+    fn capture_original_lineage_continuation_with_ticket(
+        &self,
+        _scope: super::CnpSemanticCaptureScope<'_>,
+        _ticket: &crate::node_contract::OriginalLineageOwnerCaptureTicket<'_>,
+        _activation: &WorldActivation,
+        _record: &crate::node_contract::OriginalLineageRuntimeRecord,
+        _runtime_object: &InputPayload,
+        _limits: crate::node_contract::NativeCaptureLimits,
+    ) -> Result<crate::node_contract::InstalledOriginalLineageCapture, OperationFailure> {
+        Err(super::refused(
+            "generic source ticketed native capture is unsupported",
+        ))
+    }
+
     /// Authenticates genuine unchanged native staging without semantic consumption.
     ///
     /// # Errors

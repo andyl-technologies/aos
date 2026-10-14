@@ -73,6 +73,8 @@ struct ControlView<'a> {
     complete_coordinator:
         &'a Option<super::super::coordinator::PacketNative5CoordinatorInstallation>,
     complete_storage: &'a Option<super::native5::PacketNative5StorageSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    complete_capture_profile: &'a Option<super::super::service::PacketNative5CaptureProfile>,
 }
 
 #[derive(Serialize)]
@@ -179,6 +181,7 @@ impl PacketControl {
                 connected_coordinator: &self.connected_coordinator,
                 complete_coordinator: &self.complete_coordinator,
                 complete_storage: &self.complete_storage,
+                complete_capture_profile: &self.complete_capture_profile,
             },
         };
         crate::connection::serialized_credit(&view, maximum_bytes)?;
@@ -257,6 +260,8 @@ struct ControlState {
         Option<super::super::coordinator::PacketConnectedCoordinatorInstallation>,
     complete_coordinator: Option<super::super::coordinator::PacketNative5CoordinatorInstallation>,
     complete_storage: Option<super::native5::PacketNative5StorageSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    complete_capture_profile: Option<super::super::service::PacketNative5CaptureProfile>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -411,6 +416,14 @@ impl ControlState {
                     "native5 captured storage/coordinator mixture",
                 ));
             }
+        }
+        if let Some(profile) = &self.complete_capture_profile {
+            if self.complete_coordinator.is_none() || self.complete_storage.is_none() {
+                return Err(ProviderError::Correlation(
+                    "native5 captured profile lacks original birth storage",
+                ));
+            }
+            profile.validate()?;
         }
         if let Some(installed) = &self.complete_coordinator {
             if self.common_coordinator.is_some()

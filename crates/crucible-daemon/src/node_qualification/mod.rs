@@ -107,3 +107,12 @@ pub use packet_collection::{
     PacketConnectedPeerLaunchRequest, PacketConnectedPublicationRequest,
     PreparedPacketConnectedPeer, StoredPacketConnectedResultPublisher,
 };
+
+/// Structural complete-source declarations retain no capture qualification.
+pub use packet_collection::{
+    InstalledPacketCompleteCollectionAuthority, PacketCompleteCollectionRequest,
+    PacketCompleteNativeOracle, PacketCompleteOracleRequest,
+    InstalledPacketCompleteGraphPolicy, PacketCompleteGraphOwner, PacketCompleteGraphRequest,
+    PacketCompletePopulationRequest, PacketCompleteWitnessPopulation,
+    PacketCompleteRoster, packet_complete_independent_graph_contract, packet_complete_measured_graph_proof,
+};

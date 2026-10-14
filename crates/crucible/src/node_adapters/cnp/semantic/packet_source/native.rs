@@ -19,11 +19,57 @@ impl PacketSemanticSource {
         self.authenticate_provider(scope.native)?;
         let bytes = scope.controller.content(root).map_err(unknown)?;
         root.verify(bytes).map_err(unknown)?;
-        let record: PacketNativeRecord = serde_json::from_value(
+        let value =
             canonical::parse_json(bytes, self.installation.maximum_result_bytes.min(65_536))
-                .map_err(unknown)?,
-        )
-        .map_err(unknown)?;
+                .map_err(unknown)?;
+        let record = if let Some(world) = self
+            .world_scope
+            .as_ref()
+            .filter(|world| world.is_complete())
+        {
+            let wrapper: crucible_node_provider::reference_packet::control::PacketNative5Record =
+                serde_json::from_value(value).map_err(unknown)?;
+            if canonical::canonical_json(&serde_json::to_value(&wrapper).map_err(unknown)?)
+                .map_err(unknown)?
+                != bytes
+            {
+                return Err(refused("complete producer wrapper noncanonical"));
+            }
+            let request_id = wrapper
+                .original
+                .request_id
+                .0
+                .as_ref()
+                .ok_or_else(|| refused("complete producer original request absent"))?;
+            let original = scope
+                .controller
+                .original(request_id)
+                .ok_or_else(|| refused("complete producer original controller request absent"))?;
+            let expected = self
+                .complete_storage
+                .as_ref()
+                .ok_or_else(|| refused("complete source selected storage absent"))?;
+            if wrapper.capture_profile != *self.complete_capture_profile.as_ref().unwrap_or(
+                &crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile::OriginalArrays6,
+            )
+                || wrapper.storage_selection != *expected
+                || wrapper.storage_selection.limits != scope.controller.authority().limits()
+            {
+                return Err(refused(
+                    "complete source original storage/negotiated limits changed",
+                ));
+            }
+            let raw = scope
+                .controller
+                .content(&wrapper.native_record)
+                .map_err(unknown)?;
+            match wrapper.verify_original_record_data(world.selection(),scope.native.provider_pid(),&original.request,raw).map_err(unknown)? {
+                crucible_node_provider::reference_packet::control::PacketNative5UnderlyingRecord::Producer(record)=>*record,
+                _=>return Err(refused("complete producer cannot consume reactive record")),
+            }
+        } else {
+            serde_json::from_value::<PacketNativeRecord>(value).map_err(unknown)?
+        };
         let request = record
             .original
             .request_id
@@ -102,6 +148,65 @@ impl PacketSemanticSource {
         }
         self.inventory(&record)?;
         Ok(record)
+    }
+
+    pub(super) fn authenticate_record_evidence(
+        &self,
+        scope: &CnpSemanticRealizationScope<'_>,
+        reference: &ContentRef,
+    ) -> Result<(), OperationFailure> {
+        if !self
+            .world_scope
+            .as_ref()
+            .is_some_and(|world| world.is_complete())
+        {
+            return self.native_record(scope, reference).map(|_| ());
+        }
+        self.authenticate_provider(scope.native)?;
+        let bytes = scope.controller.content(reference).map_err(unknown)?;
+        reference.verify(bytes).map_err(unknown)?;
+        let value = canonical::parse_json(bytes, 65_536).map_err(unknown)?;
+        if value.get("schema").and_then(serde_json::Value::as_str)
+            == Some("source-owned.packet-receipt/5")
+        {
+            return self.native_record(scope, reference).map(|_| ());
+        }
+        let record: PacketNativeRecord = serde_json::from_value(value).map_err(unknown)?;
+        let request = record
+            .original
+            .request_id
+            .0
+            .as_ref()
+            .ok_or_else(|| refused("complete producer raw original id absent"))?;
+        let original = scope
+            .controller
+            .original(request)
+            .ok_or_else(|| refused("complete producer raw original request absent"))?;
+        let response = original
+            .response
+            .as_ref()
+            .ok_or_else(|| refused("complete producer raw original response absent"))?;
+        let request =
+            decode_request(original.request.method, &original.request.body).map_err(unknown)?;
+        let root = super::super::packet_connected_source::native_result_root(
+            decode_response(&request, &response.body)
+                .map_err(unknown)?
+                .result
+                .as_ref(),
+        )?
+        .ok_or_else(|| refused("complete producer raw original root absent"))?;
+        let wrapper: crucible_node_provider::reference_packet::control::PacketNative5Record =
+            serde_json::from_value(
+                canonical::parse_json(scope.controller.content(&root).map_err(unknown)?, 65_536)
+                    .map_err(unknown)?,
+            )
+            .map_err(unknown)?;
+        if wrapper.native_record != *reference || self.native_record(scope, &root)? != record {
+            return Err(refused(
+                "complete producer raw differs from original wrapper",
+            ));
+        }
+        self.authenticate_provider(scope.native)
     }
 
     fn inventory(&self, record: &PacketNativeRecord) -> Result<(), OperationFailure> {

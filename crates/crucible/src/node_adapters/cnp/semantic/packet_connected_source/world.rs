@@ -8,14 +8,18 @@
 use crucible_node_provider::{
     bodies::RealizeResult,
     reference_packet::{
-        control::PacketControlSelection, coordinator::PacketConnectedCoordinatorInstallation,
+        control::PacketControlSelection,
+        coordinator::{
+            PacketConnectedCoordinatorInstallation, PacketConnectedHostSelection,
+            PacketNative5CoordinatorInstallation,
+        },
     },
 };
 
 use super::*;
 
 pub(super) struct PacketConnectedWorldScope {
-    coordinator: PacketConnectedCoordinatorInstallation,
+    coordinator: InstalledConnectedCoordinator,
     local: usize,
     activation: SavedRuntimeActivation,
 }
@@ -26,24 +30,49 @@ impl PacketConnectedWorldScope {
         coordinator: PacketConnectedCoordinatorInstallation,
     ) -> Result<Self, OperationFailure> {
         budget::serialized_size(&coordinator, crucible_node_provider::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES)?;
+        Self::new_selected(
+            installation,
+            InstalledConnectedCoordinator::Four(Box::new(coordinator)),
+        )
+    }
+
+    pub(super) fn new_complete(
+        installation: &CnpSemanticInstallation,
+        coordinator: PacketNative5CoordinatorInstallation,
+    ) -> Result<Self, OperationFailure> {
+        budget::serialized_size(&coordinator, crucible_node_provider::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES)?;
+        Self::new_selected(
+            installation,
+            InstalledConnectedCoordinator::Five(Box::new(coordinator)),
+        )
+    }
+
+    fn new_selected(
+        installation: &CnpSemanticInstallation,
+        coordinator: InstalledConnectedCoordinator,
+    ) -> Result<Self, OperationFailure> {
+        let view = coordinator.view();
         let mut selected = None;
-        for (index, peer) in coordinator.participants.iter().enumerate() {
+        for (index, peer) in view.participants.iter().enumerate() {
             if Self::matches_installation(installation, peer) && selected.replace(index).is_some() {
                 return Err(refused("packet whole-world local source is duplicated"));
             }
         }
         let local = selected.ok_or_else(|| refused("packet whole-world local source absent"))?;
         coordinator
-            .validate(&coordinator.participants[local])
+            .validate(&view.participants[local])
             .map_err(unknown)?;
-        let contract =
-            crucible_node_provider::reference_packet::contracts::connected_ingress_contract()
-                .map_err(unknown)?;
+        let (identifier, version, contract) = match &coordinator {
+            InstalledConnectedCoordinator::Four(_) => ("source-owned.packet-ingress/4",4,
+                crucible_node_provider::reference_packet::contracts::connected_ingress_contract().map_err(unknown)?),
+            InstalledConnectedCoordinator::Five(_) => ("source-owned.packet-ingress/5",5,
+                crucible_node_provider::reference_packet::continuation_contracts::complete_ingress_contract().map_err(unknown)?),
+        };
         let definition = canonical::content_ref(&contract, "application/json").map_err(unknown)?;
         let formats = &installation.provider.implementation.formats;
         if formats
             .iter()
-            .filter(|format| format.id.as_str() == "source-owned.packet-ingress/4")
+            .filter(|format| format.id.as_str() == identifier)
             .count()
             != 1
             || formats.iter().any(|format| {
@@ -52,10 +81,14 @@ impl PacketConnectedWorldScope {
                     "source-owned.packet-ingress/1"
                         | "source-owned.packet-ingress/2"
                         | "source-owned.packet-ingress/3"
-                ) || (format.id.as_str() == "source-owned.packet-ingress/4"
-                    && (format.version != 4
-                        || format.definition != definition
-                        || !format.extensions.is_empty()))
+                ) || (matches!(
+                    format.id.as_str(),
+                    "source-owned.packet-ingress/4" | "source-owned.packet-ingress/5"
+                ) && format.id.as_str() != identifier)
+                    || (format.id.as_str() == identifier
+                        && (format.version != version
+                            || format.definition != definition
+                            || !format.extensions.is_empty()))
             })
         {
             return Err(refused(
@@ -63,7 +96,7 @@ impl PacketConnectedWorldScope {
             ));
         }
         let activation: SavedRuntimeActivation =
-            serde_json::from_value(coordinator.template["activation"].clone()).map_err(unknown)?;
+            serde_json::from_value(view.template["activation"].clone()).map_err(unknown)?;
         Ok(Self {
             coordinator,
             local,
@@ -72,11 +105,15 @@ impl PacketConnectedWorldScope {
     }
 
     pub(super) fn selection(&self) -> &PacketControlSelection {
-        &self.coordinator.participants[self.local]
+        &self.coordinator.view().participants[self.local]
     }
 
-    pub(super) fn coordinator(&self) -> &PacketConnectedCoordinatorInstallation {
-        &self.coordinator
+    pub(super) fn coordinator(&self) -> ConnectedCoordinatorView<'_> {
+        self.coordinator.view()
+    }
+
+    pub(super) fn is_complete(&self) -> bool {
+        matches!(&self.coordinator, InstalledConnectedCoordinator::Five(_))
     }
 
     fn matches_installation(
@@ -102,8 +139,20 @@ impl PacketConnectedWorldScope {
         &self,
         coordinator: &PacketConnectedCoordinatorInstallation,
     ) -> Result<(), OperationFailure> {
-        if coordinator != &self.coordinator {
+        if !matches!(&self.coordinator,InstalledConnectedCoordinator::Four(original) if original.as_ref()==coordinator)
+        {
             return Err(refused("packet original whole-world installation changed"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn authenticate_complete_installation(
+        &self,
+        coordinator: &PacketNative5CoordinatorInstallation,
+    ) -> Result<(), OperationFailure> {
+        if !matches!(&self.coordinator,InstalledConnectedCoordinator::Five(original) if original.as_ref()==coordinator)
+        {
+            return Err(refused("complete packet original coordinator changed"));
         }
         Ok(())
     }
@@ -135,9 +184,10 @@ impl PacketConnectedWorldScope {
         &self,
         realization: &RealizeResult,
     ) -> Result<(), OperationFailure> {
-        if realization.realization_manifest != self.coordinator.participants[self.local].realization
+        if realization.realization_manifest
+            != self.coordinator.view().participants[self.local].realization
             || realization.prepared_token
-                != self.coordinator.participants[self.local].prepared_token
+                != self.coordinator.view().participants[self.local].prepared_token
         {
             return Err(refused(
                 "packet whole-world original preparation token changed",
@@ -157,7 +207,7 @@ impl PacketConnectedWorldScope {
                 "packet whole-world complete prepared roster absent",
             ));
         }
-        for (actual, peer) in owners.iter().zip(&self.coordinator.participants) {
+        for (actual, peer) in owners.iter().zip(self.coordinator.view().participants) {
             let binding = &peer.realization.bindings[0];
             let expected = &peer.realization.owners[0];
             if actual.owner_id != expected.id
@@ -174,9 +224,9 @@ impl PacketConnectedWorldScope {
             actual.ready_receipt.validate().map_err(unknown)?;
         }
         let actual = owners
-            .get(self.coordinator.participants.len())
+            .get(self.coordinator.view().participants.len())
             .ok_or_else(|| refused("connected original host prepared row absent"))?;
-        let host = &self.coordinator.host;
+        let host = self.coordinator.view().host;
         if actual.owner_id != host.owner.owner.id
             || actual.incarnation_id != host.binding.authority.incarnation_id
             || actual.owner_generation != host.binding.authority.owner_generation
@@ -198,5 +248,52 @@ impl PacketConnectedWorldScope {
 
     pub(super) fn authenticate_coordinator(&self, bytes: &[u8]) -> Result<(), OperationFailure> {
         self.coordinator.validate_body(bytes).map_err(unknown)
+    }
+}
+
+// This closed choice retains the actual selected edition's whole value. It
+// never reconstructs a portable four tuple from complete five metadata.
+enum InstalledConnectedCoordinator {
+    Four(Box<PacketConnectedCoordinatorInstallation>),
+    Five(Box<PacketNative5CoordinatorInstallation>),
+}
+
+pub(super) struct ConnectedCoordinatorView<'a> {
+    pub(super) participants: &'a [PacketControlSelection],
+    pub(super) host: &'a PacketConnectedHostSelection,
+    pub(super) template: &'a serde_json::Value,
+}
+
+impl InstalledConnectedCoordinator {
+    fn view(&self) -> ConnectedCoordinatorView<'_> {
+        match self {
+            Self::Four(original) => ConnectedCoordinatorView {
+                participants: &original.participants,
+                host: &original.host,
+                template: &original.template,
+            },
+            Self::Five(original) => ConnectedCoordinatorView {
+                participants: &original.participants,
+                host: &original.host,
+                template: &original.template,
+            },
+        }
+    }
+
+    fn validate(
+        &self,
+        local: &PacketControlSelection,
+    ) -> Result<(), crucible_node_provider::ProviderError> {
+        match self {
+            Self::Four(original) => original.validate(local),
+            Self::Five(original) => original.validate(local),
+        }
+    }
+
+    fn validate_body(&self, bytes: &[u8]) -> Result<(), crucible_node_provider::ProviderError> {
+        match self {
+            Self::Four(original) => original.validate_body(bytes),
+            Self::Five(original) => original.validate_body(bytes),
+        }
     }
 }

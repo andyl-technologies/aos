@@ -43,7 +43,7 @@ pub use process::{
 };
 
 pub use semantic::{
-    CnpSemanticAcceptance, CnpSemanticAdmissionFailure, CnpSemanticAttachmentFailure,
+    CnpSemanticAcceptance, CnpSemanticCaptureScope, CnpOriginalSemanticSnapshot, CnpSemanticSnapshotReservation, CnpSemanticAdmissionFailure, CnpSemanticAttachmentFailure,
     CnpSemanticConformanceAuthority, CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
     CnpSemanticConformanceWorldProvider, CnpSemanticExactConformanceWorldProvider,
     CnpSemanticExactWorldReservation, CnpSemanticExactWorldReservationFailure,
@@ -54,9 +54,9 @@ pub use semantic::{
     CnpSemanticRegistrationPolicy, CnpSemanticRegistry, CnpSemanticReservationFailure,
     CnpSemanticSource, CnpSemanticSourceRead, CnpSemanticTransition,
     CnpSemanticWorldPreparationFailure, CnpSemanticWorldReservationFailure,
-    InstalledCnpConformanceRole, InstalledCnpSemanticRole, PacketConnectedInputWitness,
-    PacketConnectedNativeWitness, PacketConnectedSemanticSource, PacketNativeWitness,
-    PacketSemanticSource, packet_common_grant_authorization,
+    InstalledCnpConformanceRole, InstalledCnpSemanticRole, PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits, PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader, PacketCompleteNativeRecord, PacketCompleteNativeWitness, PacketCompleteSemanticSource, PacketCompleteSourceRole,
+    PacketConnectedInputWitness, PacketConnectedNativeWitness, PacketConnectedSemanticSource,
+    PacketNativeWitness, PacketSemanticSource, packet_common_grant_authorization,
 };
 
 /// Runs an actual installed public checksum node under the common quantized runtime.

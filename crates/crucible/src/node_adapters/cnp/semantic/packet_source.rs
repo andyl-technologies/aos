@@ -46,6 +46,10 @@ pub struct PacketSemanticSource {
     program: PacketProgramDefinition,
     world_scope: Option<world::PacketWorldSourceScope>,
     current_native: RefCell<Option<super::process::CnpSemanticSourceRead>>,
+    pub(super) complete_capture_profile:
+        Option<crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile>,
+    complete_storage:
+        Option<crucible_node_provider::reference_packet::control::PacketNative5StorageSelection>,
 }
 
 /// Borrows authentic source-native original bytes without issuing permission.
@@ -77,14 +81,50 @@ impl PacketNativeWitness<'_> {
 }
 
 impl PacketSemanticSource {
+
+    // Complete-source authorities join the retained original allocation, never
+    // only equal installation fields or an independently live foreign child.
+    // Immutable selection data; the complete wrapper authenticates origin first.
+    pub(super) fn complete_selected_storage(
+        &self,
+    ) -> Option<&crucible_node_provider::reference_packet::control::PacketNative5StorageSelection> {
+        self.complete_storage.as_ref()
+    }
+
+    pub(super) fn authenticate_complete_native_owner(
+        &self,
+        native: &CnpSemanticProcessCustody,
+    ) -> Result<(), OperationFailure> {
+        native.authenticate_process().map_err(unknown)?;
+        let original = self.current_native.try_borrow().map_err(|_| {
+            refused("complete source original native read is already borrowed")
+        })?;
+        let original = original.as_ref().ok_or_else(|| {
+            refused("complete source original native read is absent")
+        })?;
+        if !original.same_native_owner(native) {
+            return Err(refused("complete source belongs to another original native owner"));
+        }
+        original.ensure_current().map_err(unknown)?;
+        let supplied = native.original_source_read().map_err(unknown)?;
+        if !original.same_original(&supplied) {
+            return Err(refused("complete source original registrar allocation changed"));
+        }
+        supplied.ensure_current().map_err(unknown)?;
+        original.ensure_current().map_err(unknown)
+    }
+
     fn coordinator_byte_limit(&self) -> usize {
-        if self.world_scope.as_ref().is_some_and(world::PacketWorldSourceScope::is_connected) {
+        if self
+            .world_scope
+            .as_ref()
+            .is_some_and(world::PacketWorldSourceScope::is_connected)
+        {
             crucible_node_provider::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES
         } else {
             65_536
         }
     }
-
 
     /// Checks this original source's retained collecting-world installation.
     ///
@@ -175,7 +215,20 @@ impl PacketSemanticSource {
         program: PacketProgramDefinition,
         profile: &str,
     ) -> Result<Self, OperationFailure> {
-        super::preparation::validate_installation(&installation)?;
+        Self::new_selected_edition(installation, program, profile, false)
+    }
+
+    fn new_selected_edition(
+        installation: CnpSemanticInstallation,
+        program: PacketProgramDefinition,
+        profile: &str,
+        complete: bool,
+    ) -> Result<Self, OperationFailure> {
+        if complete {
+            super::preparation::validate_complete_installation(&installation)?;
+        } else {
+            super::preparation::validate_installation(&installation)?;
+        }
         budget::serialized_size(&program, 8192)?;
         let bytes = canonical::canonical_json(&serde_json::to_value(&program).map_err(unknown)?)
             .map_err(unknown)?;
@@ -186,25 +239,45 @@ impl PacketSemanticSource {
         let contract =
             canonical::content_ref(&contract_bytes, "application/json").map_err(unknown)?;
         let ports = &installation.descriptor.ports;
-        if installation.receipt_schema.id.as_str() != "source-owned.packet-receipt/2"
+        let semantic_contract = if complete {
+            let bytes=crucible_node_provider::reference_packet::continuation_contracts::complete_packet_contract().map_err(unknown)?;
+            canonical::content_ref(&bytes, "application/json").map_err(unknown)?
+        } else {
+            contract.clone()
+        };
+        if installation.receipt_schema.id.as_str()
+            != if complete {
+                "source-owned.packet-receipt/5"
+            } else {
+                "source-owned.packet-receipt/2"
+            }
             || installation.profile.profile_id.as_str() != profile
             || installation
                 .provider
                 .implementation
                 .implementation_id
                 .as_str()
-                != "source-owned.packet-native/2"
-            || installation.exact_facet.id.as_str() != "source-owned.packet-exact/2"
+                != if complete {
+                    "source-owned.packet-native/5"
+                } else {
+                    "source-owned.packet-native/2"
+                }
+            || installation.exact_facet.id.as_str()
+                != if complete {
+                    "source-owned.packet-exact/5"
+                } else {
+                    "source-owned.packet-exact/2"
+                }
             || installation.descriptor.roles.as_slice()
                 != [Id::new("external_device").map_err(unknown)?]
             || installation.profile.roles != installation.descriptor.roles
-            || installation.receipt_schema.version != 2
-            || installation.receipt_schema.definition != contract
+            || installation.receipt_schema.version != if complete { 5 } else { 2 }
+            || installation.receipt_schema.definition != semantic_contract
             || installation.profile.configuration_schema.id.as_str()
                 != "source-owned.packet-program/1"
             || installation.profile.configuration_schema.version != 1
-            || installation.profile.configuration_schema.definition != contract
-            || installation.exact_facet.version != 2
+            || installation.profile.configuration_schema.definition != semantic_contract
+            || installation.exact_facet.version != if complete { 5 } else { 2 }
             || program.schema != "source-owned.packet-program.v1"
             || program.events.len() != 2
             || program.events[0].payload.is_some()
@@ -236,10 +309,25 @@ impl PacketSemanticSource {
             || ports[0].lanes[0].payload_schema.definition != contract
             || ports[0].lanes[0].maximum_payload_bytes.get() != 32
             || ports[0].lanes[0].maximum_pending_events.get() != 1
-            || installation.guarantees.repeatability != Repeatability::Nondeterministic
-            || installation.guarantees.capture_scope != CaptureScope::None
-            || installation.guarantees.continuation != Continuation::Unsupported
-            || installation.guarantees.durable_restart
+            || installation.guarantees.repeatability
+                != if complete {
+                    Repeatability::Unqualified
+                } else {
+                    Repeatability::Nondeterministic
+                }
+            || installation.guarantees.capture_scope
+                != if complete {
+                    CaptureScope::CompleteModel
+                } else {
+                    CaptureScope::None
+                }
+            || installation.guarantees.continuation
+                != if complete {
+                    Continuation::Exact
+                } else {
+                    Continuation::Unsupported
+                }
+            || installation.guarantees.durable_restart != complete
             || installation.guarantees.isolated_fork
             || installation.guarantees.conditional_replay
             || installation.maximum_operations > 64
@@ -260,6 +348,8 @@ impl PacketSemanticSource {
             program,
             world_scope: None,
             current_native: RefCell::new(None),
+            complete_storage: None,
+            complete_capture_profile: None,
         })
     }
 
@@ -307,6 +397,47 @@ impl PacketSemanticSource {
         Ok(source)
     }
 
+    pub(super) fn complete_preparation_unbound(&self) -> Result<bool, OperationFailure> {
+        // The complete outer source authenticates its creator before this loan.
+        if self.complete_storage.is_none() {
+            return Err(refused("source has no complete preparation selection"));
+        }
+        self.current_native.try_borrow()
+            .map(|original| original.is_none())
+            .map_err(|_| refused("complete source native association is busy"))
+    }
+
+    pub(super) fn new_complete_collecting(
+        installation: CnpSemanticInstallation,
+        program: PacketProgramDefinition,
+        coordinator: crucible_node_provider::reference_packet::coordinator::PacketNative5CoordinatorInstallation,
+        storage_selection:crucible_node_provider::reference_packet::control::PacketNative5StorageSelection,
+    ) -> Result<Self, OperationFailure> {
+        storage_selection.validate().map_err(unknown)?;
+        let mut source = Self::new_selected_edition(
+            installation,
+            program,
+            "source-owned.packet-complete-original-lineage/5",
+            true,
+        )?;
+        source.world_scope = Some(world::PacketWorldSourceScope::new_complete(
+            &source.installation,
+            coordinator,
+        )?);
+        source.complete_storage = Some(storage_selection);
+        Ok(source)
+    }
+
+    pub(super) fn authenticate_complete_world_scope(
+        &self,
+        coordinator:&crucible_node_provider::reference_packet::coordinator::PacketNative5CoordinatorInstallation,
+    ) -> Result<(), OperationFailure> {
+        self.world_scope
+            .as_ref()
+            .ok_or_else(|| refused("complete producer world absent"))?
+            .authenticate_complete_installation(coordinator)
+    }
+
     fn authenticate_activation_record(
         &self,
         record: &ActivationRecord,
@@ -329,12 +460,21 @@ impl PacketSemanticSource {
     ) -> Result<InputPayload, OperationFailure> {
         if let Some(world) = &self.world_scope {
             world.authenticate_record(original.activation().record())?;
-            super::packet_grant::packet_world_grant_authorization(
-                &self.installation,
-                original,
-                watermark,
-                world.owners(),
-            )
+            if world.is_complete() {
+                super::packet_grant::packet_complete_grant_authorization(
+                    &self.installation,
+                    original,
+                    watermark,
+                    world.owners(),
+                )
+            } else {
+                super::packet_grant::packet_world_grant_authorization(
+                    &self.installation,
+                    original,
+                    watermark,
+                    world.owners(),
+                )
+            }
         } else {
             packet_common_grant_authorization(&self.installation, original, watermark)
         }
@@ -596,6 +736,12 @@ impl CnpSemanticSource for PacketSemanticSource {
                 "packet connected producer requires immutable original transport4",
             ));
         }
+        if self.complete_storage.is_some() {
+            controller
+                .authenticate_native5_source_codec()
+                .map_err(|error| refused(error.to_string()))?;
+        }
+
         if !self
             .installation
             .provider
@@ -864,7 +1010,8 @@ impl CnpSemanticSource for PacketSemanticSource {
         if let Some(world) = &self.world_scope {
             world.authenticate_coordinator(&coordinator.bytes)?;
         }
-        let data = canonical::parse_json(&coordinator.bytes, self.coordinator_byte_limit()).map_err(unknown)?;
+        let data = canonical::parse_json(&coordinator.bytes, self.coordinator_byte_limit())
+            .map_err(unknown)?;
         let saved: SavedRuntimeActivation = serde_json::from_value(
             data.get("activation")
                 .cloned()
@@ -934,7 +1081,8 @@ impl CnpSemanticSource for PacketSemanticSource {
         if let Some(world) = &self.world_scope {
             world.authenticate_coordinator(&coordinator.bytes)?;
         }
-        let data = canonical::parse_json(&coordinator.bytes, self.coordinator_byte_limit()).map_err(unknown)?;
+        let data = canonical::parse_json(&coordinator.bytes, self.coordinator_byte_limit())
+            .map_err(unknown)?;
         let saved: SavedRuntimeActivation = serde_json::from_value(
             data.get("activation")
                 .cloned()
@@ -1085,8 +1233,32 @@ impl CnpSemanticSource for PacketSemanticSource {
         let mut total = 0usize;
         let mut planned = Vec::with_capacity(references.len());
         for reference in references {
-            let bytes = if let Ok(bytes) = scope.controller.content(reference) {
-                self.native_record(&scope, reference)?;
+            let complete = self
+                .world_scope
+                .as_ref()
+                .is_some_and(|world| world.is_complete());
+            let retained_payload = if complete {
+                current.inventory.retained_outputs.iter().find(|row| {
+                    canonical::content_ref(row.payload.as_slice(), "application/octet-stream")
+                        .ok()
+                        .as_ref()
+                        == Some(reference)
+                })
+            } else {
+                None
+            };
+            let bytes = if let Some(row) = retained_payload {
+                reference.verify(row.payload.as_slice()).map_err(unknown)?;
+                if let Ok(stored) = scope.controller.content(reference) {
+                    if stored != row.payload.as_slice() {
+                        return Err(refused("complete producer original raw payload changed"));
+                    }
+                    stored
+                } else {
+                    row.payload.as_slice()
+                }
+            } else if let Ok(bytes) = scope.controller.content(reference) {
+                self.authenticate_record_evidence(&scope, reference)?;
                 bytes
             } else {
                 current

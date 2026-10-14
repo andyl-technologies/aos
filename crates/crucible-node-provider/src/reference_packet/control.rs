@@ -149,6 +149,7 @@ pub struct PacketControl {
     connected_coordinator: Option<super::coordinator::PacketConnectedCoordinatorInstallation>,
     complete_coordinator: Option<super::coordinator::PacketNative5CoordinatorInstallation>,
     complete_storage: Option<native5::PacketNative5StorageSelection>,
+    complete_capture_profile: Option<super::service::PacketNative5CaptureProfile>,
 }
 
 impl PacketControl {
@@ -278,6 +279,7 @@ impl PacketControl {
             connected_coordinator: None,
             complete_coordinator: None,
             complete_storage: None,
+            complete_capture_profile: None,
         })
     }
 

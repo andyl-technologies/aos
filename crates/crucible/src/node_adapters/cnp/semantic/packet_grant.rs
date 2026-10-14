@@ -49,7 +49,7 @@ pub fn packet_common_grant_authorization(
     original: &OperationAdmission,
     watermark: U64,
 ) -> Result<InputPayload, OperationFailure> {
-    encode_grant(installation, original, watermark, None)
+    encode_grant(installation, original, watermark, None, false)
 }
 
 pub(super) fn packet_world_grant_authorization(
@@ -58,7 +58,27 @@ pub(super) fn packet_world_grant_authorization(
     watermark: U64,
     owners: &[crate::node_contract::OwnerIdentity],
 ) -> Result<InputPayload, OperationFailure> {
-    encode_grant(installation, original, watermark, Some(owners))
+    encode_grant(installation, original, watermark, Some(owners), false)
+}
+
+pub(super) fn packet_complete_grant_authorization(
+    installation: &CnpSemanticInstallation,
+    original: &OperationAdmission,
+    watermark: U64,
+    owners: &[crate::node_contract::OwnerIdentity],
+) -> Result<InputPayload, OperationFailure> {
+    encode_grant(installation, original, watermark, Some(owners), true)
+}
+
+#[derive(Serialize)]
+struct CompleteOriginalGrant<'a> {
+    schema: &'static str,
+    operation: &'a crucible_node_contract::Id,
+    route: &'a crate::node_contract::NodeRoute,
+    activation: OriginalActivation<'a>,
+    request: &'a OperationRequest,
+    input: Option<()>,
+    input_watermark: U64,
 }
 
 fn encode_grant(
@@ -66,6 +86,7 @@ fn encode_grant(
     original: &OperationAdmission,
     watermark: U64,
     world_owners: Option<&[crate::node_contract::OwnerIdentity]>,
+    complete: bool,
 ) -> Result<InputPayload, OperationFailure> {
     let token = original.token();
     let record = original.activation().record();
@@ -125,9 +146,24 @@ fn encode_grant(
         input_watermark: watermark,
     };
     let ceiling = installation.maximum_authorization_bytes.min(8192);
-    budget::serialized_size(&body, ceiling)?;
-    let bytes = canonical::canonical_json(&serde_json::to_value(&body).map_err(unknown)?)
-        .map_err(unknown)?;
+    let bytes = if complete {
+        let selected = CompleteOriginalGrant {
+            schema: "source-owned.packet-common-grant.v5",
+            operation: body.operation,
+            route: body.route,
+            activation: body.activation,
+            request: body.request,
+            input: None,
+            input_watermark: body.input_watermark,
+        };
+        budget::serialized_size(&selected, ceiling)?;
+        canonical::canonical_json(&serde_json::to_value(&selected).map_err(unknown)?)
+            .map_err(unknown)?
+    } else {
+        budget::serialized_size(&body, ceiling)?;
+        canonical::canonical_json(&serde_json::to_value(&body).map_err(unknown)?)
+            .map_err(unknown)?
+    };
     if bytes.len() > ceiling {
         return Err(refused("packet whole original common authorization bytes"));
     }

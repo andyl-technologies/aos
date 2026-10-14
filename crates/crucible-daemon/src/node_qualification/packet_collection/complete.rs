@@ -1,0 +1,34 @@
+//! Owns structural collecting bootstrap for native-three/Host2 complete selections.
+//!
+//! This namespace preserves the connected-four policy and grants no Capture
+//! qualification from declarations. Installed source/factory association and
+//! selected physical geometry remain independent before ticket dispatch.
+
+mod authority;
+mod population;
+mod graph;
+mod records;
+mod roster;
+
+pub use graph::{
+    InstalledPacketCompleteGraphPolicy, PacketCompleteGraphOwner, PacketCompleteGraphRequest,
+};
+pub use records::{
+    packet_complete_independent_graph_contract, packet_complete_measured_graph_proof,
+};
+pub use roster::PacketCompleteRoster;
+
+use super::QualificationError;
+
+fn refused() -> QualificationError {
+    QualificationError::Refused("complete original packet collecting scope unavailable")
+}
+
+#[cfg(test)]
+mod tests;
+
+pub use authority::{InstalledPacketCompleteCollectionAuthority, PacketCompleteCollectionRequest};
+pub use population::{PacketCompletePopulationRequest, PacketCompleteWitnessPopulation};
+
+mod witness;
+pub use witness::{PacketCompleteNativeOracle, PacketCompleteOracleRequest};

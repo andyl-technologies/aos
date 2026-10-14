@@ -8,12 +8,14 @@
 //! The legacy checksum realization and receipt dialect remain independent.
 
 mod budget;
+mod capture;
 mod conformance;
 mod implementation;
 mod input;
 mod lifecycle;
 mod node;
 mod operations;
+mod packet_complete_source;
 mod packet_connected_source;
 mod packet_grant;
 mod packet_lineage;
@@ -23,8 +25,12 @@ mod process;
 mod provider;
 mod registry;
 mod source;
+mod semantic_snapshot;
 mod state;
 mod world_provider;
+
+pub use capture::CnpSemanticCaptureScope;
+pub use semantic_snapshot::{CnpOriginalSemanticSnapshot, CnpSemanticSnapshotReservation};
 
 pub use conformance::{
     CnpSemanticConformanceAuthority, CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
@@ -37,6 +43,7 @@ pub use world_provider::{
 };
 
 pub use node::{CnpSemanticAdmissionFailure, CnpSemanticNode};
+pub use packet_complete_source::{PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits, PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader, PacketCompleteNativeRecord, PacketCompleteNativeWitness, PacketCompleteSemanticSource, PacketCompleteSourceRole};
 pub use packet_connected_source::{
     PacketConnectedInputWitness, PacketConnectedNativeWitness, PacketConnectedSemanticSource,
 };

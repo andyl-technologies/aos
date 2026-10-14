@@ -128,13 +128,19 @@ impl CnpSemanticSource for PacketConnectedSemanticSource {
             .implementation
             .formats
             .iter()
-            .any(|format| matches!(format.id.as_str(), "source-owned.packet-ingress/4"))
+            .any(|format| format.id.as_str() == "source-owned.packet-ingress/4")
             && !controller.has_connected_packet_transport_schema()
         {
             return Err(refused(
                 "packet common ingress requires immutable original transport schema",
             ));
         }
+        if self.complete_storage.is_some() {
+            controller
+                .authenticate_native5_source_codec()
+                .map_err(|error| refused(error.to_string()))?;
+        }
+
         if !self
             .installation
             .provider
@@ -644,7 +650,7 @@ impl CnpSemanticSource for PacketConnectedSemanticSource {
                     &current.inventory,
                     reference,
                     scope.controller.content(reference).ok(),
-                    || self.native_record(&scope, reference).map(|_| ()),
+                    || self.authenticate_record_evidence(&scope, reference),
                 )?;
                 total = total
                     .checked_add(bytes.len())

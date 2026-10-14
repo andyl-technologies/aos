@@ -23,6 +23,28 @@ pub trait CnpSemanticRegistrationPolicy {
     fn authenticate(&self, selection: &CnpSemanticInstallation) -> Result<(), OperationFailure>;
 }
 
+// The public installation cannot choose this discriminator. Only the concrete
+// complete packet enrollment below issues its conformance-only variant.
+#[derive(Clone, Copy)]
+pub(super) enum SemanticInstallationKind {
+    ExactOnly,
+    CollectingCompletePacket,
+}
+
+impl SemanticInstallationKind {
+    pub(super) fn authenticate(
+        self,
+        installation: &CnpSemanticInstallation,
+    ) -> Result<(), OperationFailure> {
+        match self {
+            Self::ExactOnly => super::preparation::validate_installation(installation),
+            Self::CollectingCompletePacket => {
+                super::preparation::validate_complete_installation(installation)
+            }
+        }
+    }
+}
+
 /// Retains one explicitly installed role without granting native execution authority.
 ///
 /// The capsule has no public constructor or decoded representation. Realization
@@ -30,6 +52,7 @@ pub trait CnpSemanticRegistrationPolicy {
 /// and current independent behavioral acceptance before original Admit.
 #[must_use = "retain the installed source and acceptance policies for native preparation"]
 pub struct InstalledCnpSemanticRole {
+    pub(super) kind: SemanticInstallationKind,
     pub(super) policy: Rc<dyn CnpSemanticRegistrationPolicy>,
     pub(super) identity: HashRef,
     pub(super) source: Rc<dyn CnpSemanticSource>,
@@ -97,6 +120,7 @@ impl CnpSemanticRegistry {
             return Err(refused("generic original source role was already enrolled"));
         }
         Ok(InstalledCnpSemanticRole {
+            kind: SemanticInstallationKind::ExactOnly,
             policy: self.policy.clone(),
             identity,
             source,
@@ -136,6 +160,47 @@ impl CnpSemanticRegistry {
         }
         Ok(super::InstalledCnpConformanceRole(
             InstalledCnpSemanticRole {
+                kind: SemanticInstallationKind::ExactOnly,
+                policy: self.policy.clone(),
+                identity,
+                source,
+                acceptance: None,
+                conformance: Some(authority),
+                collection_plan: Some(plan.retained()),
+            },
+        ))
+    }
+    /// Enrolls a concrete edition-five packet source for collection only.
+    ///
+    /// Ordinary enrollment and preparation retain their exact-only checks. The
+    /// private registration kind follows the same original source into custody;
+    /// matching profile strings cannot select this path for arbitrary adapters.
+    ///
+    /// # Errors
+    /// Refuses a changed complete source, absent independent fixture authority,
+    /// duplicate enrollment or exhausted registration and serialization credit.
+    pub fn install_complete_packet_for_conformance(
+        &mut self,
+        source: Rc<super::PacketCompleteSemanticSource>,
+        authority: Rc<dyn super::CnpSemanticConformanceAuthority>,
+        plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<super::InstalledCnpConformanceRole, OperationFailure> {
+        source.authenticate_registration()?;
+        let selected = source.installation();
+        self.policy.authenticate(selected)?;
+        super::preparation::authenticate_collection_selection(plan, authority.as_ref(), selected)?;
+        if self.installed.len() >= self.maximum_roles {
+            return Err(refused(
+                "generic source registry has no original role credit",
+            ));
+        }
+        let identity = installation_identity(selected)?;
+        if !self.installed.insert(identity.clone()) {
+            return Err(refused("generic original source role was already enrolled"));
+        }
+        Ok(super::InstalledCnpConformanceRole(
+            InstalledCnpSemanticRole {
+                kind: SemanticInstallationKind::CollectingCompletePacket,
                 policy: self.policy.clone(),
                 identity,
                 source,

@@ -20,7 +20,10 @@ mod record;
 pub use record::PacketNative5UnderlyingRecord;
 
 use super::*;
-use crate::{handshake::Limits, reference_packet::service::PacketNative5StorageLimits};
+use crate::{
+    handshake::Limits,
+    reference_packet::service::{PacketNative5CaptureProfile, PacketNative5StorageLimits},
+};
 
 /// Retains one service-selected native storage and negotiated transport tuple.
 ///
@@ -80,6 +83,9 @@ pub struct PacketNative5Record {
     pub native_record: ContentRef,
     /// Retains the original service-selected storage and negotiated limits.
     pub storage_selection: PacketNative5StorageSelection,
+    /// Retains the codec edition selected at this original service birth.
+    #[serde(default, skip_serializing_if = "PacketNative5CaptureProfile::is_original_arrays")]
+    pub capture_profile: PacketNative5CaptureProfile,
 }
 
 impl PacketControl {
@@ -118,6 +124,78 @@ impl PacketControl {
         let selected = PacketNative5StorageSelection { storage, limits };
         selected.validate()?;
         self.complete_storage = Some(selected);
+        Ok(())
+    }
+
+    /// Binds the original capture profile before this complete actor's dispatch.
+    ///
+    /// The native service calls this after authenticating its actual connection
+    /// and selected allocations. Matching profile data alone never installs a
+    /// codec, proves an allocation, or grants capture and restoration.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator, unbound storage, previous profile binding,
+    /// any dispatched original, or invalid finite compact bounds.
+    pub fn bind_complete_original_capture_profile(
+        &mut self,
+        profile: PacketNative5CaptureProfile,
+    ) -> Result<(), ProviderError> {
+        if self.capture_creator != std::process::id() {
+            return Err(ProviderError::Correlation("native5 profile foreign creator"));
+        }
+        if self.complete_coordinator.is_none()
+            || self.complete_storage.is_none()
+            || self.complete_capture_profile.is_some()
+            || self.realized
+            || self.admitted
+            || self.staged.is_some()
+            || self.active.is_some()
+            || self.fenced
+            || self.native_effect_attempted
+            || self.current_operation.is_some()
+            || !self.originals.is_empty()
+            || !self.begins.is_empty()
+            || !self.begin_requests.is_empty()
+            || !self.content.is_empty()
+            || self.content_bytes != 0
+            || !self.terminals.is_empty()
+        {
+            return Err(ProviderError::Conflict(
+                "native5 profile binding is not original unused birth",
+            ));
+        }
+
+        profile.validate()?;
+        self.complete_capture_profile = Some(profile);
+        Ok(())
+    }
+
+    /// Checks this original birth's profile against an independently owned policy.
+    ///
+    /// The endpoint must authenticate its actual installed policy and codec
+    /// before calling this data comparison. Equality does not install a codec,
+    /// allocate a bank, or authenticate historical restoration associations.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator, absent complete storage/coordinator, invalid
+    /// expected bounds, or a different immutable original capture profile.
+    pub fn authenticate_complete_capture_profile(
+        &self,
+        expected: &PacketNative5CaptureProfile,
+    ) -> Result<(), ProviderError> {
+        if self.capture_creator != std::process::id() {
+            return Err(ProviderError::Correlation("native5 profile foreign creator"));
+        }
+        if self.complete_coordinator.is_none() || self.complete_storage.is_none() {
+            return Err(ProviderError::Correlation("native5 original profile birth is absent"));
+        }
+
+        expected.validate()?;
+        let original = self.complete_capture_profile.as_ref()
+            .unwrap_or(&PacketNative5CaptureProfile::OriginalArrays6);
+        if original != expected {
+            return Err(ProviderError::Correlation("native5 original capture profile changed"));
+        }
         Ok(())
     }
 
@@ -280,6 +358,7 @@ impl PacketControl {
             input_epoch: binding.authority.input_epoch.clone(),
             world: self.selection.world.clone(),
             native_record,
+            capture_profile: self.complete_capture_profile.clone().unwrap_or_default(),
             storage_selection: self
                 .complete_storage
                 .as_ref()

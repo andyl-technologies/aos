@@ -9,6 +9,58 @@ use crucible_node_provider::{
     },
 };
 
+pub(super) enum InstalledCommonGrant {
+    Four(PacketConnectedCommonGrant),
+    Complete(crucible_node_provider::reference_packet::common::PacketNative5CommonGrant),
+}
+
+pub(super) struct CommonGrantView<'a> {
+    schema: &'a str,
+    pub(super) operation: &'a Id,
+    route: &'a PacketCommonRoute,
+    activation: &'a PacketCommonActivation,
+    pub(super) request: &'a PacketCommonRequest,
+    pub(super) input_batch: &'a PacketConnectedCommonInput,
+    input_watermark: U64,
+}
+
+impl InstalledCommonGrant {
+    pub(super) fn view(&self) -> Result<CommonGrantView<'_>, OperationFailure> {
+        let (schema, operation, route, activation, request, input_batch, input_watermark) =
+            match self {
+                Self::Four(grant) => (
+                    &grant.schema,
+                    &grant.operation,
+                    &grant.route,
+                    &grant.activation,
+                    &grant.request,
+                    &grant.input_batch,
+                    grant.input_watermark,
+                ),
+                Self::Complete(grant) => (
+                    &grant.schema,
+                    &grant.operation,
+                    &grant.route,
+                    &grant.activation,
+                    &grant.request,
+                    grant.input.as_ref().ok_or_else(|| {
+                        refused("complete reactive grant omitted actual consumed input")
+                    })?,
+                    grant.input_watermark,
+                ),
+            };
+        Ok(CommonGrantView {
+            schema,
+            operation,
+            route,
+            activation,
+            request,
+            input_batch,
+            input_watermark,
+        })
+    }
+}
+
 fn common_owner(owner: &OwnerIdentity) -> PacketCommonOwner {
     PacketCommonOwner {
         owner: owner.owner.clone(),
@@ -78,43 +130,62 @@ impl PacketConnectedSemanticSource {
             return Err(refused("connected actual input watermark changed"));
         }
         let activation = original.activation().record();
-        let body = PacketConnectedCommonGrant {
-            schema: "source-owned.packet-common-grant.v4".into(),
-            operation: original.token().operation().clone(),
-            route: PacketCommonRoute {
-                node: original.token().route().node.clone(),
-                owners: original
-                    .token()
-                    .route()
-                    .owners
-                    .iter()
-                    .map(common_owner)
-                    .collect(),
-            },
-            activation: PacketCommonActivation {
-                generation: activation.generation,
-                activation_id: activation.activation_id.clone(),
-                world_binding_hash: activation.world_binding_hash.clone(),
-                owners: activation.owners.iter().map(common_owner).collect(),
-                boundary: activation.boundary,
-            },
-            request,
-            input_batch: PacketConnectedCommonInput {
-                cut: consumed.cut.clone(),
-                commit_request_id: consumed
-                    .original
-                    .request_id
-                    .0
-                    .clone()
-                    .ok_or_else(|| refused("connected commit original id absent"))?,
-                commit_record: root,
-            },
-            input_watermark: consumed.cut.batch_sequence,
+        let operation = original.token().operation().clone();
+        let route = PacketCommonRoute {
+            node: original.token().route().node.clone(),
+            owners: original
+                .token()
+                .route()
+                .owners
+                .iter()
+                .map(common_owner)
+                .collect(),
         };
-        let payload = self.payload(
-            &body,
-            self.installation.maximum_authorization_bytes.min(8192),
-        )?;
+
+        let activation = PacketCommonActivation {
+            generation: activation.generation,
+            activation_id: activation.activation_id.clone(),
+            world_binding_hash: activation.world_binding_hash.clone(),
+            owners: activation.owners.iter().map(common_owner).collect(),
+            boundary: activation.boundary,
+        };
+
+        let input = PacketConnectedCommonInput {
+            cut: consumed.cut.clone(),
+            commit_request_id: consumed
+                .original
+                .request_id
+                .0
+                .clone()
+                .ok_or_else(|| refused("connected commit original id absent"))?,
+            commit_record: root,
+        };
+
+        let input_watermark = consumed.cut.batch_sequence;
+        let maximum = self.installation.maximum_authorization_bytes.min(8192);
+        let payload = if self.world.is_complete() {
+            let body = crucible_node_provider::reference_packet::common::PacketNative5CommonGrant {
+                schema: "source-owned.packet-common-grant.v5".into(),
+                operation,
+                route,
+                activation,
+                request,
+                input: Some(input),
+                input_watermark,
+            };
+            self.payload(&body, maximum)?
+        } else {
+            let body = PacketConnectedCommonGrant {
+                schema: "source-owned.packet-common-grant.v4".into(),
+                operation,
+                route,
+                activation,
+                request,
+                input_batch: input,
+                input_watermark,
+            };
+            self.payload(&body, maximum)?
+        };
         self.guard(scope)?;
         Ok(payload)
     }
@@ -173,13 +244,18 @@ impl PacketConnectedSemanticSource {
         scope: &CnpSemanticRealizationScope<'_>,
         envelope: &Envelope,
         begin: &BeginRequest,
-    ) -> Result<PacketConnectedCommonGrant, OperationFailure> {
+    ) -> Result<InstalledCommonGrant, OperationFailure> {
         let arguments: ExactRunArguments =
             serde_json::from_value(serde_json::Value::Object(begin.arguments.clone()))
                 .map_err(unknown)?;
         arguments.validate().map_err(unknown)?;
-        let common: PacketConnectedCommonGrant =
-            self.object(scope, &arguments.input_authorization)?;
+        let common = if self.world.is_complete() {
+            InstalledCommonGrant::Complete(self.object(scope, &arguments.input_authorization)?)
+        } else {
+            InstalledCommonGrant::Four(self.object(scope, &arguments.input_authorization)?)
+        };
+        let selected = common;
+        let common = selected.view()?;
         let consumed = self.commit_record(scope, &common.input_batch.commit_record)?;
         let record = &common.activation;
         let activation: SavedRuntimeActivation =
@@ -190,16 +266,21 @@ impl PacketConnectedSemanticSource {
                 start,
                 limit,
                 boundary_policy: PacketCommonBoundaryPolicy::HorizonPark,
-            } => (BeginKind::ExactRun, start, limit),
+            } => (BeginKind::ExactRun, *start, *limit),
             PacketCommonRequest::BoundarySettle { start, limit }
                 if start.time_ps == limit.time_ps =>
             {
-                (BeginKind::BoundarySettle, start, limit)
+                (BeginKind::BoundarySettle, *start, *limit)
             }
             _ => return Err(refused("connected original native stop convention")),
         };
-        if common.schema != "source-owned.packet-common-grant.v4"
-            || envelope.operation_id.0.as_ref() != Some(&common.operation)
+        if common.schema
+            != if self.world.is_complete() {
+                "source-owned.packet-common-grant.v5"
+            } else {
+                "source-owned.packet-common-grant.v4"
+            }
+            || envelope.operation_id.0.as_ref() != Some(common.operation)
             || common.route.node != self.installation.descriptor.id
             || common.route.owners != [common_owner(&self.owner())]
             || record.generation != activation.generation
@@ -224,7 +305,7 @@ impl PacketConnectedSemanticSource {
             || common.input_watermark != consumed.cut.batch_sequence
             || common.input_watermark.get() == 0
             || arguments.input_watermark != common.input_watermark
-            || arguments.grant_id != common.operation
+            || &arguments.grant_id != common.operation
             || arguments.start != start
             || arguments.limit != limit
             || arguments.boundary_policy != BoundaryPolicy::OrdinaryStop
@@ -247,7 +328,7 @@ impl PacketConnectedSemanticSource {
                 "connected native grant differs from complete actual original association",
             ));
         }
-        Ok(common)
+        Ok(selected)
     }
 
     pub(super) fn operation_root(

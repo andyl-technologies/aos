@@ -365,13 +365,104 @@ impl PacketConnectedSemanticSource {
         Ok(None)
     }
 
+    // Edition five retains a live wrapper and the unchanged model record as
+    // separate objects. Both are joined to the same original controller request;
+    // parsing the wrapper cannot authenticate a foreign or restored capsule.
+    fn original_record_data(
+        &self,
+        scope: &CnpSemanticRealizationScope<'_>,
+        root: &ContentRef,
+    ) -> Result<PacketConnectedNativeRecord, OperationFailure> {
+        if !self.world.is_complete() {
+            return self.object(scope, root);
+        }
+        self.guard(scope)?;
+        let wrapper: crucible_node_provider::reference_packet::control::PacketNative5Record =
+            self.object(scope, root)?;
+        let request_id = wrapper
+            .original
+            .request_id
+            .0
+            .as_ref()
+            .ok_or_else(|| refused("complete native original request id absent"))?;
+        let original = scope
+            .controller
+            .original(request_id)
+            .ok_or_else(|| refused("complete native original controller request absent"))?;
+        if self.completed_root(scope, &original.request)?.as_ref() != Some(root) {
+            return Err(refused(
+                "complete native wrapper is not the original response",
+            ));
+        }
+        let expected = self
+            .complete_storage
+            .as_ref()
+            .ok_or_else(|| refused("complete source selected storage absent"))?;
+        if wrapper.capture_profile != *self.complete_capture_profile.as_ref().unwrap_or(
+                &crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile::OriginalArrays6,
+            )
+                || wrapper.storage_selection != *expected
+            || wrapper.storage_selection.limits != scope.controller.authority().limits()
+        {
+            return Err(refused(
+                "complete source original storage/negotiated limits changed",
+            ));
+        }
+        let bytes = scope
+            .controller
+            .content(&wrapper.native_record)
+            .map_err(unknown)?;
+        let record = wrapper
+            .verify_original_record_data(
+                self.world.selection(),
+                scope.native.provider_pid(),
+                &original.request,
+                bytes,
+            )
+            .map_err(unknown)?;
+        self.guard(scope)?;
+        match record {
+            crucible_node_provider::reference_packet::control::PacketNative5UnderlyingRecord::Reactive(record)=>Ok(*record),
+            _=>Err(refused("complete reactive source cannot read a producer record")),
+        }
+    }
+
+    pub(super) fn authenticate_record_evidence(
+        &self,
+        scope: &CnpSemanticRealizationScope<'_>,
+        reference: &ContentRef,
+    ) -> Result<(), OperationFailure> {
+        if !self.world.is_complete() {
+            return self.native_record(scope, reference).map(|_| ());
+        }
+        self.guard(scope)?;
+        let value: serde_json::Value = self.object(scope, reference)?;
+        if value.get("schema").and_then(serde_json::Value::as_str)
+            == Some("source-owned.packet-receipt/5")
+        {
+            return self.native_record(scope, reference).map(|_| ());
+        }
+        let record: PacketConnectedNativeRecord = serde_json::from_value(value).map_err(unknown)?;
+        let root = self
+            .completed_root(scope, &record.original)?
+            .ok_or_else(|| refused("complete underlying record original response absent"))?;
+        let wrapper: crucible_node_provider::reference_packet::control::PacketNative5Record =
+            self.object(scope, &root)?;
+        if wrapper.native_record != *reference || self.native_record(scope, &root)? != record {
+            return Err(refused(
+                "complete underlying record differs from original wrapper",
+            ));
+        }
+        self.guard(scope)
+    }
+
     pub(super) fn native_record(
         &self,
         scope: &CnpSemanticRealizationScope<'_>,
         root: &ContentRef,
     ) -> Result<PacketConnectedNativeRecord, OperationFailure> {
         self.guard(scope)?;
-        let record: PacketConnectedNativeRecord = self.object(scope, root)?;
+        let record = self.original_record_data(scope, root)?;
         self.envelope_current(scope, &record.original)?;
         if record.schema != "source-owned.packet-native/4"
             || record.native_pid.get() != u64::from(scope.native.provider_pid())
@@ -498,7 +589,7 @@ impl PacketConnectedSemanticSource {
                     let Some(root) = self.completed_root(scope, envelope)? else {
                         return Err(refused("connected historical original Begin is incomplete"));
                     };
-                    let record: PacketConnectedNativeRecord = self.object(scope, &root)?;
+                    let record = self.original_record_data(scope, &root)?;
                     if record.original != *envelope
                         || record.schema != "source-owned.packet-native/4"
                         || record.native_pid.get() != u64::from(scope.native.provider_pid())
@@ -509,7 +600,8 @@ impl PacketConnectedSemanticSource {
                         .grant
                         .as_ref()
                         .ok_or_else(|| refused("connected actual completed grant absent"))?;
-                    let common = self.validate_original_grant(scope, envelope, &begin)?;
+                    let selected_common = self.validate_original_grant(scope, envelope, &begin)?;
+                    let common = selected_common.view()?;
                     let consumed = committed
                         .last()
                         .ok_or_else(|| refused("connected grant has no actual consumed cut"))?;
@@ -531,9 +623,9 @@ impl PacketConnectedSemanticSource {
                     }
                     let (common_start, common_limit) = match common.request {
                         crucible_node_provider::reference_packet::common::PacketCommonRequest::ExactRun { start, limit, .. }
-                        | crucible_node_provider::reference_packet::common::PacketCommonRequest::BoundarySettle { start, limit } => (start, limit),
+                        | crucible_node_provider::reference_packet::common::PacketCommonRequest::BoundarySettle { start, limit } => (*start, *limit),
                     };
-                    if actual.operation != common.operation
+                    if &actual.operation != common.operation
                         || actual.start != common_start
                         || actual.limit != common_limit
                     {
@@ -560,7 +652,7 @@ impl PacketConnectedSemanticSource {
                     let Some(root) = self.completed_root(scope, envelope)? else {
                         continue;
                     };
-                    let record: PacketConnectedNativeRecord = self.object(scope, &root)?;
+                    let record = self.original_record_data(scope, &root)?;
                     if !inventory.gate_closed {
                         return Err(refused("connected original gate renewed"));
                     }
@@ -601,7 +693,7 @@ impl PacketConnectedSemanticSource {
                 }
                 RequestBody::Realize(_) | RequestBody::Activate(_) | RequestBody::Observe(_) => {
                     if let Some(root) = self.completed_root(scope, envelope)? {
-                        let record: PacketConnectedNativeRecord = self.object(scope, &root)?;
+                        let record = self.original_record_data(scope, &root)?;
                         if record.original != *envelope
                             || record.schema != "source-owned.packet-native/4"
                             || record.native_pid.get() != u64::from(scope.native.provider_pid())
