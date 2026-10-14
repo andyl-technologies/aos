@@ -29,7 +29,8 @@
 //! daemons must explicitly own its activation object, dispatch the closed
 //! method profile, and retain recovery custody before advertising readiness.
 //!
-//! [`manifest`] owns the fixed `AOSBSC01` format.
+//! The canonical protocol manifest owns the fixed `AOSBSC01` format and
+//! shape-only pins; this crate owns their protected provenance and currentness.
 //! The private protected-files module pins
 //! the endpoint directory and its three role-local files. The private
 //! self-execution module pins and revalidates the loading

@@ -483,6 +483,12 @@ receive/commit stages borrowing the original session. Controller retains prepara
 competing-operation gates, method context, pending custody, polling and native
 error parking within this same complete owner.
 
+Security uses the canonical broker-session Protocol manifest and role pins
+without a compatibility facade or duplicate pin array. Native loader and
+context errors retain their original redacted field classes; protected files,
+process custody and currentness remain Security-owned. Passive type identities
+and redacted Debug labels cut over directly to the canonical DATA API.
+
 Security stores the canonical Protocol historical checkpoint directly,
 without a second checkpoint wrapper. Historical failures retain the original
 redacted Security error at native frontiers; protected session and Journal
