@@ -8,12 +8,11 @@ use super::{
     DomainCapacityAdmissionUnknownV1, DomainCapacityReservationV1,
     DomainCapacitySettlementCommitOutcomeV1, DomainCapacitySettlementRecoveryV1,
     DomainCapacitySettlementUnknownV1, GlobalCapacityReservationPurposeV1,
-    GlobalCapacityReservationRecoveryBindingV1, GlobalCapacityReservationRequestV1,
-    JournalError, JournalRecord, JournalTransaction, PhantomData,
-    PreparedCapacityReservedDomainTransactionV1, PreparedCapacitySettlementDomainTransactionV1,
-    PreparedDomainTransactionV1, ProtectedCapacitySettlementMemberV1,
-    ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1, ProtectedDomainSchemaV1,
-    ProtectedReducerPhaseV1, RecordNamespace, aggregate_semantic_phases,
+    GlobalCapacityReservationRecoveryBindingV1, GlobalCapacityReservationRequestV1, JournalError,
+    JournalRecord, JournalTransaction, PhantomData, PreparedCapacityReservedDomainTransactionV1,
+    PreparedCapacitySettlementDomainTransactionV1, PreparedDomainTransactionV1,
+    ProtectedCapacitySettlementMemberV1, ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1,
+    ProtectedDomainSchemaV1, ProtectedReducerPhaseV1, RecordNamespace, aggregate_semantic_phases,
     capacity_request_binds_schema, decode_reducer_payload_with_validator, postcommit_records,
     validate_domain_capacity_lineage_v1, validate_expected_values, values_match,
 };
@@ -402,17 +401,20 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
                     record.envelope.key(),
                     record.envelope.payload(),
                     &self.validator,
-                ).map_err(ProtectedDomainJournalErrorV1::from)
+                )
+                .map_err(ProtectedDomainJournalErrorV1::from)
             })
             .collect::<Result<Vec<_>, _>>()?;
         let members = phases
             .iter()
             .zip(&decoded)
-            .map(|(record, payload)| ProtectedCapacitySettlementMemberV1::from_unvalidated_data(
-                record.envelope.key().kind(),
-                record.envelope.key().identity(),
-                payload.body(),
-            ))
+            .map(|(record, payload)| {
+                ProtectedCapacitySettlementMemberV1::from_unvalidated_data(
+                    record.envelope.key().kind(),
+                    record.envelope.key().identity(),
+                    payload.body(),
+                )
+            })
             .collect::<Vec<_>>();
         if !S::validates_capacity_settlement(
             &reservation.request,
