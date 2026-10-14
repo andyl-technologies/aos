@@ -462,6 +462,16 @@ Independent review verifies the 121-payload failure packet and preserves all
 five scratch directories. Import-only correction `f2cfcd9a89fe` is composed
 through an ordinary merge at `4ab8fbd1cc62` (tree `c952b61e2d14`). Its source
 and renewed compiler preparation pass review before another qualification.
+The corrected `4ab8fbd1cc62` candidate passes all thirteen compiler phases;
+fresh SDK compilation takes 513.122 seconds. Its actual inventory contains
+1,135 tests across three executables, retaining every previous identity and
+adding exactly the four collector witnesses, with none ignored. Independent
+review verifies all 280 sealed payloads, 6,283 tracked source entries, 3,271
+compiler inputs and six original/copied executable bindings. The separately
+bound six-case queue is authorized only after that review; its four new
+collector cases and two overlay renewals retain default 120-second limits,
+zero retries and unset diagnostic flags. Runtime outcomes, owning gates and
+the complete current trunk floor remain pending; no task advances.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
