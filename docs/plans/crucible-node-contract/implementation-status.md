@@ -4630,8 +4630,27 @@ source context and configure output name the binary output. This is a failed
 realization, not an installed context. The reviewed correction generates directly
 inside the source output and uses source-local GNU configure prefixes. The
 recorder and provider consume those same source roots; metadata references source
-in one direction. Actual output-reference inspection and successful registration,
-provider and emulator realization remain pending.
+in one direction. The corrected context and private observer now both realize
+successfully. Independent inspection verifies their registered derivations,
+complete source outputs, actual compiler dependency files and twelve archive
+member commands. Streaming inspection finds no reverse output reference in the
+context's 2.15 GB source archive. These results qualify these two build components.
+
+The next complete QEMU build configures successfully and reaches compilation
+step 3,641 of 3,788, then fails while linking the isolated ptimer test. Pulling
+the endpoint owner utility through oslib also pulls the real main loop and timer
+implementations, which conflict with the fixture's intentional replacements.
+A reviewed one-file correction supplies the exact typed no-journal NULL backing
+result in the existing test stub. Production code, clocks, test selection and
+file licenses remain unchanged; a fresh full build must verify the correction.
+
+Corresponding-source assembly also unnecessarily pulls Cargo and Git into a
+registry-only vendoring operation. A supplied lockfile now selects the required
+tools, and both stages authenticate its exact raw bytes before vendoring effects.
+Nine Python controls pass, including changed source and cached lockfiles, same
+verified-byte parsing/copying, unchanged Git metadata routing, actual tiny
+registry archive extraction and checksum rejection. Nix dependency pruning and
+the current fixed-output content hash still need actual qualification.
 
 ## Full gem5 production build and ownership check
 
@@ -4653,10 +4672,20 @@ it. They preserve the original failing assertion, refusal tuple and unchanged
 event queues. Permanent ownership records correlate the first visiting leaf
 with the ARM instruction TLB. The second diagnostic also observes zero registered
 table banks, placing the refusal before the first successful table-entry check.
-This does not identify which earlier TLB guard fails. The selected configuration
-also contains a 1,280-entry L2 TLB, exceeding the current 1,024-entry account;
-that distinct later obstacle requires an explicit account and profile correction
-without reducing the configured TLB.
+Inspection of the actual executable and source identifies an always-false RTTI
+comparison through the non-polymorphic replacement-data base. The correction
+records constructor provenance in a finite preallocated bank and checks the
+original policy, data pointer and shared ownership identity before the cast.
+Nine fresh component controls pass, including foreign owners, pointer reuse,
+retirement and exhausted capacity. They measure a 58,896-byte bank for 1,472
+retained birth obligations. This is component evidence; the full native simulator
+has not been rebuilt with the correction.
+
+The selected configuration also contains a 1,280-entry L2 TLB, exceeding the
+current 1,024-entry account. A separate source correction preserves that default,
+reserves sixteen 1,280-entry banks before object construction, and checks the
+actual declared extent and complete owner/index correspondence. Its component
+controls and fresh full simulator build remain pending.
 
 ## Complete SDK composition qualification
 
@@ -4670,9 +4699,20 @@ released process group are retained. The corrected candidate, including two
 independent legacy and selected-field serialization controls, reduces the next
 compilation to one borrow error in 15.56 seconds. Its process group also releases
 without signals and its source remains exact. The remaining observer call uses
-a mutable authority accessor through a shared connection reference. This
-uncommitted candidate has no passing compiler or preservation claim and does not
-replace the earlier passing 29-control admission cohort.
+a mutable authority accessor through a shared connection reference. The fix uses
+the existing authenticated immutable authority loan. The next strict invocation
+closes those type errors but reports dead-code and Clippy issues, including
+missing native Commit consumers; strict qualification remains incomplete.
+
+With those diagnostics retained, a normal all-target/all-feature type check
+passes on the subsequent exact 157-role composition. Its fresh provider libtest
+build also passes. Forty-three distinct focused controls pass on that same
+executable across invocations of 41 and two tests; the original 43-test selector
+omitted a module in two names, so its exact-name collector failure is retained.
+The second invocation runs only those two corrected selectors. The controls
+include legacy policy wire-byte preservation and selected-field serialization.
+They provide no whole-world Capture or native restoration claim. Actual Commit,
+held-proof publication and complete suffix admission are still being integrated.
 
 ## Performance evidence
 

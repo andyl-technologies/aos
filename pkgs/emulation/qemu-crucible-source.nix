@@ -84,6 +84,8 @@
   cargoDepsHash = import ../tools/crucible/_cargo-deps-hash.nix;
   crucibleCargoDeps = fetchCargoVendor {
     src = crucibleSource;
+    # The complete lockfile is authenticated again in both vendor stages.
+    lockFile = ../../crates/Cargo.lock;
     name = "crucible-vendor-${version}";
     sourceRoot = "source/crates";
     hash = cargoDepsHash;
