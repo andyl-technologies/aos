@@ -401,6 +401,7 @@ impl PacketConnectedSemanticSource {
         if wrapper.capture_profile != *self.complete_capture_profile.as_ref().unwrap_or(
                 &crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile::OriginalArrays6,
             )
+                || wrapper.confirmation_selection != self.complete_confirmation_selection.flatten()
                 || wrapper.storage_selection != *expected
             || wrapper.storage_selection.limits != scope.controller.authority().limits()
         {

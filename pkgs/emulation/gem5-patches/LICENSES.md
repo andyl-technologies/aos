@@ -162,3 +162,12 @@ preservation after exit or whole-node execution authority.
 The public diagnostic queue forwarder retains the original private walker;
 it checks the actual process/thread/UID before phase validation and either
 inherited lock. This is diagnostic access, not a native execution permit.
+
+The fixed x86 Linux controller components add no upstream simulator files.
+`native-controller-x86.py`, `native-controller-x86-model.py`,
+`x86-linux-loader.py`, `x86-linux-loader-check.py` and
+`x86-linux-loader-fixture.S` under `../_gem5/` carry explicit MIT notices. The
+loader check co-retains those source inputs and its Nix recipe; the component
+bundle co-retains the complete corresponding native source and required loader
+check. ELF/boot-protocol component results do not qualify native process
+ownership, full-system readiness, device parity, capture or CPU timing.

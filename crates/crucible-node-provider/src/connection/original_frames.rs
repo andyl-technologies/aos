@@ -515,6 +515,11 @@ impl<S: ProviderStream> Connection<S> {
         &mut self,
         cut: crate::protocol_snapshot::ProtocolCaptureCut,
     ) -> Result<(), ProviderError> {
+        if self.original_canonical_ack_admission.is_some() {
+            return Err(ProviderError::Correlation(
+                "native admission complete owning edition not installed",
+            ));
+        }
         self.check_authority()?;
         if let Some(codec) = &self.native5_codec {
             codec.validate_installation(&self.authority)?;

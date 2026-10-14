@@ -65,4 +65,25 @@ impl CnpController {
             registration: self.authority().original_registration_read()?,
         })
     }
+
+    /// Retains the same original controller read under its typed handshake.
+    ///
+    /// # Errors
+    /// Refuses a foreign process/thread, fenced actor, replaced registration or
+    /// another typed handshake. This creates no native or restoration permission.
+    pub fn original_registrar_read_extensions(
+        &self,
+        handshake: &crate::handshake::ExtensionHandshake,
+    ) -> Result<CnpRegistrarRead, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.fenced {
+            return Err(ProviderError::Correlation(
+                "generic original controller fenced",
+            ));
+        }
+        handshake.verify_authority(self.authority())?;
+        Ok(CnpRegistrarRead {
+            registration: self.authority().original_registration_read()?,
+        })
+    }
 }

@@ -27,7 +27,8 @@ mod input;
 mod native5;
 
 pub use native5::{
-    PacketNative5Record, PacketNative5StorageSelection, PacketNative5UnderlyingRecord,
+    PacketCompleteControlBirthFailure, PacketNative5Record, PacketNative5StorageSelection,
+    PacketNative5UnderlyingRecord,
 };
 
 pub use continuation::{
@@ -150,6 +151,8 @@ pub struct PacketControl {
     complete_coordinator: Option<super::coordinator::PacketNative5CoordinatorInstallation>,
     complete_storage: Option<native5::PacketNative5StorageSelection>,
     complete_capture_profile: Option<super::service::PacketNative5CaptureProfile>,
+    complete_confirmation_selection: Option<super::service::PacketNative5ConfirmationSelection>,
+    complete_ack_emitter_selection: Option<super::service::PacketNative5AckEmitterSelection>,
 }
 
 impl PacketControl {
@@ -280,6 +283,8 @@ impl PacketControl {
             complete_coordinator: None,
             complete_storage: None,
             complete_capture_profile: None,
+            complete_confirmation_selection: None,
+            complete_ack_emitter_selection: None,
         })
     }
 

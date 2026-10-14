@@ -232,13 +232,26 @@ impl CnpSemanticProcessCustody {
         let controller = self.controller.as_ref().ok_or(ProviderError::Correlation(
             "generic original read controller absent",
         ))?;
-        let handshake = self.handshake.as_ref().ok_or(ProviderError::Correlation(
-            "generic original read handshake absent",
-        ))?;
+        // Exactly one surviving original handshake must own this registrar.
+        // Typed negotiation stays typed, including an empty selected roster.
+        let registration = match (&self.handshake, &self.extension_handshake) {
+            (Some(handshake), None) => controller.original_registrar_read(handshake)?,
+            (None, Some(handshake)) => controller.original_registrar_read_extensions(handshake)?,
+            (None, None) => {
+                return Err(ProviderError::Correlation(
+                    "generic original read handshake absent",
+                ));
+            }
+            (Some(_), Some(_)) => {
+                return Err(ProviderError::Correlation(
+                    "generic original read handshake ambiguous",
+                ));
+            }
+        };
         let handle = CnpSemanticSourceRead {
             process: std::process::id(),
             owner: Rc::clone(&self.read_owner),
-            registration: controller.original_registrar_read(handshake)?,
+            registration,
             kernel: self.kernel_identity.ok_or(ProviderError::Correlation(
                 "generic original read kernel identity absent",
             ))?,

@@ -59,6 +59,11 @@ pub struct PacketConnectedSemanticSource {
     process: u32,
     thread: std::thread::ThreadId,
     current_native: RefCell<Option<super::process::CnpSemanticSourceRead>>,
+    pub(super) complete_confirmation_selection: Option<
+        Option<
+            crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+    >,
     pub(super) complete_capture_profile:
         Option<crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile>,
     complete_storage:
@@ -365,6 +370,7 @@ impl PacketConnectedSemanticSource {
             current_native: RefCell::new(None),
             complete_storage: None,
             complete_capture_profile: None,
+            complete_confirmation_selection: None,
         })
     }
 

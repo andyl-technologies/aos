@@ -30,6 +30,9 @@ pub enum Gem5ModelDialect {
     /// Selects source-owned ARM full-system serial and diagnostic reservation.
     #[serde(rename = "crucible.gem5.arm-linux-native/1")]
     ArmLinux,
+    /// Selects the distinct source-owned fixed x86 full-system model.
+    #[serde(rename = "crucible.gem5.x86-linux-native/1")]
+    X86Linux,
 }
 
 /// Retains an exact immutable role and its already measured portable bytes.
@@ -80,6 +83,19 @@ pub enum Gem5ModelSelection {
         /// Retains the complete source-owned board configuration tree.
         configuration: Gem5ConfigurationTree,
     },
+    /// Selects the fixed functional PC Linux model and finite native loader assets.
+    ///
+    /// Firmware tables are created by the source-bound board configuration, not
+    /// supplied by an operator-selected firmware executable.
+    #[serde(rename = "x86_linux")]
+    X86Linux {
+        /// Retains the complete source-installed Linux ELF artifact.
+        kernel: Box<Gem5ModelAsset>,
+        /// Retains the complete fixed Linux boot-protocol initramfs artifact.
+        initramfs: Box<Gem5ModelAsset>,
+        /// Retains the complete source-owned PC board and firmware-table definitions.
+        configuration: Gem5ConfigurationTree,
+    },
     /// Selects the distinct closed VExpress ARM root-computation model and finite assets.
     #[serde(rename = "arm_linux_root")]
     ArmLinuxRoot {
@@ -110,14 +126,45 @@ impl Gem5ModelSelection {
                 guest_isa,
                 executable,
             } => {
-                if dialect == Gem5ModelDialect::ArmLinux
-                    || !matches!(guest_isa.as_str(), "x86_64" | "aarch64")
+                if !matches!(
+                    dialect,
+                    Gem5ModelDialect::LegacySe | Gem5ModelDialect::ReservedSe
+                ) || !matches!(guest_isa.as_str(), "x86_64" | "aarch64")
                 {
                     return Err(ProviderError::Correlation(
                         "gem5 model and native dialect differ",
                     ));
                 }
                 validate_asset(executable, "guest.elf")
+            }
+            Self::X86Linux {
+                kernel,
+                initramfs,
+                configuration,
+            } => {
+                if dialect != Gem5ModelDialect::X86Linux {
+                    return Err(ProviderError::Correlation(
+                        "x86 model lacks its distinct native dialect",
+                    ));
+                }
+                validate_asset(kernel, "kernel.elf")?;
+                validate_asset(initramfs, "initrd.img")?;
+                if initramfs.content.length.get() > 32 * 1024 * 1024
+                    || configuration.files.get() == 0
+                    || configuration.files.get() > 4096
+                    || configuration.bytes.get() == 0
+                    || configuration.bytes.get() > 64 * 1024 * 1024
+                    || configuration.sha256.len() != 64
+                    || !configuration
+                        .sha256
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(ProviderError::Frame(
+                        "x86 model exceeds its fixed loader or configuration geometry",
+                    ));
+                }
+                Ok(())
             }
             Self::ArmLinux {
                 kernel,
@@ -302,7 +349,8 @@ impl Gem5ArmNativeReady {
                     Gem5ModelSelection::ArmLinux { .. } => {
                         "arm-linux-vexpress-atomic-functional-v1"
                     }
-                    Gem5ModelSelection::FreestandingO3 { .. } => "unsupported",
+                    Gem5ModelSelection::FreestandingO3 { .. }
+                    | Gem5ModelSelection::X86Linux { .. } => "unsupported",
                 }
             || !scope.full_system
             || scope.complete_process_closure_qualified
@@ -368,8 +416,57 @@ impl Gem5SerialPublication {
         original_id: U64,
         original_parent: U64,
     ) -> Result<(), ProviderError> {
+        self.validate_birth_at_terminal(
+            before,
+            after,
+            original_id,
+            original_parent,
+            "system.terminal",
+        )
+    }
+
+    /// Checks serial data under an explicitly selected full-system model.
+    ///
+    /// The fixed x86 UART retains its actual PC object path. A model description
+    /// never authenticates a live owner or grants input/publication authority.
+    ///
+    /// # Errors
+    /// Refuses SE models, foreign dialects, invalid model data, another native
+    /// terminal, or a changed original byte/callback/parent/FIFO identity.
+    pub fn validate_birth_for_model(
+        &self,
+        selected: &Gem5ModelSelection,
+        dialect: Gem5ModelDialect,
+        before: &Gem5Boundary,
+        after: &Gem5Boundary,
+        original_id: U64,
+        original_parent: U64,
+    ) -> Result<(), ProviderError> {
+        selected.validate_for(dialect)?;
+        let terminal = match selected {
+            Gem5ModelSelection::ArmLinux { .. } | Gem5ModelSelection::ArmLinuxRoot { .. } => {
+                "system.terminal"
+            }
+            Gem5ModelSelection::X86Linux { .. } => "system.pc.com_1.device",
+            Gem5ModelSelection::FreestandingO3 { .. } => {
+                return Err(ProviderError::Correlation(
+                    "SE output cannot acquire a native serial facet",
+                ));
+            }
+        };
+        self.validate_birth_at_terminal(before, after, original_id, original_parent, terminal)
+    }
+
+    fn validate_birth_at_terminal(
+        &self,
+        before: &Gem5Boundary,
+        after: &Gem5Boundary,
+        original_id: U64,
+        original_parent: U64,
+        terminal: &str,
+    ) -> Result<(), ProviderError> {
         if self.facet != "serial"
-            || self.terminal != "system.terminal"
+            || self.terminal != terminal
             || self.payload.len() != 1
             || self.output_id.get() == 0
             || self.output_id != original_id
@@ -387,3 +484,7 @@ impl Gem5SerialPublication {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod tests;

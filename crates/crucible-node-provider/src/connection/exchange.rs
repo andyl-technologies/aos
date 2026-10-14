@@ -422,6 +422,48 @@ impl<S: ProviderStream> PreparedExchange<S> {
         result
     }
 
+    /// Publishes selected confirmation proofs under genuine canonical ACK admission.
+    ///
+    /// The installed native token and exact prepared Poll/proof originals are
+    /// rechecked before publication. Every restricted read begins its original
+    /// bank at the compiled ACK ceiling before reading the header. Generic
+    /// publication retains its complete negotiated allowance.
+    ///
+    /// # Errors
+    /// Refuses absent/replaced admission, unrelated Poll/proofs, repeated phase,
+    /// oversized header, malformed ACK or incomplete I/O, retaining this capsule.
+    ///
+    /// # Panics
+    /// Validators or supervision may panic; the borrowed original capsule remains
+    /// outside those callbacks and its attempt guard contains uncertainty.
+    pub fn publish_original_canonical_blob_acks(
+        &mut self,
+        original_poll: &Envelope,
+        validate: &mut dyn FnMut(&Envelope, &ReceivedFrame) -> Result<(), ProviderError>,
+    ) -> Result<(), ProviderError> {
+        if self.phase != Phase::Prepared {
+            return Err(ProviderError::Conflict(
+                "prepared canonical ACK exchange already attempted",
+            ));
+        }
+        self.connection.original_canonical_blob_ack_framed_bytes()?;
+        self.connection
+            .authenticate_prepared_canonical_ack_poll(original_poll, &self.record.originals)?;
+        self.phase = Phase::Publishing;
+        let mut attempt = PublicationAttempt {
+            connection: &mut self.connection,
+            complete: false,
+        };
+        let result = publish_with_ack_scope(attempt.connection, &mut self.record, validate, true);
+        if result.is_ok() {
+            self.phase = Phase::Complete;
+            attempt.complete = true;
+        } else {
+            self.phase = Phase::Failed;
+        }
+        result
+    }
+
     /// Moves the same connection and full records into the source's owning ledger.
     ///
     /// Success discharges transport correlation only. A failed or unwound
@@ -474,6 +516,15 @@ fn publish<S: ProviderStream>(
     record: &mut ExchangeRecord,
     validate: &mut dyn FnMut(&Envelope, &ReceivedFrame) -> Result<(), ProviderError>,
 ) -> Result<(), ProviderError> {
+    publish_with_ack_scope(connection, record, validate, false)
+}
+
+fn publish_with_ack_scope<S: ProviderStream>(
+    connection: &mut Connection<S>,
+    record: &mut ExchangeRecord,
+    validate: &mut dyn FnMut(&Envelope, &ReceivedFrame) -> Result<(), ProviderError>,
+    canonical_ack_scope: bool,
+) -> Result<(), ProviderError> {
     for index in 0..record.originals.len() {
         connection.check_authority()?;
         let bytes = &record.canonical[index];
@@ -497,9 +548,12 @@ fn publish<S: ProviderStream>(
         if original.message == MessageKind::Response {
             connection.guard.confirm_response_sent(original)?;
         } else if original.message == MessageKind::Request {
-            let reply = connection
-                .receive()?
-                .ok_or(ProviderError::Frame("prepared proof reply missing"))?;
+            let received = if canonical_ack_scope {
+                connection.receive_original_canonical_blob_ack()?
+            } else {
+                connection.receive()?
+            };
+            let reply = received.ok_or(ProviderError::Frame("prepared proof reply missing"))?;
             record.acknowledgements.push(reply);
             let reply = record
                 .acknowledgements

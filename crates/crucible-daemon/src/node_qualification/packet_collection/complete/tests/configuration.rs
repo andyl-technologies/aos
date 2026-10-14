@@ -70,6 +70,26 @@ impl World {
         proof_bytes: Vec<u8>,
         effect_phases: &[u16],
     ) -> Self {
+        Self::with_native_selection(
+            peer,
+            host_executable,
+            proof_bytes,
+            effect_phases,
+            None,
+            None,
+        )
+    }
+
+    pub(super) fn with_native_selection(
+        peer: ContentRef,
+        host_executable: ContentRef,
+        proof_bytes: Vec<u8>,
+        effect_phases: &[u16],
+        confirmation: Option<
+            crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+        ack: Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+    ) -> Self {
         let mut content = BTreeMap::new();
         let proof = canonical::content_ref(&proof_bytes, "application/json").unwrap();
         content.insert(proof.clone(), proof_bytes.clone());
@@ -142,9 +162,27 @@ impl World {
                 0,
                 proof_bytes.clone(),
                 effect_phases,
+                confirmation,
+                ack,
             ),
-            Definition::new(peer.clone(), &relay, 1, proof_bytes.clone(), effect_phases),
-            Definition::new(peer, &sink, 2, proof_bytes, effect_phases),
+            Definition::new(
+                peer.clone(),
+                &relay,
+                1,
+                proof_bytes.clone(),
+                effect_phases,
+                confirmation,
+                ack,
+            ),
+            Definition::new(
+                peer,
+                &sink,
+                2,
+                proof_bytes,
+                effect_phases,
+                confirmation,
+                ack,
+            ),
         ];
         for member in &members {
             content.extend(member.content.clone());

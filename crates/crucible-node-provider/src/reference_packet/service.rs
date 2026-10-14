@@ -181,12 +181,34 @@ impl PacketSourceLaunch {
 #[must_use = "keep the original service until authentic native process containment"]
 pub struct PacketSourceService {
     endpoint: super::endpoint::PacketEndpoint<crate::client::DeadlineStream>,
-    _handshake: crate::handshake::Handshake,
+    _handshake: OriginalServiceHandshake,
+    _private_bootstrap: Option<Box<dyn std::any::Any>>,
     _supervisor: Rc<security::Supervisor>,
     deadline: crate::client::ExchangeDeadline,
 }
 
+enum OriginalServiceHandshake {
+    Legacy(crate::handshake::Handshake),
+    Selected(crate::handshake::ExtensionHandshake),
+}
+
 impl PacketSourceService {
+    /// Authenticates two retained private frames before selected native birth.
+    ///
+    /// This route issues preparation and a distinct original protocol Admit;
+    /// it grants no semantic Arm, Capture, or complete factory qualification.
+    ///
+    /// # Errors
+    /// Refuses malformed boot, changed original kernel peer or executable,
+    /// expired original five-second cut, or an unsupported selected mechanism.
+    /// Refused original owners remain held until the host reaps this Child.
+    pub fn accept_original_private_bootstrap(
+        socket: &std::path::Path,
+        original: std::io::Stdin,
+    ) -> Result<Self, ProviderError> {
+        ack_emitter::native_boot::accept(socket, original)
+    }
+
     /// Installs a complete original native source after actual peer authentication.
     ///
     /// # Errors
@@ -238,8 +260,14 @@ impl PacketSourceService {
         }
         self.endpoint.wait_for_request()?;
         self.deadline.reset(std::time::Duration::from_secs(5))?;
-        self.endpoint
-            .step_with_complete_context(Some((&self._handshake, &self.deadline)))
+        match &self._handshake {
+            OriginalServiceHandshake::Legacy(handshake) => self
+                .endpoint
+                .step_with_complete_context(Some((handshake, &self.deadline))),
+            OriginalServiceHandshake::Selected(handshake) => {
+                self.endpoint.step_with_selected_context(handshake, &self.deadline)
+            }
+        }
     }
 
     /// Borrows the retained endpoint for independent original data inspection.
@@ -250,3 +278,8 @@ impl PacketSourceService {
 
 #[cfg(test)]
 pub(crate) use native5_policy::controlled_native5_policy;
+
+pub mod ack_emitter;
+pub use ack_emitter::PacketNative5AckEmitterSelection;
+
+pub use ack_emitter::{PacketCanonicalAckAdmissionContext, PacketCanonicalAckAdmissionProof};

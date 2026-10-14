@@ -69,6 +69,26 @@ pub(super) fn plan(
             "capture snapshot/anchor closure",
         ));
     }
+    match &source.control {
+        Some((reference, bytes)) => {
+            if capture.owner_state_refs.as_slice() != std::slice::from_ref(reference)
+                || *reference == source.snapshot.0
+                || *reference == source.anchor.0
+                || bytes.len() > MAXIMUM_CAPTURE_SNAPSHOT_BYTES
+            {
+                return Err(ProviderError::Correlation(
+                    "capture original control closure",
+                ));
+            }
+            reference.verify(bytes)?;
+        }
+        None if !capture.owner_state_refs.is_empty() => {
+            return Err(ProviderError::Correlation(
+                "capture promised control body absent",
+            ));
+        }
+        None => {}
+    }
     source.snapshot.0.verify(&source.snapshot.1)?;
     source.anchor.0.verify(&source.anchor.1)?;
     let chunk = usize::try_from(authority.limits().blob_chunk_bytes.get())
@@ -82,8 +102,10 @@ pub(super) fn plan(
             "capture finite transport credit",
         ));
     }
-    let count = [source.snapshot.1.len(), source.anchor.1.len()]
+    let count = [&source.snapshot, &source.anchor]
         .into_iter()
+        .chain(source.control.iter())
+        .map(|(_, bytes)| bytes.len())
         .try_fold(1usize, |total, length| {
             total.checked_add(2 + length.div_ceil(chunk))
         })
@@ -106,7 +128,10 @@ pub(super) fn plan(
     // Every snapshot/anchor acknowledgement must precede that response.
     let mut sequence = response.sequence.get();
     let mut contents = BTreeMap::new();
-    for (reference, bytes) in [&source.snapshot, &source.anchor] {
+    for (reference, bytes) in [&source.snapshot, &source.anchor]
+        .into_iter()
+        .chain(source.control.iter())
+    {
         let transfer = Id::new(format!("packet-capture-transfer-{sequence}"))?;
         contents.insert(transfer.clone(), reference.clone());
         append_request(

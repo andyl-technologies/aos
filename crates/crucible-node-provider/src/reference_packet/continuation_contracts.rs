@@ -161,3 +161,8 @@ pub(super) fn complete_host_continuation_schema() -> Result<SchemaRef, ProviderE
         extensions: Default::default(),
     })
 }
+
+mod confirmation;
+pub use confirmation::{PacketNative5ConfirmationDeclaration, complete_packet_confirmation_declaration};
+mod ack_emitter;
+pub use ack_emitter::{PacketNative5AckEmitterDeclaration, complete_packet_ack_emitter_declaration};

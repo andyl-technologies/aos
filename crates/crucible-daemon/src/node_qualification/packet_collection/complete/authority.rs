@@ -23,6 +23,7 @@ use crucible_node_provider::reference_packet::{
     service::{PacketConnectedSourceProgram, PacketNative5SourceLaunch},
 };
 use std::{
+    cell::{Cell, RefCell},
     collections::BTreeMap,
     path::{Path, PathBuf},
     rc::Rc,
@@ -57,6 +58,9 @@ pub struct PacketCompleteCollectionRequest<'a> {
     pub maximum_audit_bytes: usize,
 }
 
+type OriginalAckHelloSlot =
+    Rc<RefCell<Option<crucible_node_provider::client::OriginalHelloJournal>>>;
+
 /// Retains the exact original preparation scope and full Refused witness plan.
 ///
 /// This authority grants no operation, Arm, Capture, restore or class acceptance.
@@ -75,6 +79,8 @@ pub struct InstalledPacketCompleteCollectionAuthority {
     roots: Vec<ContentRef>,
     private_launches: [Vec<u8>; 3],
     directories: [PathBuf; 3],
+    original_ack_hello: RefCell<[Option<OriginalAckHelloSlot>; 3]>,
+    original_ack_callback_started: Cell<bool>,
 }
 
 impl InstalledPacketCompleteCollectionAuthority {
@@ -127,6 +133,7 @@ impl InstalledPacketCompleteCollectionAuthority {
             {
                 return Err(refused());
             }
+            authenticate_expected_launch_selections(source, launch)?;
             let expected = source
                 .selected_storage_selection()
                 .map_err(operation_qualification)?;
@@ -176,6 +183,8 @@ impl InstalledPacketCompleteCollectionAuthority {
         let private_launches = request.launches.each_ref().map(encoded);
         let [first, second, third] = private_launches;
         let original = Rc::new(Self {
+            original_ack_hello: RefCell::new(std::array::from_fn(|_| None)),
+            original_ack_callback_started: Cell::new(false),
             roster: request.roster,
             host: request.host,
             graph_policy: request.graph_policy,
@@ -252,6 +261,45 @@ impl InstalledPacketCompleteCollectionAuthority {
     /// Borrows the exact original complete coordinator declaration.
     pub fn coordinator(&self) -> &PacketNative5CoordinatorInstallation {
         &self.roster.coordinator
+    }
+
+    /// Retains the original recorded-Hello slot before the first realization callback.
+    ///
+    /// The slot starts empty and later receives the same SDK-recorded journal.
+    /// Source authentication compares its actual literal bank and controller;
+    /// merely installing a sidecar grants no preparation or operation authority.
+    ///
+    /// # Errors
+    /// Refuses a foreign source origin, an unselected or invalid member, a late
+    /// or repeated slot, a borrowed journal, or a slot that already owns a journal.
+    pub fn bind_original_ack_hello_slot(
+        &self,
+        member: usize,
+        slot: Rc<RefCell<Option<crucible_node_provider::client::OriginalHelloJournal>>>,
+    ) -> Result<(), QualificationError> {
+        let source = self.roster.sources.get(member).ok_or_else(refused)?;
+        if source
+            .selected_ack_emitter_selection()
+            .map_err(|_| refused())?
+            .is_none()
+        {
+            return Err(refused());
+        }
+        self.current()?;
+        if self.original_ack_callback_started.get()
+            || slot.try_borrow().map_err(|_| refused())?.is_some()
+        {
+            return Err(refused());
+        }
+        let mut originals = self
+            .original_ack_hello
+            .try_borrow_mut()
+            .map_err(|_| refused())?;
+        if originals[member].is_some() {
+            return Err(refused());
+        }
+        originals[member] = Some(slot);
+        Ok(())
     }
 
     /// Borrows one original source without replacing its concrete allocation.
@@ -358,4 +406,27 @@ fn operation_error(error: QualificationError) -> OperationFailure {
 
 fn operation_qualification(error: OperationFailure) -> QualificationError {
     QualificationError::Evidence(error.reason)
+}
+
+/// Compares independently bound Source choices before actual launch effects.
+pub(super) fn authenticate_expected_launch_selections(
+    source: &crucible::node_adapters::cnp::PacketCompleteSemanticSource,
+    launch: &PacketNative5SourceLaunch,
+) -> Result<(), QualificationError> {
+    if launch.confirmation_selection
+        != source
+            .selected_confirmation_selection()
+            .map_err(operation_qualification)?
+        || launch.ack_emitter_selection
+            != source
+                .selected_ack_emitter_selection()
+                .map_err(operation_qualification)?
+        || launch.native_codec_metadata_extent
+            != source
+                .selected_native_ack_codec_metadata_extent()
+                .map_err(operation_qualification)?
+    {
+        return Err(refused());
+    }
+    Ok(())
 }

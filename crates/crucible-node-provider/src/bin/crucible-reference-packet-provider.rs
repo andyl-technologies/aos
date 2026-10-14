@@ -29,8 +29,18 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = std::env::args_os().skip(1);
     let socket = PathBuf::from(arguments.next().ok_or("expected private packet socket")?);
+    let original_boot = match arguments.next() {
+        None => false,
+        Some(flag) if flag == "--original-canonical-ack-boot" => true,
+        Some(_) => return Err("unexpected private packet argument".into()),
+    };
     if arguments.next().is_some() {
         return Err("unexpected private packet argument".into());
+    }
+    if original_boot {
+        let mut service =
+            PacketSourceService::accept_original_private_bootstrap(&socket, std::io::stdin())?;
+        return drive(&mut service);
     }
     let value = FrameReader::with_limits(std::io::stdin().lock(), 1024 * 1024, 64)?
         .read()?
@@ -54,6 +64,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    drive(&mut service)
+}
+
+fn drive(service: &mut PacketSourceService) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         if let Err(error) = service.step() {
             report_endpoint_failure(&error);

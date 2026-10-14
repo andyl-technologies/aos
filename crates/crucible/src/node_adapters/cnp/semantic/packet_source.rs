@@ -46,6 +46,11 @@ pub struct PacketSemanticSource {
     program: PacketProgramDefinition,
     world_scope: Option<world::PacketWorldSourceScope>,
     current_native: RefCell<Option<super::process::CnpSemanticSourceRead>>,
+    pub(super) complete_confirmation_selection: Option<
+        Option<
+            crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+    >,
     pub(super) complete_capture_profile:
         Option<crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile>,
     complete_storage:
@@ -355,6 +360,7 @@ impl PacketSemanticSource {
             current_native: RefCell::new(None),
             complete_storage: None,
             complete_capture_profile: None,
+            complete_confirmation_selection: None,
         })
     }
 

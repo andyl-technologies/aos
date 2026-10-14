@@ -16,6 +16,9 @@ use super::super::{
     coordinator::PacketNative5CoordinatorInstallation,
 };
 mod record;
+mod birth;
+
+pub use birth::PacketCompleteControlBirthFailure;
 
 pub use record::PacketNative5UnderlyingRecord;
 
@@ -89,6 +92,12 @@ pub struct PacketNative5Record {
         skip_serializing_if = "PacketNative5CaptureProfile::is_original_arrays"
     )]
     pub capture_profile: PacketNative5CaptureProfile,
+    /// Retains the confirmation selection bound at this original service birth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_selection: Option<super::super::service::PacketNative5ConfirmationSelection>,
+    /// Retains expected emitter data bound at this original birth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ack_emitter_selection: Option<super::super::service::PacketNative5AckEmitterSelection>,
 }
 
 impl PacketControl {
@@ -372,6 +381,8 @@ impl PacketControl {
             world: self.selection.world.clone(),
             native_record,
             capture_profile: self.complete_capture_profile.clone().unwrap_or_default(),
+            confirmation_selection: self.complete_confirmation_selection,
+            ack_emitter_selection: self.complete_ack_emitter_selection,
             storage_selection: self
                 .complete_storage
                 .as_ref()
@@ -436,8 +447,161 @@ fn decode_record<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Prov
     Ok(serde_json::from_value(value).map_err(ContractError::from)?)
 }
 
+impl PacketControl {
+    /// Binds confirmation correlation data before this complete actor's first dispatch.
+    ///
+    /// The genuine service separately authenticates the actual installed policy,
+    /// negotiated feature and static schema before calling this method. Binding
+    /// this value alone never installs the endpoint route or grants capture.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator, absent original storage/profile, prior binding,
+    /// or any earlier realization, activation, dispatch or effect attempt.
+    pub fn bind_complete_original_confirmation_selection(
+        &mut self,
+        selected: super::super::service::PacketNative5ConfirmationSelection,
+    ) -> Result<(), ProviderError> {
+        if self.capture_creator != std::process::id() {
+            return Err(ProviderError::Correlation(
+                "native5 confirmation foreign creator",
+            ));
+        }
+        if self.complete_coordinator.is_none()
+            || self.complete_storage.is_none()
+            || self.complete_capture_profile.is_none()
+            || self.complete_confirmation_selection.is_some()
+            || self.realized
+            || self.admitted
+            || self.staged.is_some()
+            || self.active.is_some()
+            || self.fenced
+            || self.native_effect_attempted
+            || self.current_operation.is_some()
+            || !self.originals.is_empty()
+            || !self.begins.is_empty()
+            || !self.begin_requests.is_empty()
+            || !self.content.is_empty()
+            || self.content_bytes != 0
+            || !self.terminals.is_empty()
+        {
+            return Err(ProviderError::Conflict(
+                "native5 confirmation is not unused original birth",
+            ));
+        }
+        self.complete_confirmation_selection = Some(selected);
+        Ok(())
+    }
+
+    /// Compares retained confirmation data with an independently installed policy.
+    ///
+    /// The endpoint first authenticates its actual immutable policy and codec.
+    /// This comparison grants no source ticket or restoration permission.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator, absent original complete storage or a different
+    /// confirmation selection. None preserves the existing unselected route.
+    pub fn authenticate_complete_confirmation_selection(
+        &self,
+        expected: Option<super::super::service::PacketNative5ConfirmationSelection>,
+    ) -> Result<(), ProviderError> {
+        if self.capture_creator != std::process::id() {
+            return Err(ProviderError::Correlation(
+                "native5 confirmation foreign creator",
+            ));
+        }
+        if self.complete_coordinator.is_none()
+            || self.complete_storage.is_none()
+            || self.complete_confirmation_selection != expected
+        {
+            return Err(ProviderError::Correlation(
+                "native5 original confirmation selection differs",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod capture_tests;
+
+impl PacketControl {
+    /// Binds expected acknowledgement-emitter data before original dispatch.
+    ///
+    /// The source and service separately authenticate the actual host writer
+    /// lease and kernel-bound peer mechanism. This value does not install that
+    /// mechanism, lower generic raw ACK credit or grant capture permission.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, missing storage/profile/confirmation, a prior
+    /// selection, or any earlier realization, activation, request or effect.
+    pub fn bind_complete_original_ack_emitter_selection(
+        &mut self,
+        selected: super::super::service::ack_emitter::PacketNative5AckEmitterSelection,
+    ) -> Result<(), ProviderError> {
+        if self.capture_creator != std::process::id() {
+            return Err(ProviderError::Correlation(
+                "native5 ACK emitter foreign creator",
+            ));
+        }
+        if self.complete_coordinator.is_none()
+            || self.complete_storage.is_none()
+            || self.complete_capture_profile.is_none()
+            || self.complete_confirmation_selection
+                != Some(
+                    super::super::service::PacketNative5ConfirmationSelection::AfterProtocolPoll5,
+                )
+            || self.complete_ack_emitter_selection.is_some()
+            || self.realized
+            || self.admitted
+            || self.staged.is_some()
+            || self.active.is_some()
+            || self.fenced
+            || self.native_effect_attempted
+            || self.current_operation.is_some()
+            || !self.originals.is_empty()
+            || !self.begins.is_empty()
+            || !self.begin_requests.is_empty()
+            || !self.content.is_empty()
+            || self.content_bytes != 0
+            || !self.terminals.is_empty()
+        {
+            return Err(ProviderError::Conflict(
+                "native5 ACK emitter is not unused selected birth",
+            ));
+        }
+        self.complete_ack_emitter_selection = Some(selected);
+        Ok(())
+    }
+
+    /// Compares retained emitter data with an independently authenticated mechanism.
+    ///
+    /// None preserves the original unselected route and implicit array profile.
+    /// The actual controller lease, source association and native peer proof
+    /// remain separate requirements even when this data matches.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, absent original storage, a different selection,
+    /// or an emitter selection without the selected confirmation mechanism.
+    pub fn authenticate_complete_ack_emitter_selection(
+        &self,
+        expected: Option<super::super::service::ack_emitter::PacketNative5AckEmitterSelection>,
+    ) -> Result<(), ProviderError> {
+        if self.capture_creator != std::process::id() {
+            return Err(ProviderError::Correlation(
+                "native5 ACK emitter foreign creator",
+            ));
+        }
+        if self.complete_coordinator.is_none() || self.complete_storage.is_none()
+            || self.complete_ack_emitter_selection != expected
+            || expected.is_some() && self.complete_confirmation_selection != Some(
+                super::super::service::PacketNative5ConfirmationSelection::AfterProtocolPoll5,
+            )
+        {
+            return Err(ProviderError::Correlation("native5 original ACK emitter selection differs"));
+        }
+        Ok(())
+    }
+}

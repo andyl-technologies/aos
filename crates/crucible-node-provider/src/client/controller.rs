@@ -25,6 +25,13 @@ mod registration_read;
 mod confirmation;
 pub use registration_read::CnpRegistrarRead;
 
+#[path = "controller/ack_emitter.rs"]
+mod ack_emitter;
+pub(crate) use ack_emitter::maximum_canonical_ack_framed_bytes;
+mod assigned_admit;
+pub use ack_emitter::OriginalCanonicalBlobAckEmitter;
+pub use assigned_admit::{CompletedOriginalCanonicalAckAdmit, PreparedOriginalCanonicalAckAdmit};
+
 /// Names one node and its indivisible execution owner on an actual connection.
 ///
 /// These labels are routing data. Construction does not authenticate their
@@ -53,9 +60,30 @@ pub struct CnpController {
     budget: Duration,
     fenced: bool,
     protocol_owner: std::rc::Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+    original_ack_admit: Option<assigned_admit::AssignedOriginalCanonicalAckAdmit>,
 }
 
 impl CnpController {
+    /// Returns raw Hello digests from this exact recorded controller connection.
+    ///
+    /// The source separately binds its own original journal/native/key context.
+    /// This check requires the same retained bank Rc; equal bytes alone cannot
+    /// stand in for the Hello used by this actual negotiated connection.
+    ///
+    /// # Errors
+    /// Refuses a foreign actor, revoked or unselected codec, different Hello
+    /// bank, missing recorded association or incomplete literal framing.
+    pub fn original_canonical_ack_hello_frame_digests(
+        &self,
+        journal: &super::OriginalHelloJournal,
+    ) -> Result<crate::native_hello::OriginalHelloFrameDigests, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        if self.original_native5_ack_emitter_selection()? != Some(crate::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection::CanonicalSdkBlob5) {
+            return Err(ProviderError::Correlation("canonical ACK original Hello selection absent"));
+        }
+        self.session.original_ack_hello_digests(journal)
+    }
+
     /// Authenticates this controller's actual immutable native-five codec.
     ///
     /// The borrowed predicate checks original process/thread, genuine current
@@ -73,6 +101,24 @@ impl CnpController {
             ));
         }
         self.session.authenticate_native5_source_codec()
+    }
+
+    /// Observes this actor's actual immutable canonical acknowledgement selection.
+    ///
+    /// The returned value is data. It grants no native frame limit, source
+    /// capture or permission to install a captured state.
+    ///
+    /// # Errors
+    /// Refuses changed actor, revoked registrar, replaced codec, callback loss
+    /// policy or selected mechanism missing from the negotiated source features.
+    pub fn original_native5_ack_emitter_selection(
+        &self,
+    ) -> Result<
+        Option<crate::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+        ProviderError,
+    > {
+        self.authenticate_native5_source_codec()?;
+        self.session.original_native5_ack_emitter_selection()
     }
 
     /// Observes the closed confirmation selection on this same installed actor.
@@ -218,6 +264,11 @@ impl CnpController {
         if self.fenced {
             return Err(ProviderError::Correlation("captured controller fenced"));
         }
+        if self.original_ack_admit.is_some() {
+            return Err(ProviderError::Correlation(
+                "assigned Admit complete protocol edition not selected",
+            ));
+        }
         self.session.protocol_capture_preflight(cut)?;
         self.session.preflight_protocol_reservation(reservation)?;
         reservation.validate_source_encoding(
@@ -270,6 +321,11 @@ impl CnpController {
         reservation: &mut Option<crate::protocol_snapshot::ProtocolSnapshotReservation>,
         cut: crate::protocol_snapshot::ProtocolCaptureCut,
     ) -> Result<crate::protocol_snapshot::OriginalProtocolSnapshot, ProviderError> {
+        if self.original_ack_admit.is_some() {
+            return Err(ProviderError::Correlation(
+                "assigned Admit complete protocol edition not selected",
+            ));
+        }
         self.session.protocol_capture_preflight(cut)?;
         crate::protocol_snapshot::ProtocolSnapshotReservation::finish_from_slot(
             reservation,
@@ -435,6 +491,91 @@ impl CnpController {
             coordinator,
             profile,
         )
+    }
+
+    /// Installs the source-selected canonical ACK and confirmation grammar once.
+    ///
+    /// The extra definition and genuine current negotiation are checked before
+    /// moving the original bank. A portable selection never creates this owner,
+    /// a native peer read limit, source ticket or restoration authority.
+    ///
+    /// # Errors
+    /// Refuses foreign routes/actors, used custody or callbacks, missing source
+    /// definitions/features, changed policies or already installed original bank.
+    pub fn install_native5_source_ack_emitter_codec(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.fenced
+            || self.custody.originals().next().is_some()
+            || selection.realization.bindings.len() != 1
+            || selection.realization.owner_bindings.len() != 1
+            || self.route.node != selection.realization.bindings[0].compatibility.node_id
+            || self.route.execution_owner != selection.realization.owner_bindings[0].owner.id
+        {
+            return Err(ProviderError::Correlation(
+                "canonical ACK codec requires original unused source controller",
+            ));
+        }
+        self.session
+            .install_native5_source_ack_emitter_codec(bank, selection, coordinator, profile)
+    }
+
+    /// Returns the selected metadata extent of the same installed source codec.
+    ///
+    /// This guarded data read grants no allocation identity or native permission.
+    ///
+    /// # Errors
+    /// Refuses a foreign process/thread, revoked registration, changed source
+    /// codec or an actor without the original sealed source installation.
+    pub fn original_native5_codec_metadata_extent(
+        &self,
+    ) -> Result<Option<crate::connection::CanonicalAckCodecMetadataExtent>, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.session.original_native5_codec_metadata_extent()
+    }
+
+    /// Installs a source-selected finite codec metadata edition once.
+    ///
+    /// Complete immutable source fields are retained and counted against the
+    /// closed selected extent before transferring the supplied literal bank.
+    /// Actual allocation and whole snapshot credits remain independent.
+    ///
+    /// # Errors
+    /// Refuses wrong or used actors, missing schemas/negotiation, replaced
+    /// policies, used banks or a complete codec view exceeding the selection.
+    pub fn install_native5_source_ack_emitter_codec_with_metadata_extent(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: crate::connection::CanonicalAckCodecMetadataExtent,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.fenced
+            || self.custody.originals().next().is_some()
+            || selection.realization.bindings.len() != 1
+            || selection.realization.owner_bindings.len() != 1
+            || self.route.node != selection.realization.bindings[0].compatibility.node_id
+            || self.route.execution_owner != selection.realization.owner_bindings[0].owner.id
+        {
+            return Err(ProviderError::Correlation(
+                "canonical ACK codec requires original unused source controller",
+            ));
+        }
+        self.session
+            .install_native5_source_ack_emitter_codec_with_metadata_extent(
+                bank,
+                selection,
+                coordinator,
+                profile,
+                metadata_extent,
+            )
     }
 
     /// Installs the original connected input codec and a precharged literal bank.
@@ -607,6 +748,7 @@ impl CnpController {
             route,
             budget,
             fenced: false,
+            original_ack_admit: None,
             protocol_owner: std::rc::Rc::new(crate::protocol_snapshot::ProtocolCaptureOwner::new()),
         })
     }
@@ -661,6 +803,7 @@ impl CnpController {
                 route,
                 budget,
                 fenced: false,
+                original_ack_admit: None,
                 protocol_owner: std::rc::Rc::new(
                     crate::protocol_snapshot::ProtocolCaptureOwner::new(),
                 ),
@@ -846,6 +989,7 @@ impl CnpController {
         body: impl Serialize,
         extensions: Extensions,
     ) -> Result<ResponseBody, ProviderError> {
+        self.ensure_no_pending_original_ack_admit()?;
         let CallScope {
             operation_id,
             method,
@@ -923,6 +1067,7 @@ impl CnpController {
     /// Refuses changed content, insufficient finite custody, invalid progress,
     /// exhausted journals, overlong identities or uncertain transport effects.
     pub fn upload(&mut self, reference: &ContentRef, bytes: &[u8]) -> Result<(), ProviderError> {
+        self.ensure_no_pending_original_ack_admit()?;
         if self.fenced {
             return Err(ProviderError::Correlation(
                 "generic original controller is fenced",

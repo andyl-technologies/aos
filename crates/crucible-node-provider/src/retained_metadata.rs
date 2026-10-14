@@ -481,6 +481,22 @@ impl ObserveMetadata for crate::reference_packet::service::PacketNative5Confirma
     }
 }
 
+impl ObserveMetadata for crate::reference_packet::service::PacketNative5AckEmitterSelection {
+    fn observe_metadata(&self, _: &mut MetadataObserver) -> Result<(), ProviderError> {
+        match self {
+            Self::CanonicalSdkBlob5 => Ok(()),
+        }
+    }
+}
+
+impl ObserveMetadata for crate::client::CanonicalAckCodecMetadataExtent {
+    fn observe_metadata(&self, _observer: &mut MetadataObserver) -> Result<(), ProviderError> {
+        match self {
+            Self::CanonicalAck512KiB => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

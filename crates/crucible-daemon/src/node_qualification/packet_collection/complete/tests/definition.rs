@@ -41,6 +41,10 @@ impl Definition {
         member: usize,
         proof_bytes: Vec<u8>,
         effect_phases: &[u16],
+        confirmation: Option<
+            crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+        ack: Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
     ) -> Self {
         let id = |value: &str| match value {
             "packet"
@@ -275,6 +279,18 @@ impl Definition {
             qualification_refs: vec![proof.clone()],
             extensions: Extensions::new(),
         };
+        let declaration = crucible_node_provider::reference_packet::continuation_contracts::complete_packet_ack_emitter_declaration(
+            &provider, confirmation.as_ref(), ack.as_ref(),
+        ).unwrap();
+        for (_, reference, bytes) in declaration
+            .confirmation
+            .into_iter()
+            .chain(declaration.ack_emitter)
+            .chain(declaration.admission)
+        {
+            content.insert(reference, bytes);
+        }
+        let provider = declaration.provider;
         let binding = NodeBinding {
             compatibility: BindingCompatibility {
                 schema_version: 1,

@@ -192,6 +192,8 @@ mod qemu_hot_fork_world_factory;
 mod qemu_hot_fork_world_resource;
 pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
+#[cfg(target_os = "linux")]
+pub mod qemu_sim_preparation;
 pub mod repository_admission;
 mod supervision;
 

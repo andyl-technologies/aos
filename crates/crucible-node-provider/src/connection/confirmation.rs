@@ -18,6 +18,16 @@ impl<S: ProviderStream> Connection<S> {
         &self,
         original_poll: &Envelope,
     ) -> Result<(), ProviderError> {
+        self.authenticate_native5_confirmation_context(original_poll)?;
+        self.guard
+            .authenticate_incoming_confirmation(original_poll)?;
+        self.authority.ensure_live()
+    }
+
+    fn authenticate_native5_confirmation_context(
+        &self,
+        original_poll: &Envelope,
+    ) -> Result<(), ProviderError> {
         self.authenticate_native5_source_codec()?;
         if self.role != EndpointRole::Provider {
             return Err(ProviderError::Correlation(
@@ -43,9 +53,18 @@ impl<S: ProviderStream> Connection<S> {
                 "confirmation Poll request changed",
             ));
         }
-        self.guard
-            .authenticate_incoming_confirmation(original_poll)?;
         self.authority.ensure_live()
+    }
+
+    pub(crate) fn authenticate_prepared_canonical_ack_poll(
+        &self,
+        original_poll: &Envelope,
+        originals: &[Envelope],
+    ) -> Result<(), ProviderError> {
+        self.original_canonical_blob_ack_framed_bytes()?;
+        self.authenticate_native5_confirmation_context(original_poll)?;
+        self.guard
+            .authenticate_prepared_confirmation(original_poll, originals)
     }
 
     /// Admits prospective literal bytes and slots without changing any bank.
@@ -73,6 +92,53 @@ impl<S: ProviderStream> Connection<S> {
             .ok_or(ProviderError::ResourceExhausted(
                 "confirmation framed byte overflow",
             ))?;
+        self.preflight_confirmation_publication_with_maximum(
+            original_poll,
+            outgoing_count,
+            canonical_outgoing_framed_bytes,
+            incoming_ack_count,
+            incoming_raw_framed_bytes,
+            maximum_raw,
+        )
+    }
+
+    /// Admits a confirmation suffix under this actor's genuine keyed ACK marker.
+    ///
+    /// The marker supplies the compiled complete canonical ceiling. No caller
+    /// scalar or host-side emitter lease selects a restricted native reader.
+    ///
+    /// # Errors
+    /// Refuses an absent or replaced marker, unrelated Poll or insufficient
+    /// complete lifetime byte, slot, request-ID and sequence credit.
+    pub fn preflight_original_canonical_blob_ack_publication(
+        &self,
+        original_poll: &Envelope,
+        outgoing_count: usize,
+        canonical_outgoing_framed_bytes: usize,
+        incoming_ack_count: usize,
+        incoming_raw_framed_bytes: usize,
+    ) -> Result<(), ProviderError> {
+        let maximum_raw = self.original_canonical_blob_ack_framed_bytes()?;
+        self.preflight_confirmation_publication_with_maximum(
+            original_poll,
+            outgoing_count,
+            canonical_outgoing_framed_bytes,
+            incoming_ack_count,
+            incoming_raw_framed_bytes,
+            maximum_raw,
+        )
+    }
+
+    fn preflight_confirmation_publication_with_maximum(
+        &self,
+        original_poll: &Envelope,
+        outgoing_count: usize,
+        canonical_outgoing_framed_bytes: usize,
+        incoming_ack_count: usize,
+        incoming_raw_framed_bytes: usize,
+        maximum_raw: usize,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native5_confirmation_poll(original_poll)?;
         let required_incoming =
             incoming_ack_count
                 .checked_mul(maximum_raw)
@@ -138,6 +204,28 @@ impl<S: ProviderStream> Connection<S> {
         &self,
         original_poll: &Envelope,
         frames: impl Iterator<Item = &'a Envelope> + Clone,
+    ) -> Result<(usize, usize, usize), ProviderError> {
+        self.preflight_confirmation_plan_with_ack_scope(original_poll, frames, false)
+    }
+
+    /// Checks the exact complete plan under genuine keyed canonical ACK admission.
+    ///
+    /// # Errors
+    /// Refuses an absent or replaced marker, changed scope, malformed frames,
+    /// lifetime ID reuse or insufficient complete suffix credit.
+    pub fn preflight_original_canonical_blob_ack_plan<'a>(
+        &self,
+        original_poll: &Envelope,
+        frames: impl Iterator<Item = &'a Envelope> + Clone,
+    ) -> Result<(usize, usize, usize), ProviderError> {
+        self.preflight_confirmation_plan_with_ack_scope(original_poll, frames, true)
+    }
+
+    fn preflight_confirmation_plan_with_ack_scope<'a>(
+        &self,
+        original_poll: &Envelope,
+        frames: impl Iterator<Item = &'a Envelope> + Clone,
+        canonical_ack_scope: bool,
     ) -> Result<(usize, usize, usize), ProviderError> {
         self.authenticate_native5_confirmation_poll(original_poll)?;
         let mut count = 0usize;
@@ -206,16 +294,29 @@ impl<S: ProviderStream> Connection<S> {
                 "confirmation plan has no single final response",
             ));
         }
+        let maximum_raw = if canonical_ack_scope {
+            self.original_canonical_blob_ack_framed_bytes()?
+        } else {
+            maximum
+                .checked_add(4)
+                .ok_or(ProviderError::ResourceExhausted("confirmation ACK framing"))?
+        };
         let raw = requests
-            .checked_mul(
-                maximum
-                    .checked_add(4)
-                    .ok_or(ProviderError::ResourceExhausted("confirmation ACK framing"))?,
-            )
+            .checked_mul(maximum_raw)
             .ok_or(ProviderError::ResourceExhausted(
                 "confirmation ACK suffix overflow",
             ))?;
-        self.preflight_confirmation_publication(original_poll, count, bytes, requests, raw)?;
+        if canonical_ack_scope {
+            self.preflight_original_canonical_blob_ack_publication(
+                original_poll,
+                count,
+                bytes,
+                requests,
+                raw,
+            )?;
+        } else {
+            self.preflight_confirmation_publication(original_poll, count, bytes, requests, raw)?;
+        }
         Ok((count, bytes, requests))
     }
 

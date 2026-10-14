@@ -356,3 +356,103 @@ impl CnpSemanticNode {
         Ok(result)
     }
 }
+
+/// Retains the finite request data for one separately selected confirmation.
+///
+/// This value owns no ticket or source authority. The actual capture scope must
+/// independently authenticate the original ticket, capsule and installed codec.
+pub struct CnpNativeAfterConfirmationCall {
+    /// Supplies the new original controller request ID without renewing Capture.
+    pub request_id: crucible_node_contract::Id,
+    /// Binds the previously completed Capture and its three original references.
+    pub context: crucible_node_provider::reference_packet::service::confirmation::PacketNativeAfterConfirmationRequest,
+}
+
+impl CnpSemanticCaptureScope<'_> {
+    /// Retains the selected confirmation result before rechecking its original source.
+    ///
+    /// The independent ticket and active capsule must match before the same
+    /// controller dispatches the correlated Poll. Its SDK helper checks actual
+    /// Capture correspondence and received fourth-object content. The returned
+    /// data alone does not authenticate literal ACKs, settle the source journal,
+    /// construct an installed capture or grant fresh restoration permission.
+    ///
+    /// The caller allocates and charges the result slot before dispatch. This
+    /// method fills that slot before its final source check so a post-I/O refusal
+    /// retains both the original controller history and returned receipt data.
+    ///
+    /// # Errors
+    /// Refuses changed source or ticket custody, a foreign Capture context, an
+    /// occupied result slot, an absent selected codec or uncertain transport.
+    /// Uncertainty revokes the same original read owner without replacing it.
+    pub fn call_original_native_after_confirmation_into(
+        &mut self,
+        ticket: &OriginalLineageOwnerCaptureTicket<'_>,
+        record: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
+        request: CnpNativeAfterConfirmationCall,
+        completed: &mut Option<(
+            ResponseBody,
+            crucible_node_provider::reference_packet::service::confirmation::PacketNativeAfterConfirmationReceipt,
+        )>,
+    ) -> Result<(), OperationFailure> {
+        self.realization()?;
+        if completed.is_some() {
+            return Err(refused("original confirmation result slot is occupied"));
+        }
+        let active = self
+            .native
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.active.as_ref())
+            .ok_or_else(|| refused("original confirmation activation is absent"))?;
+        ticket
+            .authenticate_scope(
+                active,
+                record,
+                runtime_object,
+                self.owner,
+                &self.source.installation().owner.owner.participant_ids,
+            )
+            .map_err(|error| refused(error.to_string()))?;
+        let CnpNativeAfterConfirmationCall {
+            request_id,
+            context,
+        } = request;
+        context.validate_data().map_err(unknown)?;
+        if context.capture_operation_id != *ticket.operation_id()
+            || request_id == context.capture_request_id
+        {
+            return Err(refused(
+                "original confirmation has another Capture operation",
+            ));
+        }
+
+        let call = ReadCall::begin(Rc::clone(&self.native.read_owner)).map_err(unknown)?;
+        let result: Result<(), OperationFailure> = (|| {
+            let controller = self
+                .native
+                .controller
+                .as_mut()
+                .ok_or_else(|| refused("original confirmation controller is absent"))?;
+            let result = controller
+                .call_original_native_after_confirmation(
+                    request_id,
+                    ticket.owner().owner.clone(),
+                    context,
+                )
+                .map_err(unknown)?;
+            *completed = Some(result);
+            Ok(())
+        })();
+        call.finish(result.is_ok());
+        result?;
+
+        if let Err(error) = self.realization() {
+            self.native.ensure_origin().map_err(unknown)?;
+            self.native.read_owner.revoke();
+            return Err(super::after_effect(error));
+        }
+        Ok(())
+    }
+}

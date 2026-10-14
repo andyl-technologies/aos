@@ -8,7 +8,11 @@ use std::process::{Child, ExitStatus};
 use std::rc::Rc;
 
 use crucible_node_contract::{ContentRef, U64};
-use crucible_node_provider::{ProviderError, client::CnpController, handshake::Handshake};
+use crucible_node_provider::{
+    ProviderError,
+    client::CnpController,
+    handshake::{ExtensionHandshake, Handshake},
+};
 use rustix::process::{Pid, Signal, getpgid, kill_process_group};
 
 #[path = "process/current.rs"]
@@ -52,6 +56,7 @@ pub struct CnpSemanticProcessCustody {
     pub(super) directory: PathBuf,
     pub(super) controller: Option<CnpController>,
     pub(super) handshake: Option<Handshake>,
+    pub(super) extension_handshake: Option<ExtensionHandshake>,
     pub(super) expected_executable: ContentRef,
     pub(super) installation_kind: Option<super::registry::SemanticInstallationKind>,
     pub(super) registration: Option<Rc<dyn super::CnpSemanticRegistrationPolicy>>,
@@ -61,6 +66,10 @@ pub struct CnpSemanticProcessCustody {
     pub(super) conformance: Option<Rc<dyn super::CnpSemanticConformanceAuthority>>,
     pub(super) collection_plan: Option<crate::node_admission::InstalledConformancePlan>,
     pub(super) runtime: Option<super::state::SemanticRuntimeCustody>,
+    pub(super) completed_ack_protocol_started: bool,
+    pub(super) completed_ack_admission: std::cell::RefCell<
+        Option<super::packet_complete_source::OriginalCompletedCanonicalAckWorldAdmission>,
+    >,
     rejected_control: Option<(CnpController, Handshake)>,
     group: Option<Pid>,
     killed: bool,
@@ -181,6 +190,9 @@ impl CnpSemanticProcessCustody {
         if let Some(handshake) = &mut self.handshake {
             handshake.contain();
         }
+        if let Some(handshake) = &mut self.extension_handshake {
+            handshake.contain();
+        }
         if let Some(controller) = &mut self.controller {
             controller.fence();
         }
@@ -230,12 +242,14 @@ impl Drop for CnpSemanticProcessCustody {
         std::mem::forget(self.child.take());
         std::mem::forget(self.controller.take());
         std::mem::forget(self.handshake.take());
+        std::mem::forget(self.extension_handshake.take());
         std::mem::forget(self.registration.take());
         std::mem::forget(self.source.take());
         std::mem::forget(self.acceptance.take());
         std::mem::forget(self.conformance.take());
         std::mem::forget(self.collection_plan.take());
         std::mem::forget(self.runtime.take());
+        std::mem::forget(self.completed_ack_admission.get_mut().take());
         std::mem::forget(self.rejected_control.take());
         std::mem::forget(self.executable_guard.take());
     }
@@ -300,6 +314,7 @@ impl CnpSemanticLaunchGuard {
                 directory,
                 controller: None,
                 handshake: None,
+                extension_handshake: None,
                 expected_executable: executable,
                 installation_kind: None,
                 registration: None,
@@ -309,6 +324,8 @@ impl CnpSemanticLaunchGuard {
                 conformance: None,
                 collection_plan: None,
                 runtime: None,
+                completed_ack_protocol_started: false,
+                completed_ack_admission: std::cell::RefCell::new(None),
                 rejected_control: None,
                 group,
                 killed: false,
@@ -396,6 +413,7 @@ impl CnpSemanticLaunchGuard {
         custody.authenticate_process()?;
         handshake.validate_registration(controller.authority())?;
         if custody.controller.is_some()
+            || custody.extension_handshake.is_some()
             || controller.peer_pid() != custody.provider_pid()
             || controller.peer_executable() != &custody.expected_executable
         {
@@ -404,6 +422,68 @@ impl CnpSemanticLaunchGuard {
             ));
         }
         Ok(())
+    }
+
+    /// Attaches the same original controller under its surviving typed Hello.
+    ///
+    /// The caller retains both owning input slots outside its failure/unwind
+    /// boundary. Validation borrows them before transfer; every refusal leaves
+    /// their original controller, registration, typed selection and banks in
+    /// those slots. Success installs both into this original guarded capsule
+    /// without unwrapping or downgrading the typed handshake.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, absent inputs, an already attached or transferred
+    /// capsule, changed actual Child/executable, revoked registration or another
+    /// original typed handshake. No input owner moves on refusal.
+    pub fn attach_extensions_owned(
+        &mut self,
+        controller: &mut Option<CnpController>,
+        handshake: &mut Option<ExtensionHandshake>,
+    ) -> Result<(), ProviderError> {
+        self.ensure_origin()?;
+        let original_controller = controller.as_ref().ok_or(ProviderError::Correlation(
+            "generic typed attachment controller absent",
+        ))?;
+        let original_handshake = handshake.as_ref().ok_or(ProviderError::Correlation(
+            "generic typed attachment handshake absent",
+        ))?;
+        let custody = self.custody.as_ref().ok_or(ProviderError::Correlation(
+            "generic typed attachment custody transferred",
+        ))?;
+        custody.authenticate_process()?;
+        original_handshake.verify_authority(original_controller.authority())?;
+        if custody.controller.is_some()
+            || custody.handshake.is_some()
+            || custody.extension_handshake.is_some()
+            || original_controller.peer_pid() != custody.provider_pid()
+            || original_controller.peer_executable() != &custody.expected_executable
+        {
+            return Err(ProviderError::Correlation(
+                "generic typed attachment is repeated or not original Child",
+            ));
+        }
+        // This immutable SDK read also authenticates its actual protocol owner
+        // before transfer. Matching registration labels alone are insufficient.
+        original_controller.original_registrar_read_extensions(original_handshake)?;
+
+        let custody = self.custody.as_mut().ok_or(ProviderError::Correlation(
+            "generic typed attachment custody transferred",
+        ))?;
+        match (controller.take(), handshake.take()) {
+            (Some(original_controller), Some(original_handshake)) => {
+                custody.controller = Some(original_controller);
+                custody.extension_handshake = Some(original_handshake);
+                Ok(())
+            }
+            (original_controller, original_handshake) => {
+                *controller = original_controller;
+                *handshake = original_handshake;
+                Err(ProviderError::Correlation(
+                    "generic typed attachment original input slots changed",
+                ))
+            }
+        }
     }
 
     /// Borrows actual original native custody for installed independent source oracles.

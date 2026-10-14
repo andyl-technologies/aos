@@ -5,7 +5,7 @@
 //! the original ticket, unchanged full cut and complete prefix settlement remain
 //! independent prerequisites.
 
-use super::super::service::PacketNative5StorageLimits;
+use super::super::service::{PacketNative5CaptureProfile, PacketNative5StorageLimits};
 use super::*;
 use crate::{
     native_hello::OriginalNativeHelloJournal, protocol_snapshot::ProtocolSnapshotReservation,
@@ -15,6 +15,7 @@ pub(super) struct CompleteEndpointState {
     pub(super) creator: u32,
     pub(super) thread: std::thread::ThreadId,
     pub(super) storage: PacketNative5StorageLimits,
+    pub(super) profile: Option<PacketNative5CaptureProfile>,
     pub(super) hello: OriginalNativeHelloJournal,
     pub(super) before: Option<ProtocolSnapshotReservation>,
     pub(super) after: Option<ProtocolSnapshotReservation>,
@@ -60,6 +61,20 @@ impl CompleteEndpointState {
         let after = self.after.as_ref().ok_or(ProviderError::Correlation(
             "native5 initial settlement slot absent",
         ))?;
+        let profile = self.profile.as_ref().ok_or(ProviderError::Correlation(
+            "native5 original endpoint profile absent",
+        ))?;
+        let before_facts = before.original_allocation_facts()?;
+        let after_facts = after.original_allocation_facts()?;
+        if before_facts.maximum_encoded_bytes as u64
+            != profile.native_before_bytes(&self.storage).get()
+            || after_facts.maximum_encoded_bytes as u64
+                != profile.native_after_bytes(&self.storage).get()
+        {
+            return Err(ProviderError::Correlation(
+                "native5 original snapshot bank differs from born profile",
+            ));
+        }
         before
             .allocated_bytes()
             .checked_add(after.allocated_bytes())
@@ -178,6 +193,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 creator: std::process::id(),
                 thread: std::thread::current().id(),
                 storage: storage.clone(),
+                profile: None,
                 hello,
                 before: None,
                 after: None,
@@ -206,6 +222,27 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             original
                 .native
                 .authenticate_complete_storage(&storage, authority.limits())?;
+            let actual_profile = original
+                .connection
+                .original_native5_capture_profile()?
+                .clone();
+            original
+                .native
+                .authenticate_complete_capture_profile(&actual_profile)?;
+            if original
+                .state
+                .profile
+                .as_ref()
+                .is_some_and(|profile| profile != &actual_profile)
+            {
+                return Err(ProviderError::Correlation(
+                    "native5 original endpoint profile changed",
+                ));
+            }
+            let actual_confirmation = original.connection
+                .original_native5_confirmation_selection()?;
+            original.native.authenticate_complete_confirmation_selection(actual_confirmation)?;
+            original.state.profile = Some(actual_profile);
 
             let history = usize::try_from(storage.frame_bank_bytes.get())
                 .map_err(|_| ProviderError::ResourceExhausted("native5 original history bytes"))?;
@@ -234,20 +271,41 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             // A wrong compatible candidate never changes selected storage or
             // creates a replacement bank. Already prepared original banks stay.
             original.state.storage = storage;
-            let maximum = usize::try_from(original.state.storage.protocol_snapshot_bytes.get())
-                .map_err(|_| ProviderError::ResourceExhausted("native5 protocol snapshot bytes"))?;
+            let profile = original
+                .state
+                .profile
+                .as_ref()
+                .ok_or(ProviderError::Correlation(
+                    "native5 original endpoint profile absent",
+                ))?;
+            let before_maximum =
+                usize::try_from(profile.native_before_bytes(&original.state.storage).get())
+                    .map_err(|_| {
+                        ProviderError::ResourceExhausted("native5 before snapshot bytes")
+                    })?;
+            let after_maximum =
+                usize::try_from(profile.native_after_bytes(&original.state.storage).get())
+                    .map_err(|_| {
+                        ProviderError::ResourceExhausted("native5 after snapshot bytes")
+                    })?;
             let history = usize::try_from(original.state.storage.frame_bank_bytes.get())
                 .map_err(|_| ProviderError::ResourceExhausted("native5 frozen history bytes"))?;
             let frames = usize::try_from(original.state.storage.frames_per_direction.get())
                 .map_err(|_| ProviderError::ResourceExhausted("native5 frozen history slots"))?;
             if original.state.before.is_none() {
-                original.state.before = Some(ProtocolSnapshotReservation::reserve_complete(
-                    maximum, history, frames,
+                original.state.before = Some(reserve_original_protocol_bank(
+                    profile,
+                    before_maximum,
+                    history,
+                    frames,
                 )?);
             }
             if original.state.after.is_none() {
-                original.state.after = Some(ProtocolSnapshotReservation::reserve_complete(
-                    maximum, history, frames,
+                original.state.after = Some(reserve_original_protocol_bank(
+                    profile,
+                    after_maximum,
+                    history,
+                    frames,
                 )?);
             }
             original.state.preflight_birth(&authority)?;
@@ -312,6 +370,27 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             held: false,
             complete: Some(state),
             capture: None,
+            pending_capture: None,
+            after_confirmation: None,
+            canonical_ack_boot: None,
+            canonical_ack_admission: None,
         })
     }
 }
+
+fn reserve_original_protocol_bank(
+    profile: &PacketNative5CaptureProfile,
+    maximum: usize,
+    history: usize,
+    frames: usize,
+) -> Result<ProtocolSnapshotReservation, ProviderError> {
+    match profile {
+        PacketNative5CaptureProfile::OriginalArrays6 => {
+            ProtocolSnapshotReservation::reserve_complete(maximum, history, frames)
+        }
+        PacketNative5CaptureProfile::CompactBytes7 { .. } => {
+            ProtocolSnapshotReservation::reserve_complete_compact(maximum, history, frames)
+        }
+    }
+}
+

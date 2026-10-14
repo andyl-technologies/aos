@@ -32,7 +32,26 @@ impl serde::Serialize for ProtocolCodecView<'_> {
     }
 }
 
+/// Selects a finite serialized metadata extent for the canonical ACK codec.
+///
+/// The source selects this data before construction and accounts actual retained
+/// metadata independently. It grants no native ACK limit or restoration right.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum CanonicalAckCodecMetadataExtent {
+    /// Admits at most 512 KiB of the complete immutable codec view.
+    CanonicalAck512KiB,
+}
+
+impl CanonicalAckCodecMetadataExtent {
+    fn maximum_encoded_bytes(self) -> usize {
+        match self {
+            Self::CanonicalAck512KiB => 512 * 1024,
+        }
+    }
+}
+
 pub(crate) struct ControllerNative5Policy {
+    metadata_extent: Option<CanonicalAckCodecMetadataExtent>,
     selection: PacketControlSelection,
     coordinator: InstalledContent,
     definition: ContentRef,
@@ -42,6 +61,9 @@ pub(crate) struct ControllerNative5Policy {
     confirmation_selection:
         Option<crate::reference_packet::service::confirmation::PacketNative5ConfirmationSelection>,
     confirmation_definition: Option<ContentRef>,
+    ack_emitter_selection:
+        Option<crate::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+    ack_emitter_definition: Option<ContentRef>,
 }
 
 impl ControllerNative5Policy {
@@ -50,6 +72,7 @@ impl ControllerNative5Policy {
         observer: &mut crate::retained_metadata::MetadataObserver,
     ) -> Result<(), ProviderError> {
         let Self {
+            metadata_extent,
             selection,
             coordinator,
             definition,
@@ -58,7 +81,13 @@ impl ControllerNative5Policy {
             capture_profile,
             confirmation_selection,
             confirmation_definition,
+            ack_emitter_selection,
+            ack_emitter_definition,
         } = self;
+        // The unit selection is inline; actual retained allocations are walked below.
+        match metadata_extent {
+            None | Some(CanonicalAckCodecMetadataExtent::CanonicalAck512KiB) => {}
+        }
         observer.observe(selection)?;
         observer.observe(coordinator)?;
         observer.observe(definition)?;
@@ -66,7 +95,9 @@ impl ControllerNative5Policy {
         wire.observe_retained_metadata(observer)?;
         observer.observe(capture_profile)?;
         observer.observe(confirmation_selection)?;
-        observer.observe(confirmation_definition)
+        observer.observe(confirmation_definition)?;
+        observer.observe(ack_emitter_selection)?;
+        observer.observe(ack_emitter_definition)
     }
 
     pub(crate) fn from_source_installation(
@@ -87,6 +118,22 @@ impl ControllerNative5Policy {
         selection: PacketControlSelection,
         coordinator: InstalledContent,
         capture_profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<Self, ProviderError> {
+        Self::from_source_installation_with_metadata_extent(
+            authority,
+            selection,
+            coordinator,
+            capture_profile,
+            None,
+        )
+    }
+
+    fn from_source_installation_with_metadata_extent(
+        authority: &ConnectionAuthority,
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        capture_profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: Option<CanonicalAckCodecMetadataExtent>,
     ) -> Result<Self, ProviderError> {
         capture_profile.validate()?;
         serialized_credit(&selection, 65_536)?;
@@ -121,6 +168,7 @@ impl ControllerNative5Policy {
             &selection.realization.owner_bindings[0],
         )?;
         let original = Self {
+            metadata_extent,
             selection,
             coordinator,
             definition: schema.definition,
@@ -129,9 +177,17 @@ impl ControllerNative5Policy {
             capture_profile,
             confirmation_selection: None,
             confirmation_definition: None,
+            ack_emitter_selection: None,
+            ack_emitter_definition: None,
         };
         original.validate_installation(authority)?;
-        serialized_credit(&original.protocol_view(), 256 * 1024)?;
+        serialized_credit(
+            &original.protocol_view(),
+            original.metadata_extent.map_or(
+                256 * 1024,
+                CanonicalAckCodecMetadataExtent::maximum_encoded_bytes,
+            ),
+        )?;
         Ok(original)
     }
 
@@ -141,14 +197,31 @@ impl ControllerNative5Policy {
         coordinator: InstalledContent,
         capture_profile: crate::reference_packet::service::PacketNative5CaptureProfile,
     ) -> Result<Self, ProviderError> {
-        use crate::reference_packet::service::confirmation::{
-            PacketNative5ConfirmationSelection, native_after_confirmation_schema,
-        };
-        let mut original = Self::from_source_installation_with_profile(
+        Self::from_source_confirmation_with_metadata_extent(
             authority,
             selection,
             coordinator,
             capture_profile,
+            None,
+        )
+    }
+
+    fn from_source_confirmation_with_metadata_extent(
+        authority: &ConnectionAuthority,
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        capture_profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: Option<CanonicalAckCodecMetadataExtent>,
+    ) -> Result<Self, ProviderError> {
+        use crate::reference_packet::service::confirmation::{
+            PacketNative5ConfirmationSelection, native_after_confirmation_schema,
+        };
+        let mut original = Self::from_source_installation_with_metadata_extent(
+            authority,
+            selection,
+            coordinator,
+            capture_profile,
+            metadata_extent,
         )?;
         let schema = native_after_confirmation_schema()?;
         if !original
@@ -166,8 +239,88 @@ impl ControllerNative5Policy {
             Some(PacketNative5ConfirmationSelection::AfterProtocolPoll5);
         original.confirmation_definition = Some(schema.definition);
         original.validate_current_confirmation(authority)?;
-        serialized_credit(&original.protocol_view(), 256 * 1024)?;
+        serialized_credit(
+            &original.protocol_view(),
+            original.metadata_extent.map_or(
+                256 * 1024,
+                CanonicalAckCodecMetadataExtent::maximum_encoded_bytes,
+            ),
+        )?;
         Ok(original)
+    }
+
+    fn from_source_ack_emitter_installation(
+        authority: &ConnectionAuthority,
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<Self, ProviderError> {
+        Self::from_source_ack_emitter_with_metadata_extent(
+            authority,
+            selection,
+            coordinator,
+            profile,
+            None,
+        )
+    }
+
+    fn from_source_ack_emitter_with_metadata_extent(
+        authority: &ConnectionAuthority,
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: Option<CanonicalAckCodecMetadataExtent>,
+    ) -> Result<Self, ProviderError> {
+        use crate::reference_packet::service::ack_emitter::{
+            PacketNative5AckEmitterSelection, native_canonical_blob_ack_schema,
+        };
+        let mut policy = Self::from_source_confirmation_with_metadata_extent(
+            authority,
+            selection,
+            coordinator,
+            profile,
+            metadata_extent,
+        )?;
+        let schema = native_canonical_blob_ack_schema()?;
+        let admission_schema =
+            crate::reference_packet::service::ack_emitter::native_canonical_ack_admission_schema()?;
+        if !policy
+            .selection
+            .provider
+            .implementation
+            .formats
+            .contains(&admission_schema)
+        {
+            return Err(ProviderError::Correlation(
+                "canonical ACK Admit proof schema absent",
+            ));
+        }
+        if !policy
+            .selection
+            .provider
+            .implementation
+            .formats
+            .contains(&schema)
+        {
+            return Err(ProviderError::Correlation(
+                "canonical ACK controller source schema absent",
+            ));
+        }
+        policy.ack_emitter_selection = Some(PacketNative5AckEmitterSelection::CanonicalSdkBlob5);
+        policy.ack_emitter_definition = Some(schema.definition);
+        validate_ack_emitter_selection(
+            authority,
+            policy.ack_emitter_selection,
+            policy.ack_emitter_definition.as_ref(),
+        )?;
+        serialized_credit(
+            &policy.protocol_view(),
+            policy.metadata_extent.map_or(
+                256 * 1024,
+                CanonicalAckCodecMetadataExtent::maximum_encoded_bytes,
+            ),
+        )?;
+        Ok(policy)
     }
 
     fn validate_current_confirmation(
@@ -227,6 +380,13 @@ impl ControllerNative5Policy {
         if self.confirmation_selection.is_some() {
             self.validate_current_confirmation(authority)?;
         }
+        if self.ack_emitter_selection.is_some() {
+            validate_ack_emitter_selection(
+                authority,
+                self.ack_emitter_selection,
+                self.ack_emitter_definition.as_ref(),
+            )?;
+        }
         authority.ensure_live()
     }
 
@@ -249,6 +409,27 @@ impl ControllerNative5Policy {
                     policy.wire.protocol_view(),
                     &policy.capture_profile,
                 );
+                if let Some(emitter) = policy.ack_emitter_selection {
+                    let original = (
+                        "source-private.controller5-policy-canonical-ack/9",
+                        ordinary,
+                        &policy.confirmation_selection,
+                        &policy.confirmation_definition,
+                        emitter,
+                        &policy.ack_emitter_definition,
+                    );
+                    return match policy.metadata_extent {
+                        None => serde::Serialize::serialize(&original, serializer),
+                        Some(extent) => serde::Serialize::serialize(
+                            &(
+                                "source-private.controller5-codec-metadata/10",
+                                extent,
+                                original,
+                            ),
+                            serializer,
+                        ),
+                    };
+                }
                 match policy.confirmation_selection {
                     None => serde::Serialize::serialize(&ordinary, serializer),
                     Some(selection) => serde::Serialize::serialize(
@@ -278,6 +459,27 @@ impl ControllerNative5Policy {
                     &policy.connected,
                     policy.wire.protocol_view(),
                 );
+                if let Some(emitter) = policy.ack_emitter_selection {
+                    let original = (
+                        "source-private.controller5-policy-canonical-ack/9",
+                        ordinary,
+                        &policy.confirmation_selection,
+                        &policy.confirmation_definition,
+                        emitter,
+                        &policy.ack_emitter_definition,
+                    );
+                    return match policy.metadata_extent {
+                        None => serde::Serialize::serialize(&original, serializer),
+                        Some(extent) => serde::Serialize::serialize(
+                            &(
+                                "source-private.controller5-codec-metadata/10",
+                                extent,
+                                original,
+                            ),
+                            serializer,
+                        ),
+                    };
+                }
                 match policy.confirmation_selection {
                     None => serde::Serialize::serialize(&ordinary, serializer),
                     Some(selection) => serde::Serialize::serialize(
@@ -310,6 +512,35 @@ impl Native5CodecOwner {
                 observer.shared_value(std::mem::size_of_val(policy.as_ref()))?;
                 policy.observe_retained_metadata(observer)
             }
+        }
+    }
+
+    pub(crate) fn ack_emitter_selection(
+        &self,
+    ) -> Option<crate::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>
+    {
+        match self {
+            Self::ControllerPacket(policy) => policy.ack_emitter_selection,
+            Self::NativePacket(policy) => policy.ack_emitter_selection(),
+        }
+    }
+
+    pub(crate) fn authenticate_ack_emitter_selection(
+        &self,
+        authority: &ConnectionAuthority,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_confirmation_selection(authority)?;
+        match self {
+            Self::ControllerPacket(policy) => validate_ack_emitter_selection(
+                authority,
+                policy.ack_emitter_selection,
+                policy.ack_emitter_definition.as_ref(),
+            ),
+            Self::NativePacket(policy) => validate_ack_emitter_selection(
+                authority,
+                policy.ack_emitter_selection(),
+                policy.ack_emitter_definition(),
+            ),
         }
     }
 
@@ -374,7 +605,10 @@ impl Native5CodecOwner {
                 "fresh controller mapping requires two actual controller codecs",
             ));
         };
-        if original.confirmation_selection != target.confirmation_selection
+        if original.metadata_extent != target.metadata_extent
+            || original.ack_emitter_selection != target.ack_emitter_selection
+            || original.ack_emitter_definition != target.ack_emitter_definition
+            || original.confirmation_selection != target.confirmation_selection
             || original.confirmation_definition != target.confirmation_definition
             || original.capture_profile != target.capture_profile
             || original.definition != target.definition
@@ -453,7 +687,20 @@ impl BodySchemaVerifier for Native5CodecOwner {
         match self {
             Self::ControllerPacket(policy) => {
                 policy.validate_current_negotiation(authority)?;
-                if envelope.extensions.contains_key(crate::reference_packet::service::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION) {
+                if let Some(proof) = envelope.extensions.get(crate::reference_packet::service::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE) {
+                    validate_ack_emitter_selection(authority, policy.ack_emitter_selection, policy.ack_emitter_definition.as_ref())?;
+                    if envelope.extensions.len() != 1
+                        || envelope.message != MessageKind::Request
+                        || envelope.method != Method::Admit
+                        || controller_node(policy) != envelope.node_id.0.as_ref()
+                        || envelope.body.get("extensions").is_none_or(|value| value.as_object().is_none_or(|extensions| !extensions.is_empty()))
+                        || !matches!(body, ReceivedBody::Request(request) if matches!(request.as_ref(), RequestBody::Admit(_)))
+                    {
+                        return Err(ProviderError::Correlation("controller assigned Admit proof scope"));
+                    }
+                    crate::reference_packet::service::ack_emitter::validate_proof_value(proof)?;
+                    authority.ensure_live()
+                } else if envelope.extensions.contains_key(crate::reference_packet::service::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION) {
                     policy.validate_current_confirmation(authority)?;
                     if controller_node(policy) != envelope.node_id.0.as_ref() {
                         return Err(ProviderError::Correlation("confirmation changed installed controller node"));
@@ -504,6 +751,79 @@ impl<S: ProviderStream> Connection<S> {
             ));
         }
         self.authority.ensure_live()
+    }
+
+    pub(crate) fn retain_original_ack_emitter(
+        &self,
+    ) -> Result<
+        (
+            Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+            crate::handshake::RegistrationRead,
+            Rc<Native5CodecOwner>,
+        ),
+        ProviderError,
+    > {
+        self.authenticate_native5_source_codec()?;
+        if self.role != EndpointRole::Controller {
+            return Err(ProviderError::Correlation(
+                "canonical ACK emitter is not original controller",
+            ));
+        }
+        let codec = self
+            .native5_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation("canonical ACK codec absent"))?;
+        codec.authenticate_ack_emitter_selection(&self.authority)?;
+        Ok((
+            self.protocol_owner.clone(),
+            self.authority.original_registration_read()?,
+            codec.clone(),
+        ))
+    }
+
+    pub(crate) fn authenticate_original_ack_emitter(
+        &self,
+        owner: &Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+        registration: &crate::handshake::RegistrationRead,
+        codec: &Rc<Native5CodecOwner>,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        if !Rc::ptr_eq(owner, &self.protocol_owner)
+            || self.role != EndpointRole::Controller
+            || self
+                .native5_codec
+                .as_ref()
+                .is_none_or(|actual| !Rc::ptr_eq(actual, codec))
+            || !registration.same_original(&self.authority.original_registration_read()?)
+        {
+            return Err(ProviderError::Correlation(
+                "canonical ACK original connection/registrar/codec changed",
+            ));
+        }
+        registration.ensure_current()
+    }
+
+    /// Observes the closed emitter selection on this same installed source codec.
+    ///
+    /// # Errors
+    /// Refuses foreign or revoked actors, changed verifier ownership or a selected
+    /// emitter whose source definition and negotiated feature are absent.
+    pub fn original_native5_ack_emitter_selection(
+        &self,
+    ) -> Result<
+        Option<crate::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+        ProviderError,
+    > {
+        self.authenticate_native5_source_codec()?;
+        let codec = self
+            .native5_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation("canonical ACK codec absent"))?;
+        let selected = codec.ack_emitter_selection();
+        if selected.is_some() {
+            codec.authenticate_ack_emitter_selection(&self.authority)?;
+        }
+        Ok(selected)
     }
 
     /// Observes the selection of this same actually installed immutable codec.
@@ -568,6 +888,13 @@ impl<S: ProviderStream> Connection<S> {
             ));
         }
         policy.validate_installation(&self.authority)?;
+        if policy.ack_emitter_selection().is_some() {
+            validate_ack_emitter_selection(
+                &self.authority,
+                policy.ack_emitter_selection(),
+                policy.ack_emitter_definition(),
+            )?;
+        }
         if policy.confirmation_selection().is_some() {
             validate_confirmation_selection(
                 &self.authority,
@@ -647,6 +974,79 @@ impl<S: ProviderStream> Connection<S> {
             selection,
             coordinator,
             profile,
+        )?;
+        self.install_original_native5_codec(
+            bank,
+            Native5CodecOwner::ControllerPacket(Box::new(policy)),
+        )
+    }
+
+    pub(crate) fn install_native5_controller_ack_emitter_codec(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.check_authority()?;
+        if self.role != EndpointRole::Controller {
+            return Err(ProviderError::Correlation(
+                "canonical ACK source requires controller",
+            ));
+        }
+        let policy = ControllerNative5Policy::from_source_ack_emitter_installation(
+            &self.authority,
+            selection,
+            coordinator,
+            profile,
+        )?;
+        self.install_original_native5_codec(
+            bank,
+            Native5CodecOwner::ControllerPacket(Box::new(policy)),
+        )
+    }
+
+    pub(crate) fn original_native5_codec_metadata_extent(
+        &self,
+    ) -> Result<Option<CanonicalAckCodecMetadataExtent>, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        let codec = self
+            .native5_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native5 actual immutable source codec is absent",
+            ))?;
+        match codec.as_ref() {
+            Native5CodecOwner::ControllerPacket(policy) => {
+                policy.validate_current_negotiation(&self.authority)?;
+                Ok(policy.metadata_extent)
+            }
+            Native5CodecOwner::NativePacket(_) => Ok(None),
+        }
+    }
+
+    pub(crate) fn install_native5_controller_ack_emitter_codec_with_metadata_extent(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: CanonicalAckCodecMetadataExtent,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.check_authority()?;
+        if self.role != EndpointRole::Controller {
+            return Err(ProviderError::Correlation(
+                "canonical ACK source requires controller",
+            ));
+        }
+        let policy = ControllerNative5Policy::from_source_ack_emitter_with_metadata_extent(
+            &self.authority,
+            selection,
+            coordinator,
+            profile,
+            Some(metadata_extent),
         )?;
         self.install_original_native5_codec(
             bank,
@@ -759,4 +1159,31 @@ fn controller_node(policy: &ControllerNative5Policy) -> Option<&Id> {
         .bindings
         .first()
         .map(|binding| &binding.compatibility.node_id)
+}
+
+fn validate_ack_emitter_selection(
+    authority: &ConnectionAuthority,
+    selected: Option<
+        crate::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection,
+    >,
+    definition: Option<&ContentRef>,
+) -> Result<(), ProviderError> {
+    use crate::reference_packet::service::ack_emitter::{
+        PACKET_NATIVE_CANONICAL_ACK_FEATURE, PacketNative5AckEmitterSelection,
+    };
+    authority.ensure_live()?;
+    if selected != Some(PacketNative5AckEmitterSelection::CanonicalSdkBlob5)
+        || definition.is_none()
+        || !authority
+            .selected_features()
+            .iter()
+            .any(|feature| feature.as_str() == PACKET_NATIVE_CANONICAL_ACK_FEATURE)
+        || !authority.selected_features().iter().any(|feature| feature.as_str() == crate::reference_packet::service::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE)
+        || !authority.envelope_extensions().contains(crate::reference_packet::service::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE)
+    {
+        return Err(ProviderError::Correlation(
+            "canonical ACK source mechanism not installed and negotiated",
+        ));
+    }
+    authority.ensure_live()
 }

@@ -37,6 +37,7 @@ impl ClientSession {
                     b"inert controller model",
                     "application/octet-stream",
                 )?,
+                original_ack_hello: None,
                 original_response_loss: None,
             },
             peer,

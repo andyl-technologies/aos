@@ -100,6 +100,9 @@ pub struct QemuChildProcessContract {
 #[derive(Debug)]
 struct AttemptResourceBinding;
 
+mod original_launch_binding;
+pub(crate) use original_launch_binding::OriginalQemuLaunchBinding;
+
 fn invalid_input(operation: &'static str, message: &'static str) -> QemuSpawnError {
     QemuSpawnError::Io {
         operation,
@@ -992,6 +995,9 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
         Some(setup) => setup.pinned_launch_args(&launch_args)?,
         None => launch_args,
     };
+    // Retain the private original attempt before the actual child can exist.
+    // This is host-only custody metadata, never a native protocol pointer.
+    let original_launch = contract.retain_original_launch_binding();
     let child = spawn_process_with_resources(
         command.executable(),
         &launch_args,
@@ -1007,7 +1013,7 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     )?;
     resources.whole_setup = whole_setup;
     Ok(QemuSpawnedChild {
-        child: QemuNodeChild::new(child),
+        child: QemuNodeChild::new(child).with_original_launch_binding(original_launch),
         resources,
     })
 }

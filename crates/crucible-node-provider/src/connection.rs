@@ -20,11 +20,16 @@ use crate::transport::{FrameReader, write_frame_with_limits};
 mod capture_prefix;
 mod confirmation_projection;
 pub(crate) use confirmation_projection::ConfirmationProjection;
+mod ack_admission;
+pub(crate) use ack_admission::OriginalNativeAckConnectionIdentity;
+
+mod assigned_admit;
 mod confirmation;
 mod native5_birth;
 pub use native5_birth::{Native5ConnectionBirth, Native5ConnectionBirthRefusal};
 mod exchange;
 mod native5_codec;
+pub use native5_codec::CanonicalAckCodecMetadataExtent;
 pub(crate) use native5_codec::{Native5CodecOwner, ProtocolCodecView};
 mod original_frames;
 mod packet_schema;
@@ -160,6 +165,8 @@ pub struct Connection<S: ProviderStream> {
     protocol_owner: Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
     native5_blobs: Option<crate::blob::BlobProtocolOwner>,
     native5_codec: Option<Rc<native5_codec::Native5CodecOwner>>,
+    original_canonical_ack_admission:
+        Option<crate::reference_packet::service::ack_emitter::VerifiedCanonicalAckAdmission>,
     packet_schema: bool,
     original_frames: Option<
         std::rc::Rc<
@@ -285,6 +292,7 @@ impl<S: ProviderStream> Connection<S> {
             protocol_owner: Rc::new(crate::protocol_snapshot::ProtocolCaptureOwner::new()),
             native5_blobs: None,
             native5_codec: None,
+            original_canonical_ack_admission: None,
             packet_schema: false,
             original_frames: None,
             connected_packet_schema: false,
@@ -303,6 +311,65 @@ impl<S: ProviderStream> Connection<S> {
     pub fn receive(&mut self) -> Result<Option<ReceivedFrame>, ProviderError> {
         self.check_authority()?;
         let result = self.receive_inner();
+        match &result {
+            Ok(None) => self.contain(ConnectionFailure::Read),
+            Err(_) => self.contain(ConnectionFailure::Protocol),
+            _ => {}
+        }
+        result
+    }
+
+    /// Installs the genuine private keyed-admission token on its original actor.
+    ///
+    /// Validation borrows the caller's original slot before the infallible take.
+    /// Data proofs, policy selection and historical tokens cannot call a public
+    /// constructor for this token. Refusal preserves the same caller-owned token.
+    ///
+    /// # Errors
+    /// Refuses an absent/already installed token, wrong actor/policy/registration,
+    /// revoked source or a changed current original Admit.
+    pub(crate) fn install_original_canonical_ack_admission(
+        &mut self,
+        token: &mut Option<
+            crate::reference_packet::service::ack_emitter::VerifiedCanonicalAckAdmission,
+        >,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.original_canonical_ack_admission.is_some() {
+            return Err(ProviderError::Conflict(
+                "native canonical ACK admission already installed",
+            ));
+        }
+        token
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native canonical ACK admission absent",
+            ))?
+            .authenticate_installation(self)?;
+        self.original_canonical_ack_admission = token.take();
+        Ok(())
+    }
+
+    pub(crate) fn original_canonical_blob_ack_framed_bytes(&self) -> Result<usize, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.original_canonical_ack_admission
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native canonical ACK admission not installed",
+            ))?
+            .authenticate_current(self)?;
+        crate::client::maximum_canonical_ack_framed_bytes()
+    }
+
+    fn receive_original_canonical_blob_ack(
+        &mut self,
+    ) -> Result<Option<ReceivedFrame>, ProviderError> {
+        let framed = self.original_canonical_blob_ack_framed_bytes()?;
+        let maximum = framed
+            .checked_sub(4)
+            .ok_or(ProviderError::Frame("canonical ACK header extent"))?;
+        self.check_authority()?;
+        let result = self.receive_inner_with_maximum(Some(maximum));
         match &result {
             Ok(None) => self.contain(ConnectionFailure::Read),
             Err(_) => self.contain(ConnectionFailure::Protocol),
@@ -361,7 +428,21 @@ impl<S: ProviderStream> Connection<S> {
     }
 
     fn receive_inner(&mut self) -> Result<Option<ReceivedFrame>, ProviderError> {
-        let Some(value) = self.reader.read()? else {
+        self.receive_inner_with_maximum(None)
+    }
+
+    fn receive_inner_with_maximum(
+        &mut self,
+        maximum_body_bytes: Option<usize>,
+    ) -> Result<Option<ReceivedFrame>, ProviderError> {
+        let value = match maximum_body_bytes {
+            None => self.reader.read()?,
+            Some(maximum) => self
+                .reader
+                .read_retained_with_maximum_bytes(maximum)?
+                .map(|frame| frame.value),
+        };
+        let Some(value) = value else {
             return Ok(None);
         };
         let envelope: Envelope =

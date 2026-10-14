@@ -5,6 +5,8 @@
 //! Incoming bytes remain literal; only the originally planned outgoing response
 //! is encoded. This journal grants no negotiation, capture or native authority.
 
+pub use crate::hello_frames::OriginalHelloFrameDigests;
+
 use crate::{
     ProviderError,
     protocol_snapshot::ProtocolCaptureOwner,
@@ -148,6 +150,24 @@ impl OriginalNativeHelloJournal {
             original.strong_count() != 0
                 && std::rc::Weak::ptr_eq(&original, &Rc::downgrade(&journal.bank))
         }
+    }
+
+    /// Returns role-normalized digests of complete original raw Hello frames.
+    ///
+    /// The original process/thread guard precedes every bank observation. These
+    /// digests are data; source/kernel/registrar association is independently
+    /// required before they can enter an authenticated admission context.
+    ///
+    /// # Errors
+    /// Refuses a foreign actor, failed/incomplete Hello, changed framing extent,
+    /// repeated direction or a concurrently borrowed original bank.
+    pub fn original_literal_frame_digests(&self) -> Result<OriginalHelloFrameDigests, ProviderError> {
+        self.owner.ensure_current()?;
+        if !self.attempted || !self.received || !self.write_started || self.failed {
+            return Err(ProviderError::Correlation("native original Hello exchange incomplete"));
+        }
+        let bank = self.bank.try_borrow().map_err(|_| ProviderError::Correlation("native original Hello bank borrowed"))?;
+        crate::hello_frames::original_hello_frame_digests(&bank, crate::connection::EndpointRole::Provider)
     }
 
     /// Reports the actual byte and descriptor allocation for source admission.

@@ -29,7 +29,7 @@ mod semantic_snapshot;
 mod state;
 mod world_provider;
 
-pub use capture::CnpSemanticCaptureScope;
+pub use capture::{CnpNativeAfterConfirmationCall, CnpSemanticCaptureScope};
 pub use semantic_snapshot::{CnpOriginalSemanticSnapshot, CnpSemanticSnapshotReservation};
 
 pub use conformance::{
@@ -44,10 +44,11 @@ pub use world_provider::{
 
 pub use node::{CnpSemanticAdmissionFailure, CnpSemanticNode};
 pub use packet_complete_source::{
-    PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits,
-    PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader,
-    PacketCompleteNativeRecord, PacketCompleteNativeWitness, PacketCompleteSemanticSource,
-    PacketCompleteSourceRole,
+    PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame,
+    PacketCompleteAckPeerBootMaterial, PacketCompleteCaptureBankFacts,
+    PacketCompleteCaptureBankLimits, PacketCompleteEffectReceiverGroup,
+    PacketCompleteEffectReceiverReader, PacketCompleteNativeRecord, PacketCompleteNativeWitness,
+    PacketCompleteSemanticSource, PacketCompleteSourceRole,
 };
 pub use packet_connected_source::{
     PacketConnectedInputWitness, PacketConnectedNativeWitness, PacketConnectedSemanticSource,

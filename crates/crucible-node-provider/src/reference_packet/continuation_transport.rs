@@ -13,6 +13,10 @@ use crucible_node_contract::{ContentRef, Id};
 use crate::{ProviderError, bodies::*, connection::*, envelope::*};
 
 mod frames;
+mod confirmation_frames;
+mod confirmation;
+pub(crate) use confirmation::PacketAfterConfirmationPrefix;
+pub(crate) use confirmation_frames::outgoing_confirmation_extent;
 
 /// Bounds a complete Native5 snapshot transfer independently of legacy endpoints.
 pub const MAXIMUM_CAPTURE_SNAPSHOT_BYTES: usize = 8 * 1024 * 1024;
@@ -45,6 +49,7 @@ struct CaptureSource {
     response: Envelope,
     snapshot: (ContentRef, Vec<u8>),
     anchor: (ContentRef, Vec<u8>),
+    control: Option<(ContentRef, Vec<u8>)>,
 }
 
 enum CaptureTransport<S: ProviderStream> {
@@ -101,6 +106,39 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
         snapshot: (ContentRef, Vec<u8>),
         anchor: (ContentRef, Vec<u8>),
     ) -> Result<(), ProviderError> {
+        self.prepare_source(response, snapshot, anchor, None)
+    }
+
+    /// Retains and exports the separately promised original control snapshot.
+    ///
+    /// The complete Capture result must name this exact control object once.
+    /// Every proof acknowledgement still precedes the terminal Capture reply.
+    ///
+    /// # Errors
+    /// Refuses reuse, mismatched owner-state references, insufficient finite
+    /// transport credit or any refusal also described by [`Self::prepare`].
+    /// Supplied originals and the same connection remain retained on failure.
+    ///
+    /// # Panics
+    /// Installed schema and supervision callbacks may panic. This owner retains
+    /// the complete original source bodies and active window across unwind.
+    pub fn prepare_complete(
+        &mut self,
+        response: Envelope,
+        snapshot: (ContentRef, Vec<u8>),
+        anchor: (ContentRef, Vec<u8>),
+        control: (ContentRef, Vec<u8>),
+    ) -> Result<(), ProviderError> {
+        self.prepare_source(response, snapshot, anchor, Some(control))
+    }
+
+    fn prepare_source(
+        &mut self,
+        response: Envelope,
+        snapshot: (ContentRef, Vec<u8>),
+        anchor: (ContentRef, Vec<u8>),
+        control: Option<(ContentRef, Vec<u8>)>,
+    ) -> Result<(), ProviderError> {
         if self.state != PrefixState::Unprepared {
             return Err(ProviderError::Conflict(
                 "capture prefix preparation already attempted",
@@ -111,6 +149,7 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
             response,
             snapshot,
             anchor,
+            control,
         });
         let Some(CaptureTransport::Connected(connection)) = self.transport.as_mut() else {
             return Err(ProviderError::Conflict(
@@ -161,6 +200,31 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
             return Err(ProviderError::Conflict("capture prepared window absent"));
         };
         exchange.prepare_in_place()
+    }
+
+    /// Bounds the after-suffix encoding on the same unpublished first window.
+    ///
+    /// This counts the entire finite literal bank and descriptor population.
+    /// It neither predicts acknowledgements nor proves that the whole suffix
+    /// fits those banks; the source separately authenticates that admission.
+    ///
+    /// # Errors
+    /// Refuses a different phase, published bytes, foreign owner, changed bank,
+    /// absent original blob binding or insufficient selected after credit.
+    pub fn preflight_after_protocol_capacity(
+        &self,
+        after: &crate::protocol_snapshot::ProtocolSnapshotReservation,
+        blobs: &crate::blob::BlobReceiver,
+    ) -> Result<crate::protocol_snapshot::Native5AfterProtocolCapacityFacts, ProviderError> {
+        if self.state != PrefixState::Prepared {
+            return Err(ProviderError::Conflict("capture after preflight phase"));
+        }
+        let Some(CaptureTransport::Prepared(exchange)) = self.transport.as_ref() else {
+            return Err(ProviderError::Conflict(
+                "capture after original window absent",
+            ));
+        };
+        exchange.preflight_native5_after_protocol_capacity(after, blobs)
     }
 
     /// Publishes each original window once and retains every actual acknowledgement.

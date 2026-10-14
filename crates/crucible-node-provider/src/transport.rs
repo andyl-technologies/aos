@@ -107,10 +107,26 @@ impl<R: Read> FrameReader<R> {
 
     /// Keeps original validated wire bytes for source-owned native preparation.
     pub(crate) fn read_retained(&mut self) -> Result<Option<RetainedFrame>, ProviderError> {
+        self.read_retained_with_maximum_bytes(self.maximum_bytes)
+    }
+
+    // This data-only restriction never increases negotiated credit. The native
+    // source-owned ACK scope must authenticate its original peer marker before
+    // using it. Oversized headers retain their partial literal slot and poison
+    // this same reader; no fallback or replay is attempted.
+    pub(crate) fn read_retained_with_maximum_bytes(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<Option<RetainedFrame>, ProviderError> {
         if self.failed {
             return Err(ProviderError::Frame("connection already failed"));
         }
-        let result = self.read_frame();
+        if maximum_bytes == 0 || maximum_bytes > self.maximum_bytes {
+            return Err(ProviderError::Frame(
+                "selected read exceeds negotiated frame limit",
+            ));
+        }
+        let result = self.read_frame_with_maximum_bytes(maximum_bytes);
         if result.is_err() {
             self.failed = true;
         }
@@ -134,9 +150,12 @@ impl<R: Read> FrameReader<R> {
         self.originals = Some(originals);
     }
 
-    fn read_frame(&mut self) -> Result<Option<RetainedFrame>, ProviderError> {
+    fn read_frame_with_maximum_bytes(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<Option<RetainedFrame>, ProviderError> {
         if self.originals.is_some() {
-            return self.read_original_frame();
+            return self.read_original_frame_with_maximum_bytes(maximum_bytes);
         }
         let mut header = [0_u8; 4];
         let first = loop {
@@ -151,17 +170,19 @@ impl<R: Read> FrameReader<R> {
         self.stream.read_exact(&mut header[1..])?;
 
         let length = u32::from_be_bytes(header) as usize;
-        if length == 0 || length > self.maximum_bytes {
+        if length == 0 || length > maximum_bytes {
             return Err(ProviderError::Frame("length outside admitted allowance"));
         }
 
         let mut body = vec![0_u8; length];
         self.stream.read_exact(&mut body)?;
-        let value =
-            canonical::parse_json_with_depth(&body, self.maximum_bytes, self.maximum_nesting)?;
+        let value = canonical::parse_json_with_depth(&body, maximum_bytes, self.maximum_nesting)?;
         Ok(Some(RetainedFrame { value, bytes: body }))
     }
-    fn read_original_frame(&mut self) -> Result<Option<RetainedFrame>, ProviderError> {
+    fn read_original_frame_with_maximum_bytes(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<Option<RetainedFrame>, ProviderError> {
         let bank = self
             .originals
             .as_ref()
@@ -170,7 +191,7 @@ impl<R: Read> FrameReader<R> {
         // The maximum possible frame is admitted before reading its first byte.
         let slot = bank
             .borrow_mut()
-            .begin(FrameDirection::Incoming, self.maximum_bytes + 4)?;
+            .begin(FrameDirection::Incoming, maximum_bytes + 4)?;
         self.last_original_slot = Some(slot);
         let mut header = [0_u8; 4];
         let mut used = 0;
@@ -190,7 +211,7 @@ impl<R: Read> FrameReader<R> {
             used += count;
         }
         let length = u32::from_be_bytes(header) as usize;
-        if length == 0 || length > self.maximum_bytes {
+        if length == 0 || length > maximum_bytes {
             return Err(ProviderError::Frame("length outside admitted allowance"));
         }
         let mut body = vec![0_u8; length];
@@ -207,8 +228,7 @@ impl<R: Read> FrameReader<R> {
             used += count;
         }
         bank.borrow_mut().finish(slot)?;
-        let value =
-            canonical::parse_json_with_depth(&body, self.maximum_bytes, self.maximum_nesting)?;
+        let value = canonical::parse_json_with_depth(&body, maximum_bytes, self.maximum_nesting)?;
         Ok(Some(RetainedFrame { value, bytes: body }))
     }
 }
@@ -427,5 +447,155 @@ mod retained_frame_tests {
         assert!(reader.read_retained().is_err());
         assert!(reader.read().is_err());
         assert!(reader.read_retained().is_err());
+    }
+}
+
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // Test assertion panics are the control verdict.
+mod selected_header_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn reader(
+        wire: Vec<u8>,
+        bytes: usize,
+    ) -> (
+        FrameReader<Cursor<Vec<u8>>>,
+        Rc<RefCell<OriginalFrameReservation>>,
+    ) {
+        let bank = Rc::new(RefCell::new(
+            OriginalFrameReservation::reserve(bytes, 2).unwrap(),
+        ));
+        let mut reader = FrameReader::new(Cursor::new(wire), 65_536).unwrap();
+        reader.install_originals(bank.clone());
+        (reader, bank)
+    }
+
+    #[test]
+    fn selected_header_limit_admits_bank_before_header_with_exact_smaller_allowance() {
+        let mut wire = 2_u32.to_be_bytes().to_vec();
+        wire.extend_from_slice(b"{}");
+        let (mut restricted, bank) = reader(wire.clone(), 6);
+
+        assert_eq!(
+            restricted
+                .read_retained_with_maximum_bytes(2)
+                .unwrap()
+                .unwrap()
+                .bytes,
+            b"{}"
+        );
+        assert_eq!(restricted.stream.position(), 6);
+        let bank = bank.borrow();
+        let frame = bank.frames().next().unwrap();
+        assert_eq!(frame.bytes, wire);
+        assert!(frame.complete);
+        assert_eq!(frame.transferred, 6);
+        drop(bank);
+
+        let (mut generic, original) = reader(wire, 6);
+        assert!(generic.read_retained().is_err());
+        assert_eq!(generic.stream.position(), 0);
+        assert_eq!(original.borrow().frames().count(), 0);
+    }
+
+    #[test]
+    fn selected_oversized_header_never_reads_body_and_retains_same_partial_original() {
+        let mut wire = 9_u32.to_be_bytes().to_vec();
+        wire.extend_from_slice(b"body-never-read");
+        let (mut reader, bank) = reader(wire, 12);
+        let allocation = bank.borrow().allocated_bytes();
+
+        assert!(reader.read_retained_with_maximum_bytes(8).is_err());
+        assert_eq!(reader.stream.position(), 4);
+        assert_eq!(reader.original_slot(), Some(0));
+        let before = serde_json::to_vec(&bank.borrow().protocol_view()).unwrap();
+        {
+            let bank = bank.borrow();
+            let frame = bank.frames().next().unwrap();
+            assert_eq!(frame.bytes, 9_u32.to_be_bytes());
+            assert_eq!(frame.transferred, 4);
+            assert!(!frame.complete);
+            assert_eq!(bank.allocated_bytes(), allocation);
+        }
+        assert!(reader.read_retained().is_err());
+        assert!(reader.read_retained_with_maximum_bytes(8).is_err());
+        assert_eq!(reader.stream.position(), 4);
+        assert_eq!(
+            serde_json::to_vec(&bank.borrow().protocol_view()).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn selected_partial_header_and_invalid_restriction_preserve_original_state() {
+        let wire = vec![0, 0];
+        let (mut reader, bank) = reader(wire.clone(), 12);
+        for limit in [0, 65_537] {
+            assert!(reader.read_retained_with_maximum_bytes(limit).is_err());
+            assert_eq!(reader.stream.position(), 0);
+            assert_eq!(bank.borrow().frames().count(), 0);
+        }
+        assert!(reader.read_retained_with_maximum_bytes(8).is_err());
+        assert_eq!(reader.stream.position(), 2);
+        let bank = bank.borrow();
+        let frame = bank.frames().next().unwrap();
+        assert_eq!(frame.bytes, wire);
+        assert_eq!(frame.transferred, 2);
+        assert!(!frame.complete);
+        drop(bank);
+        assert!(reader.read_retained_with_maximum_bytes(8).is_err());
+        assert_eq!(reader.stream.position(), 2);
+    }
+
+    #[test]
+    fn selected_oversized_header_on_actual_unix_keeps_body_unread_and_original_header() {
+        use std::{
+            io::{Read, Write},
+            os::unix::net::UnixStream,
+            time::Duration,
+        };
+
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        peer.set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let body = b"123456789";
+        peer.write_all(&9_u32.to_be_bytes()).unwrap();
+        peer.write_all(body).unwrap();
+        let bank = Rc::new(RefCell::new(
+            OriginalFrameReservation::reserve(12, 2).unwrap(),
+        ));
+        let mut reader = FrameReader::new(stream, 65_536).unwrap();
+        reader.install_originals(bank.clone());
+
+        assert!(reader.read_retained_with_maximum_bytes(8).is_err());
+        assert_eq!(reader.original_slot(), Some(0));
+        let retained = serde_json::to_vec(&bank.borrow().protocol_view()).unwrap();
+        {
+            let bank = bank.borrow();
+            let frame = bank.frames().next().unwrap();
+            assert_eq!(frame.bytes, 9_u32.to_be_bytes());
+            assert_eq!(frame.transferred, 4);
+            assert!(!frame.complete);
+        }
+        assert!(reader.read_retained_with_maximum_bytes(8).is_err());
+        assert_eq!(
+            serde_json::to_vec(&bank.borrow().protocol_view()).unwrap(),
+            retained
+        );
+
+        // This test-only forensic read occurs after the fatal reader fence.
+        // All nine original body bytes remain in the real Unix socket queue.
+        let mut queued = [0; 9];
+        reader.stream_mut().read_exact(&mut queued).unwrap();
+        assert_eq!(&queued, body);
+        assert_eq!(
+            serde_json::to_vec(&bank.borrow().protocol_view()).unwrap(),
+            retained
+        );
     }
 }

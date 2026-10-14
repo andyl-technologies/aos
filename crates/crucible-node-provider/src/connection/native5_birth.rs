@@ -148,6 +148,7 @@ impl<S: ProviderStream> Native5ConnectionBirth<S> {
             protocol_owner,
             native5_blobs: None,
             native5_codec: None,
+            original_canonical_ack_admission: None,
             packet_schema: false,
             original_frames: None,
             connected_packet_schema: false,

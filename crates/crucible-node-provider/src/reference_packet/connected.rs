@@ -22,6 +22,8 @@ mod run;
 
 pub use inputs::causal_parent_ids;
 
+mod birth;
+
 const MAXIMUM_BATCHES: usize = 16;
 const MAXIMUM_EVENTS: usize = 32;
 const MAXIMUM_OPERATIONS: usize = 64;

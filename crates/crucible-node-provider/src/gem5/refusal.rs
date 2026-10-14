@@ -139,6 +139,7 @@ pub fn parse_run_refusal_for_model(
     let expected = match selected {
         super::model::Gem5ModelDialect::ReservedSe => GEM5_RESERVATION_PROTOCOL,
         super::model::Gem5ModelDialect::ArmLinux => "crucible.gem5.arm-linux-native/1",
+        super::model::Gem5ModelDialect::X86Linux => "crucible.gem5.x86-linux-native/1",
         super::model::Gem5ModelDialect::LegacySe => {
             return Err(ProviderError::Frame(
                 "legacy model has no reservation dialect",

@@ -362,3 +362,6 @@ fn validate_limits(value: &Value) -> Result<(), ProviderError> {
 fn refused() -> ProviderError {
     ProviderError::Correlation("packet original common coordinator scope differs")
 }
+
+#[cfg(test)]
+pub(crate) use continuation::original_canonical_ack_controller_scope;

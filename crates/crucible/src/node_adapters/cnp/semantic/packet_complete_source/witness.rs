@@ -95,6 +95,34 @@ impl PacketCompleteSemanticSource {
             ));
         }
         self.authenticate_original_native_owner(scope.native)?;
+        if scope
+            .controller
+            .original_native5_codec_metadata_extent()
+            .map_err(unknown)?
+            != self.selected_ack_codec_metadata_extent()?
+        {
+            return Err(refused(
+                "complete source actual codec metadata extent differs",
+            ));
+        }
+        if scope
+            .controller
+            .original_native5_ack_emitter_selection()
+            .map_err(unknown)?
+            != self.selected_ack_emitter_selection()?
+        {
+            return Err(refused("complete source installed ACK selection changed"));
+        }
+        if scope
+            .controller
+            .original_native5_confirmation_selection()
+            .map_err(unknown)?
+            != self.selected_confirmation_selection()?
+        {
+            return Err(refused(
+                "complete witness installed confirmation selection differs",
+            ));
+        }
         self.source().authenticate_provider(scope.native)?;
         self.authenticate_original_native_owner(scope.native)
     }

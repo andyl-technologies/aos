@@ -126,6 +126,9 @@ impl CnpSemanticPreparation {
             self.reauthenticate()?;
             let scope = self.scope()?;
             let install = scope.installation;
+            // Retain the result metadata before completed-admission validation.
+            // A Source getter after the terminal read could revoke that read.
+            let exact_profile = install.exact_facet.id.clone();
             if graph.world_binding_hash() != &install.world_binding_hash
                 || graph.descriptor(&install.descriptor.id) != Some(&install.descriptor)
                 || graph.binding(&install.descriptor.id) != Some(&install.binding)
@@ -185,56 +188,65 @@ impl CnpSemanticPreparation {
             // The reserved native capsule owns bookkeeping before the first
             // remote admission effect, including failure or caller unwind.
             native.runtime = Some(state);
-            self.authenticate_native_dispatch()?;
-            let native = self
-                .guard
-                .custody
-                .as_mut()
-                .ok_or_else(|| refused("generic original native custody is absent"))?;
-            let owner = Rc::clone(&native.read_owner);
-            let call = super::process::ReadCall::begin(owner).map_err(unknown)?;
-            let response = native
-                .controller
-                .as_mut()
-                .ok_or_else(|| refused("generic original controller is absent"))?
-                .call(id, None, Method::Admit, false, request)
-                .map_err(unknown);
-            call.finish(response.is_ok());
-            let response = response?;
-            let Some(MethodResult::Admit(admitted)) = response.result else {
-                return Err(unknown("generic original admission did not complete"));
+            // Reusing a completed protocol Admit requires the graph, installation
+            // and runtime-credit checks above, followed by the same terminal
+            // native dispatch guard after all completed Source-pair validation.
+            let reused = {
+                let scope = self.scope()?;
+                let mut slot = scope
+                    .native
+                    .completed_ack_admission
+                    .try_borrow_mut()
+                    .map_err(|_| refused("completed world admission slot is busy"))?;
+                if let Some(original) = slot.as_mut() {
+                    original.consume(&self, &scope, &request)?;
+                    true
+                } else if scope.native.completed_ack_protocol_started {
+                    return Err(refused(
+                        "assigned ACK Admit requires its original world token",
+                    ));
+                } else {
+                    self.authenticate_native_dispatch()?;
+                    false
+                }
             };
-            if admitted.admission_id != expected_admission
-                || admitted.accepted_binding_hashes != [expected]
-            {
-                return Err(unknown(
-                    "generic original admission changed the complete native binding",
-                ));
-            }
-            self.reauthenticate()?;
-            Ok(route)
-        })();
-        match result {
-            Ok(route) => {
-                let exact_profile = self
+            if !reused {
+                let native = self
                     .guard
                     .custody
-                    .as_ref()
-                    .and_then(|native| native.source.as_ref())
-                    .map(|source| source.installation().exact_facet.id.clone());
-                let Some(exact_profile) = exact_profile else {
-                    return Err(CnpSemanticAdmissionFailure {
-                        error: unknown("generic installed profile disappeared"),
-                        preparation: Box::new(self),
-                    });
+                    .as_mut()
+                    .ok_or_else(|| refused("generic original native custody is absent"))?;
+                let owner = Rc::clone(&native.read_owner);
+                let call = super::process::ReadCall::begin(owner).map_err(unknown)?;
+                let response = native
+                    .controller
+                    .as_mut()
+                    .ok_or_else(|| refused("generic original controller is absent"))?
+                    .call(id, None, Method::Admit, false, request)
+                    .map_err(unknown);
+                call.finish(response.is_ok());
+                let response = response?;
+                let Some(MethodResult::Admit(admitted)) = response.result else {
+                    return Err(unknown("generic original admission did not complete"));
                 };
-                Ok(CnpSemanticNode {
-                    preparation: Box::new(self),
-                    route,
-                    exact_profile,
-                    affinity: ThreadAffinity::OwnerThread(std::thread::current().id()),
-                })
+                if admitted.admission_id != expected_admission
+                    || admitted.accepted_binding_hashes != [expected]
+                {
+                    return Err(unknown(
+                        "generic original admission changed the complete native binding",
+                    ));
+                }
+                self.reauthenticate()?;
             }
+            Ok((route, exact_profile))
+        })();
+        match result {
+            Ok((route, exact_profile)) => Ok(CnpSemanticNode {
+                preparation: Box::new(self),
+                route,
+                exact_profile,
+                affinity: ThreadAffinity::OwnerThread(std::thread::current().id()),
+            }),
             Err(error) => Err(CnpSemanticAdmissionFailure {
                 error,
                 preparation: Box::new(self),

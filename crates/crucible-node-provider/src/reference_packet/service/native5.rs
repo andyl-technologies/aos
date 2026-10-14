@@ -122,6 +122,12 @@ pub struct PacketNative5SourceLaunch {
     /// Selects closed confirmation data; only an actual installed service enables it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmation_selection: Option<super::PacketNative5ConfirmationSelection>,
+    /// Selects canonical ACK data; only a genuine source association installs it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ack_emitter_selection: Option<super::PacketNative5AckEmitterSelection>,
+    /// Selects an independent finite native codec encoding ceiling, without authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_codec_metadata_extent: Option<crate::client::CanonicalAckCodecMetadataExtent>,
     /// Names the privately owned native effect receiver.
     pub effects: PathBuf,
 }
@@ -207,7 +213,35 @@ impl PacketNative5SourceLaunch {
             .realize
             .configuration
             .verify(&canonical::canonical_json(&configuration)?)?;
-        if let Some(confirmation) = self.confirmation_selection {
+        if let Some(emitter) = self.ack_emitter_selection {
+            let confirmation = self
+                .confirmation_selection
+                .ok_or(ProviderError::Correlation(
+                    "canonical ACK emitter requires selected confirmation",
+                ))?;
+            if let Some(extent) = self.native_codec_metadata_extent {
+                super::super::Native5Policy::from_original_launch_with_ack_emitter_metadata_extent(
+                    self.selection.clone(),
+                    self.initial_coordinator.clone(),
+                    self.capture_profile.clone(),
+                    confirmation,
+                    emitter,
+                    extent,
+                )?;
+            } else {
+                super::super::Native5Policy::from_original_launch_with_ack_emitter(
+                    self.selection.clone(),
+                    self.initial_coordinator.clone(),
+                    self.capture_profile.clone(),
+                    confirmation,
+                    emitter,
+                )?;
+            }
+        } else if self.native_codec_metadata_extent.is_some() {
+            return Err(ProviderError::Correlation(
+                "native codec extent requires canonical ACK selection",
+            ));
+        } else if let Some(confirmation) = self.confirmation_selection {
             // Additional source grammar is authenticated before any service
             // allocation or listener effect; selecting it grants no mechanism.
             super::super::Native5Policy::from_original_launch_with_confirmation(

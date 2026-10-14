@@ -8,13 +8,18 @@
 
 mod content;
 mod controller;
+pub(crate) use controller::maximum_canonical_ack_framed_bytes;
 mod deadline;
 pub(crate) mod history_credit;
 mod reference;
 mod session;
 
+pub use crate::connection::CanonicalAckCodecMetadataExtent;
 pub use content::ClientContent;
-pub use controller::{CnpController, CnpRegistrarRead, ControllerRoute};
+pub use controller::{
+    CnpController, CnpRegistrarRead, ControllerRoute, OriginalCanonicalBlobAckEmitter,
+};
+pub use controller::{CompletedOriginalCanonicalAckAdmit, PreparedOriginalCanonicalAckAdmit};
 pub use deadline::{
     DeadlineStream, DeadlineStreamBirthRefusal, ExchangeDeadline, OriginalNative5BirthCut,
     OriginalNative5BirthStream, OriginalNative5BirthStreamRefusal,

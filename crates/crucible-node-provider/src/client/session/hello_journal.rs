@@ -11,6 +11,8 @@ use serde_json::Value;
 
 use crate::{ProviderError, envelope::Envelope};
 
+pub use crate::hello_frames::OriginalHelloFrameDigests;
+
 const MAXIMUM_BYTES: usize = 1024 * 1024;
 
 /// Owns bounded original Hello bodies without registration or command authority.
@@ -143,6 +145,36 @@ impl OriginalHelloJournal {
             original_cut: crate::protocol_snapshot::ProtocolCaptureOwner::new(),
         });
         Ok(original)
+    }
+
+    pub(super) fn authenticate_original_literal_bank(
+        &self,
+        actual: &std::rc::Rc<std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>>,
+    ) -> Result<(), ProviderError> {
+        let literal = self.literal.as_ref().ok_or(ProviderError::Correlation("original literal Hello absent"))?;
+        literal.original_cut.ensure_current()?;
+        if !std::rc::Rc::ptr_eq(&literal.bank, actual) {
+            return Err(ProviderError::Correlation("original recorded Hello connection differs"));
+        }
+        Ok(())
+    }
+
+    /// Returns role-normalized digests of complete original raw Hello frames.
+    ///
+    /// No frame is reconstructed. The source separately authenticates this
+    /// journal's association with its actual controller, native and registrar.
+    ///
+    /// # Errors
+    /// Refuses a nonliteral, foreign-origin, unattempted, incomplete or repeated
+    /// Hello direction, changed raw framing extent or concurrently borrowed bank.
+    pub fn original_literal_frame_digests(&self) -> Result<OriginalHelloFrameDigests, ProviderError> {
+        let literal = self.literal.as_ref().ok_or(ProviderError::Correlation("original literal Hello absent"))?;
+        literal.original_cut.ensure_current()?;
+        if !self.attempted || !self.received || !literal.write_started {
+            return Err(ProviderError::Correlation("original literal Hello exchange incomplete"));
+        }
+        let bank = literal.bank.try_borrow().map_err(|_| ProviderError::Correlation("original literal Hello bank borrowed"))?;
+        crate::hello_frames::original_hello_frame_digests(&bank, crate::connection::EndpointRole::Controller)
     }
 
     /// Reports the additional actual literal byte/descriptor reservation.
@@ -356,5 +388,51 @@ mod literal_tests {
         assert!(!frames[1].complete);
         assert!(original.response().is_none());
         assert!(original.attempted());
+    }
+}
+
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod role_digest_tests {
+    use super::*;
+    use crate::{envelope::{MessageKind, Method, Nullable}, native_hello::OriginalNativeHelloJournal, transport::FrameReader};
+    use crucible_node_contract::U64;
+    use std::{os::unix::net::UnixStream, time::Duration};
+
+    #[test]
+    fn original_hello_raw_digest_matches_actual_duplex_unix_and_refuses_equal_foreign_bank() {
+        // These are literal transport models, with no negotiated registrar or
+        // private Child. The journal/connection source conjunction is separate.
+        let request = Envelope {
+            protocol: "CNP/1".into(), message: MessageKind::Request,
+            session_id: Nullable(None), incarnation_id: Nullable(None), node_id: Nullable(None),
+            execution_owner_id: Nullable(None), capture_owner_id: Nullable(None),
+            request_id: Nullable(Some(crucible_node_contract::Id::new("hello").unwrap())),
+            operation_id: Nullable(None), sequence: U64::new(1), method: Method::Hello,
+            body: serde_json::Map::new(), extensions: crucible_node_contract::Extensions::new(),
+        };
+        let (mut host_stream, native_stream) = UnixStream::pair().unwrap();
+        host_stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        native_stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut journal = OriginalHelloJournal::reserve_native5(&request, 65_536, 64).unwrap();
+        assert!(journal.original_literal_frame_digests().is_err());
+        journal.begin(&request, 65_536, 64).unwrap();
+        journal.publish_literal(&mut host_stream).unwrap();
+        let actual_bank = journal.literal_bank().unwrap();
+        let mut native = OriginalNativeHelloJournal::reserve(65_536, 64).unwrap().bind(native_stream).unwrap();
+        let received = native.receive().unwrap().unwrap();
+        assert_eq!(received, serde_json::to_value(&request).unwrap());
+        native.publish(&serde_json::json!({"transport-model":"response"})).unwrap();
+        let mut reader = FrameReader::with_limits(host_stream, 65_536, 64).unwrap();
+        reader.install_originals(actual_bank.clone());
+        let reply = reader.read_retained().unwrap().unwrap();
+        journal.retain_response(&reply.bytes).unwrap();
+
+        journal.authenticate_original_literal_bank(&actual_bank).unwrap();
+        assert_eq!(journal.original_literal_frame_digests().unwrap(), native.originals().original_literal_frame_digests().unwrap());
+        let foreign = OriginalHelloJournal::reserve_native5(&request, 65_536, 64).unwrap();
+        assert!(foreign.authenticate_original_literal_bank(&actual_bank).is_err());
+        assert!(journal.literal_bank().is_some());
     }
 }

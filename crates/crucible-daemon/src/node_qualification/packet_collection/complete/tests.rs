@@ -40,6 +40,18 @@ impl Scene {
     }
 
     fn with_effect_phases(distinct: bool, effect_phases: &[u16]) -> Self {
+        Self::with_selected_effect_phases(distinct, effect_phases, None, None, false)
+    }
+
+    fn with_selected_effect_phases(
+        distinct: bool,
+        effect_phases: &[u16],
+        confirmation: Option<
+            crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+        ack: Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+        native_extent: bool,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let executable = std::env::current_exe().unwrap();
         let host = canonical::content_ref(
@@ -99,7 +111,16 @@ impl Scene {
             measurements.clone(),
         ])
         .unwrap();
-        let mut world = if effect_phases == [1, 2] {
+        let mut world = if confirmation.is_some() || ack.is_some() {
+            configuration::World::with_native_selection(
+                peer_reference,
+                host,
+                proof,
+                effect_phases,
+                confirmation,
+                ack,
+            )
+        } else if effect_phases == [1, 2] {
             configuration::World::new(peer_reference, host, proof)
         } else {
             configuration::World::with_effect_phases(peer_reference, host, proof, effect_phases)
@@ -111,7 +132,7 @@ impl Scene {
         );
         let sources = std::array::from_fn(|member| {
             let selection = world.members[member].take().unwrap().installation;
-            let source = match &world.programmes[member] {
+            let mut source = match &world.programmes[member] {
                 PacketConnectedSourceProgram::Producer { program } => {
                     PacketCompleteSemanticSource::new_producer_for_collecting_world(
                         selection,
@@ -130,6 +151,26 @@ impl Scene {
                 }
             }
             .unwrap();
+            if confirmation.is_some() || ack.is_some() {
+                source.bind_original_capture_profile(
+                    crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile::OriginalArrays6,
+                ).unwrap();
+                source
+                    .bind_original_confirmation_selection(confirmation)
+                    .unwrap();
+                source.bind_original_ack_emitter_selection(ack).unwrap();
+                if ack.is_some() {
+                    let extent = crucible_node_provider::client::CanonicalAckCodecMetadataExtent::CanonicalAck512KiB;
+                    source
+                        .bind_original_ack_codec_metadata_extent(extent)
+                        .unwrap();
+                    if native_extent {
+                        source
+                            .bind_original_native_ack_codec_metadata_extent(extent)
+                            .unwrap();
+                    }
+                }
+            }
             Rc::new(source)
         });
         let roster = PacketCompleteRoster::new(sources, &world.coordinator).unwrap();
@@ -259,3 +300,6 @@ fn complete_graph_refuses_direction_only_lane_contracts() {
 
 #[path = "tests/authority.rs"]
 mod authority;
+
+#[path = "tests/selected.rs"]
+mod selected;

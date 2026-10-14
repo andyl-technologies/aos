@@ -28,7 +28,7 @@ use crate::{
 };
 
 mod complete;
-pub(super) use complete::accept_complete;
+pub(super) use complete::{accept_complete, accept_complete_with_boot};
 
 pub(super) fn accept(
     socket: &Path,
@@ -315,7 +315,8 @@ fn accept_native(
     };
     Ok(PacketSourceService {
         endpoint,
-        _handshake: handshake,
+        _handshake: super::OriginalServiceHandshake::Legacy(handshake),
+        _private_bootstrap: None,
         _supervisor: supervisor,
         deadline,
     })

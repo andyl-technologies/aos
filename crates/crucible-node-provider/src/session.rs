@@ -115,6 +115,84 @@ impl CorrelationGuard {
         Ok(())
     }
 
+    pub(crate) fn authenticate_incoming_canonical_ack_admit(
+        &self,
+        original: &Envelope,
+    ) -> Result<(), ProviderError> {
+        self.check_live()?;
+        self.check_scope(original)?;
+        if original.message != MessageKind::Request
+            || original.method != Method::Admit
+            || original.sequence.get().checked_add(1) != Some(self.next_received)
+            || self.received_requests.len() != 1
+            || self.received_requests.values().next() != Some(original)
+            || !self.pending.is_empty()
+            || !self.writing_responses.is_empty()
+        {
+            return Err(ProviderError::Correlation(
+                "native ACK has unrelated original Admit correlation",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn authenticate_prepared_confirmation(
+        &self,
+        poll: &Envelope,
+        originals: &[Envelope],
+    ) -> Result<(), ProviderError> {
+        self.check_live()?;
+        self.check_scope(poll)?;
+        let requests = originals
+            .iter()
+            .filter(|frame| frame.message == MessageKind::Request);
+        let responses = originals
+            .iter()
+            .filter(|frame| frame.message == MessageKind::Response);
+        if poll.message != MessageKind::Request
+            || poll.method != Method::Poll
+            || self.received_requests.len() != 1
+            || self.received_requests.values().next() != Some(poll)
+            || self.pending.len() != requests.clone().count()
+            || self.writing_responses.len() != responses.clone().count()
+            || requests.clone().any(|frame| {
+                frame
+                    .request_id
+                    .0
+                    .as_ref()
+                    .is_none_or(|id| self.pending.get(id) != Some(frame))
+            })
+            || responses.clone().any(|frame| {
+                frame
+                    .request_id
+                    .0
+                    .as_ref()
+                    .is_none_or(|id| self.writing_responses.get(id) != Some(frame))
+            })
+            || originals.iter().any(|frame| {
+                frame.session_id != poll.session_id
+                    || frame.incarnation_id != poll.incarnation_id
+                    || frame.node_id != poll.node_id
+                    || frame.capture_owner_id != poll.capture_owner_id
+                    || frame.operation_id != poll.operation_id
+                    || frame.execution_owner_id != poll.execution_owner_id
+                    || (frame.message == MessageKind::Request
+                        && (!frame.extensions.is_empty()
+                            || !matches!(
+                                frame.method,
+                                Method::BlobBegin | Method::BlobChunk | Method::BlobFinish
+                            )))
+                    || (frame.message == MessageKind::Response && frame.method != Method::Poll)
+                    || frame.message == MessageKind::Event
+            })
+        {
+            return Err(ProviderError::Correlation(
+                "canonical ACK prepared Poll/proof originals differ",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn authenticate_incoming_confirmation(
         &self,
         original: &Envelope,

@@ -650,18 +650,20 @@ fn validate_native_definitions(
         ("source-owned.packet-ingress/5", 5, &ingress_ref),
         ("source-owned.packet-octets/1", 1, &octets_ref),
     ]);
+    // The same concrete Source fixes selected additional grammar before any
+    // binding hashes or native preparation. Declarations grant no collection,
+    // currentness, graph admission or Capture authority here.
+    let additional = selected_native_definition_bodies(&request.roster.sources[member])?;
+    for (schema, bytes) in &additional {
+        schema.definition.verify(bytes)?;
+        if request.content.get(&schema.definition) != Some(bytes) {
+            return Err(refused());
+        }
+        expected.push((schema.id.as_str(), schema.version, &schema.definition));
+    }
     expected.sort_by_key(|(id, _, _)| *id);
     let formats = &selected.provider.implementation.formats;
-    if formats.len() != expected.len()
-        || formats
-            .iter()
-            .zip(expected)
-            .any(|(actual, (id, version, reference))| {
-                actual.id.as_str() != id
-                    || actual.version != version
-                    || &actual.definition != reference
-                    || !actual.extensions.is_empty()
-            })
+    if !exact_native_format_roster(formats, &expected)
         || selected.descriptor.ports.iter().any(|port| {
             !port.extensions.is_empty()
                 || port.lanes.iter().any(|lane| {
@@ -676,4 +678,108 @@ fn validate_native_definitions(
         return Err(refused());
     }
     Ok(())
+}
+
+/// Derives only the closed extra grammar selected by the same concrete Source.
+fn selected_native_definition_bodies(
+    source: &crucible::node_adapters::cnp::PacketCompleteSemanticSource,
+) -> Result<Vec<(SchemaRef, Vec<u8>)>, QualificationError> {
+    use crucible_node_provider::reference_packet::service::{
+        PacketNative5ConfirmationSelection,
+        ack_emitter::{
+            PacketNative5AckEmitterSelection, native_canonical_ack_admission_contract,
+            native_canonical_ack_admission_schema, native_canonical_blob_ack_contract,
+            native_canonical_blob_ack_schema,
+        },
+        confirmation::{native_after_confirmation_contract, native_after_confirmation_schema},
+    };
+
+    let confirmation = source
+        .selected_confirmation_selection()
+        .map_err(|error| QualificationError::Evidence(error.reason))?;
+    let ack = source
+        .selected_ack_emitter_selection()
+        .map_err(|error| QualificationError::Evidence(error.reason))?;
+    let mut definitions = Vec::new();
+    if let Some(PacketNative5ConfirmationSelection::AfterProtocolPoll5) = confirmation {
+        definitions.push((
+            native_after_confirmation_schema()
+                .map_err(|error| QualificationError::Evidence(error.to_string()))?,
+            native_after_confirmation_contract()
+                .map_err(|error| QualificationError::Evidence(error.to_string()))?,
+        ));
+    }
+    if let Some(PacketNative5AckEmitterSelection::CanonicalSdkBlob5) = ack {
+        if confirmation != Some(PacketNative5ConfirmationSelection::AfterProtocolPoll5) {
+            return Err(refused());
+        }
+        definitions.extend([
+            (
+                native_canonical_blob_ack_schema()
+                    .map_err(|error| QualificationError::Evidence(error.to_string()))?,
+                native_canonical_blob_ack_contract()
+                    .map_err(|error| QualificationError::Evidence(error.to_string()))?,
+            ),
+            (
+                native_canonical_ack_admission_schema()
+                    .map_err(|error| QualificationError::Evidence(error.to_string()))?,
+                native_canonical_ack_admission_contract()
+                    .map_err(|error| QualificationError::Evidence(error.to_string()))?,
+            ),
+        ]);
+    }
+    Ok(definitions)
+}
+
+fn exact_native_format_roster(
+    formats: &[SchemaRef],
+    expected: &[(&str, crucible_node_contract::Version, &ContentRef)],
+) -> bool {
+    formats.len() == expected.len()
+        && formats
+            .iter()
+            .zip(expected)
+            .all(|(actual, (id, version, reference))| {
+                actual.id.as_str() == *id
+                    && actual.version == *version
+                    && &actual.definition == *reference
+                    && actual.extensions.is_empty()
+            })
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "closed structural roster fixture assertions"
+)]
+mod selected_roster_tests {
+    use super::*;
+
+    #[test]
+    fn closed_native_format_roster_rejects_unknown_extra_foreign_and_extended_formats() {
+        let actual = crucible_node_provider::reference_packet::service::confirmation::
+            native_after_confirmation_schema().unwrap();
+        let expected = [(actual.id.as_str(), actual.version, &actual.definition)];
+        assert!(exact_native_format_roster(
+            std::slice::from_ref(&actual),
+            &expected
+        ));
+
+        assert!(!exact_native_format_roster(&[], &expected));
+        assert!(!exact_native_format_roster(
+            &[actual.clone(), actual.clone()],
+            &expected
+        ));
+        let mut unknown = actual.clone();
+        unknown.id = Id::new("unknown.native-format/1").unwrap();
+        assert!(!exact_native_format_roster(&[unknown], &expected));
+        let mut foreign = actual.clone();
+        foreign.definition = canonical::content_ref(b"foreign", "application/json").unwrap();
+        assert!(!exact_native_format_roster(&[foreign], &expected));
+        let mut extended = actual.clone();
+        extended
+            .extensions
+            .insert("unexpected".into(), serde_json::Value::Null);
+        assert!(!exact_native_format_roster(&[extended], &expected));
+    }
 }

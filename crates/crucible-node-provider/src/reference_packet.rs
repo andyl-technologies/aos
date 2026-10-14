@@ -16,6 +16,9 @@ const MAXIMUM_EVENTS: usize = 32;
 const MAXIMUM_OPERATIONS: usize = 64;
 const MAXIMUM_PAYLOAD: usize = 1024;
 
+mod birth;
+pub use birth::PacketModelBirthFailure;
+
 pub mod common;
 pub mod connected;
 pub mod continuation_models;

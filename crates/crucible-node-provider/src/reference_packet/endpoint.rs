@@ -17,6 +17,7 @@ use crate::{
 
 mod capture;
 mod complete;
+mod confirmation;
 pub use complete::{PacketCompleteEndpointRecovery, PacketCompleteEndpointRefusal};
 mod prefix;
 
@@ -78,6 +79,10 @@ pub struct PacketEndpoint<S: ProviderStream> {
     held: bool,
     complete: Option<complete::CompleteEndpointState>,
     capture: Option<capture::CaptureFlight<S>>,
+    pending_capture: Option<capture::PendingCapture>,
+    after_confirmation: Option<confirmation::AfterConfirmation<S>>,
+    canonical_ack_boot: Option<Rc<std::cell::RefCell<super::service::ack_emitter::NativeAckBoot>>>,
+    canonical_ack_admission: Option<super::service::ack_emitter::VerifiedCanonicalAckAdmission>,
 }
 
 /// Returns the same original unopened connection and native owner on refusal.
@@ -165,6 +170,10 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             held: false,
             complete: None,
             capture: None,
+            pending_capture: None,
+            after_confirmation: None,
+            canonical_ack_boot: None,
+            canonical_ack_admission: None,
         })
     }
 
@@ -222,6 +231,27 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             &crate::client::ExchangeDeadline,
         )>,
     ) -> Result<(), ProviderError> {
+        self.step_with_original_context(context, None)
+    }
+
+    pub(crate) fn step_with_selected_context(
+        &mut self,
+        handshake: &crate::handshake::ExtensionHandshake,
+        deadline: &crate::client::ExchangeDeadline,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_selected_registration(handshake)?;
+        deadline.remaining()?;
+        self.step_with_original_context(None, Some(deadline))
+    }
+
+    fn step_with_original_context(
+        &mut self,
+        context: Option<(
+            &crate::handshake::Handshake,
+            &crate::client::ExchangeDeadline,
+        )>,
+        selected_deadline: Option<&crate::client::ExchangeDeadline>,
+    ) -> Result<(), ProviderError> {
         self.ensure_complete_origin()?;
         if self.held {
             return Err(ProviderError::Conflict("packet endpoint held"));
@@ -229,6 +259,13 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         // This sticky guard precedes receive, source policy and all callbacks.
         // Only complete publication restores eligibility for the next original.
         self.held = true;
+        if self.canonical_ack_boot.is_some() {
+            selected_deadline
+                .ok_or(ProviderError::Correlation(
+                    "native ACK requires original service cut",
+                ))?
+                .remaining()?;
+        }
         self.reserve()?;
         let frame = match self.transport.as_mut() {
             Some(Transport::Connected(connection)) => connection
@@ -246,6 +283,60 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             ));
         };
         let request = frame.envelope;
+        if let Some(boot) = self.canonical_ack_boot.as_ref() {
+            if matches!(body.as_ref(), RequestBody::Begin(begin) if begin.kind == BeginKind::Capture)
+            {
+                return Err(ProviderError::Correlation(
+                    "native boot requires whole owning Capture edition",
+                ));
+            }
+            if request.method == Method::Admit {
+                let complete = self.complete.as_ref().ok_or(ProviderError::Correlation(
+                    "native ACK original Hello absent",
+                ))?;
+                let owner = boot
+                    .try_borrow()
+                    .map_err(|_| ProviderError::Conflict("native ACK boot borrowed"))?;
+                let policy = owner
+                    .policy
+                    .as_ref()
+                    .ok_or(ProviderError::Correlation(
+                        "native ACK installed policy absent",
+                    ))?
+                    .clone();
+                drop(owner);
+                let Some(Transport::Connected(connection)) = self.transport.as_ref() else {
+                    return Err(ProviderError::Correlation(
+                        "native assigned Admit original connection absent",
+                    ));
+                };
+                self.canonical_ack_admission =
+                    Some(super::service::ack_emitter::NativeAckBoot::verify_admit(
+                        boot,
+                        policy,
+                        &self.authority,
+                        &complete.hello,
+                        &request,
+                        connection,
+                    )?);
+                self.canonical_ack_admission
+                    .as_ref()
+                    .ok_or(ProviderError::Correlation(
+                        "native ACK verified slot absent",
+                    ))?
+                    .authenticate_installation(connection)?;
+                let Some(Transport::Connected(connection)) = self.transport.as_mut() else {
+                    return Err(ProviderError::Correlation(
+                        "native ACK installation original connection absent",
+                    ));
+                };
+                selected_deadline
+                    .ok_or(ProviderError::Correlation("native ACK original cut absent"))?
+                    .remaining()?;
+                connection
+                    .install_original_canonical_ack_admission(&mut self.canonical_ack_admission)?;
+            }
+        }
         if self.complete.is_some()
             && matches!(body.as_ref(), RequestBody::Begin(begin) if begin.kind == BeginKind::Capture)
         {
@@ -253,6 +344,14 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 "native5 Capture requires original service negotiation custody",
             ))?;
             return self.capture_original(&request, handshake, deadline);
+        }
+        if self.complete.is_some()
+            && request.method == Method::Poll
+            && request.extensions.contains_key(
+                super::service::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION,
+            )
+        {
+            return self.confirm_original_after(request);
         }
         if let Some(reply) = self.upload(&request, body.as_ref())? {
             self.prepare(&request, &reply)?;
@@ -282,6 +381,42 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         self.transport = Some(Transport::Connected(connection));
         self.held = false;
         Ok(())
+    }
+
+    pub(crate) fn bind_original_canonical_ack_boot(
+        &mut self,
+        boot: Rc<std::cell::RefCell<super::service::ack_emitter::NativeAckBoot>>,
+        policy: Rc<super::service::Native5Policy>,
+    ) -> Result<(), ProviderError> {
+        self.ensure_complete_origin()?;
+        if self.canonical_ack_boot.is_some() || !self.records.is_empty() || self.held {
+            return Err(ProviderError::Conflict(
+                "native ACK boot binding follows activity",
+            ));
+        }
+        let mut owner = boot
+            .try_borrow_mut()
+            .map_err(|_| ProviderError::Conflict("native ACK boot borrowed"))?;
+        owner.ensure_origin()?;
+        if policy.ack_emitter_selection()
+            != Some(
+                super::service::ack_emitter::PacketNative5AckEmitterSelection::CanonicalSdkBlob5,
+            )
+        {
+            return Err(ProviderError::Correlation("native ACK boot policy differs"));
+        }
+        owner.policy = Some(policy);
+        drop(owner);
+        self.canonical_ack_boot = Some(boot);
+        Ok(())
+    }
+
+    pub(crate) fn authenticate_selected_registration(
+        &self,
+        handshake: &crate::handshake::ExtensionHandshake,
+    ) -> Result<(), ProviderError> {
+        self.ensure_complete_origin()?;
+        handshake.verify_authority(&self.authority)
     }
 
     fn reserve(&mut self) -> Result<(), ProviderError> {

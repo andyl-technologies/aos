@@ -11,15 +11,19 @@ fn collection_authority(
     PacketCompleteGraphOwner,
     Rc<super::super::InstalledPacketCompleteCollectionAuthority>,
 ) {
+    try_collection_authority(scene, launches(scene)).unwrap()
+}
+
+pub(super) fn launches(
+    scene: &Scene,
+) -> [crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch; 3] {
     use crucible_node_contract::{Bytes, U64};
     use crucible_node_provider::{
         reference_packet::service::PacketNative5SourceLaunch, reference_service::InstalledContent,
     };
-    let owner = PacketCompleteGraphOwner::install(scene.request(&scene.world.content)).unwrap();
-    let policy = owner.graph_policy().unwrap();
     let bytes = configuration::encoded(&scene.world.coordinator);
     let reference = canonical::content_ref(&bytes, "application/json").unwrap();
-    let launches = std::array::from_fn(|member| {
+    std::array::from_fn(|member| {
         let program = match &scene.world.programmes[member] {
             PacketConnectedSourceProgram::Producer { program } => {
                 PacketConnectedSourceProgram::Producer {
@@ -34,8 +38,19 @@ fn collection_authority(
         };
         let selected = storage_selection();
         PacketNative5SourceLaunch {
-            confirmation_selection: None,
-            capture_profile: crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile::OriginalArrays6,
+            native_codec_metadata_extent: scene.roster.sources[member]
+                .selected_native_ack_codec_metadata_extent()
+                .unwrap(),
+            confirmation_selection: scene.roster.sources[member]
+                .selected_confirmation_selection()
+                .unwrap(),
+            ack_emitter_selection: scene.roster.sources[member]
+                .selected_ack_emitter_selection()
+                .unwrap(),
+            capture_profile: scene.roster.sources[member]
+                .selected_capture_profile()
+                .unwrap()
+                .clone(),
             schema_version: 5,
             selection: scene.world.coordinator.participants[member].clone(),
             program,
@@ -54,7 +69,21 @@ fn collection_authority(
                 .path()
                 .join(format!("effect-{member}.sock")),
         }
-    });
+    })
+}
+
+pub(super) fn try_collection_authority(
+    scene: &Scene,
+    launches: [crucible_node_provider::reference_packet::service::PacketNative5SourceLaunch; 3],
+) -> Result<
+    (
+        PacketCompleteGraphOwner,
+        Rc<super::super::InstalledPacketCompleteCollectionAuthority>,
+    ),
+    super::super::QualificationError,
+> {
+    let owner = PacketCompleteGraphOwner::install(scene.request(&scene.world.content))?;
+    let policy = owner.graph_policy()?;
     let authority = super::super::InstalledPacketCompleteCollectionAuthority::install(
         super::super::PacketCompleteCollectionRequest {
             roster: scene.roster.clone(),
@@ -71,9 +100,8 @@ fn collection_authority(
             limits: crate::node_qualification::QualificationLimits::default(),
             maximum_audit_bytes: 8 * 1024 * 1024,
         },
-    )
-    .unwrap();
-    (owner, authority)
+    )?;
+    Ok((owner, authority))
 }
 
 #[test]

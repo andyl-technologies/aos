@@ -540,3 +540,111 @@ fn complete_source_receiver_binding_keeps_same_group_and_kernel_path() {
         .unwrap();
     assert!(source.authenticate_original_preconstruction().is_err());
 }
+
+#[test]
+fn complete_native_after_return_bank_is_separate_and_selected_before_child() {
+    let installed = coordinator();
+    let mut source = PacketCompleteSemanticSource::new_producer_for_collecting_world(
+        installation(&installed, 0),
+        producer(),
+        installed,
+        storage_selection(),
+    )
+    .unwrap();
+    assert!(
+        source
+            .reserve_original_native_after_return_bank(6 * 1024 * 1024)
+            .is_err()
+    );
+    source
+        .reserve_complete_capture_banks(
+            PacketCompleteCaptureBankLimits {
+                host_protocol_bytes: 2 * 1024 * 1024,
+                semantic_bytes: 128 * 1024,
+                ancestry_bytes: 128 * 1024,
+                journal_bytes: 128 * 1024,
+            },
+            4 * 1024 * 1024,
+        )
+        .unwrap();
+    let before = source.original_capture_bank_facts().unwrap();
+    assert_eq!(before.native_after_protocol_bytes, 0);
+
+    assert!(
+        source
+            .reserve_original_native_after_return_bank(before.total_bytes)
+            .is_err()
+    );
+    assert_eq!(source.original_capture_bank_facts().unwrap(), before);
+    source
+        .reserve_original_native_after_return_bank(6 * 1024 * 1024)
+        .unwrap();
+    let after = source.original_capture_bank_facts().unwrap();
+    assert_eq!(after.native_after_protocol_bytes, 1024 * 1024);
+    assert_eq!(
+        after.total_bytes,
+        before.total_bytes + after.native_after_protocol_bytes
+    );
+    assert_eq!(after.protocol_bytes, before.protocol_bytes);
+    assert_eq!(after.native_snapshot_bytes, before.native_snapshot_bytes);
+    assert!(
+        source
+            .reserve_original_native_after_return_bank(6 * 1024 * 1024)
+            .is_err()
+    );
+    assert_eq!(source.original_capture_bank_facts().unwrap(), after);
+    assert!(source.authenticate_original_preconstruction().is_err());
+}
+
+#[test]
+fn complete_source_confirmation_binding_preserves_none_and_refuses_missing_declaration() {
+    use crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection;
+
+    let installed = coordinator();
+    let mut source = PacketCompleteSemanticSource::new_producer_for_collecting_world(
+        installation(&installed, 0),
+        producer(),
+        installed,
+        storage_selection(),
+    )
+    .unwrap();
+    assert_eq!(source.selected_confirmation_selection().unwrap(), None);
+    assert!(
+        source
+            .bind_original_confirmation_selection(Some(
+                PacketNative5ConfirmationSelection::AfterProtocolPoll5
+            ),)
+            .is_err()
+    );
+    source.bind_original_confirmation_selection(None).unwrap();
+    assert!(source.bind_original_confirmation_selection(None).is_err());
+    assert_eq!(source.selected_confirmation_selection().unwrap(), None);
+    assert!(source.authenticate_current_native().is_err());
+}
+
+#[test]
+fn complete_source_confirmation_selection_refuses_after_bank_reservation() {
+    let installed = coordinator();
+    let mut source = PacketCompleteSemanticSource::new_producer_for_collecting_world(
+        installation(&installed, 0),
+        producer(),
+        installed,
+        storage_selection(),
+    )
+    .unwrap();
+    source
+        .reserve_complete_capture_banks(
+            PacketCompleteCaptureBankLimits {
+                host_protocol_bytes: 2 * 1024 * 1024,
+                semantic_bytes: 128 * 1024,
+                ancestry_bytes: 128 * 1024,
+                journal_bytes: 128 * 1024,
+            },
+            4 * 1024 * 1024,
+        )
+        .unwrap();
+    let before = source.original_capture_bank_facts().unwrap();
+    assert!(source.bind_original_confirmation_selection(None).is_err());
+    assert_eq!(source.original_capture_bank_facts().unwrap(), before);
+    assert_eq!(source.selected_confirmation_selection().unwrap(), None);
+}

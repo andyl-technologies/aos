@@ -44,7 +44,10 @@ pub struct PacketCompleteCaptureBankFacts {
     pub native_control_bytes: usize,
     /// Retains the independent returned unchanged-cut anchor byte bank.
     pub native_anchor_bytes: usize,
-    /// Includes all seven independently allocated source bank roles.
+    /// Retains the separately selected fourth native-after return byte bank.
+    /// Zero means that this optional bank was not selected before the child.
+    pub native_after_protocol_bytes: usize,
+    /// Includes every independently allocated selected source bank role.
     pub total_bytes: usize,
 }
 
@@ -58,6 +61,8 @@ pub(super) struct PacketCompleteCaptureBanks {
     pub(super) protocol_payload: Option<(OriginalProtocolPayloadOwner, Vec<u8>)>,
     pub(super) native_banks: [Option<CnpSemanticSnapshotReservation>; 3],
     pub(super) native_objects: [Option<InputPayload>; 3],
+    pub(super) native_after_bank: Option<CnpSemanticSnapshotReservation>,
+    pub(super) native_after_object: Option<InputPayload>,
 }
 
 impl PacketCompleteCaptureBanks {
@@ -137,6 +142,8 @@ impl PacketCompleteCaptureBanks {
             protocol_payload: None,
             native_banks,
             native_objects: [None, None, None],
+            native_after_bank: None,
+            native_after_object: None,
         };
         if original.facts()?.total_bytes > admitted {
             return Err(refused(
@@ -195,6 +202,17 @@ impl PacketCompleteCaptureBanks {
             native_control_bytes,
             native_anchor_bytes,
         ] = native_capacity;
+        let native_after_protocol_bytes = match (&self.native_after_bank, &self.native_after_object)
+        {
+            (None, None) => 0,
+            (Some(bank), None) => bank.allocated_bytes(),
+            (None, Some(object)) => object.bytes.capacity(),
+            _ => {
+                return Err(refused(
+                    "native-after return bank association is incomplete",
+                ));
+            }
+        };
         let total_bytes = [
             semantic_bytes,
             ancestry_bytes,
@@ -203,6 +221,7 @@ impl PacketCompleteCaptureBanks {
             native_snapshot_bytes,
             native_control_bytes,
             native_anchor_bytes,
+            native_after_protocol_bytes,
         ]
         .into_iter()
         .try_fold(0usize, |sum, size| sum.checked_add(size))
@@ -215,6 +234,7 @@ impl PacketCompleteCaptureBanks {
             native_snapshot_bytes,
             native_control_bytes,
             native_anchor_bytes,
+            native_after_protocol_bytes,
             total_bytes,
         })
     }
@@ -409,6 +429,63 @@ impl PacketCompleteSemanticSource {
         .map_err(|_| refused("selected host protocol extent is not representable"))?;
         if facts.maximum_encoded_bytes != expected || facts.encoded_length != 0 {
             return Err(refused("preconstruction host protocol extent differs"));
+        }
+        Ok(())
+    }
+}
+
+impl PacketCompleteSemanticSource {
+    /// Reserves a separate fourth native-after return bank before native association.
+    ///
+    /// The selected profile supplies its finite encoded native-after bound. This
+    /// allocation coexists with the controller content cache and the independent
+    /// settled host protocol owner. It installs no confirmation mechanism and
+    /// cannot prove that the remote native-after snapshot was issued.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, absent source banks, a prior native association,
+    /// repeated selection, an unrepresentable bound or exhausted total credit.
+    /// Any bank already retained in this source remains owned on refusal.
+    pub fn reserve_original_native_after_return_bank(
+        &mut self,
+        admitted_total_bytes: usize,
+    ) -> Result<(), OperationFailure> {
+        self.ensure_origin()?;
+        let unbound = match &self.original {
+            CompletePacketOriginal::Producer(source) => source.complete_preparation_unbound(),
+            CompletePacketOriginal::Reactive(source) => source.complete_preparation_unbound(),
+        }?;
+        if !unbound {
+            return Err(refused(
+                "native-after return bank follows native association",
+            ));
+        }
+
+        let maximum = usize::try_from(
+            self.selected_capture_profile()?
+                .native_after_bytes(&self.selected_storage_selection()?.storage)
+                .get(),
+        )
+        .map_err(|_| refused("native-after return bound is not representable"))?;
+        let banks = self
+            .capture_banks
+            .get_mut()
+            .as_mut()
+            .ok_or_else(|| refused("native-after return has no original source banks"))?;
+        if banks.native_after_bank.is_some() || banks.native_after_object.is_some() {
+            return Err(refused("native-after return bank was already selected"));
+        }
+        let remaining = admitted_total_bytes
+            .checked_sub(banks.facts()?.total_bytes)
+            .filter(|remaining| *remaining >= maximum)
+            .ok_or_else(|| refused("native-after return bank exceeds total admission"))?;
+
+        let bank = CnpSemanticSnapshotReservation::reserve(maximum, remaining)?;
+        banks.native_after_bank = Some(bank);
+        if banks.facts()?.total_bytes > admitted_total_bytes {
+            return Err(refused(
+                "actual native-after return capacity exceeds admission",
+            ));
         }
         Ok(())
     }

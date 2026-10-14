@@ -329,3 +329,21 @@ fn native5_confirmation_refuses_legacy_codec_before_custody_or_unix_io() {
         std::io::ErrorKind::WouldBlock
     );
 }
+
+
+#[test]
+fn canonical_ack_lease_refuses_unselected_original_controller_before_wire() {
+    let (_handshake, controller, mut peer) = controller();
+    let original_count = controller.originals().count();
+    assert!(
+        controller
+            .retain_original_canonical_blob_ack_emitter()
+            .is_err()
+    );
+    assert_eq!(controller.originals().count(), original_count);
+    peer.set_nonblocking(true).unwrap();
+    let mut byte = [0];
+    assert!(
+        matches!(peer.read(&mut byte), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+}

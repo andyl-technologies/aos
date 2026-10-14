@@ -107,6 +107,20 @@ impl CnpSemanticConformanceAuthority for InstalledPacketCompleteCollectionAuthor
         source.authenticate_realization(scope)?;
         source.authenticate_original_native_owner(scope.native)?;
         source.authenticate_realized_preconstruction(&scope)?;
+        if source.selected_ack_emitter_selection()?.is_some() {
+            self.original_ack_callback_started.set(true);
+            let slot = self
+                .original_ack_hello
+                .try_borrow()
+                .map_err(|_| operation_error(refused()))?[index]
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| operation_error(refused()))?;
+            let mut original = slot
+                .try_borrow_mut()
+                .map_err(|_| operation_error(refused()))?;
+            source.retain_original_canonical_ack_peer_association(&scope, &mut original)?;
+        }
         self.current().map_err(operation_error)
     }
 }

@@ -244,8 +244,66 @@ pub struct ClientSession {
     sequence: U64,
     peer_pid: u32,
     peer_executable: ContentRef,
+    original_ack_hello:
+        Option<Rc<std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>>>,
     pub(super) original_response_loss:
         Option<super::reference::original_response_loss::OriginalResponseLossRecorder>,
+}
+
+struct SessionProtocolView<'a> {
+    session: &'a ClientSession,
+    compact: bool,
+}
+
+impl serde::Serialize for SessionProtocolView<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let original = self.session;
+        if self.compact {
+            let previous = (
+                original.connection.protocol_view_with_encoding(true),
+                &original.sequence,
+                original.peer_pid,
+                &original.peer_executable,
+                "original-physical-cut-retained-by-source-not-portable-time",
+            );
+            if let Some(bank) = &original.original_ack_hello {
+                let bank = bank
+                    .try_borrow()
+                    .map_err(|_| serde::ser::Error::custom("original ACK Hello bank borrowed"))?;
+                return serde::Serialize::serialize(
+                    &(
+                        "source-private.client-session-canonical-ack/10",
+                        previous,
+                        bank.protocol_view_with_encoding(true),
+                    ),
+                    serializer,
+                );
+            }
+            serde::Serialize::serialize(&previous, serializer)
+        } else {
+            let previous = (
+                original.connection.protocol_view(),
+                &original.sequence,
+                original.peer_pid,
+                &original.peer_executable,
+                "original-physical-cut-retained-by-source-not-portable-time",
+            );
+            if let Some(bank) = &original.original_ack_hello {
+                let bank = bank
+                    .try_borrow()
+                    .map_err(|_| serde::ser::Error::custom("original ACK Hello bank borrowed"))?;
+                return serde::Serialize::serialize(
+                    &(
+                        "source-private.client-session-canonical-ack/10",
+                        previous,
+                        bank.protocol_view(),
+                    ),
+                    serializer,
+                );
+            }
+            serde::Serialize::serialize(&previous, serializer)
+        }
+    }
 }
 
 enum InitialDeadline {
@@ -370,24 +428,148 @@ impl ClientSession {
         self.connection.retain_frozen_protocol_frames(reservation)
     }
 
+    pub(super) fn begin_original_ack_admit(
+        &self,
+        budget: Duration,
+    ) -> Result<(U64, crate::operational_time::OperationalDeadline), ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        self.sequence.checked_add(U64::new(1))?;
+        self.deadline.reset(budget)?;
+        Ok((self.sequence, self.deadline.original_cut()))
+    }
+
+    pub(super) fn authenticate_original_ack_admit_cut(
+        &self,
+        sequence: U64,
+        cut: crate::operational_time::OperationalDeadline,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        if self.sequence != sequence
+            || self.deadline.original_cut() != cut
+            || cut.remaining().is_none()
+        {
+            return Err(ProviderError::Correlation(
+                "assigned Admit original sequence or cut changed",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn reserve_original_ack_admit(
+        &mut self,
+        original: &Envelope,
+        maximum: usize,
+        slot: &mut Option<usize>,
+    ) -> Result<(), ProviderError> {
+        self.connection
+            .reserve_original_assigned_ack_admit(original, maximum, slot)
+    }
+
+    pub(super) fn seal_original_ack_admit(
+        &mut self,
+        custody: &mut ClientCustody,
+        original: &Envelope,
+        bytes: &mut Vec<u8>,
+        slot: Option<usize>,
+    ) -> Result<(), ProviderError> {
+        self.connection
+            .seal_original_assigned_ack_admit(original, bytes, slot)?;
+        let id = original
+            .request_id
+            .0
+            .clone()
+            .ok_or(ProviderError::Correlation("assigned Admit ID absent"))?;
+        if custody.controller.contains_key(&id) {
+            return Err(ProviderError::Conflict("assigned Admit lifetime ID reused"));
+        }
+        let original_bytes = envelope_bytes(original)?;
+        custody.ensure_journal_room(original_bytes)?;
+        custody.retain_journal_bytes(original_bytes)?;
+        custody.controller.insert(
+            id,
+            ClientOriginal {
+                request: original.clone(),
+                identity: original.request_hash(RequestOrigin::Controller)?,
+                response: None,
+            },
+        );
+        Ok(())
+    }
+
+    pub(super) fn publish_original_ack_admit(
+        &mut self,
+        custody: &mut ClientCustody,
+        original: &Envelope,
+        bytes: &[u8],
+        slot: Option<usize>,
+        cut: crate::operational_time::OperationalDeadline,
+    ) -> Result<Envelope, ProviderError> {
+        self.authenticate_original_ack_admit_cut(original.sequence, cut)?;
+        self.connection
+            .publish_original_assigned_ack_admit(original, bytes, slot)?;
+        self.sequence = self.sequence.checked_add(U64::new(1))?;
+        loop {
+            let frame = self
+                .connection
+                .receive()?
+                .ok_or(ProviderError::Correlation(
+                    "assigned Admit response unknown",
+                ))?;
+            match frame.body {
+                ReceivedBody::Response(_) => {
+                    original.matches_response(&frame.envelope)?;
+                    custody.retain_journal_bytes(envelope_bytes(&frame.envelope)?)?;
+                    let id = original
+                        .request_id
+                        .0
+                        .as_ref()
+                        .ok_or(ProviderError::Correlation("assigned Admit ID absent"))?;
+                    let retained = custody
+                        .controller
+                        .get_mut(id)
+                        .ok_or(ProviderError::Correlation("assigned Admit custody absent"))?;
+                    retained.response = Some(frame.envelope.clone());
+                    return Ok(frame.envelope);
+                }
+                ReceivedBody::Request(body) => {
+                    self.receive_transfer(custody, frame.envelope, *body)?
+                }
+                ReceivedBody::Notification(_) => {
+                    return Err(ProviderError::Correlation(
+                        "assigned Admit notification unsupported",
+                    ));
+                }
+            }
+        }
+    }
+
+    pub(super) fn original_ack_hello_digests(
+        &self,
+        journal: &OriginalHelloJournal,
+    ) -> Result<crate::hello_frames::OriginalHelloFrameDigests, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        let actual = self
+            .original_ack_hello
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "original canonical ACK Hello association absent",
+            ))?;
+        journal.authenticate_original_literal_bank(actual)?;
+        journal.original_literal_frame_digests()
+    }
+
     pub(super) fn protocol_view(&self) -> impl serde::Serialize + '_ {
-        (
-            self.connection.protocol_view(),
-            &self.sequence,
-            self.peer_pid,
-            &self.peer_executable,
-            "original-physical-cut-retained-by-source-not-portable-time",
-        )
+        SessionProtocolView {
+            session: self,
+            compact: false,
+        }
     }
 
     pub(super) fn compact_protocol_view(&self) -> impl serde::Serialize + '_ {
-        (
-            self.connection.protocol_view_with_encoding(true),
-            &self.sequence,
-            self.peer_pid,
-            &self.peer_executable,
-            "original-physical-cut-retained-by-source-not-portable-time",
-        )
+        SessionProtocolView {
+            session: self,
+            compact: true,
+        }
     }
 
     pub(super) fn install_native5_frame_bank(
@@ -415,6 +597,87 @@ impl ClientSession {
         }
         self.connection
             .install_native5_controller_codec(bank, selection, coordinator)
+    }
+
+    pub(super) fn original_native5_ack_emitter_selection(
+        &self,
+    ) -> Result<
+        Option<crate::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+        ProviderError,
+    > {
+        self.authenticate_native5_source_codec()?;
+        self.connection.original_native5_ack_emitter_selection()
+    }
+
+    pub(super) fn install_native5_source_ack_emitter_codec(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<(), ProviderError> {
+        if self.sequence.get() != 2 || self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "canonical ACK codec requires unused original session without callbacks",
+            ));
+        }
+        self.connection
+            .install_native5_controller_ack_emitter_codec(bank, selection, coordinator, profile)
+    }
+
+    pub(super) fn original_native5_codec_metadata_extent(
+        &self,
+    ) -> Result<Option<crate::connection::CanonicalAckCodecMetadataExtent>, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        self.connection.original_native5_codec_metadata_extent()
+    }
+
+    pub(super) fn install_native5_source_ack_emitter_codec_with_metadata_extent(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: crate::connection::CanonicalAckCodecMetadataExtent,
+    ) -> Result<(), ProviderError> {
+        if self.sequence.get() != 2 || self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "canonical ACK codec requires unused original session without callbacks",
+            ));
+        }
+        self.connection
+            .install_native5_controller_ack_emitter_codec_with_metadata_extent(
+                bank,
+                selection,
+                coordinator,
+                profile,
+                metadata_extent,
+            )
+    }
+
+    pub(super) fn retain_original_ack_emitter(
+        &self,
+    ) -> Result<
+        (
+            std::rc::Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+            crate::handshake::RegistrationRead,
+            std::rc::Rc<crate::connection::Native5CodecOwner>,
+        ),
+        ProviderError,
+    > {
+        self.authenticate_native5_source_codec()?;
+        self.connection.retain_original_ack_emitter()
+    }
+
+    pub(super) fn authenticate_original_ack_emitter(
+        &self,
+        owner: &std::rc::Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+        registration: &crate::handshake::RegistrationRead,
+        codec: &std::rc::Rc<crate::connection::Native5CodecOwner>,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        self.connection
+            .authenticate_original_ack_emitter(owner, registration, codec)
     }
 
     pub(super) fn original_native5_confirmation_selection(
@@ -628,6 +891,46 @@ impl ClientSession {
         )
     }
 
+    /// Records the same original typed Hello under its fixed physical cut.
+    ///
+    /// The caller's journal remains the source of literal request/response bytes
+    /// and the retained Hello Rc. Typed registration is never downgraded.
+    ///
+    /// # Errors
+    /// Refuses changed/attempted journals, expired cuts, foreign peers, unsupported
+    /// typed selections or original authentication/transport uncertainty.
+    // crucible-lint: allow rust-allow -- Peer, verifier, original cut and journal are independent source dependencies.
+    #[allow(clippy::too_many_arguments)]
+    pub fn negotiate_extensions_recorded_before(
+        stream: std::os::unix::net::UnixStream,
+        peer: &ClientPeer,
+        hello: &Envelope,
+        connection_id: Id,
+        handshake: &mut crate::handshake::ExtensionHandshake,
+        verifier: &mut impl TrustedHandshakeVerifier,
+        supervisor: Rc<dyn ConnectionSupervisor>,
+        schemas: Rc<dyn BodySchemaVerifier>,
+        deadline: ExchangeDeadline,
+        maximum_bytes: usize,
+        maximum_nesting: usize,
+        journal: &mut OriginalHelloJournal,
+    ) -> Result<Self, ProviderError> {
+        journal.begin(hello, maximum_bytes, maximum_nesting)?;
+        deadline.remaining()?;
+        Self::negotiate_with_admission(
+            stream,
+            peer,
+            hello,
+            supervisor,
+            schemas,
+            deadline,
+            maximum_bytes,
+            maximum_nesting,
+            Some(journal),
+            |response| handshake.admit_envelopes(hello, response, connection_id, verifier),
+        )
+    }
+
     /// Authenticates a peer and selects explicit installed extension contracts.
     ///
     /// Uses the same original peer credential checks, complete executable
@@ -748,6 +1051,9 @@ impl ClientSession {
         };
         let mut reader =
             FrameReader::with_limits(writer.try_clone()?, maximum_bytes, maximum_nesting)?;
+        let retained_hello = journal
+            .as_ref()
+            .and_then(|original| original.literal_bank());
         let value = if let Some(original) = journal {
             if let Some(bank) = original.literal_bank() {
                 reader.install_originals(bank);
@@ -775,6 +1081,11 @@ impl ClientSession {
         };
         let response = Envelope::decode(&canonical::canonical_json(&value)?, maximum_bytes)?;
         let authority = admit(&response)?;
+        let original_ack_hello = if authority.selected_features().iter().any(|feature| feature.as_str() == crate::reference_packet::service::ack_emitter::PACKET_NATIVE_CANONICAL_ACK_FEATURE) {
+            Some(retained_hello.ok_or(ProviderError::Correlation("canonical ACK birth requires recorded original Hello"))?)
+        } else {
+            None
+        };
         let connection = Connection::new(
             writer,
             authority.clone(),
@@ -789,6 +1100,7 @@ impl ClientSession {
             sequence: U64::new(2),
             peer_pid: peer.pid,
             peer_executable: peer.executable.clone(),
+            original_ack_hello,
             original_response_loss: None,
         })
     }

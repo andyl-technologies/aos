@@ -4517,6 +4517,30 @@ still refuses before descriptor allocation, including when supplied a fabricated
 complete mask. FD/VFS/RCU ownership, physical retirement, complete Kbuild, nested
 execution, CREATE/RUN and Ready remain unqualified. No host kernel change ran.
 
+## Common preparation and authenticated packet integration
+
+The integration adds original-controller assignment, authenticated canonical ACK
+admission, retained packet transport and metadata banks, and one-shot complete
+world admission. The same revocation guard spans final callback reauthentication
+and native terminal validation. Failure or unwind retains original resources and
+revokes the admission instead of renewing it.
+
+QEMU preparation retains the actual node, process guard, full legacy scheduler,
+fault state and optional VMState in one preallocated common participant. Its
+checked clock mapping preserves the existing 50 ps lattice and reported idle
+bias. This preparation profile still exposes no common execution or Ready facet.
+The gem5 x86 model adds bounded physical-entry ELF and boot-geometry validation;
+its component tests do not establish full-system execution or device parity.
+
+These 122 sparse integration roles preserve the later campaign, mixed-provider
+and kernel changes. Functional changes and formatting are separate commits.
+Combined strict checks remain pending: earlier attempts stopped on an equivalent
+conditional layout and then test-local unwrap lint settings. Those failed runs
+remain recorded; the local test allowances preserve the existing assertions and
+production lint policy. Current all-target compilation, fresh executable
+inventories, selected runtime controls and genuine native admission still need
+to pass on the canonical source. No integrated runtime pass is inferred here.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

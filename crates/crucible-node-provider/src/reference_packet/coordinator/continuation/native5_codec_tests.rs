@@ -869,3 +869,104 @@ fn native5_controller_current_codec_refuses_revocation_foreign_scope_and_changed
         assert!(controller.authenticate_native5_source_codec().is_err());
     }
 }
+
+#[allow(clippy::unwrap_used)]
+pub(super) fn original_canonical_ack_controller_scope() -> (
+    Handshake, ConnectionAuthority, PacketControlSelection, InstalledContent,
+) {
+    let participant = 0;
+    let coordinator = five_with_ack_emitter(
+        Some(&crate::reference_packet::service::PacketNative5ConfirmationSelection::AfterProtocolPoll5),
+        Some(&crate::reference_packet::service::PacketNative5AckEmitterSelection::CanonicalSdkBlob5),
+    );
+    let selection = coordinator.participants[participant].clone();
+    let binding = &selection.realization.bindings[0];
+    let session = binding.authority.session_id.clone();
+    let incarnation = binding.authority.incarnation_id.clone();
+    let mut features = vec![
+        id("cnp.core/1"),
+        id(crate::reference_packet::input::PACKET_INPUT_FEATURE),
+    ];
+    features.push(id(contracts::PACKET_COMPLETE_LINEAGE_FEATURE));
+    features.extend([
+        id("cnp.control-evidence/1"),
+        id(crate::reference_packet::service::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE),
+        id(crate::reference_packet::service::ack_emitter::PACKET_NATIVE_CANONICAL_ACK_FEATURE),
+        id(crate::reference_packet::service::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE),
+    ]);
+    features.sort();
+    let limits = Limits {
+        frame_bytes: U64::new(65536),
+        nesting: U64::new(64),
+        requests: U64::new(8),
+        journal_entries: U64::new(64),
+        blob_chunk_bytes: U64::new(4096),
+    };
+    let mut handshake = Handshake::new(
+        TrustedInstallation {
+            session_id: session.clone(),
+            incarnation_id: incarnation.clone(),
+            measured_implementation: selection.provider.implementation.clone(),
+            launch_receipt: selection.admission_receipt.clone(),
+            admission_token: [7; 32],
+        },
+        NegotiationPolicy {
+            supported_features: features.clone(),
+            required_features: features.clone(),
+            provider_limits: limits,
+            required_schemas: Vec::new(),
+            required_guarantees: binding.compatibility.guarantees_ref.clone(),
+            envelope_extension_features: std::collections::BTreeMap::from([(
+                crate::reference_packet::input::PACKET_INPUT_FEATURE.into(),
+                id(crate::reference_packet::input::PACKET_INPUT_FEATURE),
+            ), (
+                crate::reference_packet::service::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION.into(),
+                id(crate::reference_packet::service::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE),
+            ), (
+                crate::reference_packet::service::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE.into(),
+                id(crate::reference_packet::service::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE),
+            )]),
+        },
+    )
+    .unwrap();
+    let request = HelloRequest {
+        versions: vec!["CNP/1".into()],
+        session_id: session.clone(),
+        controller_nonce: Bytes::new(vec![3; 32]),
+        required_features: features.clone(),
+        optional_features: Vec::new(),
+        limits,
+        admission_token: Bytes::new(vec![7; 32]),
+        resume_session: None,
+        extensions: Extensions::new(),
+    };
+    let response = HelloResult {
+        version: "CNP/1".into(),
+        session_id: session,
+        incarnation_id: incarnation,
+        controller_nonce: request.controller_nonce.clone(),
+        provider_nonce: Bytes::new(vec![5; 32]),
+        selected_features: features,
+        limits,
+        resume_token: Nullable(None),
+        provider_identity: selection.provider.clone(),
+        resumed_operations: Vec::new(),
+    };
+    let authority = handshake
+        .admit_exchange(
+            &request,
+            &response,
+            id(&format!(
+                "codec-fixture-connection-{}",
+                "selected-ack"
+            )),
+            &mut ModelVerifier,
+        )
+        .unwrap();
+    let bytes = canonical::canonical_json(&serde_json::to_value(coordinator).unwrap()).unwrap();
+    let installed = InstalledContent {
+        reference: canonical::content_ref(&bytes, "application/json").unwrap(),
+        bytes: Bytes::new(bytes),
+    };
+    (handshake, authority, selection, installed)
+}

@@ -39,6 +39,17 @@ mod preconstruction;
 mod effects;
 pub use effects::{PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader};
 
+#[path = "packet_complete_source/ack_peer.rs"]
+mod ack_peer;
+
+#[path = "packet_complete_source/world_admission.rs"]
+mod world_admission;
+pub use ack_peer::{
+    PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame,
+    PacketCompleteAckPeerBootMaterial,
+};
+pub(super) use world_admission::OriginalCompletedCanonicalAckWorldAdmission;
+
 /// Identifies the original model retained by a complete collecting source.
 ///
 /// This is immutable declaration data. It grants no native currentness,
@@ -63,6 +74,13 @@ pub struct PacketCompleteSemanticSource {
     capture_banks: std::cell::RefCell<Option<capture_banks::PacketCompleteCaptureBanks>>,
     preconstruction: std::cell::RefCell<Option<preconstruction::OriginalCompletePreconstruction>>,
     effect_receiver: Option<effects::OriginalCompleteEffectReceiver>,
+    ack_emitter_selection: Option<Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>>,
+    ack_peer_birth: std::cell::RefCell<Option<ack_peer::OriginalAckPeerBirth>>,
+    ack_birth_attempted: bool,
+    ack_peer_association: std::cell::RefCell<Option<ack_peer::OriginalAckPeerAssociation>>,
+    ack_codec_metadata_extent: Option<crucible_node_provider::client::CanonicalAckCodecMetadataExtent>,
+    native_ack_codec_metadata_extent: Option<crucible_node_provider::client::CanonicalAckCodecMetadataExtent>,
+    ack_birth_input_banks: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 impl PacketCompleteSemanticSource {
@@ -90,6 +108,13 @@ impl PacketCompleteSemanticSource {
             capture_banks: std::cell::RefCell::new(None),
             preconstruction: std::cell::RefCell::new(None),
             effect_receiver: None,
+            ack_emitter_selection: None,
+            ack_peer_birth: std::cell::RefCell::new(None),
+            ack_birth_attempted: false,
+            ack_peer_association: std::cell::RefCell::new(None),
+            ack_codec_metadata_extent: None,
+            native_ack_codec_metadata_extent: None,
+            ack_birth_input_banks: None,
         })
     }
 
@@ -117,6 +142,13 @@ impl PacketCompleteSemanticSource {
             capture_banks: std::cell::RefCell::new(None),
             preconstruction: std::cell::RefCell::new(None),
             effect_receiver: None,
+            ack_emitter_selection: None,
+            ack_peer_birth: std::cell::RefCell::new(None),
+            ack_birth_attempted: false,
+            ack_peer_association: std::cell::RefCell::new(None),
+            ack_codec_metadata_extent: None,
+            native_ack_codec_metadata_extent: None,
+            ack_birth_input_banks: None,
         })
     }
 
@@ -817,6 +849,81 @@ impl CnpSemanticSource for PacketCompleteSemanticSource {
 enum CompletePacketOriginal {
     Producer(Box<PacketSemanticSource>),
     Reactive(Box<PacketConnectedSemanticSource>),
+}
+
+impl PacketCompleteSemanticSource {
+    /// Binds expected confirmation data before native association and bank selection.
+    ///
+    /// This does not install a native/SDK mechanism. A selected source later
+    /// authenticates the actual same-child receipt, installed codec and negotiated
+    /// feature in its original realization scope. None preserves the old route.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, prior bank/native association, repeated binding or
+    /// a selected schema absent from the exact source declaration.
+    pub fn bind_original_confirmation_selection(
+        &mut self,
+        selected: Option<
+            crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+    ) -> Result<(), OperationFailure> {
+        self.ensure_origin()?;
+        if self.capture_banks.get_mut().is_some() {
+            return Err(refused(
+                "confirmation selection follows source bank reservation",
+            ));
+        }
+        if selected.is_some() {
+            let schema = crucible_node_provider::reference_packet::service::confirmation::native_after_confirmation_schema().map_err(unknown)?;
+            if !self.installation().binding.compatibility.implementation.formats.contains(&schema)
+                || !self.installation().provider.extensions_supported.iter().any(|feature| {
+                    feature.as_str() == crucible_node_provider::reference_packet::service::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE
+                })
+            {
+                return Err(refused("selected confirmation lacks exact source declaration"));
+            }
+        }
+        let slot = match &mut self.original {
+            CompletePacketOriginal::Producer(source) => {
+                if !source.complete_preparation_unbound()? {
+                    return Err(refused("confirmation selection follows native association"));
+                }
+                &mut source.complete_confirmation_selection
+            }
+            CompletePacketOriginal::Reactive(source) => {
+                if !source.complete_preparation_unbound()? {
+                    return Err(refused("confirmation selection follows native association"));
+                }
+                &mut source.complete_confirmation_selection
+            }
+        };
+        if slot.is_some() {
+            return Err(refused("original confirmation selection was already bound"));
+        }
+        *slot = Some(selected);
+        Ok(())
+    }
+
+    /// Returns expected confirmation data retained before sharing the source.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator process or thread. Matching data confers no
+    /// capture, source-ticket or restoration permission.
+    pub fn selected_confirmation_selection(
+        &self,
+    ) -> Result<
+        Option<
+            crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+        OperationFailure,
+    > {
+        self.ensure_origin()?;
+        let selected = match &self.original {
+            CompletePacketOriginal::Producer(source) => source.complete_confirmation_selection,
+            CompletePacketOriginal::Reactive(source) => source.complete_confirmation_selection,
+        };
+        Ok(selected.flatten())
+    }
 }
 
 #[cfg(test)]
