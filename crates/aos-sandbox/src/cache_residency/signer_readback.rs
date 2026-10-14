@@ -20,7 +20,7 @@ use super::protected_owner::{
     CacheResidencyRootReadOnlyPolicyHoldV1, PROTECTED_CACHE_ROOT, SIGNER_READ_ONLY_CACHE_VIEW,
     derive_fixed_signer_cache_policy_hold_and_limits_v1,
 };
-use super::signer_mount::require_signer_mount;
+use crate::signer_mount::require_signer_mount;
 
 /// Reports the two independently replayed Cache views for one signer observation.
 ///

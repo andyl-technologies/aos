@@ -8,7 +8,7 @@ use std::os::fd::OwnedFd;
 
 use rustix::fs::{Mode, OFlags};
 
-use crate::cache_residency::signer_mount::require_signer_mount;
+use crate::signer_mount::require_signer_mount;
 
 use super::{
     CacheOwnerCurrentnessV1, CacheOwnerErrorV1, CacheOwnerLimitsV1, FIXED_CACHE_ROOT, inspect_lock,

@@ -167,6 +167,8 @@ pub mod runtime_execution;
 pub mod runtime_scope;
 pub mod sandbox_spec_state;
 #[cfg(target_os = "linux")]
+mod signer_mount;
+#[cfg(target_os = "linux")]
 mod systemd_property_data;
 
 #[cfg(target_os = "linux")]

@@ -1,8 +1,9 @@
-//! Exact read-only idmapped Cache mount checks for a separate signer UID.
+//! Read-only idmapped mount observations for independently owned signer views.
 //!
-//! The signer sees only the two Cache roots, remapped from Controller UID to
-//! its own UID. The on-disk roots are siblings below a root-owned parent so
-//! the signer can re-resolve each original fixed name without traversing it.
+//! Callers select the source, view, mount parent and protected ancestry. This
+//! module checks Linux mount and inode facts without journal replay, writer
+//! exclusion, role admission or policy authority. The returned witness is an
+//! observation that callers must bind to their own retained custody.
 
 use std::fs;
 use std::io::{self, Read as _};
@@ -12,7 +13,7 @@ use rustix::fs::{AtFlags, CWD, StatVfsMountFlags, StatxAttributes, StatxFlags, s
 
 /// Identifies the mounted inode and its mount across one bounded readback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SignerMountWitness {
+pub struct SignerMountWitness {
     mount_id: u64,
     device: u64,
     inode: u64,
@@ -21,40 +22,42 @@ pub(crate) struct SignerMountWitness {
 
 impl SignerMountWitness {
     /// Returns the exact mounted root inode expected from an opened descriptor.
-    pub(crate) const fn root_identity(self) -> (u64, u64) {
+    pub const fn root_identity(self) -> (u64, u64) {
         (self.device, self.inode)
     }
 
-    /// Returns the original Controller journal owner UID, before the signer-only idmap.
-    pub(crate) const fn source_uid(self) -> u32 {
+    /// Returns the source directory owner UID before the signer-only idmap.
+    pub const fn source_uid(self) -> u32 {
         self.source_uid
     }
 
     /// Rejects a descriptor opened through a transient replacement mount.
-    pub(crate) fn matches_opened_root(self, device: u64, inode: u64) -> bool {
+    pub fn matches_opened_root(self, device: u64, inode: u64) -> bool {
         (device, inode) == self.root_identity()
     }
 }
 
-/// Checks a fixed signer mount and the original Controller-owned root name.
-pub(crate) fn require_signer_mount(
+/// Checks a read-only signer mount and its original source directory name.
+///
+/// Callers supply protected parent names in the order they must be observed.
+/// The witness contains no descriptor, writer exclusion or role authority.
+///
+/// # Errors
+/// Returns the original I/O error for failed observations, or a permission
+/// error for unsafe ownership, modes, mount attributes or mountinfo.
+pub fn require_signer_mount(
     view: &str,
     source: &str,
     signer_uid: u32,
+    view_parent: &str,
+    protected_parents: &[&str],
 ) -> io::Result<SignerMountWitness> {
     let signer_gid = rustix::process::getegid().as_raw();
     if signer_uid == 0 || signer_gid == 0 {
         return Err(invalid_mount());
     }
 
-    for parent in [
-        "/var",
-        "/var/lib",
-        "/var/lib/aos",
-        "/var/lib/aos/sandbox",
-        "/run",
-        "/run/aos",
-    ] {
+    for &parent in protected_parents {
         let metadata = fs::symlink_metadata(parent)?;
         if !metadata.file_type().is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
             return Err(invalid_mount());
@@ -86,7 +89,7 @@ pub(crate) fn require_signer_mount(
     )?;
     let parent = statx(
         CWD,
-        "/run/aos",
+        view_parent,
         AtFlags::SYMLINK_NOFOLLOW,
         StatxFlags::BASIC_STATS | StatxFlags::MNT_ID,
     )?;

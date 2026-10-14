@@ -8,10 +8,10 @@
 use std::path::Path;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
+use aos_sandbox_linux::signer_mount::SignerMountWitness;
 use ed25519_dalek::SigningKey;
 use thiserror::Error;
 
-use crate::cache_residency::signer_mount::{SignerMountWitness, require_signer_mount};
 use crate::hierarchy::protected_journal::replay_project_ancestry_head_v1;
 use crate::journal::{
     Journal, JournalError, ProtectedJournalNamesV1, ReadOnlyProtectedJournal,
@@ -20,6 +20,7 @@ use crate::journal::{
 use crate::journal::{
     replay_source_domain_challenge_v1, replay_source_project_admission_challenge_v1,
 };
+use crate::signer_mount::require_signer_mount;
 use crate::source_domain::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT, source_domain_journal_limits,
 };

@@ -46,8 +46,6 @@ pub mod read_authority;
 pub mod recovery;
 pub mod scrub;
 #[cfg(target_os = "linux")]
-pub(crate) mod signer_mount;
-#[cfg(target_os = "linux")]
 mod signer_readback;
 
 pub use admission::{
