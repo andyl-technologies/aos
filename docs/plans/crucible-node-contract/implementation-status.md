@@ -3808,6 +3808,17 @@ The current module-header wrapping is separately reconciled; tested declarations
 remain byte-identical, without promoting unconsumed kernel or ledger differences.
 The shared identifier-capacity addition uses its separate Source101 cohort.
 
+Five separately compiled frame-bank controls pass with production serialization
+unchanged. Actual streaming emission at the 512-MiB raw limit fits both bounds:
+numeric output is exactly 2,147,483,649 bytes; compact output is 716,352,219 bytes
+under its 716,352,237-byte bound. All 8,192 possible frame descriptors, maximum
+accepted request IDs, chunk/padding boundaries, empty spare storage and partial
+progress also pass. Independent test receipt
+`784cb74ea0e0bdbb0d65ac7ff1917a0cb533bae2bdbeda3a0f2e4b832973af34`
+verifies the two test-only roles and their actual executable. Counting streams
+creates no giant output fixture. These controls prove serializer widths, not
+envelope validity, acknowledgements, ownership or simultaneous native memory.
+
 The capture source must still prove its prospective raw sends and replies fit
 the same banks and retain the codec/blob geometry through the suffix. This
 capacity check does not establish acknowledgement, semantic settlement, full

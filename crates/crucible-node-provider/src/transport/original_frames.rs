@@ -456,3 +456,6 @@ pub use decoded::DecodedOriginalFrameData;
 
 #[cfg(test)]
 mod antecedent_tests;
+
+#[cfg(test)]
+mod after_encoding_bound_tests;
