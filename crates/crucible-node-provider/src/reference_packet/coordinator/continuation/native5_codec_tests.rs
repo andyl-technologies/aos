@@ -18,6 +18,10 @@ struct Supervisor;
 impl ConnectionSupervisor for Supervisor {
     fn quarantine(&self, _: ConnectionIncident) {}
 }
+impl crate::blob::BlobSupervisor for Supervisor {
+    fn quarantine(&self, _: crate::blob::BlobQuarantine) {}
+}
+
 struct Uninstalled;
 impl BodySchemaVerifier for Uninstalled {
     fn verify(
@@ -227,6 +231,15 @@ fn scope_named_with_limits(
 
 #[test]
 fn native5_original_immutable_codec_installs_and_captures_actual_pending_frame() {
+    original_pending_capture_control(false);
+}
+
+#[test]
+fn native5_prepared_suffix_after_capacity_is_readonly_and_retains_same_originals() {
+    original_pending_capture_control(true);
+}
+
+fn original_pending_capture_control(prepared_suffix: bool) {
     let (_handshake, authority, selection, coordinator) = scope(true);
     let (host, native) = UnixStream::pair().unwrap();
     let mut controller = Connection::new(
@@ -259,6 +272,25 @@ fn native5_original_immutable_codec_installs_and_captures_actual_pending_frame()
         .install_native5_native_codec(&mut native_bank, policy)
         .unwrap();
     assert!(host_bank.is_none() && native_bank.is_none());
+    let blob_authority = provider.provider_authority().unwrap().clone();
+    let blob_limits = crate::blob::BlobLimits {
+        reserved_bytes: 65536,
+        content_bytes: 65536,
+        chunk_bytes: 4096,
+        transfers_per_origin: 8,
+        tombstones_per_origin: 8,
+        chunks_per_transfer: 16,
+        operation_pins: 8,
+    };
+    let blobs = crate::blob::BlobReceiver::new(
+        blob_authority.session_id().clone(),
+        blob_authority.incarnation_id().clone(),
+        blob_limits,
+        Rc::new(Supervisor),
+    )
+    .unwrap();
+    provider.bind_native5_blob_receiver(&blobs).unwrap();
+
     controller.authenticate_native5_source_codec().unwrap();
     provider.authenticate_native5_source_codec().unwrap();
     assert!(controller.install_packet_schema().is_err());
@@ -323,6 +355,85 @@ fn native5_original_immutable_codec_installs_and_captures_actual_pending_frame()
 
     let deadline =
         crate::client::ExchangeDeadline::start(std::time::Duration::from_secs(2)).unwrap();
+    let after = ProtocolSnapshotReservation::reserve_complete(4 * 1024 * 1024, 262144, 8).unwrap();
+    let original_bank = provider.original_native5_storage_facts().unwrap();
+    let original_copy = after.original_allocation_facts().unwrap();
+    let admitted = provider
+        .preflight_native5_after_protocol_capacity(&after, &blobs)
+        .unwrap();
+    assert!(admitted.maximum_literal_encoded_bytes >= 4 * 262144);
+    assert!(admitted.maximum_after_encoded_bytes <= admitted.reserved_after_encoded_bytes);
+    assert_eq!(
+        provider.original_native5_storage_facts().unwrap(),
+        original_bank
+    );
+    assert_eq!(after.original_allocation_facts().unwrap(), original_copy);
+    let small = ProtocolSnapshotReservation::reserve_complete(65536, 262144, 8).unwrap();
+    assert!(
+        provider
+            .preflight_native5_after_protocol_capacity(&small, &blobs)
+            .is_err()
+    );
+    assert_eq!(small.original_allocation_facts().unwrap().encoded_length, 0);
+    let foreign_blobs = crate::blob::BlobReceiver::new(
+        blob_authority.session_id().clone(),
+        blob_authority.incarnation_id().clone(),
+        blob_limits,
+        Rc::new(Supervisor),
+    )
+    .unwrap();
+    assert!(
+        provider
+            .preflight_native5_after_protocol_capacity(&after, &foreign_blobs)
+            .is_err()
+    );
+    assert_eq!(
+        provider.original_native5_storage_facts().unwrap(),
+        original_bank
+    );
+    if prepared_suffix {
+        let mut prospective = request.clone();
+        prospective.node_id = Nullable(None);
+        prospective.execution_owner_id = Nullable(None);
+        prospective.capture_owner_id = Nullable(None);
+        prospective.operation_id = Nullable(None);
+        prospective.request_id = Nullable(Some(id("after-preflight-request")));
+        prospective.sequence = U64::new(2);
+        prospective.method = Method::BlobBegin;
+        prospective.body = serde_json::json!({
+            "transfer_id":"after-preflight-transfer",
+            "content": canonical::content_ref(b"abc", "application/octet-stream").unwrap(),
+            "extensions":{},
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let exchange = provider
+            .prepare_exchange(vec![prospective.clone()])
+            .unwrap_or_else(|failure| panic!("{}", failure.error()));
+        let admitted = exchange
+            .preflight_native5_after_protocol_capacity(&after, &blobs)
+            .unwrap();
+        assert!(admitted.maximum_after_encoded_bytes <= admitted.reserved_after_encoded_bytes);
+        assert_eq!(exchange.record().sent(), 0);
+        assert_eq!(exchange.record().originals(), &[prospective]);
+        assert!(
+            exchange
+                .preflight_native5_after_protocol_capacity(&small, &blobs)
+                .is_err()
+        );
+        assert!(
+            exchange
+                .preflight_native5_after_protocol_capacity(&after, &foreign_blobs)
+                .is_err()
+        );
+        assert_eq!(exchange.record().sent(), 0);
+        assert_eq!(after.original_allocation_facts().unwrap(), original_copy);
+        let held = exchange.abort(ProviderError::Frame("preflight fixture containment"));
+        assert_eq!(held.record().sent(), 0);
+        assert_eq!(held.record().originals().len(), 1);
+        return;
+    }
     let mut reserve =
         ProtocolSnapshotReservation::reserve_complete(4 * 1024 * 1024, 262144, 8).unwrap();
     provider

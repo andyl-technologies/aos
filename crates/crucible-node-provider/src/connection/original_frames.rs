@@ -177,6 +177,116 @@ impl<S: ProviderStream> Connection<S> {
         self.retain_frozen_protocol_frames(reservation)
     }
 
+    /// Admits encoding capacity after a finite original Capture suffix without I/O.
+    ///
+    /// The same original codec/blob owner and exact after-profile reservation are
+    /// rechecked. Counting the current body plus the entire selected literal and
+    /// descriptor banks conservatively covers every successfully settled suffix
+    /// within those banks; it never predicts acknowledgements or issues an owner.
+    /// The source separately proves prospective sends and incoming raw extents
+    /// fit the live bank and prevents uncredited blob/codec changes during I/O.
+    ///
+    /// # Errors
+    /// Refuses a nonprovider/copy/fenced actor, foreign or borrowed blob ledger,
+    /// unsupported current cut, used or mismatched reserved after bank, overflow
+    /// or insufficient whole encoding credit. All original state is retained.
+    pub fn preflight_native5_after_protocol_capacity(
+        &self,
+        reservation: &crate::protocol_snapshot::ProtocolSnapshotReservation,
+        blobs: &crate::blob::BlobReceiver,
+    ) -> Result<crate::protocol_snapshot::Native5AfterProtocolCapacityFacts, ProviderError> {
+        self.preflight_native5_after_protocol_capacity_inner(reservation, blobs, None)
+    }
+
+    pub(super) fn preflight_native5_after_protocol_capacity_inner(
+        &self,
+        reservation: &crate::protocol_snapshot::ProtocolSnapshotReservation,
+        blobs: &crate::blob::BlobReceiver,
+        prepared: Option<&[Envelope]>,
+    ) -> Result<crate::protocol_snapshot::Native5AfterProtocolCapacityFacts, ProviderError> {
+        use crate::protocol_snapshot::{Native5AfterProtocolCapacityFacts, ProtocolCaptureCut};
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        if self.role != EndpointRole::Provider || !reservation.unused_for_after_preflight() {
+            return Err(ProviderError::Correlation(
+                "after preflight requires original provider and unused bank",
+            ));
+        }
+        match prepared {
+            None => self
+                .guard
+                .protocol_cut(ProtocolCaptureCut::NativeIncomingCapture)?,
+            Some(originals) => self.guard.authenticate_prepared_capture_suffix(originals)?,
+        }
+        if self
+            .native5_blobs
+            .as_ref()
+            .is_none_or(|owner| !blobs.same_protocol_owner(owner))
+        {
+            return Err(ProviderError::Correlation(
+                "after preflight requires same original blob owner",
+            ));
+        }
+        let original_blobs = blobs.original_protocol_view(&self.authority)?;
+        reservation.validate_source_encoding(
+            self.native5_codec.as_ref(),
+            ProtocolCaptureCut::HostSettled,
+            false,
+        )?;
+        let current = self
+            .original_frames
+            .as_ref()
+            .ok_or(ProviderError::Correlation("after original bank absent"))?
+            .try_borrow()
+            .map_err(|_| ProviderError::Correlation("after original bank mutably borrowed"))?;
+        reservation.validate_literal_reservation(&current)?;
+        let selected = reservation
+            .original_allocation_facts()?
+            .maximum_encoded_bytes;
+        let compact = reservation.uses_compact_encoding();
+        let current_encoded_bytes = if compact {
+            super::serialized_credit(
+                &(
+                    "source-private.native-cnp/7",
+                    self.original_native5_capture_profile()?,
+                    self.protocol_view_with_encoding(true),
+                    original_blobs.with_compact_encoding(true),
+                ),
+                selected,
+            )?
+        } else {
+            super::serialized_credit(
+                &(
+                    "source-private.native-cnp/5",
+                    self.protocol_view(),
+                    original_blobs,
+                ),
+                selected,
+            )?
+        };
+        let (maximum_literal_encoded_bytes, maximum_descriptor_encoded_bytes) =
+            current.maximum_encoding_growth(compact)?;
+        // Four bank counters and two sequence counters cannot grow by more than
+        // 20 decimal bytes each on this source's supported 64-bit target.
+        let maximum_counter_growth_bytes = 6 * 20;
+        let maximum_after_encoded_bytes = current_encoded_bytes
+            .checked_add(maximum_literal_encoded_bytes)
+            .and_then(|n| n.checked_add(maximum_descriptor_encoded_bytes))
+            .and_then(|n| n.checked_add(maximum_counter_growth_bytes))
+            .filter(|n| *n <= selected)
+            .ok_or(ProviderError::ResourceExhausted(
+                "complete after protocol encoding credit",
+            ))?;
+        Ok(Native5AfterProtocolCapacityFacts {
+            current_encoded_bytes,
+            maximum_literal_encoded_bytes,
+            maximum_descriptor_encoded_bytes,
+            maximum_counter_growth_bytes,
+            maximum_after_encoded_bytes,
+            reserved_after_encoded_bytes: selected,
+        })
+    }
+
     /// Takes a completed capture issued by this exact endpoint and registration.
     ///
     /// # Errors

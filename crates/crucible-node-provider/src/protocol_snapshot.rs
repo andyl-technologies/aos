@@ -127,6 +127,26 @@ pub struct OriginalNative5CaptureAntecedentFacts {
     pub current: OriginalProtocolStorageFacts,
 }
 
+/// Reports a conservative after-prefix encoding admission for one original bank.
+///
+/// These numbers prove only capacity for admitted data, not actual future bytes,
+/// acknowledgement, a completed snapshot, semantic settlement or installation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Native5AfterProtocolCapacityFacts {
+    /// Counts the current complete borrowed endpoint/blob encoding.
+    pub current_encoded_bytes: usize,
+    /// Bounds encoding of the entire selected original raw byte bank.
+    pub maximum_literal_encoded_bytes: usize,
+    /// Bounds all nonrenewing original frame descriptors at their selected limit.
+    pub maximum_descriptor_encoded_bytes: usize,
+    /// Credits maximum decimal growth of current numeric counters.
+    pub maximum_counter_growth_bytes: usize,
+    /// Bounds the complete encoded body after a settled suffix.
+    pub maximum_after_encoded_bytes: usize,
+    /// States the actual same-profile reserved after-body ceiling.
+    pub reserved_after_encoded_bytes: usize,
+}
+
 pub(crate) struct ProtocolCaptureOwner {
     pid: u32,
     thread: std::thread::ThreadId,
@@ -229,6 +249,10 @@ impl ProtocolSnapshotReservation {
         let mut original = Self::reserve_complete(maximum, history_bytes, lifetime_frames)?;
         original.compact = true;
         Ok(original)
+    }
+
+    pub(crate) fn unused_for_after_preflight(&self) -> bool {
+        self.bytes.is_empty() && self.issuer.is_none() && self.codec.is_none() && !self.complete
     }
 
     pub(crate) fn uses_compact_encoding(&self) -> bool {

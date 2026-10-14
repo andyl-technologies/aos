@@ -246,6 +246,56 @@ impl OriginalFrameReservation {
         self.slots.iter().all(|slot| slot.complete)
     }
 
+    pub(crate) fn maximum_encoding_growth(
+        &self,
+        compact: bool,
+    ) -> Result<(usize, usize), ProviderError> {
+        let exhausted = || ProviderError::ResourceExhausted("after protocol encoding bound");
+        let bytes = if compact {
+            self.maximum_bytes
+                .div_ceil(3)
+                .checked_mul(4)
+                .and_then(|n| {
+                    self.maximum_bytes
+                        .div_ceil(3072)
+                        .checked_mul(3)
+                        .and_then(|overhead| n.checked_add(overhead))
+                })
+                .and_then(|n| n.checked_add(64))
+                .ok_or_else(exhausted)?
+        } else {
+            self.maximum_bytes
+                .checked_mul(4)
+                .and_then(|n| n.checked_add(1))
+                .ok_or_else(exhausted)?
+        };
+        // This is the exact existing descriptor serializer with maximal integer
+        // tokens and byte-array ID expansion, not a modeled future descriptor.
+        let maximum_request_id = [255_u8; 128];
+        let descriptor = crate::connection::serialized_credit(
+            &(
+                "outgoing",
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+                false,
+                Some(maximum_request_id.as_slice()),
+            ),
+            1024,
+        )?;
+        let descriptors = self
+            .maximum_frames
+            .checked_mul(2)
+            .and_then(|n| {
+                descriptor
+                    .checked_add(1)
+                    .and_then(|width| n.checked_mul(width))
+            })
+            .and_then(|n| n.checked_add(2))
+            .ok_or_else(exhausted)?;
+        Ok((bytes, descriptors))
+    }
+
     pub(crate) fn protocol_view(&self) -> impl serde::Serialize + '_ {
         self.protocol_view_with_encoding(false)
     }

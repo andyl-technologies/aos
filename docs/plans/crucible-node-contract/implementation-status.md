@@ -3791,6 +3791,28 @@ retains the exact source, executable and actual spare-capacity/wire round trip.
 The larger private Core accounting changes and native memory admission remain
 separate; this observation API does not grant allocation or capture authority.
 
+## Original-bank after-capture encoding admission
+
+The provider can check complete after-capture encoding capacity before publishing
+its prepared suffix. It authenticates the original endpoint, codec, blob ledger,
+reserved after buffer and exact pending requests. The bound includes the current
+complete encoding, the entire selected raw frame bank, both directions of frame
+descriptors and counter growth. Checking capacity does not send frames or issue
+a completed snapshot. Insufficient or foreign reservations retain all originals.
+
+Source89 passes all 423 enabled provider units and strict all-target/all-feature
+compilation, with 13 units ignored. The new prepared-suffix control verifies zero
+publication and unchanged originals on success and refusal. Independent receipt
+`fa34cd0a636393beb3b6eeff80014e1d6dde1cc3b3ac7125d766ca7a422e861f` verifies the six production/test roles and actual results.
+The current module-header wrapping is separately reconciled; tested declarations
+remain byte-identical, without promoting unconsumed kernel or ledger differences.
+The shared identifier-capacity addition uses its separate Source101 cohort.
+
+The capture source must still prove its prospective raw sends and replies fit
+the same banks and retain the codec/blob geometry through the suffix. This
+capacity check does not establish acknowledgement, semantic settlement, full
+memory admission, native Capture or fresh restoration.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

@@ -249,6 +249,54 @@ impl<S: ProviderStream> PreparedExchange<S> {
         &self.record
     }
 
+    /// Admits after-body capacity while retaining this same unpublished suffix.
+    ///
+    /// Exact prepared original requests must be the connection's only pending
+    /// outgoing correlations beside its original incoming Capture. Counting
+    /// neither sends a frame nor converts those correlations into settled state.
+    /// The source separately proves its remaining plan and raw ACK bank budget.
+    ///
+    /// # Errors
+    /// Refuses an unprepared/failed or published capsule, foreign actor/archive,
+    /// unrelated correlations, mismatched after reservation or encoding credit.
+    pub fn preflight_native5_after_protocol_capacity(
+        &self,
+        reservation: &crate::protocol_snapshot::ProtocolSnapshotReservation,
+        blobs: &crate::blob::BlobReceiver,
+    ) -> Result<crate::protocol_snapshot::Native5AfterProtocolCapacityFacts, ProviderError> {
+        self.connection.protocol_owner.ensure_current()?;
+        if self.phase != Phase::Prepared || self.record.sent != 0 {
+            return Err(ProviderError::Correlation(
+                "after preflight requires unpublished prepared suffix",
+            ));
+        }
+        let (owner, bank) =
+            self.record
+                .original_actor
+                .as_ref()
+                .ok_or(ProviderError::Correlation(
+                    "after prepared suffix has no original actor",
+                ))?;
+        owner.ensure_current()?;
+        if !Rc::ptr_eq(owner, &self.connection.protocol_owner)
+            || self
+                .connection
+                .original_frames
+                .as_ref()
+                .is_none_or(|current| !Rc::ptr_eq(bank, current))
+        {
+            return Err(ProviderError::Correlation(
+                "after prepared suffix original actor changed",
+            ));
+        }
+        self.connection
+            .preflight_native5_after_protocol_capacity_inner(
+                reservation,
+                blobs,
+                Some(&self.record.originals),
+            )
+    }
+
     pub(crate) fn prepare_in_place(&mut self) -> Result<(), ProviderError> {
         if self.phase != Phase::Unprepared {
             return Err(ProviderError::Conflict(

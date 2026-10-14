@@ -61,6 +61,36 @@ impl CorrelationGuard {
         }
     }
 
+    pub(crate) fn authenticate_prepared_capture_suffix(
+        &self,
+        originals: &[Envelope],
+    ) -> Result<(), ProviderError> {
+        let mut requests = originals
+            .iter()
+            .filter(|frame| frame.message == MessageKind::Request);
+        if self.failed
+            || !self.writing_responses.is_empty()
+            || self.received_requests.len() != 1
+            || self.received_requests.values().any(|frame| {
+                frame.method != Method::Begin
+                    || frame.body.get("kind").and_then(serde_json::Value::as_str) != Some("capture")
+            })
+            || self.pending.len() != requests.clone().count()
+            || requests.any(|frame| {
+                frame
+                    .request_id
+                    .0
+                    .as_ref()
+                    .is_none_or(|id| self.pending.get(id) != Some(frame))
+            })
+        {
+            return Err(ProviderError::Correlation(
+                "after preflight has unrelated prepared correlation",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn protocol_view(&self) -> impl serde::Serialize + '_ {
         (
             "source-private.correlations/6",
