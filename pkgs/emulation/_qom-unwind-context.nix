@@ -91,11 +91,17 @@
     normalizeProbe = ./normalize-qom-unwind-file-probes.py;
     probeCatalog = ./qom-unwind-file-probes.json;
   };
+  # Path interpolation imports source files into the sandbox input closure.
+  # toString alone would retain an inaccessible workspace path.
+  sourceReference = value:
+    if builtins.isPath value
+    then "${value}"
+    else toString value;
   markers = builtins.attrNames expectedMarkers;
   replacement = marker: let
     name = builtins.substring 1 (builtins.stringLength marker - 2) marker;
   in
-    toString substitutions.${name};
+    sourceReference substitutions.${name};
   validTemplate =
     builtins.all (
       marker:
@@ -170,7 +176,7 @@ in
         {
           name = "install";
           script = ''
-            for recipe in ${builtins.concatStringsSep " " (map toString retainedRecipes)}; do
+            for recipe in ${builtins.concatStringsSep " " (map sourceReference retainedRecipes)}; do
               cp -a "$recipe" "$source/recipe/$(basename "$recipe")"
             done
             cp "$qomConfigureScriptPath" "$source/recipe/configure-command.bash"

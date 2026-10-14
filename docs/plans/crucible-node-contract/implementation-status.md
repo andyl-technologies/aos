@@ -4605,9 +4605,19 @@ source tuple passes 14 checks. The first context build fails in its predecessor
 the executable link. Selecting libtool's static executable link mode alone
 still fails: the actual configure output reports that upstream disables static libraries by default.
 The follow-up enables static libmagic alongside its shared library and retains
-the executable link policy, all features and full upstream checks. Both failed
-builds remain recorded. Independent source review passes; the corrected context,
-provider and emulator realization remains pending.
+the executable link policy, all features and full upstream checks. Its actual
+helper build passes the complete upstream check/install/fixup phases. The
+registered output contains both libraries; ELF inspection confirms that the
+executable has neither a dynamic interpreter nor a dynamic segment. The two
+failed predecessor builds remain recorded.
+
+The context then fails because Python receives a workspace source path that
+is absent inside the Nix sandbox. The instantiated derivation confirms that
+plain `toString` omitted source-path imports. A path-only interpolation helper
+now retains those inputs and the recipe files in the store closure; derivation
+contexts, numeric substitutions, flags and features keep their existing handling.
+Independent source review passes. The failed context remains preserved; its
+corrected realization, provider and emulator are still pending.
 
 ## Full gem5 production build and ownership check
 
