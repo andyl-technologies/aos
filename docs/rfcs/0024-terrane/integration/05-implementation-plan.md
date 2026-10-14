@@ -472,6 +472,16 @@ bound six-case queue is authorized only after that review; its four new
 collector cases and two overlay renewals retain default 120-second limits,
 zero retries and unset diagnostic flags. Runtime outcomes, owning gates and
 the complete current trunk floor remain pending; no task advances.
+The normal queue completes with four collector passes and two overlay timeouts.
+The new cases verify sharing without fresh-store reuse, independent membership
+and genuine restore checks, changed payload refusal at native handoff, and
+Session/Original fencing. Both overlays still exceed their original 120-second
+limits; no assertion is weakened. Independent review verifies all 174 sealed
+payloads, unchanged source/input/executable bindings and 1,014 archived entries;
+all six scratch directories remain preserved. Only those two timed-out cases
+enter separate diagnostics using the quieter value of the existing trace flag.
+Those diagnostics preserve the original profile, limits and retries and cannot
+qualify the normal failures. Owning gates and the T1 exit remain unqualified.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
