@@ -1914,6 +1914,8 @@ fn selectable_reply_is_not_published_before_qemu_confirms_pause() -> Result<(), 
     Ok(())
 }
 
+#[path = "node_tests/campaign_marker_resume.rs"]
+mod campaign_marker_resume;
 #[path = "node_tests/exact_lifecycle_tests.rs"]
 mod exact_lifecycle;
 #[path = "node_tests/fault_event_budget.rs"]

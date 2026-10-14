@@ -540,7 +540,8 @@ impl QemuNodeSet {
     /// # Errors
     ///
     /// Returns [`BackendError`] when the node is absent, the marker differs,
-    /// or its physical retired count changed while parked.
+    /// its physical retired count changed while parked, or QEMU cannot confirm
+    /// the native stop that its next quantum must resume.
     pub fn release_parked_campaign_marker(
         &mut self,
         node: &NodeId,
@@ -559,6 +560,12 @@ impl QemuNodeSet {
                 ),
             });
         }
+        // The plugin's native VMStop outlives the scheduler park: the node
+        // must resume QEMU when its next quantum publishes a ceiling, or that
+        // quantum would wait on a VM that cannot execute.
+        self.node_mut(node)?
+            .release_campaign_marker_stop()
+            .map_err(BackendError::from)?;
         self.parked_campaign_markers.remove(node);
         Ok(())
     }

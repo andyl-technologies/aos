@@ -421,6 +421,8 @@ impl QemuHotForkSchedulerNodeContinuation {
             network_output_resume_pending: false,
             console_output_resume_pending: false,
             hot_fork_resume_pending: true,
+            // The fork's own resume releases the inherited template stop.
+            campaign_marker_resume_pending: false,
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: state.next_network_output_sequence,

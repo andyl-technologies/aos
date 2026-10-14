@@ -551,6 +551,8 @@ pub struct QemuNode {
     console_output_resume_pending: bool,
     // A fork child inherits the stopped template until its first ceiling is published.
     hot_fork_resume_pending: bool,
+    // A released campaign marker park keeps its native VMStop until the next ceiling.
+    campaign_marker_resume_pending: bool,
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
     pending_priming_observations: Vec<ObservableEvent>,
     next_network_output_sequence: u64,
@@ -819,6 +821,7 @@ impl QemuNode {
             network_output_resume_pending: false,
             console_output_resume_pending: false,
             hot_fork_resume_pending: false,
+            campaign_marker_resume_pending: false,
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: 0,
@@ -1739,6 +1742,37 @@ impl QemuNode {
         Ok(())
     }
 
+    /// Retains a released campaign marker's native VMStop for the next quantum.
+    ///
+    /// The plugin stopped QEMU at the marker's exact boundary. Releasing the
+    /// park only authorizes execution: QEMU stays stopped until the next
+    /// bounded step publishes its scheduler ceiling, whose start hook then
+    /// resumes it, exactly as a selectable reply resumes its stopped guest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when QEMU cannot confirm the native paused
+    /// state or a campaign marker resume is already pending.
+    pub fn release_campaign_marker_stop(&mut self) -> Result<(), QemuNodeError> {
+        if self.campaign_marker_resume_pending {
+            return Err(QemuNodeError::from_channel(
+                QemuNodeChannelPlane::QmpMachineControl,
+                QemuNodeChannelError::new(
+                    "release campaign marker stop",
+                    "one campaign marker resume is already pending",
+                ),
+            ));
+        }
+        self.channels
+            .qmp_machine_control
+            .stop_for_checkpoint()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
+            })?;
+        self.campaign_marker_resume_pending = true;
+        Ok(())
+    }
+
     /// Returns a copy of the exact host-mirrored selectable catalog plan.
     #[must_use]
     pub fn selectable_catalog_plan(
@@ -1822,7 +1856,8 @@ impl QemuNode {
         let resume_stopped_boundary = self.selectable_resume_pending
             || self.network_output_resume_pending
             || self.console_output_resume_pending
-            || self.hot_fork_resume_pending;
+            || self.hot_fork_resume_pending
+            || self.campaign_marker_resume_pending;
         let mut target = QemuNodeAsyncStepTarget {
             child: &mut self.child,
             channels: &mut self.channels,
@@ -1881,6 +1916,7 @@ impl QemuNode {
             self.selectable_resume_pending = false;
             self.network_output_resume_pending = false;
             self.hot_fork_resume_pending = false;
+            self.campaign_marker_resume_pending = false;
         }
         Ok(report)
     }
@@ -1901,7 +1937,8 @@ impl QemuNode {
         let resume_stopped_boundary = self.selectable_resume_pending
             || self.network_output_resume_pending
             || self.console_output_resume_pending
-            || self.hot_fork_resume_pending;
+            || self.hot_fork_resume_pending
+            || self.campaign_marker_resume_pending;
         let mut resume_acknowledged = false;
         let step = if resume_stopped_boundary {
             run_bounded_qemu_node_step_with_start_hook(
@@ -1936,6 +1973,7 @@ impl QemuNode {
             self.selectable_resume_pending = false;
             self.network_output_resume_pending = false;
             self.hot_fork_resume_pending = false;
+            self.campaign_marker_resume_pending = false;
         }
         Ok(report)
     }
@@ -2369,6 +2407,7 @@ impl QemuNode {
         self.network_output_resume_pending = false;
         self.console_output_resume_pending = false;
         self.hot_fork_resume_pending = false;
+        self.campaign_marker_resume_pending = false;
         Ok(())
     }
 
