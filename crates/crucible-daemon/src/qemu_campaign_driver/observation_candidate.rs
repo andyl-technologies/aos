@@ -394,3 +394,19 @@ fn build_observation_candidate_inner(
     );
     Ok(AttemptExecutionProduct::prepared_semantic(result))
 }
+
+fn coverage_projection(
+    event_log: &[SchedulerEventLogEntry],
+) -> Result<CoverageProjection, QemuFreshModeledDriverError> {
+    let projection = crucible::event_log_coverage_projection(event_log);
+    let identities = projection
+        .entries()
+        .iter()
+        .map(|entry| coverage_identity(&entry.observation))
+        .collect();
+    CoverageProjection::new(identities, BTreeSet::new()).map_err(Into::into)
+}
+
+fn coverage_identity(observation: &EventLogCoverageObservation) -> CampaignHash {
+    CampaignHash::from_bytes(observation.content_hash().bytes)
+}
