@@ -272,7 +272,6 @@ fn own_reference_capacities(
     })
 }
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
