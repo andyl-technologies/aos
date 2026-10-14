@@ -1153,6 +1153,33 @@ fn exact_checkpoint_root_is_immutable_across_contract_generations() -> Result<()
 }
 
 #[test]
+fn concurrent_node_contracts_receive_distinct_cancellation_descriptions()
+-> Result<(), Box<dyn Error>> {
+    let eventfd_id = |contract: &QemuChildProcessContract| {
+        crate::node::eventfd_id(contract.cancellation_event.as_raw_fd())
+    };
+    let (_, cgroup) = pipe_pair()?;
+    let attempt = QemuChildProcessContract::for_test(
+        cgroup,
+        event_fd_for_test()?,
+        current_file_size_limit()?,
+    )
+    .with_cancellation_fanout(Arc::default());
+
+    let generation = attempt.try_clone_for_attempt_generation()?;
+    let first_node = attempt.try_clone_for_concurrent_node()?;
+    let second_node = attempt.try_clone_for_concurrent_node()?;
+
+    // Generation clones keep the attempt eventfd, which exact-restore
+    // cancellation identity checks rely on; concurrent nodes do not share it.
+    assert_eq!(eventfd_id(&generation)?, eventfd_id(&attempt)?);
+    assert_ne!(eventfd_id(&first_node)?, eventfd_id(&attempt)?);
+    assert_ne!(eventfd_id(&first_node)?, eventfd_id(&second_node)?);
+    validate_cancellation_eventfd(first_node.cancellation_event.as_raw_fd())?;
+    Ok(())
+}
+
+#[test]
 fn guarded_credentials_reject_root_and_supervisor_identity() -> Result<(), Box<dyn Error>> {
     let supervisor = current_supervisor_credentials()?;
     let distinct_user_id = distinct_nonzero_id(&supervisor.user_ids);

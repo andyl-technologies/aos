@@ -79,6 +79,9 @@ pub struct QemuChildProcessContract {
     cgroup_directory: Option<OwnedFd>,
     cgroup_procs: OwnedFd,
     cancellation_event: OwnedFd,
+    /// Attempt-wide sticky cancellation that mints per-node eventfds; absent
+    /// only for unvalidated test contracts.
+    cancellation_fanout: Option<Arc<crate::cancellation_fanout::QemuCancellationFanout>>,
     maximum_vcpus: u32,
     maximum_resident_bytes: u64,
     maximum_writable_bytes: u64,
@@ -276,6 +279,7 @@ impl QemuChildProcessContract {
             cgroup_directory,
             cgroup_procs,
             cancellation_event,
+            cancellation_fanout: self.cancellation_fanout.clone(),
             maximum_vcpus: self.maximum_vcpus,
             maximum_resident_bytes: self.maximum_resident_bytes,
             maximum_writable_bytes: self.maximum_writable_bytes,
@@ -283,6 +287,31 @@ impl QemuChildProcessContract {
             attempt_binding: Arc::clone(&self.attempt_binding),
             exact_checkpoint_root: self.exact_checkpoint_root,
         })
+    }
+
+    /// Duplicates this contract for one concurrently launched node.
+    ///
+    /// The duplicate matches [`Self::try_clone_for_attempt_generation`] except
+    /// that it carries its own cancellation eventfd, which the attempt's sticky
+    /// cancellation also signals. QEMU clears `O_NONBLOCK` on every descriptor
+    /// it receives over `SCM_RIGHTS`, and that flag belongs to the open file
+    /// description, so concurrent nodes must not hand one description to
+    /// several QEMU processes that each validate it. Unvalidated test
+    /// contracts have no attempt cancellation and keep a shared duplicate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError::Io`] when a descriptor cannot be duplicated
+    /// or the attempt cannot mint another node eventfd.
+    pub fn try_clone_for_concurrent_node(&self) -> Result<Self, QemuSpawnError> {
+        let mut contract = self.try_clone_for_attempt_generation()?;
+        if let Some(fanout) = &self.cancellation_fanout {
+            contract.cancellation_event = fanout.mint().map_err(|source| QemuSpawnError::Io {
+                operation: "mint concurrent node cancellation eventfd",
+                source,
+            })?;
+        }
+        Ok(contract)
     }
 
     /// Derives a contract for a newly authenticated repository checkpoint.
@@ -334,6 +363,7 @@ impl QemuChildProcessContract {
             cgroup_directory: Some(cgroup_directory),
             cgroup_procs,
             cancellation_event,
+            cancellation_fanout: None,
             maximum_vcpus: cgroup_limits.maximum_vcpus(),
             maximum_resident_bytes: cgroup_limits.maximum_resident_bytes(),
             maximum_writable_bytes,
@@ -341,6 +371,19 @@ impl QemuChildProcessContract {
             attempt_binding: Arc::new(AttemptResourceBinding),
             exact_checkpoint_root,
         })
+    }
+
+    /// Binds the attempt cancellation that mints per-node eventfds.
+    ///
+    /// `cancellation_fanout` must belong to the same attempt cgroup as this
+    /// contract's cancellation eventfd.
+    #[must_use]
+    pub(crate) fn with_cancellation_fanout(
+        mut self,
+        cancellation_fanout: Arc<crate::cancellation_fanout::QemuCancellationFanout>,
+    ) -> Self {
+        self.cancellation_fanout = Some(cancellation_fanout);
+        self
     }
 
     pub(crate) fn require_exact_checkpoint_root(
@@ -426,6 +469,7 @@ impl QemuChildProcessContract {
             cgroup_directory: None,
             cgroup_procs,
             cancellation_event,
+            cancellation_fanout: None,
             maximum_vcpus,
             maximum_resident_bytes,
             maximum_writable_bytes,
@@ -455,6 +499,7 @@ impl QemuChildProcessContract {
             cgroup_directory: Some(cgroup_directory),
             cgroup_procs,
             cancellation_event,
+            cancellation_fanout: None,
             maximum_vcpus,
             maximum_resident_bytes,
             maximum_writable_bytes,

@@ -39,6 +39,9 @@ mod artifact_identity;
 mod async_driver;
 #[cfg(target_os = "linux")]
 mod block_realization_gate;
+// Per-node cancellation eventfds shared by the cgroup authority and contracts.
+#[cfg(target_os = "linux")]
+mod cancellation_fanout;
 mod checkpoint;
 mod coverage;
 mod crash_detection;
