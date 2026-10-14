@@ -537,8 +537,19 @@ carriers. Existing current-authority checks and paired generic dispatch remain
 unchanged. Full coordinator and independent source reviews cover production
 checkpoint `26d7f80f3d75`, its presentation correction `ee1f0c086f07`, and seven
 genuine native witnesses through `c4c8fc3a63b2`. These cases are registered in
-the owning index gate and a focused native integration check. Compilation,
-runtime, final-source qualification and task acceptance remain pending.
+the owning index gate and a focused native integration check. The first native
+Clippy run rejects two private accesses; narrow internal accessors preserve the
+original checks and order. Corrected candidate `cf1cfea03a5a` (tree `6a103b022777`)
+passes all thirteen compiler phases and retains all 1,140 previous identities
+plus exactly the seven new cases, with none ignored. Its normal 33-case run
+passes all seven new cases and 24 existing controls, including indexed overlay
+replay in 106.792 seconds. The direct physical fault matrix and ancestry
+collection still time out under their original 120-second limits. Coordinator
+review verifies the sealed results and preserved scratch. A separate test-only
+repair retains all twelve positive and twelve negative physical walks while
+publishing one fixture per mode and running destructive corruption last; its
+runtime remains pending. Ancestry diagnosis, owning gates, final-source
+qualification and task acceptance remain required.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
