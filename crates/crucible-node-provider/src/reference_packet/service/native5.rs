@@ -66,13 +66,14 @@ impl PacketNative5StorageLimits {
                 "native5 selected storage bounds",
             ));
         }
-        // Snapshot and anchor each have Begin/Finish plus every real chunk;
+        // Snapshot, control and anchor each require Begin/Finish and every chunk;
         // Capture has one response. Existing lifetime history is charged by the
         // source's original bank, not discarded to make room for this prefix.
         let prefix = snapshot
             .div_ceil(chunk)
-            .checked_add(8192_u64.div_ceil(chunk))
-            .and_then(|count| count.checked_add(5))
+            .checked_add(self.control_snapshot_bytes.get().div_ceil(chunk))
+            .and_then(|count| count.checked_add(8192_u64.div_ceil(chunk)))
+            .and_then(|count| count.checked_add(7))
             .ok_or(ProviderError::ResourceExhausted(
                 "native5 selected prefix count",
             ))?;
@@ -200,3 +201,7 @@ impl PacketNative5SourceLaunch {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "native5/storage_geometry_tests.rs"]
+mod storage_geometry_tests;

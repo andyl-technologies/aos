@@ -3543,6 +3543,26 @@ The retained actor pair and serialized alias metadata still require whole-factor
 accounting. Transport correspondence grants no successful Capture, durable ACK,
 source settlement or fresh installation permission.
 
+## Three-object capture frame capacity
+
+The selected native-five storage validator now includes the separately
+transferred control-state object. Its complete capture suffix reserves chunks
+for snapshot, control and anchor, their three Begin/Finish pairs and the terminal
+response. The former two-object count could admit a bank that necessarily ran
+out of descriptors during capture.
+
+Two boundary controls pass: the formerly admitted 23 slots and insufficient 25
+slots refuse while the complete 26-slot case passes; the hard 4096-slot boundary
+passes exactly and refuses one additional control chunk. Strict all-target and
+all-feature checks pass in the retained 9573-file cohort. Independent receipt
+`c03546a11edbd56f6ee27a6522fe4b6903860b29e9879a34f0d81f926ca2068a`
+verifies the two current-source preimages, executable and dependency evidence.
+Legacy editions two and four are unchanged.
+
+This descriptor minimum excludes prior lifetime history. Frame-byte capacity,
+window credit and the complete four-owner allocation peak remain separate
+checks before any full capture admission or Arm permission.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
