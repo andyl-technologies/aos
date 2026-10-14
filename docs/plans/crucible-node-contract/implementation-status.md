@@ -4589,7 +4589,7 @@ existing bootstrap restriction; they are not positive cross-build results.
 These evaluations used the preceding QEMU source and do not qualify a newer
 production realization.
 
-The matching signed atomic QEMU source now selects commit
+The stopped-current source initially selects signed commit
 `0351e3ad49c67c88cb1a14669a48e0d9d94a22be`, with its complete patch, bundle,
 descriptor and updated per-file license inventory. Its additional stopped-current
 getter observes the same parked original RR root, command, input epoch and

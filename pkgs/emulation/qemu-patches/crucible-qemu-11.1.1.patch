@@ -1,6 +1,6 @@
-From 0351e3ad49c67c88cb1a14669a48e0d9d94a22be Mon Sep 17 00:00:00 2001
+From 02bdf2de185682e4d211dff441527fcb4e7f7383 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 14 Oct 2026 17:35:00 +0000
+Date: Wed, 14 Oct 2026 20:53:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -734,6 +734,17 @@ The initial supported observation is single-CPU with no public input/output
 ports. Preserve the existing WholeRequest and clock behavior. Seventeen
 extracted C controls pass; configured QEMU execution, plugin consumption,
 complete native preservation and common readiness remain unqualified.
+
+
+Provide the isolated ptimer policy fixture with the exact typed no-journal
+backing result. Resolve the ordinary oslib reference locally so its test
+timer and bottom-half implementations do not collide with the unrelated
+real endpoint/main-loop dependency closure. Preserve production code,
+clock behavior, test selection and the existing file license.
+
+The full previous package build failed at this unit link. Source review
+confirms the production no-journal NULL branch and unchanged public
+prototype; fresh native package and unit qualification remain required.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -218479,13 +218490,14 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8abc12d2d6ceac649d99065e05911e3d
 +  )
 +endif
 diff --git a/tests/unit/ptimer-test-stubs.c b/tests/unit/ptimer-test-stubs.c
-index da46dda32d2e69f12a4ce531a91806ee07b027d0..1c67f60bf40cc00ee3b07c38a32029ca7cce4009 100644
+index da46dda32d2e69f12a4ce531a91806ee07b027d0..8a0a713ba9f811779c53430ce958fe081b1f5713 100644
 --- a/tests/unit/ptimer-test-stubs.c
 +++ b/tests/unit/ptimer-test-stubs.c
-@@ -10,16 +10,20 @@
+@@ -10,16 +10,21 @@
  
  #include "qemu/osdep.h"
  #include "qemu/main-loop.h"
++#include "qemu/crucible-endpoint-roots.h"
 +#include "exec/icount.h"
  #include "exec/replay-core.h"
  #include "migration/vmstate.h"
@@ -218503,9 +218515,20 @@ index da46dda32d2e69f12a4ce531a91806ee07b027d0..1c67f60bf40cc00ee3b07c38a32029ca
  
  struct QEMUBH {
      QEMUBHFunc *cb;
-@@ -29,9 +33,64 @@ struct QEMUBH {
+@@ -28,10 +33,75 @@ struct QEMUBH {
+ 
  QEMUTimerListGroup main_loop_tlg;
  
++/* This isolated policy fixture never selects a native endpoint journal. Match
++ * the ordinary no-journal result without pulling the real event-loop backend
++ * into a test that supplies its own timer and bottom-half implementations. */
++void *qemu_endpoint_whole_owned_backing(
++    void *original_birth, CrucibleOriginalBackingSlot slot,
++    size_t extent, size_t alignment)
++{
++    return NULL;
++}
++
  int64_t ptimer_test_time_ns;
 +__int128 ptimer_test_time_ps;
 +bool ptimer_test_ps_enabled;
@@ -218569,7 +218592,7 @@ index da46dda32d2e69f12a4ce531a91806ee07b027d0..1c67f60bf40cc00ee3b07c38a32029ca
  bool qtest_allowed;
  
  void timer_init_full(QEMUTimer *ts,
-@@ -68,6 +127,45 @@ void timer_mod(QEMUTimer *ts, int64_t expire_time)
+@@ -68,6 +138,45 @@ void timer_mod(QEMUTimer *ts, int64_t expire_time)
      t->next = ts;
  }
  
@@ -218615,7 +218638,7 @@ index da46dda32d2e69f12a4ce531a91806ee07b027d0..1c67f60bf40cc00ee3b07c38a32029ca
  void timer_del(QEMUTimer *ts)
  {
      QEMUTimerList *timer_list = ts->timer_list;
-@@ -83,6 +181,48 @@ void timer_del(QEMUTimer *ts)
+@@ -83,6 +192,48 @@ void timer_del(QEMUTimer *ts)
      }
  }
  
