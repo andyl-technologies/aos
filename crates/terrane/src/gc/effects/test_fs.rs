@@ -38,8 +38,16 @@ struct State {
     expire_after_sync: Mutex<Option<(PathBuf, TestClock)>>,
     forbidden_data_reads: Mutex<std::collections::BTreeSet<PathBuf>>,
     data_read_attempts: AtomicUsize,
+    catalog_read_gate: Mutex<Option<CatalogReadGate>>,
     permanent: permanent::PermanentHooks,
     gc_proposal: gc_proposal::GcProposalHooks,
+}
+
+/// Holds one genuine leaf result after native reading and before caller delivery.
+struct CatalogReadGate {
+    path: PathBuf,
+    arrived: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
 }
 
 /// Selects an actual closed native retirement or Trash creator request.
@@ -62,6 +70,33 @@ pub(crate) struct TestFs {
 }
 
 impl TestFs {
+    /// Pauses one successful native leaf read of the exact catalog artifact.
+    ///
+    /// The caller receives arrival only after the real native read completes.
+    /// Releasing or dropping the sender delivers that original result unchanged;
+    /// cancelling the read drops the retained result and leaves no paused worker.
+    ///
+    /// # Panics
+    /// Panics if a previous read gate remains or synchronization is poisoned.
+    pub(crate) fn pause_next_catalog_read(
+        &self,
+        path: PathBuf,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (arrived, received) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let mut pending = self.state.catalog_read_gate.lock().unwrap();
+        assert!(pending.is_none());
+        *pending = Some(CatalogReadGate {
+            path,
+            arrived,
+            release: released,
+        });
+        (received, release)
+    }
+
     /// Refuses reads of independently identified data-pack paths after setup.
     ///
     /// # Errors
@@ -490,7 +525,28 @@ impl LocalFs for TestFs {
             self.check_data_read(path)?;
         }
 
-        TokioLocalFs.read_ordinary_record(read).await
+        let path = read.path_for_test().map(Path::to_owned);
+        let result = TokioLocalFs.read_ordinary_record(read).await?;
+        let gate = if result.is_some() {
+            let mut pending = self.state.catalog_read_gate.lock().unwrap();
+            if pending
+                .as_ref()
+                .is_some_and(|gate| Some(&gate.path) == path.as_ref())
+            {
+                pending.take()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(gate) = gate {
+            let _ = gate.arrived.send(());
+            let _ = gate.release.await;
+        }
+
+        Ok(result)
     }
 
     async fn read_payload_ranges(
