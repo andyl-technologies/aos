@@ -260,7 +260,9 @@ typed-checkpoint roots, without a duplicate recovery byte engine. Cache retains
 headers, capacities, canonical booleans/optional fields, closed codes, commitments
 and semantic validation; envelope hashes include the header and EOF precedes
 digest comparison. Protected Cache admission, custody and recovery authority do
-not change. LocalInventory retained Journal/store/bootstrap/clock formats share
+not change. Guardian's five reducer decoders share those byte mechanics; its
+closed selectors, sequence ceilings and protected recovery stay local.
+LocalInventory retained Journal/store/bootstrap/clock formats share
 that reader without private read adapters; original bounds/errors, canonical
 domains, exact authenticated prefixes, protected factories and public Node
 carrier-decoder contracts remain local.

@@ -8,6 +8,9 @@
 //!
 //! Every integer is big-endian, every option and closed union has a one-byte
 //! discriminant, and every sequence has a checked `u32` element count.
+//!
+//! Byte bounds use Core's shared reader; Guardian retains canonical discriminants,
+//! sequence ceilings and semantic commitments.
 
 use aos_sandbox_core::{
     AssignmentEpoch, IncarnationId, LeaseAssignment, NodeId, ObjectDigest, SandboxId,
