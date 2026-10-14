@@ -1,6 +1,7 @@
 //! Borrows the native control endpoint under its actual installing Source.
 //!
 //! Selected setup I/O observes the same installing Source on every attempt.
+//! Readiness waits preserve its nanosecond allowance without upward rounding.
 //! Per-call flags leave the native owner's shared open-file description intact.
 //! RUN stops installer observation only after the actual registration sequence;
 //! Rust teardown asks the native runtime holder to interrupt its own endpoint.
@@ -22,6 +23,20 @@ struct InstallObservation {
     plugin_id: u64,
     api: NativeStartupApi,
     first_refusal: Option<StartupSourceError>,
+}
+
+fn installer_poll_timeout(nanoseconds: u64) -> Result<libc::timespec, StartupSourceError> {
+    let invalid = || StartupSourceError::Ownership {
+        reason: "native control observation slice is invalid",
+    };
+    if nanoseconds == 0 {
+        return Err(invalid());
+    }
+
+    Ok(libc::timespec {
+        tv_sec: libc::time_t::try_from(nanoseconds / 1_000_000_000).map_err(|_| invalid())?,
+        tv_nsec: libc::c_long::try_from(nanoseconds % 1_000_000_000).map_err(|_| invalid())?,
+    })
 }
 
 impl InstallerStartupSource {
@@ -77,33 +92,35 @@ impl InstallObservation {
         self.check()?;
         let mut nanoseconds = 0;
         self.accept((self.api.query_slice)(self.plugin_id, &mut nanoseconds))?;
-        let timeout = nanoseconds
-            .checked_add(999_999)
-            .map(|value| value / 1_000_000)
-            .and_then(|value| i32::try_from(value).ok())
-            .filter(|value| *value > 0)
-            .ok_or_else(|| {
-                let error = StartupSourceError::Ownership {
-                    reason: "native control observation slice is invalid",
-                };
-                self.first_refusal = Some(error);
-                io::Error::other(error)
-            })?;
+        let timeout = installer_poll_timeout(nanoseconds).map_err(|error| {
+            self.first_refusal = Some(error);
+            io::Error::other(error)
+        })?;
         let mut request = libc::pollfd {
             fd: descriptor,
             events,
             revents: 0,
         };
-        // SAFETY: this one initialized pollfd is valid for the bounded call.
-        let status = unsafe { libc::poll(&mut request, 1, timeout) };
-        if status < 0 {
+        // SAFETY: the initialized pollfd and positive timespec remain live for
+        // the call. A null signal mask preserves the caller's existing mask.
+        let status = unsafe { libc::ppoll(&mut request, 1, &timeout, std::ptr::null()) };
+        let primary = if status < 0 {
             let error = io::Error::last_os_error();
             if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
+                Some(error)
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
+
         // A timeout or EINTR reobserves this original, never a renewed deadline.
-        self.check()
+        let post = self.check();
+        match primary {
+            Some(error) => Err(error),
+            None => post,
+        }
     }
 }
 

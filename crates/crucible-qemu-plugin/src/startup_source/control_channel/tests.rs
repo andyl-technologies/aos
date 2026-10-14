@@ -29,6 +29,15 @@ extern "C" fn slice(_: u64, out: *mut u64) -> i32 {
     }
     0
 }
+
+extern "C" fn one_nanosecond_slice(_: u64, out: *mut u64) -> i32 {
+    // SAFETY: the model adapter supplies one initialized output for this call.
+    unsafe {
+        *out = 1;
+    }
+    0
+}
+
 extern "C" fn complete(_: u64, _: i32) -> i32 {
     0
 }
@@ -49,6 +58,63 @@ fn socket(owner: &UnixStream, check: super::super::Check) -> SetupControlSocket 
             first_refusal: None,
         }),
     }
+}
+
+#[test]
+fn poll_timeout_preserves_nanoseconds_across_unit_boundaries() -> Result<(), StartupSourceError> {
+    for (nanoseconds, seconds, remainder) in [
+        (1, 0, 1),
+        (999_999, 0, 999_999),
+        (1_000_001, 0, 1_000_001),
+        (1_000_000_001, 1, 1),
+    ] {
+        let timeout = installer_poll_timeout(nanoseconds)?;
+
+        assert_eq!(timeout.tv_sec, seconds);
+        assert_eq!(timeout.tv_nsec, remainder);
+    }
+    Ok(())
+}
+
+#[test]
+fn zero_poll_allowance_is_refused_before_waiting() {
+    assert!(matches!(
+        installer_poll_timeout(0),
+        Err(StartupSourceError::Ownership { .. })
+    ));
+}
+
+#[test]
+fn ready_wait_rechecks_the_original_without_consuming_the_reply() -> io::Result<()> {
+    CHECKS.with(|calls| calls.set(0));
+    let (mut owner, mut peer) = UnixStream::pair()?;
+    peer.write_all(b"ack")?;
+    let mut view = socket(&owner, refuse_post);
+    let observation = view
+        .installing
+        .as_mut()
+        .ok_or_else(|| io::Error::other("model installing observation is absent"))?;
+    observation.api.query_slice = one_nanosecond_slice;
+
+    let error = match observation.wait(owner.as_raw_fd(), libc::POLLIN) {
+        Ok(()) => return Err(io::Error::other("expired installing original was admitted")),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error
+            .get_ref()
+            .and_then(|cause| cause.downcast_ref::<StartupSourceError>()),
+        Some(&StartupSourceError::NativeStatus { status: -211 }),
+    );
+    assert_eq!(
+        observation.first_refusal,
+        Some(StartupSourceError::NativeStatus { status: -211 }),
+    );
+    let mut reply = [0; 3];
+    owner.read_exact(&mut reply)?;
+    assert_eq!(&reply, b"ack");
+    Ok(())
 }
 
 #[test]
