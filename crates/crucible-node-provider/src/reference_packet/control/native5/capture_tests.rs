@@ -26,7 +26,7 @@ fn modeled_active_control() -> PacketControl {
         .bind_complete_original_storage(
             crate::reference_packet::service::PacketNative5StorageLimits {
                 snapshot_bytes: U64::new(8 * 1024 * 1024),
-                control_snapshot_bytes: U64::new(8 * 1024 * 1024),
+                control_snapshot_bytes: U64::new(4 * 1024 * 1024),
                 protocol_snapshot_bytes: U64::new(32 * 1024 * 1024),
                 frame_bank_bytes: U64::new(8 * 1024 * 1024),
                 frames_per_direction: U64::new(4096),

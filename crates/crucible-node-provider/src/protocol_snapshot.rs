@@ -49,6 +49,44 @@ pub struct OriginalProtocolStorageFacts {
     pub all_io_complete: bool,
 }
 
+/// Reports one independently reserved literal snapshot copy's actual storage.
+///
+/// These numbers describe the copy bank, not either endpoint's live archive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct ProtocolSnapshotLiteralAllocationFacts {
+    /// Bounds retained bytes across both lifetime directions.
+    pub maximum_history_bytes: usize,
+    /// Bounds each direction's lifetime descriptor count.
+    pub maximum_frames_per_direction: usize,
+    /// Reports the actual byte vector capacity.
+    pub byte_capacity: usize,
+    /// Reports the actual combined descriptor vector capacity.
+    pub descriptor_capacity: usize,
+    /// Reports the descriptor vector's allocated bytes.
+    pub descriptor_bytes: usize,
+    /// Reports actual retained literal bytes.
+    pub retained_bytes: usize,
+    /// Reports byte and descriptor allocations together.
+    pub allocated_bytes: usize,
+}
+
+/// Reports the actual encoded buffer and independent literal copy allocations.
+///
+/// The facts provide no source selection, Capture, settlement or adoption right.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct ProtocolSnapshotAllocationFacts {
+    /// States the selected encoded snapshot ceiling.
+    pub maximum_encoded_bytes: usize,
+    /// Reports the actual encoded vector capacity.
+    pub encoded_capacity: usize,
+    /// Reports bytes currently retained in the encoded vector.
+    pub encoded_length: usize,
+    /// Describes an independently precharged literal copy when present.
+    pub literal: Option<ProtocolSnapshotLiteralAllocationFacts>,
+    /// Reports all encoded, literal and descriptor allocations together.
+    pub allocated_bytes: usize,
+}
+
 /// Reports a same-original native snapshot's physical antecedent correspondence.
 ///
 /// These borrowed numeric facts grant no successful Capture, semantic settlement,
@@ -181,6 +219,33 @@ impl ProtocolSnapshotReservation {
                 .literal
                 .as_ref()
                 .map_or(0, |literal| literal.allocated_bytes())
+    }
+
+    /// Reports allocation-free facts for this same reserved snapshot bank.
+    ///
+    /// An unbound reservation can be inspected before child construction. Once
+    /// bound, the original process and thread are checked before reading either
+    /// bank. This does not invoke callbacks, serialize state or grant permission.
+    ///
+    /// # Errors
+    /// Refuses inspection from a different bound process or thread.
+    pub fn original_allocation_facts(
+        &self,
+    ) -> Result<ProtocolSnapshotAllocationFacts, ProviderError> {
+        if let Some((_, owner, _, _)) = &self.issuer {
+            owner.ensure_current()?;
+        }
+
+        Ok(ProtocolSnapshotAllocationFacts {
+            maximum_encoded_bytes: self.maximum,
+            encoded_capacity: self.bytes.capacity(),
+            encoded_length: self.bytes.len(),
+            literal: self
+                .literal
+                .as_ref()
+                .map(|literal| literal.snapshot_allocation_facts()),
+            allocated_bytes: self.allocated_bytes(),
+        })
     }
 
     pub(crate) fn encode(&mut self, state: &impl Serialize) -> Result<(), ProviderError> {
@@ -813,5 +878,61 @@ mod tests {
         assert!(mapping.validate_original(&original_snapshots[1]).is_err());
         assert_eq!(original_snapshots[0].bytes(), b"{\"actual\":\"first\"}");
         assert!(fresh.ensure_live().is_ok());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod reservation_allocation_tests {
+    use super::*;
+
+    #[test]
+    fn native5_snapshot_reservation_facts_report_both_actual_independent_banks() {
+        let ordinary = ProtocolSnapshotReservation::reserve(1024).unwrap();
+        let ordinary_facts = ordinary.original_allocation_facts().unwrap();
+        assert_eq!(ordinary_facts.encoded_capacity, ordinary.bytes.capacity());
+        assert_eq!(ordinary_facts.literal, None);
+        assert_eq!(ordinary_facts.allocated_bytes, ordinary.allocated_bytes());
+
+        let mut complete = ProtocolSnapshotReservation::reserve_complete(4096, 2048, 3).unwrap();
+        let before = complete.original_allocation_facts().unwrap();
+        let literal = before.literal.unwrap();
+        assert_eq!(before.encoded_capacity, complete.bytes.capacity());
+        assert_eq!(literal.byte_capacity, 2048);
+        assert_eq!(literal.descriptor_capacity, 6);
+        assert!(literal.descriptor_bytes > 0);
+        assert_eq!(literal.maximum_frames_per_direction, 3);
+        assert_eq!(
+            before.allocated_bytes,
+            before.encoded_capacity + literal.allocated_bytes
+        );
+
+        let (_handshake, authority) = crate::handshake::tests::authority();
+        let owner = Rc::new(ProtocolCaptureOwner::new());
+        let deadline =
+            crate::operational_time::OperationalDeadline::after(std::time::Duration::from_secs(2))
+                .unwrap();
+        complete
+            .bind(
+                &authority,
+                &owner,
+                ProtocolCaptureCut::HostSettled,
+                deadline,
+            )
+            .unwrap();
+        complete
+            .encode(&serde_json::json!({"state":"original"}))
+            .unwrap();
+        let encoded = complete.original_allocation_facts().unwrap();
+        assert!(encoded.encoded_length > 0);
+        assert_eq!(encoded.encoded_capacity, before.encoded_capacity);
+        assert_eq!(encoded.literal, before.literal);
+
+        complete.issuer.as_mut().unwrap().1 = Rc::new(ProtocolCaptureOwner {
+            pid: std::process::id().wrapping_add(1),
+            thread: std::thread::current().id(),
+        });
+        assert!(complete.original_allocation_facts().is_err());
+        assert_eq!(complete.allocated_bytes(), before.allocated_bytes);
     }
 }

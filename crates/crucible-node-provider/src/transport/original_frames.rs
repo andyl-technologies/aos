@@ -228,6 +228,20 @@ impl OriginalFrameReservation {
         }
     }
 
+    pub(crate) fn snapshot_allocation_facts(
+        &self,
+    ) -> crate::protocol_snapshot::ProtocolSnapshotLiteralAllocationFacts {
+        crate::protocol_snapshot::ProtocolSnapshotLiteralAllocationFacts {
+            maximum_history_bytes: self.maximum_bytes,
+            maximum_frames_per_direction: self.maximum_frames,
+            byte_capacity: self.bytes.capacity(),
+            descriptor_capacity: self.slots.capacity(),
+            descriptor_bytes: self.slots.capacity() * std::mem::size_of::<Slot>(),
+            retained_bytes: self.bytes.len(),
+            allocated_bytes: self.allocated_bytes(),
+        }
+    }
+
     pub(crate) fn complete(&self) -> bool {
         self.slots.iter().all(|slot| slot.complete)
     }

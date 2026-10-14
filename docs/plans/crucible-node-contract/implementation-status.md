@@ -3619,6 +3619,27 @@ The test authorities model their own dormant profiles. The production complete
 factory association remains pending, so this hook grants no native Arm, active
 Capture, fresh restoration, accepted class or Ready permission.
 
+## Actual protocol reservation allocation facts
+
+Snapshot reservations now expose the actual encoded buffer separately from their
+independent literal byte and descriptor banks. The getter reads lengths,
+capacities, selected ceilings and allocation totals without allocating,
+serializing, invoking callbacks or performing I/O. Bound reservations verify
+the original process and thread; unbound numeric facts establish no association.
+
+Source74 passes 80 focused controls, all 401 enabled SDK units and strict
+all-target/all-feature checks; 13 units remain ignored. This complete SDK cohort
+also executes the three-object geometry correction. Its earlier control fixture
+selected an impossible eight-MiB snapshot plus eight-MiB control transfer within
+4096 descriptors; the test now selects four MiB of control storage. Production
+limits and old refusal evidence are unchanged. Independent receipt
+`c3b4e7becce724e843de79e32811f873f73ebd69b1b248af107d859802dd816c`
+verifies the exact three current preimages and retained source/executable cohort.
+
+These component facts exclude whole-factory namespace and allocator closure.
+Native registration, physical cut, source association, terminal Capture,
+settlement and installation remain separate requirements.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
