@@ -59,3 +59,26 @@ fn reports_no_holder_for_live_files() {
     assert!(!report.contains("present"), "{report}");
     assert!(report.contains("(processes "), "{report}");
 }
+
+#[test]
+fn names_a_socket_whose_queue_holds_unread_bytes() {
+    let (sender, receiver) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+    (&sender).write_all(b"unread").expect("queue bytes");
+
+    // Other processes on the host may queue bytes too; inspect only this one.
+    let own_process = i32::try_from(std::process::id()).expect("process id");
+    let report = kernel_held_candidates_among(|pid| pid == own_process);
+
+    let receiver_descriptor = std::os::fd::AsRawFd::as_raw_fd(&receiver);
+    assert!(
+        report.contains(&format!(
+            "pid {} ({}) fd {receiver_descriptor} socket:",
+            std::process::id(),
+            fs::read_to_string("/proc/self/comm")
+                .expect("own command")
+                .trim()
+        )),
+        "{report}"
+    );
+    assert!(report.contains("queued 6"), "{report}");
+}

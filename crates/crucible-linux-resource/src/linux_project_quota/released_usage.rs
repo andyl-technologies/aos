@@ -2,18 +2,25 @@
 //!
 //! When release still finds accounted usage, a bounded `/proc` scan names
 //! processes that hold deleted files on the run directory's filesystem, and
-//! processes whose descriptor tables it could not read. The scan never
-//! influences the release decision.
+//! processes whose descriptor tables it could not read. Because a kernel can
+//! also keep a file alive with no descriptor or mapping in any table, the
+//! scan additionally names exiting tasks and unix sockets with unread queued
+//! bytes. The scan never influences the release decision.
 
 use std::fs;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
+
+use rustix::process::{Pid, PidfdFlags, PidfdGetfdFlags};
 
 /// Most `/proc` descriptor and mapping entries inspected by one scan.
 const MAX_SCANNED_ENTRIES: usize = 65_536;
 
 /// Most holders named in one diagnostic.
 const MAX_REPORTED_HOLDERS: usize = 8;
+
+/// Linux `PF_EXITING` task flag from `/proc/<pid>/stat`.
+const PF_EXITING: u64 = 0x4;
 
 /// Scans for deleted-file holders, then re-reads the project usage.
 ///
@@ -24,11 +31,14 @@ pub(super) fn diagnose_released_usage<E: std::fmt::Display>(
     reread_usage: impl FnOnce() -> Result<(u64, u64), E>,
 ) -> String {
     let holders = deleted_file_holders(directory);
+    let kernel_held = kernel_held_candidates();
     match reread_usage() {
         Ok((bytes, inodes)) => {
-            format!("{holders}; usage after scan: {bytes} bytes, {inodes} inodes")
+            format!("{holders}; {kernel_held}; usage after scan: {bytes} bytes, {inodes} inodes")
         }
-        Err(source) => format!("{holders}; usage after scan unavailable: {source}"),
+        Err(source) => {
+            format!("{holders}; {kernel_held}; usage after scan unavailable: {source}")
+        }
     }
 }
 
@@ -123,6 +133,126 @@ pub(super) fn deleted_file_holders(directory: &Path) -> String {
     }
     report.push(')');
     report
+}
+
+/// Names exiting tasks and unix sockets that still queue unread bytes.
+///
+/// Neither shows a deleted file in a descriptor table. An exiting task has
+/// detached its table while the final release of its files can still be
+/// pending, and a descriptor sent with `SCM_RIGHTS` but never received is
+/// owned by the receiving socket's queue rather than by any process. A
+/// queued socket is therefore a candidate holder, not proof of one.
+pub(super) fn kernel_held_candidates() -> String {
+    kernel_held_candidates_among(|_pid| true)
+}
+
+/// Runs [`kernel_held_candidates`] over the processes `include` selects.
+fn kernel_held_candidates_among(include: impl Fn(i32) -> bool) -> String {
+    let Ok(processes) = fs::read_dir("/proc") else {
+        return String::from("kernel-held candidates unavailable: /proc is unreadable");
+    };
+
+    let mut exiting = Vec::new();
+    let mut queued = Vec::new();
+    let mut inspected_sockets = 0_usize;
+    let mut socket_errors = 0_usize;
+    let mut first_socket_error = None;
+
+    for process in processes.flatten() {
+        let Some(pid) = process
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<i32>().ok())
+            .filter(|pid| include(*pid))
+        else {
+            continue;
+        };
+        let command = fs::read_to_string(process.path().join("comm"))
+            .map(|command| command.trim().to_owned())
+            .unwrap_or_default();
+
+        if let Some((state, flags)) = task_state(&process.path())
+            && (flags & PF_EXITING != 0 || matches!(state, 'D' | 'X' | 'Z'))
+            && exiting.len() < MAX_REPORTED_HOLDERS
+        {
+            exiting.push(format!("{pid} ({command}) state {state} flags {flags:#x}"));
+        }
+
+        let Ok(entries) = fs::read_dir(process.path().join("fd")) else {
+            continue;
+        };
+        let mut pidfd = None;
+        for entry in entries.flatten() {
+            let Ok(target) = fs::read_link(entry.path()) else {
+                continue;
+            };
+            let target = target.to_string_lossy().into_owned();
+            let Some(descriptor) = target
+                .starts_with("socket:")
+                .then(|| entry.file_name().to_str()?.parse::<i32>().ok())
+                .flatten()
+            else {
+                continue;
+            };
+            inspected_sockets += 1;
+
+            match queued_socket_bytes(pid, &mut pidfd, descriptor) {
+                Ok(0) => {}
+                Ok(bytes) => {
+                    if queued.len() < MAX_REPORTED_HOLDERS {
+                        queued.push(format!(
+                            "pid {pid} ({command}) fd {descriptor} {target} queued {bytes}"
+                        ));
+                    }
+                }
+                Err(source) => {
+                    socket_errors += 1;
+                    first_socket_error
+                        .get_or_insert_with(|| format!("pid {pid} fd {descriptor}: {source}"));
+                }
+            }
+        }
+    }
+
+    format!(
+        "exiting tasks [{}]; queued unix sockets [{}] (inspected {inspected_sockets}, errors {socket_errors}{})",
+        exiting.join(", "),
+        queued.join("; "),
+        first_socket_error
+            .map(|error| format!(", first {error}"))
+            .unwrap_or_default(),
+    )
+}
+
+/// Reads a task's state letter and kernel flags from `/proc/<pid>/stat`.
+fn task_state(process: &Path) -> Option<(char, u64)> {
+    let stat = fs::read_to_string(process.join("stat")).ok()?;
+    // The command field may contain spaces and parentheses; fields resume
+    // after its final closing parenthesis.
+    let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let flags = fields.nth(5)?.parse().ok()?;
+    Some((state, flags))
+}
+
+/// Duplicates one socket descriptor from `pid` and returns its unread bytes.
+///
+/// The duplicate refers to the same open socket and is closed on return, so
+/// the inspected process keeps its descriptor unchanged.
+fn queued_socket_bytes(
+    pid: i32,
+    pidfd: &mut Option<rustix::fd::OwnedFd>,
+    descriptor: i32,
+) -> rustix::io::Result<u64> {
+    let pidfd = match pidfd {
+        Some(pidfd) => pidfd,
+        None => {
+            let process = Pid::from_raw(pid).ok_or(rustix::io::Errno::SRCH)?;
+            pidfd.insert(rustix::process::pidfd_open(process, PidfdFlags::empty())?)
+        }
+    };
+    let socket = rustix::process::pidfd_getfd(&*pidfd, descriptor, PidfdGetfdFlags::empty())?;
+    rustix::io::ioctl_fionread(&socket)
 }
 
 #[cfg(test)]

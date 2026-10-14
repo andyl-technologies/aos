@@ -102,10 +102,17 @@ fn report_shutdown_cause(
     );
 }
 
-/// Writes the end of the deepest cause, which nested prefixes truncate away.
+/// Characters carried by one deepest-cause row.
+const SHUTDOWN_LEAF_PART_CHARACTERS: usize = 512;
+
+/// Most deepest-cause rows written for one failed source.
+const SHUTDOWN_LEAF_PARTS: usize = 16;
+
+/// Writes the deepest cause in bounded parts, which nested prefixes truncate.
 ///
 /// Wrapping errors repeat their sources' text, so the bounded prefixes above
-/// can all stop before the innermost reason. The chain walk is bounded.
+/// can all stop before the innermost reason. The chain walk is bounded, and
+/// a cause longer than every part keeps its first and last halves.
 fn report_shutdown_leaf<E: std::error::Error>(
     output: &mut impl Write,
     key: &impl std::fmt::Debug,
@@ -122,15 +129,25 @@ fn report_shutdown_leaf<E: std::error::Error>(
         depth += 1;
         cause = current.source();
     }
-    let characters = message.chars().count();
-    let suffix = message
-        .chars()
-        .skip(characters.saturating_sub(512))
-        .collect::<String>();
-    let _ = writeln!(
-        output,
-        "CRUCIBLE-HOT-FORK-SHUTDOWN-V1 source_key={key:?} leaf_depth={depth} cause_suffix={suffix:?}"
-    );
+
+    let characters = message.chars().collect::<Vec<_>>();
+    let parts = characters
+        .chunks(SHUTDOWN_LEAF_PART_CHARACTERS)
+        .map(|part| part.iter().collect::<String>())
+        .collect::<Vec<_>>();
+    let kept_head = SHUTDOWN_LEAF_PARTS / 2;
+    let tail_start = parts.len().saturating_sub(SHUTDOWN_LEAF_PARTS - kept_head);
+    for (index, part) in parts.iter().enumerate() {
+        if index >= kept_head && index < tail_start {
+            continue;
+        }
+        let _ = writeln!(
+            output,
+            "CRUCIBLE-HOT-FORK-SHUTDOWN-V1 source_key={key:?} leaf_depth={depth} part={}/{} cause={part:?}",
+            index + 1,
+            parts.len(),
+        );
+    }
 }
 
 impl<D, R> Drop for ConcretePackagedQemuHotForkSourceOwner<D, R>
@@ -914,3 +931,7 @@ fn cleanup_shared_sources(
         },
     }
 }
+
+#[cfg(test)]
+#[path = "hot_fork_tests.rs"]
+mod tests;
