@@ -51,6 +51,14 @@ impl ContentValidator for Validator {
             IdentityKind::Index => crate::pack::PackIndexSnapshot::decode(upload.bytes(), 1)
                 .map(|_| ())
                 .map_err(|_| denied()),
+            // V1 filters are opaque canonical metadata, not reusable decisions.
+            IdentityKind::Filter => {
+                let mut decoder = terrane_core::cbor::Decoder::new(upload.bytes());
+                decoder
+                    .skip_value(upload.bytes().len())
+                    .and_then(|()| decoder.finish())
+                    .map_err(|_| denied())
+            }
             _ => Err(denied()),
         }
     }
