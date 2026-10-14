@@ -20,14 +20,15 @@ const GUARDED_RUN_QEMU_PROFILE: &str = "deterministic-tcg-v1";
 const CAMPAIGN_DEPLOYMENT_ENV: &str = "CRUCIBLE_CAMPAIGN_DEPLOYMENT";
 const DEFAULT_CAMPAIGN_DEPLOYMENT_PATH: &str = "/etc/crucible/packaged-executor.toml";
 
-/// Keeps packaged campaign RUNs bounded without reducing the terminal ceiling.
+/// Keeps packaged campaign RUNs bounded by a fixed scheduler rendezvous.
 pub(super) fn production_rendezvous_interval(
     requested: Option<u64>,
     packaged: bool,
 ) -> Option<u64> {
     // Conditions, checkpoint requests, and resource checks run at modeled
-    // boundaries. Without rendezvous, an isolated VM can consume the complete
-    // forty-billion-instruction CLI run allowance before returning to them.
+    // boundaries. Packaged attempts have no lifecycle virtual-time ceiling, so
+    // without rendezvous an isolated VM could run indefinitely before
+    // returning to them.
     requested.or_else(|| packaged.then_some(DEFAULT_PACKAGED_RUN_INTERVAL_ICOUNT))
 }
 
@@ -254,6 +255,25 @@ pub(crate) fn load_campaign_run_deployment(
     })
 }
 
+/// Removes the interactive CLI horizon from packaged campaign lifecycles.
+///
+/// Campaign policies own the modeled horizon: an attempt's stop frontier
+/// carries the policy's virtual-time deadline and ends it with a modeled
+/// policy timeout. Attempts whose policy declares no deadline are bounded by
+/// the deployment's execution-quantum allowance, the event-log bound, and any
+/// host watchdog. A lifecycle ceiling below the policy deadline would instead
+/// stall every node at the ceiling until the quantum allowance ran out.
+fn packaged_campaign_lifecycle(
+    lifecycle: &crucible_api::ProductionVmLifecycleConfig,
+) -> Result<crucible_api::ProductionVmLifecycleConfig, CliError> {
+    if lifecycle.rendezvous_interval_ticks().is_none() {
+        return Err(serve_error(
+            "packaged campaign execution requires a scheduler rendezvous interval",
+        ));
+    }
+    Ok(lifecycle.clone().without_run_ceiling())
+}
+
 pub(super) fn prepare_cli_packaged_executor(
     prepared: &crucible_daemon::PreparedCampaignLocalService,
     args: &ServeArgs,
@@ -266,6 +286,7 @@ pub(super) fn prepare_cli_packaged_executor(
     let operations = deployment_operations(&deployment)?;
     let host = deployment_host(&deployment)?;
     let capacity = deployment_capacity(&deployment)?;
+    let lifecycle = &packaged_campaign_lifecycle(lifecycle)?;
     let user_id = rustix::process::geteuid().as_raw();
     let group_id = rustix::process::getegid().as_raw();
     let endpoint = crucible_daemon::ExecutorLoopbackEndpointConfig::new(

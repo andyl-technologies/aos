@@ -838,6 +838,14 @@ a choice reached before that fallback can. Campaign logic handles an
 authenticated timeout outcome; no timer event is delivered to guest code for
 recovery.
 
+The authored policy and stop condition are the only modeled horizon. The
+packaged executor's lifecycle has no separate virtual-time ceiling, so a
+policy deadline is never truncated by an executor default. An attempt whose
+policy declares no deadline runs until its primary stop or until an
+operational limit refuses it: the deployment's execution-quantum allowance,
+the attempt event-log byte bound, or the host completion watchdog. These
+refusals are operational failures, never `PolicyTimeout` evidence.
+
 These stop tags occur only in the current enclosing records: `Attempt` v9,
 `BranchRequest` v10, `CampaignFact` v15, `Observation` v14, and discovery-service
 request v4. A noncurrent enclosing schema is rejected before interpreting the

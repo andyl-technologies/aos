@@ -266,6 +266,20 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
+    /// Returns this configuration without a lifecycle virtual-time ceiling.
+    ///
+    /// The scheduler then never clamps advancement to a lifecycle horizon.
+    /// Each attempt's authored stop frontier, such as a campaign policy's
+    /// virtual-time deadline, bounds modeled time instead, and operational
+    /// limits such as the attempt's execution-quantum allowance bound the
+    /// rest. Pair this with a rendezvous interval so every physical RUN still
+    /// returns to the scheduler at a finite boundary.
+    #[must_use]
+    pub const fn without_run_ceiling(mut self) -> Self {
+        self.run_ceiling_ticks = u64::MAX;
+        self
+    }
+
     /// Returns this configuration with a different scheduler quantum budget.
     #[must_use]
     pub const fn with_quantum_budget(mut self, budget: u64) -> Self {

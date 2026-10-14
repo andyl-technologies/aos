@@ -1184,6 +1184,48 @@ fn attempt_stop_frontier_precedes_branch_and_trigger_horizons() {
 }
 
 #[test]
+fn unbounded_time_limit_leaves_the_attempt_stop_as_the_modeled_horizon() {
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "test-scheduler-unbounded-horizon",
+        16,
+        SimInstant { ticks: u64::MAX },
+        vec![test_scenario_node(
+            "node-a",
+            0,
+            SchedulerNodeActivity::Runnable,
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::NoArmedTimer,
+        )],
+        Vec::new(),
+    )
+    .with_rendezvous_interval(SimDuration { ticks: 10 })
+    .unwrap_or_else(|error| panic!("rendezvous should install: {error}"));
+    let mut scheduler = SingleScheduler::new(scenario)
+        .unwrap_or_else(|error| panic!("unbounded scheduler should build: {error}"));
+    scheduler
+        .set_attempt_stop_frontier(Some(VirtualTime { ticks: 35 }))
+        .unwrap_or_else(|error| panic!("attempt stop should install: {error}"));
+
+    let mut frontiers = Vec::new();
+    for _ in 0..5 {
+        let outcome = scheduler
+            .drive_quantum(QuantumRequest {
+                configuration: scheduler.configuration().clone(),
+                control: Vec::new(),
+            })
+            .unwrap_or_else(|error| panic!("unbounded quantum should run: {error}"));
+        frontiers.push(outcome.frontier.ticks);
+    }
+
+    // Rendezvous bounds every RUN, and the attempt stop, not a lifecycle
+    // ceiling, is where modeled time stops.
+    assert_eq!(frontiers, [10, 20, 30, 35, 35]);
+    assert!(!scheduler.reached_time_limit().unwrap_or_else(|error| {
+        panic!("scenario terminal state should remain inspectable: {error}")
+    }));
+}
+
+#[test]
 fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     let parent = scheduler.configuration().clone();
