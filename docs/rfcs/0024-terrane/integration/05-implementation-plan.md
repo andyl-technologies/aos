@@ -267,8 +267,26 @@ phase and native groups, and retains all assertions and the original deadline.
 Periodic output is limited to nine snapshots at absolute 200-second intervals.
 The caller corrections route existing test timing through the private Clock,
 preserving diagnostic enablement, aggregation, actual clocks and test bounds.
-These sources are staged for fresh trunk qualification; compilation and the
-diagnostic invocation remain unrun, with no performance fix or task acceptance.
+Qualification of actual trunk `021f4c56fbfd` (tree `3ada0401e12d`) passes all
+thirteen compiler phases: the exact formatter pair, strict all-target Clippy
+and private rustdoc for default, std-send and native profiles, SDK all-target
+test compilation, default build and executable inventory. The inventory has
+1,121 cases across three fresh binaries, with none ignored. Its single bounded
+diagnostic times out in 1,800.061 seconds under the unchanged limit. Baseline
+completes in 587.307 seconds, maintained commit in 513.247 seconds and reopen
+in 642.166 seconds; output remains unfinished at the final snapshot. Fifteen
+fixed reports have no lost updates. Full source, inputs and executables remain
+unchanged; the sealed packet and all owned temporary content are independently
+verified, with owned processes absent. Scoped success accepts no task.
+The completed direct-history intervals total 842.810 seconds across three
+invocations, including previous-tree and reopened historical-view verification.
+These inclusive intervals overlap caller phases; their times must not be added
+to those phases. Source audit identifies fresh selected-chain and complete
+catalog preparation per native GET, but does not measure its component cost.
+The shared bounded group registry now names selected GET preparation, canonical
+decode/memo and catalog artifact work for a separate test-only diagnostic.
+Fresh reads, full history, Original/current checks and independent accounting
+remain required; no performance fix or task acceptance is claimed.
 The unfiltered SDK qualification must retain all 1,121 actual cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
 cases. Application test-target compilation and strict Clippy/private rustdoc for
@@ -293,8 +311,9 @@ The focused source-identity evaluation and actual registry build pass on
 test-only scaffold, before the all-format command starts. The shared scaffold
 correction also makes diagnostic clock helpers available to std-only tests;
 collection and reporting remain confined to Tokio tests. The exact formatter
-pair passes on corrected `c6a9ad7e687c`, with unchanged source. The newly
-composed diagnostic sources require fresh qualification. This preparation changes no normative
+pair passes on corrected `c6a9ad7e687c`, with unchanged source. The composed
+diagnostic compiler profiles also pass on `021f4c56fbfd`; runtime and owning
+qualification remain incomplete. This preparation changes no normative
 specification, manifest or dependency and accepts no task.
 A separate reviewed private handoff correction carries each native reader's
 actual caller configuration; it is not established as this failure's cause.
