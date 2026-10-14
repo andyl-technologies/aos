@@ -617,9 +617,10 @@ mod tests {
         let decoded: serde_json::Value = serde_json::from_slice(snapshot.bytes()).unwrap();
         let bank_bytes: Vec<u8> = serde_json::from_value(decoded["frames"][6].clone()).unwrap();
         assert_eq!(&bank_bytes[bank_bytes.len() - raw.len()..], raw.as_slice());
-        assert_eq!(decoded["correlations"][2], "3");
+        assert_eq!(decoded["correlations"][0], "source-private.correlations/6");
         assert_eq!(decoded["correlations"][3], "3");
-        assert!(decoded["correlations"][5].as_object().unwrap().is_empty());
+        assert_eq!(decoded["correlations"][4], "3");
+        assert!(decoded["correlations"][6].as_object().unwrap().is_empty());
         assert_eq!(decoded["frames"][7].as_array().unwrap().len(), 2);
         assert_eq!(snapshot.literal_frames().unwrap().count(), 2);
 

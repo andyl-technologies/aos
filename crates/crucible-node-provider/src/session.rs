@@ -26,6 +26,7 @@ pub struct CorrelationGuard {
     writing_responses: BTreeMap<Id, Envelope>,
     extensions: BTreeSet<String>,
     failed: bool,
+    continuation_installed: bool,
 }
 
 impl CorrelationGuard {
@@ -62,6 +63,7 @@ impl CorrelationGuard {
 
     pub(crate) fn protocol_view(&self) -> impl serde::Serialize + '_ {
         (
+            "source-private.correlations/6",
             &self.session,
             &self.incarnation,
             crucible_node_contract::U64::new(self.next_received),
@@ -72,12 +74,14 @@ impl CorrelationGuard {
             &self.writing_responses,
             &self.extensions,
             self.failed,
+            self.continuation_installed,
         )
     }
 
     /// Checks initial sequencing, including frames whose transport credit retired.
     pub(crate) fn unused(&self) -> bool {
         !self.failed
+            && !self.continuation_installed
             && self.next_received == 2
             && self.next_sent == 2
             && self.pending.is_empty()
@@ -114,6 +118,7 @@ impl CorrelationGuard {
             writing_responses: BTreeMap::new(),
             extensions,
             failed: false,
+            continuation_installed: false,
         })
     }
 
@@ -458,3 +463,6 @@ mod tests {
         assert!(guard.register_request(first_request()).is_err());
     }
 }
+
+mod continuation_data;
+pub use continuation_data::DecodedSettledCorrelationData;

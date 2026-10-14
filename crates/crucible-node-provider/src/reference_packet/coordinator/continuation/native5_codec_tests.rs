@@ -327,7 +327,8 @@ fn native5_original_immutable_codec_installs_and_captures_actual_pending_frame()
     let data: Value = serde_json::from_slice(snapshot.bytes()).unwrap();
     assert_eq!(data["native5_codec"][0], "native-packet/5");
     assert_eq!(snapshot.literal_frames().unwrap().count(), 1);
-    assert_eq!(data["correlations"][6].as_object().unwrap().len(), 1);
+    assert_eq!(data["correlations"][0], "source-private.correlations/6");
+    assert_eq!(data["correlations"][7].as_object().unwrap().len(), 1);
     let mut target = OriginalFrameReservation::reserve(262144, 8).unwrap();
     assert!(snapshot.prepare_historical_frame_data(&mut target).is_err());
     assert_eq!(target.frames().count(), 0);

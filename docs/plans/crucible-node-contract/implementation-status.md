@@ -3474,6 +3474,33 @@ Whole factory allocation accounting, complete SDK installation, semantic source
 and target context, native settlement and capture/adoption permission remain
 pending. These data banks and mappings grant no Ready or conformance acceptance.
 
+## Settled correlation data and one-shot reconstruction
+
+The source-private correlation tuple now carries an explicit version-six tag
+and a persistent installation flag. Its standalone data decoder preserves both
+sequence counters and request credit, while requiring settled empty maps. A
+fresh data guard retains its new session/incarnation and receives the original
+counters once; even an empty source consumes that installation. Repeat,
+same-scope, mismatched-credit and unsupported-extension attempts leave it intact.
+
+A borrowed cursor validates the whole grammar and identifier roster before
+owning copies. Named admission covers the decoded object, both identifier
+strings, extension bytes and exact vector/string capacities. Parsing allocates
+no serde scratch or tree nodes; applying data compares the existing extension
+roster without allocation. The CNP wire grammar remains unchanged.
+
+The coherent four-role Source63 cohort passes 76 focused controls, all 397
+enabled SDK units and strict all-target/all-feature checks; 13 units remain
+ignored. Independent receipt
+`8431f1a13657f42b57a68a573621cd1cc0f505634071cd29cb766e45157a2e81`
+verifies the current source join and retained executable. Prior failed and
+fixed-allowance-only cohorts retain their original scope.
+
+The public standalone guard provides no access to a connection's private guard.
+Complete SDK installation, lifetime request-ID custody, pending native
+settlement, signed source/target context and whole factory allocation closure
+remain pending. These mechanics grant no native capture or Ready permission.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
