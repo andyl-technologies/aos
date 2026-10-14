@@ -403,8 +403,26 @@ join membership oracle, retains only unsigned seed Commit data for proposal
 construction, and adds Clock-backed elapsed times to existing opt-in markers.
 Every real admission, Original, current-authority, root, ref and no-effect
 check remains. The proposal template holds no verified history or permission.
-These changes remain uncompiled and unexecuted; full SDK and owning Nix gates
-remain required before acceptance.
+This candidate passes all thirteen compiler phases, retains the same 1,131
+nonignored test identities and passes both corrected join cases in 6.802 and
+6.975 seconds. Both overlay cases still time out at their original 120-second
+limits. Separate elapsed diagnostics also time out: indexed replay starts
+nested output publication at 84.501 seconds and reaches retained publication
+without an after marker; ancestry starts deletion at 53.947 seconds without a
+later output-verification marker. Source, inputs and six executable bindings
+remain unchanged. Independent archive review preserves two normal passes,
+two normal timeouts and two diagnostic timeouts; all six scratch directories
+remain intact. These intervals do not establish the unfinished operation's cost.
+A separate collector workline prepares raw containing-pack sharing within one
+MetadataStore, after every identity's placement, kind, quarantine and restore
+checks. Completed history and permission must never be cached across requests.
+Four exact native witnesses are registered before implementation: genuine
+same-pack sharing and fresh-store I/O, membership and restore refusals, changed
+payload rejection at native handoff, and Session and Original fencing. The
+existing genuine unsigned request builder is shared within runner tests so
+these witnesses publish actual metadata cohorts. A separate source audit maps
+the retained-publication interval for a finer existing-trace diagnostic.
+Full SDK and owning Nix gates remain required before acceptance.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
