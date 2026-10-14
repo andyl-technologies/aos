@@ -1,0 +1,359 @@
+--- a/virt/kvm/crucible-original-kernel-resource.inc.c
++++ b/virt/kvm/crucible-original-kernel-resource.inc.c
+@@ -70,6 +70,19 @@
+ 	raw_spinlock_t allocator_lock;
+ 	struct crucible_allocator_scope delivery_scopes[2];
+ 	bool delivery_scope_active[2];
++	struct crucible_allocator_scope root_scope;
++	u64 root_requested_bytes;
++	u64 root_request_reservation;
++	gfp_t root_allocation_flags;
++	struct task_struct *root_actor;
++	u64 root_generation;
++	s64 root_constructor_result;
++	bool root_scope_active;
++	bool root_attempted;
++	bool root_returned;
++	bool root_constructor_completed;
++	bool root_free_attempted;
++	bool root_free_returned;
+ 	u32 current_delivery;
+ 	s64 prepare_delivery_result;
+ 	u64 prepare_delivered_prefix;
+@@ -162,7 +175,14 @@
+ 		return -EOPNOTSUPP;
+ 	/* This native request rounding is a diagnostic minimum, not complete
+ 	 * slab/page allocator metadata, slack or internal transient coverage. */
+-	vm_request = kmalloc_size_roundup(sizeof(struct kvm));
++	/* x86's literal allocator is vendor-sized kvzalloc, not sizeof(kvm).
++	 * Rounding this sampled request still does not cover vmalloc fallback.
++	 */
++#ifdef CONFIG_X86_64
++	vm_request = kmalloc_size_roundup(READ_ONCE(kvm_x86_ops.vm_size));
++#else
++	return -EOPNOTSUPP;
++#endif
+ 	if (!vm_request || check_add_overflow(metadata, vm_request, &resident))
+ 		return -EOVERFLOW;
+ 	*output = *input;
+@@ -191,9 +211,14 @@
+ 	struct kvm_crucible_kernel_resource_context *context = owner;
+ 	u32 control = READ_ONCE(context->current_delivery);
+ 
+-	return READ_ONCE(context->prepared) && !READ_ONCE(context->closed) &&
+-		control < ARRAY_SIZE(context->delivery_scopes) &&
+-		READ_ONCE(context->delivery_scope_active[control]) &&
++	bool active = control < ARRAY_SIZE(context->delivery_scopes) ?
++		READ_ONCE(context->delivery_scope_active[control]) :
++		control == ARRAY_SIZE(context->delivery_scopes) &&
++		READ_ONCE(context->root_scope_active) &&
++		context->root_actor == current &&
++		context->root_generation == context->generation;
++
++	return READ_ONCE(context->prepared) && !READ_ONCE(context->closed) && active &&
+ 		context->original_task == current && context->original_mm == current->mm &&
+ 		context->original_file && context->original_file->f_op == &kvm_chardev_ops;
+ }
+@@ -323,6 +348,205 @@
+ 	.reserve_slab = crucible_resource_allocator_reserve,
+ 	.complete_slab = crucible_resource_allocator_complete,
+ };
++
++/* Root custody is established at the native constructor, never by a quote
++ * or a userspace pointer. Public before-CREATE still refuses every selected
++ * context: no complete-family continuation issues create_native_entered yet.
++ */
++static struct kvm *kvm_crucible_resource_alloc_vm(struct file *file,
++	unsigned long type, int *source_result)
++{
++	struct kvm_crucible_kernel_resource_context *context;
++	struct kvm *kvm;
++	bool scope_entered, scope_known;
++	size_t extent;
++	u64 request_reservation, reserved;
++
++	*source_result = 0;
++	mutex_lock(&crucible_resource_lock);
++	context = crucible_resource_find(file);
++	if (!context) {
++		mutex_unlock(&crucible_resource_lock);
++		return kvm_arch_alloc_vm();
++	}
++	if (!crucible_resource_actor(context, file) || !context->prepared ||
++	    context->uncertain || !context->create_native_entered ||
++	    context->create_actor != current || context->create_operand != type ||
++	    context->root_attempted || current->crucible_allocator_scope ||
++	    ktime_get_ns() > context->input.constructor_deadline_ns) {
++		context->uncertain = true;
++		mutex_unlock(&crucible_resource_lock);
++		*source_result = -EPERM;
++		return NULL;
++	}
++#ifndef CONFIG_X86_64
++	context->uncertain = true;
++	mutex_unlock(&crucible_resource_lock);
++	*source_result = -EOPNOTSUPP;
++	return NULL;
++#else
++	extent = READ_ONCE(kvm_x86_ops.vm_size);
++	if (extent < sizeof(struct kvm)) {
++		context->uncertain = true;
++		mutex_unlock(&crucible_resource_lock);
++		*source_result = -EINVAL;
++		return NULL;
++	}
++	/* Retain the actual request reservation before any native allocation.
++	 * This overlaps later leaf reservations deliberately: it is a ceiling
++	 * check, not a claim about resident pages, internal retries or slack.
++	 */
++	request_reservation = kmalloc_size_roundup(extent);
++	if (!request_reservation ||
++	    check_add_overflow(context->reserved_bytes, request_reservation, &reserved) ||
++	    reserved > context->input.reserved_ceiling ||
++	    reserved > context->input.peak_ceiling ||
++	    request_reservation > context->input.transient_ceiling) {
++		context->uncertain = true;
++		mutex_unlock(&crucible_resource_lock);
++		*source_result = -E2BIG;
++		return NULL;
++	}
++	context->root_request_reservation = request_reservation;
++	context->reserved_bytes = reserved;
++	context->root_actor = current;
++	context->root_generation = context->generation;
++	context->root_requested_bytes = extent;
++	context->root_allocation_flags = GFP_KERNEL_ACCOUNT;
++	context->root_scope.original_task = current;
++	context->root_scope.original_owner = context;
++	context->root_scope.original_ops = &crucible_resource_allocator_ops;
++	context->current_delivery = ARRAY_SIZE(context->delivery_scopes);
++	context->root_attempted = true;
++	WRITE_ONCE(context->root_scope_active, true);
++	mutex_unlock(&crucible_resource_lock);
++
++	scope_entered = crucible_allocator_enter(&context->root_scope);
++	if (!scope_entered) {
++		WRITE_ONCE(context->root_scope_active, false);
++		WRITE_ONCE(context->uncertain, true);
++		*source_result = -EIO;
++		return NULL;
++	}
++	kvm = kvm_arch_alloc_vm_extent(extent);
++	/* Native return precedes currentness reconciliation, including NULL.
++	 * Binding lives in the actual zeroed root, not an address-only lookup.
++	 */
++	context->original_vm = kvm;
++	context->root_returned = true;
++	/* Internal retries, vmalloc fallback, shared backing and retirement are
++	 * still incomplete even when the immediate native return is non-NULL.
++	 */
++	WRITE_ONCE(context->uncertain, true);
++	if (kvm)
++		kvm->crucible_resource_context = context;
++	scope_known = crucible_allocator_leave(&context->root_scope);
++	WRITE_ONCE(context->root_scope_active, false);
++	if (!scope_known || context->uncertain || context->root_actor != current ||
++	    context->root_generation != context->generation) {
++		WRITE_ONCE(context->uncertain, true);
++		*source_result = -EIO;
++	}
++	if (!kvm) {
++		/* The literal constructor returns source_result for this NULL
++		 * root. Retain that return in its original context, without a VM
++		 * owner field or a fabricated successful allocation identity.
++		 */
++		context->root_constructor_result = *source_result;
++		context->root_constructor_completed = true;
++	}
++	return kvm;
++#endif
++}
++
++/* Only source-born live root records identify a journal owner. Never follow
++ * the candidate pointer stored in a VM; it may be cleared or substituted.
++ * Closing is published before native free, excluding any address reuse while
++ * the destructor's retained context token awaits its return observation.
++ */
++static struct kvm_crucible_kernel_resource_context *
++crucible_resource_root_find(struct kvm *kvm)
++{
++	struct kvm_crucible_kernel_resource_context *context = NULL;
++	u32 index;
++
++	lockdep_assert_held(&crucible_resource_lock);
++	for (index = 0; index < CRUCIBLE_RESOURCE_CONTEXTS; index++) {
++		struct kvm_crucible_kernel_resource_context *candidate =
++			&crucible_resource_contexts[index];
++
++		if (!candidate->root_attempted || !candidate->root_returned ||
++		    candidate->original_vm != kvm || candidate->root_free_attempted)
++			continue;
++		if (context) {
++			WRITE_ONCE(context->uncertain, true);
++			WRITE_ONCE(candidate->uncertain, true);
++			return NULL;
++		}
++		context = candidate;
++	}
++	return context;
++}
++
++static void kvm_crucible_resource_constructor_complete(struct kvm *kvm, int result)
++{
++	struct kvm_crucible_kernel_resource_context *context;
++	unsigned long flags;
++
++	mutex_lock(&crucible_resource_lock);
++	context = crucible_resource_root_find(kvm);
++	if (!context)
++		goto unlock_registry;
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	/* Membership and the original root-return tuple precede both candidate
++	 * pointer observation and journal mutation. A substituted owner cannot
++	 * redirect the actual constructor return to another retained bank.
++	 */
++	if (kvm->crucible_resource_context != context)
++		WRITE_ONCE(context->uncertain, true);
++	if (context->root_constructor_completed) {
++		WRITE_ONCE(context->uncertain, true);
++		goto unlock_allocator;
++	}
++	context->root_constructor_result = result;
++	context->root_constructor_completed = true;
++	if (context->root_actor != current ||
++	    context->root_generation != context->generation || context->closed)
++		WRITE_ONCE(context->uncertain, true);
++unlock_allocator:
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++unlock_registry:
++	mutex_unlock(&crucible_resource_lock);
++}
++
++static void kvm_crucible_resource_free_vm(struct kvm *kvm)
++{
++	struct kvm_crucible_kernel_resource_context *context;
++	unsigned long flags;
++
++	mutex_lock(&crucible_resource_lock);
++	context = crucible_resource_root_find(kvm);
++	if (context) {
++		raw_spin_lock_irqsave(&context->allocator_lock, flags);
++		/* The source-born root, not its candidate owner field, retains the
++		 * cleanup token. Clearing that field cannot bypass this journal.
++		 * Unknown cleanup still runs; no physical credit is refunded.
++		 */
++		WRITE_ONCE(context->root_free_attempted, true);
++		WRITE_ONCE(context->uncertain, true);
++		raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++	}
++	mutex_unlock(&crucible_resource_lock);
++	kvm_arch_free_vm(kvm);
++	/* Never dereference the freed root. This is only the void native
++	 * destructor's return; deferred/shared backing retirement is unproved.
++	 */
++	if (context) {
++		raw_spin_lock_irqsave(&context->allocator_lock, flags);
++		WRITE_ONCE(context->root_free_returned, true);
++		raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++	}
++}
+ 
+ /* Same original reservation is required BEFORE descriptor-table expansion,
+  * VM allocation, SRCU/perCPU and all original architecture constructors. */
+--- a/virt/kvm/kvm_main.c
++++ b/virt/kvm/kvm_main.c
+@@ -1173,12 +1173,21 @@
+ 
+ #include "crucible-original-kernel-resource.inc.c"
+ 
+-static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
+-{
+-	struct kvm *kvm = kvm_arch_alloc_vm();
++static struct kvm *kvm_create_vm(struct file *original_system_file,
++	unsigned long type, const char *fdname)
++{
++	struct kvm *kvm;
+ 	struct kvm_memslots *slots;
+ 	int r, i, j;
+ 
++	kvm = kvm_crucible_resource_alloc_vm(original_system_file, type, &r);
++	if (r) {
++		if (kvm) {
++			kvm_crucible_resource_constructor_complete(kvm, r);
++			kvm_crucible_resource_free_vm(kvm);
++		}
++		return ERR_PTR(r);
++	}
+ 	if (!kvm)
+ 		return ERR_PTR(-ENOMEM);
+ 
+@@ -1284,6 +1293,7 @@
+ 
+ 	preempt_notifier_inc();
+ 	kvm_init_pm_notifier(kvm);
++	kvm_crucible_resource_constructor_complete(kvm, 0);
+ 
+ 	return kvm;
+ 
+@@ -1306,7 +1316,8 @@
+ out_err_no_irq_srcu:
+ 	cleanup_srcu_struct(&kvm->srcu);
+ out_err_no_srcu:
+-	kvm_arch_free_vm(kvm);
++	kvm_crucible_resource_constructor_complete(kvm, r);
++	kvm_crucible_resource_free_vm(kvm);
+ 	mmdrop(current->mm);
+ 	return ERR_PTR(r);
+ }
+@@ -1384,7 +1395,7 @@
+ #ifdef CONFIG_KVM_GENERIC_MEMORY_ATTRIBUTES
+ 	xa_destroy(&kvm->mem_attr_array);
+ #endif
+-	kvm_arch_free_vm(kvm);
++	kvm_crucible_resource_free_vm(kvm);
+ 	preempt_notifier_dec();
+ 	kvm_disable_virtualization();
+ 	mmdrop(mm);
+@@ -6089,7 +6100,7 @@
+ 
+ 	snprintf(fdname, sizeof(fdname), "%d", fd);
+ 
+-	kvm = kvm_create_vm(type, fdname);
++	kvm = kvm_create_vm(original_system_file, type, fdname);
+ 	if (IS_ERR(kvm)) {
+ 		r = PTR_ERR(kvm);
+ 		goto put_fd;
+--- a/include/linux/kvm_host.h
++++ b/include/linux/kvm_host.h
+@@ -920,6 +920,10 @@
+ struct kvm_crucible_kernel_resource_context;
+ 
+ struct kvm {
++	/* Only the literal original root allocation binds this private owner.
++	 * Zeroed ordinary VM roots retain their original unselected inverse.
++	 */
++	struct kvm_crucible_kernel_resource_context *crucible_resource_context;
+ 	/* Native domain admission, callback ownership and bypass installation share
+ 	 * one order. No architecture-private objects are exposed through this gate.
+ 	 */
+--- a/arch/x86/include/asm/kvm_host.h
++++ b/arch/x86/include/asm/kvm_host.h
+@@ -2705,9 +2705,17 @@
+ void kvm_x86_vendor_exit(void);
+ 
+ #define __KVM_HAVE_ARCH_VM_ALLOC
++/* The selected constructor retains the exact vendor extent before effects.
++ * Its allocator consumes that retained extent rather than resampling vm_size.
++ */
++static inline struct kvm *kvm_arch_alloc_vm_extent(size_t extent)
++{
++	return kvzalloc(extent, GFP_KERNEL_ACCOUNT);
++}
++
+ static inline struct kvm *kvm_arch_alloc_vm(void)
+ {
+-	return kvzalloc(kvm_x86_ops.vm_size, GFP_KERNEL_ACCOUNT);
++	return kvm_arch_alloc_vm_extent(kvm_x86_ops.vm_size);
+ }
+ 
+ #define __KVM_HAVE_ARCH_VM_FREE

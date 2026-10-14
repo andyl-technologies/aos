@@ -15,4 +15,5 @@
   ./original-direct-bulk-page-refusal.patch
   ./original-nolock-page-refusal.patch
   ./original-page-input-currentness.patch
+  ./0042-original-vm-root-custody.patch
 ]

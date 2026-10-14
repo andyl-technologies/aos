@@ -3976,6 +3976,59 @@
           }
         }
       ]
+    },
+    {
+      "name": "0042-original-vm-root-custody.patch",
+      "patch": {
+        "sha256": "49e61207c0ff04ca8a0fe627d26ff28c1413e593b4aa153ed37cd07c008559e8",
+        "bytes": 12868
+      },
+      "changes": [
+        {
+          "path": "arch/x86/include/asm/kvm_host.h",
+          "before": {
+            "sha256": "f303aa91c7941d21c59abac1a4adacb36238c78803be2b9ae68234d4ca5cd796",
+            "bytes": 97867
+          },
+          "after": {
+            "sha256": "86658c691f03c3f14c82559bd526ba9253625b35a45233224875f6cff2fcc21c",
+            "bytes": 98139
+          }
+        },
+        {
+          "path": "include/linux/kvm_host.h",
+          "before": {
+            "sha256": "c4d17b87ef9477a23bef33c11557224b6ad4f83d7d87c123bb6ede976fd65fd7",
+            "bytes": 93401
+          },
+          "after": {
+            "sha256": "43e9709c800ac43819a0a970ec42a66401d456d00820d83ad32901b938e824d9",
+            "bytes": 93622
+          }
+        },
+        {
+          "path": "virt/kvm/crucible-original-kernel-resource.inc.c",
+          "before": {
+            "sha256": "28f62bb30e80afaec1ba87c2ebcf1ff6df14219eb36ef492cf71774b53172a15",
+            "bytes": 21741
+          },
+          "after": {
+            "sha256": "2399d68fdd1eaace2d4d28f64478a4f9beea406948224ffa58f6e322cba02897",
+            "bytes": 29892
+          }
+        },
+        {
+          "path": "virt/kvm/kvm_main.c",
+          "before": {
+            "sha256": "5e7c92ac099edfb17ea6452a92f2433865ad22d12a10349d5f8e0222245a7108",
+            "bytes": 190387
+          },
+          "after": {
+            "sha256": "39aed30b54159c2338d149abcff82e965953c8dc84c93ab540d931b103f24e6a",
+            "bytes": 190771
+          }
+        }
+      ]
     }
   ]
 }

@@ -3871,6 +3871,33 @@ remain separate peak terms. These observations cannot grant whole-budget or
 capture permission, and content edition7 still cannot reconstruct omitted
 metadata capacities. Source settlement and full native restoration remain open.
 
+## Original VM-root allocation and retirement source
+
+The selected kernel chain adds one corrected original VM-root stage, preserving
+all 33 prior patches and 169 source roles. The quote uses the vendor's actual
+allocation request instead of sizeof(kvm). Constructor custody binds the
+original file, Task, mm and generation, retains the native return before later
+checks, and records cleanup without refunding physical credit.
+
+Review rejected the first private candidate because constructor/free helpers
+trusted a substituted owner field. The integrated successor derives the owner
+from the retained live-root record before following candidate data or changing
+the journal. Closing precedes native free, so a new root at the same address
+cannot retire the earlier journal. A NULL return retains the constructor error.
+
+Independent receipt
+`f6178d587f42fc4cf8e9723b02e1341b82255abef66439489d592d46b2636281`
+verifies the corrected 34-stage, 169-role source replay, complete configured
+common TU and unchanged x86 cohort, 19 positive controls and ten source erasures.
+The controls include full protected-context access and real address reuse; their
+native allocation and continuation peers remain modeled. Five exact package
+roles include the patch, catalogs and existing license/scope notice.
+
+Coverage remains one of eleven domains, with no source continuation issuer and
+the before-FD CREATE fence unchanged. This source stage does not qualify full
+Kbuild, generated offsets, linking, guest execution, physical peak/retirement,
+RUN or Ready. Existing rejected candidates retain their separate evidence.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

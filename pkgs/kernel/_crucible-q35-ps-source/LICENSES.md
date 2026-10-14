@@ -88,3 +88,11 @@ incomplete. Source41 currentness precedes mask observation; historical Source40
 is retained as its separately inspectable predecessor. Constructor coverage
 stays bit0 and selected CREATE_VM is refused before native allocation. Full
 Kbuild/module/guest execution, RUN and Ready remain unqualified.
+
+Source42 changes four existing native roles without adding or removing a source
+file or changing its license notice. Its literal original VM-root constructor
+retains vendor request geometry, Task/file/generation custody and native
+allocation/cleanup outcomes. Request reservation and final-pointer observation
+do not complete physical peak or backing retirement. Constructor coverage stays
+bit0, required coverage stays 2047, and no selected CREATE/RUN/Ready permission
+is issued. The complete source/config/toolchain retention policy is unchanged.
