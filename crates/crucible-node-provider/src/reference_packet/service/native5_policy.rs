@@ -33,6 +33,10 @@ pub(crate) struct Native5Policy {
     connected: PacketNative5CoordinatorInstallation,
     #[serde(skip_serializing_if = "super::PacketNative5CaptureProfile::is_original_arrays")]
     capture_profile: super::PacketNative5CaptureProfile,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confirmation_selection: Option<super::PacketNative5ConfirmationSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confirmation_definition: Option<ContentRef>,
 }
 
 impl Native5Policy {
@@ -46,12 +50,16 @@ impl Native5Policy {
             definition,
             connected,
             capture_profile,
+            confirmation_selection,
+            confirmation_definition,
         } = self;
         observer.observe(selection)?;
         observer.observe(coordinator)?;
         observer.observe(definition)?;
         observer.observe(connected)?;
-        observer.observe(capture_profile)
+        observer.observe(capture_profile)?;
+        observer.observe(confirmation_selection)?;
+        observer.observe(confirmation_definition)
     }
 
     pub(super) fn from_original_launch(
@@ -90,10 +98,48 @@ impl Native5Policy {
             definition: schema.definition,
             connected,
             capture_profile,
+            confirmation_selection: None,
+            confirmation_definition: None,
         };
         serialized_credit(&policy.protocol_view(), 256 * 1024)?;
         policy.validate_immutable_content()?;
         Ok(policy)
+    }
+
+    pub(super) fn from_original_launch_with_confirmation(
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        profile: super::PacketNative5CaptureProfile,
+        confirmation: super::PacketNative5ConfirmationSelection,
+    ) -> Result<Self, ProviderError> {
+        let mut policy = Self::from_original_launch_with_profile(selection, coordinator, profile)?;
+        let schema = super::confirmation::native_after_confirmation_schema()?;
+        if !policy
+            .selection
+            .provider
+            .implementation
+            .formats
+            .contains(&schema)
+        {
+            return Err(ProviderError::Correlation(
+                "native5 confirmation schema not installed",
+            ));
+        }
+        policy.confirmation_selection = Some(confirmation);
+        policy.confirmation_definition = Some(schema.definition);
+        policy.validate_immutable_content()?;
+        serialized_credit(&policy.protocol_view(), 256 * 1024)?;
+        Ok(policy)
+    }
+
+    pub(crate) fn confirmation_selection(
+        &self,
+    ) -> Option<super::PacketNative5ConfirmationSelection> {
+        self.confirmation_selection
+    }
+
+    pub(crate) fn confirmation_definition(&self) -> Option<&ContentRef> {
+        self.confirmation_definition.as_ref()
     }
 
     pub(crate) fn capture_profile(&self) -> &super::PacketNative5CaptureProfile {
@@ -105,6 +151,10 @@ impl Native5Policy {
     }
 
     pub(crate) fn compact_protocol_view(&self) -> impl Serialize + '_ {
+        Native5CompactPolicyView(self)
+    }
+
+    fn original_compact_protocol_view(&self) -> impl Serialize + '_ {
         (
             &self.selection,
             (
@@ -131,6 +181,25 @@ impl Native5Policy {
     // All fields are privately owned immutable values validated at construction.
     // No callback, decoder or mutable accessor changes them after publication.
     fn validate_immutable_content(&self) -> Result<(), ProviderError> {
+        if self.confirmation_selection.is_some() {
+            let schema = super::confirmation::native_after_confirmation_schema()?;
+            if self.confirmation_definition.as_ref() != Some(&schema.definition)
+                || !self
+                    .selection
+                    .provider
+                    .implementation
+                    .formats
+                    .contains(&schema)
+            {
+                return Err(ProviderError::Correlation(
+                    "native5 confirmation definition changed",
+                ));
+            }
+        } else if self.confirmation_definition.is_some() {
+            return Err(ProviderError::Correlation(
+                "native5 absent confirmation definition",
+            ));
+        }
         self.connected.validate(&self.selection)?;
         self.coordinator
             .reference
@@ -180,6 +249,26 @@ impl Native5Policy {
             ));
         }
         authority.ensure_live()
+    }
+}
+
+struct Native5CompactPolicyView<'a>(&'a Native5Policy);
+
+impl Serialize for Native5CompactPolicyView<'_> {
+    fn serialize<T: serde::Serializer>(&self, serializer: T) -> Result<T::Ok, T::Error> {
+        let policy = self.0;
+        match policy.confirmation_selection {
+            None => policy
+                .original_compact_protocol_view()
+                .serialize(serializer),
+            Some(selection) => (
+                "source-private.native5-policy-confirmed/8",
+                policy.original_compact_protocol_view(),
+                selection,
+                &policy.confirmation_definition,
+            )
+                .serialize(serializer),
+        }
     }
 }
 
@@ -400,3 +489,4 @@ pub(crate) fn controlled_native5_policy(
         coordinator,
     )?))
 }
+

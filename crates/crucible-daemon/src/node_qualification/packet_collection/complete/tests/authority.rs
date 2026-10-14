@@ -34,6 +34,7 @@ fn collection_authority(
         };
         let selected = storage_selection();
         PacketNative5SourceLaunch {
+            confirmation_selection: None,
             capture_profile: crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile::OriginalArrays6,
             schema_version: 5,
             selection: scene.world.coordinator.participants[member].clone(),

@@ -119,6 +119,9 @@ pub struct PacketNative5SourceLaunch {
         skip_serializing_if = "PacketNative5CaptureProfile::is_original_arrays"
     )]
     pub capture_profile: PacketNative5CaptureProfile,
+    /// Selects closed confirmation data; only an actual installed service enables it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_selection: Option<super::PacketNative5ConfirmationSelection>,
     /// Names the privately owned native effect receiver.
     pub effects: PathBuf,
 }
@@ -204,10 +207,18 @@ impl PacketNative5SourceLaunch {
             .realize
             .configuration
             .verify(&canonical::canonical_json(&configuration)?)?;
-        super::super::Native5Policy::from_original_launch(
-            self.selection.clone(),
-            self.initial_coordinator.clone(),
-        )?;
+        if let Some(confirmation) = self.confirmation_selection {
+            // Additional source grammar is authenticated before any service
+            // allocation or listener effect; selecting it grants no mechanism.
+            super::super::Native5Policy::from_original_launch_with_confirmation(
+                self.selection.clone(), self.initial_coordinator.clone(),
+                self.capture_profile.clone(), confirmation,
+            )?;
+        } else {
+            super::super::Native5Policy::from_original_launch(
+                self.selection.clone(), self.initial_coordinator.clone(),
+            )?;
+        }
         Ok(())
     }
 }

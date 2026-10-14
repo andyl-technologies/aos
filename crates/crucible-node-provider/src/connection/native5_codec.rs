@@ -39,6 +39,9 @@ pub(crate) struct ControllerNative5Policy {
     connected: PacketNative5CoordinatorInstallation,
     wire: packet_schema::ConnectedPacketSchema,
     capture_profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    confirmation_selection:
+        Option<crate::reference_packet::service::confirmation::PacketNative5ConfirmationSelection>,
+    confirmation_definition: Option<ContentRef>,
 }
 
 impl ControllerNative5Policy {
@@ -53,13 +56,17 @@ impl ControllerNative5Policy {
             connected,
             wire,
             capture_profile,
+            confirmation_selection,
+            confirmation_definition,
         } = self;
         observer.observe(selection)?;
         observer.observe(coordinator)?;
         observer.observe(definition)?;
         observer.observe(connected)?;
         wire.observe_retained_metadata(observer)?;
-        observer.observe(capture_profile)
+        observer.observe(capture_profile)?;
+        observer.observe(confirmation_selection)?;
+        observer.observe(confirmation_definition)
     }
 
     pub(crate) fn from_source_installation(
@@ -120,10 +127,58 @@ impl ControllerNative5Policy {
             connected,
             wire,
             capture_profile,
+            confirmation_selection: None,
+            confirmation_definition: None,
         };
         original.validate_installation(authority)?;
         serialized_credit(&original.protocol_view(), 256 * 1024)?;
         Ok(original)
+    }
+
+    fn from_source_confirmation_installation(
+        authority: &ConnectionAuthority,
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        capture_profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<Self, ProviderError> {
+        use crate::reference_packet::service::confirmation::{
+            PacketNative5ConfirmationSelection, native_after_confirmation_schema,
+        };
+        let mut original = Self::from_source_installation_with_profile(
+            authority,
+            selection,
+            coordinator,
+            capture_profile,
+        )?;
+        let schema = native_after_confirmation_schema()?;
+        if !original
+            .selection
+            .provider
+            .implementation
+            .formats
+            .contains(&schema)
+        {
+            return Err(ProviderError::Correlation(
+                "confirmation source schema absent",
+            ));
+        }
+        original.confirmation_selection =
+            Some(PacketNative5ConfirmationSelection::AfterProtocolPoll5);
+        original.confirmation_definition = Some(schema.definition);
+        original.validate_current_confirmation(authority)?;
+        serialized_credit(&original.protocol_view(), 256 * 1024)?;
+        Ok(original)
+    }
+
+    fn validate_current_confirmation(
+        &self,
+        authority: &ConnectionAuthority,
+    ) -> Result<(), ProviderError> {
+        validate_confirmation_selection(
+            authority,
+            self.confirmation_selection,
+            self.confirmation_definition.as_ref(),
+        )
     }
 
     fn validate_installation(&self, authority: &ConnectionAuthority) -> Result<(), ProviderError> {
@@ -169,34 +224,75 @@ impl ControllerNative5Policy {
                 "native5 controller original authority changed",
             ));
         }
+        if self.confirmation_selection.is_some() {
+            self.validate_current_confirmation(authority)?;
+        }
         authority.ensure_live()
     }
 
     fn compact_protocol_view(&self) -> impl serde::Serialize + '_ {
-        (
-            &self.selection,
-            (
-                &self.coordinator.reference,
-                self.coordinator.bytes.allocation_capacity(),
-                crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(
-                    self.coordinator.bytes.as_slice(),
-                ),
-            ),
-            &self.definition,
-            &self.connected,
-            self.wire.protocol_view(),
-            &self.capture_profile,
-        )
+        struct View<'a>(&'a ControllerNative5Policy);
+        impl serde::Serialize for View<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let policy = self.0;
+                let ordinary = (
+                    &policy.selection,
+                    (
+                        &policy.coordinator.reference,
+                        policy.coordinator.bytes.allocation_capacity(),
+                        crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(
+                            policy.coordinator.bytes.as_slice(),
+                        ),
+                    ),
+                    &policy.definition,
+                    &policy.connected,
+                    policy.wire.protocol_view(),
+                    &policy.capture_profile,
+                );
+                match policy.confirmation_selection {
+                    None => serde::Serialize::serialize(&ordinary, serializer),
+                    Some(selection) => serde::Serialize::serialize(
+                        &(
+                            "source-private.controller5-policy-confirmed/8",
+                            ordinary,
+                            selection,
+                            &policy.confirmation_definition,
+                        ),
+                        serializer,
+                    ),
+                }
+            }
+        }
+        View(self)
     }
 
     fn protocol_view(&self) -> impl serde::Serialize + '_ {
-        (
-            &self.selection,
-            &self.coordinator,
-            &self.definition,
-            &self.connected,
-            self.wire.protocol_view(),
-        )
+        struct View<'a>(&'a ControllerNative5Policy);
+        impl serde::Serialize for View<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let policy = self.0;
+                let ordinary = (
+                    &policy.selection,
+                    &policy.coordinator,
+                    &policy.definition,
+                    &policy.connected,
+                    policy.wire.protocol_view(),
+                );
+                match policy.confirmation_selection {
+                    None => serde::Serialize::serialize(&ordinary, serializer),
+                    Some(selection) => serde::Serialize::serialize(
+                        &(
+                            "source-private.controller5-policy-confirmed/8",
+                            ordinary,
+                            selection,
+                            &policy.confirmation_definition,
+                        ),
+                        serializer,
+                    ),
+                }
+            }
+        }
+        View(self)
     }
 }
 
@@ -214,6 +310,33 @@ impl Native5CodecOwner {
                 observer.shared_value(std::mem::size_of_val(policy.as_ref()))?;
                 policy.observe_retained_metadata(observer)
             }
+        }
+    }
+
+    pub(crate) fn confirmation_selection(
+        &self,
+    ) -> Option<crate::reference_packet::service::confirmation::PacketNative5ConfirmationSelection>
+    {
+        match self {
+            Self::ControllerPacket(policy) => policy.confirmation_selection,
+            Self::NativePacket(policy) => policy.confirmation_selection(),
+        }
+    }
+
+    pub(crate) fn authenticate_confirmation_selection(
+        &self,
+        authority: &ConnectionAuthority,
+    ) -> Result<(), ProviderError> {
+        match self {
+            Self::ControllerPacket(policy) => {
+                policy.validate_current_negotiation(authority)?;
+                policy.validate_current_confirmation(authority)
+            }
+            Self::NativePacket(policy) => validate_confirmation_selection(
+                authority,
+                policy.confirmation_selection(),
+                policy.confirmation_definition(),
+            ),
         }
     }
 
@@ -251,7 +374,9 @@ impl Native5CodecOwner {
                 "fresh controller mapping requires two actual controller codecs",
             ));
         };
-        if original.capture_profile != target.capture_profile
+        if original.confirmation_selection != target.confirmation_selection
+            || original.confirmation_definition != target.confirmation_definition
+            || original.capture_profile != target.capture_profile
             || original.definition != target.definition
             || !same_durable_selection(&original.selection, &target.selection)
             || original.connected.schema != target.connected.schema
@@ -328,7 +453,17 @@ impl BodySchemaVerifier for Native5CodecOwner {
         match self {
             Self::ControllerPacket(policy) => {
                 policy.validate_current_negotiation(authority)?;
-                policy.wire.verify(authority, envelope, body)
+                if envelope.extensions.contains_key(crate::reference_packet::service::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION) {
+                    policy.validate_current_confirmation(authority)?;
+                    if controller_node(policy) != envelope.node_id.0.as_ref() {
+                        return Err(ProviderError::Correlation("confirmation changed installed controller node"));
+                    }
+                    super::ConfirmationProjection::from_envelope(envelope)?;
+                    super::confirmation_projection::validate_typed_poll(envelope, body)?;
+                    authority.ensure_live()
+                } else {
+                    policy.wire.verify(authority, envelope, body)
+                }
             }
             Self::NativePacket(policy) => policy.verify(authority, envelope, body),
         }
@@ -371,6 +506,32 @@ impl<S: ProviderStream> Connection<S> {
         self.authority.ensure_live()
     }
 
+    /// Observes the selection of this same actually installed immutable codec.
+    ///
+    /// A selected value is checked against the current negotiated feature and
+    /// extension. It supplies no source ticket, Capture or restoration authority.
+    ///
+    /// # Errors
+    /// Refuses another original actor, revoked registration, replaced codec or
+    /// a selected confirmation whose negotiated installation no longer matches.
+    pub fn original_native5_confirmation_selection(
+        &self,
+    ) -> Result<
+        Option<crate::reference_packet::service::confirmation::PacketNative5ConfirmationSelection>,
+        ProviderError,
+    > {
+        self.authenticate_native5_source_codec()?;
+        let codec = self
+            .native5_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation("confirmation codec absent"))?;
+        let selection = codec.confirmation_selection();
+        if selection.is_some() {
+            codec.authenticate_confirmation_selection(&self.authority)?;
+        }
+        Ok(selection)
+    }
+
     /// Borrows the profile from this same actually installed immutable codec.
     ///
     /// # Errors
@@ -407,6 +568,13 @@ impl<S: ProviderStream> Connection<S> {
             ));
         }
         policy.validate_installation(&self.authority)?;
+        if policy.confirmation_selection().is_some() {
+            validate_confirmation_selection(
+                &self.authority,
+                policy.confirmation_selection(),
+                policy.confirmation_definition(),
+            )?;
+        }
         self.install_original_native5_codec(bank, Native5CodecOwner::NativePacket(policy))
     }
 
@@ -449,6 +617,32 @@ impl<S: ProviderStream> Connection<S> {
             ));
         }
         let policy = ControllerNative5Policy::from_source_installation_with_profile(
+            &self.authority,
+            selection,
+            coordinator,
+            profile,
+        )?;
+        self.install_original_native5_codec(
+            bank,
+            Native5CodecOwner::ControllerPacket(Box::new(policy)),
+        )
+    }
+
+    pub(crate) fn install_native5_controller_confirmation_codec(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.check_authority()?;
+        if self.role != EndpointRole::Controller {
+            return Err(ProviderError::Correlation(
+                "confirmation source requires controller",
+            ));
+        }
+        let policy = ControllerNative5Policy::from_source_confirmation_installation(
             &self.authority,
             selection,
             coordinator,
@@ -526,4 +720,43 @@ fn same_durable_selection(
         && original.realize.resource_limits == target.realize.resource_limits
         && original.realize.extensions == target.realize.extensions
         && original.world == target.world
+}
+
+// The static definition is authenticated at construction. This fast path only
+// observes the same immutable selection and current negotiated registration.
+fn validate_confirmation_selection(
+    authority: &ConnectionAuthority,
+    selection: Option<
+        crate::reference_packet::service::confirmation::PacketNative5ConfirmationSelection,
+    >,
+    definition: Option<&ContentRef>,
+) -> Result<(), ProviderError> {
+    use crate::reference_packet::service::confirmation::{
+        PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE, PacketNative5ConfirmationSelection,
+    };
+    authority.ensure_live()?;
+    if selection != Some(PacketNative5ConfirmationSelection::AfterProtocolPoll5)
+        || definition.is_none()
+        || !authority
+            .selected_features()
+            .iter()
+            .any(|feature| feature.as_str() == PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE)
+        || !authority
+            .envelope_extensions()
+            .contains(PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE)
+    {
+        return Err(ProviderError::Correlation(
+            "confirmation immutable selection not installed and negotiated",
+        ));
+    }
+    authority.ensure_live()
+}
+
+fn controller_node(policy: &ControllerNative5Policy) -> Option<&Id> {
+    policy
+        .selection
+        .realization
+        .bindings
+        .first()
+        .map(|binding| &binding.compatibility.node_id)
 }

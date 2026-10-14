@@ -18,6 +18,9 @@ use crate::session::CorrelationGuard;
 use crate::transport::{FrameReader, write_frame_with_limits};
 
 mod capture_prefix;
+mod confirmation_projection;
+pub(crate) use confirmation_projection::ConfirmationProjection;
+mod confirmation;
 mod native5_birth;
 pub use native5_birth::{Native5ConnectionBirth, Native5ConnectionBirthRefusal};
 mod exchange;

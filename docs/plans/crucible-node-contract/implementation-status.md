@@ -4040,6 +4040,36 @@ This loader accounts selected host data and grants no native installation or
 factory/adopter authority. Both Core42 and Packet148 safeguards remain; complete
 physical capture, local source settlement and fresh worlds remain required.
 
+## Original native-after confirmation SDK
+
+The controller validates confirmation against the original Capture operation,
+terminal envelope and three complete content references, then requires the
+actual fourth content object before accepting its receipt. The provider checks
+the same installed codec and incoming Poll, complete literal suffix credit,
+sequence bounds and lifetime request identifiers before publication. Borrowed
+closed projections avoid cloning the response DOM. Absent selection preserves
+ordinary wire bytes; selected service activation remains refused until its
+native source and journal mechanism is installed.
+
+Independent production review
+`f17da6321bf2fc8bcd439e1a62634fc2a22170acc223f774597646fee380de53`
+verifies the eighteen SDK bodies and their original Source98 strict checks,
+457 enabled provider tests and six contract tests; 13 provider tests remain
+ignored. Successor review `f551e3c2f971d7733351b22e86254539fce5196e33afd90c9768f54d36df8dac` verifies the exact current
+preimages and the daemon test's explicit None initializer. Distinct broader
+Source116 all-target checks verify that initializer against the same public
+launch layout; they do not represent a minimal nineteen-file execution.
+Native source settlement, complete physical peak and fresh adoption remain open.
+
+The separate Source60 repository-profile core suite records 1,405 passes and
+five missing-provider failures in 45.329 seconds, with 24 ignored. A genuine
+same-source provider build supplies only those five retries, all passing in
+0.812 seconds under unchanged assertions and deadlines. Receipt
+`d5f507b214f6bab30925832d8bc58598829185e286220a47e4cfab354c65d16c`
+retains exact executable identities and original process retirement. All 1,410
+enabled cases therefore pass across the explicit fixture conditions; the first
+invocation stays failed. These results are not a current-HEAD full-suite claim.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

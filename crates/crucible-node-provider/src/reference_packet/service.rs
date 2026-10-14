@@ -20,6 +20,9 @@ use serde::{Deserialize, Serialize};
 use super::{PacketProgramDefinition, control::PacketControlSelection};
 use crate::{ProviderError, handshake::Limits, reference_service::InstalledContent};
 
+pub mod confirmation;
+pub use confirmation::PacketNative5ConfirmationSelection;
+
 mod connected;
 mod native5;
 mod native5_policy;

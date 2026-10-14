@@ -242,6 +242,54 @@ impl OriginalFrameReservation {
         }
     }
 
+    pub(crate) fn outgoing_original_id_slots(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.direction == FrameDirection::Outgoing && slot.request.is_some())
+            .count()
+    }
+
+    pub(crate) fn contains_original_id(&self, id: &str) -> bool {
+        self.slots.iter().any(|slot| {
+            slot.request
+                .as_ref()
+                .is_some_and(|(bytes, length)| &bytes[..*length] == id.as_bytes())
+        })
+    }
+
+    /// Checks unused lifetime bytes and directional slots without reservation.
+    pub(crate) fn preflight_framed_suffix(
+        &self,
+        outgoing_frames: usize,
+        outgoing_framed_bytes: usize,
+        incoming_frames: usize,
+        incoming_framed_bytes: usize,
+    ) -> Result<(), ProviderError> {
+        let outgoing = self.outgoing.checked_add(outgoing_frames);
+        let incoming = self.incoming.checked_add(incoming_frames);
+        let bytes = self
+            .bytes
+            .len()
+            .checked_add(outgoing_framed_bytes)
+            .and_then(|value| value.checked_add(incoming_framed_bytes));
+        let slots = self
+            .slots
+            .len()
+            .checked_add(outgoing_frames)
+            .and_then(|value| value.checked_add(incoming_frames));
+        if !self.complete()
+            || outgoing.is_none_or(|value| value > self.maximum_frames)
+            || incoming.is_none_or(|value| value > self.maximum_frames)
+            || bytes.is_none_or(|value| value > self.maximum_bytes || value > self.bytes.capacity())
+            || slots.is_none_or(|value| value > self.slots.capacity())
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "original confirmation lifetime frame bank exhausted",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn complete(&self) -> bool {
         self.slots.iter().all(|slot| slot.complete)
     }
@@ -459,3 +507,58 @@ mod antecedent_tests;
 
 #[cfg(test)]
 mod after_encoding_bound_tests;
+
+#[cfg(test)]
+mod confirmation_suffix_tests {
+    // crucible-lint: allow panic-shortcut -- Literal-bank refusal controls deliberately panic on invalid test setup.
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crucible_node_contract::Id;
+
+    #[test]
+    fn original_confirmation_bank_checks_actual_lifetime_extents_without_mutation() {
+        let mut bank = OriginalFrameReservation::reserve(64, 2).unwrap();
+        for direction in [FrameDirection::Incoming, FrameDirection::Outgoing] {
+            let slot = bank.begin(direction, 5).unwrap();
+            bank.append(slot, &[0, 0, 0, 1, b'a']).unwrap();
+            bank.retain_request(
+                slot,
+                &Id::new(if direction == FrameDirection::Incoming {
+                    "poll"
+                } else {
+                    "old-proof"
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            if direction == FrameDirection::Outgoing {
+                bank.advance(slot, 5).unwrap();
+            }
+            bank.finish(slot).unwrap();
+        }
+        let original = serde_json::to_vec(&bank.protocol_view()).unwrap();
+
+        assert!(bank.preflight_framed_suffix(1, 20, 1, 34).is_ok());
+        assert!(bank.preflight_framed_suffix(1, 20, 1, 35).is_err());
+        assert!(bank.preflight_framed_suffix(2, 10, 1, 5).is_err());
+        assert!(bank.preflight_framed_suffix(1, usize::MAX, 1, 5).is_err());
+        assert!(bank.contains_original_id("poll"));
+        assert!(bank.contains_original_id("old-proof"));
+        assert!(!bank.contains_original_id("new-proof"));
+        assert_eq!(bank.outgoing_original_id_slots(), 1);
+        assert_eq!(serde_json::to_vec(&bank.protocol_view()).unwrap(), original);
+    }
+
+    #[test]
+    fn original_confirmation_bank_refuses_partial_io_without_resetting_slot() {
+        let mut bank = OriginalFrameReservation::reserve(64, 2).unwrap();
+        let slot = bank.begin(FrameDirection::Incoming, 5).unwrap();
+        bank.append(slot, &[0, 0]).unwrap();
+        let original = serde_json::to_vec(&bank.protocol_view()).unwrap();
+
+        assert!(bank.preflight_framed_suffix(1, 5, 1, 5).is_err());
+        assert_eq!(serde_json::to_vec(&bank.protocol_view()).unwrap(), original);
+        assert!(!bank.complete());
+    }
+}

@@ -417,6 +417,32 @@ impl ClientSession {
             .install_native5_controller_codec(bank, selection, coordinator)
     }
 
+    pub(super) fn original_native5_confirmation_selection(
+        &self,
+    ) -> Result<
+        Option<crate::reference_packet::service::confirmation::PacketNative5ConfirmationSelection>,
+        ProviderError,
+    > {
+        self.authenticate_native5_source_codec()?;
+        self.connection.original_native5_confirmation_selection()
+    }
+
+    pub(super) fn install_native5_source_confirmation_codec(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<(), ProviderError> {
+        if self.sequence.get() != 2 || self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "confirmation codec requires unused original session without callbacks",
+            ));
+        }
+        self.connection
+            .install_native5_controller_confirmation_codec(bank, selection, coordinator, profile)
+    }
+
     pub(super) fn install_native5_source_codec_with_profile(
         &mut self,
         bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,

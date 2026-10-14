@@ -473,6 +473,14 @@ impl ObserveMetadata for crate::reference_packet::service::PacketNative5CaptureP
     }
 }
 
+impl ObserveMetadata for crate::reference_packet::service::PacketNative5ConfirmationSelection {
+    fn observe_metadata(&self, _: &mut MetadataObserver) -> Result<(), ProviderError> {
+        match self {
+            Self::AfterProtocolPoll5 => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

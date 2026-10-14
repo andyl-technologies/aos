@@ -20,6 +20,9 @@ use super::{ClientCustody, ClientOriginal, ClientSession};
 
 #[path = "controller/registration_read.rs"]
 mod registration_read;
+
+#[path = "controller/confirmation.rs"]
+mod confirmation;
 pub use registration_read::CnpRegistrarRead;
 
 /// Names one node and its indivisible execution owner on an actual connection.
@@ -70,6 +73,24 @@ impl CnpController {
             ));
         }
         self.session.authenticate_native5_source_codec()
+    }
+
+    /// Observes the closed confirmation selection on this same installed actor.
+    ///
+    /// The selected value is data after original registration and sealed verifier
+    /// checks. It grants no source Capture, archive or fresh installation right.
+    ///
+    /// # Errors
+    /// Refuses another origin, fenced/revoked controller, callback loss policy,
+    /// absent/replaced codec or a selected feature absent from negotiation.
+    pub fn original_native5_confirmation_selection(
+        &self,
+    ) -> Result<
+        Option<crate::reference_packet::service::confirmation::PacketNative5ConfirmationSelection>,
+        ProviderError,
+    > {
+        self.authenticate_native5_source_codec()?;
+        self.session.original_native5_confirmation_selection()
     }
 
     /// Borrows the profile of this controller's same installed immutable codec.
@@ -373,6 +394,42 @@ impl CnpController {
             ));
         }
         self.session.install_native5_source_codec_with_profile(
+            bank,
+            selection,
+            coordinator,
+            profile,
+        )
+    }
+
+    /// Installs source-selected confirmation grammar on the original unused actor.
+    ///
+    /// The additional immutable schema, same source route, selected negotiation
+    /// and original bank are checked before bank transfer. Transport selection
+    /// supplies no semantic/native Capture or fresh restoration authority.
+    ///
+    /// # Errors
+    /// Refuses a used/foreign controller, wrong source tuple, absent additional
+    /// schema/feature, mutable loss callback or already installed verifier/bank.
+    pub fn install_native5_source_confirmation_codec(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.fenced
+            || self.custody.originals().next().is_some()
+            || selection.realization.bindings.len() != 1
+            || selection.realization.owner_bindings.len() != 1
+            || self.route.node != selection.realization.bindings[0].compatibility.node_id
+            || self.route.execution_owner != selection.realization.owner_bindings[0].owner.id
+        {
+            return Err(ProviderError::Correlation(
+                "confirmation codec requires original unused source controller",
+            ));
+        }
+        self.session.install_native5_source_confirmation_codec(
             bank,
             selection,
             coordinator,

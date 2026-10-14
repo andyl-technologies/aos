@@ -284,3 +284,48 @@ fn native5_original_custody_facts_refuse_unsealed_baseline_bank_without_mutation
     assert_eq!(facts.maximum_journal_bytes, 2 * 65_536);
     assert_eq!(facts.negotiated_journal_entries, 64);
 }
+
+#[test]
+fn native5_confirmation_refuses_legacy_codec_before_custody_or_unix_io() {
+    let (_handshake, mut controller, mut peer) = controller();
+    let before = serde_json::to_vec(&controller.custody.protocol_view()).unwrap();
+    let reference = canonical::content_ref(b"inert snapshot", "application/json").unwrap();
+    let context =
+        crate::reference_packet::service::confirmation::PacketNativeAfterConfirmationRequest {
+            schema: "source-owned.packet-native-after-confirmation-request/5".into(),
+            capture_request_id: id("capture-request"),
+            capture_request_hash: canonical::hash("cnp.request.v1", b"inert request").unwrap(),
+            capture_operation_id: id("capture-operation"),
+            capture_terminal_hash: canonical::hash(
+                "source-owned.packet-native-capture-terminal/5",
+                b"inert terminal",
+            )
+            .unwrap(),
+            capture_terminal_sequence: U64::new(2),
+            native_snapshot_ref: reference,
+            native_control_ref: canonical::content_ref(b"inert control", "application/json")
+                .unwrap(),
+            native_anchor_ref: canonical::content_ref(b"inert anchor", "application/json").unwrap(),
+        };
+
+    assert!(matches!(
+        controller.call_original_native_after_confirmation(
+            id("confirmation"),
+            id("capture-owner"),
+            context
+        ),
+        Err(ProviderError::Correlation(
+            "native5 actual immutable source codec is absent"
+        ))
+    ));
+    assert_eq!(
+        serde_json::to_vec(&controller.custody.protocol_view()).unwrap(),
+        before
+    );
+    peer.set_nonblocking(true).unwrap();
+    let mut byte = [0; 1];
+    assert_eq!(
+        peer.read(&mut byte).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}

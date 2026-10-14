@@ -91,6 +91,50 @@ impl CorrelationGuard {
         Ok(())
     }
 
+    pub(crate) fn preflight_confirmation_sequences(
+        &self,
+        outgoing: usize,
+        incoming: usize,
+    ) -> Result<(), ProviderError> {
+        let outgoing = u64::try_from(outgoing).map_err(|_| {
+            ProviderError::ResourceExhausted("confirmation outgoing sequence count")
+        })?;
+        let incoming = u64::try_from(incoming).map_err(|_| {
+            ProviderError::ResourceExhausted("confirmation incoming sequence count")
+        })?;
+        self.next_sent
+            .checked_add(outgoing)
+            .ok_or(ProviderError::ResourceExhausted(
+                "confirmation outgoing sequence exhausted",
+            ))?;
+        self.next_received
+            .checked_add(incoming)
+            .ok_or(ProviderError::ResourceExhausted(
+                "confirmation incoming sequence exhausted",
+            ))?;
+        Ok(())
+    }
+
+    pub(crate) fn authenticate_incoming_confirmation(
+        &self,
+        original: &Envelope,
+    ) -> Result<(), ProviderError> {
+        self.check_live()?;
+        self.check_scope(original)?;
+        if original.message != MessageKind::Request
+            || original.method != Method::Poll
+            || self.received_requests.len() != 1
+            || self.received_requests.values().next() != Some(original)
+            || !self.pending.is_empty()
+            || !self.writing_responses.is_empty()
+        {
+            return Err(ProviderError::Correlation(
+                "confirmation publication has unrelated original correlation",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn protocol_view(&self) -> impl serde::Serialize + '_ {
         (
             "source-private.correlations/6",

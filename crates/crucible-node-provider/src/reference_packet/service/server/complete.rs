@@ -11,6 +11,9 @@ pub(in super::super) fn accept_complete(
     launch: PacketNative5SourceLaunch,
 ) -> Result<PacketSourceService, ProviderError> {
     launch.validate()?;
+    if launch.confirmation_selection.is_some() {
+        return Err(ProviderError::Correlation("selected native-after confirmation service not installed"));
+    }
     validate_original_service_encoding(&launch.capture_profile)?;
     let hello = OriginalNativeHelloJournal::reserve(65_536, 64)?;
     if hello.allocated_bytes()
