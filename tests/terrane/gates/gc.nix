@@ -47,6 +47,10 @@
   ];
 
   markTests = [
+    "gc::runner::tests::inspection::gc_metadata_pack_sharing_preserves_consumed_identities_and_fresh_store_reads"
+    "gc::runner::tests::inspection::gc_metadata_pack_sharing_keeps_membership_and_restore_checks_independent"
+    "gc::runner::tests::inspection::gc_metadata_pack_sharing_rejects_changed_payload_before_native_handoff"
+    "gc::runner::tests::inspection::gc_metadata_pack_sharing_preserves_session_and_original_refusal"
     "gc::runner::walk::tests::common_walk_certificates_apply_only_to_direct_entry_objects"
     "gc::runner::walk::tests::common_walk_context_order_is_fieldwise_and_round_trips_exact_state"
     "gc::runner::walk::tests::common_walk_cutoffs_remain_per_occurrence_and_broadest"
