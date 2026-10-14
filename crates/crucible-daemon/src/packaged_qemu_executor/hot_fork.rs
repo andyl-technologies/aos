@@ -71,6 +71,7 @@ where
                             report_shutdown_cause(&mut stderr, key, depth, current);
                             cause = current.source();
                         }
+                        report_shutdown_leaf(&mut stderr, key, failure);
                     }
                     let _ = writeln!(
                         std::io::stderr().lock(),
@@ -98,6 +99,37 @@ fn report_shutdown_cause(
     let _ = writeln!(
         output,
         "CRUCIBLE-HOT-FORK-SHUTDOWN-V1 source_key={key:?} depth={depth} cause_prefix={message:?}"
+    );
+}
+
+/// Writes the end of the deepest cause, which nested prefixes truncate away.
+///
+/// Wrapping errors repeat their sources' text, so the bounded prefixes above
+/// can all stop before the innermost reason. The chain walk is bounded.
+fn report_shutdown_leaf<E: std::error::Error>(
+    output: &mut impl Write,
+    key: &impl std::fmt::Debug,
+    failure: &E,
+) {
+    let mut message = failure.to_string();
+    let mut depth = 0_usize;
+    let mut cause = failure.source();
+    while let Some(current) = cause {
+        if depth == 32 {
+            break;
+        }
+        message = current.to_string();
+        depth += 1;
+        cause = current.source();
+    }
+    let characters = message.chars().count();
+    let suffix = message
+        .chars()
+        .skip(characters.saturating_sub(512))
+        .collect::<String>();
+    let _ = writeln!(
+        output,
+        "CRUCIBLE-HOT-FORK-SHUTDOWN-V1 source_key={key:?} leaf_depth={depth} cause_suffix={suffix:?}"
     );
 }
 
