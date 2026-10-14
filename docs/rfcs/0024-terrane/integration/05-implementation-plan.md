@@ -563,8 +563,11 @@ Normative review by the coordinator and an independent reviewer confirms that
 120 seconds is the general Nextest default, not an RFC ancestry latency limit. An
 exact-selector override permits a finite third runner minute, following the
 existing real-wait cases, while retaining C=30, G=60, D=60, retention=90,
-all live lease checks and every assertion. This configuration correction needs
-fresh qualification and does not convert any earlier timeout into a pass.
+all live lease checks and every assertion. Fresh candidate `9890628922a8`
+(tree `a7db0659640b`) passes all thirteen compiler phases and the normal ancestry
+case in 144.851 seconds, with diagnostics unset and zero retries. Coordinator
+review verifies all 59 runtime payloads, unchanged binaries and preserved scratch.
+This result does not convert any earlier timeout into a pass.
 Owning gates, final-source qualification and task acceptance remain required.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
