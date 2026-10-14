@@ -4703,6 +4703,31 @@ native source `92e5b2b4d39ddf110188c3ea9829d2521fba5ee5`, tree
 signature and unchanged-license reconstruction review. Full native execution
 of this correction and package/source realization remain pending.
 
+The next ordinary build again passes all 3,792 build steps and 589 unit cases,
+including the network, deferred-control and stop-chain fixtures. A later snapshot
+fixture fails because its extracted setup lacks the genuine constructor process
+guard. The reviewed correction includes that actual guard and its process
+controls. Focused compilation also exposes a replay-barrier fixture missing the
+actual deferred-external-work field. Its correction preserves the legacy reset
+model and adds all four external/self and immediate/deferred queue checks.
+
+All seven remaining fixture positives now execute successfully, and all 29
+negative mutations produce checked assertion aborts. Six exact compiled
+components are reused with their complete dependencies rechecked; the changed
+replay fixture compiles afresh. An initial adapter path-rewrite failure and the
+subsequent replay compile failure remain recorded. A later adapter rejects
+libc's assertion spelling despite SIGABRT; a source-qualified parser classifies
+that retained diagnostic separately, then only the remaining 23 controls run.
+Independent review joins all source, compiler, dependency, binary and runtime
+records. These are extracted fixture/model checks, not a full package pass.
+
+Signed native source `508d5e7438c78c9d0932228f26798773d7ec2f05`, tree
+`b6bf375e4a0f1c8eeb90d215be546ebf119e7262`, changes only those two existing
+Python fixtures relative to the preceding source. The cumulative atomic patch,
+source bundle, signature and unchanged license inventory pass reconstruction
+review. Full ordinary package and corresponding-source realization remain
+pending; no replay startup, clock-equivalence or Ready claim follows here.
+
 Corresponding-source assembly also unnecessarily pulls Cargo and Git into a
 registry-only vendoring operation. A supplied lockfile now selects the required
 tools, and both stages authenticate its exact raw bytes before vendoring effects.

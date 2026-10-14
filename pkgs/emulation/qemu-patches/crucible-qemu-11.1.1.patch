@@ -1,6 +1,6 @@
-From 92e5b2b4d39ddf110188c3ea9829d2521fba5ee5 Mon Sep 17 00:00:00 2001
+From 508d5e7438c78c9d0932228f26798773d7ec2f05 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 01:00:00 +0000
+Date: Thu, 15 Oct 2026 02:00:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -795,6 +795,21 @@ cases; the network and lifecycle fixtures pass before deferred-control
 compilation exposes its missing shared admission definition. Preserve that
 failure. Pure source controls cover unique admission extraction and all
 three generated fixture bodies; native compilation remains required.
+
+
+Complete the extracted snapshot and round-robin fixture models with their
+actual production dependencies. Retain the genuine raw-PID constructor
+clock guard before its snapshot callers, checking unselected/current birth
+and original fork refusal. Model the actual CPU deferred-work boolean and
+cover external/self callers with the selector both false and true. Keep
+the original assertions, mutation branches and source extraction tails.
+
+The previous ordinary build completes 3792 steps, 589 unit cases and all
+pre-snapshot checks before exposing the missing snapshot guard. A focused
+family compile validates six fixtures and exposes the remaining RR model
+field. Preserve both failures. These two existing Python-only changes do
+not change production execution or create selected authority; complete
+component execution and package/source realization remain required.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -247567,10 +247582,10 @@ index 0000000000000000000000000000000000000000..47c5b0de1b13d148c6b19af3e0bacdf5
 +    main()
 diff --git a/tests/unit/test-crucible-rr-sim-barriers.py b/tests/unit/test-crucible-rr-sim-barriers.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ac231e80b1643c3613ceb63be13c8aec71f88d55
+index 0000000000000000000000000000000000000000..386c5721fb4af7f8b51d1eec2a0e014e6311398c
 --- /dev/null
 +++ b/tests/unit/test-crucible-rr-sim-barriers.py
-@@ -0,0 +1,673 @@
+@@ -0,0 +1,704 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production RR FIFO barriers and ordinary CPU event processing.
 +
@@ -247694,6 +247709,8 @@ index 0000000000000000000000000000000000000000..ac231e80b1643c3613ceb63be13c8aec
 +    CPUState *next;
 +    int cpu_index, exception_index;
 +    bool stop, stopped, unplug, halted, thread_kicked, exit_request;
++    /* The old barrier traces do not select finite-quantum external deferral. */
++    bool crucible_sim_rr_defer_external_work;
 +    /* Native ingress is never armed in the legacy RR barrier proof. */
 +    bool crucible_node_ingress_armed, crucible_node_work_tracking;
 +    /* No KVM paused service is enrolled in the legacy RR barrier proof. */
@@ -247931,6 +247948,7 @@ index 0000000000000000000000000000000000000000..ac231e80b1643c3613ceb63be13c8aec
 +        assert(QSIMPLEQ_EMPTY(&cpus[index].work_list));
 +        cpus[index].stop = cpus[index].stopped = cpus[index].unplug = false;
 +        cpus[index].thread_kicked = cpus[index].exit_request = false;
++        cpus[index].crucible_sim_rr_defer_external_work = false;
 +        cycles[index] = 0;
 +    }
 +    machine.accelerator = &accelerator;
@@ -248014,6 +248032,33 @@ index 0000000000000000000000000000000000000000..ac231e80b1643c3613ceb63be13c8aec
 +    assert(cycles[0] == 6 && cycles[1] == 6);
 +    current_machine = &machine;
 +    puts("PASS healthy ordinary 8->3 cycles per CPU; precise/adaptive/off Sim, absent accelerator and early startup");
++}
++
++static void check_external_work_selection(void)
++{
++    /* Supply the immutable queue-selection bit explicitly. Thread startup and
++     * the accelerator's kick implementation remain modeled by this fixture. */
++    for (unsigned defer = 0; defer < 2; defer++) {
++        for (unsigned self = 0; self < 2; self++) {
++            reset(true, ICOUNT_PRECISE);
++            CPUState *target = &cpus[0];
++            target->crucible_sim_rr_defer_external_work = defer;
++            current_cpu = self ? target : &sentinel;
++
++            enqueue(target, 'D', false);
++            unsigned expected_kicks = defer && !self;
++            assert(kicks == expected_kicks && idle_bridges == expected_kicks);
++            assert(target->thread_kicked == (expected_kicks != 0));
++            assert(target->exit_request && !cpu_work_list_empty(target));
++
++            current_cpu = target;
++            process_queued_cpu_work(target);
++            assert(callbacks == 1 && !strcmp(events, "D"));
++            assert(cpu_work_list_empty(target));
++            current_cpu = &sentinel;
++        }
++    }
++    puts("PASS production work queue selection: external/self, deferred/direct; FIFO callback retained");
 +}
 +
 +static void check_wrapper(void)
@@ -248118,6 +248163,7 @@ index 0000000000000000000000000000000000000000..ac231e80b1643c3613ceb63be13c8aec
 +        QSIMPLEQ_INIT(&cpus[index].work_list);
 +    }
 +
++    check_external_work_selection();
 +    check_wrapper();
 +    check_fixed_point();
 +    check_healthy();
@@ -250866,10 +250912,10 @@ index 0000000000000000000000000000000000000000..22e321204c3443ea7d63c9329ea1208d
 +}
 diff --git a/tests/unit/test-crucible-snapshot-fast-path.py b/tests/unit/test-crucible-snapshot-fast-path.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9e7f89b14aa13f74cea37a8a38ca55a1861d882e
+index 0000000000000000000000000000000000000000..c070ad268d510f2d6753ae3a47cb7f53f10185af
 --- /dev/null
 +++ b/tests/unit/test-crucible-snapshot-fast-path.py
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,410 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production snapshot continuation and RR restoration bodies.
 +
@@ -250899,6 +250945,10 @@ index 0000000000000000000000000000000000000000..9e7f89b14aa13f74cea37a8a38ca55a1
 +#include <stdint.h>
 +#include <stdio.h>
 +#include <string.h>
++#include <sys/syscall.h>
++#include <sys/types.h>
++#include <sys/wait.h>
++#include <unistd.h>
 +#include <glib.h>
 +#include "qemu/typedefs.h"
 +#define qemu_build_assert(condition) _Static_assert(condition, #condition)
@@ -250935,6 +250985,10 @@ index 0000000000000000000000000000000000000000..9e7f89b14aa13f74cea37a8a38ca55a1
 +static CPUState *first_cpu = &cpus[0];
 +static const char *accel_name = "sim";
 +static unsigned int accel_reads, raw_reads, error_reports, handoffs;
++
++/* No original constructor clock is selected by the field-only model. The
++ * genuine process guard below also exercises its bound-process/fork branches. */
++static pid_t q35_constructor_clock_original_process;
 +
 +/* Count identity lookups at the same provider called by the real predicate. */
 +static const char *current_accel_name(void)
@@ -250989,6 +251043,31 @@ index 0000000000000000000000000000000000000000..9e7f89b14aa13f74cea37a8a38ca55a1
 +"""
 +
 +CHECKS = r"""
++static void constructor_process_guard_checks(void)
++{
++    g_assert_cmpint(q35_constructor_clock_original_process, ==, 0);
++    q35_constructor_clock_process_guard();
++    q35_constructor_clock_original_process = syscall(SYS_getpid);
++    q35_constructor_clock_process_guard();
++
++    pid_t child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        q35_constructor_clock_process_guard();
++        _exit(99);
++    }
++    int status;
++    pid_t waited;
++    do {
++        waited = waitpid(child, &status, 0);
++    } while (waited < 0 && errno == EINTR);
++    g_assert_cmpint(waited, ==, child);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 125);
++    q35_constructor_clock_original_process = 0;
++    puts("PASS production constructor process guard: unselected/current process, fork refused with exit 125");
++}
++
 +static void reset(void)
 +{
 +    memset(&timers_state, 0, sizeof(timers_state));
@@ -251179,6 +251258,7 @@ index 0000000000000000000000000000000000000000..9e7f89b14aa13f74cea37a8a38ca55a1
 +
 +int main(void)
 +{
++    constructor_process_guard_checks();
 +    truth_table();
 +    cold_checks();
 +    active_checks();
@@ -251198,6 +251278,9 @@ index 0000000000000000000000000000000000000000..9e7f89b14aa13f74cea37a8a38ca55a1
 +    timers = (ROOT / "system/cpu-timers.c").read_text()
 +    header = (ROOT / "include/exec/icount.h").read_text()
 +    modes = header[header.index("typedef enum {"):header.index("#ifdef CONFIG_TCG")]
++    constructor_clock = (ROOT / "system/crucible-kvm-q35-constructor-clock.inc.c").read_text()
++    process_guard = definition(constructor_clock,
++                              "static void q35_constructor_clock_process_guard(void)")
 +    bodies = "\n\n".join(definition(icount, signature) for signature in [
 +        "bool icount_tcg_50ps(void)\n{",
 +        "bool icount_crucible_sim_mode(",
@@ -251229,7 +251312,7 @@ index 0000000000000000000000000000000000000000..9e7f89b14aa13f74cea37a8a38ca55a1
 +    generated = arguments.output_dir / "snapshot-fast-path.c"
 +    prelude = PRELUDE.replace("static ICountMode use_icount",
 +                              modes + "static ICountMode use_icount")
-+    generated.write_text("\n\n".join([prelude, bodies, post_load, CHECKS]))
++    generated.write_text("\n\n".join([prelude, process_guard, bodies, post_load, CHECKS]))
 +    binary = arguments.output_dir / "snapshot-fast-path"
 +    command = [os.environ.get("CC", "cc"),
 +               *shlex.split(os.environ.get("CFLAGS", "")),
