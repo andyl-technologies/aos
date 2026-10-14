@@ -393,6 +393,13 @@ validation/errors, state-clone/frame lifetimes, Cache locks, clocks, first cause
 publication, caller outcomes and postchecks. Selectors stay within Journal and
 descendants; protected constructors and crate/public APIs do not widen.
 
+Private `protected_domain_journal::capacity` owns complete domain reservation
+admission, authenticated recovery and terminal settlement on the original Journal.
+The unused ID-plus-binding adapter recipe is retired; exact pending, full-request
+and unique stable-binding recovery retain their original authority and chronology.
+Resident fields and shared postcommit issuance remain parent-owned; this private
+organization does not isolate protected Cargo dependencies.
+
 Linux `journal::controller` owns the intact Controller Journal profile, identity
 and opening-construction group; `JournalShape` stays beside its producer with
 Linux-only availability. Crate-root `protected_domain_journal` keeps original
