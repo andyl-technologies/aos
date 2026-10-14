@@ -507,6 +507,26 @@ retaining exactly 1,135 identities with none ignored. Its 111-payload packet and
 four preserved scratch directories pass independent review; this narrower run
 does not renew the three Clippy and private-documentation profiles. The two
 overlay diagnostics remain separate from normal qualification.
+The combined catalog candidate `6aa3f5962f22` (tree `d8942ae78837`)
+passes all thirteen compiler phases, including three strict all-target Clippy
+and private-documentation profiles. Its fresh inventory retains all 1,135
+previous identities and adds exactly the four catalog cases, with none ignored.
+Coordinator review verifies the complete 282-payload compiler packet. The
+normal ten-case queue then passes all eight catalog and metadata-pack cases;
+both overlays still time out at their unchanged 120-second limits. Its sealed
+runtime packet awaits final coordinator review; no task or milestone advances.
+The finer ancestry diagnostic localizes one retirement publication to 18.012
+seconds without attributing all that time to one operation. Reviewed candidate
+`456ba7eb3762` (tree `7eff41d85d59`) synchronizes each original file and then
+each distinct scoped original directory, deepest first, within that single
+namespace-preserving durability phase. It retains the original descriptors,
+adjacent live checks and a final check of every original file before the real
+acknowledgment. A new native test checks actual file descriptors, directory
+scope and order, and genuine retirement publication. Full coordinator and
+independent source reviews pass; compilation and runtime remain unqualified.
+The next compiler inventory must preserve all 1,139 identities and add exactly
+that test. Existing fault, clock-expiry and cancellation cases remain required,
+along with both overlays, owning gates and the complete final trunk floor.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
