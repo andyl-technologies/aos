@@ -486,3 +486,6 @@ fn native5_original_fresh_codec_mapping_keeps_actual_policies_and_refuses_other_
 
 #[path = "native5_endpoint_recovery_tests.rs"]
 mod endpoint_recovery_tests;
+
+#[path = "native5_birth_tests.rs"]
+mod birth_tests;

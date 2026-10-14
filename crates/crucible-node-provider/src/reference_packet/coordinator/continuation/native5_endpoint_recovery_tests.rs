@@ -611,3 +611,33 @@ fn native5_original_complete_endpoint_refuses_different_actual_bank_before_snaps
         );
     }
 }
+
+#[test]
+fn native5_original_immutable_bank_facts_read_same_retained_connection() {
+    let (mut handshake, connection, _native, _policy, storage, hello, _peer) =
+        retained_endpoint_fixture();
+    let original_hello = hello.original_test_identity();
+    let borrowed = &connection;
+    let facts = borrowed.original_native5_storage_facts().unwrap();
+    assert_eq!(
+        facts.maximum_history_bytes,
+        storage.frame_bank_bytes.get() as usize
+    );
+    assert_eq!(facts.byte_capacity, storage.frame_bank_bytes.get() as usize);
+    assert_eq!(
+        facts.maximum_frames_per_direction,
+        storage.frames_per_direction.get() as usize
+    );
+    assert_eq!(
+        facts.descriptor_capacity,
+        2 * storage.frames_per_direction.get() as usize
+    );
+    assert_eq!(facts.maximum_frame_bytes, 65_536);
+    assert!(facts.all_io_complete);
+    assert_eq!(borrowed.original_native5_storage_facts().unwrap(), facts);
+    assert!(original_hello(&hello));
+
+    handshake.contain();
+    assert!(borrowed.original_native5_storage_facts().is_err());
+    assert!(original_hello(&hello));
+}

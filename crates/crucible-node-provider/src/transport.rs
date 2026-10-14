@@ -68,6 +68,32 @@ impl<R: Read> FrameReader<R> {
         })
     }
 
+    // Complete-source births keep the stream outside all fallible framing checks.
+    pub(crate) fn with_limits_owned(
+        stream: R,
+        maximum_bytes: usize,
+        maximum_nesting: usize,
+    ) -> Result<Self, (R, ProviderError)> {
+        let admission = check_limit(maximum_bytes).and({
+            if maximum_nesting == 0 || maximum_nesting > MAX_NESTING {
+                Err(ProviderError::Frame("invalid negotiated nesting limit"))
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(error) = admission {
+            return Err((stream, error));
+        }
+        Ok(Self {
+            stream,
+            maximum_bytes,
+            maximum_nesting,
+            failed: false,
+            originals: None,
+            last_original_slot: None,
+        })
+    }
+
     /// Reads exactly one JSON frame, distinguishing clean EOF from truncation.
     ///
     /// # Errors

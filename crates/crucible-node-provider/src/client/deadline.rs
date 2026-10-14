@@ -100,7 +100,49 @@ pub struct DeadlineStream {
     deadline: ExchangeDeadline,
 }
 
+/// Retains the exact socket and original deadline after a complete-source refusal.
+///
+/// The refusal neither closes the socket nor starts another exchange period.
+pub struct DeadlineStreamBirthRefusal {
+    stream: UnixStream,
+    deadline: ExchangeDeadline,
+    error: io::Error,
+}
+
+impl DeadlineStreamBirthRefusal {
+    /// Borrows the original deadline admission failure.
+    pub fn error(&self) -> &io::Error {
+        &self.error
+    }
+
+    /// Returns the same socket and nonrenewed original deadline to its owner.
+    pub fn into_original(self) -> (UnixStream, ExchangeDeadline) {
+        (self.stream, self.deadline)
+    }
+}
+
 impl DeadlineStream {
+    /// Retains the original socket when its existing complete-source cut refuses.
+    ///
+    /// The caller starts this absolute deadline before native birth effects.
+    /// No failure path resets it, closes the socket, or clones transport custody.
+    ///
+    /// # Errors
+    /// Returns both original inputs on an expired deadline.
+    pub fn with_original_deadline_owned(
+        stream: UnixStream,
+        deadline: ExchangeDeadline,
+    ) -> Result<Self, DeadlineStreamBirthRefusal> {
+        if let Err(error) = deadline.remaining() {
+            return Err(DeadlineStreamBirthRefusal {
+                stream,
+                deadline,
+                error,
+            });
+        }
+        Ok(Self { stream, deadline })
+    }
+
     /// Retains a previously started original exchange cut without renewing it.
     ///
     /// # Errors

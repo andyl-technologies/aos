@@ -34,7 +34,82 @@ pub struct OriginalNativeHelloJournal {
     failed: bool,
 }
 
+/// Retains the original native Hello journal and socket when binding refuses.
+///
+/// Recovery does not reset an attempted Hello, replace literal frames, or renew
+/// any exchange deadline embedded in the supplied stream.
+pub struct OriginalNativeHelloBindRefusal<S: Read + Write> {
+    journal: OriginalNativeHelloJournal,
+    stream: S,
+    error: ProviderError,
+}
+
+impl<S: Read + Write> OriginalNativeHelloBindRefusal<S> {
+    /// Borrows the original binding refusal without extracting retained owners.
+    pub fn error(&self) -> &ProviderError {
+        &self.error
+    }
+
+    /// Transfers the same socket and literal journal back to their phase owner.
+    pub fn into_original(self) -> (S, OriginalNativeHelloJournal) {
+        (self.stream, self.journal)
+    }
+}
+
 impl OriginalNativeHelloJournal {
+    /// Binds framing while returning both original owners on every refusal.
+    ///
+    /// This owning complete-source transition performs no reads, writes, or
+    /// callbacks. In particular, an attempted journal cannot be replaced with a
+    /// fresh reservation after a failed native Hello.
+    ///
+    /// # Errors
+    /// Retains the same stream and journal on foreign ownership, an attempted
+    /// Hello, an unavailable original-bank borrow, or invalid framing limits.
+    pub fn bind_owned<S: Read + Write>(
+        self,
+        stream: S,
+    ) -> Result<OriginalNativeHelloExchange<S>, Box<OriginalNativeHelloBindRefusal<S>>> {
+        let admission = self.owner.ensure_current().and_then(|()| {
+            let bank = self.bank.try_borrow().map_err(|_| {
+                ProviderError::Correlation("native original Hello bank borrowed during bind")
+            })?;
+            if self.attempted || bank.frames().next().is_some() {
+                Err(ProviderError::Conflict(
+                    "native original Hello already attempted",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(error) = admission {
+            return Err(Box::new(OriginalNativeHelloBindRefusal {
+                journal: self,
+                stream,
+                error,
+            }));
+        }
+        let mut reader = match FrameReader::with_limits_owned(
+            stream,
+            self.maximum_bytes,
+            self.maximum_nesting,
+        ) {
+            Ok(reader) => reader,
+            Err((stream, error)) => {
+                return Err(Box::new(OriginalNativeHelloBindRefusal {
+                    journal: self,
+                    stream,
+                    error,
+                }));
+            }
+        };
+        reader.install_originals(self.bank.clone());
+        Ok(OriginalNativeHelloExchange {
+            reader,
+            journal: self,
+        })
+    }
+
     /// Reserves both literal directions before accepting the original stream.
     ///
     /// # Errors
@@ -553,5 +628,69 @@ mod tests {
         let (stream, original) = exchange.into_parts();
         assert!(stream.written.is_empty());
         assert_eq!(original.original_frames().frames().count(), 1);
+    }
+    #[test]
+    fn native5_original_native_hello_owned_bind_keeps_attempted_journal_and_socket() {
+        use std::os::fd::AsRawFd;
+        let (stream, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let descriptor = stream.as_raw_fd();
+        peer.write_all(&wire(b"{} \n")).unwrap();
+        let original = OriginalNativeHelloJournal::reserve(128, 64).unwrap();
+        let same = original.original_test_identity();
+        let mut exchange = match original.bind_owned(stream) {
+            Ok(exchange) => exchange,
+            Err(_) => panic!("original unused Hello binding refused"),
+        };
+        exchange.receive().unwrap().unwrap();
+        let (stream, original) = exchange.into_parts();
+        let bytes = serde_json::to_vec(&original.protocol_view()).unwrap();
+        let failure = match original.bind_owned(stream) {
+            Ok(_) => panic!("attempted Hello was reset"),
+            Err(failure) => failure,
+        };
+        assert!(matches!(failure.error(), ProviderError::Conflict(_)));
+        let (mut stream, original) = failure.into_original();
+        assert_eq!(stream.as_raw_fd(), descriptor);
+        assert!(same(&original));
+        assert_eq!(
+            serde_json::to_vec(&original.protocol_view()).unwrap(),
+            bytes
+        );
+        peer.write_all(b"held").unwrap();
+        let mut held = [0; 4];
+        stream.read_exact(&mut held).unwrap();
+        assert_eq!(&held, b"held");
+        let failure = match original.bind_owned(stream) {
+            Ok(_) => panic!("retry reset literal Hello"),
+            Err(failure) => failure,
+        };
+        let (_, original) = failure.into_original();
+        assert!(same(&original));
+        assert_eq!(
+            serde_json::to_vec(&original.protocol_view()).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn native5_original_native_hello_owned_bind_invalid_limits_retains_both_owners() {
+        use std::os::fd::AsRawFd;
+        let (stream, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let descriptor = stream.as_raw_fd();
+        let mut original = OriginalNativeHelloJournal::reserve(128, 64).unwrap();
+        let same = original.original_test_identity();
+        // A private hostile fixture tests the framing refusal; public reserve
+        // cannot construct this invalid selected depth.
+        original.maximum_nesting = 0;
+        let failure = match original.bind_owned(stream) {
+            Ok(_) => panic!("invalid framing depth was accepted"),
+            Err(failure) => failure,
+        };
+        let (stream, original) = failure.into_original();
+        assert_eq!(stream.as_raw_fd(), descriptor);
+        assert!(same(&original));
+        assert_eq!(original.maximum_nesting, 0);
+        assert!(!original.attempted);
+        assert_eq!(original.original_frames().frames().count(), 0);
     }
 }

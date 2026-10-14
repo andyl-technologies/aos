@@ -127,6 +127,23 @@ impl CnpController {
         )
     }
 
+    /// Reports original lifetime journal use under this same sealed registration.
+    ///
+    /// The source can preflight remaining response-prefix credit from actual
+    /// original maps rather than treating outstanding-request limits as lifetime
+    /// capacity. This getter allocates nothing and grants no Capture permission.
+    ///
+    /// # Errors
+    /// Refuses foreign actors, fenced/revoked registrations, mutable loss
+    /// callbacks, absent sealed codec or changed verifier ownership.
+    pub fn original_native5_custody_facts(
+        &self,
+    ) -> Result<super::OriginalNative5CustodyFacts, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        let entries = self.session.original_native5_journal_entries()?;
+        Ok(self.custody.original_native5_custody_facts(entries))
+    }
+
     /// Reports actual retained storage of this controller's sealed native-five codec.
     ///
     /// This origin-guarded getter allocates nothing and retains the same bank.
@@ -137,7 +154,7 @@ impl CnpController {
     /// Refuses another process or thread, fenced or revoked authority, a mutable
     /// loss callback, absent native-five codec or a concurrently borrowed bank.
     pub fn original_native5_storage_facts(
-        &mut self,
+        &self,
     ) -> Result<crate::protocol_snapshot::OriginalProtocolStorageFacts, ProviderError> {
         self.protocol_owner.ensure_current()?;
         if self.fenced {

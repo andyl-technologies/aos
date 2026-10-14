@@ -3355,6 +3355,37 @@ The earlier failed package remains failed on its original source; current full
 package/source qualification, system constructor closure and native Ready
 remain pending.
 
+## Owning protocol birth and read-only current custody facts
+
+Additive complete-source constructors retain the original socket, authority,
+callback owners and captured protocol actor lease through framing refusal and
+retry. Literal Hello binding retains its same journal, bank and socket when
+validation refuses. Constructor unwind retains the original payload and poisons
+retry. These helpers perform no transport or supervisor callbacks during their
+borrowed validation; legacy constructors remain unchanged.
+
+Current Native5 lifetime-journal and physical-bank getters read the same sealed
+controller and original registration. The three bank getter receivers now borrow
+immutably without changing their validation bodies. The actual Unix control
+reads original capacities twice, then checks refusal after revocation. Numeric
+facts alone provide no native capture or geometry permission; the source must
+borrow the same actual controller during whole-group admission.
+
+The source qualification combines committed `82a538937e` with exactly 13 paths;
+its source index is
+`4e12ec046362b454a028b8829d8f751ecf7622d9835cf477f7421bc5430560ec`.
+The same retained executable passes 60 focused controls and all 381 enabled
+provider unit tests, with 13 existing tests ignored. Strict all-target,
+all-feature checks pass. Independent review verifies the complete source,
+current preimages, executable/dependency bodies and original resource release:
+`6e379f73d8f18821c86fbcd4d2b95ba137fe441bab603fbeda69c4b56c6d2f34`.
+
+The owning deadline helper itself performs no reset and returns the same handle
+on refusal. That legacy handle remains externally resettable; this stage does
+not seal an immutable birth cut. The separate immutable-cut successor, actual
+phased service consumer, complete factory geometry, Capture and fresh adoption
+remain required. No whole partial-birth closure or Ready permission is claimed.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

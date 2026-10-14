@@ -52,6 +52,25 @@ pub struct ClientOriginal {
     pub response: Option<Envelope>,
 }
 
+/// Reports unrecycled original journal credit on one actual sealed controller.
+///
+/// These borrowed numeric facts do not authenticate Capture or grant authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OriginalNative5CustodyFacts {
+    /// Limits lifetime originals independently in each request namespace.
+    pub maximum_requests_per_namespace: usize,
+    /// Counts retained original controller requests, including completed history.
+    pub controller_originals: usize,
+    /// Counts retained original provider requests, including completed history.
+    pub provider_originals: usize,
+    /// Limits complete raw request and response journal bytes.
+    pub maximum_journal_bytes: usize,
+    /// Counts actual retained raw request and response journal bytes.
+    pub retained_journal_bytes: usize,
+    /// Limits lifetime entries under the same negotiated registration.
+    pub negotiated_journal_entries: u64,
+}
+
 /// Keeps finite original request and content custody across connection replacement.
 pub struct ClientCustody {
     maximum_requests: usize,
@@ -63,6 +82,20 @@ pub struct ClientCustody {
 }
 
 impl ClientCustody {
+    pub(super) fn original_native5_custody_facts(
+        &self,
+        negotiated_journal_entries: u64,
+    ) -> OriginalNative5CustodyFacts {
+        OriginalNative5CustodyFacts {
+            maximum_requests_per_namespace: self.maximum_requests,
+            controller_originals: self.controller.len(),
+            provider_originals: self.provider.len(),
+            maximum_journal_bytes: self.maximum_bytes,
+            retained_journal_bytes: self.retained_bytes,
+            negotiated_journal_entries,
+        }
+    }
+
     pub(super) fn protocol_view(&self) -> impl serde::Serialize + '_ {
         (
             self.maximum_requests,
@@ -288,8 +321,13 @@ impl ClientSession {
         self.connection.authenticate_native5_source_codec()
     }
 
+    pub(super) fn original_native5_journal_entries(&self) -> Result<u64, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        Ok(self.authority.limits().journal_entries.get())
+    }
+
     pub(super) fn original_native5_storage_facts(
-        &mut self,
+        &self,
     ) -> Result<crate::protocol_snapshot::OriginalProtocolStorageFacts, ProviderError> {
         if self.original_response_loss.is_some() {
             return Err(ProviderError::Correlation(

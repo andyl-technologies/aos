@@ -259,7 +259,7 @@ impl<S: ProviderStream> Connection<S> {
     }
 
     pub(crate) fn original_native5_storage_facts(
-        &mut self,
+        &self,
     ) -> Result<crate::protocol_snapshot::OriginalProtocolStorageFacts, ProviderError> {
         self.authenticate_native5_source_codec()?;
         let bank = self

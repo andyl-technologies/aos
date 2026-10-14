@@ -15,7 +15,7 @@ mod session;
 
 pub use content::ClientContent;
 pub use controller::{CnpController, CnpRegistrarRead, ControllerRoute};
-pub use deadline::{DeadlineStream, ExchangeDeadline};
+pub use deadline::{DeadlineStream, DeadlineStreamBirthRefusal, ExchangeDeadline};
 pub use reference::{
     LineageWindowRequests, ObservationHandle, ObservationLimits, ObservationScope, ObservedContent,
     ObservedRequest, ObservedRequestKey, OriginalConflictLimits, OriginalConflictObservation,
@@ -26,4 +26,7 @@ pub use reference::{
     ReferenceControllerPreparationFailure, ReferenceObservationSnapshot, TransmissionLimits,
     TransmissionObservation, TransmissionObservationHandle,
 };
-pub use session::{ClientCustody, ClientOriginal, ClientPeer, ClientSession, OriginalHelloJournal};
+pub use session::{
+    ClientCustody, ClientOriginal, ClientPeer, ClientSession, OriginalHelloJournal,
+    OriginalNative5CustodyFacts,
+};

@@ -18,6 +18,8 @@ use crate::session::CorrelationGuard;
 use crate::transport::{FrameReader, write_frame_with_limits};
 
 mod capture_prefix;
+mod native5_birth;
+pub use native5_birth::{Native5ConnectionBirth, Native5ConnectionBirthRefusal};
 mod exchange;
 mod native5_codec;
 pub(crate) use native5_codec::Native5CodecOwner;

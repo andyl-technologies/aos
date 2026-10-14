@@ -264,3 +264,23 @@ fn native5_original_controller_capture_credit_precedes_argument_decode() {
         matches!(peer.read(&mut byte), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
     );
 }
+
+#[test]
+fn native5_original_custody_facts_refuse_unsealed_baseline_bank_without_mutation() {
+    let (_handshake, controller, _peer) = controller();
+    let before = controller.custody.protocol_view();
+    let bytes = serde_json::to_vec(&before).unwrap();
+    drop(before);
+    assert!(controller.original_native5_custody_facts().is_err());
+    assert_eq!(
+        serde_json::to_vec(&controller.custody.protocol_view()).unwrap(),
+        bytes
+    );
+    let facts = controller.custody.original_native5_custody_facts(64);
+    assert_eq!(facts.maximum_requests_per_namespace, 8);
+    assert_eq!(facts.controller_originals, 0);
+    assert_eq!(facts.provider_originals, 0);
+    assert_eq!(facts.retained_journal_bytes, 0);
+    assert_eq!(facts.maximum_journal_bytes, 2 * 65_536);
+    assert_eq!(facts.negotiated_journal_entries, 64);
+}
