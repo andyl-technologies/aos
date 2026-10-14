@@ -3776,6 +3776,21 @@ without proving allocation-free whole snapshots. Other metadata capacities,
 complete owning-state decoding, all serializer/decoder overlap, the source-local
 journal and full native Capture and restoration remain required.
 
+## Original identifier allocation capacity
+
+The shared Id type reports its owned String allocation capacity, including spare
+storage, without copying or changing wire bytes. Memory admission can therefore
+charge an original short identifier with a large backing allocation rather than
+substituting its serialized length. The existing Bytes capacity API is unchanged.
+
+The standalone Source101 control passes against a freshly compiled contract
+test executable. Its fourteen consumed contract source bodies match the current
+contract except this additive getter and test. Qualified handoff
+`5fcfa9bc07dedd2c74d0c5c6380c6fa989b6c2c53f26f2c696b72e864ef18cb4`
+retains the exact source, executable and actual spare-capacity/wire round trip.
+The larger private Core accounting changes and native memory admission remain
+separate; this observation API does not grant allocation or capture authority.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

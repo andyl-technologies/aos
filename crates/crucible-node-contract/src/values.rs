@@ -42,6 +42,14 @@ impl Id {
         Ok(Self(value))
     }
 
+    /// Returns the allocated byte capacity of the owned identifier string.
+    ///
+    /// The capacity includes unused storage. It does not change the identifier's
+    /// content, validation or wire representation.
+    pub fn allocated_capacity(&self) -> usize {
+        self.0.capacity()
+    }
+
     /// Returns the validated ASCII identifier.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -459,5 +467,26 @@ mod original_bytes_capacity_tests {
         assert_eq!(bytes.allocation_capacity(), 128);
         assert_eq!(bytes.as_slice().as_ptr(), pointer);
         assert_eq!(serde_json::to_string(&bytes).unwrap(), "\"\"");
+    }
+}
+
+#[cfg(test)]
+// These bounded fixture constructors deliberately panic on invalid test setup.
+#[allow(clippy::unwrap_used)]
+mod allocated_capacity_tests {
+    use super::Id;
+
+    #[test]
+    fn allocated_identifier_capacity_retains_spare_storage_without_changing_wire_bytes() {
+        let mut original = String::with_capacity(4096);
+        original.push_str("capture/owner");
+        let capacity = original.capacity();
+        let id = Id::new(original).unwrap();
+
+        assert_eq!(id.allocated_capacity(), capacity);
+        assert!(id.allocated_capacity() > id.as_str().len());
+        assert_eq!(serde_json::to_string(&id).unwrap(), "\"capture/owner\"");
+        let decoded: Id = serde_json::from_str("\"capture/owner\"").unwrap();
+        assert_eq!(decoded, id);
     }
 }
