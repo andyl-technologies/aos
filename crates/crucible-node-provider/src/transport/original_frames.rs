@@ -104,6 +104,40 @@ impl OriginalFrameReservation {
         })
     }
 
+    pub(crate) fn authenticate_exact_prefix_of(&self, current: &Self) -> Result<(), ProviderError> {
+        if self.maximum_bytes != current.maximum_bytes
+            || self.maximum_frames != current.maximum_frames
+            || self.bytes.capacity() != current.bytes.capacity()
+            || self.slots.capacity() != current.slots.capacity()
+            || self.slots.is_empty()
+            || self.slots.len() > current.slots.len()
+            || self.incoming > current.incoming
+            || self.outgoing > current.outgoing
+            || !current.bytes.starts_with(&self.bytes)
+            || self
+                .slots
+                .iter()
+                .any(|slot| !slot.complete || slot.transferred != slot.length)
+            || current
+                .slots
+                .iter()
+                .any(|slot| !slot.complete || slot.transferred != slot.length)
+            || self.slots.iter().zip(&current.slots).any(|(old, now)| {
+                old.direction != now.direction
+                    || old.start != now.start
+                    || old.length != now.length
+                    || old.transferred != now.transferred
+                    || old.complete != now.complete
+                    || old.request != now.request
+            })
+        {
+            return Err(ProviderError::Correlation(
+                "native capture literal antecedent differs",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_empty_copy(&self, target: &Self) -> Result<(), ProviderError> {
         if !target.bytes.is_empty()
             || !target.slots.is_empty()
@@ -309,3 +343,6 @@ impl OriginalFrameReservation {
 
 mod decoded;
 pub use decoded::DecodedOriginalFrameData;
+
+#[cfg(test)]
+mod antecedent_tests;

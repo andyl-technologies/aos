@@ -3501,6 +3501,28 @@ Complete SDK installation, lifetime request-ID custody, pending native
 settlement, signed source/target context and whole factory allocation closure
 remain pending. These mechanics grant no native capture or Ready permission.
 
+## Native capture antecedent correspondence
+
+An original provider can now compare its opaque pending native snapshot with the
+same channel after transport correlations settle. Authentication checks the
+original actor, registration, native codec owner and physical cut, then compares
+the exact complete literal prefix, including bytes, request IDs, slots and bank
+capacities. It returns borrowed numeric facts without allocation or callbacks.
+
+These facts cannot establish successful Capture. A real Unix-channel control
+receives an explicit `not_started` refusal, obtains the physical correspondence
+facts and still refuses adoption. The source must separately authenticate the
+successful terminal result, complete three-object/ACK suffix and signed source
+and fresh-target context before issuing settlement or installation permission.
+
+The five-role Source65 cohort passes 77 focused controls, all 398 enabled SDK
+units and strict all-target/all-feature checks; 13 units remain ignored.
+Independent receipt
+`569fe563944fcc5d6b4e35bbd4ef0128bdc89e7c4dbc063008079e93238b16f6`
+verifies exact current preimages and retained source/executable evidence. Its
+original tested cohort remains distinct from the later current-source join.
+No native Capture, constructor, fresh installation or Ready permission is added.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

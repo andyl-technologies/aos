@@ -49,6 +49,22 @@ pub struct OriginalProtocolStorageFacts {
     pub all_io_complete: bool,
 }
 
+/// Reports a same-original native snapshot's physical antecedent correspondence.
+///
+/// These borrowed numeric facts grant no successful Capture, semantic settlement,
+/// transfer, fresh installation or Ready permission. The source still verifies
+/// the precise terminal Capture outcome, complete three-object suffix and signed
+/// source-to-target context; a terminal refusal can also have a settled transport.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OriginalNative5CaptureAntecedentFacts {
+    /// States the exact retained opaque snapshot's encoded length.
+    pub snapshot_bytes: usize,
+    /// Describes the frozen physical frame bank before the Capture response.
+    pub captured: OriginalProtocolStorageFacts,
+    /// Describes the same live bank after transport correlations settled.
+    pub current: OriginalProtocolStorageFacts,
+}
+
 pub(crate) struct ProtocolCaptureOwner {
     pid: u32,
     thread: std::thread::ThreadId,
@@ -377,6 +393,40 @@ impl OriginalProtocolSnapshot {
     pub fn original_physical_cut_expired(&self) -> bool {
         self.deadline.is_expired()
     }
+    pub(crate) fn authenticate_native_capture_antecedent(
+        &self,
+        authority: &ConnectionAuthority,
+        owner: &Rc<ProtocolCaptureOwner>,
+        codec: &Rc<crate::connection::Native5CodecOwner>,
+        current: &crate::transport::original_frames::OriginalFrameReservation,
+    ) -> Result<OriginalNative5CaptureAntecedentFacts, ProviderError> {
+        owner.ensure_current()?;
+        self.owner.ensure_current()?;
+        if self.cut != ProtocolCaptureCut::NativeIncomingCapture
+            || !self.same_owner(owner, authority)
+            || self
+                .codec
+                .as_ref()
+                .is_none_or(|original| !Rc::ptr_eq(original, codec))
+            || self.deadline.is_expired()
+        {
+            return Err(ProviderError::Correlation(
+                "native capture antecedent owner or cut differs",
+            ));
+        }
+        let captured = self.literal.as_ref().ok_or(ProviderError::Correlation(
+            "native capture antecedent literal copy absent",
+        ))?;
+        captured.authenticate_exact_prefix_of(current)?;
+        let maximum_frame = usize::try_from(authority.limits().frame_bytes.get())
+            .map_err(|_| ProviderError::ResourceExhausted("native antecedent frame limit"))?;
+        Ok(OriginalNative5CaptureAntecedentFacts {
+            snapshot_bytes: self.bytes.len(),
+            captured: captured.storage_facts(maximum_frame),
+            current: current.storage_facts(maximum_frame),
+        })
+    }
+
     pub(crate) fn same_owner(
         &self,
         owner: &Rc<ProtocolCaptureOwner>,

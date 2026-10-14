@@ -332,6 +332,37 @@ fn native5_original_immutable_codec_installs_and_captures_actual_pending_frame()
     let mut target = OriginalFrameReservation::reserve(262144, 8).unwrap();
     assert!(snapshot.prepare_historical_frame_data(&mut target).is_err());
     assert_eq!(target.frames().count(), 0);
+    assert!(
+        provider
+            .authenticate_native5_capture_antecedent(&snapshot)
+            .is_err()
+    );
+    let mut response = request;
+    response.message = MessageKind::Response;
+    response.body = serde_json::json!({"status":"error","operation_state":"not_started",
+        "error":{"code":"UNSUPPORTED_FEATURE","message":"antecedent fixture refusal",
+            "effect":"not_started","retryable":false,"details":{}},"extensions":{}})
+    .as_object()
+    .unwrap()
+    .clone();
+    provider.send(response).unwrap();
+    controller.receive().unwrap().unwrap();
+    let facts = provider
+        .authenticate_native5_capture_antecedent(&snapshot)
+        .unwrap();
+    assert_eq!(facts.snapshot_bytes, snapshot.bytes().len());
+    assert_eq!(facts.captured.incoming_frames, 1);
+    assert_eq!(facts.captured.outgoing_frames, 0);
+    assert_eq!(facts.current.incoming_frames, 1);
+    assert_eq!(facts.current.outgoing_frames, 1);
+    assert!(facts.current.all_io_complete);
+    assert!(
+        controller
+            .authenticate_native5_capture_antecedent(&snapshot)
+            .is_err()
+    );
+    assert!(snapshot.prepare_historical_frame_data(&mut target).is_err());
+    assert_eq!(target.frames().count(), 0);
 }
 
 #[test]

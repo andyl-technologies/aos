@@ -171,6 +171,58 @@ impl<S: ProviderStream> Connection<S> {
         original.finish(&self.authority, &self.protocol_owner, cut)
     }
 
+    /// Authenticates an opaque pending native snapshot against its ended original channel.
+    ///
+    /// The actual actor, registration and sealed native policy must be identical;
+    /// every frozen literal byte, slot, request ID and capacity must be an exact
+    /// prefix of the same current bank. Both histories must have complete I/O and
+    /// current correlations must be settled. No allocation or callback occurs.
+    ///
+    /// This proves physical antecedent correspondence only. The source separately
+    /// verifies the exact complete object/ACK suffix, terminal Capture result and
+    /// signed fresh-target association before minting its private settlement.
+    ///
+    /// # Errors
+    /// Refuses foreign/revoked actors, replaced or non-native codecs, wrong cuts,
+    /// expired original physical allowance, changed literal history, incomplete
+    /// I/O, outstanding correlations or an actively borrowed original bank.
+    pub fn authenticate_native5_capture_antecedent(
+        &self,
+        snapshot: &crate::protocol_snapshot::OriginalProtocolSnapshot,
+    ) -> Result<crate::protocol_snapshot::OriginalNative5CaptureAntecedentFacts, ProviderError>
+    {
+        self.authenticate_native5_source_codec()?;
+        self.guard
+            .protocol_cut(crate::protocol_snapshot::ProtocolCaptureCut::HostSettled)?;
+        let codec = self
+            .native5_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native capture antecedent codec absent",
+            ))?;
+        if self.role != EndpointRole::Provider
+            || !matches!(codec.as_ref(), Native5CodecOwner::NativePacket(_))
+        {
+            return Err(ProviderError::Correlation(
+                "native capture antecedent requires native endpoint",
+            ));
+        }
+        let bank = self
+            .original_frames
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native capture antecedent bank absent",
+            ))?
+            .try_borrow()
+            .map_err(|_| ProviderError::Correlation("native antecedent bank in use"))?;
+        snapshot.authenticate_native_capture_antecedent(
+            &self.authority,
+            &self.protocol_owner,
+            codec,
+            &bank,
+        )
+    }
+
     /// Prepares actual new-scope registration mapping without installing state.
     ///
     /// A source factory must still join complete Wire/Scheduling/native state,
