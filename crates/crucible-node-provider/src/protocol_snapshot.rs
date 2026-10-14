@@ -397,6 +397,9 @@ impl OriginalProtocolSnapshot {
 /// It installs no history, counter, native state or Ready
 /// permission. Source5 must join its complete verified settlement and models.
 pub struct PreparedFreshProtocolMapping {
+    original_body: blake3::Hash,
+    original_length: usize,
+    original_deadline: crate::operational_time::OperationalDeadline,
     original: ConnectionAuthority,
     original_owner: Rc<ProtocolCaptureOwner>,
     fresh: ConnectionAuthority,
@@ -458,6 +461,9 @@ impl PreparedFreshProtocolMapping {
             ));
         }
         Ok(Self {
+            original_body: blake3::hash(&original.bytes),
+            original_length: original.bytes.len(),
+            original_deadline: original.deadline,
             original: original.authority.clone(),
             original_owner: original.owner.clone(),
             fresh: fresh.clone(),
@@ -516,9 +522,9 @@ impl PreparedFreshProtocolMapping {
     ///
     /// # Errors
     /// Refuses process/thread drift, revoked fresh Hello or substituted original
-    /// issuer/cut/codec. This identifies the original actor, not one particular
-    /// snapshot body: the source's signed restoration context separately binds
-    /// the exact captured bytes, reference and ticket before any installation.
+    /// issuer/cut/codec, changed captured body, or substituted original physical
+    /// cut. The source's signed restoration context must still independently
+    /// bind the exact captured reference/ticket before any installation.
     /// This check supplies no semantic settlement or native permission.
     pub fn validate_original(
         &self,
@@ -527,7 +533,10 @@ impl PreparedFreshProtocolMapping {
         self.original_owner.ensure_current()?;
         self.fresh_owner.ensure_current()?;
         self.fresh.ensure_live()?;
-        if !self.original.same_registration(&original.authority)
+        if self.original_length != original.bytes.len()
+            || self.original_body != blake3::hash(&original.bytes)
+            || self.original_deadline != original.deadline
+            || !self.original.same_registration(&original.authority)
             || !Rc::ptr_eq(&self.original_owner, &original.owner)
             || self.cut != original.cut
             || !same_codec_owner(self.original_codec.as_ref(), original.codec.as_ref())
@@ -718,5 +727,39 @@ mod tests {
         exact.validate_literal_reservation(&source).unwrap();
         assert!(exact.issuer.is_none());
         assert_eq!(source.frames().count(), 0);
+    }
+    #[test]
+    fn native5_original_mapping_rejects_another_body_from_the_same_original_actor() {
+        let (_old_handshake, old) = crate::handshake::tests::authority();
+        let (_new_handshake, fresh) = crate::handshake::tests::authority_with_scope("body-target");
+        let owner = Rc::new(ProtocolCaptureOwner::new());
+        let fresh_owner = Rc::new(ProtocolCaptureOwner::new());
+        let deadline =
+            crate::operational_time::OperationalDeadline::after(std::time::Duration::from_secs(2))
+                .unwrap();
+        let mut original_snapshots = Vec::new();
+        for body in [
+            serde_json::json!({"actual":"first"}),
+            serde_json::json!({"actual":"second"}),
+        ] {
+            let mut reservation =
+                ProtocolSnapshotReservation::reserve_complete(1024, 1024, 2).unwrap();
+            reservation
+                .bind(&old, &owner, ProtocolCaptureCut::HostSettled, deadline)
+                .unwrap();
+            reservation.encode(&body).unwrap();
+            original_snapshots.push(
+                reservation
+                    .finish(&old, &owner, ProtocolCaptureCut::HostSettled)
+                    .unwrap(),
+            );
+        }
+        let mapping =
+            PreparedFreshProtocolMapping::prepare(&original_snapshots[0], &fresh, &fresh_owner)
+                .unwrap();
+        mapping.validate_original(&original_snapshots[0]).unwrap();
+        assert!(mapping.validate_original(&original_snapshots[1]).is_err());
+        assert_eq!(original_snapshots[0].bytes(), b"{\"actual\":\"first\"}");
+        assert!(fresh.ensure_live().is_ok());
     }
 }

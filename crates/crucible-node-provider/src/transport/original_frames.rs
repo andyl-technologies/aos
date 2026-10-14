@@ -306,3 +306,6 @@ impl OriginalFrameReservation {
         Ok(())
     }
 }
+
+mod decoded;
+pub use decoded::DecodedOriginalFrameData;

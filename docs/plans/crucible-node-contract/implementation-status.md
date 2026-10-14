@@ -3450,6 +3450,30 @@ CPUAddressSpace/listener storage and complete original graph/RCU closure remain
 pending. No type/class prototype is included here. Instance storage grants no
 BIOS writer, full seal, Capture, Ready, installed-pair or package qualification.
 
+## Bounded historical frame decoding and exact body association
+
+The source-private historical frame decoder uses a fixed byte cursor. It admits
+the complete byte and descriptor banks before either allocation, preserving raw
+bytes, capacities, request IDs and unrecycled incoming/outgoing counts. Malformed
+numbers, escaped strings, incomplete I/O, inconsistent extents and trailing
+values refuse without parser scratch allocation or recursive parsing. Decoded
+data cannot install state or authenticate a capture source.
+
+Fresh protocol mappings bind the exact captured body digest, length and original
+physical deadline alongside the original actor, codec and cut. Another body from
+the same actor refuses before installation.
+
+The three-role Source60 cohort passes 71 focused controls, all 392 enabled SDK
+units and strict all-target/all-feature checks; 13 units remain ignored. Review
+receipt `1a71171cf9b6397efc7cc15c377f5cbed69291daeb526aed9bdeebcd6b971958`
+verifies the retained source, executable and exact current preimages. The earlier
+serde decoder remains blocked: malformed escaped strings could allocate scratch
+before admission despite passing its existing controls.
+
+Whole factory allocation accounting, complete SDK installation, semantic source
+and target context, native settlement and capture/adoption permission remain
+pending. These data banks and mappings grant no Ready or conformance acceptance.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
