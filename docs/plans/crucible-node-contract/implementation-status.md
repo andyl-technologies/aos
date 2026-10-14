@@ -4690,6 +4690,19 @@ only. The matching atomic patch, source bundle and unchanged license inventory
 pass independent reconstruction review. C fixture execution, full package checks
 and matching-source realization remain required. Earlier failures remain recorded.
 
+The following build again completes all 3,792 native build steps and 589 unit
+cases. The repaired network-output fixture and lifecycle projection now pass;
+the deferred-control fixture then fails C compilation because its imported
+shared prelude omits the genuine original-endpoint admission definition.
+A reviewed correction moves that exact definition and its typed fixture
+prerequisites into the common prelude and updates the independent stop-chain
+fixture to the same sender signature. Existing behavioral assertions and
+mutation branches remain intact. Pure extraction controls pass, and signed
+native source `92e5b2b4d39ddf110188c3ea9829d2521fba5ee5`, tree
+`e2463530f1f4c1e59acd871e4fc38acf1c8db2d5`, passes independent patch, bundle,
+signature and unchanged-license reconstruction review. Full native execution
+of this correction and package/source realization remain pending.
+
 Corresponding-source assembly also unnecessarily pulls Cargo and Git into a
 registry-only vendoring operation. A supplied lockfile now selects the required
 tools, and both stages authenticate its exact raw bytes before vendoring effects.

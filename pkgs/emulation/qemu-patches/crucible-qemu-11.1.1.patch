@@ -1,6 +1,6 @@
-From 01b7a428d447a5ffa181c29729a2db45085b6183 Mon Sep 17 00:00:00 2001
+From 92e5b2b4d39ddf110188c3ea9829d2521fba5ee5 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 14 Oct 2026 23:55:00 +0000
+Date: Thu, 15 Oct 2026 01:00:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -782,6 +782,19 @@ The preceding full build completes all 3792 native steps and 589 selected
 unit cases, then fails this stale source selector. Preserve that failure.
 Pure extraction controls verify all 48 actual selected definitions; C fixture
 execution, full package and matching source realization remain required.
+
+
+Compose the genuine original-endpoint admission into the shared network
+fixture prelude so deferred-control and stop-chain extraction retain the
+same guard. Align the stop-chain sender selector and direct calls with
+the actual typed signature. Keep all existing behavioral and mutation
+assertions, with typed abort-only dependencies for inactive fixture paths.
+
+The preceding native build again completes 3792 build steps and 589 unit
+cases; the network and lifecycle fixtures pass before deferred-control
+compilation exposes its missing shared admission definition. Preserve that
+failure. Pure source controls cover unique admission extraction and all
+three generated fixture bodies; native compilation remains required.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -241485,10 +241498,10 @@ index 0000000000000000000000000000000000000000..7c0e740270c5f06ea7e1dde755888dfe
 +    main()
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c26789ee712f92419d3342e5acebbe82b2ca829b
+index 0000000000000000000000000000000000000000..793a260952629eea849a79c35bc8fd5965d76dc6
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-output-stop.py
-@@ -0,0 +1,922 @@
+@@ -0,0 +1,931 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production TX, VM-stop, clock completion, and RR parking bodies.
 +
@@ -241579,7 +241592,6 @@ index 0000000000000000000000000000000000000000..c26789ee712f92419d3342e5acebbe82
 +#include <sys/uio.h>
 +#include <glib.h>
 +#include "qemu/typedefs.h"
-+#include "qemu/crucible-endpoint-roots.h"
 +#define qemu_build_assert(condition) _Static_assert(condition, #condition)
 +#include "qemu/atomic.h"
 +#include "qemu/iov.h"
@@ -241866,19 +241878,6 @@ index 0000000000000000000000000000000000000000..c26789ee712f92419d3342e5acebbe82
 +static void replay_mutex_lock(void) { }
 +static void bql_unlock(void) { locked = false; }
 +static void bql_lock(void) { locked = true; }
-+/* The fixture has no original-bound endpoint. Retain the actual
-+ * net_original_callback_admit body below, and refuse either selected branch
-+ * dependency rather than manufacturing an endpoint binding or permission. */
-+static CrucibleEndpointOriginalBinding net_original_binding(NetClientState *client)
-+{
-+    g_assert_not_reached();
-+}
-+int qemu_endpoint_whole_callback_admit(
-+    CrucibleEndpointOriginalKind kind,
-+    const CrucibleEndpointOriginalBinding *binding)
-+{
-+    g_assert_not_reached();
-+}
 +static int filter_receive(NetClientState *sender, int direction,
 +    NetClientState *source, unsigned flags, const uint8_t *data, int length,
 +    NetPacketSent *cb) { g_assert_not_reached(); }
@@ -241921,6 +241920,30 @@ index 0000000000000000000000000000000000000000..c26789ee712f92419d3342e5acebbe82
 +"""
 +
 +
++def network_endpoint_prelude(prelude):
++    """Retain the actual TX admission guard for fixtures without owned endpoints."""
++    declarations = r"""
++#include <unistd.h>
++#include "qemu/crucible-endpoint-roots.h"
++/* These fixtures have no original-bound endpoint. Refuse selected dependencies
++ * rather than manufacturing an endpoint binding or callback permission. */
++static CrucibleEndpointOriginalBinding net_original_binding(NetClientState *client)
++{
++    g_assert_not_reached();
++}
++int qemu_endpoint_whole_callback_admit(
++    CrucibleEndpointOriginalKind kind,
++    const CrucibleEndpointOriginalBinding *binding)
++{
++    g_assert_not_reached();
++}
++"""
++    source = (ROOT / "net/net.c").read_text()
++    admission = definition(source,
++        "static void net_original_callback_admit(NetClientState *client)")
++    return prelude + declarations + "\n" + admission + "\n"
++
++
 +def prefix_notifier_prelude(prelude):
 +    """Model disabled prefix storage and extract its actual notifier guards.
 +
@@ -241956,7 +241979,7 @@ index 0000000000000000000000000000000000000000..c26789ee712f92419d3342e5acebbe82
 +    return prelude + "\n\n" + "\n\n".join(bodies)
 +
 +
-+PRELUDE = prefix_notifier_prelude(PRELUDE)
++PRELUDE = network_endpoint_prelude(prefix_notifier_prelude(PRELUDE))
 +
 +
 +TESTS = r"""
@@ -242301,7 +242324,6 @@ index 0000000000000000000000000000000000000000..c26789ee712f92419d3342e5acebbe82
 +            "int icount_advance_virtual_time_to_tick(uint64_t target_tick)",
 +        ],
 +        "net/net.c": [
-+            "static void net_original_callback_admit(NetClientState *client)",
 +            "static bool crucible_net_tx_callback_ready(NetClientState *sender)",
 +            "static ssize_t crucible_net_tx_submit(NetClientState *sender, const uint8_t *data, size_t len)",
 +            "static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,",
@@ -242413,10 +242435,10 @@ index 0000000000000000000000000000000000000000..c26789ee712f92419d3342e5acebbe82
 +    main()
 diff --git a/tests/unit/test-crucible-net-stop-chain.py b/tests/unit/test-crucible-net-stop-chain.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..06c5dcc7f3227e3e9e6fbaa33e21aebd5195b418
+index 0000000000000000000000000000000000000000..d63c2f194fcc729c700090994d1f2c0890ec59a4
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-stop-chain.py
-@@ -0,0 +1,494 @@
+@@ -0,0 +1,503 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise native stop admission through the actual next-TB decrementer gate.
 +
@@ -242436,8 +242458,9 @@ index 0000000000000000000000000000000000000000..06c5dcc7f3227e3e9e6fbaa33e21aebd
 +
 +
 +ROOT = Path(__file__).resolve().parents[2]
-+definition = runpy.run_path(str(Path(__file__).with_name(
-+    "test-crucible-net-output-stop.py")))["definition"]
++SUPPORT = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))
++definition = SUPPORT["definition"]
 +
 +PRELUDE = r"""
 +#include <assert.h>
@@ -242467,6 +242490,11 @@ index 0000000000000000000000000000000000000000..06c5dcc7f3227e3e9e6fbaa33e21aebd
 +#define TB_EXIT_REQUESTED 3
 +#define TCG_COND_LT 0
 +#define CPU_FOREACH(value) for ((value) = first_cpu; (value); (value) = (value)->next)
++
++struct NetClientState {
++    void *crucible_original_birth;
++};
++static NetClientState sender;
 +
 +typedef struct CPUState {
 +    struct CPUState *next;
@@ -242622,6 +242650,8 @@ index 0000000000000000000000000000000000000000..06c5dcc7f3227e3e9e6fbaa33e21aebd
 +{ return (db->tb->pc >> 12) == (dest >> 12); }
 +"""
 +
++PRELUDE = SUPPORT["network_endpoint_prelude"](PRELUDE)
++
 +CHECKS = r"""
 +static uint64_t output_raw;
 +static int admission_status;
@@ -242636,6 +242666,7 @@ index 0000000000000000000000000000000000000000..06c5dcc7f3227e3e9e6fbaa33e21aebd
 +
 +static void reset_case(void)
 +{
++    g_assert_null(sender.crucible_original_birth);
 +    cpu = (CPUState){.running = true, .icount_budget = 1000};
 +    cpu.neg.icount_decr.u16.low = 983;
 +    cpu.neg.can_do_io = true;
@@ -242692,7 +242723,7 @@ index 0000000000000000000000000000000000000000..06c5dcc7f3227e3e9e6fbaa33e21aebd
 +    g_assert_cmpint(db.is_jmp, ==, DISAS_TOO_MANY);
 +    g_assert_true(translator_use_goto_tb(&db, 0x1004));
 +
-+    g_assert_cmpint(crucible_net_tx_submit((const uint8_t *)"abc", 3), ==, 3);
++    g_assert_cmpint(crucible_net_tx_submit(&sender, (const uint8_t *)"abc", 3), ==, 3);
 +    g_assert_cmpint(admission_status, ==, 0);
 +    g_assert_cmpuint(output_raw, ==, 17);
 +    g_assert_true(cpu.stop && cpu.exit_request);
@@ -242779,7 +242810,7 @@ index 0000000000000000000000000000000000000000..06c5dcc7f3227e3e9e6fbaa33e21aebd
 +    }
 +    qemu_plugin_crucible_vmstop_generation_value = 7;
 +
-+    g_assert_cmpint(crucible_net_tx_submit((const uint8_t *)"abc", 3), ==, 3);
++    g_assert_cmpint(crucible_net_tx_submit(&sender, (const uint8_t *)"abc", 3), ==, 3);
 +    g_assert_cmpint(admission_status, ==, 0);
 +    g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==, 8);
 +    g_assert_cmpuint(stop_requests, ==, 1);
@@ -242855,7 +242886,7 @@ index 0000000000000000000000000000000000000000..06c5dcc7f3227e3e9e6fbaa33e21aebd
 +            "void qemu_plugin_crucible_exact_boundary_leave(void)",
 +            "bool qemu_plugin_crucible_vmstop_pending(void)",
 +        ],
-+        "net/net.c": ["static ssize_t crucible_net_tx_submit(const uint8_t *data, size_t len)"],
++        "net/net.c": ["static ssize_t crucible_net_tx_submit(NetClientState *sender, const uint8_t *data, size_t len)"],
 +        "accel/tcg/translator.c": [
 +            "bool translator_io_start(DisasContextBase *db)",
 +            "static TCGOp *gen_tb_start(DisasContextBase *db, uint32_t cflags)",
