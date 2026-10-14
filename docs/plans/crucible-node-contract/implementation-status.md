@@ -4156,8 +4156,12 @@ fourteen focused Core passes, one ownership compile-fail doctest, and five new
 Campaign passes. The qualification source is the committed 9,629-file parent
 plus seven changes, including one new file. The original full Campaign run
 remains failed at its 600-second limit: 314 passes and 141 unfinished cases,
-without a reported assertion failure. A separately bounded continuation covers
-those 141 cases; it is pending here. The completed geometry test's buffered
+without a reported assertion failure. A separately bounded continuation passes
+exactly those 141 cases in 458.152480 seconds. Independent review
+`f8a5979272ee1538a22cf3c6f4388b97c6261e09bd5e6c3a09f15b921e794ab2`
+verifies their disjoint union with the original 314 passes: all 455 enabled
+Campaign cases have passing results across two invocations, with no completed
+case repeated. The first invocation remains failed. The completed geometry test's buffered
 numeric output was not emitted, so no numeric geometry result is inferred.
 
 One matched maximum-frontier pair preserves the original assertions and test
@@ -4171,6 +4175,43 @@ retains source, original waits, both binaries and the incomplete Campaign run.
 This pair does not establish a full-suite pass, overall complexity bound,
 allocator peak, Linux-boot gain or native-backend qualification. Raw profiles
 and qualification artifacts remain local and outside repository publication.
+
+## Dedicated original per-CPU backing
+
+The selected constructor family now uses a dedicated boot-born per-CPU arena
+instead of borrowing the dynamic allocator's chunks and global balancing work.
+The source records original boot geometry, admits whole arena/template/mapping
+and keeper credit before clearing storage, and retains unreused logical slots
+and generations through release. Its constrained SRCU constructor profile
+accepts exact raw GFP_KERNEL flags; unsupported flags refuse before effects.
+The permanent row retains raw output before observation. Pointer delivery then
+rechecks the same task, scope, currentness, deadline and lease/delivery generation
+after the sole final observer, so callback revocation cannot deliver a stale
+pointer. Ordinary dynamic allocations retain their original path.
+
+Independent source correction review
+`cc6d4304b952b6a4d5aa13255dd740c332dd9b09b0bae70da2d2ef1737b146bb`
+verifies two changed configured translation units and 879 inputs, sixteen
+modeled positive controls and four causal erasures. Boot, task, CPU-map and
+deadline peers remain modeled. Actual configured objects measure a 64 KiB
+page-aligned per-CPU arena, 40 KiB keeper and 384-byte, 64-byte-aligned SRCU data.
+The earlier correction candidate and failed erasure oracle remain retained.
+
+Package review
+`04087219047e03150745ac2c2fac1d61191f1c84a588effdbbfee5508c5ade84`
+verifies the five source-package changes and exact 37-stage replay across 172
+roles. All 36 earlier patch payloads remain unchanged. One corrected cumulative
+Source45-to47 stage includes the exact flag fence and final observer guard;
+the rejected intermediate Source46 is not a production stage. Source and
+license catalogs distinguish newly catalogued upstream mm/percpu.c from the
+sole new GPL-2.0-only pool fragment.
+
+The backing bound covers selected possible-CPU slices, template, mapping bound
+and keeper. Complete first-chunk allocation, slack, NUMA padding, boot peak,
+actual mapping/PFNs and native CPU-map lifetime remain unqualified. Coverage
+stays 1/2047; full Kbuild, boot, SRCU/concurrency, CREATE, RUN and Ready remain
+separate requirements. No full physical-budget or kernel execution claim follows
+from configured translation units, model controls or patch replay.
 
 ## Performance evidence
 

@@ -18,4 +18,5 @@
   ./0042-original-vm-root-custody.patch
   ./0043-original-vmalloc-lifetime.patch
   ./0045-original-percpu-vfree-custody.patch
+  ./0047-original-percpu-pool-delivery.patch
 ]

@@ -1,0 +1,794 @@
+--- a/include/linux/crucible_allocator.h
++++ b/include/linux/crucible_allocator.h
+@@ -3,6 +3,8 @@
+ #define _LINUX_CRUCIBLE_ALLOCATOR_H
+ 
+ #include <linux/types.h>
++#include <linux/compiler_types.h>
++#include <linux/percpu.h>
+ #include <linux/gfp_types.h>
+ #include <linux/nodemask.h>
+ 
+@@ -39,6 +41,51 @@
+ 	CRUCIBLE_ALLOCATOR_PAGE_BULK = 5,
+ 	CRUCIBLE_ALLOCATOR_PAGE_NOLOCK = 6,
+ 	CRUCIBLE_ALLOCATOR_VM_AREA = 7,
++	CRUCIBLE_ALLOCATOR_PERCPU_POOL = 8,
++};
++
++/* The actual boot-born static arena is distinct from dynamic shared chunks.
++ * Its backing charge is retained in full, including template/mapping bounds.
++ */
++struct crucible_percpu_pool_shape {
++	const void *original_issuer;
++	const void __percpu *original_storage;
++	const unsigned long *original_offsets;
++	u64 generation;
++	u64 arena_bytes;
++	u64 metadata_bytes;
++	u64 physical_resident_bound;
++	u64 physical_peak_bound;
++	u32 cpu_ids;
++	u32 slot_limit;
++};
++
++struct crucible_percpu_request {
++	u64 requested_bytes;
++	u64 requested_alignment;
++	u64 aligned_bytes;
++	u64 effective_alignment;
++	u32 allocation_flags;
++	bool reserved;
++};
++
++struct crucible_percpu_output {
++	void __percpu *original_pointer;
++	u64 pool_generation;
++	u64 lease_generation;
++	u64 delivery_generation;
++	u64 native_offset;
++	u64 native_bytes;
++	u32 original_cpu_ids;
++	u32 cleared_cpu_count;
++	bool native_attempted;
++	bool native_returned;
++	bool source_current;
++	bool closing;
++	bool logical_released;
++	bool delivery_attempted;
++	bool delivery_completed;
++	bool delivered;
+ };
+ 
+ struct crucible_uncovered_request {
+@@ -144,6 +191,14 @@
+ 		bool native_attempted);
+ 	void (*observe_vm_area_cleanup)(void *owner, void *lease,
+ 		const struct crucible_vm_area_cleanup *output, bool native_returned);
++	bool (*reserve_percpu_pool)(void *owner,
++		const struct crucible_percpu_request *request,
++		const struct crucible_percpu_pool_shape *shape, void **lease);
++	bool (*percpu_pool_current)(void *owner);
++	void (*complete_percpu_pool)(void *owner, void *lease,
++		const struct crucible_percpu_output *output);
++	void (*observe_percpu_transition)(void *owner, void *lease,
++		const struct crucible_percpu_output *output);
+ };
+ 
+ struct crucible_allocator_scope {
+@@ -207,4 +262,11 @@
+ 	struct work_struct *work, void (*method)(struct work_struct *),
+ 	struct crucible_vm_area_token *token);
+ 
++bool crucible_allocator_percpu_pool_shape(struct crucible_percpu_pool_shape *shape);
++/* Readonly lookup authenticates the original bank row before input follow. */
++bool crucible_allocator_percpu_output_snapshot(void *owner, void *lease,
++	const struct crucible_percpu_output *original_output, u64 lease_generation,
++	struct crucible_percpu_output *snapshot);
++u64 crucible_allocator_percpu_pool_metadata_bytes(void);
++
+ #endif
+--- a/virt/kvm/crucible-original-kernel-resource.inc.c
++++ b/virt/kvm/crucible-original-kernel-resource.inc.c
+@@ -48,6 +48,12 @@
+ 	bool vm_area_returned;
+ 	bool vm_area_native_attempted;
+ 	bool vm_area_cleanup_returned;
++	struct crucible_percpu_request percpu_request;
++	struct crucible_percpu_output percpu_output;
++	const struct crucible_percpu_output *percpu_original_output;
++	bool percpu_physical_reserved;
++	bool percpu_completed;
++	u32 percpu_release_observations;
+ 	u32 control_index;
+ 	bool source_reservation_known;
+ 	bool native_attempted;
+@@ -90,6 +96,8 @@
+ 	bool root_constructor_completed;
+ 	bool root_free_attempted;
+ 	bool root_free_returned;
++	struct crucible_percpu_pool_shape original_percpu_pool;
++	bool percpu_pool_reserved;
+ 	u32 current_delivery;
+ 	s64 prepare_delivery_result;
+ 	u64 prepare_delivered_prefix;
+@@ -172,8 +180,12 @@
+ {
+ 	u64 metadata;
+ 	u64 origin_metadata = crucible_allocator_vm_area_metadata_bytes();
++	struct crucible_percpu_pool_shape pool_shape;
+ 	u64 vm_request, resident;
+ 
++	if (check_add_overflow(origin_metadata,
++	    crucible_allocator_percpu_pool_metadata_bytes(), &origin_metadata))
++		return -EOVERFLOW;
+ 	if (check_add_overflow((u64)sizeof(struct kvm_crucible_kernel_resource_context),
+ 	    origin_metadata, &metadata))
+ 		return -EOVERFLOW;
+@@ -195,6 +207,13 @@
+ 	return -EOPNOTSUPP;
+ #endif
+ 	if (!vm_request || check_add_overflow(metadata, vm_request, &resident))
++		return -EOVERFLOW;
++	/* The whole dedicated boot pool is charged conservatively, including
++	 * its immutable template and worst-case mapping backing. This is not
++	 * permission to borrow dynamic/shared chunks or a global worker.
++	 */
++	if (crucible_allocator_percpu_pool_shape(&pool_shape) &&
++	    check_add_overflow(resident, pool_shape.physical_resident_bound, &resident))
+ 		return -EOVERFLOW;
+ 	*output = *input;
+ 	output->quoted_resident = resident;
+@@ -454,6 +473,156 @@
+ 	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
+ }
+ 
++static struct kvm_crucible_resource_allocation *crucible_resource_percpu_row(
++	struct kvm_crucible_kernel_resource_context *context, void *lease)
++{
++	u32 index;
++
++	lockdep_assert_held(&context->allocator_lock);
++	for (index = 0; index < context->allocations_used; index++)
++		if (lease == &context->allocations[index] &&
++		    context->allocations[index].family == CRUCIBLE_ALLOCATOR_PERCPU_POOL)
++			return &context->allocations[index];
++	return NULL;
++}
++
++static bool crucible_resource_percpu_current(void *owner)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++
++	struct crucible_percpu_output output;
++	u32 index;
++
++	if (!crucible_resource_allocator_current(context) || READ_ONCE(context->uncertain) ||
++	    ktime_get_ns() > context->input.constructor_deadline_ns)
++		return false;
++	/* Raw completion retains the original permanent pool row. Its readonly
++	 * source lookup supplies the post-observer result without another callback.
++	 * A copied pre-delivery snapshot is never treated as a final delivery claim.
++	 */
++	for (index = 0; index < READ_ONCE(context->allocations_used); index++) {
++		struct kvm_crucible_resource_allocation *row = &context->allocations[index];
++
++		if (row->family != CRUCIBLE_ALLOCATOR_PERCPU_POOL || !row->percpu_completed)
++			continue;
++		if (!crucible_allocator_percpu_output_snapshot(context, row,
++		    row->percpu_original_output, row->percpu_output.lease_generation, &output) ||
++		    (output.delivery_completed && !output.delivered)) {
++			WRITE_ONCE(context->uncertain, true);
++			return false;
++		}
++	}
++	return true;
++}
++
++static bool crucible_resource_percpu_reserve(void *owner,
++	const struct crucible_percpu_request *request,
++	const struct crucible_percpu_pool_shape *shape, void **lease)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	struct kvm_crucible_resource_allocation *row;
++	struct crucible_percpu_pool_shape actual;
++	struct kvm_crucible_kernel_resource_policy prefix;
++	unsigned long flags;
++	u64 reserved;
++	bool admitted = false;
++
++	*lease = NULL;
++	if (!crucible_allocator_percpu_pool_shape(&actual) ||
++	    memcmp(&actual, shape, sizeof(actual)) ||
++	    crucible_resource_quote(&context->input, &prefix))
++		return false;
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	if (!crucible_resource_allocator_current(context) || context->uncertain ||
++	    context->allocations_used == CRUCIBLE_RESOURCE_ALLOCATION_ROWS ||
++	    ktime_get_ns() > context->input.constructor_deadline_ns)
++		goto refuse;
++	reserved = context->reserved_bytes;
++	if (context->percpu_pool_reserved) {
++		if (memcmp(&context->original_percpu_pool, &actual, sizeof(actual)))
++			goto refuse;
++	} else if (check_add_overflow(reserved, actual.physical_peak_bound, &reserved)) {
++		goto refuse;
++	}
++	/* The counter already retains the charged metadata and other families.
++	 * Reserve the whole arena/mapping bound once, without logical refunds.
++	 */
++	if (reserved > context->input.resident_ceiling ||
++	    reserved > context->input.peak_ceiling ||
++	    reserved > context->input.reserved_ceiling)
++		goto refuse;
++	context->original_percpu_pool = actual;
++	context->percpu_pool_reserved = true;
++	context->reserved_bytes = reserved;
++	row = &context->allocations[context->allocations_used++];
++	row->actor = current;
++	row->vm = context->original_vm;
++	row->generation = context->generation;
++	row->control_index = context->current_delivery;
++	row->family = CRUCIBLE_ALLOCATOR_PERCPU_POOL;
++	row->percpu_request = *request;
++	row->requested_bytes = request->requested_bytes;
++	row->percpu_physical_reserved = true;
++	row->source_reservation_known = true;
++	row->state = 6;
++	*lease = row;
++	admitted = true;
++	goto unlock;
++refuse:
++	WRITE_ONCE(context->uncertain, true);
++unlock:
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++	return admitted;
++}
++
++static void crucible_resource_percpu_complete(void *owner, void *lease,
++	const struct crucible_percpu_output *output)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	struct kvm_crucible_resource_allocation *row;
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	row = crucible_resource_percpu_row(context, lease);
++	if (row && !row->percpu_completed) {
++		row->percpu_output = *output;
++		row->percpu_original_output = output;
++		row->percpu_completed = true;
++		row->native_attempted = output->native_attempted;
++		row->native_known = output->native_returned && output->source_current;
++		row->state = 7;
++	}
++	if (!row || !output->native_returned || !output->source_current)
++		WRITE_ONCE(context->uncertain, true);
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++}
++
++static void crucible_resource_percpu_release(void *owner, void *lease,
++	const struct crucible_percpu_output *output)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	struct kvm_crucible_resource_allocation *row;
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	row = crucible_resource_percpu_row(context, lease);
++	if (row && row->percpu_completed &&
++	    row->percpu_output.original_pointer == output->original_pointer &&
++	    row->percpu_output.lease_generation == output->lease_generation) {
++		row->percpu_output = *output;
++		if (output->closing && row->percpu_release_observations != U32_MAX)
++			row->percpu_release_observations++;
++		row->retirement_attempted |= output->closing;
++	}
++	if (!row || !output->source_current ||
++	    (output->delivery_completed && !output->delivered))
++		WRITE_ONCE(context->uncertain, true);
++	/* Logical release never discharges the original physical pool charge or
++	 * the issuer's module/Task/mm references. No backing retirement is issued.
++	 */
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++}
++
+ static const struct crucible_allocator_ops crucible_resource_allocator_ops = {
+ 	.source_current = crucible_resource_allocator_current,
+ 	.refuse_uncovered = crucible_resource_allocator_refuse_uncovered,
+@@ -462,6 +631,10 @@
+ 	.reserve_vm_area = crucible_resource_vm_area_reserve,
+ 	.complete_vm_area = crucible_resource_vm_area_complete,
+ 	.observe_vm_area_cleanup = crucible_resource_vm_area_observe,
++	.reserve_percpu_pool = crucible_resource_percpu_reserve,
++	.percpu_pool_current = crucible_resource_percpu_current,
++	.complete_percpu_pool = crucible_resource_percpu_complete,
++	.observe_percpu_transition = crucible_resource_percpu_release,
+ };
+ 
+ /* Root custody is established at the native constructor, never by a quote
+--- a/mm/percpu.c
++++ b/mm/percpu.c
+@@ -87,6 +87,8 @@
+ #include <linux/sched.h>
+ #include <linux/sched/mm.h>
+ #include <linux/memcontrol.h>
++#include <linux/crucible_allocator.h>
++#include <linux/overflow.h>
+ 
+ #include <asm/cacheflush.h>
+ #include <asm/sections.h>
+@@ -198,8 +200,12 @@
+ static bool pcpu_async_enabled __read_mostly;
+ static bool pcpu_atomic_alloc_failed;
+ 
++#include "crucible-percpu-pool.inc.c"
++
+ static void pcpu_schedule_balance_work(void)
+ {
++	if (crucible_percpu_pool_shared_balance_refuse())
++		return;
+ 	if (pcpu_async_enabled)
+ 		schedule_work(&pcpu_balance_work);
+ }
+@@ -1736,6 +1742,8 @@
+ void __percpu *pcpu_alloc_noprof(size_t size, size_t align, bool reserved,
+ 				 gfp_t gfp)
+ {
++	bool source_handled;
++	void __percpu *source_pointer;
+ 	gfp_t pcpu_gfp;
+ 	bool is_atomic;
+ 	bool do_warn;
+@@ -1747,6 +1755,11 @@
+ 	unsigned long flags;
+ 	void __percpu *ptr;
+ 	size_t bits, bit_align;
++
++	source_pointer = crucible_percpu_pool_allocate(size, align, reserved, gfp,
++		&source_handled);
++	if (source_handled)
++		return source_pointer;
+ 
+ 	gfp = current_gfp_context(gfp);
+ 	/* whitelisted flags that can be passed to the backing allocators */
+@@ -2239,6 +2252,10 @@
+ 
+ 	if (!ptr)
+ 		return;
++	if (crucible_percpu_pool_release(ptr))
++		return;
++	if (crucible_percpu_pool_shared_balance_refuse())
++		return;
+ 
+ 	kmemleak_free_percpu(ptr);
+ 
+@@ -2730,6 +2747,7 @@
+ 
+ 	/* we're done */
+ 	pcpu_base_addr = base_addr;
++	crucible_percpu_pool_birth(ai, base_addr);
+ }
+ 
+ #ifdef CONFIG_SMP
+--- /dev/null
++++ b/mm/crucible-percpu-pool.inc.c
+@@ -0,0 +1,418 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* A selected constructor never borrows the dynamic per-CPU allocator's
++ * shared chunks or global balance queue. Boot-born static storage stays held.
++ */
++
++#define CRUCIBLE_PERCPU_ARENA_BYTES (64U * 1024U)
++#define CRUCIBLE_PERCPU_LEASES 256U
++
++struct crucible_percpu_arena {
++	u8 data[CRUCIBLE_PERCPU_ARENA_BYTES];
++};
++
++static DEFINE_PER_CPU_PAGE_ALIGNED(struct crucible_percpu_arena,
++	crucible_percpu_storage);
++
++enum crucible_percpu_state {
++	CRUCIBLE_PERCPU_RESERVED = 1,
++	CRUCIBLE_PERCPU_LIVE,
++	CRUCIBLE_PERCPU_CLOSING,
++	CRUCIBLE_PERCPU_RELEASED,
++	CRUCIBLE_PERCPU_REFUSED,
++};
++
++struct crucible_percpu_lease {
++	void *original_owner;
++	const struct crucible_allocator_ops *original_ops;
++	void *original_lease;
++	struct crucible_percpu_request request;
++	struct crucible_percpu_output output;
++	u32 state;
++};
++
++struct crucible_percpu_birth {
++	void *original_base;
++	const unsigned long *original_offsets;
++	u64 original_unit_bytes;
++	u64 original_static_bytes;
++	u64 original_arena_offset;
++	u32 original_cpu_ids;
++	cpumask_t original_possible;
++	void *native_arenas[NR_CPUS];
++	bool attempted;
++	bool complete;
++	bool failed;
++};
++
++struct crucible_percpu_bank {
++	struct crucible_percpu_birth birth;
++	struct crucible_percpu_lease leases[CRUCIBLE_PERCPU_LEASES];
++	u64 generation;
++	u64 cursor;
++	u32 used;
++} __aligned(PAGE_SIZE);
++
++static struct crucible_percpu_bank crucible_percpu_pool;
++static DEFINE_RAW_SPINLOCK(crucible_percpu_pool_lock);
++
++u64 crucible_allocator_percpu_pool_metadata_bytes(void)
++{
++	return sizeof(crucible_percpu_pool);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_percpu_pool_metadata_bytes);
++
++bool crucible_allocator_percpu_output_snapshot(void *owner, void *lease,
++	const struct crucible_percpu_output *original_output, u64 lease_generation,
++	struct crucible_percpu_output *snapshot)
++{
++	unsigned long flags;
++	u32 index;
++	bool matched = false;
++
++	raw_spin_lock_irqsave(&crucible_percpu_pool_lock, flags);
++	for (index = 0; index < crucible_percpu_pool.used; index++) {
++		const struct crucible_percpu_lease *candidate = &crucible_percpu_pool.leases[index];
++
++		/* Compare source membership before following the supplied address. */
++		if (original_output != &candidate->output ||
++		    owner != candidate->original_owner || lease != candidate->original_lease ||
++		    lease_generation != candidate->output.lease_generation)
++			continue;
++		*snapshot = candidate->output;
++		matched = true;
++		break;
++	}
++	raw_spin_unlock_irqrestore(&crucible_percpu_pool_lock, flags);
++	return matched;
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_percpu_output_snapshot);
++
++static void __init crucible_percpu_pool_birth(const struct pcpu_alloc_info *ai,
++	void *base_addr)
++{
++	struct crucible_percpu_birth *birth = &crucible_percpu_pool.birth;
++	unsigned long offset = (unsigned long)&crucible_percpu_storage -
++		(unsigned long)__per_cpu_start;
++	unsigned int cpu;
++
++	if (birth->attempted) {
++		birth->failed = true;
++		return;
++	}
++	birth->attempted = true;
++	if (!base_addr || base_addr != pcpu_base_addr || !pcpu_unit_offsets ||
++	    !nr_cpu_ids || nr_cpu_ids > NR_CPUS || offset_in_page(offset) ||
++	    offset > ai->static_size ||
++	    sizeof(crucible_percpu_storage) > ai->static_size - offset ||
++	    ai->unit_size != pcpu_unit_size || !pcpu_first_chunk ||
++	    !pcpu_first_chunk->immutable) {
++		birth->failed = true;
++		return;
++	}
++	/* Copy constructor facts now; ai and its initialization lifetime are not
++	 * followed later. The static region is outside dynamic allocation maps.
++	 */
++	birth->original_base = base_addr;
++	birth->original_offsets = pcpu_unit_offsets;
++	birth->original_unit_bytes = ai->unit_size;
++	birth->original_static_bytes = ai->static_size;
++	birth->original_arena_offset = offset;
++	birth->original_cpu_ids = nr_cpu_ids;
++	cpumask_copy(&birth->original_possible, cpu_possible_mask);
++	for_each_cpu(cpu, &birth->original_possible)
++		birth->native_arenas[cpu] = base_addr + pcpu_unit_offsets[cpu] + offset;
++	birth->complete = true;
++}
++
++static bool crucible_percpu_pool_current(void)
++{
++	const struct crucible_percpu_birth *birth = &crucible_percpu_pool.birth;
++	unsigned int cpu;
++
++	if (!birth->complete || birth->failed ||
++	    birth->original_base != pcpu_base_addr ||
++	    birth->original_offsets != pcpu_unit_offsets ||
++	    birth->original_unit_bytes != pcpu_unit_size ||
++	    birth->original_cpu_ids != nr_cpu_ids ||
++	    !cpumask_equal(&birth->original_possible, cpu_possible_mask))
++		return false;
++	for_each_cpu(cpu, &birth->original_possible)
++		if (birth->native_arenas[cpu] != per_cpu_ptr(&crucible_percpu_storage, cpu))
++			return false;
++	return true;
++}
++
++bool crucible_allocator_percpu_pool_shape(struct crucible_percpu_pool_shape *shape)
++{
++	u64 data, mappings, resident;
++
++	memset(shape, 0, sizeof(*shape));
++	/* These sanitizer profiles need their own literal shadow/origin backing
++	 * issuer. Do not infer one from the logical static arena's byte count.
++	 */
++	if (IS_ENABLED(CONFIG_KASAN) || IS_ENABLED(CONFIG_KMSAN) ||
++	    !crucible_percpu_pool_current())
++		return false;
++	/* Include the original linker template and every CPU ID conservatively.
++	 * Bound both the direct-map and per-CPU aliases by a private page-table
++	 * page at every hardware level for every data page. Mapping sharing is
++	 * overcharged rather than inferred from final-pointer addition.
++	 * Runtime pool operations allocate no pages, tables, shadow or scratch.
++	 */
++	if (check_mul_overflow((u64)sizeof(crucible_percpu_storage),
++	    (u64)nr_cpu_ids + 1, &data) ||
++	    check_mul_overflow(data, 2ULL * CONFIG_PGTABLE_LEVELS, &mappings) ||
++	    check_add_overflow(data, mappings, &resident) ||
++	    check_add_overflow(resident, (u64)sizeof(crucible_percpu_pool), &resident))
++		return false;
++	shape->generation = 1;
++	shape->original_issuer = &crucible_percpu_pool.birth;
++	shape->original_storage = &crucible_percpu_storage;
++	shape->original_offsets = crucible_percpu_pool.birth.original_offsets;
++	shape->arena_bytes = sizeof(crucible_percpu_storage);
++	shape->metadata_bytes = sizeof(crucible_percpu_pool);
++	shape->physical_resident_bound = resident;
++	shape->physical_peak_bound = resident;
++	shape->cpu_ids = nr_cpu_ids;
++	shape->slot_limit = CRUCIBLE_PERCPU_LEASES;
++	return true;
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_percpu_pool_shape);
++
++static bool crucible_percpu_scope_current(struct crucible_allocator_scope *scope)
++{
++	bool currentness;
++
++	if (!scope || !in_task() || scope->original_task != current ||
++	    scope->failed || scope->callback_active || scope->cleanup_observer ||
++	    !scope->original_owner || !scope->original_ops ||
++	    !scope->original_ops->source_current ||
++	    !scope->original_ops->reserve_percpu_pool ||
++	    !scope->original_ops->percpu_pool_current ||
++	    !scope->original_ops->complete_percpu_pool ||
++	    !scope->original_ops->observe_percpu_transition)
++		return false;
++	WRITE_ONCE(scope->callback_active, true);
++	currentness = scope->original_ops->source_current(scope->original_owner) &&
++		scope->original_ops->percpu_pool_current(scope->original_owner);
++	WRITE_ONCE(scope->callback_active, false);
++	return currentness && !READ_ONCE(scope->failed);
++}
++
++static bool crucible_percpu_scope_selected(struct crucible_allocator_scope *scope)
++{
++	return scope && (in_task() ||
++		(scope->original_task == current && scope->cleanup_observer));
++}
++
++static void __percpu *crucible_percpu_pool_allocate(size_t size, size_t align,
++	bool reserved, gfp_t gfp, bool *handled)
++{
++	struct crucible_allocator_scope *scope = READ_ONCE(current->crucible_allocator_scope);
++	struct crucible_percpu_pool_shape shape;
++	struct crucible_percpu_request request = {
++		.requested_bytes = size,
++		.requested_alignment = align,
++		.allocation_flags = gfp,
++		.reserved = reserved,
++	};
++	struct crucible_percpu_lease *lease;
++	void *original_lease = NULL;
++	unsigned long flags;
++	u64 offset, end, lease_generation, delivery_generation;
++	void __percpu *original_pointer;
++	void *original_owner;
++	const struct crucible_allocator_ops *original_ops;
++	unsigned int cpu;
++	bool admitted;
++
++	*handled = crucible_percpu_scope_selected(scope);
++	if (!*handled)
++		return NULL;
++	request.aligned_bytes = ALIGN(size, PCPU_MIN_ALLOC_SIZE);
++	request.effective_alignment = max_t(size_t, align, PCPU_MIN_ALLOC_SIZE);
++	/* Selected kernel/SRCU constructors use the unaccounted ordinary region.
++	 * Every other raw GFP profile and reserved inputs cannot fall back to shared
++	 * chunks or queue a global worker outside their physical reservation.
++	 */
++	if (!crucible_percpu_scope_current(scope) || reserved ||
++	    gfp != GFP_KERNEL ||
++	    !request.aligned_bytes || request.aligned_bytes < size ||
++	    request.aligned_bytes > PCPU_MIN_UNIT_SIZE ||
++	    request.effective_alignment > PAGE_SIZE ||
++	    !is_power_of_2(request.effective_alignment) ||
++	    !crucible_allocator_percpu_pool_shape(&shape))
++		goto refuse;
++
++	raw_spin_lock_irqsave(&crucible_percpu_pool_lock, flags);
++	offset = ALIGN(crucible_percpu_pool.cursor, request.effective_alignment);
++	if (crucible_percpu_pool.used == CRUCIBLE_PERCPU_LEASES ||
++	    crucible_percpu_pool.generation == U64_MAX ||
++	    check_add_overflow(offset, request.aligned_bytes, &end) ||
++	    end > sizeof(crucible_percpu_storage)) {
++		raw_spin_unlock_irqrestore(&crucible_percpu_pool_lock, flags);
++		goto refuse;
++	}
++	lease = &crucible_percpu_pool.leases[crucible_percpu_pool.used++];
++	lease->state = CRUCIBLE_PERCPU_RESERVED;
++	lease->original_owner = scope->original_owner;
++	lease->original_ops = scope->original_ops;
++	lease->request = request;
++	lease->output.pool_generation = shape.generation;
++	lease->output.lease_generation = ++crucible_percpu_pool.generation;
++	lease->output.native_offset = offset;
++	lease->output.native_bytes = request.aligned_bytes;
++	lease->output.original_cpu_ids = shape.cpu_ids;
++	crucible_percpu_pool.cursor = end;
++	raw_spin_unlock_irqrestore(&crucible_percpu_pool_lock, flags);
++
++	WRITE_ONCE(scope->callback_active, true);
++	admitted = lease->original_ops->reserve_percpu_pool(lease->original_owner,
++		&request, &shape, &original_lease);
++	WRITE_ONCE(scope->callback_active, false);
++	lease->original_lease = original_lease;
++	if (!admitted || !original_lease || !crucible_percpu_scope_current(scope)) {
++		lease->state = CRUCIBLE_PERCPU_REFUSED;
++		goto complete;
++	}
++	/* The retained native addresses come from the literal boot constructor,
++	 * not a mutable possible-CPU walk after eligibility checking.
++	 */
++	lease->output.native_attempted = true;
++	for_each_cpu(cpu, &crucible_percpu_pool.birth.original_possible) {
++		memset(crucible_percpu_pool.birth.native_arenas[cpu] + offset,
++			0, request.aligned_bytes);
++		lease->output.cleared_cpu_count++;
++	}
++	lease->output.original_pointer = (void __percpu *)&crucible_percpu_storage + offset;
++	lease->output.native_returned = true;
++	lease->output.source_current = crucible_percpu_pool_current() &&
++		crucible_percpu_scope_current(scope);
++	raw_spin_lock_irqsave(&crucible_percpu_pool_lock, flags);
++	lease->state = CRUCIBLE_PERCPU_LIVE;
++	raw_spin_unlock_irqrestore(&crucible_percpu_pool_lock, flags);
++complete:
++	WRITE_ONCE(scope->callback_active, true);
++	lease->original_ops->complete_percpu_pool(lease->original_owner,
++		lease->original_lease, &lease->output);
++	WRITE_ONCE(scope->callback_active, false);
++	/* The native result has already reached its original receiver. The final
++	 * observer sees an attempted delivery, never a speculative delivered bit.
++	 * The permanent source row owns the result after that callback returns.
++	 */
++	original_owner = lease->original_owner;
++	original_ops = lease->original_ops;
++	original_pointer = lease->output.original_pointer;
++	lease_generation = lease->output.lease_generation;
++	raw_spin_lock_irqsave(&crucible_percpu_pool_lock, flags);
++	delivery_generation = ++lease->output.delivery_generation;
++	lease->output.delivery_attempted = true;
++	raw_spin_unlock_irqrestore(&crucible_percpu_pool_lock, flags);
++	WRITE_ONCE(scope->callback_active, true);
++	original_ops->observe_percpu_transition(original_owner,
++		lease->original_lease, &lease->output);
++	WRITE_ONCE(scope->callback_active, false);
++
++	/* All callback effects precede this cut. A consumed lease, replaced Task
++	 * scope, closed issuer or elapsed original deadline cannot supply delivery.
++	 * No second observer, native attempt, offset reuse or refund is issued.
++	 */
++	admitted = READ_ONCE(current->crucible_allocator_scope) == scope &&
++		scope->original_owner == original_owner && scope->original_ops == original_ops &&
++		lease->output.source_current && crucible_percpu_pool_current() &&
++		crucible_percpu_scope_current(scope);
++	raw_spin_lock_irqsave(&crucible_percpu_pool_lock, flags);
++	admitted = admitted && READ_ONCE(current->crucible_allocator_scope) == scope &&
++		in_task() && scope->original_task == current && !scope->cleanup_observer &&
++		!READ_ONCE(scope->failed) && !READ_ONCE(scope->callback_active) &&
++		scope->original_owner == original_owner && scope->original_ops == original_ops &&
++		lease->state == CRUCIBLE_PERCPU_LIVE &&
++		lease->original_owner == original_owner && lease->original_ops == original_ops &&
++		lease->output.original_pointer == original_pointer &&
++		lease->output.lease_generation == lease_generation &&
++		lease->output.delivery_generation == delivery_generation &&
++		!lease->output.delivery_completed;
++	lease->output.delivered = admitted;
++	lease->output.delivery_completed = true;
++	raw_spin_unlock_irqrestore(&crucible_percpu_pool_lock, flags);
++	if (admitted)
++		return original_pointer;
++refuse:
++	WRITE_ONCE(scope->failed, true);
++	return NULL;
++}
++
++static bool crucible_percpu_pool_release(void __percpu *pointer)
++{
++	struct crucible_allocator_scope *saved;
++	struct crucible_allocator_scope observer;
++	struct crucible_percpu_lease *lease = NULL;
++	struct crucible_percpu_output output;
++	unsigned long flags;
++	u32 index;
++
++	raw_spin_lock_irqsave(&crucible_percpu_pool_lock, flags);
++	for (index = 0; index < crucible_percpu_pool.used; index++) {
++		struct crucible_percpu_lease *candidate = &crucible_percpu_pool.leases[index];
++
++		if (pointer == candidate->output.original_pointer && pointer) {
++			lease = candidate;
++			break;
++		}
++	}
++	if (!lease) {
++		bool inside = (unsigned long)pointer >= (unsigned long)&crucible_percpu_storage &&
++			(unsigned long)pointer < (unsigned long)&crucible_percpu_storage +
++			sizeof(crucible_percpu_storage);
++
++		raw_spin_unlock_irqrestore(&crucible_percpu_pool_lock, flags);
++		return inside;
++	}
++	if (lease->state != CRUCIBLE_PERCPU_LIVE) {
++		raw_spin_unlock_irqrestore(&crucible_percpu_pool_lock, flags);
++		return true;
++	}
++	/* Source membership precedes every owner/callback follow. Closing is
++	 * visible before logical release; the static backing is never freed,
++	 * reused or sent to the dynamic bitmap/global balance queue.
++	 */
++	lease->state = CRUCIBLE_PERCPU_CLOSING;
++	lease->output.closing = true;
++	lease->output.source_current = crucible_percpu_pool_current();
++	output = lease->output;
++	raw_spin_unlock_irqrestore(&crucible_percpu_pool_lock, flags);
++	saved = READ_ONCE(current->crucible_allocator_scope);
++	observer = (struct crucible_allocator_scope) {
++		.original_task = current,
++		.original_owner = lease->original_owner,
++		.original_ops = lease->original_ops,
++		.callback_active = true,
++		.cleanup_observer = true,
++	};
++	WRITE_ONCE(current->crucible_allocator_scope, &observer);
++	lease->original_ops->observe_percpu_transition(lease->original_owner,
++		lease->original_lease, &output);
++	raw_spin_lock_irqsave(&crucible_percpu_pool_lock, flags);
++	lease->state = CRUCIBLE_PERCPU_RELEASED;
++	lease->output.logical_released = true;
++	output = lease->output;
++	raw_spin_unlock_irqrestore(&crucible_percpu_pool_lock, flags);
++	lease->original_ops->observe_percpu_transition(lease->original_owner,
++		lease->original_lease, &output);
++	WRITE_ONCE(current->crucible_allocator_scope, saved);
++	return true;
++}
++
++static bool crucible_percpu_pool_shared_balance_refuse(void)
++{
++	struct crucible_allocator_scope *scope = READ_ONCE(current->crucible_allocator_scope);
++
++	if (!crucible_percpu_scope_selected(scope))
++		return false;
++	/* Dedicated-source operations never own this global worker. A selected
++	 * legacy escape cannot enqueue unreserved backing effects. Ordinary
++	 * queue/receiver/reclaim behavior remains entirely with its native owner.
++	 */
++	WRITE_ONCE(scope->failed, true);
++	return true;
++}

@@ -915,6 +915,10 @@
       }
     },
     {
+      "path": "mm/crucible-percpu-pool.inc.c",
+      "identity": null
+    },
+    {
       "path": "mm/crucible_allocator.c",
       "identity": null
     },
@@ -923,6 +927,13 @@
       "identity": {
         "sha256": "439ae8ec1e47cbf38770865e53e98bf2229e32a20c4b0f8178e6f19f34edbc50",
         "bytes": 228331
+      }
+    },
+    {
+      "path": "mm/percpu.c",
+      "identity": {
+        "sha256": "73a5d950fdf94617bde5f38477dd1a3f3b400720dd63d28f0b589455522e67c3",
+        "bytes": 102885
       }
     },
     {
@@ -4128,6 +4139,56 @@
           "after": {
             "sha256": "1c80303cc216903a0a62a1bc84d65be2887ecffaa898da52e9b718c7e2545e52",
             "bytes": 151158
+          }
+        }
+      ]
+    },
+    {
+      "name": "0047-original-percpu-pool-delivery.patch",
+      "patch": {
+        "sha256": "57a2776eca56388c48d23f6b08ccc8b57aed5ab84ff4cf1e7b937b2d62028f8f",
+        "bytes": 29510
+      },
+      "changes": [
+        {
+          "path": "include/linux/crucible_allocator.h",
+          "before": {
+            "sha256": "3d7b4d95df63b60c89057131e315590dc2ccb1ccc735c3d658be2afbbaf4d163",
+            "bytes": 7347
+          },
+          "after": {
+            "sha256": "364e7f4da2c446ee51301ff0a1e02347de79c365cb6c8c8843a80fd21c021ff2",
+            "bytes": 9297
+          }
+        },
+        {
+          "path": "virt/kvm/crucible-original-kernel-resource.inc.c",
+          "before": {
+            "sha256": "1ff5eaaf981395eb76bad27e05bbe2266901ffd5a483320f157fece7170efb52",
+            "bytes": 34349
+          },
+          "after": {
+            "sha256": "330a8ade40c9969652f0281e23cd5fc3aa68d637d11f40eeae7fa4114be1cdba",
+            "bytes": 41167
+          }
+        },
+        {
+          "path": "mm/percpu.c",
+          "before": {
+            "sha256": "73a5d950fdf94617bde5f38477dd1a3f3b400720dd63d28f0b589455522e67c3",
+            "bytes": 102885
+          },
+          "after": {
+            "sha256": "227ca6d2562ea20e8c50b1cd80c5a2329c7c31711c6e781070eed9ec571e55de",
+            "bytes": 103403
+          }
+        },
+        {
+          "path": "mm/crucible-percpu-pool.inc.c",
+          "before": null,
+          "after": {
+            "sha256": "126d8d9e869f68a2985c1864bb992bd07f85808c7553cd31c5d5e07390c7f2bc",
+            "bytes": 16205
           }
         }
       ]

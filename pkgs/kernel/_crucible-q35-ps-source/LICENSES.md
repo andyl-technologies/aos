@@ -123,3 +123,23 @@ known faulty private Source44 is excluded from this production chain.
 Native IRQ/workqueue/per-CPU allocation, shared physical backing and retirement
 remain unqualified. Coverage stays bit0, required coverage2047, and selected
 CREATE remains refused before descriptor allocation; RUN and Ready stay closed.
+
+Source47 is the corrected Source45 descendant for a dedicated boot-born per-CPU
+constructor pool and source-owned post-observer delivery. The blocked private
+Source46 payload is not a production stage. All 36 preceding patches remain
+byte-identical. No existing source file or notice is removed.
+
+| Newly catalogued source role | SPDX notice |
+| --- | --- |
+| `mm/percpu.c` (modified existing upstream role) | `GPL-2.0-only` |
+| `mm/crucible-percpu-pool.inc.c` (new private include) | `GPL-2.0-only` |
+
+The source roster checks the original upstream per-CPU allocator before every
+stage. Exact raw GFP_KERNEL precedes selected effects; original native output
+and a single final observer precede the retained delivery/currentness cut.
+Owner, callback, Task, alias and output-row addresses stay kernel-private.
+The pool bound covers its symbol slices/template/mapping metadata/keeper, not
+whole first-chunk allocation, unused unit/group slack, NUMA padding or boot peak.
+Actual boot, IRQ/concurrency, physical budget and complete SRCU remain unqualified.
+Coverage remains bit0, required coverage 2047, and selected CREATE remains fenced
+before FD allocation. No continuation, RUN, support bit or Ready is issued.
