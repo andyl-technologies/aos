@@ -30,6 +30,10 @@ pub(crate) use native_clock::gc_test_clock::TestClock;
 #[cfg(all(test, feature = "tokio", unix))]
 pub(crate) use native_effect::LeaseSyncEvent;
 
+/// Reports genuine retirement-barrier descriptor and durability observations.
+#[cfg(all(feature = "std", test, feature = "tokio", unix))]
+pub(crate) use native_effect::RetirementSyncEvent;
+
 #[cfg(all(feature = "std", test, feature = "tokio", unix))]
 pub(crate) use native_effect::MutationSyncEvent;
 #[cfg(all(feature = "std", unix))]

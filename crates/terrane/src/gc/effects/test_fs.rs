@@ -39,6 +39,8 @@ struct State {
     forbidden_data_reads: Mutex<std::collections::BTreeSet<PathBuf>>,
     data_read_attempts: AtomicUsize,
     catalog_read_gate: Mutex<Option<CatalogReadGate>>,
+    retirement_sync_observer:
+        Mutex<Option<(PathBuf, mpsc::Sender<crate::store::RetirementSyncEvent>)>>,
     permanent: permanent::PermanentHooks,
     gc_proposal: gc_proposal::GcProposalHooks,
 }
@@ -70,6 +72,24 @@ pub(crate) struct TestFs {
 }
 
 impl TestFs {
+    /// Observes the next real retirement barrier selecting the exact slot.
+    ///
+    /// The native worker supplies all events; this hook cannot acknowledge an
+    /// effect or replace its request. An unmatched slot leaves the hook armed.
+    ///
+    /// # Panics
+    /// Panics if an earlier observer remains or synchronization is poisoned.
+    pub(crate) fn observe_retirement_syncs(
+        &self,
+        slot: PathBuf,
+    ) -> mpsc::Receiver<crate::store::RetirementSyncEvent> {
+        let (sender, receiver) = mpsc::channel();
+        let mut pending = self.state.retirement_sync_observer.lock().unwrap();
+        assert!(pending.is_none());
+        *pending = Some((slot, sender));
+        receiver
+    }
+
     /// Pauses one successful native leaf read of the exact catalog artifact.
     ///
     /// The caller receives arrival only after the real native read completes.
@@ -386,6 +406,22 @@ impl LocalFs for TestFs {
                 effect.gates.push(gate);
             }
         }
+        let sync_observer = {
+            let mut pending = self.state.retirement_sync_observer.lock().unwrap();
+            if matches!(
+                effect.fault_probe(),
+                crate::store::EffectFaultProbe::SealRetirementBarrier(path)
+                    if pending.as_ref().is_some_and(|(slot, _)| path == slot)
+            ) {
+                pending.take().map(|(_, sender)| sender)
+            } else {
+                None
+            }
+        };
+        if let Some(sender) = sync_observer {
+            effect = effect.observe_retirement_syncs(sender)?;
+        }
+
         let phase = match effect.fault_probe() {
             crate::store::EffectFaultProbe::SealRetirementBarrier(_) => {
                 Some(RetirementPhase::Barrier)

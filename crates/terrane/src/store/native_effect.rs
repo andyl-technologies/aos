@@ -979,6 +979,28 @@ impl NativeFsEffect {
         Ok(self)
     }
 
+    /// Observes real retirement-barrier descriptors and completed syncs.
+    ///
+    /// # Errors
+    /// Refuses a different plan or unsupported nested retention wrappers.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn observe_retirement_syncs(
+        mut self,
+        sender: std::sync::mpsc::Sender<RetirementSyncEvent>,
+    ) -> io::Result<Self> {
+        let plan = match &mut self.plan {
+            Plan::RetainedDirectories { operation, .. } => operation.as_mut(),
+            plan => plan,
+        };
+        let Plan::SealRetirementBarrier(request) = plan else {
+            return Err(io::Error::other(
+                "sync observation requires retirement barrier",
+            ));
+        };
+        request.observe_syncs(sender);
+        Ok(self)
+    }
+
     /// Observes completed lease syncs after actual syscall and fresh checks.
     ///
     /// # Errors
@@ -1557,3 +1579,7 @@ pub(crate) use artifact_seal::mutation_publication::MutationSyncEvent;
 /// Reports actual successful lease syncs without exposing the private result channel.
 #[cfg(all(test, feature = "tokio", unix))]
 pub(crate) use artifact_seal::lease_publication::LeaseSyncEvent;
+
+/// Reports retirement durability observations independently from its private ACK.
+#[cfg(all(test, feature = "tokio", unix))]
+pub(crate) use artifact_seal::retirement_barrier::RetirementSyncEvent;

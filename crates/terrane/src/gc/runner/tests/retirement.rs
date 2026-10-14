@@ -4,6 +4,8 @@
 //! unchanged. No Tombstone, journal or returned record is treated as elapsed D,
 //! restore permission or permanent ownership. Data-pack body traps remain armed.
 
+mod durability;
+
 use super::*;
 use crate::bucket::held::SingleHeld;
 use crate::pack::{PackId, PackIndexSnapshot};

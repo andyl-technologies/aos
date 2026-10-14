@@ -20,6 +20,13 @@ use std::{
 use terrane_core::bucket::{BucketCapabilities, GenerationManifest};
 use terrane_core::gc::publication::{PublicationCommit, PublicationProof, PublicationTransaction};
 
+#[cfg(all(test, feature = "tokio", unix))]
+mod sync_observation;
+
+/// Reports actual original-descriptor capture and successful synchronization.
+#[cfg(all(test, feature = "tokio", unix))]
+pub(crate) use sync_observation::RetirementSyncEvent;
+
 /// Fixes one actual pair and exact canonical selected exclusion artifacts.
 pub(in super::super) struct BarrierRequest {
     root: PathBuf,
@@ -40,10 +47,18 @@ pub(in super::super) struct BarrierRequest {
         terrane_core::gc::publication::SourceLineage,
     )>,
     loss_generation: u64,
+    #[cfg(all(test, feature = "tokio", unix))]
+    completed_syncs: Option<mpsc::Sender<RetirementSyncEvent>>,
     result: mpsc::Sender<DurableBarrier>,
 }
 
 impl BarrierRequest {
+    /// Attaches observations without replacing any native completion channel.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(in super::super) fn observe_syncs(&mut self, sender: mpsc::Sender<RetirementSyncEvent>) {
+        self.completed_syncs = Some(sender);
+    }
+
     /// Borrows the fixed actual slot only for native fault selection.
     #[cfg(all(test, feature = "tokio"))]
     pub(in super::super) fn path(&self) -> &Path {
@@ -238,6 +253,8 @@ pub(in super::super) fn barrier_plan(
                 .zip(transaction.new.sources.iter().cloned())
                 .collect(),
             loss_generation: transaction.new.loss_generation,
+            #[cfg(all(test, feature = "tokio", unix))]
+            completed_syncs: None,
             result: sender,
         })),
         BarrierReceiver { result: receiver },

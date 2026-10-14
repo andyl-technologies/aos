@@ -14,6 +14,7 @@
     "gc::runner::tests::retirement::gc_initial_retirement_native_cancellation_retains_exclusion_until_worker_finishes"
     "gc::runner::tests::retirement::gc_initial_retirement_native_prior_trash_or_journal_refuses_before_exclusion"
     "gc::runner::tests::retirement::gc_initial_retirement_native_newer_index_controls_pair_grace"
+    "gc::runner::tests::retirement::durability::gc_initial_retirement_syncs_each_scoped_directory_once_after_all_original_files"
     "gc::runner::tests::source_carry::post_done::ordinary::ordinary_source_and_original_survive_done_reopen_and_zero_node_cold_fork"
     "gc::runner::tests::source_carry::post_done::imported::foreign_used_view_and_original_survive_done_reopen_and_zero_node_cold_fork"
     "gc::runner::tests::source_carry::post_done::ordinary::consumed_original_reincarnation_after_done_refuses_cold_publication_without_tree_io"
@@ -30,6 +31,6 @@ in
       test -s "$prerequisite/result"
     done
     ${runCases}
-    printf 'PASS: ordinary local-v1 retirement and post-Done reuse (14 exact cases), with physical recovery and current qualification prerequisites\n' \
+    printf 'PASS: ordinary local-v1 retirement and post-Done reuse (15 exact cases), with physical recovery and current qualification prerequisites\n' \
       > "$out/result"
   ''
