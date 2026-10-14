@@ -423,6 +423,25 @@ existing genuine unsigned request builder is shared within runner tests so
 these witnesses publish actual metadata cohorts. A separate source audit maps
 the retained-publication interval for a finer existing-trace diagnostic.
 Full SDK and owning Nix gates remain required before acceptance.
+The finer indexed diagnostic also times out at the original 120-second bound.
+Its complete 752,750,825-byte trace is preserved; this substantial diagnostic
+output prevents treating its timing as normal performance. The final output
+publication reaches selected early controls and candidate-evidence preparation,
+then continues ordinary publication-record reads until timeout. Zero-valued
+fixture ref clocks cannot establish inner-stage durations. Independent review
+verifies all 89 sealed payloads, unchanged source, compiler inputs and six
+executables, and all 533 archived scratch entries. Scratch remains preserved;
+no successful qualification or dominant-cost attribution follows.
+Collector candidate `45b2e4f91a96` (tree `4ac968227b78`) implements the raw
+container cache and all four registered native witnesses. Full coordinator and
+independent source review preserve every successful acquisition's index/pack
+preimages, requested-member validation, consumed identity accounting, genuine
+restore continuity, Session checks and protected Originals through native
+publication. The two-file change passes scoped formatter and diff checks;
+compilation, all four witnesses and owning gates remain pending. A separate
+six-phase Core renewal on the unchanged `072e70ada83e` source is authorized
+after the finer diagnostic is sealed and independently reviewed. No task,
+milestone or freeze advances.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
