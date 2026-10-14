@@ -52,17 +52,33 @@ in
           "$CONFIG_SHELL" ./configure --prefix="$out" \
             --build=${buildPlatform.config} --host=${hostPlatform.config} \
             --target=${hostPlatform.config}
-          make SHELL="$CONFIG_SHELL" -j"$NIX_BUILD_CORES"
+          # The predecessor wrapper produces static executables. Tell libtool
+          # about that policy for file and its test, while retaining both
+          # shared and static libmagic builds and every upstream capability.
+          make SHELL="$CONFIG_SHELL" \
+            'file_LDADD=libmagic.la -lm -all-static' \
+            'test_LDADD=$(top_builddir)/src/libmagic.la -all-static' \
+            -j"$NIX_BUILD_CORES"
         '';
       }
       {
         name = "check";
-        script = ''make SHELL="$CONFIG_SHELL" check'';
+        script = ''
+          make SHELL="$CONFIG_SHELL" \
+            'file_LDADD=libmagic.la -lm -all-static' \
+            'test_LDADD=$(top_builddir)/src/libmagic.la -all-static' \
+            check
+        '';
       }
       {
         name = "install";
         script = ''
-          make SHELL="$CONFIG_SHELL" install
+          make SHELL="$CONFIG_SHELL" \
+            'file_LDADD=libmagic.la -lm -all-static' \
+            'test_LDADD=$(top_builddir)/src/libmagic.la -all-static' \
+            install
+          test -f "$out/lib/libmagic.a"
+          test -f "$out/lib/libmagic.so"
           printf 'AOS context ABI probe\n' > "$TMPDIR/file-probe.txt"
           test "$("$out/bin/file" --brief "$TMPDIR/file-probe.txt")" = 'ASCII text'
         '';

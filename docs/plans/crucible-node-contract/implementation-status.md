@@ -4579,6 +4579,14 @@ signed tree and patch replay; configured emulator/plugin execution, ordinary
 production builds, complete preservation, readiness and release gates remain
 pending for this source.
 
+The ordinary production catalog passes for all 764 packages and the current
+source tuple passes 14 checks. The first context build fails in its predecessor
+`file` helper: its static compiler wrapper encounters shared libmagic during
+the executable link. A narrow correction selects libtool's static executable
+link mode for `file` and its test program, preserving default features, both
+libmagic library forms and the complete upstream checks. Source review passes;
+the failed build remains recorded and the corrected realization is pending.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
