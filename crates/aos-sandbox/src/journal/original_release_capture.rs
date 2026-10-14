@@ -213,8 +213,8 @@ impl OriginalReleaseControllerCutCaptureV1 {
         journal.validate_protected_writer_name_witness(witness)
     }
 
-    // Only the opaque Root readback invokes this unit-copy method after its
-    // own full graph/snapshot comparison. No scalar head is accepted as input.
+    // Retained for Root readback after a full graph/snapshot comparison; this
+    // recipe has no current caller. No scalar head is accepted as input.
     pub(super) fn copy_root_native_cut_into_v1(
         &self,
         journal: &Journal,

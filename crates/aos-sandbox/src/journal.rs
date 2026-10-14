@@ -24,6 +24,8 @@
 //! to the journal's native owner or issuing domain authority.
 //! The private `original_currentness` group keeps original native history,
 //! fixed writer loans, signing bookends, and postcommit readbacks together.
+//! The private `original_release_capture` group owns Release observation,
+//! comparison, retained first causes and copy budgets; capture fields stay here.
 //! The Linux-only `controller` owner retains Controller journal admission,
 //! node identity binding, fixed limits, and the original paid writer construction.
 
@@ -3580,9 +3582,9 @@ enum OriginalReleaseNativeCutPurposeV1 {
 
 /// Retains whole native readback DATA and each independent named bookend.
 ///
-/// This has no public constructor, field, writer or cut getter. Its closed
-/// consumers are the captured Controller Release request and the same Root
-/// phase-7 readback; neither consumer obtains current cleanup authority.
+/// This has no public constructor, field, writer or cut getter. Source retains
+/// this through its native capture. Controller/Root routes remain undeployed;
+/// no captured readback grants current cleanup authority.
 #[cfg(target_os = "linux")]
 pub(crate) struct OriginalReleaseControllerCutCaptureV1 {
     purpose: OriginalReleaseNativeCutPurposeV1,

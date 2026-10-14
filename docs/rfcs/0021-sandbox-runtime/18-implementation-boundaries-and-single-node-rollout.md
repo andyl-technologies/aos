@@ -402,6 +402,12 @@ and unique stable-binding recovery retain their original authority and chronolog
 Resident fields and shared postcommit issuance remain parent-owned; this private
 organization does not isolate protected Cargo dependencies.
 
+Private `journal::original_release_capture` owns native Release capture, replay
+comparison, retained first-cause transfer and copy pricing on the original Journal.
+Capture fields, shared COMMIT observation and the replay parser stay parent-owned.
+Controller/Root recipes remain undeployed; this private group grants no cleanup
+admission and creates no protected Cargo boundary.
+
 Linux `journal::controller` owns the intact Controller Journal profile, identity
 and opening-construction group; `JournalShape` stays beside its producer with
 Linux-only availability. Crate-root `protected_domain_journal` keeps original
