@@ -11,6 +11,15 @@ pub(in crate::node_observed_executor::factory) fn matches(
     scenario: &NodeScenario,
     requirements: &CapabilityRequirements,
 ) -> Result<(), NodeObservedError> {
+    matches_with_compute(selections, scenario, requirements, &Default::default())
+}
+
+pub(super) fn matches_with_compute(
+    selections: &[InstalledNodeSelection],
+    scenario: &NodeScenario,
+    requirements: &CapabilityRequirements,
+    compute: &super::compute::ComputeQualifications,
+) -> Result<(), NodeObservedError> {
     requirements
         .validate()
         .map_err(|error| refused(&error.to_string()))?;
@@ -39,15 +48,25 @@ pub(in crate::node_observed_executor::factory) fn matches(
         demand
             .match_contract(descriptor, binding, &capabilities, &guarantees)
             .map_err(|error| refused(&error.to_string()))?;
+        let compute_proof = compute.authenticate(scenario, selected, demand)?;
         if gem5_group_preserving(selections) {
             super::preserving_group::qualify(&selected.kind, demand)?;
-        } else {
+        } else if demand.compute.is_none() {
             qualify_kind(
                 &selected.kind,
                 demand,
                 standalone_clock(selections),
                 condition_preservation(selections),
                 gem5_ordinary(selections) || gem5_storage_group(selections),
+            )?;
+        } else {
+            qualify_kind_with_compute(
+                &selected.kind,
+                demand,
+                standalone_clock(selections),
+                condition_preservation(selections),
+                gem5_ordinary(selections) || gem5_storage_group(selections),
+                compute_proof,
             )?;
         }
     }
@@ -61,9 +80,32 @@ pub(super) fn qualify_kind(
     condition_preservation: bool,
     gem5_ordinary: bool,
 ) -> Result<(), NodeObservedError> {
-    // Each table belongs to the actual adapters used by this catalog. A new
-    // operation needs a source policy and native witness, not an advertised ID.
-    if demand.compute.is_some() || !demand.extensions.is_empty() {
+    qualify_kind_with_compute(
+        kind,
+        demand,
+        clock_preservation,
+        condition_preservation,
+        gem5_ordinary,
+        None,
+    )
+}
+
+pub(super) fn qualify_kind_with_compute(
+    kind: &InstalledNodeKind,
+    demand: &NodeCapabilityRequirement,
+    clock_preservation: bool,
+    condition_preservation: bool,
+    gem5_ordinary: bool,
+    compute: Option<super::compute::ComputeDemandProof<'_>>,
+) -> Result<(), NodeObservedError> {
+    // Each table belongs to actual source-qualified adapters. Compute needs
+    // the same measured source and borrowed demand, not a portable opt-in.
+    if (demand.compute.is_some()
+        && !compute
+            .as_ref()
+            .is_some_and(|proof| proof.authenticates(kind, demand)))
+        || !demand.extensions.is_empty()
+    {
         return Err(refused(
             "no enrolled architecture or semantic extension policy for this catalog candidate",
         ));

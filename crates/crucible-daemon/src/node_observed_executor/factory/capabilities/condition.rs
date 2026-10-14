@@ -80,6 +80,7 @@ impl InstalledNodeCatalog {
             requirements,
             scenario,
             requirements_bytes: original.to_vec(),
+            compute: Default::default(),
         })
     }
 

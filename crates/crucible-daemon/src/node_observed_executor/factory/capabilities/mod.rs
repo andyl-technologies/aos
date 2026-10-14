@@ -5,6 +5,7 @@
 //! Ambiguity refuses; the resolver never unions support across candidates.
 
 pub(super) mod admission;
+mod compute;
 mod condition;
 mod gem5;
 mod native;
@@ -16,6 +17,9 @@ pub use native::InstalledCapabilityClockFactory;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod compute_tests;
 
 #[cfg(test)]
 mod native_tests;
@@ -53,6 +57,7 @@ pub struct ResolvedCapabilityWorld {
     pub(super) requirements: CapabilityRequirements,
     scenario: NodeScenario,
     pub(super) requirements_bytes: Vec<u8>,
+    compute: compute::ComputeQualifications,
 }
 
 impl ResolvedCapabilityWorld {
@@ -102,7 +107,26 @@ impl InstalledNodeCatalog {
         let mut chosen = None;
         for candidate in candidates {
             let scenario = self.capability_baseline(&candidate.selections, source)?;
-            if policy::matches(&candidate.selections, &scenario, &requirements).is_err() {
+            let compute = match compute::ComputeQualifications::install(
+                self,
+                &candidate.selections,
+                &scenario,
+                requirements
+                    .nodes
+                    .iter()
+                    .filter_map(|node| node.compute.as_ref().map(|_| node.node.clone())),
+            ) {
+                Ok(compute) => compute,
+                Err(_) => continue,
+            };
+            if policy::matches_with_compute(
+                &candidate.selections,
+                &scenario,
+                &requirements,
+                &compute,
+            )
+            .is_err()
+            {
                 continue;
             }
             if chosen.is_some() {
@@ -110,9 +134,9 @@ impl InstalledNodeCatalog {
                     "capability requirements match multiple complete installed worlds",
                 ));
             }
-            chosen = Some((candidate, scenario));
+            chosen = Some((candidate, scenario, compute));
         }
-        let (candidate, scenario) = chosen.ok_or_else(|| {
+        let (candidate, scenario, compute) = chosen.ok_or_else(|| {
             refused("no complete installed world satisfies mandatory capabilities")
         })?;
         let scenario = bind_requirements(scenario, &requirements)?;
@@ -122,6 +146,7 @@ impl InstalledNodeCatalog {
             candidate: candidate.clone(),
             requirements,
             scenario,
+            compute,
         })
     }
 
@@ -239,10 +264,11 @@ impl InstalledNodeCatalog {
         NodeObservedError,
     > {
         let actual = self.scenario(&resolved.candidate.selections)?;
-        policy::matches(
+        policy::matches_with_compute(
             &resolved.candidate.selections,
             &actual,
             &resolved.requirements,
+            &resolved.compute,
         )?;
         if bind_original_requirements(actual, &resolved.requirements, &resolved.requirements_bytes)?
             .canonical_bytes()?

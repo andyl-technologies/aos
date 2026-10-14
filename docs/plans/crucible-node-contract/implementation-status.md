@@ -4213,6 +4213,50 @@ stays 1/2047; full Kbuild, boot, SRCU/concurrency, CREATE, RUN and Ready remain
 separate requirements. No full physical-budget or kernel execution claim follows
 from configured translation units, model controls or patch replay.
 
+## Measured installed Compute requirements
+
+The installed catalog now supplies exact Compute demand data for its closed
+gem5 x86_64 and AArch64 SE profiles. Resolution retains private source
+qualifiers bound to the original complete world, owner, descriptor, machine,
+devices and ISA. Preparation and admission reopen the measured source artifacts
+and native operation witnesses. A borrowed proof authenticates the same demand
+object; an equal copied demand cannot reuse it. Public demand data does not
+grant live authority or implementation-class acceptance.
+
+The supported model remains fixed O3, 1 GHz, 512 MiB, classic DDR3 and the
+closed write_fd1/exit guest interface. Only exact_run and boundary_settle are
+supported. Other backends, arbitrary guests, full-system devices, extensions,
+fork and replay remain refused without their independent implementations.
+
+Independent review
+`b1b75e6e90b6975e0533aad538e430b186b9626fdfa426b779a0f04bbedefdcc`
+checks the exact seven-role delta, current preimages and absences, 926 consumed
+source bodies and the original executable. The tested source is Source112 on
+the earlier indexed-decision parent, with source index
+`bc76a06e7c6da106ed6d348b3199303eb8c42688356816c37954267dc2e8091e`.
+Import does not relabel that cohort as a current whole-source build.
+
+All-target/all-feature check, strict Clippy and library-test code generation
+pass in 47.526, 124.557 and 479.256 seconds. That cohort uses its explicitly
+inherited opt-level=0 profile override. Its 427,414,616-byte executable is
+`3fed28d5efbf913e5e745e1d176c11764efdea5046420a67068cb6dc0be4c768`.
+Nine individual controls pass: five source/demand controls and four existing
+refusals. Four source-measurement controls are normally ignored and were
+explicitly executed with include-ignored; they are not omitted passes.
+
+The first typing failure, 180-second test deadline, separate optimized-profile
+compiler deadline and interrupted measured test remain failures. A bounded
+continuation runs only the four unfinished measured controls, which pass in
+203.084, 213.095, 414.163 and 206.084 seconds. These controls remeasure installed
+artifacts and launch no native gem5 child. Runtime HOME is absent in the
+original minimal environment; it is not redirected to a task-specific home.
+
+This establishes fixed-profile, no-effect demand interpretation and unchanged
+live/class refusal. It does not qualify native preparation, execution, Ready,
+capture, restoration, whole-factory allocation peak or device parity. Actual
+Cargo target compilation does not substitute for the outstanding Nix
+application unit/integration target gate.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

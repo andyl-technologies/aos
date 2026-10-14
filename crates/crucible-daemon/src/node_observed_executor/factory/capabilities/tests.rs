@@ -25,7 +25,7 @@ fn clock() -> Vec<InstalledNodeSelection> {
 
 // These references exercise source-profile predicates only. They never create
 // AdmissionEvidence, a native resource, or an operational qualification seal.
-fn model_clock() -> NodeScenario {
+pub(super) fn model_clock() -> NodeScenario {
     let host = canonical::content_ref(b"model-only host", "application/octet-stream").unwrap();
     let device = canonical::content_ref(b"model-only device", "application/octet-stream").unwrap();
     super::super::profile::build_world(&clock(), &host, &device, &Default::default())
