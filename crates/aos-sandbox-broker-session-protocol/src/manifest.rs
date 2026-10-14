@@ -103,6 +103,9 @@ impl BrokerSessionManifestAudienceV1 {
     }
 }
 
+#[cfg(test)]
+mod tests;
+
 /// Holds a manifest-binding digest without conferring authority.
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct BrokerSessionManifestBindingV1([u8; 32]);

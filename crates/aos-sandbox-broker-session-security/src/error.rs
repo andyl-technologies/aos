@@ -4,6 +4,7 @@
 //! omit configured paths, file bytes, seeds, public-key fingerprints, and
 //! manifest digests.
 
+use aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestErrorV1;
 use aos_sandbox_protocol::authenticated_session::historical_checkpoint::HistoricalCheckpointErrorV1;
 
 /// Reports a fail-closed protected-state or entropy failure.
@@ -79,5 +80,12 @@ impl From<HistoricalCheckpointErrorV1> for BrokerSessionSecurityError {
     fn from(_: HistoricalCheckpointErrorV1) -> Self {
         // Historical DATA failures retain the protected owner's redacted class.
         Self::Currentness
+    }
+}
+
+impl From<BrokerSessionManifestErrorV1> for BrokerSessionSecurityError {
+    fn from(error: BrokerSessionManifestErrorV1) -> Self {
+        // Canonical DATA failures retain the protected owner's original field class.
+        Self::manifest(error.field)
     }
 }

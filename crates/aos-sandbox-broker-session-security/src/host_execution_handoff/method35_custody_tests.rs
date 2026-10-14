@@ -16,6 +16,7 @@ use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSource
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionOwnerV1, ProtectedHostOutputReservationV1,
 };
+use aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestAudienceV1;
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionProtocolV1, BrokerSessionTrafficStateV1, VerifiedBrokerSessionTranscriptV1,
     decode_canonical_client_hello_v1, decode_canonical_request_v1,
@@ -942,7 +943,7 @@ async fn signed_method35_and_cold_query36_support_protected_method48_readback() 
     }
     let (storage_manifest, storage_secrets) = manifest_and_secrets_for_audience(
         BrokerSessionProtocolV1::Host,
-        crate::manifest::BrokerSessionSecurityAudienceV1::StorageBroker,
+        BrokerSessionManifestAudienceV1::StorageBroker,
     );
     install_endpoint(
         &storage_client_path,

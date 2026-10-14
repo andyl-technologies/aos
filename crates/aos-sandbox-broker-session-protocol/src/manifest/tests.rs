@@ -29,7 +29,7 @@ const GOLDEN_HEX: &str = concat!(
 );
 const GOLDEN_BINDING_HEX: &str = "61aea33546af9d99c79ac81bf0705500a81c94d472dbf98681c87308103dbb26";
 
-fn manifest() -> BrokerSessionSecurityManifestV1 {
+fn manifest() -> BrokerSessionManifestV1 {
     let keys = core::array::from_fn(|index| {
         let seed = [u8::try_from(index + 1).unwrap_or(1); 32];
         let signing_key = SigningKey::from_bytes(&seed);
@@ -44,7 +44,7 @@ fn manifest() -> BrokerSessionSecurityManifestV1 {
             &signing_key,
         )
         .unwrap_or_else(|error| panic!("valid signer failed: {error}"));
-        BrokerSessionSecurityKeyPinV1::new(
+        BrokerSessionManifestKeyPinV1::new(
             signer,
             signing_key.verifying_key().to_bytes(),
             5 + u64::try_from(index).unwrap_or(0),
@@ -54,9 +54,9 @@ fn manifest() -> BrokerSessionSecurityManifestV1 {
         )
         .unwrap_or_else(|error| panic!("valid pin failed: {error}"))
     });
-    BrokerSessionSecurityManifestV1::new(
+    BrokerSessionManifestV1::new(
         BrokerSessionProtocolV1::Network,
-        BrokerSessionSecurityAudienceV1::NodeController,
+        BrokerSessionManifestAudienceV1::NodeController,
         1,
         0,
         [0x10; 16],
@@ -107,7 +107,7 @@ fn exact_golden_offsets_binding_and_round_trip() {
         GOLDEN_BINDING_HEX
     );
     assert_eq!(
-        BrokerSessionSecurityManifestV1::decode(&encoded),
+        BrokerSessionManifestV1::decode(&encoded),
         Ok(manifest)
     );
 }
@@ -115,23 +115,23 @@ fn exact_golden_offsets_binding_and_round_trip() {
 #[test]
 fn exact_length_magic_version_and_closed_codes_fail() {
     let encoded = manifest().encode();
-    assert!(BrokerSessionSecurityManifestV1::decode(&encoded[..919]).is_err());
+    assert!(BrokerSessionManifestV1::decode(&encoded[..919]).is_err());
     let mut too_long = encoded.to_vec();
     too_long.push(0);
-    assert!(BrokerSessionSecurityManifestV1::decode(&too_long).is_err());
+    assert!(BrokerSessionManifestV1::decode(&too_long).is_err());
 
     for (offset, value) in [(0, 0), (9, 2), (10, 0), (10, 5), (11, 0), (11, 2)] {
         let mut mutated = encoded;
         mutated[offset] = value;
-        assert!(BrokerSessionSecurityManifestV1::decode(&mutated).is_err());
+        assert!(BrokerSessionManifestV1::decode(&mutated).is_err());
     }
 
     let mut wrong_version = encoded;
     wrong_version[12..14].copy_from_slice(&2_u16.to_be_bytes());
-    assert!(BrokerSessionSecurityManifestV1::decode(&wrong_version).is_err());
+    assert!(BrokerSessionManifestV1::decode(&wrong_version).is_err());
     let mut wrong_minor = encoded;
     wrong_minor[14..16].copy_from_slice(&1_u16.to_be_bytes());
-    assert!(BrokerSessionSecurityManifestV1::decode(&wrong_minor).is_err());
+    assert!(BrokerSessionManifestV1::decode(&wrong_minor).is_err());
 }
 
 #[test]
@@ -150,7 +150,7 @@ fn every_prefix_sentinel_fails() {
     ] {
         let mut mutated = encoded;
         mutated[range].fill(0);
-        assert!(BrokerSessionSecurityManifestV1::decode(&mutated).is_err());
+        assert!(BrokerSessionManifestV1::decode(&mutated).is_err());
     }
 }
 
@@ -169,24 +169,24 @@ fn signer_reserved_codes_order_and_sentinels_fail() {
         ] {
             let mut mutated = encoded;
             mutated[range].fill(0);
-            assert!(BrokerSessionSecurityManifestV1::decode(&mutated).is_err());
+            assert!(BrokerSessionManifestV1::decode(&mutated).is_err());
         }
 
         let mut bad_usage = encoded;
         bad_usage[start + 112] = if index == 0 { 2 } else { 1 };
-        assert!(BrokerSessionSecurityManifestV1::decode(&bad_usage).is_err());
+        assert!(BrokerSessionManifestV1::decode(&bad_usage).is_err());
         let mut unknown_usage = encoded;
         unknown_usage[start + 112] = 5;
-        assert!(BrokerSessionSecurityManifestV1::decode(&unknown_usage).is_err());
+        assert!(BrokerSessionManifestV1::decode(&unknown_usage).is_err());
         for reserved in start + 113..start + 120 {
             let mut mutated = encoded;
             mutated[reserved] = 1;
-            assert!(BrokerSessionSecurityManifestV1::decode(&mutated).is_err());
+            assert!(BrokerSessionManifestV1::decode(&mutated).is_err());
         }
         for reserved in start + 170..start + 176 {
             let mut mutated = encoded;
             mutated[reserved] = 1;
-            assert!(BrokerSessionSecurityManifestV1::decode(&mutated).is_err());
+            assert!(BrokerSessionManifestV1::decode(&mutated).is_err());
         }
     }
 }
@@ -199,34 +199,34 @@ fn key_currentness_language_is_canonical() {
         for offset in [start + 152, start + 160] {
             let mut zero_floor = encoded;
             zero_floor[offset..offset + 8].fill(0);
-            assert!(BrokerSessionSecurityManifestV1::decode(&zero_floor).is_err());
+            assert!(BrokerSessionManifestV1::decode(&zero_floor).is_err());
         }
         for offset in [start + 168, start + 169] {
             let mut bad_boolean = encoded;
             bad_boolean[offset] = 2;
-            assert!(BrokerSessionSecurityManifestV1::decode(&bad_boolean).is_err());
+            assert!(BrokerSessionManifestV1::decode(&bad_boolean).is_err());
         }
 
         let mut absent_nonzero = encoded;
         absent_nonzero[start + 176..start + 184].copy_from_slice(&30_u64.to_be_bytes());
-        assert!(BrokerSessionSecurityManifestV1::decode(&absent_nonzero).is_err());
+        assert!(BrokerSessionManifestV1::decode(&absent_nonzero).is_err());
         let mut present_zero = encoded;
         present_zero[start + 169] = 1;
-        assert!(BrokerSessionSecurityManifestV1::decode(&present_zero).is_err());
+        assert!(BrokerSessionManifestV1::decode(&present_zero).is_err());
         let mut nonadvancing = encoded;
         nonadvancing[start + 169] = 1;
         nonadvancing[start + 176..start + 184]
             .copy_from_slice(&(20 + u64::try_from(index).unwrap_or(0)).to_be_bytes());
-        assert!(BrokerSessionSecurityManifestV1::decode(&nonadvancing).is_err());
+        assert!(BrokerSessionManifestV1::decode(&nonadvancing).is_err());
 
         let mut authority_floor_too_high = encoded;
         authority_floor_too_high[start + 152..start + 160]
             .copy_from_slice(&(11 + u64::try_from(index).unwrap_or(0)).to_be_bytes());
-        assert!(BrokerSessionSecurityManifestV1::decode(&authority_floor_too_high).is_err());
+        assert!(BrokerSessionManifestV1::decode(&authority_floor_too_high).is_err());
         let mut key_floor_too_high = encoded;
         key_floor_too_high[start + 160..start + 168]
             .copy_from_slice(&(21 + u64::try_from(index).unwrap_or(0)).to_be_bytes());
-        assert!(BrokerSessionSecurityManifestV1::decode(&key_floor_too_high).is_err());
+        assert!(BrokerSessionManifestV1::decode(&key_floor_too_high).is_err());
     }
 }
 
@@ -235,10 +235,10 @@ fn fingerprints_weak_keys_and_pairwise_identity_fail() {
     let encoded = manifest().encode();
     let mut fingerprint = encoded;
     fingerprint[184 + 80] ^= 1;
-    assert!(BrokerSessionSecurityManifestV1::decode(&fingerprint).is_err());
+    assert!(BrokerSessionManifestV1::decode(&fingerprint).is_err());
     let mut raw_key = encoded;
     raw_key[184 + 120] ^= 1;
-    assert!(BrokerSessionSecurityManifestV1::decode(&raw_key).is_err());
+    assert!(BrokerSessionManifestV1::decode(&raw_key).is_err());
 
     let weak = [0_u8; 32];
     let weak_signer = BrokerSessionSignerReferenceV1::new(
@@ -251,24 +251,24 @@ fn fingerprints_weak_keys_and_pairwise_identity_fail() {
         BrokerSessionKeyUsageV1::ClientHello,
     )
     .unwrap_or_else(|error| panic!("shape-valid signer failed: {error}"));
-    assert!(BrokerSessionSecurityKeyPinV1::new(weak_signer, weak, 1, 1, false, None).is_err());
+    assert!(BrokerSessionManifestKeyPinV1::new(weak_signer, weak, 1, 1, false, None).is_err());
 
     let second = 184 + 184;
     let mut repeated_key_id = encoded;
     repeated_key_id[second + 56..second + 72].copy_from_slice(&encoded[184 + 56..184 + 72]);
-    assert!(BrokerSessionSecurityManifestV1::decode(&repeated_key_id).is_err());
+    assert!(BrokerSessionManifestV1::decode(&repeated_key_id).is_err());
 
     let mut repeated_public_key = encoded;
     repeated_public_key[second + 80..second + 112].copy_from_slice(&encoded[184 + 80..184 + 112]);
     repeated_public_key[second + 120..second + 152].copy_from_slice(&encoded[184 + 120..184 + 152]);
-    assert!(BrokerSessionSecurityManifestV1::decode(&repeated_public_key).is_err());
+    assert!(BrokerSessionManifestV1::decode(&repeated_public_key).is_err());
 }
 
 #[test]
 fn audience_protocol_matrix_and_active_state_are_explicit() {
-    let host_root = BrokerSessionSecurityManifestV1::new(
+    let host_root = BrokerSessionManifestV1::new(
         BrokerSessionProtocolV1::Host,
-        BrokerSessionSecurityAudienceV1::RootMount,
+        BrokerSessionManifestAudienceV1::RootMount,
         1,
         0,
         manifest().domain_id(),
@@ -284,9 +284,9 @@ fn audience_protocol_matrix_and_active_state_are_explicit() {
     );
     assert!(host_root.is_ok());
 
-    let host_storage = BrokerSessionSecurityManifestV1::new(
+    let host_storage = BrokerSessionManifestV1::new(
         BrokerSessionProtocolV1::Host,
-        BrokerSessionSecurityAudienceV1::StorageBroker,
+        BrokerSessionManifestAudienceV1::StorageBroker,
         1,
         0,
         manifest().domain_id(),
@@ -302,9 +302,9 @@ fn audience_protocol_matrix_and_active_state_are_explicit() {
     );
     assert!(host_storage.is_ok());
 
-    let wrong_root = BrokerSessionSecurityManifestV1::new(
+    let wrong_root = BrokerSessionManifestV1::new(
         BrokerSessionProtocolV1::Network,
-        BrokerSessionSecurityAudienceV1::RootMount,
+        BrokerSessionManifestAudienceV1::RootMount,
         1,
         0,
         manifest().domain_id(),
@@ -320,9 +320,9 @@ fn audience_protocol_matrix_and_active_state_are_explicit() {
     );
     assert!(wrong_root.is_err());
 
-    let wrong_storage = BrokerSessionSecurityManifestV1::new(
+    let wrong_storage = BrokerSessionManifestV1::new(
         BrokerSessionProtocolV1::Storage,
-        BrokerSessionSecurityAudienceV1::StorageBroker,
+        BrokerSessionManifestAudienceV1::StorageBroker,
         1,
         0,
         manifest().domain_id(),
@@ -340,14 +340,14 @@ fn audience_protocol_matrix_and_active_state_are_explicit() {
 
     let mut revoked = manifest().encode();
     revoked[184 + 168] = 1;
-    let decoded = BrokerSessionSecurityManifestV1::decode(&revoked)
+    let decoded = BrokerSessionManifestV1::decode(&revoked)
         .unwrap_or_else(|error| panic!("revoked manifest should be shape-valid: {error}"));
     assert!(decoded.require_all_active().is_err());
 
     let mut superseded = manifest().encode();
     superseded[184 + 169] = 1;
     superseded[184 + 176..184 + 184].copy_from_slice(&30_u64.to_be_bytes());
-    let decoded = BrokerSessionSecurityManifestV1::decode(&superseded)
+    let decoded = BrokerSessionManifestV1::decode(&superseded)
         .unwrap_or_else(|error| panic!("superseded manifest should be shape-valid: {error}"));
     assert!(decoded.require_all_active().is_err());
 }
@@ -362,9 +362,9 @@ fn every_protocol_has_only_its_exact_supported_version() {
         (BrokerSessionProtocolV1::MountFuse, (3, 0)),
     ] {
         let template = manifest();
-        let valid = BrokerSessionSecurityManifestV1::new(
+        let valid = BrokerSessionManifestV1::new(
             protocol,
-            BrokerSessionSecurityAudienceV1::NodeController,
+            BrokerSessionManifestAudienceV1::NodeController,
             expected.0,
             expected.1,
             template.domain_id(),
@@ -380,13 +380,13 @@ fn every_protocol_has_only_its_exact_supported_version() {
         );
         let valid = valid.unwrap();
         assert_eq!(
-            BrokerSessionSecurityManifestV1::decode(&valid.encode()).unwrap(),
+            BrokerSessionManifestV1::decode(&valid.encode()).unwrap(),
             valid
         );
 
-        let wrong = BrokerSessionSecurityManifestV1::new(
+        let wrong = BrokerSessionManifestV1::new(
             protocol,
-            BrokerSessionSecurityAudienceV1::NodeController,
+            BrokerSessionManifestAudienceV1::NodeController,
             expected.0,
             expected.1 + 1,
             template.domain_id(),

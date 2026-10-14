@@ -9,6 +9,9 @@
 use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{BrokerRequestEnvelope, BrokerResponseEnvelope};
+use aos_sandbox_broker_session_protocol::manifest::{
+    BrokerSessionManifestAudienceV1, BrokerSessionManifestBindingV1,
+};
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionArtifactError, BrokerSessionProjectionError, BrokerSessionValidationError,
     BrokerClientHelloSubjectV1, BrokerHelloSubjectV1, BrokerOutcomeSubjectV1,
@@ -33,7 +36,6 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::BrokerSessionSecurityError;
 use crate::entropy::{EntropySource, KernelEntropy, nonzero_random};
-use crate::manifest::BrokerSessionManifestBindingV1;
 use crate::protected_files::{EndpointRole, ProtectedEndpointFiles};
 use crate::self_execution::{CurrentSelfExecutionGuard, RetainedSelfExecutionGuard};
 
@@ -352,7 +354,7 @@ impl ProtectedEndpointV1 {
             == aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::MountFuse
             && manifest.protocol_version() == (3, 0)
             && manifest.audience()
-                == crate::manifest::BrokerSessionSecurityAudienceV1::NodeController;
+                == BrokerSessionManifestAudienceV1::NodeController;
         self.revalidate_after()?;
         if !matches {
             return Err(BrokerSessionSecurityError::manifest("fixed FUSE-3 context"));
@@ -436,6 +438,7 @@ impl ProtectedEndpointV1 {
             client_process,
             broker_process,
         )
+        .map_err(BrokerSessionSecurityError::from)
     }
 
     fn poison<T>(
@@ -1304,7 +1307,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::manifest::BrokerSessionSecurityManifestV1;
+    use aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestV1;
     use crate::protected_files::MANIFEST_NAME;
     use crate::test_signed_endpoint::{
         TestEndpointRole, install_endpoint, manifest_and_secrets, write_protected,
@@ -1316,7 +1319,7 @@ mod tests {
     struct Fixture {
         _temporary: TempDir,
         endpoint: PathBuf,
-        manifest: BrokerSessionSecurityManifestV1,
+        manifest: BrokerSessionManifestV1,
         secrets: [[u8; 48]; 4],
     }
 
@@ -1341,7 +1344,7 @@ mod tests {
             }
         }
 
-        fn rewrite_manifest(&self, manifest: &BrokerSessionSecurityManifestV1) {
+        fn rewrite_manifest(&self, manifest: &BrokerSessionManifestV1) {
             rewrite_protected(&self.endpoint.join(MANIFEST_NAME), &manifest.encode());
         }
     }
@@ -1470,9 +1473,9 @@ mod tests {
                 (BrokerSessionProtocolV1::MountFuse, (3, 0), true),
             ] {
                 let mut fixture = Fixture::new(role);
-                fixture.manifest = BrokerSessionSecurityManifestV1::new(
+                fixture.manifest = BrokerSessionManifestV1::new(
                     protocol,
-                    crate::manifest::BrokerSessionSecurityAudienceV1::NodeController,
+                    BrokerSessionManifestAudienceV1::NodeController,
                     version.0,
                     version.1,
                     [1; 16],
@@ -1642,7 +1645,7 @@ mod tests {
         let fixture = Fixture::new(EndpointRole::Client);
         let mut encoded = fixture.manifest.encode();
         encoded[184 + 184 + 168] = 1;
-        let revoked = BrokerSessionSecurityManifestV1::decode(&encoded)
+        let revoked = BrokerSessionManifestV1::decode(&encoded)
             .unwrap_or_else(|error| panic!("revoked manifest decode failed: {error}"));
         fixture.rewrite_manifest(&revoked);
         assert!(ProtectedEndpointFiles::load(&fixture.endpoint, EndpointRole::Client).is_err());
@@ -1929,6 +1932,33 @@ mod tests {
             let fixture = Fixture::new(EndpointRole::Client);
             rewrite_protected(&fixture.endpoint.join(MANIFEST_NAME), &vec![1; length]);
             assert!(ProtectedEndpointFiles::load(&fixture.endpoint, EndpointRole::Client).is_err());
+        }
+    }
+
+    #[test]
+    fn manifest_shape_and_active_pin_failures_keep_native_redacted_errors() {
+        for role in [EndpointRole::Client, EndpointRole::Broker] {
+            for (offset, value, field) in [
+                (0, 0, "magic"),
+                (184 + 170, 1, "key pin encoding"),
+                (184 + 168, 1, "inactive key pin"),
+            ] {
+                let fixture = Fixture::new(role);
+                let mut encoded = fixture.manifest.encode();
+                encoded[offset] = value;
+                rewrite_protected(&fixture.endpoint.join(MANIFEST_NAME), &encoded);
+
+                let error = ProtectedEndpointFiles::load(&fixture.endpoint, role)
+                    .err()
+                    .expect("invalid protected manifest must fail before key admission");
+
+                assert_eq!(error, BrokerSessionSecurityError::Manifest { field });
+                assert_eq!(
+                    error.to_string(),
+                    format!("invalid Broker Session Authentication security manifest: {field}")
+                );
+                assert!(std::error::Error::source(&error).is_none());
+            }
         }
     }
 

@@ -16,6 +16,7 @@ use aos_proto::aos::sandbox::local::v1::{
 };
 use aos_sandbox::Journal;
 use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSourceV1;
+use aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestAudienceV1;
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionDurableEndpointV1, BrokerSessionDurableHistoryV1, BrokerSessionDurableRecordV1,
     BrokerSessionOutcomeCompanionV1, BrokerSessionPeerBindingV1, BrokerSessionProtectedBindingsV1,
@@ -74,7 +75,6 @@ use tempfile::TempDir;
 use super::super::{JournalOwnerV1, ProtectedEndpointV1};
 use super::*;
 use crate::endpoint::{ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1};
-use crate::manifest::BrokerSessionSecurityAudienceV1;
 use crate::test_signed_endpoint::{
     TestEndpointRole, install_endpoint, manifest_and_secrets_for_audience,
 };
@@ -93,10 +93,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        Self::for_audience(BrokerSessionSecurityAudienceV1::NodeController)
+        Self::for_audience(BrokerSessionManifestAudienceV1::NodeController)
     }
 
-    fn for_audience(audience: BrokerSessionSecurityAudienceV1) -> Self {
+    fn for_audience(audience: BrokerSessionManifestAudienceV1) -> Self {
         let temporary = tempfile::tempdir().unwrap();
         let client_path = temporary.path().join("client");
         let broker_path = temporary.path().join("broker");
@@ -1313,7 +1313,7 @@ fn signed_method37_to_method42_preliminary_request_survives_archive_rollover() {
 
 #[test]
 fn signed_method48_response_requires_one_storage_host_session_and_exact_replay() {
-    let fixture = Fixture::for_audience(BrokerSessionSecurityAudienceV1::StorageBroker);
+    let fixture = Fixture::for_audience(BrokerSessionManifestAudienceV1::StorageBroker);
     let mut client = fixture.client();
     let mut broker = fixture.broker();
     let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT;

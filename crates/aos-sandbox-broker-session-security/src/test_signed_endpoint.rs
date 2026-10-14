@@ -4,25 +4,24 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
+use aos_sandbox_broker_session_protocol::manifest::{
+    BrokerSessionManifestAudienceV1, BrokerSessionManifestKeyPinV1, BrokerSessionManifestV1,
+};
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionKeyUsageV1, BrokerSessionProtocolV1, BrokerSessionSignerReferenceV1,
 };
 use ed25519_dalek::SigningKey;
 
-use crate::manifest::{
-    BrokerSessionSecurityAudienceV1, BrokerSessionSecurityKeyPinV1, BrokerSessionSecurityManifestV1,
-};
-
 pub(super) fn manifest_and_secrets(
     protocol: BrokerSessionProtocolV1,
-) -> (BrokerSessionSecurityManifestV1, [[u8; 48]; 4]) {
-    manifest_and_secrets_for_audience(protocol, BrokerSessionSecurityAudienceV1::NodeController)
+) -> (BrokerSessionManifestV1, [[u8; 48]; 4]) {
+    manifest_and_secrets_for_audience(protocol, BrokerSessionManifestAudienceV1::NodeController)
 }
 
 pub(super) fn manifest_and_secrets_for_audience(
     protocol: BrokerSessionProtocolV1,
-    audience: BrokerSessionSecurityAudienceV1,
-) -> (BrokerSessionSecurityManifestV1, [[u8; 48]; 4]) {
+    audience: BrokerSessionManifestAudienceV1,
+) -> (BrokerSessionManifestV1, [[u8; 48]; 4]) {
     let usages = [
         BrokerSessionKeyUsageV1::ClientHello,
         BrokerSessionKeyUsageV1::BrokerHello,
@@ -47,7 +46,7 @@ pub(super) fn manifest_and_secrets_for_audience(
             &key,
         )
         .expect("signed test endpoint reference");
-        BrokerSessionSecurityKeyPinV1::new(
+        BrokerSessionManifestKeyPinV1::new(
             signer,
             key.verifying_key().to_bytes(),
             1,
@@ -57,7 +56,7 @@ pub(super) fn manifest_and_secrets_for_audience(
         )
         .expect("signed test endpoint pin")
     });
-    let manifest = BrokerSessionSecurityManifestV1::new(
+    let manifest = BrokerSessionManifestV1::new(
         protocol, audience, 1, 0, [1; 16], [2; 16], 1, [3; 32], 1, [4; 32], 1, [5; 32], [6; 16],
         pins,
     )
@@ -77,7 +76,7 @@ pub(super) enum TestEndpointRole {
 
 pub(super) fn install_endpoint(
     directory: &Path,
-    manifest: &BrokerSessionSecurityManifestV1,
+    manifest: &BrokerSessionManifestV1,
     secrets: &[[u8; 48]; 4],
     role: TestEndpointRole,
 ) {

@@ -9,6 +9,9 @@ use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
+use aos_sandbox_broker_session_protocol::manifest::{
+    BrokerSessionManifestAudienceV1, BrokerSessionManifestKeyPinV1, BrokerSessionManifestV1,
+};
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionKeyUsageV1, BrokerSessionProtocolV1, BrokerSessionSignerReferenceV1,
     supported_broker_session_version_v1,
@@ -22,9 +25,6 @@ use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
 use crate::entropy::{KernelEntropy, nonzero_random};
-use crate::manifest::{
-    BrokerSessionSecurityAudienceV1, BrokerSessionSecurityKeyPinV1, BrokerSessionSecurityManifestV1,
-};
 use crate::protected_files::{EndpointRole, ProtectedEndpointFiles};
 
 const KEY_USAGES: [BrokerSessionKeyUsageV1; 4] = [
@@ -79,7 +79,7 @@ fn credential_pair(root: &Path, name: &str, protocol: BrokerSessionProtocolV1, n
             &key,
         )
         .unwrap();
-        BrokerSessionSecurityKeyPinV1::new(
+        BrokerSessionManifestKeyPinV1::new(
             signer,
             key.verifying_key().to_bytes(),
             1,
@@ -90,9 +90,9 @@ fn credential_pair(root: &Path, name: &str, protocol: BrokerSessionProtocolV1, n
         .unwrap()
     });
     let (major, minor) = supported_broker_session_version_v1(protocol);
-    let manifest = BrokerSessionSecurityManifestV1::new(
+    let manifest = BrokerSessionManifestV1::new(
         protocol,
-        BrokerSessionSecurityAudienceV1::NodeController,
+        BrokerSessionManifestAudienceV1::NodeController,
         major,
         minor,
         random(),

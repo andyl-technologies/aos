@@ -60,7 +60,6 @@ mod host_consumer_cgroup_transfer;
 mod host_execution_handoff;
 mod host_mount_scope_identity_transfer;
 mod immutable_image;
-pub mod manifest;
 pub mod ownership_authority_client;
 pub mod ownership_authority_runtime;
 pub mod ownership_authority_server;
@@ -149,11 +148,6 @@ pub use host_execution_handoff::HostExecutionHandoffErrorV1;
 pub use host_mount_scope_identity_transfer::{
     ProtectedHostMountScopeCurrentV1, ProtectedHostMountScopeIdentityTransferV1,
     ProtectedHostMountScopeIdentityV1,
-};
-pub use manifest::{
-    BROKER_SESSION_SECURITY_MANIFEST_BYTES, BrokerSessionManifestBindingV1,
-    BrokerSessionSecurityAudienceV1, BrokerSessionSecurityKeyPinV1,
-    BrokerSessionSecurityManifestV1,
 };
 pub use production_activation::{
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,

@@ -9,6 +9,9 @@
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
+use aos_sandbox_broker_session_protocol::manifest::{
+    BROKER_SESSION_MANIFEST_BYTES, BrokerSessionManifestV1,
+};
 use aos_sandbox_linux::protected_file::{self, ExactReadError};
 use ed25519_dalek::SigningKey;
 use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags, Stat};
@@ -16,7 +19,6 @@ use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::BrokerSessionSecurityError;
-use crate::manifest::{BROKER_SESSION_SECURITY_MANIFEST_BYTES, BrokerSessionSecurityManifestV1};
 
 pub(crate) const MANIFEST_NAME: &str = "broker-session-manifest";
 const CLIENT_HELLO_KEY_NAME: &str = "client-hello-signing-key";
@@ -97,7 +99,7 @@ impl MetadataSnapshot {
 struct ManifestFile {
     descriptor: OwnedFd,
     metadata: MetadataSnapshot,
-    exact: [u8; BROKER_SESSION_SECURITY_MANIFEST_BYTES],
+    exact: [u8; BROKER_SESSION_MANIFEST_BYTES],
     digest: [u8; 32],
 }
 
@@ -129,7 +131,7 @@ pub(crate) struct ProtectedEndpointFiles {
     directory_metadata: MetadataSnapshot,
     manifest_file: ManifestFile,
     secrets: [SecretFile; 2],
-    manifest: BrokerSessionSecurityManifestV1,
+    manifest: BrokerSessionManifestV1,
 }
 
 impl ProtectedEndpointFiles {
@@ -155,7 +157,7 @@ impl ProtectedEndpointFiles {
                 BrokerSessionSecurityError::filesystem("manifest", "lock")
             }
         })?;
-        let manifest = BrokerSessionSecurityManifestV1::decode(&manifest_file.exact)?;
+        let manifest = BrokerSessionManifestV1::decode(&manifest_file.exact)?;
         manifest.require_all_active()?;
 
         let [first, second] = role.local_files();
@@ -179,7 +181,7 @@ impl ProtectedEndpointFiles {
         Ok(files)
     }
 
-    pub(crate) const fn manifest(&self) -> &BrokerSessionSecurityManifestV1 {
+    pub(crate) const fn manifest(&self) -> &BrokerSessionManifestV1 {
         &self.manifest
     }
 
@@ -340,17 +342,17 @@ fn load_manifest(
     let before = validate_child_metadata(
         &descriptor,
         owner,
-        BROKER_SESSION_SECURITY_MANIFEST_BYTES,
+        BROKER_SESSION_MANIFEST_BYTES,
         "manifest",
     )?;
     let exact =
-        read_exact_positioned::<BROKER_SESSION_SECURITY_MANIFEST_BYTES>(&descriptor, "manifest")?;
+        read_exact_positioned::<BROKER_SESSION_MANIFEST_BYTES>(&descriptor, "manifest")?;
     let repeated =
-        read_exact_positioned::<BROKER_SESSION_SECURITY_MANIFEST_BYTES>(&descriptor, "manifest")?;
+        read_exact_positioned::<BROKER_SESSION_MANIFEST_BYTES>(&descriptor, "manifest")?;
     let after = validate_child_metadata(
         &descriptor,
         owner,
-        BROKER_SESSION_SECURITY_MANIFEST_BYTES,
+        BROKER_SESSION_MANIFEST_BYTES,
         "manifest",
     )?;
     if before != after || exact != repeated {
@@ -487,21 +489,21 @@ fn validate_retained_manifest(
     let before = validate_child_metadata(
         &file.descriptor,
         owner,
-        BROKER_SESSION_SECURITY_MANIFEST_BYTES,
+        BROKER_SESSION_MANIFEST_BYTES,
         "manifest",
     )?;
-    let exact = read_exact_positioned::<BROKER_SESSION_SECURITY_MANIFEST_BYTES>(
+    let exact = read_exact_positioned::<BROKER_SESSION_MANIFEST_BYTES>(
         &file.descriptor,
         "manifest",
     )?;
-    let repeated = read_exact_positioned::<BROKER_SESSION_SECURITY_MANIFEST_BYTES>(
+    let repeated = read_exact_positioned::<BROKER_SESSION_MANIFEST_BYTES>(
         &file.descriptor,
         "manifest",
     )?;
     let after = validate_child_metadata(
         &file.descriptor,
         owner,
-        BROKER_SESSION_SECURITY_MANIFEST_BYTES,
+        BROKER_SESSION_MANIFEST_BYTES,
         "manifest",
     )?;
     if before == file.metadata
@@ -536,7 +538,7 @@ fn validate_retained_secret(
 }
 
 fn validate_local_keys(
-    manifest: &BrokerSessionSecurityManifestV1,
+    manifest: &BrokerSessionManifestV1,
     secrets: &[SecretFile; 2],
     indices: [usize; 2],
 ) -> Result<(), BrokerSessionSecurityError> {

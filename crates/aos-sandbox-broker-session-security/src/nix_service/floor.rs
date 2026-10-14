@@ -19,7 +19,9 @@ use aos_sandbox::normal_root::{
 use aos_sandbox::production_operation_compiler::NixStartAdmissionErrorV2;
 use aos_sandbox_broker::{BrokerAdmissionError, BrokerAuthority};
 use aos_sandbox_linux::pidfd::PidFd;
-use aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestBindingV1;
+use aos_sandbox_broker_session_protocol::manifest::{
+    BrokerSessionManifestBindingV1, BrokerSessionManifestV1,
+};
 use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
@@ -234,7 +236,8 @@ fn require_publics(
         return Err(FloorErrorV1::Provisioning);
     }
 
-    let manifest = crate::manifest::BrokerSessionSecurityManifestV1::decode(publics[2])
+    let manifest = BrokerSessionManifestV1::decode(publics[2])
+        .map_err(crate::BrokerSessionSecurityError::from)
         .map_err(|_| FloorErrorV1::Provisioning)?;
     if manifest.key_pins().iter().any(|pin| pin.public_key().as_slice() == &issuer[16..])
         || [0, 5, 7, 10].iter().any(|index| {
