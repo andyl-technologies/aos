@@ -39,6 +39,8 @@ mod direct;
 #[cfg(all(feature = "tokio", unix))]
 mod held;
 #[cfg(all(feature = "tokio", unix))]
+mod overlay;
+#[cfg(all(feature = "tokio", unix))]
 mod read_configuration;
 mod requalification;
 

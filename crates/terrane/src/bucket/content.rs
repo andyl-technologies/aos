@@ -6,8 +6,12 @@ pub(in crate::bucket) mod current_node_reads;
 pub(in crate::bucket) mod direct_node_reads;
 #[cfg(all(feature = "tokio", unix))]
 pub(in crate::bucket) mod held_nodes;
+#[cfg(all(feature = "tokio", unix))]
+pub(in crate::bucket) mod immutable_node_reads;
 mod member_reads;
 mod meta_batch;
+#[cfg(all(feature = "tokio", unix))]
+pub(in crate::bucket) mod overlay_node_reads;
 pub(in crate::bucket) mod ranged_pack;
 #[cfg(all(feature = "tokio", unix))]
 mod selected_get;
