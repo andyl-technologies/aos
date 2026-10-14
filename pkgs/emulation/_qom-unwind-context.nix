@@ -176,7 +176,7 @@ in
         {
           name = "install";
           script = ''
-            for recipe in ${builtins.concatStringsSep " " (map sourceReference retainedRecipes)}; do
+            for recipe in ${builtins.concatStringsSep " " (lib.unique (map sourceReference retainedRecipes))}; do
               cp -a "$recipe" "$source/recipe/$(basename "$recipe")"
             done
             cp "$qomConfigureScriptPath" "$source/recipe/configure-command.bash"

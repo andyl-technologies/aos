@@ -4616,8 +4616,14 @@ is absent inside the Nix sandbox. The instantiated derivation confirms that
 plain `toString` omitted source-path imports. A path-only interpolation helper
 now retains those inputs and the recipe files in the store closure; derivation
 contexts, numeric substitutions, flags and features keep their existing handling.
-Independent source review passes. The failed context remains preserved; its
-corrected realization, provider and emulator are still pending.
+The corrected command imports all six source substitutions and retains its
+recipe paths as store inputs. Actual GNU configuration and header generation
+then complete, including all eleven selected headers. Installation fails while
+copying a repeated read-only compiler source into an already copied directory.
+The native build uses the same compiler for both roles: 28 source occurrences
+resolve to 21 distinct paths. A reviewed deduplication copies each distinct
+source once. The failed attempts and generated outputs remain retained;
+completed context recording, provider and emulator realization remain pending.
 
 ## Full gem5 production build and ownership check
 
