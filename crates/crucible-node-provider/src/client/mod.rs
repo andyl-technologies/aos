@@ -33,3 +33,6 @@ pub use session::{
     ClientCustody, ClientOriginal, ClientPeer, ClientSession, OriginalHelloJournal,
     OriginalNative5CustodyFacts,
 };
+
+/// Exposes bounded source-private content decoding data without source rights.
+pub use content::compact_cursor;

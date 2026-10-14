@@ -1,6 +1,10 @@
 //! Finite immutable byte custody for authenticated opposite-direction transfers.
 
 mod compact;
+mod compact_decode;
+
+/// Validates bounded source-private content alias data without authority.
+pub mod compact_cursor;
 
 use std::collections::BTreeMap;
 use std::rc::Rc;

@@ -3824,6 +3824,30 @@ the same banks and retain the codec/blob geometry through the suffix. This
 capacity check does not establish acknowledgement, semantic settlement, full
 memory admission, native Capture or fresh restoration.
 
+## Owning compact content reconstruction
+
+The complete borrowed content cursor validates grammar, references, limits,
+credit, capacities and first-group alias edges before owning allocation. The
+data decoder then creates one original-capacity Vec per first group and shares
+the same Rc on alias edges. Equal bytes in independent groups remain distinct;
+empty spare buffers, partial transfers and reserved credit survive. Complete
+transfers and objects verify their content hashes. The decoder uses no complete
+JSON tree or intermediate decoded byte copy.
+
+Source90 passes all 438 enabled provider units, five contract units and strict
+checks, with 13 provider units ignored. Independent receipt
+`27c2b47f56c464c4c41bd4efbcb4a81f892b8d1ccd2a862ffda870d5ca078ac8`
+verifies the four exact current roles and actual cursor/owning controls. The
+identifier-capacity addition and frame-bank supplement retain separate scopes;
+this earlier full-suite receipt does not include their later test additions.
+
+This returns independently owned data, without installing a controller or
+issuing native authority. Content edition7 omits metadata String capacities;
+those capacities require a distinct edition for exact allocation-state restore.
+The caller must still charge fixed cursor scratch, temporary row indices, Rc,
+metadata and tree storage alongside byte groups. Full protocol reconstruction,
+source-local settlement, physical memory and native fresh adoption remain open.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
