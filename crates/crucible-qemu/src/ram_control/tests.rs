@@ -133,6 +133,46 @@ fn pager_controller_budget_conversion_preserves_exact_nanoseconds() {
 }
 
 #[test]
+fn policy_conversion_refuses_invalid_scalars_in_both_directions() {
+    let valid = HostRamPolicy {
+        mode: HostRamMode::Managed,
+        resident_target_bytes: 4096,
+        eviction_preference: 100,
+        writeback_bytes_per_second: 1,
+        maximum_paging_io_in_flight: 1,
+        prefetch_on_increase: false,
+        latency: HostOperationBudgets::default(),
+    };
+    let wire = policy_to_wire(valid).unwrap();
+
+    for (preference, rate, slots) in [(101, 1, 1), (255, 1, 1), (100, 0, 1), (100, 1, 0)] {
+        let host = HostRamPolicy {
+            eviction_preference: preference,
+            writeback_bytes_per_second: rate,
+            maximum_paging_io_in_flight: slots,
+            ..valid
+        };
+        let direct_wire = RamControlPolicy {
+            eviction_preference: preference,
+            writeback_bytes_per_second: rate,
+            maximum_paging_io_in_flight: slots,
+            ..wire
+        };
+
+        assert!(matches!(
+            policy_to_wire(host),
+            Err(RamControlError::InvalidFrame)
+        ));
+        assert!(matches!(
+            policy_from_wire(direct_wire),
+            Err(RamControlError::InvalidFrame)
+        ));
+    }
+
+    assert_eq!(policy_from_wire(wire).unwrap(), valid);
+}
+
+#[test]
 fn budget_conversion_refuses_zero_and_unrepresentable_values_in_both_directions() {
     for duration in [
         Duration::ZERO,

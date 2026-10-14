@@ -707,12 +707,11 @@ fn nanoseconds(duration: Duration) -> Result<u64, RamControlError> {
 /// Rejects zero or unrepresentable nanosecond durations, and invalid
 /// scalar policy fields rather than silently rounding operational allowances.
 pub fn policy_to_wire(policy: HostRamPolicy) -> Result<RamControlPolicy, RamControlError> {
-    if policy.eviction_preference > 100
-        || policy.writeback_bytes_per_second == 0
-        || policy.maximum_paging_io_in_flight == 0
-    {
-        return Err(RamControlError::InvalidFrame);
-    }
+    validate_policy_scalars(
+        policy.eviction_preference,
+        policy.writeback_bytes_per_second,
+        policy.maximum_paging_io_in_flight,
+    )?;
     let budgets = budgets_to_wire(policy.latency)?;
     let result = RamControlPolicy {
         mode: match policy.mode {
@@ -755,9 +754,16 @@ pub fn budgets_to_wire(
 /// Reconstructs exact host allowances from a portable policy.
 ///
 /// # Errors
-/// Refuses zero or unrepresentable nanosecond timing, including values that
-/// bypassed the decoder. Placement acceptance remains separately owned.
+/// Refuses invalid scalar policy fields or zero or unrepresentable nanosecond
+/// timing, including values that bypassed the decoder. Placement acceptance
+/// remains separately owned.
 pub fn policy_from_wire(policy: RamControlPolicy) -> Result<HostRamPolicy, RamControlError> {
+    validate_policy_scalars(
+        policy.eviction_preference,
+        policy.writeback_bytes_per_second,
+        policy.maximum_paging_io_in_flight,
+    )?;
+
     let budgets = budgets_from_wire(policy.budgets)?;
     Ok(HostRamPolicy {
         mode: match policy.mode {
@@ -772,6 +778,21 @@ pub fn policy_from_wire(policy: RamControlPolicy) -> Result<HostRamPolicy, RamCo
         prefetch_on_increase: policy.prefetch_on_increase,
         latency: budgets,
     })
+}
+
+fn validate_policy_scalars(
+    eviction_preference: u8,
+    writeback_bytes_per_second: u64,
+    maximum_paging_io_in_flight: u32,
+) -> Result<(), RamControlError> {
+    if eviction_preference > 100
+        || writeback_bytes_per_second == 0
+        || maximum_paging_io_in_flight == 0
+    {
+        return Err(RamControlError::InvalidFrame);
+    }
+
+    Ok(())
 }
 
 /// Reconstructs exact host durations from a canonical nanosecond budget roster.
