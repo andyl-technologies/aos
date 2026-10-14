@@ -133,9 +133,7 @@ impl CnpSemanticCaptureScope<'_> {
         reservation: &mut Option<
             crucible_node_provider::protocol_snapshot::ProtocolSnapshotReservation,
         >,
-        completed: &mut Option<
-            crucible_node_provider::protocol_snapshot::OriginalProtocolSnapshot,
-        >,
+        completed: &mut Option<crucible_node_provider::protocol_snapshot::OriginalProtocolSnapshot>,
     ) -> Result<(), OperationFailure> {
         self.realization()?;
         let call = ReadCall::begin(Rc::clone(&self.native.read_owner)).map_err(unknown)?;
@@ -143,15 +141,22 @@ impl CnpSemanticCaptureScope<'_> {
             if completed.is_some() {
                 return Err(refused("original protocol result slot is occupied"));
             }
-            let controller = self.native.controller.as_mut()
+            let controller = self
+                .native
+                .controller
+                .as_mut()
                 .ok_or_else(|| refused("original protocol capture controller is absent"))?;
             let cut = crucible_node_provider::protocol_snapshot::ProtocolCaptureCut::HostSettled;
-            controller.capture_original_protocol_state(
-                reservation.as_mut()
-                    .ok_or_else(|| refused("original protocol reservation is absent"))?,
-                cut,
-            ).map_err(unknown)?;
-            controller.take_original_protocol_snapshot_into(reservation, completed, cut)
+            controller
+                .capture_original_protocol_state(
+                    reservation
+                        .as_mut()
+                        .ok_or_else(|| refused("original protocol reservation is absent"))?,
+                    cut,
+                )
+                .map_err(unknown)?;
+            controller
+                .take_original_protocol_snapshot_into(reservation, completed, cut)
                 .map_err(unknown)
         })();
         call.finish(result.is_ok());

@@ -397,9 +397,9 @@ pub use connected::{
 /// Structural bootstrap for complete packet selections; capture admission remains closed.
 pub mod complete;
 pub use complete::{
-    InstalledPacketCompleteCollectionAuthority, PacketCompleteCollectionRequest,
-    PacketCompleteNativeOracle, PacketCompleteOracleRequest,
-    InstalledPacketCompleteGraphPolicy, PacketCompleteGraphOwner, PacketCompleteGraphRequest,
-    PacketCompletePopulationRequest, PacketCompleteWitnessPopulation,
-    PacketCompleteRoster, packet_complete_independent_graph_contract, packet_complete_measured_graph_proof,
+    InstalledPacketCompleteCollectionAuthority, InstalledPacketCompleteGraphPolicy,
+    PacketCompleteCollectionRequest, PacketCompleteGraphOwner, PacketCompleteGraphRequest,
+    PacketCompleteNativeOracle, PacketCompleteOracleRequest, PacketCompletePopulationRequest,
+    PacketCompleteRoster, PacketCompleteWitnessPopulation,
+    packet_complete_independent_graph_contract, packet_complete_measured_graph_proof,
 };

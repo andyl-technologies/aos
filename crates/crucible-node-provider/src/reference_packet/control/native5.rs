@@ -84,7 +84,10 @@ pub struct PacketNative5Record {
     /// Retains the original service-selected storage and negotiated limits.
     pub storage_selection: PacketNative5StorageSelection,
     /// Retains the codec edition selected at this original service birth.
-    #[serde(default, skip_serializing_if = "PacketNative5CaptureProfile::is_original_arrays")]
+    #[serde(
+        default,
+        skip_serializing_if = "PacketNative5CaptureProfile::is_original_arrays"
+    )]
     pub capture_profile: PacketNative5CaptureProfile,
 }
 
@@ -141,7 +144,9 @@ impl PacketControl {
         profile: PacketNative5CaptureProfile,
     ) -> Result<(), ProviderError> {
         if self.capture_creator != std::process::id() {
-            return Err(ProviderError::Correlation("native5 profile foreign creator"));
+            return Err(ProviderError::Correlation(
+                "native5 profile foreign creator",
+            ));
         }
         if self.complete_coordinator.is_none()
             || self.complete_storage.is_none()
@@ -184,17 +189,25 @@ impl PacketControl {
         expected: &PacketNative5CaptureProfile,
     ) -> Result<(), ProviderError> {
         if self.capture_creator != std::process::id() {
-            return Err(ProviderError::Correlation("native5 profile foreign creator"));
+            return Err(ProviderError::Correlation(
+                "native5 profile foreign creator",
+            ));
         }
         if self.complete_coordinator.is_none() || self.complete_storage.is_none() {
-            return Err(ProviderError::Correlation("native5 original profile birth is absent"));
+            return Err(ProviderError::Correlation(
+                "native5 original profile birth is absent",
+            ));
         }
 
         expected.validate()?;
-        let original = self.complete_capture_profile.as_ref()
+        let original = self
+            .complete_capture_profile
+            .as_ref()
             .unwrap_or(&PacketNative5CaptureProfile::OriginalArrays6);
         if original != expected {
-            return Err(ProviderError::Correlation("native5 original capture profile changed"));
+            return Err(ProviderError::Correlation(
+                "native5 original capture profile changed",
+            ));
         }
         Ok(())
     }

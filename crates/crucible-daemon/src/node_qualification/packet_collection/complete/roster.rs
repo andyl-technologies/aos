@@ -48,7 +48,6 @@ impl PacketCompleteRoster {
             {
                 return Err(refused());
             }
-
         }
         if sources[0].role() != PacketCompleteSourceRole::Producer
             || sources[1].role() != PacketCompleteSourceRole::Reactive

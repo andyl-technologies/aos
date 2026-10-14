@@ -294,32 +294,59 @@ fn complete_source_refuses_changed_world_definition_and_dialects() {
 fn complete_source_bank_reservation_is_original_and_actual_before_native_association() {
     let installed = coordinator();
     let mut source = PacketCompleteSemanticSource::new_producer_for_collecting_world(
-        installation(&installed, 0), producer(), installed, storage_selection(),
-    ).unwrap();
+        installation(&installed, 0),
+        producer(),
+        installed,
+        storage_selection(),
+    )
+    .unwrap();
     assert!(source.original_capture_bank_facts().is_err());
     let limits = PacketCompleteCaptureBankLimits {
         host_protocol_bytes: 2 * 1024 * 1024,
-        semantic_bytes: 128 * 1024, ancestry_bytes: 128 * 1024, journal_bytes: 128 * 1024,
+        semantic_bytes: 128 * 1024,
+        ancestry_bytes: 128 * 1024,
+        journal_bytes: 128 * 1024,
     };
 
-    source.reserve_complete_capture_banks(limits, 4 * 1024 * 1024).unwrap();
+    source
+        .reserve_complete_capture_banks(limits, 4 * 1024 * 1024)
+        .unwrap();
     let original = source.original_capture_bank_facts().unwrap();
     assert_eq!(original.semantic_bytes, limits.semantic_bytes);
     assert_eq!(original.ancestry_bytes, limits.ancestry_bytes);
     assert_eq!(original.journal_bytes, limits.journal_bytes);
     assert!(original.protocol_bytes > 3 * 1024 * 1024);
-    assert_eq!(source.selected_storage_selection().unwrap().storage.protocol_snapshot_bytes.get(), 1024 * 1024);
+    assert_eq!(
+        source
+            .selected_storage_selection()
+            .unwrap()
+            .storage
+            .protocol_snapshot_bytes
+            .get(),
+        1024 * 1024
+    );
     assert_eq!(original.native_snapshot_bytes, 65_536);
     assert_eq!(original.native_control_bytes, 65_536);
     assert_eq!(original.native_anchor_bytes, 8192);
-    assert_eq!(original.total_bytes, original.semantic_bytes + original.ancestry_bytes
-        + original.journal_bytes + original.protocol_bytes + original.native_snapshot_bytes
-        + original.native_control_bytes + original.native_anchor_bytes);
+    assert_eq!(
+        original.total_bytes,
+        original.semantic_bytes
+            + original.ancestry_bytes
+            + original.journal_bytes
+            + original.protocol_bytes
+            + original.native_snapshot_bytes
+            + original.native_control_bytes
+            + original.native_anchor_bytes
+    );
     assert!(source.authenticate_preconstruction_protocol_bound(
         source.selected_capture_profile().unwrap(),
     ).is_err());
     assert_eq!(source.original_capture_bank_facts().unwrap(), original);
-    assert!(source.reserve_complete_capture_banks(limits, 4 * 1024 * 1024).is_err());
+    assert!(
+        source
+            .reserve_complete_capture_banks(limits, 4 * 1024 * 1024)
+            .is_err()
+    );
     assert_eq!(source.original_capture_bank_facts().unwrap(), original);
 }
 
@@ -327,15 +354,25 @@ fn complete_source_bank_reservation_is_original_and_actual_before_native_associa
 fn complete_source_bank_limit_refusal_keeps_original_selection_unallocated() {
     let installed = coordinator();
     let mut source = PacketCompleteSemanticSource::new_producer_for_collecting_world(
-        installation(&installed, 0), producer(), installed, storage_selection(),
-    ).unwrap();
+        installation(&installed, 0),
+        producer(),
+        installed,
+        storage_selection(),
+    )
+    .unwrap();
     let selected = source.selected_storage_selection().unwrap().clone();
     let limits = PacketCompleteCaptureBankLimits {
         host_protocol_bytes: 2 * 1024 * 1024,
-        semantic_bytes: 128 * 1024, ancestry_bytes: 128 * 1024, journal_bytes: 128 * 1024,
+        semantic_bytes: 128 * 1024,
+        ancestry_bytes: 128 * 1024,
+        journal_bytes: 128 * 1024,
     };
 
-    assert!(source.reserve_complete_capture_banks(limits, 128 * 1024).is_err());
+    assert!(
+        source
+            .reserve_complete_capture_banks(limits, 128 * 1024)
+            .is_err()
+    );
     assert!(source.original_capture_bank_facts().is_err());
     assert_eq!(*source.selected_storage_selection().unwrap(), selected);
 }
@@ -344,8 +381,12 @@ fn complete_source_bank_limit_refusal_keeps_original_selection_unallocated() {
 fn complete_source_profile_is_bound_before_banks() {
     let installed = coordinator();
     let mut source = PacketCompleteSemanticSource::new_producer_for_collecting_world(
-        installation(&installed, 0), producer(), installed, storage_selection(),
-    ).unwrap();
+        installation(&installed, 0),
+        producer(),
+        installed,
+        storage_selection(),
+    )
+    .unwrap();
     assert_eq!(source.selected_capture_profile().unwrap(),
         &crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile::OriginalArrays6);
     let selected = crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile::CompactBytes7 {
@@ -353,8 +394,14 @@ fn complete_source_profile_is_bound_before_banks() {
         native_after_protocol_bytes: U64::new(1024 * 1024),
         host_protocol_bytes: U64::new(2 * 1024 * 1024),
     };
-    source.bind_original_capture_profile(selected.clone()).unwrap();
-    assert!(source.bind_original_capture_profile(selected.clone()).is_err());
+    source
+        .bind_original_capture_profile(selected.clone())
+        .unwrap();
+    assert!(
+        source
+            .bind_original_capture_profile(selected.clone())
+            .is_err()
+    );
     assert_eq!(source.selected_capture_profile().unwrap(), &selected);
     assert!(source.original_capture_bank_facts().is_err());
 
@@ -364,18 +411,29 @@ fn complete_source_profile_is_bound_before_banks() {
         ancestry_bytes: 128 * 1024,
         journal_bytes: 128 * 1024,
     };
-    assert!(source.reserve_complete_capture_banks(banks, 4 * 1024 * 1024).is_err());
+    assert!(
+        source
+            .reserve_complete_capture_banks(banks, 4 * 1024 * 1024)
+            .is_err()
+    );
     assert!(source.original_capture_bank_facts().is_err());
     banks.host_protocol_bytes = 2 * 1024 * 1024;
-    source.reserve_complete_capture_banks(banks, 4 * 1024 * 1024).unwrap();
-    source.authenticate_preconstruction_protocol_bound(
-        source.selected_capture_profile().unwrap(),
-    ).unwrap();
+    source
+        .reserve_complete_capture_banks(banks, 4 * 1024 * 1024)
+        .unwrap();
+    source
+        .authenticate_preconstruction_protocol_bound(source.selected_capture_profile().unwrap())
+        .unwrap();
     let original = source.original_capture_bank_facts().unwrap();
     assert!(original.protocol_bytes > 3 * 1024 * 1024);
     let retained = source.capture_banks.borrow();
     let retained = retained.as_ref().unwrap();
-    let facts = retained.protocol.as_ref().unwrap().original_allocation_facts().unwrap();
+    let facts = retained
+        .protocol
+        .as_ref()
+        .unwrap()
+        .original_allocation_facts()
+        .unwrap();
     assert_eq!(facts.maximum_encoded_bytes, banks.host_protocol_bytes);
     assert_eq!(facts.encoded_length, 0);
     assert_eq!(facts.literal.unwrap().maximum_frames_per_direction, 64);
@@ -387,8 +445,12 @@ fn complete_source_profile_is_bound_before_banks() {
 fn complete_source_preconstruction_refuses_declarations_and_banks_alone() {
     let installed = coordinator();
     let mut source = PacketCompleteSemanticSource::new_producer_for_collecting_world(
-        installation(&installed, 0), producer(), installed, storage_selection(),
-    ).unwrap();
+        installation(&installed, 0),
+        producer(),
+        installed,
+        storage_selection(),
+    )
+    .unwrap();
     assert!(source.authenticate_original_preconstruction().is_err());
 
     let banks = PacketCompleteCaptureBankLimits {
@@ -397,7 +459,9 @@ fn complete_source_preconstruction_refuses_declarations_and_banks_alone() {
         ancestry_bytes: 128 * 1024,
         journal_bytes: 128 * 1024,
     };
-    source.reserve_complete_capture_banks(banks, 4 * 1024 * 1024).unwrap();
+    source
+        .reserve_complete_capture_banks(banks, 4 * 1024 * 1024)
+        .unwrap();
     let original = source.original_capture_bank_facts().unwrap();
     assert!(source.authenticate_original_preconstruction().is_err());
     assert_eq!(source.original_capture_bank_facts().unwrap(), original);
@@ -406,37 +470,73 @@ fn complete_source_preconstruction_refuses_declarations_and_banks_alone() {
 
 #[test]
 fn complete_source_receiver_binding_keeps_same_group_and_kernel_path() {
-    use std::{os::unix::net::UnixDatagram, sync::atomic::{AtomicUsize, Ordering}};
+    use std::{
+        os::unix::net::UnixDatagram,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     struct SocketPath(std::path::PathBuf);
     impl Drop for SocketPath {
-        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 
     let path = std::env::temp_dir().join(format!(
-        "e5-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+        "e5-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
     ));
     let receiver0 = UnixDatagram::bind(&path).unwrap();
     let original_path = SocketPath(path);
     let (_send1, receiver1) = UnixDatagram::pair().unwrap();
     let (_send2, receiver2) = UnixDatagram::pair().unwrap();
-    let (group, _reader) = PacketCompleteEffectReceiverGroup::from_original_receivers([receiver0, receiver1, receiver2]);
+    let (group, _reader) = PacketCompleteEffectReceiverGroup::from_original_receivers([
+        receiver0, receiver1, receiver2,
+    ]);
     let installed = coordinator();
     let mut source = PacketCompleteSemanticSource::new_producer_for_collecting_world(
-        installation(&installed, 0), producer(), installed, storage_selection(),
-    ).unwrap();
+        installation(&installed, 0),
+        producer(),
+        installed,
+        storage_selection(),
+    )
+    .unwrap();
 
-    source.bind_original_effect_receiver(Rc::clone(&group), 0, original_path.0.clone()).unwrap();
-    source.authenticate_original_effect_receiver_binding(&group, 0, &original_path.0).unwrap();
-    assert!(source.bind_original_effect_receiver(Rc::clone(&group), 0, original_path.0.clone()).is_err());
-    assert!(source.authenticate_original_effect_receiver_binding(&group, 1, &original_path.0).is_err());
-    assert!(source.authenticate_original_effect_receiver_binding(&group, 0, std::path::Path::new("other")).is_err());
+    source
+        .bind_original_effect_receiver(Rc::clone(&group), 0, original_path.0.clone())
+        .unwrap();
+    source
+        .authenticate_original_effect_receiver_binding(&group, 0, &original_path.0)
+        .unwrap();
+    assert!(
+        source
+            .bind_original_effect_receiver(Rc::clone(&group), 0, original_path.0.clone())
+            .is_err()
+    );
+    assert!(
+        source
+            .authenticate_original_effect_receiver_binding(&group, 1, &original_path.0)
+            .is_err()
+    );
+    assert!(
+        source
+            .authenticate_original_effect_receiver_binding(&group, 0, std::path::Path::new("other"))
+            .is_err()
+    );
 
     let (_send0, recv0) = UnixDatagram::pair().unwrap();
     let (_send1, recv1) = UnixDatagram::pair().unwrap();
     let (_send2, recv2) = UnixDatagram::pair().unwrap();
-    let (foreign, _foreign_reader) = PacketCompleteEffectReceiverGroup::from_original_receivers([recv0, recv1, recv2]);
-    assert!(source.authenticate_original_effect_receiver_binding(&foreign, 0, &original_path.0).is_err());
-    source.authenticate_original_effect_receiver_binding(&group, 0, &original_path.0).unwrap();
+    let (foreign, _foreign_reader) =
+        PacketCompleteEffectReceiverGroup::from_original_receivers([recv0, recv1, recv2]);
+    assert!(
+        source
+            .authenticate_original_effect_receiver_binding(&foreign, 0, &original_path.0)
+            .is_err()
+    );
+    source
+        .authenticate_original_effect_receiver_binding(&group, 0, &original_path.0)
+        .unwrap();
     assert!(source.authenticate_original_preconstruction().is_err());
 }

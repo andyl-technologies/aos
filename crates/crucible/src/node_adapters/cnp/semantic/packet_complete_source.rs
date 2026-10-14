@@ -13,8 +13,7 @@ use crucible_node_provider::{
     bodies::*,
     reference_packet::{
         connected::PacketConnectedDefinition, control::PacketNative5StorageSelection,
-        coordinator::PacketNative5CoordinatorInstallation,
-        service::PacketNative5CaptureProfile,
+        coordinator::PacketNative5CoordinatorInstallation, service::PacketNative5CaptureProfile,
     },
 };
 
@@ -143,13 +142,17 @@ impl PacketCompleteSemanticSource {
         let slot = match &mut self.original {
             CompletePacketOriginal::Producer(source) => {
                 if !source.complete_preparation_unbound()? {
-                    return Err(refused("complete source profile follows native association"));
+                    return Err(refused(
+                        "complete source profile follows native association",
+                    ));
                 }
                 &mut source.complete_capture_profile
             }
             CompletePacketOriginal::Reactive(source) => {
                 if !source.complete_preparation_unbound()? {
-                    return Err(refused("complete source profile follows native association"));
+                    return Err(refused(
+                        "complete source profile follows native association",
+                    ));
                 }
                 &mut source.complete_capture_profile
             }
@@ -165,7 +168,9 @@ impl PacketCompleteSemanticSource {
     ///
     /// # Errors
     /// Refuses a foreign creator process or thread.
-    pub fn selected_capture_profile(&self) -> Result<&PacketNative5CaptureProfile, OperationFailure> {
+    pub fn selected_capture_profile(
+        &self,
+    ) -> Result<&PacketNative5CaptureProfile, OperationFailure> {
         self.ensure_origin()?;
         let profile = match &self.original {
             CompletePacketOriginal::Producer(source) => source.complete_capture_profile.as_ref(),
@@ -352,40 +357,59 @@ impl CnpSemanticSource for PacketCompleteSemanticSource {
         self.original_capture_bank_facts()?;
         self.original_ancestry_size(&scope)?;
         let chunk = usize::try_from(selected.limits.blob_chunk_bytes.get())
-            .ok().filter(|chunk| *chunk != 0)
+            .ok()
+            .filter(|chunk| *chunk != 0)
             .ok_or_else(|| refused("complete prefix chunk bound is unavailable"))?;
-        let objects = [selected.storage.snapshot_bytes.get(),
-            selected.storage.control_snapshot_bytes.get(), 8192];
+        let objects = [
+            selected.storage.snapshot_bytes.get(),
+            selected.storage.control_snapshot_bytes.get(),
+            8192,
+        ];
         let mut provider_requests = 0usize;
         let mut content_bytes = 0usize;
         for object in objects {
             let bytes = usize::try_from(object)
                 .map_err(|_| refused("complete prefix object is not representable"))?;
-            let frames = bytes.checked_add(chunk - 1).map(|n| n / chunk)
+            let frames = bytes
+                .checked_add(chunk - 1)
+                .map(|n| n / chunk)
                 .and_then(|chunks| chunks.checked_add(2))
                 .ok_or_else(|| refused("complete prefix frame demand overflow"))?;
-            provider_requests = provider_requests.checked_add(frames)
+            provider_requests = provider_requests
+                .checked_add(frames)
                 .ok_or_else(|| refused("complete prefix request demand overflow"))?;
-            content_bytes = content_bytes.checked_add(bytes)
+            content_bytes = content_bytes
+                .checked_add(bytes)
                 .ok_or_else(|| refused("complete prefix content demand overflow"))?;
         }
-        let journal_bytes = provider_requests.checked_add(1)
+        let journal_bytes = provider_requests
+            .checked_add(1)
             .and_then(|frames| frames.checked_mul(2))
             .and_then(|frames| frames.checked_mul(storage.maximum_frame_bytes))
             .ok_or_else(|| refused("complete prefix journal demand overflow"))?;
-        scope.controller.preflight_source_reply(
-            1, provider_requests, journal_bytes, 3, content_bytes,
-        ).map_err(unknown)?;
-        let needed = provider_requests.checked_add(1)
+        scope
+            .controller
+            .preflight_source_reply(1, provider_requests, journal_bytes, 3, content_bytes)
+            .map_err(unknown)?;
+        let needed = provider_requests
+            .checked_add(1)
             .ok_or_else(|| refused("complete prefix lifetime-frame demand overflow"))?;
-        if storage.incoming_frames.checked_add(needed)
+        if storage
+            .incoming_frames
+            .checked_add(needed)
+            .is_none_or(|frames| frames > storage.maximum_frames_per_direction)
+            || storage
+                .outgoing_frames
+                .checked_add(needed)
                 .is_none_or(|frames| frames > storage.maximum_frames_per_direction)
-            || storage.outgoing_frames.checked_add(needed)
-                .is_none_or(|frames| frames > storage.maximum_frames_per_direction)
-            || storage.retained_bytes.checked_add(journal_bytes)
+            || storage
+                .retained_bytes
+                .checked_add(journal_bytes)
                 .is_none_or(|bytes| bytes > storage.maximum_history_bytes)
         {
-            return Err(refused("complete prefix exceeds original lifetime literal banks"));
+            return Err(refused(
+                "complete prefix exceeds original lifetime literal banks",
+            ));
         }
         self.authenticate_witness_scope(&scope)?;
 

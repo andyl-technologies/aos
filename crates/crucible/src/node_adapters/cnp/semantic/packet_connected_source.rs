@@ -94,13 +94,13 @@ impl PacketConnectedNativeWitness<'_> {
 }
 
 impl PacketConnectedSemanticSource {
-
     // Complete-source authorities join the retained original allocation, never
     // only equal installation fields or an independently live foreign child.
     // Immutable selection data; the complete wrapper authenticates origin first.
     pub(super) fn complete_selected_storage(
         &self,
-    ) -> Option<&crucible_node_provider::reference_packet::control::PacketNative5StorageSelection> {
+    ) -> Option<&crucible_node_provider::reference_packet::control::PacketNative5StorageSelection>
+    {
         self.complete_storage.as_ref()
     }
 
@@ -109,19 +109,24 @@ impl PacketConnectedSemanticSource {
         native: &CnpSemanticProcessCustody,
     ) -> Result<(), OperationFailure> {
         native.authenticate_process().map_err(unknown)?;
-        let original = self.current_native.try_borrow().map_err(|_| {
-            refused("complete source original native read is already borrowed")
-        })?;
-        let original = original.as_ref().ok_or_else(|| {
-            refused("complete source original native read is absent")
-        })?;
+        let original = self
+            .current_native
+            .try_borrow()
+            .map_err(|_| refused("complete source original native read is already borrowed"))?;
+        let original = original
+            .as_ref()
+            .ok_or_else(|| refused("complete source original native read is absent"))?;
         if !original.same_native_owner(native) {
-            return Err(refused("complete source belongs to another original native owner"));
+            return Err(refused(
+                "complete source belongs to another original native owner",
+            ));
         }
         original.ensure_current().map_err(unknown)?;
         let supplied = native.original_source_read().map_err(unknown)?;
         if !original.same_original(&supplied) {
-            return Err(refused("complete source original registrar allocation changed"));
+            return Err(refused(
+                "complete source original registrar allocation changed",
+            ));
         }
         supplied.ensure_current().map_err(unknown)?;
         original.ensure_current().map_err(unknown)
@@ -149,7 +154,8 @@ impl PacketConnectedSemanticSource {
 
     pub(super) fn complete_preparation_unbound(&self) -> Result<bool, OperationFailure> {
         self.local_owner()?;
-        self.current_native.try_borrow()
+        self.current_native
+            .try_borrow()
             .map(|original| original.is_none())
             .map_err(|_| refused("complete source native association is busy"))
     }
