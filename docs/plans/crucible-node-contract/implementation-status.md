@@ -4092,6 +4092,23 @@ native concurrency and physical retirement remain unqualified; selected CREATE,
 RUN and Ready remain refused. These source and modeled controls do not grant
 full native kernel execution or complete allocation accounting.
 
+## One-shot original prebirth ticket roster
+
+Original native and host tickets must all issue before the first target binding
+attempt. That attempt permanently seals issuance, including missing-roster or
+borrow refusals. Successful binding requires exactly the original three native
+owners and host owner; neither late issuance nor another equal target can renew
+the association. Creator process/thread checks precede state changes.
+
+Independent review `9cb426dc1df58cb408a3ee229b4e28ed6d2ce2935b95ce82af9c09aadba10e65` verifies the one production and two
+test-support changes. Matching strict checks and four controls pass, using real
+signed archive files and verified byte closure with explicitly modeled native
+verification and private target authority. Those controls cover missing tickets,
+equal copies, reentrant binding and an injected foreign creator-thread marker.
+The latter is not an actual cross-thread or forked native execution. Both Core42
+and Packet148 safeguards remain intact. This sequencing correction does not
+qualify a native Capture, source factory, restoration context or fresh adopter.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

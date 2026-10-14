@@ -335,3 +335,14 @@ fn selected_fifo_without_writer_refuses_before_blocking_open() {
     let failure = archive.load_complete_original(&reference).err().unwrap();
     assert_eq!(failure.code, StateErrorCode::ResourceLimit);
 }
+
+impl NativeArchive {
+    // Reuses actual signed local storage while keeping modeled native rows
+    // distinct from installed Source5/factory verification in sibling controls.
+    pub(in crate::node_state::native) fn modeled_complete_archive_for_ticket_controls(
+        &self,
+    ) -> NativeArchiveRecord {
+        let saved = fixture(self);
+        self.load_complete_original(saved.artifact()).unwrap()
+    }
+}

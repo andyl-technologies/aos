@@ -35,6 +35,7 @@ pub(crate) struct CompleteOriginalSource {
     thread: ThreadId,
     host_issued: Cell<bool>,
     native_issued: Cell<[bool; 4]>,
+    target_started: Cell<bool>,
     target: RefCell<Option<Rc<()>>>,
 }
 
@@ -88,7 +89,8 @@ impl CompleteOriginalRestorationSource {
     ///
     /// # Errors
     /// Refuses foreign process/thread custody, a different four-owner roster,
-    /// the host owner, an absent owner, or a repeated issuance for that owner.
+    /// the host owner, an absent owner, repeated issuance, or a target binding
+    /// that has already started. Refusal never renews spent tickets.
     pub fn take_native_ticket(
         &self,
         owner: &Id,
@@ -102,6 +104,16 @@ impl CompleteOriginalRestorationSource {
             .iter()
             .position(|row| &row.owner == owner)
             .ok_or(RuntimeError::ForeignAuthority)?;
+        // Tickets belong to prebirth source preparation. Binding the original
+        // runtime seals that roster; it cannot be extended after construction.
+        let target = self
+            .inner
+            .target
+            .try_borrow()
+            .map_err(|_| RuntimeError::OutstandingObligations)?;
+        if self.inner.target_started.get() || target.is_some() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
         let mut issued = self.inner.native_issued.get();
         if issued[index] {
             return Err(RuntimeError::OutstandingObligations);
@@ -117,10 +129,11 @@ impl CompleteOriginalRestorationSource {
     /// Issues the single original archive host ticket without cloning body buffers.
     ///
     /// # Errors
-    /// Refuses foreign process/thread custody or a previous ticket issuance.
+    /// Refuses foreign process/thread custody, a previous ticket issuance, or
+    /// target binding that has already started.
     pub fn take_host_ticket(&self) -> Result<CompleteOriginalHostTicket, RuntimeError> {
         self.inner.authenticate_birth()?;
-        if self.inner.host_issued.replace(true) {
+        if self.inner.target_started.get() || self.inner.host_issued.replace(true) {
             return Err(RuntimeError::OutstandingObligations);
         }
         Ok(CompleteOriginalHostTicket {
@@ -161,8 +174,25 @@ impl CompleteOriginalSource {
 
     pub(crate) fn bind_target(&self, authority: &Rc<()>) -> Result<(), RuntimeError> {
         self.authenticate_birth()?;
+        // Physical target preparation has already happened before this call.
+        // Refusal cannot reopen prebirth issuance or retrofit its missing rows.
+        if self.target_started.replace(true) {
+            return Err(RuntimeError::OutstandingObligations);
+        }
         if !self.host_issued.get() {
             return Err(RuntimeError::ForeignAuthority);
+        }
+        let owners = self.archive.owners();
+        let issued = self.native_issued.get();
+        let host = &self.host.source.owner.owner.id;
+        if owners.len() != issued.len()
+            || owners.iter().filter(|row| &row.owner == host).count() != 1
+            || owners
+                .iter()
+                .enumerate()
+                .any(|(index, row)| issued[index] != (&row.owner != host))
+        {
+            return Err(RuntimeError::OutstandingObligations);
         }
         let mut target = self
             .target
@@ -370,6 +400,7 @@ impl NativeArchiveRecord {
                 thread: thread::current().id(),
                 host_issued: Cell::new(false),
                 native_issued: Cell::new([false; 4]),
+                target_started: Cell::new(false),
                 target: RefCell::new(None),
             }),
         })
@@ -407,3 +438,7 @@ impl CompleteOriginalSource {
             .and_then(|reference| add(bytes, reference))
     }
 }
+
+#[cfg(test)]
+#[path = "complete_original_source_tests.rs"]
+mod tests;
