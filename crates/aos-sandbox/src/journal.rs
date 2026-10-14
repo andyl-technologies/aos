@@ -75,10 +75,10 @@ mod semantic_append;
 #[cfg(target_os = "linux")]
 mod original_release_capture;
 #[cfg(target_os = "linux")]
-use original_release_capture::native_release_replay_work_v1;
+mod original_currentness;
 
 #[cfg(target_os = "linux")]
-mod original_currentness;
+use original_release_capture::native_release_replay_work_v1;
 #[cfg(target_os = "linux")]
 use original_currentness::Q04NativeRecipeAuditV1;
 #[cfg(target_os = "linux")]
