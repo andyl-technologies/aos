@@ -239,6 +239,14 @@ impl Bytes {
         &self.0
     }
 
+    /// Reports the actual decoded byte allocation capacity without copying.
+    ///
+    /// This is local storage metadata rather than a wire limit or source right.
+    /// Serialization and equality continue to depend on the exact byte length.
+    pub fn allocation_capacity(&self) -> usize {
+        self.0.capacity()
+    }
+
     /// Consumes the value and returns its decoded octets.
     pub fn into_vec(self) -> Vec<u8> {
         self.0
@@ -430,4 +438,26 @@ pub(crate) fn validate_sorted<T, K: Ord>(
 
 pub(crate) fn validate_ids(ids: &[Id], field: &'static str) -> Result<(), ContractError> {
     validate_sorted(ids, |id| id.as_str().to_owned(), field)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod original_bytes_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn decoded_capacity_observation_preserves_existing_wire_and_same_empty_bank() {
+        let mut original = Vec::with_capacity(128);
+        original.extend_from_slice(b"abcd");
+        let bytes = Bytes::new(original);
+        assert_eq!(bytes.allocation_capacity(), 128);
+        assert_eq!(serde_json::to_string(&bytes).unwrap(), "\"YWJjZA\"");
+        let mut original = bytes.into_vec();
+        let pointer = original.as_ptr();
+        original.clear();
+        let bytes = Bytes::new(original);
+        assert_eq!(bytes.allocation_capacity(), 128);
+        assert_eq!(bytes.as_slice().as_ptr(), pointer);
+        assert_eq!(serde_json::to_string(&bytes).unwrap(), "\"\"");
+    }
 }

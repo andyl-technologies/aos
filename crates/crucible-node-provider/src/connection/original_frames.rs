@@ -452,10 +452,19 @@ impl<S: ProviderStream> Connection<S> {
                 state.serialize_field("correlations", &c.guard.protocol_view())?;
                 state.serialize_field("frames", &bank.protocol_view_with_encoding(self.1))?;
                 state.serialize_field("packet_schema", &c.packet_schema)?;
-                state.serialize_field(
-                    "native5_codec",
-                    &c.native5_codec.as_ref().map(|codec| codec.protocol_view()),
-                )?;
+                if self.1 {
+                    state.serialize_field(
+                        "native5_codec",
+                        &c.native5_codec
+                            .as_ref()
+                            .map(|codec| codec.compact_protocol_view()),
+                    )?;
+                } else {
+                    state.serialize_field(
+                        "native5_codec",
+                        &c.native5_codec.as_ref().map(|codec| codec.protocol_view()),
+                    )?;
+                }
                 state.serialize_field("fenced", &c.fenced)?;
                 state.serialize_field(
                     "role",

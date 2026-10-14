@@ -22,7 +22,7 @@ mod native5_birth;
 pub use native5_birth::{Native5ConnectionBirth, Native5ConnectionBirthRefusal};
 mod exchange;
 mod native5_codec;
-pub(crate) use native5_codec::Native5CodecOwner;
+pub(crate) use native5_codec::{Native5CodecOwner, ProtocolCodecView};
 mod original_frames;
 mod packet_schema;
 

@@ -559,7 +559,13 @@ mod policy_dynamic_tests;
 #[test]
 fn native5_compact_snapshot_requires_same_installed_profile_and_exact_bound() {
     use crate::reference_packet::service::PacketNative5CaptureProfile;
-    let (_handshake, authority, selection, coordinator) = scope(true);
+    let (_handshake, authority, selection, mut coordinator) = scope(true);
+    let mut owned_coordinator = coordinator.bytes.into_vec();
+    let required = owned_coordinator.capacity() + 256;
+    owned_coordinator.try_reserve_exact(required).unwrap();
+    let coordinator_capacity = owned_coordinator.capacity();
+    let coordinator_body = owned_coordinator.clone();
+    coordinator.bytes = Bytes::new(owned_coordinator);
     let (host, _peer) = UnixStream::pair().unwrap();
     let mut controller = Connection::new(
         host,
@@ -637,6 +643,23 @@ fn native5_compact_snapshot_requires_same_installed_profile_and_exact_bound() {
     assert_eq!(value[0], "source-private.native-cnp/7");
     assert_eq!(value[2]["frames"][6][0], "source-private.compact-bytes/7");
     assert_eq!(value[2]["frames"][4], original.byte_capacity);
+    let codec = &value[2]["native5_codec"];
+    assert_eq!(codec[0], "controller-packet-compact/7");
+    assert_eq!(codec[1][1][1], coordinator_capacity);
+    let encoded = serde_json::to_vec(&codec[1][1][2]).unwrap();
+    let plan = crate::protocol_snapshot::compact_bytes::ValidatedCompactBytes::validate(
+        &encoded,
+        encoded.len(),
+        coordinator_body.len(),
+    )
+    .unwrap();
+    let mut recovered_coordinator = Vec::with_capacity(coordinator_capacity);
+    let pointer = recovered_coordinator.as_ptr();
+    plan.fill_preowned(&mut recovered_coordinator).unwrap();
+    assert_eq!(recovered_coordinator, coordinator_body);
+    assert_eq!(recovered_coordinator.capacity(), coordinator_capacity);
+    assert_eq!(recovered_coordinator.as_ptr(), pointer);
+
     assert_eq!(
         snapshot
             .original_allocation_facts()

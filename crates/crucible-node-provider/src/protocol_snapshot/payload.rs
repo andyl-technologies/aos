@@ -122,7 +122,12 @@ impl OriginalProtocolPayloadOwner {
                 ProtocolCaptureCut::HostSettled => "host-settled",
                 ProtocolCaptureCut::NativeIncomingCapture => "native-incoming-capture",
             },
-            self.codec.as_ref().map(|codec| codec.protocol_view()),
+            self.codec
+                .as_ref()
+                .map(|codec| crate::connection::ProtocolCodecView {
+                    codec,
+                    compact: self.compact,
+                }),
         ))
     }
 

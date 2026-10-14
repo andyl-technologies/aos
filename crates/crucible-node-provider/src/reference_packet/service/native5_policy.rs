@@ -86,6 +86,22 @@ impl Native5Policy {
         self
     }
 
+    pub(crate) fn compact_protocol_view(&self) -> impl Serialize + '_ {
+        (
+            &self.selection,
+            (
+                &self.coordinator.reference,
+                self.coordinator.bytes.allocation_capacity(),
+                crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(
+                    self.coordinator.bytes.as_slice(),
+                ),
+            ),
+            &self.definition,
+            &self.connected,
+            &self.capture_profile,
+        )
+    }
+
     pub(crate) fn validate_installation(
         &self,
         authority: &ConnectionAuthority,

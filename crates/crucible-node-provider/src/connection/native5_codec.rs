@@ -17,6 +17,21 @@ pub(crate) enum Native5CodecOwner {
     NativePacket(Rc<Native5Policy>),
 }
 
+pub(crate) struct ProtocolCodecView<'a> {
+    pub(crate) codec: &'a Native5CodecOwner,
+    pub(crate) compact: bool,
+}
+
+impl serde::Serialize for ProtocolCodecView<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.compact {
+            self.codec.compact_protocol_view().serialize(serializer)
+        } else {
+            self.codec.protocol_view().serialize(serializer)
+        }
+    }
+}
+
 pub(crate) struct ControllerNative5Policy {
     selection: PacketControlSelection,
     coordinator: InstalledContent,
@@ -137,6 +152,23 @@ impl ControllerNative5Policy {
         authority.ensure_live()
     }
 
+    fn compact_protocol_view(&self) -> impl serde::Serialize + '_ {
+        (
+            &self.selection,
+            (
+                &self.coordinator.reference,
+                self.coordinator.bytes.allocation_capacity(),
+                crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(
+                    self.coordinator.bytes.as_slice(),
+                ),
+            ),
+            &self.definition,
+            &self.connected,
+            self.wire.protocol_view(),
+            &self.capture_profile,
+        )
+    }
+
     fn protocol_view(&self) -> impl serde::Serialize + '_ {
         (
             &self.selection,
@@ -206,6 +238,28 @@ impl Native5CodecOwner {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn compact_protocol_view(&self) -> impl serde::Serialize + '_ {
+        struct View<'a>(&'a Native5CodecOwner);
+        impl serde::Serialize for View<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                match self.0 {
+                    Native5CodecOwner::ControllerPacket(policy) => serde::Serialize::serialize(
+                        &(
+                            "controller-packet-compact/7",
+                            policy.compact_protocol_view(),
+                        ),
+                        serializer,
+                    ),
+                    Native5CodecOwner::NativePacket(policy) => serde::Serialize::serialize(
+                        &("native-packet-compact/7", policy.compact_protocol_view()),
+                        serializer,
+                    ),
+                }
+            }
+        }
+        View(self)
     }
 
     pub(crate) fn protocol_view(&self) -> impl serde::Serialize + '_ {

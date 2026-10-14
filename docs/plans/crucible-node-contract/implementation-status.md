@@ -3747,10 +3747,34 @@ The qualification uses the previous committed parent; the separately committed
 kernel-source extension does not enter these Rust compilation inputs.
 
 This component does not complete the owning-state decoder or native factory.
-The codec-owned coordinator Bytes serializer still allocates a temporary base64
-String and omits its independent Vec capacity from the view. Those remaining
+At this checkpoint the codec-owned coordinator Bytes serializer allocated a
+temporary base64 String and omitted its independent Vec capacity; the next
+metadata integration below fixes those two fields. Other remaining
 metadata capacities, serializer/decoder scratch, full 512-MiB admission, local
 settlement and native installation remain explicit requirements.
+
+## Borrowed compact coordinator metadata
+
+Compact codec views now serialize the coordinator's complete reference, actual
+independent Vec capacity and borrowed compact bytes. The installed codec remains
+the original owner; this separate Vec is not deduplicated as a ClientContent Rc
+alias. Payload association uses that same selected codec view. The contract
+Bytes capacity getter observes existing storage without copying or changing its
+old base64 wire encoding. Original array snapshots remain unchanged.
+
+Source88 passes all 422 enabled provider units, five contract units and strict
+all-target/all-feature compilation for both crates; 13 provider units remain
+ignored. The coordinator control restores its full body into the original spare
+capacity without reallocating. Independent receipt
+`03f8f518a63285905ada24983c80ebbe16da2db6f5a64a9423f721f8ac5c7236`
+verifies the seven functional changes and separate comments-only correction.
+The qualification retains its earlier source; current differences in kernel
+patches and the implementation ledger do not enter these compilation inputs.
+
+This removes the coordinator's allocating Bytes serializer from compact views,
+without proving allocation-free whole snapshots. Other metadata capacities,
+complete owning-state decoding, all serializer/decoder overlap, the source-local
+journal and full native Capture and restoration remain required.
 
 ## Performance evidence
 
