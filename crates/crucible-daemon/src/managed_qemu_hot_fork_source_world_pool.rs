@@ -588,6 +588,11 @@ where
     retention: R,
     records: BTreeMap<HotCheckpointFallbackSlot, HotCheckpointFallbackRecord>,
     active: BTreeMap<HotCheckpointPoolKey, HotCheckpointFallbackSlot>,
+    /// Admission ordinal of each retained source. A source forked from an
+    /// earlier source is always admitted after it, so shutdown retires
+    /// sources newest first and never reaps an origin before its descendants.
+    admissions: BTreeMap<HotCheckpointPoolKey, u64>,
+    next_admission: u64,
     checked_out: BTreeMap<
         u64,
         (

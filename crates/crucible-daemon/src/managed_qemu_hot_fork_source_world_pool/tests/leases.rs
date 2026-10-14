@@ -429,9 +429,10 @@ fn shared_worker_providers_release_before_orderly_shutdown_and_restart_inventory
         .iter()
         .map(|(key, _source)| *key)
         .collect::<Vec<_>>();
+    // Shutdown attempts the newest admission first.
     assert_eq!(
         failed_keys,
-        vec![first_key.template_key(), second_key.template_key()]
+        vec![second_key.template_key(), first_key.template_key()]
     );
 
     first_provider.restore(first_checked_out);
