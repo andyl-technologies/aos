@@ -470,3 +470,6 @@ mod tests {
         assert_eq!(content.get(&reference).unwrap(), b"abc");
     }
 }
+
+/// Validates explicit content-eight metadata capacities without granting installation.
+pub mod compact_metadata8;

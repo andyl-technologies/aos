@@ -16,6 +16,79 @@ use crucible_node_contract::{ContentRef, HashRef, Id};
 use std::{collections::BTreeMap, rc::Rc};
 
 impl ClientContent {
+    /// Reconstructs explicit edition-eight data with original metadata capacities.
+    ///
+    /// Full borrowed byte/alias and metadata-capacity admission precedes every
+    /// owner allocation. Each original String and first-group byte bank receives
+    /// one exact-capacity allocation; aliases reuse the original reconstructed Rc.
+    /// Tree/control-block/allocator layout and the complete native source/factory
+    /// peak remain separately admitted. This data constructor installs no state.
+    ///
+    /// # Errors
+    /// Refuses malformed data, insufficient credit, allocation/capacity mismatch,
+    /// unavailable aliases or changed complete content hashes.
+    pub fn decode_compact_metadata8_data(
+        input: &[u8],
+        limits: super::compact_metadata8::CompactMetadata8Limits,
+    ) -> Result<Self, ProviderError> {
+        let plan = super::compact_metadata8::ValidatedCompactMetadata8::validate(input, limits)?;
+        let data = plan.data();
+        let mut transfer_groups = empty_group_rows(data.transfer_count())?;
+        let mut object_groups = empty_group_rows(data.object_count())?;
+        let mut transfers = BTreeMap::new();
+        let mut objects = BTreeMap::new();
+
+        for (index, (row, capacities)) in data.transfers().zip(plan.transfer_metadata()).enumerate()
+        {
+            let row = row?;
+            let capacities = capacities?;
+            let reference = own_reference_capacities(row.reference, capacities)?;
+            let bytes = own_group(&row, &transfer_groups, &object_groups)?;
+            let complete = row
+                .complete
+                .ok_or(ProviderError::Frame("compact transfer completion absent"))?;
+            if complete {
+                reference.verify(bytes.as_slice())?;
+            }
+            if row.payload.is_some() {
+                transfer_groups[index] = Some(bytes.clone());
+            }
+            let key = Id::new(own_original_string(row.key, capacities[0])?)?;
+            transfers.insert(
+                key,
+                Transfer {
+                    reference,
+                    bytes,
+                    complete,
+                },
+            );
+        }
+
+        for (index, (row, capacities)) in data.objects().zip(plan.object_metadata()).enumerate() {
+            let row = row?;
+            let capacities = capacities?;
+            let reference = own_reference_capacities(row.reference, capacities)?;
+            let bytes = own_group(&row, &transfer_groups, &object_groups)?;
+            reference.verify(bytes.as_slice())?;
+            if row.payload.is_some() {
+                object_groups[index] = Some(bytes.clone());
+            }
+            objects.insert(
+                own_original_string(row.key, capacities[0])?,
+                (reference, bytes),
+            );
+        }
+        let original = data.stored_limits();
+        Ok(Self {
+            maximum_bytes: original.maximum_bytes,
+            maximum_objects: original.maximum_objects,
+            maximum_chunk: original.maximum_chunk,
+            reserved: data.reserved(),
+            transfers,
+            objects,
+        })
+    }
+
     /// Reconstructs validated byte and alias data without installing native state.
     ///
     /// All lexical fields, row counts and first-group capacities are admitted
@@ -155,6 +228,50 @@ fn own_reference(reference: BorrowedContentReference<'_>) -> Result<ContentRef, 
         media_type,
     })
 }
+
+fn own_original_string(value: &str, capacity: usize) -> Result<String, ProviderError> {
+    if capacity < value.len() {
+        return Err(ProviderError::Frame(
+            "compact original String capacity too small",
+        ));
+    }
+    let mut owned = String::new();
+    owned
+        .try_reserve_exact(capacity)
+        .map_err(|_| ProviderError::ResourceExhausted("compact original String capacity"))?;
+    if owned.capacity() != capacity {
+        return Err(ProviderError::ResourceExhausted(
+            "compact original String allocation differs",
+        ));
+    }
+    owned.push_str(value);
+    Ok(owned)
+}
+
+fn own_reference_capacities(
+    reference: BorrowedContentReference<'_>,
+    capacities: [usize; 5],
+) -> Result<ContentRef, ProviderError> {
+    let mut media_type = own_original_string("", capacities[4])?;
+    if media_type.capacity() < reference.media_type_length() {
+        return Err(ProviderError::Frame(
+            "compact original media capacity too small",
+        ));
+    }
+    for byte in reference.media_type_bytes() {
+        media_type.push(char::from(byte));
+    }
+    Ok(ContentRef {
+        hash: HashRef {
+            algorithm: own_original_string("blake3-256", capacities[1])?,
+            domain: own_original_string("cnp.blob.v1", capacities[2])?,
+            digest: own_original_string(reference.digest(), capacities[3])?,
+        },
+        length: crucible_node_contract::U64::new(reference.length()),
+        media_type,
+    })
+}
+
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

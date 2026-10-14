@@ -36,3 +36,5 @@ pub use session::{
 
 /// Exposes bounded source-private content decoding data without source rights.
 pub use content::compact_cursor;
+/// Exposes the explicit data-only content-eight metadata capacity grammar.
+pub use content::compact_metadata8;

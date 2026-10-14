@@ -3931,6 +3931,31 @@ preparse admission, source-local settlement, full physical memory and genuine
 factory/adopter implementation still gate complete capture and fresh worlds.
 This Core API closure does not qualify native Capture, Ready or the full budget.
 
+## Compact content-eight metadata preservation
+
+The explicit content-eight wrapper preserves the unchanged content-seven byte
+groups and alias grammar and adds original key/reference String capacities.
+Borrowed framing and both complete capacity rosters are validated before owner
+allocation. Restoration creates each String at its original capacity, refuses
+allocator capacity differences and retains shared byte owners, distinct equal
+buffers, empty spare capacity and partial transfer credit.
+
+Independent receipt
+`dbc83d19229ae4d0e8f88bf56cdae9958034c0a1cefb2389aadb4bba6c74125d`
+verifies the four exact current preimages and matching Source94 compiler/test
+roles. Strict checks, all 449 enabled provider units and six contract units pass;
+13 provider units remain ignored. The actual cohort uses kernel34/SDK91; the
+57 current Core105/ledger differences are disclosed without retagging compilation.
+Earlier compiler/lint failures remain separate evidence.
+
+Compilation monitoring covers the complete private source and target trees,
+charging the greater apparent/allocated extent: 28,107,710,464 bytes under the
+34,359,738,368-byte compilation ceiling. Older 16 GiB receipts sampled target
+storage only. These compilation limits do not change the scenario's 512 MiB
+budget. Tree/control-block/allocator layout and native physical storage remain
+separately admitted; this data codec does not install state, select a whole
+profile or qualify native Capture, factory adoption or Ready.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
