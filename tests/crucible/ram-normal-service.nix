@@ -23,7 +23,7 @@
     systemName = "normal-managed-ram-kernel";
   };
   normalServiceConfig = system.config;
-  service = normalServiceConfig.aos.services.crucibleCampaign;
+  service = normalServiceConfig.aos.crucibleCampaign;
   client = import ./_ram-normal-service-client.nix {
     inherit pkgs lib service campaign attemptFile;
     inherit clientAuthorityFile clientCertificateFile clientKeyFile idempotencyKey;

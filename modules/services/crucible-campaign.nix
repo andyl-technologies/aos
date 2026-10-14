@@ -10,7 +10,7 @@
   pkgs,
   ...
 }: let
-  cfg = config.aos.services.crucibleCampaign;
+  cfg = config.aos.crucibleCampaign;
   listenPrefix =
     if lib.hasPrefix "127.0.0.1:" cfg.listenAddress
     then "127.0.0.1:"
@@ -102,7 +102,7 @@
     else ''
       schema = "crucible.campaign-process.v1"
       unit = "crucible-campaign.service"
-      executable = "${pkgs.crucible}/bin/crucible"
+      executable = "${pkgs.crucible.passthru.controller}/bin/crucible"
       memory_max_bytes = ${toString process.memoryMaxBytes}
       tasks_max = ${toString process.tasksMax}
       file_descriptors = ${toString process.fileDescriptors}
@@ -140,7 +140,7 @@
     inherit (cfg) enable listenAddress socketPath stateDirectory processResources executor;
   });
 in {
-  options.aos.services.crucibleCampaign = {
+  options.aos.crucibleCampaign = {
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -306,7 +306,7 @@ in {
       assertions = [
         {
           assertion = listenPort > 0 && listenPort <= 65535;
-          message = "aos.services.crucibleCampaign.listenAddress must be a numeric loopback address with a valid nonzero TCP port";
+          message = "aos.crucibleCampaign.listenAddress must be a numeric loopback address with a valid nonzero TCP port";
         }
         {
           assertion = builtins.all hasNoControlCharacters [
@@ -318,11 +318,11 @@ in {
         }
         {
           assertion = socketPathIsOwned;
-          message = "aos.services.crucibleCampaign.socketPath must be a normalized file below /run/crucible-campaign";
+          message = "aos.crucibleCampaign.socketPath must be a normalized file below /run/crucible-campaign";
         }
         {
           assertion = stateDirectoryIsOwned;
-          message = "aos.services.crucibleCampaign.stateDirectory must be a normalized path at or below /var/lib/crucible-campaign";
+          message = "aos.crucibleCampaign.stateDirectory must be a normalized path at or below /var/lib/crucible-campaign";
         }
       ];
 
@@ -409,6 +409,17 @@ in {
         principal = "operator"
         operation = "attach-campaign-runtime"
         campaign = "*"
+
+        ${lib.optionalString (executor != null) (
+          lib.concatMapStringsSep "\n" (campaign:
+            lib.concatMapStringsSep "\n" (operation: ''
+              [[grants]]
+              principal = "operator"
+              operation = "${operation}"
+              campaign = "${campaign}"
+            '') ["get-campaign-status" "apply-campaign-command" "explain-campaign-attempt"])
+          (lib.unique executor.campaigns)
+        )}
       '';
 
       systemd.services.crucible-campaign = {

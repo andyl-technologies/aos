@@ -24,7 +24,7 @@
     else null;
   configurationIdentity =
     if selected
-    then system.config.aos.services.crucibleCampaign._runtimeIdentity
+    then system.config.aos.crucibleCampaign._runtimeIdentity
     else null;
   toplevel =
     if selected

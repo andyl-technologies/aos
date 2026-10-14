@@ -122,7 +122,7 @@
     ${lib.optionalString (campaignComposition != null) ''
       grep -Fxq 'campaign_mode=${campaignComposition.mode}' "$s4_result"
       grep -Fxq \
-        'campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}' \
+        'campaign_configuration_identity=${campaignComposition.system.config.aos.crucibleCampaign._runtimeIdentity}' \
         "$s4_result"
       grep -Fxq \
         'campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}' \

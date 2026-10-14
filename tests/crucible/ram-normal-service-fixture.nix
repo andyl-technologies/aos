@@ -32,7 +32,7 @@
     root = "/var/paging-storage/semantic/objects"
   '';
   serviceModule = {
-    aos.services.crucibleCampaign = {
+    aos.crucibleCampaign = {
       enable = true;
       processResources = {
         # This is an explicit disposable policy authenticated by real PID1.

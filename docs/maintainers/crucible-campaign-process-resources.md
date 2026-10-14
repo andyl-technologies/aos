@@ -6,7 +6,7 @@ install a separate native heap ceiling. Its existing storage, task, descriptor,
 and Rust allocation budgets remain distinct.
 
 Production `crucible serve` runs as the generated `crucible-campaign.service`.
-Enable `aos.services.crucibleCampaign` with an explicit `processResources`
+Enable `aos.crucibleCampaign` with an explicit `processResources`
 contract. Every field is required; the module supplies no resource defaults.
 It installs containment before service helpers and the main executable start,
 and publishes the same strict policy at `/etc/crucible/campaign-process.toml`.

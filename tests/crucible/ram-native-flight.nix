@@ -29,7 +29,7 @@
   normalMode = normalServiceConfig != null;
   normalService =
     if normalMode
-    then normalServiceConfig.aos.services.crucibleCampaign
+    then normalServiceConfig.aos.crucibleCampaign
     else null;
   selectedMode =
     if normalMode
