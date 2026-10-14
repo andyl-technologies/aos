@@ -27,6 +27,8 @@ pub(crate) fn prepared(
         owners: BTreeMap::new(),
         operations: BTreeMap::new(),
         input_batches: BTreeMap::new(),
+        original_capture_history: None,
+        original_capture_attempts: BTreeMap::new(),
         scheduler: None,
         terminal: None,
         condition_stop: None,
@@ -82,6 +84,8 @@ impl NodeRuntime {
             owners: std::mem::take(&mut self.owners),
             operations: std::mem::take(&mut self.operations),
             input_batches: std::mem::take(&mut self.input_batches),
+            original_capture_history: self.original_capture_history.take(),
+            original_capture_attempts: std::mem::take(&mut self.original_capture_attempts),
             scheduler: self.scheduler.take(),
             terminal: self.terminal.take(),
             condition_stop: self.condition_stop.take(),
@@ -105,6 +109,8 @@ impl NodeRuntime {
             self.owners = std::mem::take(&mut custody.owners);
             self.operations = std::mem::take(&mut custody.operations);
             self.input_batches = std::mem::take(&mut custody.input_batches);
+            self.original_capture_history = custody.original_capture_history.take();
+            self.original_capture_attempts = std::mem::take(&mut custody.original_capture_attempts);
             self.scheduler = custody.scheduler.take();
             self.terminal = custody.terminal.take();
             self.condition_stop = custody.condition_stop.take();

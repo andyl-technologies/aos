@@ -17,13 +17,14 @@ use crate::node_contract::{
 
 use super::{HostSchedulingSource, canonical, failure, json};
 
+mod capture;
 mod preservation;
 
 /// Retains the source-created host owner without any unrelated model queue.
 pub struct PreparedHostSchedulingNode {
     source: Rc<HostSchedulingSource>,
     anchor: Rc<()>,
-    plan: InstalledConformancePlan,
+    plan: Option<InstalledConformancePlan>,
     activation: ActivationRecord,
     route: NodeRoute,
     ready: Option<(ReadyAttestation, Vec<u8>)>,
@@ -31,6 +32,7 @@ pub struct PreparedHostSchedulingNode {
     reclamation: Option<NativeReclamationReceipt>,
     restoration: Option<preservation::HostRestorationAdmission>,
     restoration_installed: bool,
+    capture_preparation: Option<crate::node_contract::HostSchedulingContinuationV2>,
 }
 
 impl PreparedHostSchedulingNode {
@@ -44,7 +46,7 @@ impl PreparedHostSchedulingNode {
         Self {
             source,
             anchor,
-            plan,
+            plan: Some(plan),
             activation,
             route,
             ready: None,
@@ -52,6 +54,28 @@ impl PreparedHostSchedulingNode {
             reclamation: None,
             restoration: None,
             restoration_installed: false,
+            capture_preparation: None,
+        }
+    }
+
+    pub(super) fn new_complete_restoration(
+        source: Rc<HostSchedulingSource>,
+        anchor: Rc<()>,
+        activation: ActivationRecord,
+        route: NodeRoute,
+    ) -> Self {
+        Self {
+            source,
+            anchor,
+            plan: None,
+            activation,
+            route,
+            ready: None,
+            retired: false,
+            reclamation: None,
+            restoration: None,
+            restoration_installed: false,
+            capture_preparation: None,
         }
     }
 
@@ -113,7 +137,7 @@ impl PreparedHostSchedulingNode {
 
 impl SimulationNode for PreparedHostSchedulingNode {
     fn collection_scope(&self) -> Option<&InstalledConformancePlan> {
-        Some(&self.plan)
+        self.plan.as_ref()
     }
 
     fn validate_collection_scope(
@@ -122,7 +146,11 @@ impl SimulationNode for PreparedHostSchedulingNode {
     ) -> Result<(), OperationFailure> {
         self.source
             .authenticate_preparation_source(&self.source.world)?;
-        if !self.plan.same_original(plan) {
+        if !self
+            .plan
+            .as_ref()
+            .is_some_and(|original| original.same_original(plan))
+        {
             return Err(failure(
                 "host scheduling node changed original collection plan",
             ));
@@ -150,7 +178,7 @@ impl SimulationNode for PreparedHostSchedulingNode {
     }
 
     fn facets(&self) -> &[FacetKind] {
-        &[]
+        super::complete::selected_facets(self.source.edition).0
     }
 
     fn original_host_scheduling_owner(
@@ -183,7 +211,9 @@ impl SimulationNode for PreparedHostSchedulingNode {
             ));
         }
         self.source.authenticate_initial_attachment()?;
-        if self.source.original_ticket.is_some() && self.restoration.is_none() {
+        if (self.source.original_ticket.is_some() || self.source.archive_ticket.is_some())
+            && self.restoration.is_none()
+        {
             return Err(failure(
                 "original host restore context was not admitted before Arm",
             ));
@@ -197,6 +227,17 @@ impl SimulationNode for PreparedHostSchedulingNode {
                 "prepared_token":self.source.prepared_token,
                 "scheduling_slot":"original-uninitialized", "boundary":world.boundary,
                 "capture":"unsupported"
+            })
+        } else if self.source.edition == super::preservation::Edition::CompleteOriginalLineage {
+            json!({
+                "schema":"source-owned.host-scheduling-complete-preparation/2",
+                "process":self.source.process, "world_binding_hash":self.source.world,
+                "node_binding_hash":self.source.selection.binding.identity().map_err(failure)?,
+                "owner_binding_hash":self.source.selection.owner.identity().map_err(failure)?,
+                "prepared_token":self.source.prepared_token,
+                "scheduling_slot":"original-uninitialized", "boundary":world.boundary,
+                "original_restore":self.restoration.as_ref().map(|admission| &admission.source),
+                "capture":"core-issued original unchanged-cut common snapshot with explicit administrative settlement"
             })
         } else {
             json!({
@@ -310,6 +351,17 @@ impl SimulationNode for PreparedHostSchedulingNode {
         self.install_original_host_restoration(context, activation, operations, inputs)
     }
 
+    fn capture_original_lineage_continuation_with_ticket(
+        &mut self,
+        ticket: &crate::node_contract::OriginalLineageOwnerCaptureTicket<'_>,
+        activation: &crate::node_contract::WorldActivation,
+        source: &crate::node_contract::OriginalLineageRuntimeRecord,
+        runtime_object: &crate::node_scheduling::InputPayload,
+        limits: crate::node_contract::NativeCaptureLimits,
+    ) -> Result<crate::node_contract::InstalledOriginalLineageCapture, OperationFailure> {
+        self.capture_original_common_state(ticket, activation, source, runtime_object, limits)
+    }
+
     fn begin_operation(&mut self, _: &OperationAdmission) -> Submission {
         Submission::Refused(Self::refuse())
     }
@@ -350,7 +402,13 @@ impl SimulationNode for PreparedHostSchedulingNode {
         ))
     }
 
-    fn facet(&mut self, _: FacetKind) -> Result<NodeFacet<'_>, Refusal> {
+    fn facet(&mut self, kind: FacetKind) -> Result<NodeFacet<'_>, Refusal> {
+        self.current().map_err(|_| Self::refuse())?;
+        if kind == FacetKind::Preservation
+            && let Some(facet) = self.source.preservation_facet.as_ref()
+        {
+            return Ok(NodeFacet::Preservation(facet));
+        }
         Err(Self::refuse())
     }
 

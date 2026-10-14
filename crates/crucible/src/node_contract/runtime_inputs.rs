@@ -64,6 +64,7 @@ impl NodeRuntime {
                 .map_err(RuntimePollFailure::Admission)?;
             if self.operations.contains_key(batch.stage_operation())
                 || self.input_batches.contains_key(batch.stage_operation())
+                || self.administrative_operation_used(batch.stage_operation())
                 || self
                     .input_batches
                     .values()
@@ -318,6 +319,8 @@ impl NodeRuntime {
         &mut self,
         acknowledgement: ValidatedInputAcknowledgement,
     ) -> Result<crate::node_scheduling::InputCustodyCommit, RuntimePollFailure> {
+        self.require_settled_capture_custody()
+            .map_err(RuntimePollFailure::Admission)?;
         self.validate_activation(&acknowledgement.activation)
             .map_err(RuntimePollFailure::Admission)?;
         let stage = acknowledgement.acknowledgement.stage_operation.clone();
@@ -370,6 +373,8 @@ impl NodeRuntime {
         &mut self,
         commit: &crate::node_scheduling::InputCustodyCommit,
     ) -> Result<(), RuntimePollFailure> {
+        self.require_settled_capture_custody()
+            .map_err(RuntimePollFailure::Admission)?;
         self.validate_activation(commit.activation())
             .map_err(RuntimePollFailure::Admission)?;
         let retained = self.input_batches.get(commit.stage_operation()).ok_or(

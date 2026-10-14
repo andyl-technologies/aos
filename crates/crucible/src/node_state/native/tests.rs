@@ -73,6 +73,7 @@ fn storage_index(archive: &NativeArchive, image: ContentRef) -> Index {
     let artifact = canonical::content_ref(&bytes, "application/json").unwrap();
     archive.store(&artifact, &mut bytes.as_slice()).unwrap();
     Index {
+        original_capture_journal: None,
         selected_extensions: None,
         schema_version: 1,
         artifact: artifact.clone(),
@@ -405,4 +406,87 @@ fn unselected_archive_dialect_refuses_extensions_before_native_source_work() {
     let graph = crate::node_admission::test_model_graph_with_extension();
     assert!(!graph.selected_extensions().is_empty());
     assert!(require_supported_extensions(&graph).is_err());
+}
+
+#[test]
+fn complete_writer_peak_charges_spare_adjacency_and_nested_reference_banks() {
+    // This owns real local archive files, not native actors or capture authority.
+    let directory = TestDirectory::new();
+    let archive = NativeArchive::open(&directory.0, NativeArchiveLimits::default()).unwrap();
+    let bytes = b"unchanged inert metadata body";
+    let reference = canonical::content_ref(bytes, "application/octet-stream").unwrap();
+    let mut normal = super::capture::Objects::new(
+        &archive,
+        crate::node_state::closure::ContentInventoryEdition::Typed,
+    );
+    normal.insert(reference.clone(), bytes, Vec::new()).unwrap();
+    let normal_storage = normal.complete_owned_storage().unwrap();
+
+    let mut adjacency = Vec::new();
+    adjacency.reserve_exact(128);
+    let spare_adjacency = adjacency.capacity() * std::mem::size_of::<ContentRef>();
+    let mut spare_reference = reference;
+    spare_reference.media_type.reserve_exact(4096);
+    let spare_strings = spare_reference.media_type.capacity();
+    let mut oversized = super::capture::Objects::new(
+        &archive,
+        crate::node_state::closure::ContentInventoryEdition::Typed,
+    );
+    oversized.insert(spare_reference, bytes, adjacency).unwrap();
+    let oversized_storage = oversized.complete_owned_storage().unwrap();
+    assert!(
+        oversized_storage
+            >= normal_storage + spare_adjacency + spare_strings - "application/octet-stream".len()
+    );
+
+    let peak = super::core_future_metadata::CompleteCaptureAllocationPeak {
+        current_core: oversized_storage,
+        original_payloads: 0,
+        cached_preflight: 0,
+        registered_history: 0,
+        planned_geometry: 0,
+        attempt_construction: 0,
+        inventory_preparation: 0,
+        future_metadata: 0,
+        future_content: 0,
+        selected_sources: 0,
+    };
+    assert_eq!(peak.admit(oversized_storage), Ok(oversized_storage));
+    assert_eq!(
+        peak.admit(oversized_storage - 1),
+        Err(crate::node_contract::RuntimeError::ResourceLimit)
+    );
+}
+
+#[test]
+fn complete_read_extent_refuses_changed_same_name_files_before_digest_work() {
+    // Real regular-file IO; archive/owner metadata and captures are not issued.
+    let directory = TestDirectory::new();
+    let original_directory = fs::File::open(&directory.0).unwrap();
+    let body = vec![b'x'; 8192];
+    fs::write(directory.0.join("same-name-record"), &body).unwrap();
+
+    let complete =
+        super::storage::read_edition_file(&original_directory, "same-name-record", 3, 128, 16384);
+    let legacy =
+        super::storage::read_edition_file(&original_directory, "same-name-record", 2, 128, 16384);
+
+    assert_eq!(
+        complete.unwrap_err().code,
+        crate::node_state::StateErrorCode::ResourceLimit,
+    );
+    assert_eq!(legacy.unwrap(), body);
+    let expected = vec![b'y'; 128];
+    fs::write(directory.0.join("same-name-record"), &expected).unwrap();
+    assert_eq!(
+        super::storage::read_edition_file(
+            &original_directory,
+            "same-name-record",
+            3,
+            expected.len(),
+            16384,
+        )
+        .unwrap(),
+        expected,
+    );
 }

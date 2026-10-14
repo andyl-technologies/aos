@@ -82,6 +82,7 @@ pub(super) struct Index {
     pub objects: Vec<Object>,
     pub owners: Vec<NativeOwnerState>,
     pub selected_extensions: Option<ContentRef>,
+    pub original_capture_journal: Option<ContentRef>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -262,9 +263,11 @@ impl NativeArchive {
             Mode::empty(),
         ) {
             Ok(_) => {
-                if read_file(
+                if read_edition_file(
                     &self.directory,
                     &name,
+                    record.index.schema_version,
+                    bytes.len(),
                     self.limits.state.maximum_record_bytes,
                 )? != bytes
                 {
@@ -317,6 +320,7 @@ impl NativeArchive {
         let domain = match edition {
             1 => AUTHENTICATION_DOMAIN,
             2 => b"crucible.native-world-archive.authentication.v2\0",
+            3 => b"crucible.native-world-archive.authentication.v3\0",
             _ => return Err(refused("unsupported native authentication edition")),
         };
         mac.update(domain);
@@ -325,9 +329,11 @@ impl NativeArchive {
 
     pub(super) fn record(&self, index: Index) -> Result<NativeArchiveRecord, StateError> {
         validate_index(&index, self.limits)?;
-        let bytes = read_file(
+        let bytes = read_edition_file(
             &self.directory,
             &object_name(&index.artifact),
+            index.schema_version,
+            usize::try_from(index.artifact.length.get()).map_err(schema)?,
             self.limits.state.maximum_record_bytes,
         )?;
         index.artifact.verify(&bytes).map_err(schema)?;
@@ -339,6 +345,9 @@ impl NativeArchive {
             directory: Arc::clone(&self.directory),
             limits: self.limits,
         };
+        if record.index.schema_version == 3 {
+            super::complete_original_index::authenticate(&record)?;
+        }
         for owner in &record.index.owners {
             record.owner_artifacts(&owner.owner)?;
         }
@@ -347,6 +356,21 @@ impl NativeArchive {
 }
 
 impl NativeArchiveRecord {
+    /// Reads mandatory index-three administrative history as authenticated data.
+    ///
+    /// This read does not qualify native restoration or fresh readiness. Installed
+    /// source-specific native/host validators must independently authenticate and
+    /// install the complete administrative history before execution.
+    ///
+    /// # Errors
+    /// Refuses older archive editions, absent or unsettled administrative history,
+    /// changed original owner/capture scope, incomplete typed dependencies or bounds.
+    pub fn original_capture_journal(
+        &self,
+    ) -> Result<crate::node_contract::RuntimeOriginalCaptureJournal, StateError> {
+        super::complete_original_index::authenticate(self)
+    }
+
     /// Returns the authenticated complete CNP capture manifest.
     pub fn manifest(&self) -> &CaptureManifest {
         &self.manifest
@@ -427,6 +451,14 @@ impl NativeArchiveRecord {
                 "native core object is outside authenticated index closure",
             ));
         }
+        // Complete index-three objects have authenticated exact lengths. Bound
+        // their reader by that length before allocation, including changed-file
+        // failure; legacy archive editions preserve their original read policy.
+        let maximum = if self.index.schema_version == 3 {
+            maximum.min(usize::try_from(reference.length.get()).map_err(schema)?)
+        } else {
+            maximum
+        };
         let bytes = read_file(&self.directory, &object_name(reference), maximum)?;
         reference.verify(&bytes).map_err(schema)?;
         Ok(bytes)
@@ -434,7 +466,7 @@ impl NativeArchiveRecord {
 }
 
 fn validate_index(index: &Index, limits: NativeArchiveLimits) -> Result<(), StateError> {
-    if !matches!(index.schema_version, 1 | 2)
+    if !matches!(index.schema_version, 1..=3)
         || index.objects.len() > limits.state.maximum_content_objects
         || index.owners.len() > limits.state.maximum_owners_or_domains
     {
@@ -445,7 +477,7 @@ fn validate_index(index: &Index, limits: NativeArchiveLimits) -> Result<(), Stat
             "legacy native inventory cannot carry selected semantics",
         ));
     }
-    if index.schema_version == 2
+    if index.schema_version >= 2
         && index
             .objects
             .windows(2)
@@ -455,6 +487,7 @@ fn validate_index(index: &Index, limits: NativeArchiveLimits) -> Result<(), Stat
             "typed native inventory is not a strict canonical set",
         ));
     }
+    super::complete_original_index::validate_inventory(index)?;
     let mut identities = BTreeSet::new();
     let mut hashes = BTreeMap::new();
     let mut dependency_edges = 0usize;
@@ -480,7 +513,7 @@ fn validate_index(index: &Index, limits: NativeArchiveLimits) -> Result<(), Stat
                 .checked_add(object.reference.length.get())
                 .ok_or_else(|| limit("native core bytes"))?;
         }
-        if index.schema_version == 2 {
+        if index.schema_version >= 2 {
             if object
                 .dependencies
                 .windows(2)
@@ -503,6 +536,14 @@ fn validate_index(index: &Index, limits: NativeArchiveLimits) -> Result<(), Stat
     {
         return Err(limit("native complete core closure"));
     }
+    if let Some(journal) = &index.original_capture_journal {
+        journal.validate().map_err(schema)?;
+        if !identities.contains(journal) {
+            return Err(refused(
+                "administrative journal is outside signed typed inventory",
+            ));
+        }
+    }
     if let Some(selected) = &index.selected_extensions {
         selected.validate().map_err(schema)?;
         if !identities.contains(selected) {
@@ -511,7 +552,7 @@ fn validate_index(index: &Index, limits: NativeArchiveLimits) -> Result<(), Stat
             ));
         }
     }
-    if index.schema_version == 2
+    if index.schema_version >= 2
         && index
             .objects
             .iter()
@@ -593,6 +634,25 @@ fn artifact(directory: &File, reference: &ContentRef) -> Result<NativeCaptureArt
         file,
     )
     .map_err(native_error)
+}
+
+// A complete manifest has a sealed reference length; a collision check has
+// the new index's exact encoded length. Their failure paths must use these
+// projected extents before allocation, not the unrelated global ceiling.
+// Legacy index editions retain their original file-read policy.
+pub(super) fn read_edition_file(
+    directory: &File,
+    name: &str,
+    edition: u16,
+    expected_length: usize,
+    maximum: usize,
+) -> Result<Vec<u8>, StateError> {
+    let maximum = if edition == 3 {
+        maximum.min(expected_length)
+    } else {
+        maximum
+    };
+    read_file(directory, name, maximum)
 }
 
 fn read_file(directory: &File, name: &str, maximum: usize) -> Result<Vec<u8>, StateError> {
@@ -744,5 +804,133 @@ pub(super) mod pages {
             values.extend(page);
         }
         Ok(values)
+    }
+}
+
+impl NativeArchiveRecord {
+    pub(crate) fn capture_owned_storage(
+        &self,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::{NodeRuntime, RuntimeError};
+        use std::mem::size_of;
+        let add = |a: usize, b: usize| a.checked_add(b).ok_or(RuntimeError::ResourceLimit);
+        // Arc<Index> retains the actual index once. Charging each owning view
+        // conservatively does not treat equal portable metadata as shared bytes.
+        let mut bytes = NodeRuntime::capture_shared_allocation_storage::<Index>();
+        bytes = add(
+            bytes,
+            NodeRuntime::capture_shared_allocation_storage::<File>(),
+        )?;
+        bytes = add(
+            bytes,
+            NodeRuntime::capture_manifest_storage(&self.manifest)?,
+        )?;
+        bytes = add(
+            bytes,
+            NodeRuntime::capture_reference_storage(&self.index.artifact)?,
+        )?;
+        for reference in [
+            self.index.selected_extensions.as_ref(),
+            self.index.original_capture_journal.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            bytes = add(bytes, NodeRuntime::capture_reference_storage(reference)?)?;
+        }
+        bytes = add(
+            bytes,
+            self.index
+                .objects
+                .capacity()
+                .checked_mul(size_of::<Object>())
+                .ok_or(RuntimeError::ResourceLimit)?,
+        )?;
+        for object in &self.index.objects {
+            bytes = add(
+                bytes,
+                NodeRuntime::capture_reference_storage(&object.reference)?,
+            )?;
+            bytes = add(
+                bytes,
+                object
+                    .dependencies
+                    .capacity()
+                    .checked_mul(size_of::<ContentRef>())
+                    .ok_or(RuntimeError::ResourceLimit)?,
+            )?;
+            for reference in &object.dependencies {
+                bytes = add(bytes, NodeRuntime::capture_reference_storage(reference)?)?;
+            }
+        }
+        bytes = add(
+            bytes,
+            self.index
+                .owners
+                .capacity()
+                .checked_mul(size_of::<NativeOwnerState>())
+                .ok_or(RuntimeError::ResourceLimit)?,
+        )?;
+        for owner in &self.index.owners {
+            if !owner.key.schema.extensions.is_empty() {
+                return Err(RuntimeError::UnsupportedFacet);
+            }
+            for id in [
+                &owner.owner,
+                &owner.key.implementation,
+                &owner.key.profile,
+                &owner.key.schema.id,
+            ] {
+                bytes = add(bytes, id.allocated_capacity())?;
+            }
+            bytes = add(
+                bytes,
+                NodeRuntime::capture_reference_storage(&owner.key.schema.definition)?,
+            )?;
+            bytes = add(
+                bytes,
+                NodeRuntime::capture_map_node_storage::<String, serde_json::Value>(),
+            )?;
+            bytes = add(
+                bytes,
+                owner
+                    .participants
+                    .capacity()
+                    .checked_mul(size_of::<Id>())
+                    .ok_or(RuntimeError::ResourceLimit)?,
+            )?;
+            for participant in &owner.participants {
+                bytes = add(bytes, participant.allocated_capacity())?;
+            }
+            bytes = add(bytes, NodeRuntime::capture_reference_storage(&owner.state)?)?;
+            bytes = add(
+                bytes,
+                owner
+                    .evidence
+                    .capacity()
+                    .checked_mul(size_of::<ContentRef>())
+                    .ok_or(RuntimeError::ResourceLimit)?,
+            )?;
+            for reference in &owner.evidence {
+                bytes = add(bytes, NodeRuntime::capture_reference_storage(reference)?)?;
+            }
+            bytes = add(
+                bytes,
+                owner
+                    .artifacts
+                    .capacity()
+                    .checked_mul(size_of::<NativeArtifactState>())
+                    .ok_or(RuntimeError::ResourceLimit)?,
+            )?;
+            for artifact in &owner.artifacts {
+                bytes = add(bytes, artifact.role.allocated_capacity())?;
+                bytes = add(bytes, artifact.name.capacity())?;
+                bytes = add(
+                    bytes,
+                    NodeRuntime::capture_reference_storage(&artifact.content)?,
+                )?;
+            }
+        }
+        Ok(bytes)
     }
 }

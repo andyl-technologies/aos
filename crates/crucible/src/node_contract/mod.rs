@@ -29,6 +29,7 @@ pub use activation::*;
 pub use activation_preparation::*;
 pub use condition_debug::*;
 pub use conformance::*;
+pub(crate) use conformance::OriginalCollectingCaptureScope;
 pub use fault::*;
 pub use installed_provider::*;
 pub use provider::*;

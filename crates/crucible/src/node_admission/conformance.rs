@@ -206,6 +206,29 @@ pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
         ))
     }
 
+    /// Authorizes complete capture solely under the same original collecting plan.
+    ///
+    /// The installed source must conjunct its actual native peers and genuine
+    /// host factory with the unchanged common state. Portable scope reports,
+    /// source labels and parsed Refused audits do not provide this authority.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects foreign plan/source/current native custody,
+    /// unsupported physical capture or a changed complete cut and capture ID.
+    fn authenticate_collection_capture(
+        &self,
+        _plan: ConformancePlanEvidence<'_>,
+        _request: AdmissionRequest<'_>,
+        _source: &crate::node_contract::HostSchedulingSource,
+        _runtime: &crate::node_contract::OriginalLineageRuntimeRecord,
+        _scheduling: &crate::node_scheduling::SchedulingSnapshot,
+        _capture_id: &crucible_node_contract::Id,
+    ) -> Result<(), EvidenceError> {
+        Err(failure(
+            "installed complete collecting capture is unavailable",
+        ))
+    }
+
     /// Authenticates the scheduler's complete original batch before native Stage.
     ///
     /// # Errors
@@ -459,6 +482,34 @@ impl ConformanceGraph {
             self.request(),
             source,
         )?;
+        self.authenticate_current_scope()
+    }
+
+    pub(crate) fn authenticate_complete_capture(
+        &self,
+        source: &crate::node_contract::HostSchedulingSource,
+        runtime: &crate::node_contract::OriginalLineageRuntimeRecord,
+        scheduling: &crate::node_scheduling::SchedulingSnapshot,
+        capture_id: &crucible_node_contract::Id,
+    ) -> Result<(), EvidenceError> {
+        self.reauthenticate()?;
+        source
+            .authenticate_complete_preparation_source(&self.plan.0.world)
+            .map_err(|error| failure(error.reason))?;
+        source
+            .authenticate_current()
+            .map_err(|error| failure(error.reason))?;
+        self.plan.0.authority.authenticate_collection_capture(
+            self.plan.evidence(),
+            self.request(),
+            source,
+            runtime,
+            scheduling,
+            capture_id,
+        )?;
+        source
+            .authenticate_current()
+            .map_err(|error| failure(error.reason))?;
         self.authenticate_current_scope()
     }
 

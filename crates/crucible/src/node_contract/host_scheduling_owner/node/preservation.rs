@@ -27,16 +27,14 @@ impl PreparedHostSchedulingNode {
         content: &crate::node_state::VerifiedStateContent,
     ) -> Result<(), OperationFailure> {
         self.current()?;
-        if self.source.edition != super::super::preservation::Edition::OriginalLineage {
+        if !matches!(
+            self.source.edition,
+            super::super::preservation::Edition::OriginalLineage
+                | super::super::preservation::Edition::CompleteOriginalLineage
+        ) {
             return Err(failure("source-one host native restoration is unsupported"));
         }
-        let ticket = self
-            .source
-            .original_ticket
-            .as_ref()
-            .ok_or_else(|| failure("original host continuation ticket is absent"))?;
-        ticket.authenticate_birth().map_err(failure)?;
-        let original = ticket.record();
+        let original = self.source.original_restoration_record()?;
         let HostSchedulingRuntimeRecord::OriginalLineage(captured) = &original.runtime else {
             return Err(failure("original host legacy restoration is unsupported"));
         };
@@ -117,20 +115,18 @@ impl PreparedHostSchedulingNode {
             ));
         }
         self.source.authenticate_initial_attachment()?;
-        let ticket = self
-            .source
-            .original_ticket
-            .as_ref()
-            .ok_or_else(|| failure("original host continuation ticket is absent"))?;
-        ticket.authenticate_birth().map_err(failure)?;
-        let HostSchedulingRuntimeRecord::OriginalLineage(record) = &ticket.record().runtime else {
+        let original = self.source.original_restoration_record()?;
+        if let Some(ticket) = &self.source.archive_ticket {
+            ticket.authenticate_context(context).map_err(failure)?;
+        }
+        let HostSchedulingRuntimeRecord::OriginalLineage(record) = &original.runtime else {
             return Err(failure("original host legacy restoration is unsupported"));
         };
         if record.as_ref() != context.record() {
             return Err(failure("original host admitted another source record"));
         }
         context
-            .validate_original_scheduler(&ticket.record().scheduling)
+            .validate_original_scheduler(&original.scheduling)
             .map_err(failure)?;
         self.restoration = Some(HostRestorationAdmission {
             source: context.source_record().clone(),

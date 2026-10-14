@@ -142,6 +142,9 @@ pub struct NodeRuntime {
     pub(super) graceful_retirement: bool,
     // A fixed data-only slot records a refusal site without allocation or authority.
     original_error_site: Option<&'static str>,
+    original_capture_history: Option<Rc<crate::node_state::CompleteOriginalSource>>,
+    original_capture_attempts:
+        BTreeMap<Id, Rc<continuation::capture_ticket::OriginalLineageCaptureAttempt>>,
 }
 
 impl NodeRuntime {
@@ -185,6 +188,34 @@ impl NodeRuntime {
             return Err(RuntimeError::ForeignAuthority);
         }
         source.attach(original)
+    }
+
+    pub(crate) fn authenticate_complete_capture_purpose(
+        &mut self,
+        scope: Option<&super::OriginalCollectingCaptureScope>,
+    ) -> Result<(), RuntimeError> {
+        match (scope, self.collecting.as_ref()) {
+            (None, None) => self.validate_all_declarations(),
+            (Some(scope), Some(graph)) if scope.same_graph(graph) => {
+                self.validate_activation(scope.activation())?;
+                self.authenticate_host_scheduling_source(scope.source())?;
+                self.validate_collection_custody(scope.plan())
+            }
+            _ => Err(RuntimeError::ForeignAuthority),
+        }
+    }
+
+    pub(crate) fn authenticate_complete_restoration_purpose(
+        &mut self,
+        plan: Option<&crate::node_admission::InstalledConformancePlan>,
+    ) -> Result<(), RuntimeError> {
+        match (plan, self.collecting.as_ref()) {
+            (None, None) => self.validate_all_declarations(),
+            (Some(plan), Some(graph)) if plan.same_original(graph.plan()) => {
+                self.validate_collection_custody(plan)
+            }
+            _ => Err(RuntimeError::ForeignAuthority),
+        }
     }
 
     pub(super) fn collection_admission(
@@ -354,6 +385,8 @@ impl NodeRuntime {
             collecting,
             graceful_retirement: false,
             original_error_site: None,
+            original_capture_history: None,
+            original_capture_attempts: BTreeMap::new(),
         })
     }
 
@@ -525,6 +558,7 @@ impl NodeRuntime {
         graph: &crate::node_admission::AdmittedGraph,
         activation: &WorldActivation,
     ) -> Result<RefMut<'_, crate::node_scheduling::CausalScheduler>, RuntimeError> {
+        self.require_settled_capture_custody()?;
         self.validate_activation(activation)?;
         if self.terminal.is_some() || self.condition_fenced() {
             return Err(RuntimeError::OutstandingObligations);
@@ -1241,6 +1275,7 @@ impl NodeRuntime {
     }
 
     fn checked_route(&mut self, node: &NodeId) -> Result<NodeRoute, RuntimeError> {
+        self.require_settled_capture_custody()?;
         self.scheduling_origin()?;
         let handle = self.nodes.get(node).ok_or(RuntimeError::UnknownNode)?;
         let snapshot = self.snapshots.get(node).ok_or(RuntimeError::UnknownNode)?;
@@ -1261,6 +1296,7 @@ impl NodeRuntime {
     }
 
     fn validate_token(&self, token: &OperationToken) -> Result<(), RuntimeError> {
+        self.require_settled_capture_custody()?;
         if !Rc::ptr_eq(&self.authority, &token.authority) {
             return Err(RuntimeError::ForeignAuthority);
         }
@@ -1275,6 +1311,7 @@ impl NodeRuntime {
     }
 
     fn validate_owners_available(&self, route: &NodeRoute) -> Result<(), RuntimeError> {
+        self.require_settled_capture_custody()?;
         for identity in &route.owners {
             let owner = self
                 .owners

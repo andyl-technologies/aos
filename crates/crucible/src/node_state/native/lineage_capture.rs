@@ -61,14 +61,14 @@ pub struct OriginalLineageCaptureRequest<'a> {
 }
 
 #[derive(Serialize)]
-struct OwnerReceipt<'a> {
-    schema_version: u16,
-    owner: &'a Id,
-    inventory: HashRef,
-    coordinator: &'a ContentRef,
-    cut: Position,
-    ordinal: U64,
-    domains: &'a [Id],
+pub(super) struct OwnerReceipt<'a> {
+    pub(super) schema_version: u16,
+    pub(super) owner: &'a Id,
+    pub(super) inventory: HashRef,
+    pub(super) coordinator: &'a ContentRef,
+    pub(super) cut: Position,
+    pub(super) ordinal: U64,
+    pub(super) domains: &'a [Id],
 }
 
 impl NativeArchive {
@@ -456,6 +456,7 @@ impl NativeArchive {
             core_references(&manifest, self.limits.state.maximum_record_bytes)?,
         )?;
         let index = Index {
+            original_capture_journal: None,
             schema_version: 2,
             selected_extensions: selected_ref,
             artifact,
@@ -467,7 +468,7 @@ impl NativeArchive {
         self.persist(index)
     }
 
-    fn lineage_record(
+    pub(super) fn lineage_record(
         &self,
         value: &impl Serialize,
         media: &str,
@@ -648,7 +649,7 @@ impl NativeArchiveRecord {
     }
 }
 
-struct SignedRows<'a>(&'a NativeArchiveRecord);
+pub(super) struct SignedRows<'a>(pub(super) &'a NativeArchiveRecord);
 
 impl CaptureEvidence for SignedRows<'_> {
     fn content(&self, reference: &ContentRef, maximum: usize) -> Result<Vec<u8>, StateError> {
@@ -696,7 +697,7 @@ impl CaptureEvidence for SignedRows<'_> {
     }
 }
 
-fn remaining_native(
+pub(super) fn remaining_native(
     graph: &AdmittedGraph,
     content: &VerifiedStateContent,
     portable: [&InputPayload; 3],

@@ -11,6 +11,7 @@ pub(super) const PROFILE: &str = "source-owned.host-scheduling-original-lineage/
 pub(super) enum Edition {
     Unsupported,
     OriginalLineage,
+    CompleteOriginalLineage,
 }
 
 /// Encodes the distinct original common-state continuation factory definition.
@@ -61,6 +62,11 @@ pub fn host_scheduling_continuation_owner_preparation_schema() -> Result<SchemaR
 pub(super) fn definition(edition: Edition) -> Result<ContentRef, OperationFailure> {
     match edition {
         Edition::Unsupported => definition_ref(),
+        Edition::CompleteOriginalLineage => canonical::content_ref(
+            &super::complete::host_scheduling_complete_owner_definition()?,
+            "application/json",
+        )
+        .map_err(failure),
         Edition::OriginalLineage => canonical::content_ref(
             &host_scheduling_continuation_owner_definition()?,
             "application/json",
@@ -76,6 +82,9 @@ pub(super) fn configuration(
     match edition {
         Edition::Unsupported => host_scheduling_owner_configuration(domains),
         Edition::OriginalLineage => host_scheduling_continuation_owner_configuration(domains),
+        Edition::CompleteOriginalLineage => {
+            super::complete::host_scheduling_complete_owner_configuration(domains)
+        }
     }
 }
 
@@ -83,6 +92,9 @@ pub(super) fn preparation(edition: Edition) -> Result<SchemaRef, OperationFailur
     match edition {
         Edition::Unsupported => host_scheduling_owner_preparation_schema(),
         Edition::OriginalLineage => host_scheduling_continuation_owner_preparation_schema(),
+        Edition::CompleteOriginalLineage => {
+            super::complete::host_scheduling_complete_owner_preparation_schema()
+        }
     }
 }
 

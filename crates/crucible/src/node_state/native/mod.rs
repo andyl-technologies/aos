@@ -10,8 +10,16 @@
 //! can be issued or an autonomous resource can be reconstructed.
 
 mod capture;
+mod collecting_scope;
+mod complete_original_capture;
+pub use collecting_scope::CollectingCompleteCaptureProvenance;
+mod complete_original_geometry;
+mod complete_original_index;
+mod complete_original_source;
+mod complete_original_native_ticket;
 mod driver;
 pub(crate) mod extensions;
+mod historical_capture;
 mod lineage_capture;
 mod lineage_inventory;
 mod lineage_roots;
@@ -38,6 +46,15 @@ use super::{
     NativeRestoreStaging, RestoreReservations, StateError, StateLimits, VerifiedStateContent,
 };
 
+pub use complete_original_capture::CompleteOriginalArchiveValidation;
+pub use complete_original_geometry::{
+    CompleteOriginalCaptureGeometry, CompleteOriginalOwnerCaptureGeometry,
+    CompleteOriginalOwnerCapturePreflight,
+};
+pub(crate) use complete_original_source::CompleteOriginalSource;
+pub use complete_original_source::{CompleteOriginalHostTicket, CompleteOriginalRestorationSource};
+pub use complete_original_native_ticket::CompleteOriginalNativeTicket;
+pub(crate) use core_future_metadata::CompleteCaptureAllocationBudget;
 pub use driver::NativeWorldRestoreDriver;
 pub use extensions::NativeExtensionPreservationPolicy;
 pub use lineage_capture::OriginalLineageCaptureRequest;
@@ -236,6 +253,111 @@ pub trait NativeWorldFactory {
         ))
     }
 
+    /// Authenticates source-selected complete capture support before owner effects.
+    ///
+    /// The source-specific factory conjuncts its genuine current native/host
+    /// originals with this complete unchanged-cut data. This default refusal is
+    /// separate from Tape2 support and cannot be selected by native key labels.
+    ///
+    /// # Errors
+    /// Refuses unsupported source/factory scope, altered current original state,
+    /// incomplete native capture support or exhausted preparation credit.
+    fn authenticate_complete_original_lineage_capture(
+        &self,
+        _graph: &AdmittedGraph,
+        _runtime: &crate::node_contract::OriginalLineageRuntimeRecord,
+        _scheduler: &crate::node_scheduling::SchedulingSnapshot,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed complete original capture preparation is unsupported",
+        ))
+    }
+
+    /// Conjuncts a complete capture with its actual original collecting authority.
+    ///
+    /// The concrete installed factory must retain the same native registry and
+    /// host source as the opaque plan. This separate hook grants no ordinary
+    /// acceptance and cannot be selected by decoded plan/source references.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects a foreign opaque plan or source, missing
+    /// installed capture closure, or changed actual runtime/scheduler state.
+    fn authenticate_complete_collecting_capture(
+        &self,
+        _plan: &crate::node_admission::InstalledConformancePlan,
+        _source: &crate::node_contract::HostSchedulingSource,
+        _graph: &AdmittedGraph,
+        _runtime: &crate::node_contract::OriginalLineageRuntimeRecord,
+        _scheduling: &crate::node_scheduling::SchedulingSnapshot,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed complete collecting factory is unsupported",
+        ))
+    }
+
+    /// Authenticates fresh native preparation for a signed collecting archive.
+    ///
+    /// The source factory binds genuine held fresh native actors/controllers and
+    /// installed codecs before the Host2 ticket exists. Actual target Host source
+    /// and Runtime7 context are authenticated later before installation and Arm.
+    /// Parsed scope facts and launch declarations cannot provide this association.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects unsupported adopter, changed historical
+    /// closure, foreign fresh registration or another opaque collecting plan.
+    fn authenticate_complete_collecting_restoration_source(
+        &self,
+        _plan: &crate::node_admission::InstalledConformancePlan,
+        _graph: &AdmittedGraph,
+        _archive: &NativeArchiveRecord,
+        _scope: &CollectingCompleteCaptureProvenance,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed collecting native restoration preparation is unsupported",
+        ))
+    }
+
+    /// Derives the full selected capture plan before any administrative callback.
+    ///
+    /// The factory authenticates the same current native/host selections and
+    /// derives every row from their actual codecs and preallocated banks. It
+    /// bounds row and participant allocation before returning the plan. Parsed
+    /// metadata, generic hard ceilings and a minimum leaf count cannot opt in.
+    /// Core separately admits the whole unchanged world and private ticket.
+    ///
+    /// # Errors
+    /// Refuses unsupported source geometry, altered original selections,
+    /// missing prefix/settlement codecs or a plan beyond the supplied credits.
+    fn complete_original_lineage_capture_geometry(
+        &self,
+        _graph: &AdmittedGraph,
+        _runtime: &crate::node_contract::OriginalLineageRuntimeRecord,
+        _scheduler: &crate::node_scheduling::SchedulingSnapshot,
+        _limits: NativeArchiveLimits,
+    ) -> Result<CompleteOriginalCaptureGeometry, StateError> {
+        Err(refused(
+            "installed complete capture geometry is unsupported",
+        ))
+    }
+
+    /// Authenticates the complete native-five/host-two snapshot and administrative closure.
+    ///
+    /// The installed implementation must validate actual native capture and
+    /// response-prefix history, source/owner associations and exact restoration
+    /// dependencies. Labels, generic hashes and archive parsing are insufficient.
+    ///
+    /// # Errors
+    /// Refuses unsupported source/native codecs, incomplete original history,
+    /// changed owner or counter scope, or a closure exceeding installed limits.
+    fn authenticate_complete_original_lineage_archive(
+        &self,
+        _scope: CompleteOriginalArchiveValidation<'_>,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed complete original native capture/adoption codec is unsupported",
+        ))
+    }
+
     /// Names additional known immutable roots required by the selected model capture.
     ///
     /// The installed policy must bind these roots to the actual accepted runtime,
@@ -342,6 +464,28 @@ pub trait NativeWorldFactory {
         reservations: RestoreReservations,
         limits: NativeArchiveLimits,
     ) -> Result<Box<dyn NativeRestoreStaging>, StateError>;
+    /// Derives complete geometry from four same-original owning-node occurrences.
+    ///
+    /// The preflight seal is issued only by the actual runtime after each
+    /// readonly capsule loan. Rows alone cannot enroll a mechanism. The concrete
+    /// installed factory must conjunct its original source registry and Host2
+    /// association with all four actual keys and selected storage facts.
+    ///
+    /// # Errors
+    /// Defaults to refusal. Refuses unsupported source mechanisms, foreign
+    /// original owners or incomplete selected whole-world peak accounting.
+    fn complete_original_lineage_capture_geometry_from_preflight(
+        &self,
+        _graph: &AdmittedGraph,
+        _runtime: &crate::node_contract::OriginalLineageRuntimeRecord,
+        _scheduling: &crate::node_scheduling::SchedulingSnapshot,
+        _preflight: &crate::node_contract::PreparedCompleteOriginalCapturePreflight,
+        _limits: NativeArchiveLimits,
+    ) -> Result<CompleteOriginalCaptureGeometry, StateError> {
+        Err(refused(
+            "same-original complete capture preflight factory is unsupported",
+        ))
+    }
 }
 
 fn refused(reason: impl Into<String>) -> StateError {
@@ -393,3 +537,6 @@ fn owner_state<'a>(
         .find(|state| &state.owner == owner)
         .ok_or_else(|| refused("native archive owner state absent"))
 }
+
+mod core_decode_credit;
+mod core_future_metadata;

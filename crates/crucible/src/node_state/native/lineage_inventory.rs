@@ -132,6 +132,73 @@ pub(super) fn prepare(
     Ok(inventories)
 }
 
+/// Precharges complete-route serializer and owning adjacency/body banks.
+/// This data-only count grants no native capture or source permission.
+pub(super) fn complete_requested_storage(
+    inputs: &[OriginalLineageInputRecord],
+    limits: StateLimits,
+) -> Result<usize, StateError> {
+    use crate::node_contract::NodeRuntime;
+    use std::mem::size_of;
+    let mut total = inputs
+        .len()
+        .checked_mul(size_of::<PreparedInventory>())
+        .ok_or_else(|| refused("complete inventory metadata overflow"))?;
+    for input in inputs {
+        total = total
+            .checked_add(
+                NodeRuntime::capture_serialization_storage(
+                    &input.deliveries,
+                    limits.maximum_total_content_bytes,
+                )
+                .map_err(schema)?,
+            )
+            .ok_or_else(|| refused("complete inventory serializer overflow"))?;
+        let body = usize::try_from(input.inventory.length.get()).map_err(schema)?;
+        // Existing canonical_json grows an initially empty Vec. Both retained
+        // capacity and cumulative requests are bounded from this exact extent.
+        total = total
+            .checked_add(
+                body.checked_mul(4)
+                    .and_then(|bytes| bytes.checked_add(8))
+                    .ok_or_else(|| refused("complete inventory encoding overflow"))?,
+            )
+            .ok_or_else(|| refused("complete inventory peak overflow"))?;
+        let edges = input
+            .deliveries
+            .len()
+            .checked_mul(3)
+            .ok_or_else(|| refused("complete inventory edge overflow"))?;
+        total = total
+            .checked_add(
+                edges
+                    .checked_mul(size_of::<ContentRef>())
+                    .ok_or_else(|| refused("complete inventory adjacency overflow"))?,
+            )
+            .ok_or_else(|| refused("complete inventory metadata overflow"))?;
+        total = total
+            .checked_add(NodeRuntime::capture_reference_storage(&input.inventory).map_err(schema)?)
+            .ok_or_else(|| refused("complete inventory reference overflow"))?;
+        for delivery in &input.deliveries {
+            let policy = delivery
+                .connection_policy_ref
+                .as_ref()
+                .ok_or_else(|| refused("complete inventory connection absent"))?;
+            for reference in [&delivery.payload, &delivery.provenance_ref, policy] {
+                total = total
+                    .checked_add(NodeRuntime::capture_reference_storage(reference).map_err(schema)?)
+                    .ok_or_else(|| refused("complete inventory reference overflow"))?;
+            }
+        }
+    }
+    if total > limits.maximum_total_content_bytes {
+        return Err(refused(
+            "complete inventory requested storage exceeds credit",
+        ));
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 #[path = "lineage_inventory_models.rs"]
 mod models;

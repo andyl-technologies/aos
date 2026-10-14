@@ -213,6 +213,10 @@ impl HostSchedulingContinuationV2 {
         &self.encoded
     }
 
+    pub(super) fn into_encoded(self) -> InputPayload {
+        self.encoded
+    }
+
     /// Conjuncts the captured rows with the same fresh runtime's opaque native context.
     ///
     /// This check does not install a scheduler, remint an operation, acknowledge

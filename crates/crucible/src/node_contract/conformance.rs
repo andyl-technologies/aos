@@ -2,8 +2,9 @@
 //!
 //! Only the opaque installed collection graph can create this owner. It retains
 //! current plan authority through readiness, every original grant, polling and
-//! result publication. It exposes no capture, restore, cache, replay, debugger,
-//! mutable runtime, or ordinary admitted-graph conversion.
+//! result publication. It exposes no ordinary capture, restoration, cache, replay,
+//! debugger, mutable runtime, or admitted-graph conversion. The separate guarded
+//! complete-capture route retains collecting provenance and defaults to refusal.
 
 use std::{
     rc::Rc,
@@ -14,6 +15,11 @@ use crucible_node_contract::{Direction, Id, OperatingMode, U64};
 
 #[path = "conformance/quantized.rs"]
 mod quantized;
+
+#[path = "conformance/complete_capture.rs"]
+mod complete_capture;
+pub use complete_capture::{CollectingOriginalLineageCaptureRequest, CollectingCompleteRestorationSource};
+pub(crate) use complete_capture::OriginalCollectingCaptureScope;
 
 #[path = "conformance/exact_inputs.rs"]
 mod exact_inputs;

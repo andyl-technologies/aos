@@ -449,6 +449,30 @@ pub trait SimulationNode {
         })
     }
 
+    /// Preflights complete capture using this same original owning native capsule.
+    ///
+    /// This readonly callback registers no administrative request and performs
+    /// no modeled effect. It must inspect actual selected storage and current
+    /// controller/native custody rather than cloned or cached portable counts.
+    /// Its returned key and geometry are inert data; only the owning runtime
+    /// can seal their occurrence before conjunctive whole-factory admission.
+    ///
+    /// # Errors
+    /// Defaults to unsupported. Refuses foreign activation/source, unsettled
+    /// original I/O, unavailable actual storage facts or finite-budget excess.
+    fn preflight_complete_original_lineage_capture(
+        &self,
+        _activation: &super::WorldActivation,
+        _source: &super::OriginalLineageRuntimeRecord,
+        _runtime_object: &crate::node_scheduling::InputPayload,
+        _limits: crate::node_state::NativeArchiveLimits,
+    ) -> Result<crate::node_state::CompleteOriginalOwnerCapturePreflight, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "same-original complete capture preflight is unsupported".into(),
+        })
+    }
+
     /// Captures separately selected complete Runtime7 model journals without execution.
     ///
     /// The owning runtime must independently match the complete record and its
@@ -467,6 +491,32 @@ pub trait SimulationNode {
         Err(OperationFailure {
             effects: super::EffectKnowledge::None,
             reason: "complete original lineage capture is unsupported".into(),
+        })
+    }
+
+    /// Captures one original administrative owner attempt under whole-world custody.
+    ///
+    /// The runtime retains the nonforgeable ticket before entering this callback.
+    /// Implementations must authenticate it against their own retained opaque
+    /// activation and source/current native journals, precharge snapshot and
+    /// settlement buffers, and return only an actual settled original response.
+    /// Uncertainty holds this same attempt and world; no modeled grant or old
+    /// default capture callback substitutes for this separate route.
+    ///
+    /// # Errors
+    /// Refuses unsupported codecs, foreign ticket/current scope, incomplete
+    /// request/response custody, unsettled native capture or finite excess.
+    fn capture_original_lineage_continuation_with_ticket(
+        &mut self,
+        _ticket: &super::OriginalLineageOwnerCaptureTicket<'_>,
+        _activation: &super::WorldActivation,
+        _source: &super::OriginalLineageRuntimeRecord,
+        _runtime_object: &crate::node_scheduling::InputPayload,
+        _limits: super::NativeCaptureLimits,
+    ) -> Result<super::InstalledOriginalLineageCapture, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original ticketed lineage capture is unsupported".into(),
         })
     }
 

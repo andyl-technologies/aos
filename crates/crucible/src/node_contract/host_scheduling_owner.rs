@@ -35,6 +35,13 @@ pub use node::PreparedHostSchedulingNode;
 mod ticket;
 pub use ticket::HostSchedulingOriginalContinuationTicket;
 
+mod complete;
+pub use complete::{
+    host_scheduling_complete_continuation_schema, host_scheduling_complete_owner_configuration,
+    host_scheduling_complete_owner_definition, host_scheduling_complete_owner_preparation_schema,
+    host_scheduling_complete_preservation_facet,
+};
+
 mod preservation;
 pub use preservation::{
     host_scheduling_continuation_owner_configuration,
@@ -225,7 +232,7 @@ impl HostSchedulingOwner {
                 selection.operating_policy,
                 crate::node_scheduling::ExecutionPolicy::Exact { .. }
             )
-            || !binding.compatibility.operating_contract.facets.is_empty()
+            || !complete::valid_facets(edition, &selection)
             || owner.owner.participant_ids != [descriptor.id.clone()]
             || owner.owner.state_domain_ids != domains
             || owner.owner_roles.iter().map(Id::as_str).collect::<Vec<_>>()
@@ -263,13 +270,7 @@ impl HostSchedulingOwner {
             .verify(&guarantee_bytes)
             .map_err(failure)?;
         let guarantee = &selection.guarantees;
-        if guarantee.repeatability != crucible_node_contract::Repeatability::Unqualified
-            || guarantee.capture_scope != crucible_node_contract::CaptureScope::None
-            || guarantee.continuation != crucible_node_contract::Continuation::Unsupported
-            || guarantee.durable_restart
-            || guarantee.isolated_fork
-            || guarantee.conditional_replay
-        {
+        if !complete::valid_guarantees(edition, guarantee) {
             return Err(failure(
                 "host scheduling source cannot claim unimplemented preservation",
             ));
@@ -286,12 +287,15 @@ impl HostSchedulingOwner {
         .map_err(failure)?;
         let prepared_token =
             Id::new(format!("host/scheduling-prepared/{}", token.digest)).map_err(failure)?;
+        let preservation_facet = complete::selected_facet(edition, &selection);
         Ok(Self {
             source: Rc::new(HostSchedulingSource {
                 selection,
                 world,
                 edition,
                 original_ticket: ticket,
+                archive_ticket: None,
+                preservation_facet,
                 process,
                 owner_thread,
                 prepared_token,
@@ -325,6 +329,8 @@ impl Drop for HostSchedulingOwner {
 pub struct HostSchedulingSource {
     edition: preservation::Edition,
     original_ticket: Option<HostSchedulingOriginalContinuationTicket>,
+    archive_ticket: Option<crate::node_state::CompleteOriginalHostTicket>,
+    preservation_facet: Option<complete::SelectedPreservation>,
     selection: HostSchedulingSelection,
     world: HashRef,
     process: u32,
@@ -401,6 +407,28 @@ impl HostSchedulingSource {
         Ok(())
     }
 
+    /// Authenticates the original complete-preservation factory selection.
+    ///
+    /// This check binds the private source edition after original process,
+    /// thread and world checks. It grants no live scheduler, capture or Ready
+    /// permission and does not replace later dispatch/current authentication.
+    ///
+    /// # Errors
+    /// Refuses foreign or revoked preparation, another world, or either older
+    /// unsupported/original-lineage factory selection.
+    pub fn authenticate_complete_preparation_source(
+        &self,
+        world: &HashRef,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_preparation_source(world)?;
+        if self.edition != preservation::Edition::CompleteOriginalLineage {
+            return Err(failure(
+                "source was not created by the complete preservation factory",
+            ));
+        }
+        Ok(())
+    }
+
     /// Authenticates preparation dispatch without downgrading a prior attachment attempt.
     ///
     /// Initial native Admit may precede host attachment. Once the actual source
@@ -459,6 +487,44 @@ impl HostSchedulingSource {
             .authenticate_input_batch(batch)
             .map_err(failure)?;
         self.authenticate_current()
+    }
+
+    pub(crate) fn authenticate_complete_archive_source(
+        &self,
+        archive: &Rc<crate::node_state::CompleteOriginalSource>,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_preparation_source(&self.world)?;
+        let ticket = self
+            .archive_ticket
+            .as_ref()
+            .ok_or_else(|| failure("complete host archive ticket is absent"))?;
+        ticket.authenticate_birth().map_err(failure)?;
+        if self.edition != preservation::Edition::CompleteOriginalLineage
+            || self.original_ticket.is_some()
+            || !Rc::ptr_eq(&ticket.source, archive)
+        {
+            return Err(failure("complete host belongs to another original archive"));
+        }
+        self.authenticate_preparation_source(&self.world)
+    }
+
+    pub(super) fn original_restoration_record(
+        &self,
+    ) -> Result<&HostSchedulingContinuationRecord, OperationFailure> {
+        self.authenticate_current()?;
+        match (&self.original_ticket, &self.archive_ticket) {
+            (Some(ticket), None) => {
+                ticket.authenticate_birth().map_err(failure)?;
+                Ok(ticket.record())
+            }
+            (None, Some(ticket)) => {
+                ticket.authenticate_birth().map_err(failure)?;
+                Ok(ticket.record())
+            }
+            _ => Err(failure(
+                "original host continuation ticket is absent or ambiguous",
+            )),
+        }
     }
 
     pub(super) fn authenticate_original_lineage_context(
@@ -522,11 +588,7 @@ impl HostSchedulingSource {
             || inner.guarantees(&selected.descriptor.id) != Some(&selected.guarantees)
             || activation.world_binding_hash != self.world
             || self.node_created.get()
-            || guarantee.capture_scope != crucible_node_contract::CaptureScope::None
-            || guarantee.continuation != crucible_node_contract::Continuation::Unsupported
-            || guarantee.durable_restart
-            || guarantee.isolated_fork
-            || guarantee.conditional_replay
+            || !complete::valid_guarantees(self.edition, guarantee)
         {
             return Err(failure(
                 "host scheduling node differs from its original collecting graph",
@@ -637,7 +699,7 @@ impl HostSchedulingSource {
             "route":{"node":selected.descriptor.id,"owners":[{
                 "owner":selected.owner.owner.id,"incarnation":selected.binding.authority.incarnation_id,
                 "generation":selected.binding.authority.owner_generation}]},
-            "facets":[], "native_thread_custody":"owner-thread",
+            "facets":complete::selected_facets(self.edition).1, "native_thread_custody":"owner-thread",
             "operating_policy":selected.operating_policy,
             "guarantees":selected.guarantees,
             "effective_repeatability":selected.guarantees.repeatability,
@@ -686,6 +748,53 @@ pub struct HostSchedulingNodeWitness<'a> {
 impl<'a> HostSchedulingNodeWitness<'a> {
     pub(crate) fn new(source: &'a Rc<HostSchedulingSource>, anchor: &'a Rc<()>) -> Self {
         Self { source, anchor }
+    }
+
+    pub(in crate::node_contract) fn original_capture_source(
+        &self,
+    ) -> Result<Rc<HostSchedulingSource>, RuntimeError> {
+        self.source
+            .authenticate_current()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        if !self.matches(self.source)?
+            || !matches!(
+                self.source.edition,
+                preservation::Edition::OriginalLineage
+                    | preservation::Edition::CompleteOriginalLineage
+            )
+        {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        Ok(Rc::clone(self.source))
+    }
+
+    pub(crate) fn authenticate_archive_target(
+        &self,
+        archive: &Rc<crate::node_state::CompleteOriginalSource>,
+        authority: &Rc<()>,
+    ) -> Result<(), RuntimeError> {
+        self.source
+            .authenticate_current()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        if !self.matches(self.source)?
+            || !self
+                .source
+                .archive_ticket
+                .as_ref()
+                .is_some_and(|ticket| Rc::ptr_eq(&ticket.source, archive))
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.source
+            .attached
+            .try_borrow()
+            .map_err(|_| RuntimeError::OutstandingObligations)?
+            .as_ref()
+            .ok_or(RuntimeError::ForeignAuthority)?
+            .authenticate_runtime_authority(&self.source.world, authority)?;
+        self.source
+            .authenticate_current()
+            .map_err(|_| RuntimeError::ForeignAuthority)
     }
 
     pub(super) fn matches(&self, source: &Rc<HostSchedulingSource>) -> Result<bool, RuntimeError> {

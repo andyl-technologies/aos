@@ -3898,6 +3898,39 @@ the before-FD CREATE fence unchanged. This source stage does not qualify full
 Kbuild, generated offsets, linking, guest execution, physical peak/retirement,
 RUN or Ready. Existing rejected candidates retain their separate evidence.
 
+## Core complete-capture accounting and native restoration tickets
+
+The Core closure binds capture geometry to the same original runtime, owner
+roster and per-node preflight rows. A private budget moves from the writer into
+geometry without allowing a copied row or changed maximum to issue authority.
+Incoming identifier capacities are charged before snapshot or source callbacks;
+native keys require the same preflight key and the selected closed schema.
+
+The model names current, retained and future storage terms. Independent review
+found three omitted failure/lifetime terms; the integrated correction narrows
+complete-edition file reads to authenticated extents, includes the overlapping
+index read, charges retained registry keys/nodes, and counts cloned restoration
+reference storage. Duplicate shared snapshots and growing writer-map projections
+remain conservative overlaps. Legacy index1/2 reader policy is unchanged.
+
+A nonserializable, noncloneable native restoration ticket retains the verified
+historical source and one owner. One-shot issuance and later same-source/target
+context checks preserve original custody. Historical data alone cannot install
+or activate a fresh native process. Original attempts retain capture results,
+settlements and persisted records through failure.
+
+Independent receipt
+`7133f1be6e7454ad8eaf43d36091d5750e1b0100ba83815c7897df7b735a536c`
+verifies 51 production and five necessary test/fixture roles, matching actual104b
+strict checks, fresh executable and three focused controls. The current SDK91,
+kernel and ledger reconciliation is explicit; this earlier SDK89 cohort is not
+retagged as current combined compilation. No raw build evidence is added to Git.
+
+Both factor42 safeguards and the deferred-Unknown fence remain. Selected-loader
+preparse admission, source-local settlement, full physical memory and genuine
+factory/adopter implementation still gate complete capture and fresh worlds.
+This Core API closure does not qualify native Capture, Ready or the full budget.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

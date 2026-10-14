@@ -19,7 +19,8 @@ use crate::node_scheduling::{
 mod native_capture;
 
 pub use native_capture::{
-    InstalledNativeCapture, NativeCaptureArtifact, NativeCaptureLimits, NativeStateKey,
+    InstalledNativeCapture, InstalledOriginalLineageCapture, NativeCaptureArtifact,
+    NativeCaptureLimits, NativeStateKey,
 };
 
 pub(crate) use native_capture::validate_name as validate_native_artifact_name;
@@ -533,6 +534,8 @@ pub struct WholeRuntimeCustody {
     owners: BTreeMap<Id, OwnerCustody>,
     operations: BTreeMap<Id, RetainedOperation>,
     input_batches: BTreeMap<Id, inputs::RetainedInput>,
+    original_capture_history: Option<Rc<crate::node_state::CompleteOriginalSource>>,
+    original_capture_attempts: BTreeMap<Id, Rc<capture_ticket::OriginalLineageCaptureAttempt>>,
     scheduler: Option<crate::node_contract::runtime::scheduling_state::OriginalSchedulingState>,
     terminal: Option<crate::node_contract::terminal::TerminalState>,
     condition_stop: Option<crate::node_contract::condition_debug::ConditionStopState>,
@@ -554,7 +557,9 @@ impl WholeRuntimeCustody {
     /// This sticky obligation prevents a fallback queue from releasing its
     /// admitted slot merely because physical owners have reclamation receipts.
     pub fn retirement_history_pending(&self) -> bool {
-        self.graceful_retirement
+        !self.original_capture_attempts.is_empty()
+            || self.original_capture_history.is_some()
+            || self.graceful_retirement
             || self
                 .nodes
                 .values()
@@ -578,6 +583,8 @@ impl WholeRuntimeCustody {
             owners: BTreeMap::new(),
             operations: BTreeMap::new(),
             input_batches: BTreeMap::new(),
+            original_capture_history: None,
+            original_capture_attempts: BTreeMap::new(),
             scheduler: None,
             terminal: None,
             condition_stop: None,
@@ -904,6 +911,8 @@ impl WholeRuntimeCustody {
             owners: BTreeMap::new(),
             operations: BTreeMap::new(),
             input_batches: BTreeMap::new(),
+            original_capture_history: None,
+            original_capture_attempts: BTreeMap::new(),
             scheduler: None,
             terminal: None,
             condition_stop: None,
@@ -964,6 +973,8 @@ impl NodeRuntime {
             owners: std::mem::take(&mut self.owners),
             operations: std::mem::take(&mut self.operations),
             input_batches: std::mem::take(&mut self.input_batches),
+            original_capture_history: self.original_capture_history.take(),
+            original_capture_attempts: std::mem::take(&mut self.original_capture_attempts),
             scheduler: self.scheduler.take(),
             terminal: self.terminal.take(),
             condition_stop: self.condition_stop.take(),
@@ -1048,3 +1059,25 @@ mod borrowed_retirement;
 #[cfg(test)]
 #[path = "runtime_continuation/preparation_drop_tests.rs"]
 mod preparation_drop_tests;
+
+#[path = "runtime_continuation/capture_ticket.rs"]
+pub(super) mod capture_ticket;
+pub use capture_ticket::{
+    OriginalLineageOwnerCaptureTicket, OriginalLineageWorldCapture,
+    OriginalLineageWorldCaptureRead, PreparedCompleteOriginalCaptureGeometry,
+    TicketedOriginalLineageCaptureRequest,
+};
+
+#[path = "runtime_continuation/runtime_capture_journal.rs"]
+mod runtime_capture_journal;
+pub use runtime_capture_journal::{
+    OriginalCaptureAttemptRecord, OriginalCaptureOwnerRecord, OriginalCaptureOwnerState,
+    RuntimeOriginalCaptureJournal,
+};
+
+#[path = "runtime_continuation/capture_history.rs"]
+mod capture_history;
+
+#[path = "runtime_continuation/capture_preflight.rs"]
+mod capture_preflight;
+pub use capture_preflight::PreparedCompleteOriginalCapturePreflight;

@@ -231,6 +231,29 @@ pub struct InstalledNativeCapture {
     pub(crate) artifacts: Vec<NativeCaptureArtifact>,
 }
 
+/// Retains an actual settled administrative capture and its source-specific journal.
+///
+/// Installed adapters alone construct this seal after the same original native
+/// Capture response settles. Generic state hashes or profile labels cannot mint
+/// it. The journal is moved once into owner evidence; its bytes and object slot
+/// consume complete-world credit before the administrative request is dispatched.
+pub struct InstalledOriginalLineageCapture {
+    pub(crate) native: InstalledNativeCapture,
+    pub(crate) journal: InputPayload,
+}
+
+impl InstalledOriginalLineageCapture {
+    /// Borrows the actual installed native owner capture.
+    pub fn native(&self) -> &InstalledNativeCapture {
+        &self.native
+    }
+
+    /// Borrows the exact source-owned original request/response settlement bytes.
+    pub fn journal(&self) -> &InputPayload {
+        &self.journal
+    }
+}
+
 impl InstalledNativeCapture {
     /// Returns the authoritative owner captured exactly once.
     pub fn owner(&self) -> &Id {
@@ -375,6 +398,8 @@ impl NodeRuntime {
         source: &RuntimeSnapshot,
         limits: NativeCaptureLimits,
     ) -> Result<Vec<InstalledNativeCapture>, RuntimePollFailure> {
+        self.require_settled_capture_custody()
+            .map_err(RuntimePollFailure::Admission)?;
         self.validate_activation(activation)
             .map_err(RuntimePollFailure::Admission)?;
         if graph.world_binding_hash() != &source.source_activation.world_binding_hash

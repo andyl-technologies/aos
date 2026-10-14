@@ -128,6 +128,34 @@ pub(super) fn verify_closure_with_edition(
     limits: StateLimits,
     edition: ContentInventoryEdition,
 ) -> Result<VerifiedStateContent, StateError> {
+    verify_closure_admitted(roots, evidence, limits, edition, false)
+}
+
+/// Adds actual returned-bank admission for the complete index-three route.
+/// Legacy and transcript closures retain their original logical-byte policy.
+pub(super) fn verify_complete_closure(
+    roots: Vec<ContentRef>,
+    evidence: &dyn CaptureEvidence,
+    limits: StateLimits,
+) -> Result<VerifiedStateContent, StateError> {
+    verify_closure_admitted(
+        roots,
+        evidence,
+        limits,
+        ContentInventoryEdition::Typed,
+        true,
+    )
+}
+
+fn verify_closure_admitted(
+    roots: Vec<ContentRef>,
+    evidence: &dyn CaptureEvidence,
+    limits: StateLimits,
+    edition: ContentInventoryEdition,
+    allocated: bool,
+) -> Result<VerifiedStateContent, StateError> {
+    let mut returned_storage = 0usize;
+
     if roots.len() > limits.maximum_content_objects {
         return Err(limit("closure roots"));
     }
@@ -165,6 +193,18 @@ pub(super) fn verify_closure_with_edition(
             return Err(limit("content allocation"));
         }
         let bytes = evidence.content(&reference, length)?;
+        if allocated {
+            // Even an equal-hash duplicate returns an independent bank while
+            // retained content still exists. Admit it before digest work.
+            let peak = returned_storage
+                .checked_add(bytes.capacity())
+                .ok_or_else(|| limit("returned content capacity"))?;
+            if bytes.capacity() > limits.maximum_content_bytes
+                || peak > limits.maximum_total_content_bytes
+            {
+                return Err(limit("returned content capacity"));
+            }
+        }
         reference.verify(&bytes).map_err(|error| {
             StateError::new(
                 StateErrorCode::Content,
@@ -174,6 +214,27 @@ pub(super) fn verify_closure_with_edition(
         })?;
         let dependencies =
             evidence.dependencies(&reference, &bytes, limits.maximum_content_objects)?;
+        if allocated {
+            let mut adjacency = dependencies
+                .capacity()
+                .checked_mul(std::mem::size_of::<ContentRef>())
+                .ok_or_else(|| limit("returned dependency capacity"))?;
+            for child in &dependencies {
+                adjacency = adjacency
+                    .checked_add(
+                        crate::node_contract::NodeRuntime::capture_reference_storage(child)
+                            .map_err(schema)?,
+                    )
+                    .ok_or_else(|| limit("returned dependency capacity"))?;
+            }
+            let peak = returned_storage
+                .checked_add(bytes.capacity())
+                .and_then(|bytes| bytes.checked_add(adjacency))
+                .ok_or_else(|| limit("returned dependency capacity"))?;
+            if peak > limits.maximum_total_content_bytes {
+                return Err(limit("returned dependency capacity"));
+            }
+        }
         if dependencies.len() > limits.maximum_content_objects {
             return Err(limit("dependency fanout"));
         }
@@ -205,6 +266,11 @@ pub(super) fn verify_closure_with_edition(
                 ));
             }
         } else {
+            if allocated {
+                returned_storage = returned_storage
+                    .checked_add(bytes.capacity())
+                    .ok_or_else(|| limit("retained content capacity"))?;
+            }
             content.total_bytes = content
                 .total_bytes
                 .checked_add(bytes.len())
@@ -392,5 +458,228 @@ mod payload_tests {
         assert_eq!(content.get(&reference), Some(bytes.as_slice()));
         assert_eq!(content.total_bytes(), bytes.len());
         assert_eq!(content.object_count(), 1);
+    }
+}
+
+impl VerifiedStateContent {
+    pub(crate) fn capture_owned_storage(
+        &self,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::{NodeRuntime, RuntimeError};
+        let add = |a: usize, b: usize| a.checked_add(b).ok_or(RuntimeError::ResourceLimit);
+        let mut bytes = self
+            .objects
+            .len()
+            .max(1)
+            .checked_mul(NodeRuntime::capture_map_node_storage::<
+                HashRef,
+                (ContentRef, Vec<u8>),
+            >())
+            .ok_or(RuntimeError::ResourceLimit)?;
+        bytes = add(
+            bytes,
+            self.references
+                .len()
+                .max(1)
+                .checked_mul(NodeRuntime::capture_map_node_storage::<ContentRef, ()>())
+                .ok_or(RuntimeError::ResourceLimit)?,
+        )?;
+        for (hash, (reference, body)) in &self.objects {
+            bytes = add(bytes, NodeRuntime::capture_hash_storage(hash)?)?;
+            bytes = add(bytes, NodeRuntime::capture_reference_storage(reference)?)?;
+            bytes = add(bytes, body.capacity())?;
+        }
+        for reference in &self.references {
+            bytes = add(bytes, NodeRuntime::capture_reference_storage(reference)?)?;
+        }
+        Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod capture_owned_storage_tests {
+    use crucible_node_contract::canonical;
+    // These controls construct inert verified-content storage internally to
+    // test requested extents. They issue no source, native or restore authority.
+    use super::*;
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn retained_verified_content_charges_spare_body_capacity() {
+        let body = b"original";
+        let reference = canonical::content_ref(body, "application/octet-stream").unwrap();
+        let mut retained = Vec::with_capacity(16384);
+        retained.extend_from_slice(body);
+        let capacity = retained.capacity();
+        let content = VerifiedStateContent {
+            objects: BTreeMap::from([(reference.hash.clone(), (reference.clone(), retained))]),
+            total_bytes: body.len(),
+            references: BTreeSet::from([reference]),
+            edition: ContentInventoryEdition::Typed,
+        };
+        assert_eq!(content.total_bytes(), body.len());
+        assert!(content.capture_owned_storage().unwrap() >= capacity);
+        assert!(content.capture_owned_storage().unwrap() > content.total_bytes());
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn retained_verified_content_charges_independent_equal_reference_storage() {
+        let body = b"original";
+        let mut reference = canonical::content_ref(body, "application/octet-stream").unwrap();
+        let mut oversized = String::with_capacity(8192);
+        oversized.push_str(&reference.media_type);
+        reference.media_type = oversized;
+        let capacity = reference.media_type.capacity();
+        let content = VerifiedStateContent {
+            objects: BTreeMap::from([(reference.hash.clone(), (reference.clone(), body.to_vec()))]),
+            total_bytes: body.len(),
+            references: BTreeSet::from([reference]),
+            edition: ContentInventoryEdition::Typed,
+        };
+        // Content equality does not make the owning set key's spare bank free.
+        assert!(content.capture_owned_storage().unwrap() >= capacity);
+    }
+}
+
+#[cfg(test)]
+mod complete_capacity_controls {
+    // These controls exercise immutable content banks, not native issuers.
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use std::cell::Cell;
+
+    struct Evidence {
+        body_capacity: usize,
+        dependency_capacity: usize,
+        bad_reference: bool,
+        dependencies_called: Cell<usize>,
+    }
+
+    impl CaptureEvidence for Evidence {
+        fn content(&self, _: &ContentRef, _: usize) -> Result<Vec<u8>, StateError> {
+            let mut body = Vec::with_capacity(self.body_capacity);
+            body.extend_from_slice(b"body");
+            Ok(body)
+        }
+
+        fn dependencies(
+            &self,
+            _: &ContentRef,
+            _: &[u8],
+            _: usize,
+        ) -> Result<Vec<ContentRef>, StateError> {
+            self.dependencies_called
+                .set(self.dependencies_called.get() + 1);
+            let mut result = Vec::with_capacity(self.dependency_capacity);
+            if self.bad_reference {
+                let mut child = crucible_node_contract::canonical::content_ref(
+                    b"child",
+                    "application/octet-stream",
+                )
+                .map_err(schema)?;
+                child.hash.digest = "invalid".into();
+                result.push(child);
+            }
+            Ok(result)
+        }
+
+        fn verify_owner_capture(
+            &self,
+            _: &crate::node_admission::AdmittedGraph,
+            _: &crucible_node_contract::CaptureManifest,
+            _: &crucible_node_contract::CapturedOwner,
+            _: &super::super::StateRequirements,
+            _: &VerifiedStateContent,
+        ) -> Result<super::super::NativeOwnerCaptureProof, StateError> {
+            Err(limit("no native fixture authority"))
+        }
+
+        fn verify_coordinator_capture(
+            &self,
+            _: &crate::node_admission::AdmittedGraph,
+            _: &crucible_node_contract::CaptureManifest,
+            _: &VerifiedStateContent,
+        ) -> Result<super::super::NativeCoordinatorCaptureProof, StateError> {
+            Err(limit("no native fixture authority"))
+        }
+    }
+
+    fn limits() -> StateLimits {
+        StateLimits {
+            maximum_content_bytes: 4096,
+            maximum_total_content_bytes: 8192,
+            maximum_content_objects: 8,
+            ..StateLimits::default()
+        }
+    }
+
+    #[test]
+    fn complete_bank_refusal_precedes_digest_and_legacy_policy_stays_logical() {
+        let reference =
+            crucible_node_contract::canonical::content_ref(b"else", "application/octet-stream")
+                .unwrap();
+        let evidence = Evidence {
+            body_capacity: 16384,
+            dependency_capacity: 0,
+            bad_reference: false,
+            dependencies_called: Cell::new(0),
+        };
+        // Invalid digest must not displace the earlier allocation refusal.
+        assert_eq!(
+            verify_complete_closure(vec![reference], &evidence, limits())
+                .unwrap_err()
+                .code,
+            StateErrorCode::ResourceLimit
+        );
+        assert_eq!(evidence.dependencies_called.get(), 0);
+        let reference =
+            crucible_node_contract::canonical::content_ref(b"body", "application/octet-stream")
+                .unwrap();
+        assert!(
+            verify_closure_with_edition(
+                vec![reference],
+                &evidence,
+                limits(),
+                ContentInventoryEdition::Typed
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn complete_empty_adjacency_spare_capacity_refuses_before_enqueue() {
+        let reference =
+            crucible_node_contract::canonical::content_ref(b"body", "application/octet-stream")
+                .unwrap();
+        let evidence = Evidence {
+            body_capacity: 4,
+            dependency_capacity: 4096,
+            bad_reference: true,
+            dependencies_called: Cell::new(0),
+        };
+        assert_eq!(
+            verify_complete_closure(vec![reference], &evidence, limits())
+                .unwrap_err()
+                .code,
+            StateErrorCode::ResourceLimit
+        );
+        assert_eq!(evidence.dependencies_called.get(), 1);
+    }
+
+    #[test]
+    fn complete_exact_small_banks_retain_original_bytes() {
+        let reference =
+            crucible_node_contract::canonical::content_ref(b"body", "application/octet-stream")
+                .unwrap();
+        let evidence = Evidence {
+            body_capacity: 4,
+            dependency_capacity: 0,
+            bad_reference: false,
+            dependencies_called: Cell::new(0),
+        };
+        let content =
+            verify_complete_closure(vec![reference.clone()], &evidence, limits()).unwrap();
+        assert_eq!(content.get(&reference), Some(b"body".as_slice()));
     }
 }

@@ -24,6 +24,8 @@ impl NodeRuntime {
         lineage_limits: OriginalInputLineageLimits,
         limits: NativeCaptureLimits,
     ) -> Result<Vec<InstalledNativeCapture>, RuntimePollFailure> {
+        self.require_settled_capture_custody()
+            .map_err(RuntimePollFailure::Admission)?;
         self.validate_activation(activation)
             .map_err(RuntimePollFailure::Admission)?;
         if graph.world_binding_hash() != &source.source_activation.world_binding_hash

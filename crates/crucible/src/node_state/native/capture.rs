@@ -413,6 +413,7 @@ impl NativeArchive {
             core_references(&manifest, self.limits.state.maximum_record_bytes)?,
         )?;
         let index = Index {
+            original_capture_journal: None,
             schema_version: match edition {
                 ContentInventoryEdition::Legacy => 1,
                 ContentInventoryEdition::Typed => 2,
@@ -815,6 +816,92 @@ impl<'a> Objects<'a> {
                 .ok_or_else(|| limit("native typed dependency preflight"))
         })?;
         Ok(())
+    }
+
+    pub(super) fn complete_owned_storage(&self) -> Result<usize, StateError> {
+        use crate::node_contract::NodeRuntime;
+        use std::mem::size_of;
+
+        let mut bytes = self
+            .objects
+            .len()
+            .max(1)
+            .checked_mul(NodeRuntime::capture_map_node_storage::<ContentRef, Object>())
+            .ok_or_else(|| limit("complete writer object nodes"))?;
+        bytes = bytes
+            .checked_add(
+                self.hashes
+                    .len()
+                    .max(1)
+                    .checked_mul(NodeRuntime::capture_map_node_storage::<HashRef, ContentRef>())
+                    .ok_or_else(|| limit("complete writer hash nodes"))?,
+            )
+            .ok_or_else(|| limit("complete writer metadata"))?;
+        for (key, object) in &self.objects {
+            bytes = bytes
+                .checked_add(NodeRuntime::capture_reference_storage(key).map_err(schema)?)
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        object
+                            .dependencies
+                            .capacity()
+                            .checked_mul(size_of::<ContentRef>())?,
+                    )
+                })
+                .ok_or_else(|| limit("complete writer adjacency bank"))?;
+            bytes = bytes
+                .checked_add(
+                    NodeRuntime::capture_reference_storage(&object.reference).map_err(schema)?,
+                )
+                .ok_or_else(|| limit("complete writer reference"))?;
+            for reference in &object.dependencies {
+                bytes = bytes
+                    .checked_add(NodeRuntime::capture_reference_storage(reference).map_err(schema)?)
+                    .ok_or_else(|| limit("complete writer dependency strings"))?;
+            }
+        }
+        for (hash, reference) in &self.hashes {
+            bytes = bytes
+                .checked_add(NodeRuntime::capture_hash_storage(hash).map_err(schema)?)
+                .and_then(|bytes| {
+                    bytes.checked_add(NodeRuntime::capture_reference_storage(reference).ok()?)
+                })
+                .ok_or_else(|| limit("complete writer hash metadata"))?;
+        }
+        Ok(bytes)
+    }
+
+    pub(super) fn complete_disk_bytes(&self) -> usize {
+        self.total
+    }
+
+    pub(super) fn complete_largest_object(&self) -> Result<usize, StateError> {
+        self.objects.keys().try_fold(0usize, |largest, reference| {
+            Ok(largest.max(usize::try_from(reference.length.get()).map_err(schema)?))
+        })
+    }
+
+    pub(super) fn complete_geometry_counts(&self) -> Result<(usize, usize), StateError> {
+        let edges = self.objects.values().try_fold(0usize, |total, object| {
+            total
+                .checked_add(object.dependencies.len())
+                .ok_or_else(|| limit("complete object edge count"))
+        })?;
+        Ok((self.objects.len(), edges))
+    }
+
+    pub(super) fn remaining_dependency_credit(&self) -> Result<usize, StateError> {
+        let used = self.objects.values().try_fold(0usize, |edges, object| {
+            edges
+                .checked_add(object.dependencies.len())
+                .ok_or_else(|| limit("native typed dependency preflight"))
+        })?;
+        self.archive
+            .limits
+            .state
+            .maximum_dependency_edges
+            .checked_sub(used)
+            .ok_or_else(|| limit("native typed dependency preflight"))
     }
 }
 

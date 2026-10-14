@@ -35,6 +35,7 @@ impl NodeRuntime {
             || self.condition_stop.is_some()
             || self.operations.contains_key(&operation)
             || self.input_batches.contains_key(&operation)
+            || self.administrative_operation_used(&operation)
         {
             return Err(RuntimeError::DuplicateOperation);
         }

@@ -976,6 +976,8 @@ fn runtime(mode: OperatingMode) -> (NodeRuntime, Vec<Rc<RefCell<NativeState>>>) 
         collecting: None,
         graceful_retirement: false,
         original_error_site: None,
+        original_capture_history: None,
+        original_capture_attempts: BTreeMap::new(),
     };
     (runtime, vec![a_state, b_state])
 }
@@ -2118,6 +2120,11 @@ pub(crate) fn host_continuation_runtime_fixture() -> (
     let activation = activate(&mut runtime);
     let _ = runtime.scheduler(&graph, &activation).unwrap();
     (graph, runtime, activation)
+}
+
+pub(super) fn capture_ticket_fixture() -> (NodeRuntime, OriginalLineageRuntimeRecord) {
+    let (runtime, _, record) = original_exact_lineage_models::preservation_record();
+    (runtime, record)
 }
 
 #[path = "runtime_deferred_validation_tests.rs"]

@@ -2,6 +2,9 @@
 //!
 //! Edition one retains its original outer `objects` field. Edition two requires
 //! `typed_inventory` and an explicitly nullable selected-extension root. The
+//! Edition three requires a separate original administrative capture journal.
+//! It retains typed inventory two without admitting that edition through legacy
+//! transcript restoration. The
 //! byte store remains digest-addressed; typed rows authorize metadata roles and
 //! their individual dependency inventories without retagging original objects.
 //!
@@ -45,9 +48,21 @@ struct TypedIndex {
     selected_extensions: Option<ContentRef>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompleteOriginalIndex {
+    #[serde(deserialize_with = "crucible_node_contract::deserialize_version")]
+    schema_version: u16,
+    artifact: ContentRef,
+    typed_inventory: TypedInventory,
+    owners: Vec<NativeOwnerState>,
+    original_capture_journal: ContentRef,
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum WireIndex {
+    CompleteOriginal(CompleteOriginalIndex),
     Legacy(LegacyIndex),
     Typed(TypedIndex),
 }
@@ -83,17 +98,28 @@ struct TypedIndexRef<'a> {
     selected_extensions: &'a Option<ContentRef>,
 }
 
+#[derive(Serialize)]
+struct CompleteOriginalIndexRef<'a> {
+    schema_version: u16,
+    artifact: &'a ContentRef,
+    typed_inventory: TypedInventoryRef<'a>,
+    owners: &'a [NativeOwnerState],
+    original_capture_journal: &'a ContentRef,
+}
+
 impl Serialize for Index {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self.schema_version {
-            1 if self.selected_extensions.is_none() => LegacyIndexRef {
-                schema_version: 1,
-                artifact: &self.artifact,
-                objects: &self.objects,
-                owners: &self.owners,
+            1 if self.selected_extensions.is_none() && self.original_capture_journal.is_none() => {
+                LegacyIndexRef {
+                    schema_version: 1,
+                    artifact: &self.artifact,
+                    objects: &self.objects,
+                    owners: &self.owners,
+                }
+                .serialize(serializer)
             }
-            .serialize(serializer),
-            2 => TypedIndexRef {
+            2 if self.original_capture_journal.is_none() => TypedIndexRef {
                 schema_version: 2,
                 artifact: &self.artifact,
                 typed_inventory: TypedInventoryRef {
@@ -104,6 +130,24 @@ impl Serialize for Index {
                 selected_extensions: &self.selected_extensions,
             }
             .serialize(serializer),
+            3 if self.selected_extensions.is_none() => {
+                let journal = self.original_capture_journal.as_ref().ok_or_else(|| {
+                    serde::ser::Error::custom(
+                        "complete original index lacks administrative journal",
+                    )
+                })?;
+                CompleteOriginalIndexRef {
+                    schema_version: 3,
+                    artifact: &self.artifact,
+                    typed_inventory: TypedInventoryRef {
+                        schema_version: 2,
+                        objects: &self.objects,
+                    },
+                    owners: &self.owners,
+                    original_capture_journal: journal,
+                }
+                .serialize(serializer)
+            }
             _ => Err(serde::ser::Error::custom(
                 "unsupported native index edition or legacy extension",
             )),
@@ -120,6 +164,7 @@ impl<'de> Deserialize<'de> for Index {
                 objects: wire.objects,
                 owners: wire.owners,
                 selected_extensions: None,
+                original_capture_journal: None,
             }),
             WireIndex::Typed(wire)
                 if wire.schema_version == 2 && wire.typed_inventory.schema_version == 2 =>
@@ -130,6 +175,19 @@ impl<'de> Deserialize<'de> for Index {
                     objects: wire.typed_inventory.objects,
                     owners: wire.owners,
                     selected_extensions: wire.selected_extensions,
+                    original_capture_journal: None,
+                })
+            }
+            WireIndex::CompleteOriginal(wire)
+                if wire.schema_version == 3 && wire.typed_inventory.schema_version == 2 =>
+            {
+                Ok(Self {
+                    schema_version: 3,
+                    artifact: wire.artifact,
+                    objects: wire.typed_inventory.objects,
+                    owners: wire.owners,
+                    selected_extensions: None,
+                    original_capture_journal: Some(wire.original_capture_journal),
                 })
             }
             _ => Err(serde::de::Error::custom(

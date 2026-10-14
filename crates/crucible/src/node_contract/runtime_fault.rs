@@ -99,7 +99,10 @@ impl NodeRuntime {
         let route = self
             .checked_route(node)
             .map_err(RuntimePollFailure::Admission)?;
-        if self.operations.contains_key(&operation) || self.input_batches.contains_key(&operation) {
+        if self.operations.contains_key(&operation)
+            || self.input_batches.contains_key(&operation)
+            || self.administrative_operation_used(&operation)
+        {
             return Err(RuntimePollFailure::Admission(
                 RuntimeError::DuplicateOperation,
             ));

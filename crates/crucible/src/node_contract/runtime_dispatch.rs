@@ -39,7 +39,10 @@ impl NodeRuntime {
         } else if matches!(&request, OperationRequest::FinalizeAssertions { .. }) {
             return Err(RuntimeError::ForeignAuthority);
         }
-        if self.operations.contains_key(&operation) || self.input_batches.contains_key(&operation) {
+        if self.operations.contains_key(&operation)
+            || self.input_batches.contains_key(&operation)
+            || self.administrative_operation_used(&operation)
+        {
             return Err(RuntimeError::DuplicateOperation);
         }
         if self
@@ -204,6 +207,7 @@ impl NodeRuntime {
             let _ = self.execution_inputs(admission)?;
             if self.operations.contains_key(admission.operation())
                 || self.input_batches.contains_key(admission.operation())
+                || self.administrative_operation_used(admission.operation())
                 || !operations.insert(admission.operation().clone())
             {
                 return Err(RuntimeError::DuplicateOperation);

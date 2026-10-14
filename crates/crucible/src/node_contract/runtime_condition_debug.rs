@@ -31,6 +31,8 @@ impl NodeRuntime {
         operation: Id,
         maximum_bytes: usize,
     ) -> Result<AuthenticatedConditionStop, RuntimePollFailure> {
+        self.require_settled_capture_custody()
+            .map_err(RuntimePollFailure::Admission)?;
         self.validate_activation(activation)
             .map_err(RuntimePollFailure::Admission)?;
         if self.condition_stop.is_some() || self.terminal.is_some() || self.has_fault_scope() {
@@ -53,7 +55,10 @@ impl NodeRuntime {
         operation
             .validate()
             .map_err(|_| RuntimePollFailure::Admission(RuntimeError::InvalidReceipt))?;
-        if self.operations.contains_key(&operation) || self.input_batches.contains_key(&operation) {
+        if self.operations.contains_key(&operation)
+            || self.input_batches.contains_key(&operation)
+            || self.administrative_operation_used(&operation)
+        {
             return Err(RuntimePollFailure::Admission(
                 RuntimeError::DuplicateOperation,
             ));
@@ -875,6 +880,7 @@ impl NodeRuntime {
             || state.saved.resume_operation.is_some()
             || self.operations.contains_key(&operation)
             || self.input_batches.contains_key(&operation)
+            || self.administrative_operation_used(&operation)
         {
             return Err(RuntimePollFailure::Admission(
                 RuntimeError::OutstandingObligations,
