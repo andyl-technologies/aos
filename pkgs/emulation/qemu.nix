@@ -703,6 +703,9 @@ in
           script = ''
             tar xf $src
             cd qemu-${version}
+            ${patchPhase}
+            # The patch may carry a standalone public ABI header. Compile
+            # against the suite's generated header after applying the patch.
             mkdir -p include/aos/crucible
             cp ${shmemGeneratedHeader} include/aos/crucible/crucible_shmem_abi.h
             grep -q '#define CRUCIBLE_SHMEM_ABI_VERSION ${shmemAbiVersion}u' \
@@ -734,7 +737,6 @@ in
               -DCRUCIBLE_EXPECTED_SHMEM_ABI_VERSION=${shmemAbiVersion} \
               -c "$TMPDIR/qemu-crucible-shmem-abi-probe.c" \
               -o "$TMPDIR/qemu-crucible-shmem-abi-probe.o"
-            ${patchPhase}
             ${lib.optionalString isDarwinCross ''
               # QEMU's macOS packaging helper assumes Xcode's proprietary
               # codesign, Rez, and SetFile utilities. ldid supplies the runtime-
