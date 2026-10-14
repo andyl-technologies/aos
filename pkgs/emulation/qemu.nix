@@ -56,6 +56,8 @@
   focusedUpstreamTest ? null,
   qemuTestRunner ? null,
   qemu-firmware-x86 ? null,
+  qom-private-unwind ? null,
+  requireQomPrivateUnwind ? applyCruciblePatch,
   atomicPatch ? import ./qemu-patches/_atomic-patch.nix,
 }: let
   _testArtifactPolicy =
@@ -100,6 +102,22 @@
       }"
     else if fullUpstreamTestSuiteOnly && qemuTestRunner == null
     then throw "the full patched-QEMU test suite requires an explicit generic QEMU runner"
+    else null;
+  _qomObserverPolicy =
+    if applyCruciblePatch && !requireQomPrivateUnwind
+    then throw "patched QEMU requires its matching source-built private observer"
+    else if requireQomPrivateUnwind && !applyCruciblePatch
+    then throw "the retained QOM observer requires the selected QEMU patch"
+    else if requireQomPrivateUnwind && qom-private-unwind == null
+    then throw "the retained QOM patch requires a source-built private GNU observer"
+    else if requireQomPrivateUnwind && !(qom-private-unwind ? source)
+    then throw "the private GNU observer requires matching complete source"
+    else if requireQomPrivateUnwind && (!stdenv.buildPlatform.isLinux || !stdenv.hostPlatform.isLinux || !(builtins.elem stdenv.hostPlatform.constraints.cpu ["x86_64" "aarch64"]))
+    then throw "the private GNU observer requires supported Linux GNU build and host platforms"
+    else null;
+  qomPrivateUnwindSource =
+    if requireQomPrivateUnwind
+    then qom-private-unwind.source
     else null;
   version = atomicPatch.qemuVersion;
   selectedX86Firmware =
@@ -534,6 +552,7 @@ in
   assert _fullTestSuitePolicy == null;
   assert _fullTestVmPolicy == null;
   assert _selectedFirmwarePolicy == null;
+  assert _qomObserverPolicy == null;
     mkDerivation {
       platformSupport =
         if pname == "qemu"
@@ -707,6 +726,7 @@ in
       runtimeDeps =
         qemuRuntimeDeps
         ++ lib.optional enableLinuxUser bash
+        ++ lib.optionals requireQomPrivateUnwind [qom-private-unwind qomPrivateUnwindSource]
         ++ lib.optionals (selectedX86Firmware != null)
         [selectedX86Firmware selectedX86Firmware.source];
       propagatedDeps = [];
@@ -4862,6 +4882,7 @@ in
           qemuSimCapability
           qemuConfigureFlags
           qemuConfigureFlagsHash
+          qomPrivateUnwindSource
           qemuConfigureIdentityFlags
           qemuConfigureIdentityMaterial
           qemuConfigureFlagsMaterial

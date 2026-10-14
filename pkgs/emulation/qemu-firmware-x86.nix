@@ -46,6 +46,27 @@
   '';
 in
   mkDerivation {
+    # Current hosted helpers and raw -m32/-m64 GCC recipes require x86 builders.
+    # ROM guest ISA is data; it does not establish another native build port.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "qemu-firmware-x86";
     inherit version;
     outputs = ["out" "source"];

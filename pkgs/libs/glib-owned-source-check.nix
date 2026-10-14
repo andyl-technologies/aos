@@ -7,6 +7,26 @@
   controls = ./tests/glib-crucible-owned-source.c;
 in
   mkDerivation {
+    # This control runs the produced POSIX executable against the native library.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "build-input";
+    };
+
     pname = "glib-owned-source-check";
     version = "1";
     buildDeps = [library library.dev];

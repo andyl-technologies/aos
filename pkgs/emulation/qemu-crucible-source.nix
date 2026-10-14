@@ -8,6 +8,7 @@
 }: let
   qemu = qemu-crucible.passthru;
   atomicPatch = qemu.atomicPatch;
+  qomPrivateUnwindSource = qemu.qomPrivateUnwindSource or null;
   version = atomicPatch.qemuVersion;
   atomicPatchPath = ./qemu-patches + "/${atomicPatch.file}";
   crucibleSource = import ../tools/crucible/_source.nix {inherit lib;};
@@ -90,8 +91,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -153,7 +165,7 @@ in
       hash = atomicPatch.qemuSourceHash;
     };
 
-    runtimeDeps = [];
+    runtimeDeps = lib.optional (qomPrivateUnwindSource != null) qomPrivateUnwindSource;
     propagatedDeps = [];
     # Corresponding source must remain byte-for-byte identical to its fixed
     # source inputs. Stripping would mutate vendored static archives, while
@@ -167,6 +179,10 @@ in
         script = ''
           set -eu
           source_root="$out/share/aos/qemu-crucible-source"
+          ${lib.optionalString (qomPrivateUnwindSource != null) ''
+            mkdir -p "$source_root"
+            ln -s ${qomPrivateUnwindSource} "$source_root/private-qom-unwind-source"
+          ''}
           mkdir -p "$source_root/upstream" "$source_root/patches" \
             "$source_root/build" "$source_root/interfaces" \
             "$source_root/licenses" "$source_root/plugin" "$out/nix-support"

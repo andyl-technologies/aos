@@ -1808,7 +1808,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # All Linux QEMU variants enable compressed disk-image support when bzip2
   # is found. Retain that target library through runtime-reference scrubbing.
   mkQemuPackage = args: let
-    package = callPackage ./emulation/qemu.nix ({inherit linuxSource;} // args);
+    package = callPackage ./emulation/qemu.nix (
+      {inherit linuxSource;}
+      // args
+      // {requireQomPrivateUnwind = args.applyCruciblePatch or false;}
+    );
   in
     if stdenv.isCross && stdenv.hostPlatform.isLinux
     then package.overrideAttrs (previous: {runtimeDeps = previous.runtimeDeps ++ [self.bzip2];})
@@ -2910,6 +2914,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
               else "16.2.0";
           }
         );
+      # Only the private observer uses this context. Generic QEMU and all
+      # ordinary compiler recipes retain their existing dependency graph.
+      unwindContext = callPackage ./emulation/_qom-unwind-context.nix {
+        fileProbe = resolvedBuildPackages.stdenv.gccUnwindFile;
+      };
       gcc-libs = withPlatformSupport discoveredPackages.gcc-libs (withDistributionMeta {
           description = "GCC runtime libraries";
           homepage = "https://gcc.gnu.org/";
@@ -3069,6 +3078,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       # regression target without adding that cost to normal installation.
       qemu-crucible-full-test-suite = callPackage ./emulation/qemu.nix {
         inherit linuxSource;
+        requireQomPrivateUnwind = true;
         pname = "qemu-crucible";
         enablePlugins = true;
         applyCruciblePatch = true;

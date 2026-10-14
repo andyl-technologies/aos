@@ -4534,12 +4534,50 @@ its component tests do not establish full-system execution or device parity.
 
 These 122 sparse integration roles preserve the later campaign, mixed-provider
 and kernel changes. Functional changes and formatting are separate commits.
-Combined strict checks remain pending: earlier attempts stopped on an equivalent
-conditional layout and then test-local unwrap lint settings. Those failed runs
-remain recorded; the local test allowances preserve the existing assertions and
-production lint policy. Current all-target compilation, fresh executable
-inventories, selected runtime controls and genuine native admission still need
-to pass on the canonical source. No integrated runtime pass is inferred here.
+Combined all-target/all-feature strict checks pass for Core, daemon, provider
+and QEMU in 235.42 seconds. All-target compilation completes in 3,565.48 seconds;
+four library test executables, the ordinary packet provider and its daemon
+integration executable are fresh, with size optimization, debug assertions and
+overflow checks. Dependency records cover all 113 changed Rust roles.
+
+The compiler exits successfully, but its evidence collector then fails on an
+incorrect assumed dependency-file location for the ordinary provider binary.
+That failed outer result remains preserved. A separate retrospective check
+authenticates Cargo's exact emitted executable, its same-inode hashed alias,
+actual dependency file and retained bytes; compilation is not repeated or
+relabeled. Eight inventories, 35 selected runtime controls and five further SDK
+admission controls pass on these same executables.
+
+The actual three-process admission fixture fails during the first child's
+assigned Admit after 66.53 seconds. The native endpoint verifies its MAC and
+installs the token, but the ordinary Control dispatcher rejects the retained
+proof extension before replying. The original provider I/O times out; both
+retained processes retire without supervisor signals or unknown cleanup.
+The failure remains a required fix, not genuine native admission qualification.
+
+## Production QOM observer inputs and stopped-current observation
+
+The production recipes add a source-built private GNU unwind observer through
+the selected QOM dependency. The existing global unwind dependency remains.
+Its generator context runs on the build platform while its member compiler and
+archive target the QEMU host platform. Package support declarations cover the
+actual firmware, gem5 component and source-check producers.
+
+The earlier source configuration passes both x86-builder routes and 25 shape
+assertions per route. Two ordinary AArch64-builder baseline probes refuse at the
+existing bootstrap restriction; they are not positive cross-build results.
+These evaluations used the preceding QEMU source and do not qualify a newer
+production realization.
+
+The matching signed atomic QEMU source now selects commit
+`0351e3ad49c67c88cb1a14669a48e0d9d94a22be`, with its complete patch, bundle,
+descriptor and updated per-file license inventory. Its additional stopped-current
+getter observes the same parked original RR root, command, input epoch and
+consumed preparation acknowledgement without dispatching modeled work.
+Seventeen extracted C controls pass. Independent review verifies the complete
+signed tree and patch replay; configured emulator/plugin execution, ordinary
+production builds, complete preservation, readiness and release gates remain
+pending for this source.
 
 ## Performance evidence
 

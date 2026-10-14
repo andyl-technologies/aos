@@ -234,6 +234,8 @@ The atomic integration patch creates these QEMU source files:
 | `include/qemu/crucible-prefix-preparation.h` | MIT | Explicit SPDX identifier |
 | `include/qemu/crucible-prefix-quiet.h` | MIT | Explicit SPDX identifier |
 | `include/qemu/crucible-prefix-request.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-stopped.h` | MIT | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-stopped-rr.inc.c` | MIT | Explicit SPDX identifier |
 | `include/qemu/crucible-prefix-semantic.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-prefix-timer.h` | MIT | Explicit SPDX identifier |
 | `include/qemu/crucible-prefix-writer.h` | MIT | Explicit SPDX identifier |
@@ -297,6 +299,11 @@ The atomic integration patch creates these QEMU source files:
 | `system/crucible-whole-memory-storage.inc.c` | GPL-2.0-or-later | Source-local retained constructor MemoryRegion/AddressSpace/FlatView storage and lifetime journal; SPDX notice. |
 | `system/crucible-whole-dispatch-storage.inc.c` | GPL-2.0-or-later | Native retained dispatch/node/section/subpage constructor storage and attempted/completed retirement; SPDX notice. |
 | `qom/crucible-instance-storage.inc` | GPL-2.0-or-later | Original finite-arena QOM instance/alignment backing and literal finalizer/free retirement; SPDX notice. |
+| `qom/crucible-type-storage.inc` | GPL-2.0-or-later | Original finite-arena QOM type storage and source allocation lineage; SPDX notice. |
+| `qom/crucible-class-frame.inc` | GPL-2.0-or-later | Original class initialization frames and retained callback lifetime; SPDX notice. |
+| `qom/crucible-class-properties.inc` | GPL-2.0-or-later | Original class property storage and retained release lineage; SPDX notice. |
+| `qom/crucible-class-defaults.inc` | GPL-2.0-or-later | Original class defaults and finite constructor storage; SPDX notice. |
+| `qom/crucible-instance-properties.inc` | GPL-2.0-or-later | Original instance property storage and retained lifetime events; SPDX notice. |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated

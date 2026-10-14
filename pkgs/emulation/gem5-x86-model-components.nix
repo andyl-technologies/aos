@@ -49,6 +49,24 @@ in
     inherit sourceMetadata;
     passAsFile = ["sourceMetadata"];
     version = "1";
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     buildDeps = [];
     # Distribution keeps the complete matching native source and the required
     # source-built loader check. Components never stand in for a whole node gate.

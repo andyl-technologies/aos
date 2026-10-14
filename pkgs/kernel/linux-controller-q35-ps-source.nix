@@ -11,6 +11,24 @@
   sourcePatches = import (fixtures + "/patches.nix");
 in
   mkDerivation {
+    # This emits a source-application report, not a native kernel or a
+    # corresponding-source release artifact. No compiler ISA is selected.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "build-input";
+    };
     pname = "linux-controller-q35-ps-source";
     version = linuxSource.version;
     buildDeps = [coreutils patch python3];
