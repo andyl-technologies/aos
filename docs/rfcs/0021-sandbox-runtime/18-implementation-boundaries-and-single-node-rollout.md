@@ -488,6 +488,12 @@ without a second checkpoint wrapper. Historical failures retain the original
 redacted Security error at native frontiers; protected session and Journal
 owners retain their private fields, actual custody and currentness checks.
 
+Private `recovery::journal::current_session` owns the complete authenticated
+initial/successor request, retained terminal, outcome commit and exact recovery
+recipes on the original Journal. Resident fields, physical/schema operations,
+floor custody and peer checks stay with that owner; effective factory scopes
+and genuine currentness loans are preserved. This is not a Cargo boundary.
+
 Security's private `dormant_handshake::host_catalog_publication` retains complete
 catalog descriptor/recovery reservoirs, execution, physical readback, proven-absent
 retry and error-terminal recipes, original fields/drop order/native failures/
