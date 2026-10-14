@@ -340,8 +340,13 @@ fixture and auxiliary/imported-control tests. The auxiliary test uses existing
 accessible History and Tree APIs; the Guard-private combined API is unchanged.
 All thirteen compiler phases pass. The actual inventory retains all prior
 1,128 identities plus exactly three refusal cases, with none ignored. Its
-reviewed 35-case focus queue is authorized; runtime, growth and owning gates
-remain unqualified.
+reviewed 35-case focus queue records eight passes, then one restored-history
+parent-oracle failure; 26 cases remain unstarted. All seven direct-reader cases
+and the auxiliary-only refusal pass. PROV-29 retains the private source as a
+signed audit parent after the public predecessor while excluding its verified
+history. The reviewed fixture correction captures that exact ordered pair from
+independently published inputs. The full focus set, renewed SDK, growth and
+owning gates remain unqualified.
 The unfiltered SDK qualification must retain all 1,121 original cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
 cases. It must also execute the seven new direct-reader cases and registered
