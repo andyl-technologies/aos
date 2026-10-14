@@ -76,9 +76,11 @@ struct ControlView<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     complete_capture_profile: &'a Option<super::super::service::PacketNative5CaptureProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    complete_confirmation_selection: &'a Option<super::super::service::PacketNative5ConfirmationSelection>,
+    complete_confirmation_selection:
+        &'a Option<super::super::service::PacketNative5ConfirmationSelection>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    complete_ack_emitter_selection: &'a Option<super::super::service::PacketNative5AckEmitterSelection>,
+    complete_ack_emitter_selection:
+        &'a Option<super::super::service::PacketNative5AckEmitterSelection>,
 }
 
 #[derive(Serialize)]
@@ -269,7 +271,8 @@ struct ControlState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     complete_capture_profile: Option<super::super::service::PacketNative5CaptureProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    complete_confirmation_selection: Option<super::super::service::PacketNative5ConfirmationSelection>,
+    complete_confirmation_selection:
+        Option<super::super::service::PacketNative5ConfirmationSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     complete_ack_emitter_selection: Option<super::super::service::PacketNative5AckEmitterSelection>,
 }
@@ -437,17 +440,35 @@ impl ControlState {
         }
         if self.complete_ack_emitter_selection.is_some() {
             let schema = super::super::service::ack_emitter::native_canonical_blob_ack_schema()?;
-            if self.complete_confirmation_selection != Some(super::super::service::PacketNative5ConfirmationSelection::AfterProtocolPoll5)
-                || self.complete_storage.is_none() || self.complete_capture_profile.is_none()
-                || !self.selection.provider.implementation.formats.contains(&schema)
-            { return Err(ProviderError::Correlation("native5 captured ACK emitter lacks original tuple")); }
+            if self.complete_confirmation_selection
+                != Some(
+                    super::super::service::PacketNative5ConfirmationSelection::AfterProtocolPoll5,
+                )
+                || self.complete_storage.is_none()
+                || self.complete_capture_profile.is_none()
+                || !self
+                    .selection
+                    .provider
+                    .implementation
+                    .formats
+                    .contains(&schema)
+            {
+                return Err(ProviderError::Correlation(
+                    "native5 captured ACK emitter lacks original tuple",
+                ));
+            }
         }
         if self.complete_confirmation_selection.is_some() {
             let schema = super::super::service::confirmation::native_after_confirmation_schema()?;
             if self.complete_coordinator.is_none()
                 || self.complete_storage.is_none()
                 || self.complete_capture_profile.is_none()
-                || !self.selection.provider.implementation.formats.contains(&schema)
+                || !self
+                    .selection
+                    .provider
+                    .implementation
+                    .formats
+                    .contains(&schema)
             {
                 return Err(ProviderError::Correlation(
                     "native5 captured confirmation lacks original birth tuple",

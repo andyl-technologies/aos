@@ -264,9 +264,9 @@ impl PacketSourceService {
             OriginalServiceHandshake::Legacy(handshake) => self
                 .endpoint
                 .step_with_complete_context(Some((handshake, &self.deadline))),
-            OriginalServiceHandshake::Selected(handshake) => {
-                self.endpoint.step_with_selected_context(handshake, &self.deadline)
-            }
+            OriginalServiceHandshake::Selected(handshake) => self
+                .endpoint
+                .step_with_selected_context(handshake, &self.deadline),
         }
     }
 

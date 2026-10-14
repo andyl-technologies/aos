@@ -12,9 +12,9 @@ use crucible_node_contract::{ContentRef, Id};
 
 use crate::{ProviderError, bodies::*, connection::*, envelope::*};
 
-mod frames;
-mod confirmation_frames;
 mod confirmation;
+mod confirmation_frames;
+mod frames;
 pub(crate) use confirmation::PacketAfterConfirmationPrefix;
 pub(crate) use confirmation_frames::outgoing_confirmation_extent;
 

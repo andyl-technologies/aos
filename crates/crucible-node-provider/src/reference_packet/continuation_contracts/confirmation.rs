@@ -3,12 +3,12 @@
 //! The returned manifest and content are declaration data. They install no codec,
 //! capture mechanism, factory, source association or restoration permission.
 
-use crucible_node_contract::{ContentRef, Id, ProviderManifest, SchemaRef, Validate};
 use crate::ProviderError;
 use crate::reference_packet::service::confirmation::{
-    PacketNative5ConfirmationSelection, PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE,
+    PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE, PacketNative5ConfirmationSelection,
     native_after_confirmation_contract, native_after_confirmation_schema,
 };
+use crucible_node_contract::{ContentRef, Id, ProviderManifest, SchemaRef, Validate};
 
 /// Retains one selected native provider declaration and its added contract content.
 pub struct PacketNative5ConfirmationDeclaration {
@@ -34,24 +34,41 @@ pub fn complete_packet_confirmation_declaration(
 ) -> Result<PacketNative5ConfirmationDeclaration, ProviderError> {
     provider.validate()?;
     if provider.implementation.implementation_id.as_str() != super::PACKET_NATIVE5_IMPLEMENTATION
-        || !provider.supported_profiles.iter().any(|profile|
-            profile.profile_id.as_str() == super::PACKET_COMPLETE_LINEAGE_PROFILE)
+        || !provider
+            .supported_profiles
+            .iter()
+            .any(|profile| profile.profile_id.as_str() == super::PACKET_COMPLETE_LINEAGE_PROFILE)
     {
-        return Err(ProviderError::Correlation("confirmation declaration requires complete native5"));
+        return Err(ProviderError::Correlation(
+            "confirmation declaration requires complete native5",
+        ));
     }
     let mut selected = provider.clone();
     let Some(PacketNative5ConfirmationSelection::AfterProtocolPoll5) = selection else {
-        return Ok(PacketNative5ConfirmationDeclaration { provider: selected, confirmation: None });
+        return Ok(PacketNative5ConfirmationDeclaration {
+            provider: selected,
+            confirmation: None,
+        });
     };
 
     let schema = native_after_confirmation_schema()?;
-    if let Some(existing) = selected.implementation.formats.iter().find(|format| format.id == schema.id) {
+    if let Some(existing) = selected
+        .implementation
+        .formats
+        .iter()
+        .find(|format| format.id == schema.id)
+    {
         if existing != &schema {
-            return Err(ProviderError::Correlation("confirmation declaration schema differs"));
+            return Err(ProviderError::Correlation(
+                "confirmation declaration schema differs",
+            ));
         }
     } else {
         selected.implementation.formats.push(schema.clone());
-        selected.implementation.formats.sort_by(|left, right| left.id.cmp(&right.id));
+        selected
+            .implementation
+            .formats
+            .sort_by(|left, right| left.id.cmp(&right.id));
     }
     let feature = Id::new(PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE)?;
     if !selected.extensions_supported.contains(&feature) {

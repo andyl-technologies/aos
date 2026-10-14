@@ -450,7 +450,6 @@ mod retained_frame_tests {
     }
 }
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Test assertion panics are the control verdict.
 mod selected_header_tests {

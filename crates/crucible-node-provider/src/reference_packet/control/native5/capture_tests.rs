@@ -335,4 +335,3 @@ fn control_snapshot_retains_closed_compact_profile_and_rejects_unbound_data() {
     let reference = canonical::content_ref(&bytes, "application/json").unwrap();
     assert!(decode_packet_control_snapshot(&bytes, &reference, 8 * 1024 * 1024).is_err());
 }
-

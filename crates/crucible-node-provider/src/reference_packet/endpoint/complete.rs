@@ -239,9 +239,12 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                     "native5 original endpoint profile changed",
                 ));
             }
-            let actual_confirmation = original.connection
+            let actual_confirmation = original
+                .connection
                 .original_native5_confirmation_selection()?;
-            original.native.authenticate_complete_confirmation_selection(actual_confirmation)?;
+            original
+                .native
+                .authenticate_complete_confirmation_selection(actual_confirmation)?;
             original.state.profile = Some(actual_profile);
 
             let history = usize::try_from(storage.frame_bank_bytes.get())
@@ -393,4 +396,3 @@ fn reserve_original_protocol_bank(
         }
     }
 }
-

@@ -62,8 +62,7 @@ fn uninstalled_fixture() -> (
             .clone(),
         execution_owner: selection.realization.owner_bindings[0].owner.id.clone(),
     };
-    let controller =
-        CnpController::new(session, custody, route, Duration::from_secs(2)).unwrap();
+    let controller = CnpController::new(session, custody, route, Duration::from_secs(2)).unwrap();
     (handshake, controller, peer, selection, coordinator)
 }
 
@@ -352,10 +351,7 @@ fn original_selected_codec_extent_keeps_legacy_limit_and_wrong_source_bank_untou
         crate::reference_packet::service::PacketNative5CaptureProfile::OriginalArrays6,
     );
     assert!(matches!(refused, Err(ProviderError::ResourceExhausted(_))));
-    assert_eq!(
-        bank.as_ref().unwrap().allocated_bytes(),
-        capacity
-    );
+    assert_eq!(bank.as_ref().unwrap().allocated_bytes(), capacity);
     assert!(
         controller
             .retain_original_canonical_blob_ack_emitter()
@@ -364,7 +360,9 @@ fn original_selected_codec_extent_keeps_legacy_limit_and_wrong_source_bank_untou
     assert_no_wire(&mut peer);
 
     let mut wrong = selection;
-    wrong.admission_receipt = crucible_node_contract::canonical::content_ref(b"foreign admission", "application/json").unwrap();
+    wrong.admission_receipt =
+        crucible_node_contract::canonical::content_ref(b"foreign admission", "application/json")
+            .unwrap();
     assert!(
         controller
             .install_native5_source_ack_emitter_codec_with_metadata_extent(
@@ -376,10 +374,7 @@ fn original_selected_codec_extent_keeps_legacy_limit_and_wrong_source_bank_untou
             )
             .is_err()
     );
-    assert_eq!(
-        bank.as_ref().unwrap().allocated_bytes(),
-        capacity
-    );
+    assert_eq!(bank.as_ref().unwrap().allocated_bytes(), capacity);
     assert!(
         controller
             .retain_original_canonical_blob_ack_emitter()

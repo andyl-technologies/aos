@@ -872,7 +872,10 @@ fn native5_controller_current_codec_refuses_revocation_foreign_scope_and_changed
 
 #[allow(clippy::unwrap_used)]
 pub(super) fn original_canonical_ack_controller_scope() -> (
-    Handshake, ConnectionAuthority, PacketControlSelection, InstalledContent,
+    Handshake,
+    ConnectionAuthority,
+    PacketControlSelection,
+    InstalledContent,
 ) {
     let participant = 0;
     let coordinator = five_with_ack_emitter(
@@ -956,10 +959,7 @@ pub(super) fn original_canonical_ack_controller_scope() -> (
         .admit_exchange(
             &request,
             &response,
-            id(&format!(
-                "codec-fixture-connection-{}",
-                "selected-ack"
-            )),
+            id(&format!("codec-fixture-connection-{}", "selected-ack")),
             &mut ModelVerifier,
         )
         .unwrap();

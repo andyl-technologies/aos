@@ -161,13 +161,23 @@ impl OriginalNativeHelloJournal {
     /// # Errors
     /// Refuses a foreign actor, failed/incomplete Hello, changed framing extent,
     /// repeated direction or a concurrently borrowed original bank.
-    pub fn original_literal_frame_digests(&self) -> Result<OriginalHelloFrameDigests, ProviderError> {
+    pub fn original_literal_frame_digests(
+        &self,
+    ) -> Result<OriginalHelloFrameDigests, ProviderError> {
         self.owner.ensure_current()?;
         if !self.attempted || !self.received || !self.write_started || self.failed {
-            return Err(ProviderError::Correlation("native original Hello exchange incomplete"));
+            return Err(ProviderError::Correlation(
+                "native original Hello exchange incomplete",
+            ));
         }
-        let bank = self.bank.try_borrow().map_err(|_| ProviderError::Correlation("native original Hello bank borrowed"))?;
-        crate::hello_frames::original_hello_frame_digests(&bank, crate::connection::EndpointRole::Provider)
+        let bank = self
+            .bank
+            .try_borrow()
+            .map_err(|_| ProviderError::Correlation("native original Hello bank borrowed"))?;
+        crate::hello_frames::original_hello_frame_digests(
+            &bank,
+            crate::connection::EndpointRole::Provider,
+        )
     }
 
     /// Reports the actual byte and descriptor allocation for source admission.

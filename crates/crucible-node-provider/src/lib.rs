@@ -19,21 +19,21 @@ pub mod connection;
 pub mod envelope;
 pub mod gem5;
 pub mod handshake;
+mod hello_frames;
 pub mod input_commit;
 pub mod journal;
-pub mod native_journal;
-mod hello_frames;
 pub mod native_hello;
+pub mod native_journal;
 pub mod reference_device;
 
+pub mod protocol_snapshot;
 pub mod reference_lineage;
 /// Exposes a finite source-owned packet provider over the public protocol.
 pub mod reference_packet;
 pub mod reference_service;
+mod retained_metadata;
 pub mod session;
 pub mod transport;
-pub mod protocol_snapshot;
-mod retained_metadata;
 
 /// Reports transport, portable schema, or correlation failure.
 #[derive(Debug, thiserror::Error)]

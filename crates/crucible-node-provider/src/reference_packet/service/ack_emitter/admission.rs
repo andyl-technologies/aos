@@ -179,7 +179,8 @@ pub fn verify_canonical_ack_admission_proof_data(
     let key = blake3::derive_key(KEY_DERIVATION_CONTEXT, private_birth_key);
     let expected_context = blake3::hash(&bytes);
     let expected_mac = blake3::keyed_hash(&key, &bytes);
-    if expected_context != *proof.context_digest.as_slice() || expected_mac != *proof.mac.as_slice() {
+    if expected_context != *proof.context_digest.as_slice() || expected_mac != *proof.mac.as_slice()
+    {
         return Err(ProviderError::Correlation(
             "canonical ACK proof correspondence",
         ));

@@ -275,43 +275,85 @@ pub(crate) fn outgoing_confirmation_extent(
 ) -> Result<usize, ProviderError> {
     let exhausted = || ProviderError::ResourceExhausted("confirmation exact outgoing extent");
     let maximum = usize::try_from(authority.limits().frame_bytes.get()).map_err(|_| exhausted())?;
-    let chunk = usize::try_from(authority.limits().blob_chunk_bytes.get()).map_err(|_| exhausted())?.min(4096);
-    if chunk == 0 { return Err(exhausted()); }
+    let chunk = usize::try_from(authority.limits().blob_chunk_bytes.get())
+        .map_err(|_| exhausted())?
+        .min(4096);
+    if chunk == 0 {
+        return Err(exhausted());
+    }
     let mut sequence = response.sequence.get();
     let transfer = Id::new(format!("packet-after-transfer-{sequence}"))?;
     let mut total = 0usize;
     let mut count_frame = |method, body, payload: usize| -> Result<(), ProviderError> {
         let frame = Envelope {
-            protocol: "CNP/1".into(), message: MessageKind::Request,
+            protocol: "CNP/1".into(),
+            message: MessageKind::Request,
             session_id: Nullable(Some(authority.session_id().clone())),
             incarnation_id: Nullable(Some(authority.incarnation_id().clone())),
-            node_id: response.node_id.clone(), execution_owner_id: response.execution_owner_id.clone(),
-            capture_owner_id: response.capture_owner_id.clone(), operation_id: response.operation_id.clone(),
+            node_id: response.node_id.clone(),
+            execution_owner_id: response.execution_owner_id.clone(),
+            capture_owner_id: response.capture_owner_id.clone(),
+            operation_id: response.operation_id.clone(),
             request_id: Nullable(Some(Id::new(format!("packet-after-proof-{sequence}"))?)),
-            sequence: U64::new(sequence), method, body, extensions: Extensions::new(),
+            sequence: U64::new(sequence),
+            method,
+            body,
+            extensions: Extensions::new(),
         };
-        let encoded_payload = (payload / 3).checked_mul(4)
-            .and_then(|n| n.checked_add(match payload % 3 {0=>0,1=>2,_=>3})).ok_or_else(exhausted)?;
+        let encoded_payload = (payload / 3)
+            .checked_mul(4)
+            .and_then(|n| {
+                n.checked_add(match payload % 3 {
+                    0 => 0,
+                    1 => 2,
+                    _ => 3,
+                })
+            })
+            .ok_or_else(exhausted)?;
         let encoded = crate::connection::serialized_credit(&frame, maximum)?
-            .checked_add(encoded_payload).filter(|n| *n <= maximum).ok_or_else(exhausted)?;
-        total = total.checked_add(encoded).and_then(|n| n.checked_add(4)).ok_or_else(exhausted)?;
+            .checked_add(encoded_payload)
+            .filter(|n| *n <= maximum)
+            .ok_or_else(exhausted)?;
+        total = total
+            .checked_add(encoded)
+            .and_then(|n| n.checked_add(4))
+            .ok_or_else(exhausted)?;
         sequence = sequence.checked_add(1).ok_or_else(exhausted)?;
         Ok(())
     };
-    count_frame(Method::BlobBegin, object(BlobBeginRequest {
-        transfer_id: transfer.clone(), content: after.clone(), extensions: Extensions::new(),
-    })?, 0)?;
+    count_frame(
+        Method::BlobBegin,
+        object(BlobBeginRequest {
+            transfer_id: transfer.clone(),
+            content: after.clone(),
+            extensions: Extensions::new(),
+        })?,
+        0,
+    )?;
     for offset in (0..length).step_by(chunk) {
-        count_frame(Method::BlobChunk, object(BlobChunkRequest {
-            transfer_id: transfer.clone(), offset: U64::new(offset as u64),
-            bytes: Bytes::new(Vec::new()), extensions: Extensions::new(),
-        })?, (length-offset).min(chunk))?;
+        count_frame(
+            Method::BlobChunk,
+            object(BlobChunkRequest {
+                transfer_id: transfer.clone(),
+                offset: U64::new(offset as u64),
+                bytes: Bytes::new(Vec::new()),
+                extensions: Extensions::new(),
+            })?,
+            (length - offset).min(chunk),
+        )?;
     }
-    count_frame(Method::BlobFinish, object(BlobFinishRequest {
-        transfer_id: transfer, extensions: Extensions::new(),
-    })?, 0)?;
+    count_frame(
+        Method::BlobFinish,
+        object(BlobFinishRequest {
+            transfer_id: transfer,
+            extensions: Extensions::new(),
+        })?,
+        0,
+    )?;
     let mut completion = response.clone();
     completion.sequence = U64::new(sequence);
-    total.checked_add(crate::connection::serialized_credit(&completion, maximum)?)
-        .and_then(|n| n.checked_add(4)).ok_or_else(exhausted)
+    total
+        .checked_add(crate::connection::serialized_credit(&completion, maximum)?)
+        .and_then(|n| n.checked_add(4))
+        .ok_or_else(exhausted)
 }

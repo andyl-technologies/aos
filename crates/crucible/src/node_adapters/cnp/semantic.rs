@@ -24,8 +24,8 @@ mod preparation;
 mod process;
 mod provider;
 mod registry;
-mod source;
 mod semantic_snapshot;
+mod source;
 mod state;
 mod world_provider;
 

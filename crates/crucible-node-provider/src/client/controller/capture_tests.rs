@@ -330,7 +330,6 @@ fn native5_confirmation_refuses_legacy_codec_before_custody_or_unix_io() {
     );
 }
 
-
 #[test]
 fn canonical_ack_lease_refuses_unselected_original_controller_before_wire() {
     let (_handshake, controller, mut peer) = controller();

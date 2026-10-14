@@ -16,12 +16,12 @@ use crucible_node_provider::reference_packet::service::{
     confirmation::native_after_confirmation_schema,
 };
 
+#[path = "ack_peer/association.rs"]
+mod association;
 #[path = "ack_peer/birth.rs"]
 mod birth;
 #[path = "ack_peer/frame.rs"]
 mod frame;
-#[path = "ack_peer/association.rs"]
-mod association;
 pub(super) use association::OriginalAckPeerAssociation;
 pub(super) use birth::OriginalAckPeerBirth;
 pub use birth::PacketCompleteAckPeerBootMaterial;

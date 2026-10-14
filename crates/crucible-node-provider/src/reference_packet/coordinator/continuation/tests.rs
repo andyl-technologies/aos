@@ -197,10 +197,14 @@ fn five_with_ack_emitter(
             .push(id(contracts::PACKET_COMPLETE_LINEAGE_FEATURE));
         peer.provider.extensions_supported.sort();
         let declaration = contracts::complete_packet_ack_emitter_declaration(
-            &peer.provider, confirmation, ack_emitter,
-        ).unwrap();
+            &peer.provider,
+            confirmation,
+            ack_emitter,
+        )
+        .unwrap();
         peer.provider = declaration.provider;
-        peer.realization.bindings[0].compatibility.implementation = peer.provider.implementation.clone();
+        peer.realization.bindings[0].compatibility.implementation =
+            peer.provider.implementation.clone();
         peer.realization.provider_manifest = content(&peer.provider);
         let hash = peer.realization.bindings[0].identity().unwrap();
         peer.realization.owner_bindings[0].node_bindings[0].binding_hash = hash;
@@ -526,26 +530,47 @@ mod native5_codec_tests;
 
 #[test]
 fn selected_canonical_ack_declaration_binds_all_original_tuples_before_hashes() {
-    use crate::reference_packet::service::{PacketNative5ConfirmationSelection, PacketNative5AckEmitterSelection};
+    use crate::reference_packet::service::{
+        PacketNative5AckEmitterSelection, PacketNative5ConfirmationSelection,
+    };
     let old = five();
     let absent = five_with_ack_emitter(None, None);
-    assert_eq!(canonical::canonical_json(&json!(old)).unwrap(), canonical::canonical_json(&json!(absent)).unwrap());
+    assert_eq!(
+        canonical::canonical_json(&json!(old)).unwrap(),
+        canonical::canonical_json(&json!(absent)).unwrap()
+    );
     let selected = five_with_ack_emitter(
         Some(&PacketNative5ConfirmationSelection::AfterProtocolPoll5),
         Some(&PacketNative5AckEmitterSelection::CanonicalSdkBlob5),
     );
     selected.validate(&selected.participants[0]).unwrap();
-    let schema = crate::reference_packet::service::ack_emitter::native_canonical_blob_ack_schema().unwrap();
-    let admission_schema = crate::reference_packet::service::ack_emitter::native_canonical_ack_admission_schema().unwrap();
+    let schema =
+        crate::reference_packet::service::ack_emitter::native_canonical_blob_ack_schema().unwrap();
+    let admission_schema =
+        crate::reference_packet::service::ack_emitter::native_canonical_ack_admission_schema()
+            .unwrap();
     for peer in &selected.participants {
         assert!(peer.provider.implementation.formats.contains(&schema));
-        assert!(peer.provider.implementation.formats.contains(&admission_schema));
+        assert!(
+            peer.provider
+                .implementation
+                .formats
+                .contains(&admission_schema)
+        );
         assert!(peer.provider.extensions_supported.iter().any(|id| id.as_str() == crate::reference_packet::service::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE));
-        assert_eq!(peer.provider.implementation, peer.realization.bindings[0].compatibility.implementation);
+        assert_eq!(
+            peer.provider.implementation,
+            peer.realization.bindings[0].compatibility.implementation
+        );
         assert!(peer.provider.extensions_supported.iter().any(|id| id.as_str() == crate::reference_packet::service::ack_emitter::PACKET_NATIVE_CANONICAL_ACK_FEATURE));
     }
 }
 
-pub(super) fn original_canonical_ack_controller_scope() -> (crate::handshake::Handshake, crate::handshake::ConnectionAuthority, PacketControlSelection, crate::reference_service::InstalledContent) {
+pub(super) fn original_canonical_ack_controller_scope() -> (
+    crate::handshake::Handshake,
+    crate::handshake::ConnectionAuthority,
+    PacketControlSelection,
+    crate::reference_service::InstalledContent,
+) {
     native5_codec_tests::original_canonical_ack_controller_scope()
 }

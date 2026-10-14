@@ -263,8 +263,13 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             .checked_mul(framed)
             .ok_or(ProviderError::ResourceExhausted("after raw ACK wholebound"))?;
         let sent = super::super::continuation_transport::outgoing_confirmation_extent(
-            &self.authority, response, &original.receipt.as_ref()
-                .ok_or(ProviderError::Conflict("after receipt absent"))?.native_after_ref,
+            &self.authority,
+            response,
+            &original
+                .receipt
+                .as_ref()
+                .ok_or(ProviderError::Conflict("after receipt absent"))?
+                .native_after_ref,
             after.bytes().len(),
         )?;
         let Some(Transport::Connected(connection)) = self.transport.as_ref() else {

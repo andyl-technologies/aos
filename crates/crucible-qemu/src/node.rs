@@ -613,7 +613,9 @@ impl QemuNode {
             QemuNodeError::checkpoint(format!("authenticate QEMU original attempt: {source}"))
         })?;
         if child.reaped() {
-            return Err(QemuNodeError::checkpoint("QEMU original guarded child was reaped"));
+            return Err(QemuNodeError::checkpoint(
+                "QEMU original guarded child was reaped",
+            ));
         }
         Ok(())
     }

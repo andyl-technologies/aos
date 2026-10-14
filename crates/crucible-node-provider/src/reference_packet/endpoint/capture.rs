@@ -559,4 +559,3 @@ fn same_borrowed_reference(value: Option<&serde_json::Value>, reference: &Conten
             .and_then(|length| length.parse::<u64>().ok())
             == Some(reference.length.get())
 }
-

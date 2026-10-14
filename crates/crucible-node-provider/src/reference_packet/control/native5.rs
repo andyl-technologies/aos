@@ -15,8 +15,8 @@ use super::super::{
     connected::{PacketConnectedNativeRecord, PacketConnectedProgram},
     coordinator::PacketNative5CoordinatorInstallation,
 };
-mod record;
 mod birth;
+mod record;
 
 pub use birth::PacketCompleteControlBirthFailure;
 
