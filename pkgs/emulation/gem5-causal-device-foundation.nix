@@ -28,6 +28,7 @@
   });
 in
   gem5-terminal-runtime-foundation.overrideAttrs (previous: {
+    nativePatchFiles = previous.nativePatchFiles ++ [observerPatch fifoPatch];
     pname = "gem5-causal-device-foundation";
     phases =
       map (phase:

@@ -22,6 +22,7 @@
   });
 in
   gem5-linux-platform.overrideAttrs (previous: {
+    nativePatchFiles = previous.nativePatchFiles ++ [outputPatch witnessPatch];
     pname = "gem5-full-system-foundation";
     phases =
       [

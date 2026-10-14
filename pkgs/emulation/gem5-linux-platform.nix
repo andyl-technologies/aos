@@ -17,6 +17,7 @@
   });
 in
   gem5.overrideAttrs (previous: {
+    nativePatchFiles = previous.nativePatchFiles ++ [platformPatch];
     pname = "gem5-linux-platform";
     phases =
       [

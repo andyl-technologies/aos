@@ -14,6 +14,7 @@
   });
 in
   gem5-closed-block-foundation.overrideAttrs (previous: {
+    nativePatchFiles = previous.nativePatchFiles ++ [patch];
     pname = "gem5-closed-network-foundation";
     phases =
       map (phase:

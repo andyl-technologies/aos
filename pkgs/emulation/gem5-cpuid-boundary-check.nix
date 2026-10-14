@@ -11,9 +11,23 @@
           '../../base/atomicio.cc', '../../sim/backtrace_glibc.cc')
   '';
 in
-  gem5.overrideAttrs (previous: {
+  # This builds the handler regression, not another installed simulator.
+  gem5.passthru.nativeCompiler.overrideAttrs (previous: {
     pname = "gem5-cpuid-boundary-check";
     version = "1";
+    cpuidSourceRecord = builtins.toJSON {
+      schema = "crucible.gem5.cpuid-handler-source.v1";
+      recipeSha256 = builtins.hashFile "sha256" ./gem5-cpuid-boundary-check.nix;
+      witnessSha256 = builtins.hashFile "sha256" ./_gem5/cpuid-boundary-check.cc;
+      guardPatchSha256 = builtins.hashFile "sha256" ./gem5-patches/x86-cpuid-subleaf-bounds.patch;
+      registrationSha256 = builtins.hashString "sha256" registration;
+      buildTarget = "build/ALL/arch/x86/cpuid_boundary.test.opt";
+      sourceSnapshot = "after-handler-guard-and-witness-registration-before-defconfig";
+      inheritedInputs = "build/foundation-native-compiler-inputs.json";
+      actualCommands = "build/invoked-builder.sh";
+      simulatorQualified = false;
+    };
+    passAsFile = previous.passAsFile ++ ["cpuidSourceRecord"];
     # Reuse the exact source-built foundation environment and source patches.
     # The witness links the real handler and upstream GoogleTest harness.
     phases = [
@@ -29,6 +43,19 @@ in
           fi
           cp ${./_gem5/cpuid-boundary-check.cc} src/arch/x86/cpuid_boundary.test.cc
           cat >> src/arch/x86/SConscript <<'EOF'
+          ${registration}
+          EOF
+          # Snapshot the actual handler/witness registration before SCons writes
+          # generated files. The inherited specification describes the foundation;
+          # this check's executed builder and record identify its own commands.
+          ${(builtins.head (builtins.filter (phase: phase.name == "native-corresponding-source") previous.phases)).script}
+          mv "$source/build/native-compiler-inputs.json" \
+            "$source/build/foundation-native-compiler-inputs.json"
+          cp "$cpuidSourceRecordPath" "$source/build/cpuid-handler-source.json"
+          cp ${./gem5-cpuid-boundary-check.nix} "$source/build/recipes/gem5-cpuid-boundary-check.nix"
+          cp ${./_gem5/cpuid-boundary-check.cc} "$source/build/cpuid-boundary-check.cc"
+          # The inherited patch roster already retains the applied CPUID guard.
+          cat > "$source/build/cpuid-registration.scons" <<'EOF'
           ${registration}
           EOF
           export CPATH="$C_INCLUDE_PATH"

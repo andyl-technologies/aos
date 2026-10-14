@@ -7,6 +7,7 @@ permissive notices; they do not relicense the simulator.
 
 | Patch | Modified upstream files | Preserved license |
 | --- | --- | --- |
+| `native-lru-constructor-provenance.patch` | Modified `src/sim/crucible_native_scope.hh`, `src/sim/crucible_native_scope.cc`, `src/mem/cache/replacement_policies/lru_rp.hh`, `src/mem/cache/replacement_policies/lru_rp.cc`; new `src/sim/crucible_lru_births.hh` | Existing BSD notices retained; new fixed constructor-birth bank is BSD-3-Clause. The two host component helpers under `../_gem5/` are MIT; exact upstream declaration retains its corresponding complete source. |
 | `x86-cpuid-subleaf-bounds.patch` | `src/arch/x86/cpuid.cc` | Original BSD three-clause notice and copyright holders; direct native GoogleTest fixture under `../_gem5/` is separately MIT |
 | `x86-absent-fch-reset-status.patch` | Modified `src/dev/SConscript`; new `src/dev/AbsentFchResetStatus.py`, `src/dev/absent_fch_reset_status.hh`, `src/dev/absent_fch_reset_status.cc` | Original SConscript BSD three-clause notice retained; new explicitly absent optional-register model and native Packet witness are MIT |
 | `aarch64-pmull64.patch` | `src/arch/arm/isa/formats/neon64.isa`, `src/arch/arm/isa/insts/neon64.isa` | Original BSD three-clause notices retained, including Arm's hardware intellectual-property scope statement; separate guest assembly and check helpers are MIT |
@@ -171,3 +172,26 @@ loader check co-retains those source inputs and its Nix recipe; the component
 bundle co-retains the complete corresponding native source and required loader
 check. ELF/boot-protocol component results do not qualify native process
 ownership, full-system readiness, device parity, capture or CPU timing.
+
+The native compilation/source-enrichment split adds independently authored MIT
+`../_gem5/native-base.nix`, `native-compiler.nix`, `foundation.nix`,
+`source-enrichment.py` and `source-enrichment-check.py`. Upstream and patched
+gem5 file licenses remain unchanged. The native product retains its complete
+patched and upstream source, actual patch and compiler inputs, invoked builder,
+setup script and generated header context. The public source output additionally
+retains host controls, recipes, this inventory and the exact native source output.
+The wrapper checks native ELF byte identity and records the producer relationship;
+these packaging checks confer no simulation, source-cut or restore authority.
+
+### Selected native table-account geometry
+
+`native-selected-table-geometry.patch` modifies the existing BSD-compatible
+`src/arch/arm/tlb.cc` and `src/sim/crucible_native_scope.{cc,hh}`. It preserves
+all original file notices and the normal selected 1280-entry ARM L2 table.
+The source-private fixed bank declares actual table extents before entry debit;
+profile version 3 binds both table and LRU constructor-bank geometry.
+
+`_gem5/selected-table-banks-check.cc` and `_gem5/selected-table-methods.py` are
+independently authored MIT host/component controls. They retain exact selected
+method source and capacity data; they grant no native process, graph, capture,
+restore or execution authority. Complete configured native checks stay required.

@@ -37,6 +37,15 @@ mode = sys.argv[2]
 source_stat = Path("/proc/self/stat").read_text()
 generation = int(source_stat.rsplit(") ", 1)[1].split()[19])
 profile = native_event.crucibleDiagnosticOriginalProfile()
+# Profile v3 binds both fixed constructor and table banks before object births.
+# Ordinary heap/control-block closure and execution authority remain separate.
+selected_profile_bytes = (
+    b'crucible.gem5.diagnostic.arm-atomic-loop.lru-table-banks.v3\x00'
+    b'objects=256;edges=4096;callbacks=256;ports=256;tables=16;'
+    b'table-entries=1280;lru-constructor-births=1472;'
+    b'arm-tlb-entries=64,64,1280,32,32;clock-period-ps=1000;runtime=refused'
+)
+assert bytes(profile) == hashlib.sha256(selected_profile_bytes).digest()
 scope = hashlib.sha256(b"diagnostic-original-scope-v1").digest()
 setup = hashlib.sha256(Path(__file__).read_bytes()).digest()
 implementation = hashlib.sha256(Path("/proc/self/exe").read_bytes()).digest()

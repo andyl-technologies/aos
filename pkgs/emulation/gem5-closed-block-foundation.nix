@@ -14,6 +14,7 @@
   });
 in
   gem5-causal-device-foundation.overrideAttrs (previous: {
+    nativePatchFiles = previous.nativePatchFiles ++ [patch];
     pname = "gem5-closed-block-foundation";
     phases =
       map (phase:

@@ -14,6 +14,7 @@
   });
 in
   gem5-full-system-foundation.overrideAttrs (previous: {
+    nativePatchFiles = previous.nativePatchFiles ++ [inventoryPatch];
     pname = "gem5-terminal-runtime-foundation";
     phases =
       map (phase:

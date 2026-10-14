@@ -4642,7 +4642,16 @@ the endpoint owner utility through oslib also pulls the real main loop and timer
 implementations, which conflict with the fixture's intentional replacements.
 A reviewed one-file correction supplies the exact typed no-journal NULL backing
 result in the existing test stub. Production code, clocks, test selection and
-file licenses remain unchanged; a fresh full build must verify the correction.
+file licenses remain unchanged. The complete signed source successor is
+`02bdf2de185682e4d211dff441527fcb4e7f7383`, tree
+`1065454b7422d45f0baedd97ae979d20d03c7081`; independent review verifies its
+single changed existing file, signature, complete patch/bundle and license
+inventory. The next fresh full build reuses the successful context, observer
+and toolchain but fails at the same unit link. The timer constructor inline
+also imports the real timer backend; the first stub blocks only the separate
+oslib dependency. Both failures remain recorded, without installed-QEMU or
+complete-package credit. A second typed inactive-pool stub correction is under
+source review.
 
 Corresponding-source assembly also unnecessarily pulls Cargo and Git into a
 registry-only vendoring operation. A supplied lockfile now selects the required
@@ -4682,10 +4691,24 @@ retained birth obligations. This is component evidence; the full native simulato
 has not been rebuilt with the correction.
 
 The selected configuration also contains a 1,280-entry L2 TLB, exceeding the
-current 1,024-entry account. A separate source correction preserves that default,
+current 1,024-entry account. A separate correction preserves that default,
 reserves sixteen 1,280-entry banks before object construction, and checks the
-actual declared extent and complete owner/index correspondence. Its component
-controls and fresh full simulator build remain pending.
+actual declared extent and complete owner/index correspondence. Nine fresh
+component controls pass on eight exact production method bodies and current
+headers. Independent review verifies all six selected compiler dependency
+bodies, the emitted ELF and exact runtime control names. The component observes
+452,520 bytes for the scope and 328,192 bytes for its table backing; scalar
+bookkeeping and object identities remain test fixtures.
+
+Native compilation and its complete corresponding source now have a separate
+producer from host fixtures and source enrichment. Public packages retain both
+native outputs and verify that their ELF is an exact copy. Earlier eight-variant
+evaluation verifies that fixture-only edits preserve native derivation identity,
+while a native command change alters it. The coherent current source passes the
+ordinary package catalog and registered derivation checks. Its fresh native
+compiler is `jrmwlbjxqllw5p1sg1pwvxdvjslvziby`, with a separate public wrapper and
+mandatory native-scope check. The full local ALL build is underway; neither
+component controls nor derivation evaluation qualify its result.
 
 ## Complete SDK composition qualification
 
