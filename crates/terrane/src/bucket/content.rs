@@ -3,6 +3,8 @@
 #[cfg(all(feature = "tokio", unix))]
 pub(in crate::bucket) mod current_node_reads;
 #[cfg(all(feature = "tokio", unix))]
+pub(in crate::bucket) mod direct_node_reads;
+#[cfg(all(feature = "tokio", unix))]
 pub(in crate::bucket) mod held_nodes;
 mod member_reads;
 mod meta_batch;

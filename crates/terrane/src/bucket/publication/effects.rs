@@ -44,6 +44,9 @@ pub(crate) use retained_read::{PayloadReadCapture, RetainedPayloadRead};
 #[path = "effects/current_history_inputs.rs"]
 mod current_history_inputs;
 #[cfg(all(feature = "tokio", unix))]
+#[path = "effects/direct_history_inputs.rs"]
+mod direct_history_inputs;
+#[cfg(all(feature = "tokio", unix))]
 #[path = "effects/history_inputs.rs"]
 mod history_inputs;
 #[cfg(all(feature = "tokio", unix))]

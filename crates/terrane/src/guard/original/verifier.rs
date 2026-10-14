@@ -35,6 +35,8 @@ mod cold;
 #[cfg(all(feature = "tokio", unix))]
 mod current;
 #[cfg(all(feature = "tokio", unix))]
+mod direct;
+#[cfg(all(feature = "tokio", unix))]
 mod held;
 #[cfg(all(feature = "tokio", unix))]
 mod read_configuration;

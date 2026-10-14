@@ -287,6 +287,17 @@ The shared bounded group registry now names selected GET preparation, canonical
 decode/memo and catalog artifact work for a separate test-only diagnostic.
 Fresh reads, full history, Original/current checks and independent accounting
 remain required; no performance fix or task acceptance is claimed.
+The six-file read-preparation refinement is frozen at `1fb5bb48ccea`
+(tree `cbd7de3fe0de`) after complete coordinator and independent source review.
+Its decoder groups exclude binding checks and digest work; catalog artifact
+reads, verification and shard decoding are distinct. Fresh compiler
+qualification runs in that isolated worktree; runtime remains unstarted.
+Separate T-PROV-1/T-DRV-2 implementation and regression worklines prepare an
+ordinary immutable-history reader. It must preserve each complete walk,
+actual caller inputs, Original records and invocation-local physical closing;
+historical targets need not equal the current ref. Shared private module
+registrations provide no completion or authorization. Existing current, held,
+candidate, maintenance and paired scopes retain their existing routes.
 The unfiltered SDK qualification must retain all 1,121 actual cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
 cases. Application test-target compilation and strict Clippy/private rustdoc for

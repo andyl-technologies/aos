@@ -24,6 +24,8 @@ pub(crate) mod cold_fork;
 mod consumed;
 #[cfg(all(feature = "std", feature = "tokio", unix))]
 mod current_history;
+#[cfg(all(feature = "std", feature = "tokio", unix))]
+pub(crate) mod direct_history;
 #[cfg(feature = "std")]
 pub(crate) use consumed::registration as consumed_registration;
 #[cfg(all(feature = "std", feature = "tokio", unix))]
