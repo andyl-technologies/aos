@@ -31,12 +31,12 @@ use aos_sandbox_linux::seqpacket::{
 };
 use aos_sandbox_protocol::PeerCredentials;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
+use aos_sandbox_protocol::authenticated_session::historical_checkpoint::HistoricalSessionCheckpointV1;
 
 use crate::recovery::{
     ArchivedStorageInventoryHeadV1, AuthenticatedOriginalHostNoApplyJoinV1, FixedEndpointCustodyV1,
-    HistoricalSessionCheckpointV1, ProtectedBrokerSessionOwnerV1,
-    ProtectedPriorAtomicStorageHistoryV1, ProtectedPriorTerminalExchangeV1,
-    ProtectedVerifiedAtomicStorageHistoryV1,
+    ProtectedBrokerSessionOwnerV1, ProtectedPriorAtomicStorageHistoryV1,
+    ProtectedPriorTerminalExchangeV1, ProtectedVerifiedAtomicStorageHistoryV1,
 };
 use crate::{
     BrokerSessionSecurityError, ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1,
@@ -1704,13 +1704,16 @@ impl RetainedStorageColdOpenV1 {
             gid: credentials.gid(),
             pid: Some(credentials.pid().get()),
         };
-        self.checkpoint = Some(HistoricalSessionCheckpointV1::new(
-            context,
-            &self.verified.client_packet,
-            &self.verified.broker_packet,
-            peer,
-            transcript,
-        )?);
+        self.checkpoint = Some(
+            HistoricalSessionCheckpointV1::new(
+                context,
+                &self.verified.client_packet,
+                &self.verified.broker_packet,
+                peer,
+                transcript,
+            )
+            .map_err(BrokerSessionSecurityError::from)?,
+        );
         self.deadline.check()?;
 
         #[cfg(feature = "online-nix")]
@@ -3178,7 +3181,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
     pub(super) fn historical_checkpoint_digest(
         &self,
     ) -> Result<[u8; 32], BrokerSessionSecurityError> {
-        self.checkpoint.digest()
+        self.checkpoint
+            .digest()
+            .map_err(BrokerSessionSecurityError::from)
     }
 
     pub(super) fn prior_verified_atomic_storage_history(
@@ -3821,7 +3826,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
             &broker_packet,
             peer,
             &transcript,
-        )?;
+        )
+        .map_err(BrokerSessionSecurityError::from)?;
         let owner = ProtectedBrokerSessionOwnerV1::from_fixed_custody(root, custody)?;
         Ok(Self {
             owner,

@@ -4,6 +4,8 @@
 //! omit configured paths, file bytes, seeds, public-key fingerprints, and
 //! manifest digests.
 
+use aos_sandbox_protocol::authenticated_session::historical_checkpoint::HistoricalCheckpointErrorV1;
+
 /// Reports a fail-closed protected-state or entropy failure.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum BrokerSessionSecurityError {
@@ -70,5 +72,12 @@ impl BrokerSessionSecurityError {
 
     pub(crate) const fn filesystem(object: &'static str, operation: &'static str) -> Self {
         Self::Filesystem { object, operation }
+    }
+}
+
+impl From<HistoricalCheckpointErrorV1> for BrokerSessionSecurityError {
+    fn from(_: HistoricalCheckpointErrorV1) -> Self {
+        // Historical DATA failures retain the protected owner's redacted class.
+        Self::Currentness
     }
 }

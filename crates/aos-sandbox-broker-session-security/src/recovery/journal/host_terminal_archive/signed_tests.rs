@@ -47,6 +47,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     prepare_client_sent_authenticated_broker_method_request_v1,
     prepare_server_sent_authenticated_broker_method_outcome_v1,
 };
+use aos_sandbox_protocol::authenticated_session::historical_checkpoint::HistoricalSessionCheckpointV1;
 use aos_sandbox_protocol::host_execution_no_apply::{
     HostExecutionNoApplyRecordFieldsV1, HostExecutionNoApplyRecordV1,
     decode_host_no_apply_settlement_request_v2, match_archived_host_no_apply_outcome_v2,
@@ -74,7 +75,6 @@ use super::super::{JournalOwnerV1, ProtectedEndpointV1};
 use super::*;
 use crate::endpoint::{ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1};
 use crate::manifest::BrokerSessionSecurityAudienceV1;
-use crate::recovery::HistoricalSessionCheckpointV1;
 use crate::test_signed_endpoint::{
     TestEndpointRole, install_endpoint, manifest_and_secrets_for_audience,
 };

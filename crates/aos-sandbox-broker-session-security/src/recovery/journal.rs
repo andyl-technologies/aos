@@ -8,7 +8,6 @@
 //! current-session authority still requires the live endpoint before and after
 //! every read.
 
-mod historical_checkpoint;
 mod host_terminal_archive;
 mod owner;
 mod operator_repair_history;
@@ -32,7 +31,6 @@ pub(crate) use tpm_floor::{
 pub(crate) use tpm_floor::ModePinV1;
 pub use storage_inventory_archive::ArchivedStorageInventoryHeadV1;
 
-pub(crate) use historical_checkpoint::HistoricalSessionCheckpointV1;
 use owner::JournalOwnerV1;
 pub(crate) use pending_request::ProtectedPendingBrokerRequestCutV1;
 pub use original_create_failure::RetainedFailedCreateOriginalsDataV3;
@@ -60,6 +58,9 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedHostNoApplyReadbackV1,
     admit_client_received_authenticated_broker_method_outcome_v1,
     authenticated_semantic_bindings_from_envelope_v1,
+};
+use aos_sandbox_protocol::authenticated_session::historical_checkpoint::{
+    HistoricalSessionCheckpointV1, MAXIMUM_BYTES as MAXIMUM_HISTORICAL_CHECKPOINT_BYTES,
 };
 use aos_sandbox_protocol::authenticated_session::stored_history::{
     KEY_MAGIC, VALUE_FIXED_BYTES_V3, VALUE_VERSION_V2, VALUE_VERSION_V3,
@@ -505,7 +506,7 @@ pub(crate) enum ProtectedBrokerReceivedRequestAdmissionV1 {
 fn protected_session_journal_limits() -> JournalLimits {
     let maximum_record_bytes = BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES
         + VALUE_FIXED_BYTES_V3
-        + historical_checkpoint::MAXIMUM_BYTES
+        + MAXIMUM_HISTORICAL_CHECKPOINT_BYTES
         + 1024;
     JournalLimits {
         maximum_journal_bytes: 4 * 1024 * 1024 * 1024,
@@ -3250,7 +3251,9 @@ impl ProtectedBrokerSessionOwnerV1 {
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
-        checkpoint.encode_bounded(maximum_bytes)
+        checkpoint
+            .encode_bounded(maximum_bytes)
+            .map_err(BrokerSessionSecurityError::from)
     }
 
     pub(crate) fn revalidate_broker_replay(
@@ -6387,10 +6390,7 @@ impl StoredProtocolHistoryV1 {
             current_catalog: self.current_catalog,
             current_head: self.current_head,
             history: &self.history,
-            checkpoint: self
-                .checkpoint
-                .as_ref()
-                .map(HistoricalSessionCheckpointV1::as_canonical),
+            checkpoint: self.checkpoint.as_ref(),
         }
         .encode()
         .map_err(|_| BrokerSessionSecurityError::Currentness)
@@ -6409,9 +6409,7 @@ impl StoredProtocolHistoryV1 {
             current_catalog: stored.current_catalog,
             current_head: stored.current_head,
             history: stored.history,
-            checkpoint: stored
-                .checkpoint
-                .map(HistoricalSessionCheckpointV1::from_canonical),
+            checkpoint: stored.checkpoint,
         })
     }
 }
