@@ -4665,8 +4665,19 @@ registry-only vendoring operation. A supplied lockfile now selects the required
 tools, and both stages authenticate its exact raw bytes before vendoring effects.
 Nine Python controls pass, including changed source and cached lockfiles, same
 verified-byte parsing/copying, unchanged Git metadata routing, actual tiny
-registry archive extraction and checksum rejection. Nix dependency pruning and
-the current fixed-output content hash still need actual qualification.
+registry archive extraction and checksum rejection. Actual recursive derivation
+inspection now finds zero Rust, LLVM or Git producers in this source-assembly
+graph. All 639 registry archives match the current lockfile checksums; their
+reconstructed source cache has a verified complete 101,856,240-byte NAR with
+SHA256 `84df342660e9ec342c2aa74d2630a4f624802bb211cb3ae0aad8e44909fa6481`.
+The corresponding provider dependency edge and workspace staging hash change
+together. The real pure-vendor builder then passes and produces a registered
+712,189,328-byte vendor NAR, with the exact current lockfile and 639 expanded
+crate/checksum records. Full source and vendor NAR inspection pass. The temporary
+reconstructed source tree is removed; original caches remain unchanged.
+Network stage1 execution, complete matching QEMU source-bundle realization and
+release qualification remain separate. This removes unnecessary build inputs;
+it does not establish a guest-runtime speedup.
 
 ## Full gem5 production build and ownership check
 

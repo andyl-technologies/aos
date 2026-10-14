@@ -38,6 +38,7 @@ path = "src/bin/crucible-reference-progress-provider.rs"
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 blake3 = { workspace = true }
 crucible-node-contract = { workspace = true }
 serde = { workspace = true }
