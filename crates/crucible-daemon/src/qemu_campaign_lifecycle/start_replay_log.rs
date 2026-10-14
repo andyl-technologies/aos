@@ -18,6 +18,11 @@ pub(super) fn append_start_replay_events<F, D>(
         .checked_add(entries.len())
         .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-entry-count"))?;
     if count > MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES {
+        crate::qemu_campaign_driver::report_event_log_budget_exhaustion(
+            "fresh-campaign-event-log-entry-count",
+            &replay.event_log,
+            entries,
+        );
         return Err(AttemptWorkerFailure::Terminal(
             QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::LimitExceeded {
                 limit: "fresh-campaign-event-log-entry-count",
@@ -34,6 +39,11 @@ pub(super) fn append_start_replay_events<F, D>(
         .checked_add(added)
         .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-bytes"))?;
     if bytes > MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES {
+        crate::qemu_campaign_driver::report_event_log_budget_exhaustion(
+            "fresh-campaign-event-log-bytes",
+            &replay.event_log,
+            entries,
+        );
         return Err(AttemptWorkerFailure::Terminal(
             QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::LimitExceeded {
                 limit: "fresh-campaign-event-log-bytes",

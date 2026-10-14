@@ -54,6 +54,11 @@ pub(super) fn append_event_entries(
         },
     )?;
     if total > MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES {
+        report_event_log_budget_exhaustion(
+            "fresh-campaign-event-log-entry-count",
+            event_log,
+            &entries,
+        );
         return Err(QemuFreshModeledDriverError::LimitExceeded {
             limit: "fresh-campaign-event-log-entry-count",
         });
@@ -71,6 +76,7 @@ pub(super) fn append_event_entries(
         },
     )?;
     if total_bytes > MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES {
+        report_event_log_budget_exhaustion("fresh-campaign-event-log-bytes", event_log, &entries);
         return Err(QemuFreshModeledDriverError::LimitExceeded {
             limit: "fresh-campaign-event-log-bytes",
         });

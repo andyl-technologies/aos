@@ -58,6 +58,7 @@ use crate::{
 };
 
 mod envoy_boot;
+mod event_log_budget_report;
 mod event_log_retention;
 mod network_fault_boundary;
 #[path = "qemu_campaign_driver/observation_candidate.rs"]
@@ -69,6 +70,7 @@ mod stop_boundary;
 
 use envoy_boot::EnvoyParallelBoot;
 pub(crate) use envoy_boot::{envoy_choice_free_boot_replay_eligible, west_convergence_marker_seen};
+pub(crate) use event_log_budget_report::report_event_log_budget_exhaustion;
 use event_log_retention::{RetainedChoiceDiscoveries, append_event_entries, append_quantum};
 
 #[cfg(test)]
