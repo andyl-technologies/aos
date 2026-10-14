@@ -442,6 +442,19 @@ compilation, all four witnesses and owning gates remain pending. A separate
 six-phase Core renewal on the unchanged `072e70ada83e` source is authorized
 after the finer diagnostic is sealed and independently reviewed. No task,
 milestone or freeze advances.
+That Core renewal passes all six phases: build, all-target no-default
+compilation, strict Clippy, binary discovery, inventory and the complete default
+Nextest run. All 770 tests pass with none skipped or ignored; the eleven fresh
+executables retain exactly the previous test identities. Independent review
+verifies all 163 sealed payloads, unchanged source and compiler inputs, all 22
+original/copied executable bindings and preserved scratch. The collector and
+test-only stage-timing changes are composed privately at `ef17318fac44`
+(tree `f03c99d160d4`). Source review preserves the existing verbose diagnostics
+and adds a quieter value of the same flag, with separate diagnostic clock
+samples and no deadline changes. Fresh thirteen-phase compiler qualification
+starts on this frozen source; its expected inventory retains all 1,131 existing
+tests and exactly four new collector witnesses. Compiler completion and every
+runtime result on this candidate remain pending; no task is accepted.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
