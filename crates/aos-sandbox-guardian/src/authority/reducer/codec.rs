@@ -856,12 +856,14 @@ impl Writer {
 struct Reader<'a> {
     reader: BoundedReader<'a, GuardianReducerError>,
 }
+
 impl<'a> Reader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Self {
             reader: BoundedReader::new(bytes, |_| GuardianReducerError::ObservationMismatch),
         }
     }
+
     fn boolean(&mut self) -> Result<bool, GuardianReducerError> {
         match self.reader.u8()? {
             0 => Ok(false),
@@ -869,12 +871,15 @@ impl<'a> Reader<'a> {
             _ => Err(GuardianReducerError::ObservationMismatch),
         }
     }
+
     fn optional_digest(&mut self) -> Result<Option<ObjectDigest>, GuardianReducerError> {
         self.optional(|input| input.reader.digest())
     }
+
     fn optional_u64(&mut self) -> Result<Option<u64>, GuardianReducerError> {
         self.optional(|input| input.reader.u64())
     }
+
     fn optional<T>(
         &mut self,
         decode: fn(&mut Self) -> Result<T, GuardianReducerError>,
@@ -885,6 +890,7 @@ impl<'a> Reader<'a> {
             _ => Err(GuardianReducerError::ObservationMismatch),
         }
     }
+
     fn sequence<T>(
         &mut self,
         maximum_count: usize,
@@ -894,10 +900,12 @@ impl<'a> Reader<'a> {
         if count > maximum_count {
             return Err(GuardianReducerError::Exhausted);
         }
+
         let mut values = Vec::with_capacity(count);
         for _ in 0..count {
             values.push(decode(self)?);
         }
+
         Ok(values)
     }
 }
