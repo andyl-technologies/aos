@@ -106,6 +106,15 @@ filter = 'package(terrane) & (test(=gc::runner::tests::local_ownership::ownershi
 threads-required = "num-test-threads"
 slow-timeout = { period = "60s", terminate-after = 3 }
 
+# This ancestry case publishes and marks real native overlays, waits the full
+# sixty-second deletion window, then completes durable deletion and two reopen
+# checks. Its trace reaches that wait after 45 seconds and finishes ownership
+# at 110 seconds. Allow a bounded third runner minute for the remaining work;
+# commit, grace, deletion, retention and live lease clocks remain unchanged.
+[[profile.default.overrides]]
+filter = 'package(terrane) & test(=gc::runner::walk::tests::native::overlays::signed_overlay_layer_ancestry_survives_collection_and_reopen)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 # These native collector matrices complete six fault or handoff fixtures, or
 # reopen and reconcile two cycles. Their isolated Nix runs take 135-166 seconds.
 # Reserve the slots and allow a third minute without changing operation clocks.

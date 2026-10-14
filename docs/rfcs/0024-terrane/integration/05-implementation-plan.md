@@ -556,8 +556,16 @@ ignored. Under the unchanged normal limits, the repaired physical matrix passes
 in 23.234 seconds and indexed overlay replay passes in 107.272 seconds; ancestry
 collection still times out at 120 seconds. Coordinator review verifies all 95
 runtime payloads and preserved scratch. A separate ancestry diagnostic remains
-outside normal qualification. Ancestry diagnosis, owning gates, final-source
-qualification and task acceptance remain required.
+outside normal qualification. Its verified trace spends 45.043 seconds before
+the full 60.530-second deletion wait and completes native ownership at 109.997
+seconds; checked local deletion remains unfinished at the runner timeout.
+Normative review by the coordinator and an independent reviewer confirms that
+120 seconds is the general Nextest default, not an RFC ancestry latency limit. An
+exact-selector override permits a finite third runner minute, following the
+existing real-wait cases, while retaining C=30, G=60, D=60, retention=90,
+all live lease checks and every assertion. This configuration correction needs
+fresh qualification and does not convert any earlier timeout into a pass.
+Owning gates, final-source qualification and task acceptance remain required.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
