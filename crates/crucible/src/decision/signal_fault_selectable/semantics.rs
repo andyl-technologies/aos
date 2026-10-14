@@ -13,7 +13,8 @@ use crucible_campaign::{
 
 use super::SignalFaultSelectableError;
 use crate::model::{
-    BindingSearchCandidateSemantics, MappedEffectParameter, parse_canonical_candidate_index,
+    BindingSearchCandidate, BindingSearchCandidateSemantics, MappedEffectParameter,
+    parse_canonical_candidate_index,
 };
 
 const SIGNAL_FAULT_DOMAIN_VERSION: u32 = 1;
@@ -185,6 +186,33 @@ impl SignalFaultChoiceSemantics {
                 .and_then(|index| u32::try_from(index).ok())
                 .ok_or(SignalFaultSelectableError::CandidateOutsideDomain),
             _ => Err(SignalFaultSelectableError::CandidateOutsideDomain),
+        }
+    }
+
+    // The promoted owner validates count, uniqueness, and the unmodified
+    // sentinel before publication and exposes no mutable semantic access.
+    // Copy only the selected typed data; raw public choices still revalidate.
+    pub(super) fn runtime_candidate(&self, index: u32) -> Option<BindingSearchCandidate> {
+        let position = usize::try_from(index).ok()?;
+        match self {
+            Self::Outcome if index < 2 => Some(BindingSearchCandidate::Outcome(index == 1)),
+            Self::Transition(candidates) => candidates
+                .get(position)
+                .copied()
+                .map(content_hash)
+                .map(BindingSearchCandidate::Transition),
+            Self::Parameter {
+                parameter,
+                candidates,
+            } => candidates
+                .get(position)
+                .copied()
+                .map(content_hash)
+                .map(|identity| BindingSearchCandidate::Parameter {
+                    parameter: *parameter,
+                    identity,
+                }),
+            Self::Outcome => None,
         }
     }
 

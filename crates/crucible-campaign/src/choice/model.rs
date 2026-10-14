@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use crate::choice::domain::{ChoiceDomain, ChoiceValue};
+use crate::choice::owned_domain::ImmutableChoiceDomain;
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
@@ -572,6 +573,36 @@ impl ChoiceOpportunity {
         })
     }
 
+    /// Builds an opportunity and retains its same immutable owned domain.
+    ///
+    /// The ordinary constructor performs every check in its original order.
+    /// Only after it succeeds are the same domain and the identities already
+    /// computed there moved into a read-only data owner. No caller-provided
+    /// identity is accepted as a substitute for those domain bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::new`], at the same constructor stage.
+    pub fn new_with_owned_domain(
+        scenario: ScenarioDefId,
+        declaration: &SelectableDeclaration,
+        offered_domain: ChoiceDomain,
+        coordinate: ChoiceCoordinate,
+        instance: impl Into<String>,
+        model_prior: Option<ProbabilityModelId>,
+    ) -> Result<(Self, ImmutableChoiceDomain), CampaignCodecError> {
+        let opportunity = Self::new(
+            scenario,
+            declaration,
+            &offered_domain,
+            coordinate,
+            instance,
+            model_prior,
+        )?;
+        let domain = ImmutableChoiceDomain::from_constructor(offered_domain, &opportunity);
+        Ok((opportunity, domain))
+    }
+
     /// Returns the scenario in which this occurrence exists.
     #[must_use]
     pub const fn scenario(&self) -> ScenarioDefId {
@@ -1014,6 +1045,37 @@ impl Selection {
         )
     }
 
+    /// Builds a branch selection against the same immutable owned domain.
+    ///
+    /// Constructor-derived identities are data shortcuts for this owner's
+    /// bytes. Opportunity agreement and value membership are still checked;
+    /// the ordinary raw-domain constructor remains independently validated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for opportunity/domain/value disagreement
+    /// or an invalid opportunity identity, matching [`Self::new_campaign_branch`].
+    pub fn new_campaign_branch_owned_domain(
+        opportunity: &ChoiceOpportunity,
+        domain: &ImmutableChoiceDomain,
+        value: ChoiceValue,
+        branch_point: BranchPointId,
+    ) -> Result<Self, CampaignCodecError> {
+        let edge = Self::campaign_edge_id(branch_point, domain.semantic_id(), &value);
+        if domain.id() != opportunity.domain() || !domain.as_domain().contains(&value) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "selection value or domain disagrees with its opportunity",
+            });
+        }
+        Ok(Self {
+            schema_version: SELECTION_SCHEMA_VERSION,
+            opportunity: opportunity.id()?,
+            domain: domain.id(),
+            value,
+            origin: SelectionOrigin::CampaignBranch { branch_point, edge },
+        })
+    }
+
     fn new_with_validated_origin(
         opportunity: &ChoiceOpportunity,
         domain: &ChoiceDomain,
@@ -1178,23 +1240,35 @@ impl Selection {
         branch_point: BranchPointId,
     ) -> Result<(), CampaignCodecError> {
         validate_base_replay(self, opportunity, domain)?;
-        let SelectionOrigin::CampaignBranch {
-            branch_point: stored_point,
-            edge,
-        } = self.origin
-        else {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "selection is not a campaign branch",
-            });
-        };
-        if stored_point != branch_point
-            || edge != derive_branch_edge(branch_point, domain.semantic_id(), &self.value)
+        validate_branch_origin(self, branch_point, || domain.semantic_id())
+    }
+
+    /// Revalidates a branch against an immutable constructor-owned domain.
+    ///
+    /// Opportunity, domain, opportunity-domain, and value checks preserve the
+    /// ordinary replay order, followed by origin and branch-point/edge checks.
+    /// Derived data identities grant no source or execution permission.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same replay or edge mismatch errors as
+    /// [`Self::validate_branch_replay`] for this owner's exact domain bytes.
+    pub fn validate_branch_replay_owned_domain(
+        &self,
+        opportunity: &ChoiceOpportunity,
+        domain: &ImmutableChoiceDomain,
+        branch_point: BranchPointId,
+    ) -> Result<(), CampaignCodecError> {
+        if selection_replay_mismatch_by_identity(self, opportunity, domain.as_domain(), || {
+            Ok(domain.id())
+        })?
+        .is_some()
         {
             return Err(CampaignCodecError::InvalidValue {
-                reason: "selection branch edge does not match its point/domain/value",
+                reason: "selection replay identity or domain mismatch",
             });
         }
-        Ok(())
+        validate_branch_origin(self, branch_point, || domain.semantic_id())
     }
 
     /// Revalidates cross-object identity, legality, and self-contained origin data.
@@ -1303,10 +1377,19 @@ fn selection_replay_mismatch_kind(
     opportunity: &ChoiceOpportunity,
     domain: &ChoiceDomain,
 ) -> Result<Option<SelectionReplayMismatchKind>, CampaignCodecError> {
+    selection_replay_mismatch_by_identity(selection, opportunity, domain, || domain.id())
+}
+
+fn selection_replay_mismatch_by_identity(
+    selection: &Selection,
+    opportunity: &ChoiceOpportunity,
+    domain: &ChoiceDomain,
+    identity: impl FnOnce() -> Result<ChoiceDomainId, CampaignCodecError>,
+) -> Result<Option<SelectionReplayMismatchKind>, CampaignCodecError> {
     if selection.opportunity != opportunity.id()? {
         return Ok(Some(SelectionReplayMismatchKind::OpportunityIdentity));
     }
-    if selection.domain != domain.id()? {
+    if selection.domain != identity()? {
         return Ok(Some(SelectionReplayMismatchKind::DomainIdentity));
     }
     if selection.domain != opportunity.domain() {
@@ -1316,6 +1399,30 @@ fn selection_replay_mismatch_kind(
         return Ok(Some(SelectionReplayMismatchKind::ValueOutsideDomain));
     }
     Ok(None)
+}
+
+fn validate_branch_origin(
+    selection: &Selection,
+    branch_point: BranchPointId,
+    semantic_identity: impl FnOnce() -> ChoiceDomainSemanticId,
+) -> Result<(), CampaignCodecError> {
+    let SelectionOrigin::CampaignBranch {
+        branch_point: stored_point,
+        edge,
+    } = selection.origin
+    else {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "selection is not a campaign branch",
+        });
+    };
+    if stored_point != branch_point
+        || edge != derive_branch_edge(branch_point, semantic_identity(), &selection.value)
+    {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "selection branch edge does not match its point/domain/value",
+        });
+    };
+    Ok(())
 }
 
 fn derive_branch_edge(

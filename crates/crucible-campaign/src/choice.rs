@@ -4,6 +4,7 @@ mod domain;
 mod group;
 mod group_evidence;
 mod model;
+mod owned_domain;
 
 pub use domain::{
     BooleanDomain, ChoiceDomain, ChoiceValue, DiscreteAlternative, DiscreteDomain, IntegerDomain,
@@ -19,3 +20,5 @@ pub use model::{
     ModelSampleVerifier, SelectableDeclaration, Selection, SelectionOrigin,
     SelectionReplayMismatch, SelectionReplayMismatchKind,
 };
+
+pub use owned_domain::ImmutableChoiceDomain;

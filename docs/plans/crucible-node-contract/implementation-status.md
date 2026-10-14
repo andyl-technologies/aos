@@ -4131,6 +4131,47 @@ pair is not a repeated statistical benchmark, a Linux-boot improvement or a
 current-HEAD full-suite result; native qualification and final boot comparisons
 remain separate.
 
+## Immutable signal-fault choice domains
+
+Signal-fault opportunities now move one validated immutable domain into their
+owned basis and retain its original domain and semantic identities. Branch and
+replay helpers use that same read-only basis. Public mutable and deserialized
+domains still undergo full validation. Canonical bytes, error order, Debug
+output and raw-domain replay behavior remain covered by parity controls; these
+cached data identities grant no source, capability or backend permission.
+
+The preceding indexed implementation's maximum-frontier Callgrind run counts
+141,913,276,238 instructions. Disjoint direct edges attribute 61.075% to domain
+identity, 14.010% to semantic identity and 22.939% to roster validation (98.023%
+combined). Independent review
+`bce2d80759358eef42c1ea323a08b5313cd9aab0ee538db2fbfb8634f1b20394`
+checks the original trace and avoids double-counting inclusive call paths. This
+is instrumented instruction/call attribution, not CPU-time or allocation-count
+measurement. It identifies repeated immutable-data work removed by this stage.
+
+Independent actual review
+`8d7f3024e5efe3137ecdc7b94f38ee3b43c728382bff5764e30f595328a9f675`
+verifies strict all-target/all-feature checks, fresh Core and Campaign binaries,
+fourteen focused Core passes, one ownership compile-fail doctest, and five new
+Campaign passes. The qualification source is the committed 9,629-file parent
+plus seven changes, including one new file. The original full Campaign run
+remains failed at its 600-second limit: 314 passes and 141 unfinished cases,
+without a reported assertion failure. A separately bounded continuation covers
+those 141 cases; it is pending here. The completed geometry test's buffered
+numeric output was not emitted, so no numeric geometry result is inferred.
+
+One matched maximum-frontier pair preserves the original assertions and test
+profile: wall time changes from 9.824600 to 0.205217 seconds (47.87x), and
+wait-derived child CPU from 9.687800 to 0.173254 seconds (55.92x). The baseline
+is the previously qualified indexed binary; 35 unrelated later source changes
+are disclosed. Wall time includes 0.2-second polling granularity and uncontrolled
+host load. Receipt
+`e865ae828b8a2412e397854ea6935bba11b8fde2b4dbb9c0cf85efa4fa2ed71b`
+retains source, original waits, both binaries and the incomplete Campaign run.
+This pair does not establish a full-suite pass, overall complexity bound,
+allocator peak, Linux-boot gain or native-backend qualification. Raw profiles
+and qualification artifacts remain local and outside repository publication.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

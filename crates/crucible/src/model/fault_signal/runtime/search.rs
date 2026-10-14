@@ -158,20 +158,40 @@ impl BindingSearchChoice {
         parent_branch: ContentHash,
         candidate_index: u32,
     ) -> Option<OverrideDecision> {
-        let semantic_tag = self.candidate_semantics.candidate(candidate_index)?.tag();
-        Some(OverrideDecision {
+        let candidate = self.candidate_semantics.candidate(candidate_index)?;
+        Some(Self::materialize_candidate_decision(
+            self.id,
+            self.candidates_digest,
+            parent_branch,
+            candidate_index,
+            candidate,
+        ))
+    }
+
+    // Formatting typed data is not validation or authority. Public mutable
+    // choices validate their complete roster before reaching this helper;
+    // immutable promoted owners already validated their private owned roster.
+    pub(crate) fn materialize_candidate_decision(
+        choice: SearchChoiceId,
+        candidates_digest: ContentHash,
+        parent_branch: ContentHash,
+        candidate_index: u32,
+        candidate: BindingSearchCandidate,
+    ) -> OverrideDecision {
+        let semantic_tag = candidate.tag();
+        OverrideDecision {
             point: SchedulingPoint {
                 key: format!(
                     "signal-fault/{}/{}/{}",
                     parent_branch.to_hex(),
-                    self.id.content_hash().to_hex(),
-                    self.candidates_digest.to_hex()
+                    choice.content_hash().to_hex(),
+                    candidates_digest.to_hex()
                 ),
             },
             choice: ChoiceTag {
                 name: format!("candidate/{candidate_index}/{semantic_tag}"),
             },
-        })
+        }
     }
 }
 

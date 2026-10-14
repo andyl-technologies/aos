@@ -108,10 +108,10 @@ pub use choice::{
     BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceGroup,
     ChoiceGroupApplication, ChoiceGroupConstraintEvidence, ChoiceGroupConstraintResult,
     ChoiceGroupDomain, ChoiceGroupValue, ChoiceOpportunity, ChoiceRelationalConstraint,
-    ChoiceSource, ChoiceTuple, ChoiceValue, DiscreteAlternative, DiscreteDomain, IntegerDomain,
-    IntegerRepresentation, IntegerValue, ModelSampleEvidence, ModelSampleVerifier,
-    SelectableDeclaration, Selection, SelectionOrigin, SelectionReplayMismatch,
-    SelectionReplayMismatchKind,
+    ChoiceSource, ChoiceTuple, ChoiceValue, DiscreteAlternative, DiscreteDomain,
+    ImmutableChoiceDomain, IntegerDomain, IntegerRepresentation, IntegerValue, ModelSampleEvidence,
+    ModelSampleVerifier, SelectableDeclaration, Selection, SelectionOrigin,
+    SelectionReplayMismatch, SelectionReplayMismatchKind,
 };
 pub use codec::CampaignCodecError;
 pub use execution::{
