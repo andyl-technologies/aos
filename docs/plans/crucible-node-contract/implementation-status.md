@@ -3956,6 +3956,32 @@ budget. Tree/control-block/allocator layout and native physical storage remain
 separately admitted; this data codec does not install state, select a whole
 profile or qualify native Capture, factory adoption or Ready.
 
+## Original vmalloc metadata and deferred cleanup lifecycle
+
+The additive kernel stage retains the original vm_struct allocation lease and
+generation before native metadata allocation. Deferred cleanup records the
+actual work item and method before list publication; enqueue, accepted schedule,
+running callback, Closing and callback return remain distinct. Closing precedes
+native free. A retained generation token prevents late publication from following
+a reused or already-freed area address. Observers run outside native locks under
+an allocation-refusal guard and retain original charges and references.
+
+Independent source receipt
+`02c6d70cb309950c582a3b420c9068d20e14da9c5618bf2683d271a255368876`
+verifies three configured translation units, 18 modeled positive controls and six
+source erasures. Independent package receipt
+`5358b1ca861ec4984087724095e65afa139c82d74b07a21928e342e7edee5a43`
+verifies the five exact package roles, unchanged prior 34 patch payloads and
+zero-fuzz, zero-offset replay of all 35 stages and 170 terminal source roles.
+The modified upstream vmalloc file retains its GPL-2.0-only notice.
+
+Recorded alignment precedes IOREMAP transformation and is not complete effective
+vmap geometry. Full backing, IRQ/perCPU cleanup, cancellation, flush, hotplug and
+physical retirement remain open. Coverage stays 1/2047, with no continuation
+issuer and selected CREATE refused before descriptor allocation. These component
+and source-replay checks do not qualify full Kbuild, linking, native workqueue
+execution, physical peak, RUN or Ready.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

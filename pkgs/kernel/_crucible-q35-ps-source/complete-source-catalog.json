@@ -871,8 +871,8 @@
     {
       "path": "include/linux/crucible_allocator.h",
       "identity": {
-        "sha256": "a26c8aaf4b59c622d9b0ec3ffd530bb787173bf1bc3a4536911b4207166817a8",
-        "bytes": 3581
+        "sha256": "6aeb7225f81afcbe61fa9a29ad72fc154df8b7c2d4d5b79b106beb3ef39cdbd6",
+        "bytes": 6207
       }
     },
     {
@@ -1046,8 +1046,8 @@
     {
       "path": "mm/crucible_allocator.c",
       "identity": {
-        "sha256": "f5ffdc6510c064ed19a031d27f395e4c6e64937f862e8797172871dfdf0daac4",
-        "bytes": 7569
+        "sha256": "063cc398a61a17dbf15222d00880343193e86b674917fc96876a2a2f18f521ab",
+        "bytes": 18897
       }
     },
     {
@@ -1062,6 +1062,13 @@
       "identity": {
         "sha256": "04f2408f4f115e38a2482eac4188918e90cdbe0b7ee56059c28a0118bee95bc8",
         "bytes": 256134
+      }
+    },
+    {
+      "path": "mm/vmalloc.c",
+      "identity": {
+        "sha256": "048bbee6e6729ea5d8ea79081c3ddecb2c2336f1dbccea9d516f32142067b6e0",
+        "bytes": 150202
       }
     },
     {
@@ -1116,8 +1123,8 @@
     {
       "path": "virt/kvm/crucible-original-kernel-resource.inc.c",
       "identity": {
-        "sha256": "2399d68fdd1eaace2d4d28f64478a4f9beea406948224ffa58f6e322cba02897",
-        "bytes": 29892
+        "sha256": "1ff5eaaf981395eb76bad27e05bbe2266901ffd5a483320f157fece7170efb52",
+        "bytes": 34349
       }
     },
     {

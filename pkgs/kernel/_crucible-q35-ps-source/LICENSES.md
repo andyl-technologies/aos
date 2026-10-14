@@ -96,3 +96,19 @@ allocation/cleanup outcomes. Request reservation and final-pointer observation
 do not complete physical peak or backing retirement. Constructor coverage stays
 bit0, required coverage stays 2047, and no selected CREATE/RUN/Ready permission
 is issued. The complete source/config/toolchain retention policy is unchanged.
+
+Source43 modifies the existing native vmalloc file and existing private allocator
+header/core and kernel resource include. No source file is added or removed; all
+per-file notices remain intact. Its original vm_struct birth, exact deferred work
+and cleanup receiver tokens remain kernel-private. Callback return is not
+physical backing retirement; original Unknown charges/references stay held.
+
+| Modified existing native role | SPDX notice |
+| --- | --- |
+| `mm/vmalloc.c` | `GPL-2.0-only` |
+
+The selected source roster includes this existing upstream role from its exact
+archive preimage before every stage. Current coverage stays bit0, required
+coverage stays 2047, selected CREATE stays fenced before descriptor allocation,
+and no continuation/RUN/Ready permission is issued. Full native Kbuild, workqueue
+execution, physical budget and retirement remain unqualified.
