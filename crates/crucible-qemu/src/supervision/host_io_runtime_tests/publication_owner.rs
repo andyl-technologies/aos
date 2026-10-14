@@ -229,9 +229,15 @@ fn unavailable_initial_origin_expires_original_budget_without_a_run()
 
 /// Runs the original driver and real mapped channel; guest and native control
 /// publication are explicit providers, not an executed QEMU or QMP command.
+///
+/// `budget` bounds every driver phase. Completing runs use a generous budget
+/// so the responder thread's scheduling under parallel test load cannot fail
+/// them; the negative control keeps a short one because it waits out the
+/// timeout it asserts.
 fn drive_checkpoint_publication(
     initial_checkpoint: bool,
     fresh_coordinate: u64,
+    budget: Duration,
 ) -> Result<(crate::QemuAsyncNodeStepReport, usize), Box<dyn std::error::Error>> {
     use std::os::fd::AsFd;
 
@@ -244,12 +250,11 @@ fn drive_checkpoint_publication(
     }
     let mut notifications = mapped.notifications;
     notifications.set_nonblocking(false)?;
-    notifications.set_read_timeout(Some(Duration::from_secs(1)))?;
+    notifications.set_read_timeout(Some(budget.max(Duration::from_secs(1))))?;
     let responder =
         crucible_shmem::mmap_setup_region(mapped.file.as_fd(), mapped.layout.region_size)?;
     let (mut target, _hold_open) = owner_fixture(mapped.channel)?;
     let mut runtime = mapped.runtime;
-    let budget = Duration::from_millis(200);
     let policy = crate::QemuAsyncDriverPolicy::new(budget, budget, budget, budget);
 
     let writer = std::thread::spawn(move || -> Result<(), String> {
@@ -321,7 +326,8 @@ fn drive_checkpoint_publication(
 fn fresh_pause_before_first_poll_does_not_replace_original_checkpoint()
 -> Result<(), Box<dyn std::error::Error>> {
     for initial_checkpoint in [false, true] {
-        let (report, finishes) = drive_checkpoint_publication(initial_checkpoint, 200)?;
+        let (report, finishes) =
+            drive_checkpoint_publication(initial_checkpoint, 200, Duration::from_secs(5))?;
 
         assert!(matches!(
             report.outcome,
@@ -341,7 +347,7 @@ fn fresh_pause_before_first_poll_does_not_replace_original_checkpoint()
 #[test]
 fn same_coordinate_republication_does_not_release_original_checkpoint()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (report, finishes) = drive_checkpoint_publication(true, 100)?;
+    let (report, finishes) = drive_checkpoint_publication(true, 100, Duration::from_millis(200))?;
 
     assert!(matches!(
         report.outcome,
