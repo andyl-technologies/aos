@@ -187,6 +187,13 @@
     "guard::direct_history::tests::direct_history_verifies_historical_target_with_fresh_walks_in_both_modes"
     "guard::direct_history::tests::configuration::direct_history_preserves_caller_profiles_and_uses_genuine_factory_clock"
     "guard::direct_history::tests::physical::direct_history_closes_actual_pack_catalog_and_index_inputs"
+    "guard::overlay_history::tests::overlay_history_borrows_historical_layer_and_shares_only_one_walk"
+    "guard::overlay_history::tests::scope::overlay_history_refuses_foreign_holder_resolver_configuration_and_ordinary_scope"
+    "guard::overlay_history::tests::scope::overlay_history_rechecks_current_read_after_revocation"
+    "guard::overlay_history::tests::scope::overlay_history_captured_invocations_cannot_exchange_purpose_or_reader"
+    "guard::overlay_history::tests::physical::overlay_history_refuses_late_original_and_equal_byte_pack_replacement"
+    "guard::overlay_history::tests::physical::overlay_history_native_closing_decline_never_promotes_completion"
+    "guard::overlay_history::tests::cancellation::overlay_history_cancelled_close_keeps_namespace_and_original_exclusions"
     "ref_advance::active_completion_tests::native_active_completion_direct_history_refuses_missing_required_auxiliary"
   ];
 

@@ -513,8 +513,8 @@ and private-documentation profiles. Its fresh inventory retains all 1,135
 previous identities and adds exactly the four catalog cases, with none ignored.
 Coordinator review verifies the complete 282-payload compiler packet. The
 normal ten-case queue then passes all eight catalog and metadata-pack cases;
-both overlays still time out at their unchanged 120-second limits. Its sealed
-runtime packet awaits final coordinator review; no task or milestone advances.
+both overlays still time out at their unchanged 120-second limits. Coordinator
+review verifies all 247 runtime payloads and preserved scratch; no task advances.
 The finer ancestry diagnostic localizes one retirement publication to 18.012
 seconds without attributing all that time to one operation. Reviewed candidate
 `456ba7eb3762` (tree `7eff41d85d59`) synchronizes each original file and then
@@ -523,10 +523,22 @@ namespace-preserving durability phase. It retains the original descriptors,
 adjacent live checks and a final check of every original file before the real
 acknowledgment. A new native test checks actual file descriptors, directory
 scope and order, and genuine retirement publication. Full coordinator and
-independent source reviews pass; compilation and runtime remain unqualified.
-The next compiler inventory must preserve all 1,139 identities and add exactly
-that test. Existing fault, clock-expiry and cancellation cases remain required,
-along with both overlays, owning gates and the complete final trunk floor.
+independent source reviews pass. The first formatter check catches a missing
+explicit child-module path; the one-line correction is retained separately.
+Corrected candidate `fb88a113e582` (tree `087bbb1ea448`) passes all thirteen
+compiler phases and preserves all 1,139 identities plus exactly that new test.
+All eight normal durability, fault, clock-expiry, cancellation and physical
+refusal cases pass; both overlays still time out. Coordinator review verifies
+all 221 runtime payloads and preserved scratch. Owning gates and the complete
+final trunk floor remain required.
+A separate borrowed overlay producer now shares canonical immutable DATA only
+within one complete owning walk, with distinct purpose and native closing
+carriers. Existing current-authority checks and paired generic dispatch remain
+unchanged. Full coordinator and independent source reviews cover production
+checkpoint `26d7f80f3d75`, its presentation correction `ee1f0c086f07`, and seven
+genuine native witnesses through `c4c8fc3a63b2`. These cases are registered in
+the owning index gate and a focused native integration check. Compilation,
+runtime, final-source qualification and task acceptance remain pending.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed

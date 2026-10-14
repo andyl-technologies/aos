@@ -311,6 +311,7 @@ in {
   integration.native-written-mutation-sync = import ./native-written-mutation-sync.nix {sourceGate = nativeSdkGate;};
   integration.native-retained-request-checks = import ./native-retained-request-checks.nix {inherit sourceGate;};
   integration.native-held-owner-history = import ./native-held-owner-history.nix {sourceGate = nativeSdkGate;};
+  integration.native-overlay-history = import ./native-overlay-history.nix {sourceGate = nativeSdkGate;};
   integration.native-local-first-ownership = import ./native-local-first-ownership.nix {sourceGate = nativeSdkGate;};
   integration.native-copied-retirement-first-ownership = import ./native-copied-retirement-first-ownership.nix {sourceGate = nativeSdkGate;};
 
