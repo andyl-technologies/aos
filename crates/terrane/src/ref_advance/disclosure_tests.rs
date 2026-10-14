@@ -1329,6 +1329,18 @@ async fn disclosure_boundary_preserves_historical_key_windows_and_current_revoca
 
 #[cfg(unix)]
 #[tokio::test]
+async fn disclosure_direct_history_refuses_pending_guard_mismatch() {
+    historical_keys::refuse_pending_guard_mismatch().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_direct_history_closes_retained_import_controls() {
+    historical_keys::close_retained_import_controls().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn disclosure_projection_safe_whiteout_application_keeps_public_baseline() {
     whiteouts::materialize_public_removal().await;
 }
