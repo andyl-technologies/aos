@@ -493,6 +493,20 @@ observations motivate narrower diagnostic brackets and operation-local parsed
 catalog sharing with separate native refusal witnesses. Neither observation
 establishes that history verification alone dominates the delay. All required
 checks, deletion windows and test limits remain unchanged; no task advances.
+Parsed catalog sharing is now implemented privately at `416332b539f1`
+(tree `4876fb8285d3`). It caches successful decoded data within one metadata
+adapter while retaining every actual miss preimage, including overlapping
+misses that observe different physical incarnations. Full coordinator and
+independent source reviews cover all five changed paths and confirm that
+conflicting preimages survive native frame coalescing. Four new native cases
+cover partial-load failure, independent member and fresh-store checks, late
+shard/filter refusal, Session/Original/restore controls and concurrent misses.
+Their compiler, runtime and gate results remain pending. A separate marker-only
+candidate passes fresh SDK codegen and binary/metadata/inventory discovery,
+retaining exactly 1,135 identities with none ignored. Its 111-payload packet and
+four preserved scratch directories pass independent review; this narrower run
+does not renew the three Clippy and private-documentation profiles. The two
+overlay diagnostics remain separate from normal qualification.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
