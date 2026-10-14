@@ -173,5 +173,6 @@ pub use ack_emitter::{
 
 mod complete_restore;
 pub use complete_restore::{
-    PacketNative5CompleteRestoreDeclaration, complete_packet_restore_declaration, complete_packet_restore_input_emitter_declaration,
+    PacketNative5CompleteRestoreDeclaration, complete_packet_restore_declaration,
+    complete_packet_restore_input_emitter_declaration,
 };

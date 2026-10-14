@@ -1055,7 +1055,6 @@ impl PacketCompleteSemanticSource {
     }
 }
 
-
 #[path = "packet_complete_source/restore_input_emitter_selection.rs"]
 mod restore_input_emitter_selection;
 

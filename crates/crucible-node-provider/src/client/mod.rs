@@ -17,7 +17,8 @@ mod session;
 pub use crate::connection::CanonicalAckCodecMetadataExtent;
 pub use content::ClientContent;
 pub use controller::{
-    CnpController, CnpRegistrarRead, ControllerRoute, InstalledArchivedProtocolState, OriginalCanonicalBlobAckEmitter, OriginalCanonicalRestoreInputEmitter,
+    CnpController, CnpRegistrarRead, ControllerRoute, InstalledArchivedProtocolState,
+    OriginalCanonicalBlobAckEmitter, OriginalCanonicalRestoreInputEmitter,
 };
 pub use controller::{CompletedOriginalCanonicalAckAdmit, PreparedOriginalCanonicalAckAdmit};
 pub use controller::{

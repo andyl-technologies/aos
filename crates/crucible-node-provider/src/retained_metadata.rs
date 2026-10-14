@@ -790,6 +790,5 @@ impl ObserveMetadata for crate::reference_packet::service::complete_restore::Pac
     }
 }
 
-
 mod common_data;
 pub use common_data::RetainedCommonProtocolData;

@@ -384,7 +384,6 @@ impl super::PacketCompleteSemanticSource {
     }
 }
 
-
 impl OriginalCompleteEffectReceiver {
     pub(super) fn retained_path_storage_data(&self) -> usize {
         self.path.capacity()

@@ -196,7 +196,6 @@ impl PacketCompleteSemanticSource {
     }
 }
 
-
 impl OriginalCompletePreconstruction {
     pub(super) fn retained_native_read_storage_data(
         &self,

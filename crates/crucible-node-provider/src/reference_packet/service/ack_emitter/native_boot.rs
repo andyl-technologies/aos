@@ -9,7 +9,11 @@ mod bootstrap;
 mod owned_read;
 
 pub(crate) use boot::{
-    NativeAckBoot, OriginalCanonicalAckControlAdmit, VerifiedCanonicalAckAdmission, VerifiedCompleteRestoration, VerifiedCompleteRestorePrepare, original_native_ack_boot_layout, VerifiedCanonicalRestoreInputAdmission, NativeRestoredControlEvidence, OriginalCompleteRestoreCommit, VerifiedCompleteRestorationHeld,
+    NativeAckBoot, NativeRestoredControlEvidence, OriginalCanonicalAckControlAdmit,
+    OriginalCompleteRestoreCommit, VerifiedCanonicalAckAdmission,
+    VerifiedCanonicalRestoreInputAdmission, VerifiedCompleteRestoration,
+    VerifiedCompleteRestorationHeld, VerifiedCompleteRestorePrepare,
+    original_native_ack_boot_layout,
 };
 pub(in crate::reference_packet::service) use bootstrap::accept;
 pub(crate) use bootstrap::{

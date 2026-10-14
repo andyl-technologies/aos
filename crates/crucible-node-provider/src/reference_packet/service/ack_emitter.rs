@@ -101,5 +101,9 @@ pub(crate) use admission_projection::validate_proof_value;
 
 pub(in crate::reference_packet::service) mod native_boot;
 pub(crate) use native_boot::{
-    NativeAckBoot, OriginalCanonicalAckControlAdmit, OriginalNativeBootstrapOwned11, VerifiedCanonicalAckAdmission, VerifiedCompleteRestoration, VerifiedCompleteRestorePrepare, original_native_ack_boot_layout, original_native_private_bootstrap_layout, VerifiedCanonicalRestoreInputAdmission, NativeRestoredControlEvidence, OriginalCompleteRestoreCommit, VerifiedCompleteRestorationHeld,
+    NativeAckBoot, NativeRestoredControlEvidence, OriginalCanonicalAckControlAdmit,
+    OriginalCompleteRestoreCommit, OriginalNativeBootstrapOwned11, VerifiedCanonicalAckAdmission,
+    VerifiedCanonicalRestoreInputAdmission, VerifiedCompleteRestoration,
+    VerifiedCompleteRestorationHeld, VerifiedCompleteRestorePrepare,
+    original_native_ack_boot_layout, original_native_private_bootstrap_layout,
 };
