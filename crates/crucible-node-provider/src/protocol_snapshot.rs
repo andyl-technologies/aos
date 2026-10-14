@@ -1,9 +1,11 @@
 //! Source-private protocol byte snapshots without native installation authority.
 //!
 //! Reservations precede child construction. Capturing borrows complete actual
-//! state twice under one exclusive actor: a no-allocation count, then a bounded
-//! write into the same precharged buffer. Decoding never produces an installed
-//! capture, process lease, semantic seal or fresh-adoption permission.
+//! state twice under one exclusive actor: a bounded count, then a bounded
+//! write into the same precharged buffer. Some metadata serializers allocate
+//! scratch; source admission must charge that peak alongside original storage.
+//! Decoding never produces an installed capture, process lease, semantic seal
+//! or fresh-adoption permission.
 
 /// Provides bounded source-private compact byte data without authority.
 pub mod compact_bytes;
