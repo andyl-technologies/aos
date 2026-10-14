@@ -104,6 +104,45 @@ impl OriginalFrameReservation {
         })
     }
 
+    pub(crate) fn authenticate_completed_send(
+        &self,
+        index: usize,
+        canonical: &[u8],
+    ) -> Result<(), ProviderError> {
+        let slot = self
+            .slots
+            .get(index)
+            .ok_or(ProviderError::Frame("sent original slot absent"))?;
+        let expected = canonical
+            .len()
+            .checked_add(4)
+            .ok_or(ProviderError::Frame("sent original extent"))?;
+        let length = u32::try_from(canonical.len())
+            .map_err(|_| ProviderError::Frame("sent original header"))?;
+        if slot.direction != FrameDirection::Outgoing
+            || !slot.complete
+            || slot.transferred != slot.length
+            || slot.length != expected
+            || self.bytes.get(slot.start..slot.start + 4) != Some(length.to_be_bytes().as_slice())
+            || self.bytes.get(slot.start + 4..slot.start + slot.length) != Some(canonical)
+        {
+            return Err(ProviderError::Frame(
+                "sent original literal bytes or progress differ",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn borrowed_original_slot(&self, index: usize) -> OriginalFrame<'_> {
+        let slot = &self.slots[index];
+        OriginalFrame {
+            direction: slot.direction,
+            bytes: &self.bytes[slot.start..slot.start + slot.length],
+            transferred: slot.transferred,
+            complete: slot.complete,
+        }
+    }
+
     pub(crate) fn authenticate_exact_prefix_of(&self, current: &Self) -> Result<(), ProviderError> {
         if self.maximum_bytes != current.maximum_bytes
             || self.maximum_frames != current.maximum_frames

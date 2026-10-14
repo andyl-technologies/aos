@@ -345,8 +345,25 @@ fn native5_original_immutable_codec_installs_and_captures_actual_pending_frame()
     .as_object()
     .unwrap()
     .clone();
-    provider.send(response).unwrap();
+    let mut exchange = provider
+        .prepare_exchange(vec![response.clone()])
+        .unwrap_or_else(|failure| {
+            panic!("actual terminal preparation refused: {}", failure.error())
+        });
+    assert_eq!(exchange.record().sent(), 0);
+    exchange.publish(&mut |_, _| Ok(())).unwrap();
+    let (provider, record) = exchange.into_parts();
     controller.receive().unwrap().unwrap();
+    {
+        let sent = record.original_sent_frame(&provider, 0).unwrap();
+        assert_eq!(sent.original(), &response);
+        assert_eq!(&sent.literal().bytes[4..], sent.canonical_body());
+        assert!(sent.literal().complete);
+        assert_eq!(sent.literal().transferred, sent.literal().bytes.len());
+        assert_eq!(record.sent(), record.originals().len());
+    }
+    assert!(record.original_sent_frame(&controller, 0).is_err());
+    assert!(record.original_sent_frame(&provider, 1).is_err());
     let facts = provider
         .authenticate_native5_capture_antecedent(&snapshot)
         .unwrap();

@@ -18,9 +18,111 @@ pub struct ExchangeRecord {
     acknowledgements: Vec<ReceivedFrame>,
     sent: usize,
     original_slots: Vec<Option<usize>>,
+    original_actor: Option<(
+        Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+        Rc<std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>>,
+    )>,
+}
+
+/// Borrows a physically sent original frame under its same connection's bank loan.
+///
+/// The read guard prevents literal history mutation while the view exists. This
+/// authenticates transport correspondence only, never successful native Capture,
+/// durable acknowledgement, source settlement or fresh installation.
+pub struct OriginalSentFrameView<'a> {
+    original: &'a Envelope,
+    canonical: &'a [u8],
+    bank: std::cell::Ref<'a, crate::transport::original_frames::OriginalFrameReservation>,
+    slot: usize,
+}
+
+impl OriginalSentFrameView<'_> {
+    /// Borrows the actual post-sequence-assignment original envelope.
+    pub fn original(&self) -> &Envelope {
+        self.original
+    }
+
+    /// Borrows the complete planned canonical body matched to physical bytes.
+    pub fn canonical_body(&self) -> &[u8] {
+        self.canonical
+    }
+
+    /// Borrows the actual complete literal header and body under the retained loan.
+    pub fn literal(&self) -> crate::transport::original_frames::OriginalFrame<'_> {
+        self.bank.borrowed_original_slot(self.slot)
+    }
 }
 
 impl ExchangeRecord {
+    /// Authenticates one actually sent original against its same current connection.
+    ///
+    /// The native-five preowned record retains the original actor and literal
+    /// bank identities before publication. Matching labels or numeric slot
+    /// indexes from another connection cannot authenticate this view. The whole
+    /// physical header/body must equal the retained planned canonical bytes.
+    /// No serialization, allocation, callback or I/O occurs.
+    ///
+    /// # Errors
+    /// Refuses foreign/revoked actors, archive-absent records, unsent or absent
+    /// originals, missing slots, changed bytes, partial I/O or a mutably borrowed
+    /// bank. The view grants no native execution, settlement or adoption right.
+    pub fn original_sent_frame<'a, S: ProviderStream>(
+        &'a self,
+        connection: &'a Connection<S>,
+        index: usize,
+    ) -> Result<OriginalSentFrameView<'a>, ProviderError> {
+        connection.protocol_owner.ensure_current()?;
+        connection.authenticate_native5_source_codec()?;
+        let (owner, held_bank) = self
+            .original_actor
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "sent original has no owning native5 archive",
+            ))?;
+        owner.ensure_current()?;
+        let current_bank =
+            connection
+                .original_frames
+                .as_ref()
+                .ok_or(ProviderError::Correlation(
+                    "sent original current archive absent",
+                ))?;
+        if !Rc::ptr_eq(owner, &connection.protocol_owner) || !Rc::ptr_eq(held_bank, current_bank) {
+            return Err(ProviderError::Correlation(
+                "sent original connection owner differs",
+            ));
+        }
+        if index >= self.sent {
+            return Err(ProviderError::Correlation(
+                "original frame was not fully sent",
+            ));
+        }
+        let original = self
+            .originals
+            .get(index)
+            .ok_or(ProviderError::Correlation("sent original absent"))?;
+        let canonical = self
+            .canonical
+            .get(index)
+            .ok_or(ProviderError::Correlation("sent canonical absent"))?;
+        let slot = self
+            .original_slots
+            .get(index)
+            .copied()
+            .flatten()
+            .ok_or(ProviderError::Correlation("sent literal slot absent"))?;
+        let bank = current_bank
+            .try_borrow()
+            .map_err(|_| ProviderError::Correlation("sent original bank in use"))?;
+        bank.authenticate_completed_send(slot, canonical)?;
+        Ok(OriginalSentFrameView {
+            original,
+            canonical,
+            bank,
+            slot,
+        })
+    }
+
     /// Borrows every exact original frame, including any unsent suffix.
     pub fn originals(&self) -> &[Envelope] {
         &self.originals
@@ -122,6 +224,10 @@ impl<S: ProviderStream> Connection<S> {
     }
 
     pub(crate) fn unprepared_exchange(self, originals: Vec<Envelope>) -> PreparedExchange<S> {
+        let original_actor = self
+            .original_frames
+            .as_ref()
+            .map(|bank| (self.protocol_owner.clone(), bank.clone()));
         PreparedExchange {
             connection: self,
             record: ExchangeRecord {
@@ -130,6 +236,7 @@ impl<S: ProviderStream> Connection<S> {
                 acknowledgements: Vec::new(),
                 sent: 0,
                 original_slots: Vec::new(),
+                original_actor,
             },
             phase: Phase::Unprepared,
         }

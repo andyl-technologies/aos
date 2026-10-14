@@ -3523,6 +3523,26 @@ verifies exact current preimages and retained source/executable evidence. Its
 original tested cohort remains distinct from the later current-source join.
 No native Capture, constructor, fresh installation or Ready permission is added.
 
+## Original sent-frame read loans
+
+A prepared native exchange retains its original actor and literal bank before
+publication. Its sent-frame accessor checks that the supplied connection still
+owns both, then matches the complete outgoing header, canonical body and physical
+progress. The returned view holds an immutable bank loan, so callers can inspect
+the original envelope and bytes without copying or serializing them. Foreign
+connections, absent frames and incomplete sends refuse.
+
+Source67 passes 77 focused controls, all 398 enabled SDK units and strict
+all-target/all-feature checks; 13 units remain ignored. Independent receipt
+`7db92260178a5cedc09b1b9419116bfa031f5e2e641ae63c55616b4baf87b092`
+verifies the five exact current preimages and retained source/executable evidence.
+Its original tested cohort excludes three disclosed current documentation,
+spacing and ledger differences; this is not a full current-source compilation.
+
+The retained actor pair and serialized alias metadata still require whole-factory
+accounting. Transport correspondence grants no successful Capture, durable ACK,
+source settlement or fresh installation permission.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

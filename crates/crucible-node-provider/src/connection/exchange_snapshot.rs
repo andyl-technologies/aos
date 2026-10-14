@@ -24,7 +24,7 @@ struct ExchangeProtocolView<'a>(&'a ExchangeRecord);
 impl Serialize for ExchangeProtocolView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let record = self.0;
-        let mut view = serializer.serialize_struct("Native5ExchangeRecord", 9)?;
+        let mut view = serializer.serialize_struct("Native5ExchangeRecord", 10)?;
         view.serialize_field("originals", &record.originals)?;
         view.serialize_field("originals_capacity", &record.originals.capacity())?;
         view.serialize_field(
@@ -53,6 +53,15 @@ impl Serialize for ExchangeProtocolView<'_> {
         view.serialize_field("sent", &record.sent)?;
         view.serialize_field("original_slots", &record.original_slots)?;
         view.serialize_field("original_slots_capacity", &record.original_slots.capacity())?;
+        // This graph edge denotes the enclosing endpoint's actor/bank, not a
+        // portable pointer or decoded capability. Fresh installation is separate.
+        view.serialize_field(
+            "original_actor",
+            &record
+                .original_actor
+                .as_ref()
+                .map(|_| "same-original-endpoint"),
+        )?;
         view.end()
     }
 }
@@ -181,6 +190,7 @@ mod tests {
             acknowledgements,
             sent: 1,
             original_slots: slots,
+            original_actor: None,
         };
 
         let data = serde_json::to_value(record.original_protocol_view()).unwrap();

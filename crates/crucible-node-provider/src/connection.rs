@@ -29,7 +29,7 @@ mod packet_schema;
 mod prepared;
 pub(crate) use prepared::serialized_credit;
 
-pub use exchange::{ExchangeFailure, ExchangeRecord, PreparedExchange};
+pub use exchange::{ExchangeFailure, ExchangeRecord, OriginalSentFrameView, PreparedExchange};
 pub use prepared::PreparedSend;
 
 /// Defines an authenticated stream whose whole connection can be fenced.
