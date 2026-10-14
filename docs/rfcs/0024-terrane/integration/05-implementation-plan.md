@@ -359,8 +359,10 @@ cleanup pass coordinator review. The other five growth populations, unfiltered
 SDK, owning Nix gates and full current trunk floor remain pending. DRV-29's
 qualification blocker stays in place; no task or milestone advances.
 The unchanged unfiltered SDK run has also passed the original 1,024-entry
-ordinary population in 417.337 seconds. The run continues with three actual
-failures and one 120.009-second ancestry-collection timeout preserved. Independent
+ordinary and adversarial populations in 417.337 and 396.149 seconds, and the
+2,048-entry adversarial population in 701.314 seconds, all under their unchanged
+1,800-second limits. The run continues with three actual failures and one
+120.009-second ancestry-collection timeout preserved. Independent
 source review supports isolated fixture corrections: stage the genuine surviving
 Chunk in the nested overlay proposal and observe actual native admission reads
 instead of the bypassed wrapper. Exact roots, parents, refs, typed refusal sources
