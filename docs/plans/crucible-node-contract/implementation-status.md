@@ -4372,6 +4372,32 @@ mixed native execution, accepted backend classes, QEMU/gem5 device parity,
 Arm, capture, Ready or ordinary package qualification. Those remain required
 integration and runtime checks.
 
+## Source-built private unwind members
+
+Two actual GNU unwind source members compile against the independently qualified
+native64 diagnostic context. Their complete symbol maps are renamed into the
+private QOM namespace, preserving ordinary shared unwind linkage. The resulting
+deterministic archive is 282,676 bytes; the coexistence executable is 219,576
+bytes and runs successfully with both ordinary and private backtrace paths.
+The original serial work completes in 26.773 seconds and is reaped successfully.
+
+Independent actual review
+`1d20ce798d7bdafae0664406311af4cb840f049be2f76c4554ba29e6315bfec1`
+checks 466 retained selectors, 227 actual dependency bodies, both object symbol
+maps, exact archive members, the coexistence ELF and 123 after-input producer
+joins. The separate handoff is
+`a6d73011b8c518614a6681fca116c8f1fec9757446dce8aea9fba00c11176503`.
+All seven observed process records are retired; original terminal receipts
+show no remaining group members, unknown retirements or dispatched signals.
+These observations do not establish a complete process census or physical peak.
+
+The comparator uses diagnostic heap and FDE forwarding shims. It tests coexistence,
+not QOM arena ownership, exact stack equality, exception restoration or a complete
+module graph. The earlier command-input failure before child birth and failed
+optional FHS probes remain recorded as failures. Production context generation,
+full emulator and utility links, corresponding-source release gates and native
+Capture/Ready remain unqualified. Raw source/build evidence stays local.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
