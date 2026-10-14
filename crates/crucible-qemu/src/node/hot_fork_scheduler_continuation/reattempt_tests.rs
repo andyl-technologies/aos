@@ -612,7 +612,7 @@ fn child_installer_error_reaps_qmp_peer_while_continuation_is_retained()
             crucible::NodeId { name: "vm".into() },
             RetainedProcess(process),
             QemuShutdownPolicy::fast_test(),
-            QemuAsyncDriverPolicy::fast_test(),
+            retained_restore_policy(),
             QemuCrashDetector::new("child"),
             Some(&stopped_restore_ack),
         )?;
@@ -719,7 +719,7 @@ fn child_installer_retains_restore_after_late_unavailable_publication() -> Resul
                             crucible::NodeId { name: "vm".into() },
                             RetainedProcess(process),
                             QemuShutdownPolicy::fast_test(),
-                            QemuAsyncDriverPolicy::fast_test(),
+                            retained_restore_policy(),
                             QemuCrashDetector::new("child"),
                             Some(&stopped_restore_ack),
                         )
@@ -762,7 +762,7 @@ fn child_installer_retains_restore_after_late_unavailable_publication() -> Resul
                 crucible::NodeId { name: "vm".into() },
                 RetainedProcess(process),
                 QemuShutdownPolicy::fast_test(),
-                QemuAsyncDriverPolicy::fast_test(),
+                retained_restore_policy(),
                 QemuCrashDetector::new("child"),
                 Some(&stopped_restore_ack),
             )
@@ -772,7 +772,8 @@ fn child_installer_retains_restore_after_late_unavailable_publication() -> Resul
         assert!(
             error
                 .to_string()
-                .contains("injected original installer wake failure")
+                .contains("injected original installer wake failure"),
+            "unexpected installer refusal: {error}"
         );
         assert!(scheduler.child_ceiling_armed);
         let segment = region.native_console_segment(0)?;
@@ -840,7 +841,7 @@ fn child_installer_retains_restore_after_late_unavailable_publication() -> Resul
             crucible::NodeId { name: "vm".into() },
             RetainedProcess(process),
             QemuShutdownPolicy::fast_test(),
-            QemuAsyncDriverPolicy::fast_test(),
+            retained_restore_policy(),
             QemuCrashDetector::new("child"),
             Some(&stopped_restore_ack),
         )?;
