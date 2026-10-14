@@ -1647,7 +1647,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_stream_calls_retry_within_the_operation_deadline() {
+    fn interrupted_stream_calls_resume_within_the_operation_deadline() {
         // The first read, the capabilities write, and later calls each fail
         // once with EINTR, as a debugger attach or SIGSTOP/SIGCONT would.
         let mut client = QmpClient::connect_with_policies(
@@ -1662,9 +1662,11 @@ mod tests {
             QmpJobPollPolicy::fast_test(1),
             QmpIoTimeoutPolicy::new(Duration::from_secs(5), Duration::from_secs(5)),
         )
-        .expect("interrupted QMP greeting and capabilities should retry");
+        .expect("interrupted QMP greeting and capabilities should resume");
 
-        client.quit().expect("interrupted QMP command should retry");
+        client
+            .quit()
+            .expect("interrupted QMP command should resume");
     }
 
     #[test]
