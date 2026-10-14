@@ -325,7 +325,9 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
         ExactCheckpointStore::new(checkpoint_backend, resources.maximum_disk_bytes())
             .map_err(|error| campaign_run_error("open exact checkpoint store", error))?,
     );
-    let lifecycle = production_qemu_lifecycle_config(backend)?;
+    let lifecycle = production_qemu_lifecycle_config(backend)?.with_run_ceiling_ticks(
+        interactive_run_ceiling_ticks(run_plan.max_virtual_time_ticks),
+    );
     let scenario = run_plan.scenario.scenario_form().clone();
     let seed = run_plan
         .request_seed
@@ -858,7 +860,9 @@ pub(super) fn run_local_qemu_campaign_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     run_plan: &RunInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    let lifecycle = production_qemu_lifecycle_config(backend)?;
+    let lifecycle = production_qemu_lifecycle_config(backend)?.with_run_ceiling_ticks(
+        interactive_run_ceiling_ticks(run_plan.max_virtual_time_ticks),
+    );
     let campaign = execute_local_qemu_campaign(backend, run_plan, lifecycle)?;
 
     campaign_run_outcome(
@@ -891,7 +895,9 @@ pub(super) fn run_local_qemu_interactive_workflow(
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
     let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
-    let lifecycle = production_qemu_lifecycle_config(backend)?;
+    let lifecycle = production_qemu_lifecycle_config(backend)?.with_run_ceiling_ticks(
+        interactive_run_ceiling_ticks(run_plan.max_virtual_time_ticks),
+    );
     let host = deployment.host;
     let control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
         "crucible-cli-interactive-qemu",
