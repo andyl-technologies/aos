@@ -175,6 +175,15 @@ impl<'a> HistoryObservation<'a> {
         self
     }
 
+    /// Reports whether the derived overlay context selects the given view.
+    ///
+    /// This decoding selection does not authenticate the layer or grant permission.
+    #[cfg(all(feature = "std", feature = "tokio", unix))]
+    pub(in crate::guard) fn selects_overlay_layer(self, view: Digest) -> bool {
+        self.overlay_layer
+            .is_some_and(|(selected, _)| selected == view)
+    }
+
     /// Checks the requested serving target while authenticating its source ancestry.
     ///
     /// Explicit maintenance qualification remains distinct and takes precedence.
