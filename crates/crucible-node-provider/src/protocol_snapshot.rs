@@ -363,35 +363,48 @@ impl ProtocolSnapshotReservation {
         Ok(())
     }
 
+    pub(crate) fn finish_from_slot(
+        slot: &mut Option<Self>,
+        authority: &ConnectionAuthority,
+        owner: &Rc<ProtocolCaptureOwner>,
+        cut: ProtocolCaptureCut,
+    ) -> Result<OriginalProtocolSnapshot, ProviderError> {
+        // The caller retains both banks through every fallible validation. The
+        // following transfer invokes no callback and performs no revalidation.
+        slot.as_ref()
+            .ok_or(ProviderError::Correlation("original snapshot slot absent"))?
+            .validate_issuer(authority, owner, cut)?;
+
+        let mut original = slot
+            .take()
+            .ok_or(ProviderError::Correlation("original snapshot slot absent"))?;
+        let Some((authority, owner, original_cut, deadline)) = original.issuer.take() else {
+            *slot = Some(original);
+            return Err(ProviderError::Correlation(
+                "protocol snapshot issuer absent",
+            ));
+        };
+
+        Ok(OriginalProtocolSnapshot {
+            maximum: original.maximum,
+            bytes: original.bytes,
+            authority,
+            owner,
+            cut: original_cut,
+            deadline,
+            literal: original.literal,
+            codec: original.codec,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn finish(
         self,
         authority: &ConnectionAuthority,
         owner: &Rc<ProtocolCaptureOwner>,
         cut: ProtocolCaptureCut,
     ) -> Result<OriginalProtocolSnapshot, ProviderError> {
-        self.validate_issuer(authority, owner, cut)?;
-        let (original, issuer, original_cut, deadline) = self.issuer.ok_or(
-            ProviderError::Correlation("protocol snapshot has no original issuer"),
-        )?;
-        if !self.complete
-            || self.bytes.is_empty()
-            || !original.same_registration(authority)
-            || !Rc::ptr_eq(&issuer, owner)
-            || original_cut != cut
-        {
-            return Err(ProviderError::Correlation(
-                "protocol snapshot changed original issuer or cut",
-            ));
-        }
-        Ok(OriginalProtocolSnapshot {
-            bytes: self.bytes,
-            authority: original,
-            owner: issuer,
-            cut,
-            deadline,
-            literal: self.literal,
-            codec: self.codec,
-        })
+        Self::finish_from_slot(&mut Some(self), authority, owner, cut)
     }
 }
 
@@ -401,6 +414,7 @@ impl ProtocolSnapshotReservation {
 /// data. It grants no native adoption or readiness; the source must authenticate
 /// its complete semantic and process custody and literal Hello originals.
 pub struct OriginalProtocolSnapshot {
+    maximum: usize,
     codec: Option<Rc<crate::connection::Native5CodecOwner>>,
     bytes: Vec<u8>,
     authority: ConnectionAuthority,
@@ -411,6 +425,33 @@ pub struct OriginalProtocolSnapshot {
 }
 
 impl OriginalProtocolSnapshot {
+    /// Reports the actual allocation of this source-issued original snapshot.
+    ///
+    /// These data-only facts preserve the selected encoded ceiling separately
+    /// from its actual capacity and the independently frozen literal copy.
+    ///
+    /// # Errors
+    /// Refuses inspection from a different original process or thread.
+    pub fn original_allocation_facts(
+        &self,
+    ) -> Result<ProtocolSnapshotAllocationFacts, ProviderError> {
+        self.owner.ensure_current()?;
+        Ok(ProtocolSnapshotAllocationFacts {
+            maximum_encoded_bytes: self.maximum,
+            encoded_capacity: self.bytes.capacity(),
+            encoded_length: self.bytes.len(),
+            literal: self
+                .literal
+                .as_ref()
+                .map(|literal| literal.snapshot_allocation_facts()),
+            allocated_bytes: self.bytes.capacity()
+                + self
+                    .literal
+                    .as_ref()
+                    .map_or(0, |literal| literal.allocated_bytes()),
+        })
+    }
+
     /// Borrows exact source-private snapshot bytes without reencoding frames.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
@@ -934,5 +975,78 @@ mod reservation_allocation_tests {
         });
         assert!(complete.original_allocation_facts().is_err());
         assert_eq!(complete.allocated_bytes(), before.allocated_bytes);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod owning_finish_tests {
+    use super::*;
+
+    #[test]
+    fn native5_original_finish_refusal_keeps_same_encoded_and_literal_allocations() {
+        let (_handshake, authority) = crate::handshake::tests::authority();
+        let owner = Rc::new(ProtocolCaptureOwner::new());
+        let deadline =
+            crate::operational_time::OperationalDeadline::after(std::time::Duration::from_secs(2))
+                .unwrap();
+        let mut original = ProtocolSnapshotReservation::reserve_complete(4096, 1024, 3).unwrap();
+        original
+            .bind(
+                &authority,
+                &owner,
+                ProtocolCaptureCut::HostSettled,
+                deadline,
+            )
+            .unwrap();
+        original
+            .encode(&serde_json::json!({"state":"original"}))
+            .unwrap();
+        let facts = original.original_allocation_facts().unwrap();
+        let pointer = original.bytes.as_ptr();
+        let body = original.bytes.clone();
+        let mut slot = Some(original);
+
+        assert!(
+            ProtocolSnapshotReservation::finish_from_slot(
+                &mut slot,
+                &authority,
+                &owner,
+                ProtocolCaptureCut::NativeIncomingCapture
+            )
+            .is_err()
+        );
+        let retained = slot.as_ref().unwrap();
+        assert_eq!(retained.bytes.as_ptr(), pointer);
+        assert_eq!(retained.bytes, body);
+        assert_eq!(retained.original_allocation_facts().unwrap(), facts);
+
+        let snapshot = ProtocolSnapshotReservation::finish_from_slot(
+            &mut slot,
+            &authority,
+            &owner,
+            ProtocolCaptureCut::HostSettled,
+        )
+        .unwrap();
+        assert!(slot.is_none());
+        assert_eq!(snapshot.bytes.as_ptr(), pointer);
+        assert_eq!(snapshot.bytes(), body);
+        assert_eq!(snapshot.original_allocation_facts().unwrap(), facts);
+        assert_eq!(
+            snapshot
+                .original_allocation_facts()
+                .unwrap()
+                .maximum_encoded_bytes,
+            4096
+        );
+        assert!(
+            ProtocolSnapshotReservation::finish_from_slot(
+                &mut slot,
+                &authority,
+                &owner,
+                ProtocolCaptureCut::HostSettled
+            )
+            .is_err()
+        );
     }
 }

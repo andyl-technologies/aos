@@ -161,14 +161,38 @@ impl<S: ProviderStream> Connection<S> {
         cut: crate::protocol_snapshot::ProtocolCaptureCut,
     ) -> Result<crate::protocol_snapshot::OriginalProtocolSnapshot, ProviderError> {
         self.protocol_capture_preflight(cut)?;
-        reservation
-            .as_ref()
-            .ok_or(ProviderError::Correlation("original snapshot slot absent"))?
-            .validate_issuer(&self.authority, &self.protocol_owner, cut)?;
-        let original = reservation
-            .take()
-            .ok_or(ProviderError::Correlation("original snapshot slot absent"))?;
-        original.finish(&self.authority, &self.protocol_owner, cut)
+        crate::protocol_snapshot::ProtocolSnapshotReservation::finish_from_slot(
+            reservation,
+            &self.authority,
+            &self.protocol_owner,
+            cut,
+        )
+    }
+
+    /// Retains a completed original snapshot in the caller's owning result slot.
+    ///
+    /// Failure leaves the same reservation in its original slot. Success fills
+    /// the empty result slot before the source performs any later guard or copy;
+    /// no fallible revalidation occurs after the reservation moves.
+    ///
+    /// # Errors
+    /// Refuses an occupied result, absent or incomplete reservation, foreign
+    /// original issuer, changed registration or incompatible current cut.
+    pub fn take_native_protocol_snapshot_into(
+        &mut self,
+        reservation: &mut Option<crate::protocol_snapshot::ProtocolSnapshotReservation>,
+        completed: &mut Option<crate::protocol_snapshot::OriginalProtocolSnapshot>,
+        cut: crate::protocol_snapshot::ProtocolCaptureCut,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if completed.is_some() {
+            return Err(ProviderError::Conflict(
+                "original snapshot result slot occupied",
+            ));
+        }
+        let original = self.take_native_protocol_snapshot(reservation, cut)?;
+        *completed = Some(original);
+        Ok(())
     }
 
     /// Authenticates an opaque pending native snapshot against its ended original channel.

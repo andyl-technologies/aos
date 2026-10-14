@@ -3665,6 +3665,29 @@ validation. With the duplicate checks removed, both transfer controls pass in
 activation and registration; their success is not native Capture qualification
 or an overall VM performance result. Source80 is not relabeled as Source84.
 
+## Original snapshot ownership through fallible checks
+
+Snapshot finalization validates the borrowed original reservation before moving
+its encoded and literal banks. Failure keeps both allocations in the same slot;
+the successful move invokes no callback, allocation or fallible revalidation.
+Controller and endpoint APIs can fill the caller's completed result slot before
+the source performs its later checks. An occupied result slot refuses without
+moving either owner. Finished snapshots retain the original selected maximum
+and expose their actual encoded and independent literal allocation facts.
+
+Source85 passes 83 focused controls, all 404 enabled SDK units and strict
+all-target/all-feature compilation; 13 units remain ignored. Its additional
+control verifies pointer, byte, capacity and literal-allocation preservation
+through refusal and successful transfer, followed by repeat refusal. Independent
+receipt `7ff727c4478e5d688acf5ec7e733a9b34678527df9b00d86ac0b7eb783387cf9`
+verifies the exact three current preimages and retained executable cohort. The
+qualification source differs from its committed parent only in those three
+roles and the disclosed implementation ledger, which compilation does not use.
+
+These changes retain custody rather than grant Capture or restoration rights.
+Compact encoding, archive payload transfer, source settlement, full peak memory
+admission and the installed native factory remain separate requirements.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
