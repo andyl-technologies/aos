@@ -382,9 +382,29 @@ All require fresh execution. Final archive verification, exact source/input and
 six-executable parity, and owned cleanup now pass independent review. The sealed
 397-payload packet preserves all failed outcomes and all six bounded growth
 passes; no failed result is reclassified or task accepted. The corrected private
-candidate `6297a4455965` (tree `3898e56e33a0`) adds only the reviewed join/fold,
-rotation-ordering and nested I/O diagnostic repairs to the earlier fixture
-candidate. Its compiler profiles and targeted runtime checks remain pending.
+candidate `6297a4455965` (tree `3898e56e33a0`) passes all thirteen compiler
+phases and retains all 1,131 nonignored identities across three executables.
+Eight normal renewals produce five passes, two failures and one timeout.
+Both admission cases, both rotation cases and the exact required-index I/O
+refusal pass. Join and fold fail the asserted zero ordinary Node count;
+source review identifies three genuine membership reads for base, ours and
+theirs, independent of native history reads. The indexed overlay times out
+at its unchanged 120-second limit. Separate existing-trace diagnostics also
+time out: indexed replay reaches nested output publication, and ancestry
+reaches deletion without a later output-verification marker. These locate
+unfinished intervals, not their causes; the mandatory deletion wait remains
+60 seconds and retention remains 90 seconds. Sealed archives preserve all
+outcomes and unchanged source, inputs and six executable bindings. Automatic
+approval review rejects temporary-directory deletion; archive-only finalization
+preserves all ten owned scratch directories and records that cleanup is deferred.
+No test failure is reclassified or task accepted.
+Reviewed private candidate `072e70ada83e` (tree `2b7e61de7832`) corrects the
+join membership oracle, retains only unsigned seed Commit data for proposal
+construction, and adds Clock-backed elapsed times to existing opt-in markers.
+Every real admission, Original, current-authority, root, ref and no-effect
+check remains. The proposal template holds no verified history or permission.
+These changes remain uncompiled and unexecuted; full SDK and owning Nix gates
+remain required before acceptance.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
