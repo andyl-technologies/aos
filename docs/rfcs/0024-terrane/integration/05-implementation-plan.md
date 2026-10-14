@@ -322,9 +322,19 @@ Renewed composition `1a5505b799f1` resolves those production API errors but
 native Clippy stops at the fixture's wrong profile-constructor error type.
 The reviewed one-line collector correction preserves the actual error and
 every assertion. Later compiler phases and runtime remain unstarted.
-The unfiltered SDK qualification must retain all 1,121 actual cases: 1,115
+The corrected private composition `3ef8a2bf4a40` (tree `861fdb8c3241`) passes
+all thirteen compiler phases, including three strict all-target Clippy and
+private rustdoc profiles. Its actual inventory retains all 1,121 original
+cases plus seven new direct-reader cases, with none ignored. A reviewed
+32-case focus queue is authorized; its execution and all six renewed growth
+populations remain pending. Separately registered auxiliary-only and imported
+control refusal witnesses are test-only work awaiting fresh qualification.
+These results advance no task or milestone.
+The unfiltered SDK qualification must retain all 1,121 original cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
-cases. Application test-target compilation and strict Clippy/private rustdoc for
+cases. It must also execute the seven new direct-reader cases and registered
+auxiliary and imported-control refusal witnesses. Application test-target
+compilation and strict Clippy/private rustdoc for
 the default, std-send and native profiles remain separate required checks;
 the current Terrane aggregate does not include those checks.
 Review of the branch graph confirms that the frozen composition includes all
