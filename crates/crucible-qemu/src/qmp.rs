@@ -928,9 +928,21 @@ where
                 .set_qmp_read_timeout(remaining)
                 .map_err(|error| QmpError::from_io("set QMP read timeout", error))?;
             let mut byte = [0u8; 1];
-            let read = self.stream.read(&mut byte).map_err(|error| {
-                QmpError::from_io_with_timeout(operation, deadline.timeout, error)
-            })?;
+            let read = match self.stream.read(&mut byte) {
+                Ok(read) => read,
+                // Linux never restarts a socket call that carries a timeout,
+                // so a handled signal or a stop/continue (including a
+                // debugger attach) surfaces as EINTR. Retry within the
+                // operation deadline, which the loop rechecks.
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    return Err(QmpError::from_io_with_timeout(
+                        operation,
+                        deadline.timeout,
+                        error,
+                    ));
+                }
+            };
             if read == 0 {
                 return Err(QmpError::Io {
                     operation,
@@ -966,13 +978,19 @@ where
                 .get_mut()
                 .set_qmp_write_timeout(remaining)
                 .map_err(|error| QmpError::from_io("set QMP write timeout", error))?;
-            let count = self
-                .stream
-                .get_mut()
-                .write(&line[written..])
-                .map_err(|error| {
-                    QmpError::from_io_with_timeout("write QMP request", deadline.timeout, error)
-                })?;
+            let count = match self.stream.get_mut().write(&line[written..]) {
+                Ok(count) => count,
+                // Timed socket writes are not restarted either; see
+                // `read_json_line`.
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    return Err(QmpError::from_io_with_timeout(
+                        "write QMP request",
+                        deadline.timeout,
+                        error,
+                    ));
+                }
+            };
             if count == 0 {
                 return Err(QmpError::Io {
                     operation: "write QMP request",
@@ -1030,17 +1048,19 @@ where
                 .get_mut()
                 .set_qmp_write_timeout(remaining)
                 .map_err(|error| QmpError::from_io("set QMP write timeout", error))?;
-            let count = self
-                .stream
-                .get_mut()
-                .write(&line[written..])
-                .map_err(|error| {
-                    QmpError::from_io_with_timeout(
+            let count = match self.stream.get_mut().write(&line[written..]) {
+                Ok(count) => count,
+                // Timed socket writes are not restarted either; see
+                // `read_json_line`.
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    return Err(QmpError::from_io_with_timeout(
                         "complete QMP descriptor request",
                         deadline.timeout,
                         error,
-                    )
-                })?;
+                    ));
+                }
+            };
             if count == 0 {
                 return Err(QmpError::Io {
                     operation: "complete QMP descriptor request",
@@ -1535,6 +1555,8 @@ mod tests {
     struct ScriptedStream {
         read: Cursor<Vec<u8>>,
         written: Vec<u8>,
+        /// Reads and writes still to fail with EINTR before making progress.
+        interruptions: usize,
     }
 
     impl ScriptedStream {
@@ -1544,18 +1566,36 @@ mod tests {
             Self {
                 read: Cursor::new(bytes),
                 written: Vec::new(),
+                interruptions: 0,
             }
+        }
+
+        fn interrupted(lines: &[&str], interruptions: usize) -> Self {
+            Self {
+                interruptions,
+                ..Self::new(lines)
+            }
+        }
+
+        fn take_interruption(&mut self) -> io::Result<()> {
+            if self.interruptions == 0 {
+                return Ok(());
+            }
+            self.interruptions -= 1;
+            Err(io::Error::from(ErrorKind::Interrupted))
         }
     }
 
     impl Read for ScriptedStream {
         fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.take_interruption()?;
             self.read.read(buffer)
         }
     }
 
     impl Write for ScriptedStream {
         fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.take_interruption()?;
             self.written.extend_from_slice(buffer);
             Ok(buffer.len())
         }
@@ -1604,6 +1644,27 @@ mod tests {
                 limit: 1,
             })
         ));
+    }
+
+    #[test]
+    fn interrupted_stream_calls_retry_within_the_operation_deadline() {
+        // The first read, the capabilities write, and later calls each fail
+        // once with EINTR, as a debugger attach or SIGSTOP/SIGCONT would.
+        let mut client = QmpClient::connect_with_policies(
+            ScriptedStream::interrupted(
+                &[
+                    r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+                    r#"{"return":{}}"#,
+                    r#"{"return":{}}"#,
+                ],
+                4,
+            ),
+            QmpJobPollPolicy::fast_test(1),
+            QmpIoTimeoutPolicy::new(Duration::from_secs(5), Duration::from_secs(5)),
+        )
+        .expect("interrupted QMP greeting and capabilities should retry");
+
+        client.quit().expect("interrupted QMP command should retry");
     }
 
     #[test]
