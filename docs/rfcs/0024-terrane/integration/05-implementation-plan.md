@@ -325,9 +325,14 @@ every assertion. Later compiler phases and runtime remain unstarted.
 The corrected private composition `3ef8a2bf4a40` (tree `861fdb8c3241`) passes
 all thirteen compiler phases, including three strict all-target Clippy and
 private rustdoc profiles. Its actual inventory retains all 1,121 original
-cases plus seven new direct-reader cases, with none ignored. A reviewed
-32-case focus queue is authorized; its execution and all six renewed growth
-populations remain pending. Separately registered auxiliary-only and imported
+cases plus seven new direct-reader cases, with none ignored. Its reviewed
+32-case focus queue stops on the first case with `Invalid(MalformedRequest)`;
+the other 31 cases remain unstarted. Source review identifies a fixture that
+changes authoring after publishing A/H; the Guard correctly rejects its shared
+executed selection map. A fresh Guard must configure later authoring first,
+retain genuine historical associations and restore Original through the native
+factory. No exact failure line was measured. All six renewed growth populations
+remain pending. Separately registered auxiliary-only and imported
 control refusal witnesses are test-only work awaiting fresh qualification.
 These results advance no task or milestone.
 The unfiltered SDK qualification must retain all 1,121 original cases: 1,115
