@@ -919,6 +919,10 @@
       }
     },
     {
+      "path": "mm/crucible-percpu-backing.inc.c",
+      "identity": null
+    },
+    {
       "path": "mm/crucible-percpu-boot-accounting.inc.c",
       "identity": null
     },
@@ -4369,6 +4373,45 @@
           "after": {
             "sha256": "263c1abd201781b69ed99fe0cdb1665e062628d80fca8d0562ebe856c32dae9b",
             "bytes": 81930
+          }
+        }
+      ]
+    },
+    {
+      "name": "0052-original-percpu-physical-backing.patch",
+      "patch": {
+        "sha256": "8d17c1fe807e6c6cbbd2242a1c1d8c5ec25a29b449c858ffbe8a9263592d367d",
+        "bytes": 8846
+      },
+      "changes": [
+        {
+          "path": "mm/percpu.c",
+          "before": {
+            "sha256": "d648370c12e4afeb62c484d3d6d168b59b6969da1bb0000666e6fa6d2efd8103",
+            "bytes": 105338
+          },
+          "after": {
+            "sha256": "f18e512d6dd668a63ab295aaef75a2110c26dc34b629263de694959cc0274aaf",
+            "bytes": 105407
+          }
+        },
+        {
+          "path": "mm/crucible-percpu-pool.inc.c",
+          "before": {
+            "sha256": "85b6f03a807168b82777dbc5653b84994a6dbf2922b5eaee99c83af07fe28dd1",
+            "bytes": 17045
+          },
+          "after": {
+            "sha256": "cfdf9f66dfa12bbf286b2584f9fe8eb045d0cb249c730c5d5b087bdd69c4ac1a",
+            "bytes": 17337
+          }
+        },
+        {
+          "path": "mm/crucible-percpu-backing.inc.c",
+          "before": null,
+          "after": {
+            "sha256": "b41abd2782634b72b19185e24c29945aa0b1addf8ae8c07e6d138bb2077de581",
+            "bytes": 7027
           }
         }
       ]

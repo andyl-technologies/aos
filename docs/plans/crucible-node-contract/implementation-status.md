@@ -3977,7 +3977,8 @@ The modified upstream vmalloc file retains its GPL-2.0-only notice.
 
 Recorded alignment precedes IOREMAP transformation and is not complete effective
 vmap geometry. Full backing, IRQ/perCPU cleanup, cancellation, flush, hotplug and
-physical retirement remain open. Coverage stays 1/2047, with no continuation
+physical retirement remain open. Coverage stays one of eleven required coverage
+bits, with no continuation
 issuer and selected CREATE refused before descriptor allocation. These component
 and source-replay checks do not qualify full Kbuild, linking, native workqueue
 execution, physical peak, RUN or Ready.
@@ -4087,7 +4088,8 @@ All prior 35 patch payloads remain unchanged; the new stage applies the correcte
 Source43-to45 delta directly, excluding the rejected Source44 address rebinding.
 Per-file licenses and corresponding-source catalogs match the new patch.
 
-Coverage remains 1/2047. Shared backing, allocator families, full Kbuild/linking,
+Coverage remains one of eleven required coverage bits. Shared backing, allocator
+families, full Kbuild/linking,
 native concurrency and physical retirement remain unqualified; selected CREATE,
 RUN and Ready remain refused. These source and modeled controls do not grant
 full native kernel execution or complete allocation accounting.
@@ -4209,7 +4211,8 @@ sole new GPL-2.0-only pool fragment.
 The backing bound covers selected possible-CPU slices, template, mapping bound
 and keeper. Complete first-chunk allocation, slack, NUMA padding, boot peak,
 actual mapping/PFNs and native CPU-map lifetime remain unqualified. Coverage
-stays 1/2047; full Kbuild, boot, SRCU/concurrency, CREATE, RUN and Ready remain
+stays one of eleven required coverage bits; full Kbuild, boot, SRCU/concurrency,
+CREATE, RUN and Ready remain
 separate requirements. No full physical-budget or kernel execution claim follows
 from configured translation units, model controls or patch replay.
 
@@ -4331,7 +4334,8 @@ remain local, outside Git and releases.
 This closes the selected embedded group-backing and alias-origin gap. It does
 not close first-chunk setup metadata, memblock internals, retries or resizing,
 global boot peak, page-remapped/fallback paths, native PFNs/maps, concurrency or
-whole physical-budget admission. Coverage remains 1/2047, with CREATE before
+whole physical-budget admission. Coverage remains one of eleven required coverage
+bits, with CREATE before
 FD allocation, RUN and Ready still fenced. Full Kbuild and nested/native
 qualification plans remain prospective and unexecuted.
 
@@ -4428,7 +4432,8 @@ memblock notices remain GPL-2.0-or-later; two new files are GPL-2.0-only.
 
 This component does not qualify global boot peak, free-triggered metadata growth,
 PFN/mapping acceptance, native concurrency or whole physical-budget admission.
-Coverage remains 1/2047; selected CREATE before FD allocation, RUN and Ready
+Coverage remains one of eleven required coverage bits; selected CREATE before FD
+allocation, RUN and Ready
 remain fenced. Complete Kbuild and guest-only nested boot plans remain unexecuted.
 Raw compiler and control evidence stays local, outside Git and releases.
 
@@ -4453,8 +4458,37 @@ verifies the five package roles, 39 preceding payloads unchanged and the sole
 appended three-file delta. Strict 40-stage replay covers the same 176 source
 roles; sparse AOS replay and formatting pass. No new GPL files are introduced.
 
-Coverage remains 1/2047. Complete Kbuild, nested boot, native physical-budget
+Coverage remains one of eleven required coverage bits. Complete Kbuild, nested
+boot, native physical-budget
 admission, CREATE continuation, RUN and Ready remain unqualified.
+
+## Original post-init per-CPU physical backing
+
+Kernel source stage 41 retains runtime per-CPU arena and permanent keeper page
+references after page initialization. Its fixed bank reserves each row before
+the native pin attempt and retains raw outcomes and partial prefixes on failure.
+Currentness checks preserve the same direct-map address, page, PFN, reserved
+status and non-CMA backing. The linker template remains historical because
+its init-section lifetime ends at init-memory retirement.
+
+Independent source review
+`ae8e66c7ebe7b4e0b131bd0deed624bf198fec49b5178487bc2a37aa450c95ab`
+verifies the configured per-CPU translation unit, 776 consumed inputs, 15 positive
+controls and three causal erasures. The backing bank measures 675,840 bytes;
+the existing permanent boot ledger remains 798,720 bytes. These are object
+measurements and scoped controls, without native boot or hotplug qualification.
+
+Independent package review
+`5926b8c75c8902687bb13f504ca530edf86ceb0736c4ce246aae247ff167a955`
+verifies the five package roles, all 40 preceding payloads unchanged, strict
+41-stage replay across 177 roles, sparse AOS replay and formatting. The new
+backing include is GPL-2.0-only and appears in the source/license inventories.
+
+Coverage is a bitmask: 0x001 supplies one of eleven required bits; the complete
+mask is 0x7ff. Earlier 1/2047 prose referred to numeric mask values and must not
+be interpreted as 2,047 independent allocation domains. Global boot accounting,
+native concurrency, complete Kbuild, nested execution, CREATE, RUN and Ready
+remain unqualified. No native pin, kernel operation or host change was run.
 
 ## Performance evidence
 

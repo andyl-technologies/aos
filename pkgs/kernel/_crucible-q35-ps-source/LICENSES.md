@@ -195,3 +195,22 @@ physical incarnations from address reuse. The configured boot keeper measures
 Native remove/isolate, platform backing, PFN/maps and concurrent IRQ/async
 lifetimes remain unqualified. Coverage stays 1 of required 2047, with selected
 CREATE fenced before descriptor allocation and support/RUN/Ready closed.
+
+Source52 adds the original post-initialization per-CPU backing issuer. All 40
+prior payloads and notices remain unchanged. Existing private pool source and
+`mm/percpu.c` retain their notices; one private include is added.
+
+| Added source role | SPDX notice |
+| --- | --- |
+| `mm/crucible-percpu-backing.inc.c` | `GPL-2.0-only` |
+
+The actual built-in late initializer retains source-born runtime arena and
+permanent keeper page references after page metadata exists. Native pin results
+are retained before reconciliation, with no uncertain-prefix unpin or renewal.
+The original linker template has init lifetime and remains historical only.
+The backing bank's configured object measurement is 675,840 bytes, separately
+from the 798,720-byte boot ledger; neither measures complete native boot peak.
+Full Kbuild, native boot/hotplug/PFN lifetime and global physical resources remain
+unqualified. Coverage mask stays 0x001; required mask 0x7ff has 11 domain bits.
+Selected CREATE remains fenced before descriptor allocation; no capability
+support, RUN or Ready is issued.
