@@ -214,3 +214,20 @@ Full Kbuild, native boot/hotplug/PFN lifetime and global physical resources rema
 unqualified. Coverage mask stays 0x001; required mask 0x7ff has 11 domain bits.
 Selected CREATE remains fenced before descriptor allocation; no capability
 support, RUN or Ready is issued.
+
+Source54 adds the original whole-CREATE scope and closes retained system-file
+address reuse. All 41 prior payloads and notices remain unchanged; no new
+native source file is added. Existing `virt/kvm/kvm_main.c` retains its upstream
+SPDX/notice, and `virt/kvm/crucible-original-kernel-resource.inc.c` retains
+`GPL-2.0-only`.
+
+The literal ioctl wrapper enrolls original Task/mm/system-file/files/generation
+before descriptor allocation and retains raw returns before reconciliation.
+An original files reference spans this call and is dropped outside the scope;
+attempted context history is retained. Closed origins leave live lookup while
+late completion authenticates retained array membership and generation.
+The configured whole TU and modeled-peer controls do not prove native FD-table,
+anonymous-file, shared backing, RCU retirement or whole physical resource limits.
+Coverage stays 0x001; required 0x7ff is an 11-bit mask. The selected constructor
+still refuses before FD allocation; no native continuation/delegation, capability
+support, RUN or Ready is issued. Historical Source53 is not a production stage.

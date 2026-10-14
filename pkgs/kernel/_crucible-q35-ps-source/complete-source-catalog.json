@@ -1172,8 +1172,8 @@
     {
       "path": "virt/kvm/crucible-original-kernel-resource.inc.c",
       "identity": {
-        "sha256": "330a8ade40c9969652f0281e23cd5fc3aa68d637d11f40eeae7fa4114be1cdba",
-        "bytes": 41167
+        "sha256": "973053a44aef569487d2c88889fd4b872b4c8175dfa66907149d1796a4e177bc",
+        "bytes": 46156
       }
     },
     {
@@ -1221,8 +1221,8 @@
     {
       "path": "virt/kvm/kvm_main.c",
       "identity": {
-        "sha256": "39aed30b54159c2338d149abcff82e965953c8dc84c93ab540d931b103f24e6a",
-        "bytes": 190771
+        "sha256": "4903501ce58094a68659d37c83e1ebd3ad55d675d2ff79dad4f6cc259ab3a875",
+        "bytes": 191246
       }
     },
     {

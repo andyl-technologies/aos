@@ -4490,6 +4490,33 @@ be interpreted as 2,047 independent allocation domains. Global boot accounting,
 native concurrency, complete Kbuild, nested execution, CREATE, RUN and Ready
 remain unqualified. No native pin, kernel operation or host change was run.
 
+## Original KVM constructor scope
+
+Kernel source stage 42 scopes the actual CREATE caller before descriptor
+allocation. It retains the original task, memory context, file table and
+generation, records the raw native result before final reconciliation, and
+releases the temporary file-table reference outside the registry and allocator
+scope. Closed system-file origins cannot match a later file at a reused address;
+completion authenticates the retained original generation independently.
+
+Independent component review
+`010fe67aac93c9c91f816782efb53e14263ccadd757a8c18cf70eab08d5b950b`
+checks the complete configured kvm_main translation unit, 857 consumed inputs,
+20 literal-source positive controls and six causal erasures. Kernel peers in
+these user-process controls are modeled. The earlier stale-lookup source stage
+53 remains rejected; the packaged delta goes directly from source 52 to 54.
+
+Independent package review
+`4d9f2330b0785aad2931706d6eeddd120351b4d625341811d9edfad37efd873b`
+checks all 41 preceding payloads unchanged, 42-stage strict replay across 177
+source roles, sparse AOS replay and formatting. Existing GPL notices remain
+unchanged and no native source file is added.
+
+Coverage remains one of eleven required bits (0x001 of 0x7ff). Selected CREATE
+still refuses before descriptor allocation, including when supplied a fabricated
+complete mask. FD/VFS/RCU ownership, physical retirement, complete Kbuild, nested
+execution, CREATE/RUN and Ready remain unqualified. No host kernel change ran.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
