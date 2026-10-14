@@ -85,6 +85,20 @@ fn scope_named(
     PacketControlSelection,
     InstalledContent,
 ) {
+    scope_named_with_limits(feature, suffix, participant, None)
+}
+
+fn scope_named_with_limits(
+    feature: bool,
+    suffix: Option<&str>,
+    participant: usize,
+    override_limits: Option<Limits>,
+) -> (
+    Handshake,
+    ConnectionAuthority,
+    PacketControlSelection,
+    InstalledContent,
+) {
     let mut coordinator = five();
     if let Some(suffix) = suffix {
         let identities: Vec<_> = coordinator
@@ -141,13 +155,13 @@ fn scope_named(
         features.push(id(contracts::PACKET_COMPLETE_LINEAGE_FEATURE));
     }
     features.sort();
-    let limits = Limits {
+    let limits = override_limits.unwrap_or(Limits {
         frame_bytes: U64::new(65536),
         nesting: U64::new(64),
         requests: U64::new(8),
         journal_entries: U64::new(64),
         blob_chunk_bytes: U64::new(4096),
-    };
+    });
     let mut handshake = Handshake::new(
         TrustedInstallation {
             session_id: session.clone(),
@@ -538,3 +552,6 @@ mod endpoint_recovery_tests;
 
 #[path = "native5_birth_tests.rs"]
 mod birth_tests;
+
+#[path = "native5_policy_dynamic_tests.rs"]
+mod policy_dynamic_tests;

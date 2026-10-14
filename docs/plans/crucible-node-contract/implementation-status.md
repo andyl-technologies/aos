@@ -3640,6 +3640,31 @@ These component facts exclude whole-factory namespace and allocator closure.
 Native registration, physical cut, source association, terminal Capture,
 settlement and installation remain separate requirements.
 
+## Immutable policy validation and per-frame live checks
+
+Original policy construction and one-shot installation validate complete immutable
+connected and coordinator content. Per-frame verification now checks the live
+registration, session, incarnation, features, extensions and negotiated limits
+without hashing that immutable content again. Both live fences and complete
+Input4 predicates remain. The privately owned policy fields have no decoder or
+mutable accessor that can change them after publication.
+
+Source84 passes 82 focused controls, all 403 enabled SDK units and strict
+all-target/all-feature compilation; 13 units remain ignored. New hostile cases
+exercise the NativePacket policy with the same revoked registration, foreign
+identity, missing features, over-limit chunks and unsupported extensions.
+Existing positive ControllerPacket coverage exercises its changed branch; new
+hostile ControllerPacket execution is not claimed. Independent receipt
+`f4a49837baf0269fe9f259f710021dd3cb3f2a144b86b0db188aaa0b2509fd0e`
+verifies the five exact current source changes and retained executable cohort.
+
+In the distinct historical Source80 transfer cohort, profiling measured 30.751 ms
+of frame planning against approximately five seconds of repeated immutable
+validation. With the duplicate checks removed, both transfer controls pass in
+0.99 seconds under their unchanged two-second limits. These controls use modeled
+activation and registration; their success is not native Capture qualification
+or an overall VM performance result. Source80 is not relabeled as Source84.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

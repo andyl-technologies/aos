@@ -80,6 +80,16 @@ impl ControllerNative5Policy {
         self.coordinator
             .reference
             .verify(self.coordinator.bytes.as_slice())?;
+        self.validate_current_negotiation(authority)
+    }
+
+    // Complete immutable source fields are validated at original construction
+    // and one-shot installation. Every frame still checks its live negotiation.
+    fn validate_current_negotiation(
+        &self,
+        authority: &ConnectionAuthority,
+    ) -> Result<(), ProviderError> {
+        authority.ensure_live()?;
         let binding =
             self.selection
                 .realization
@@ -198,9 +208,11 @@ impl BodySchemaVerifier for Native5CodecOwner {
         envelope: &Envelope,
         body: &ReceivedBody,
     ) -> Result<(), ProviderError> {
-        self.validate_installation(authority)?;
         match self {
-            Self::ControllerPacket(policy) => policy.wire.verify(authority, envelope, body),
+            Self::ControllerPacket(policy) => {
+                policy.validate_current_negotiation(authority)?;
+                policy.wire.verify(authority, envelope, body)
+            }
             Self::NativePacket(policy) => policy.verify(authority, envelope, body),
         }
     }

@@ -17,7 +17,7 @@ impl BlobSupervisor for BlobCustodian {
     fn quarantine(&self, _: BlobQuarantine) {}
 }
 
-fn retained_endpoint_fixture() -> (
+pub(super) fn retained_endpoint_fixture() -> (
     Handshake,
     Connection<UnixStream>,
     PacketControl,

@@ -58,6 +58,7 @@ impl Native5Policy {
             connected,
         };
         serialized_credit(&policy.protocol_view(), 256 * 1024)?;
+        policy.validate_immutable_content()?;
         Ok(policy)
     }
 
@@ -69,7 +70,13 @@ impl Native5Policy {
         &self,
         authority: &ConnectionAuthority,
     ) -> Result<(), ProviderError> {
-        authority.ensure_live()?;
+        self.validate_immutable_content()?;
+        self.validate_current_negotiation(authority)
+    }
+
+    // All fields are privately owned immutable values validated at construction.
+    // No callback, decoder or mutable accessor changes them after publication.
+    fn validate_immutable_content(&self) -> Result<(), ProviderError> {
         self.connected.validate(&self.selection)?;
         self.coordinator
             .reference
@@ -83,6 +90,15 @@ impl Native5Policy {
                 "native5 complete local owner population",
             ));
         }
+        Ok(())
+    }
+
+    // Each frame retains both live fences and every negotiated tuple predicate.
+    fn validate_current_negotiation(
+        &self,
+        authority: &ConnectionAuthority,
+    ) -> Result<(), ProviderError> {
+        authority.ensure_live()?;
         let binding = self
             .selection
             .realization
@@ -120,7 +136,7 @@ impl BodySchemaVerifier for Native5Policy {
         envelope: &Envelope,
         received: &ReceivedBody,
     ) -> Result<(), ProviderError> {
-        self.validate_installation(authority)?;
+        self.validate_current_negotiation(authority)?;
         if envelope
             .body
             .get("extensions")
