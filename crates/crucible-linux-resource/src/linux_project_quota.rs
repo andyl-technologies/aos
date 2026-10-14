@@ -25,7 +25,7 @@ use rustix::fs::{FileType, Mode, OFlags, RawDir, fstat, fstatfs, fsync, openat};
 use rustix::ioctl::{Getter, Setter, ioctl, opcode};
 use thiserror::Error;
 
-mod deleted_holders;
+mod released_usage;
 
 const EXT4_QUOTA_BLOCK_BYTES: u64 = 1 << 10;
 const PROJECT_QUOTA_TYPE: u32 = 2;
@@ -288,7 +288,10 @@ impl LinuxProjectQuotaReservation {
                 project_id: self.project_id,
                 bytes: usage.dqb_curspace,
                 inodes: usage.dqb_curinodes,
-                holders: deleted_holders::deleted_file_holders(&self.path),
+                holders: released_usage::diagnose_released_usage(&self.path, || {
+                    get_project_quota(filesystem, &self.path, self.project_id)
+                        .map(|usage| (usage.dqb_curspace, usage.dqb_curinodes))
+                }),
             });
         }
         clear_project_quota(filesystem, &self.path, self.project_id)?;
