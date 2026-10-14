@@ -876,6 +876,13 @@
       }
     },
     {
+      "path": "include/linux/crucible_percpu_boot.h",
+      "identity": {
+        "sha256": "144fd5c41d73a25a1a53b8d2ba362888e2cd5f7950ddd376ee5e2a8ea6da3240",
+        "bytes": 2679
+      }
+    },
+    {
       "path": "include/linux/kvm_crucible_clock_continuation.h",
       "identity": {
         "sha256": "ce2cf23b4facc72236ac3960e2c8a952068c4b079ed9b2eec38123cf7f7c7b8a",
@@ -1044,17 +1051,24 @@
       }
     },
     {
+      "path": "mm/crucible-percpu-boot-accounting.inc.c",
+      "identity": {
+        "sha256": "0f385371e49cdd0441f0c83f438793961a30c33f2a7070e40b2ae5ce06c4ff6b",
+        "bytes": 15426
+      }
+    },
+    {
       "path": "mm/crucible-percpu-first-chunk.inc.c",
       "identity": {
-        "sha256": "230dae671fcd3e74990d423cc9a9a2b4364f3e3ef2e6702ef983c5739a4e34ca",
-        "bytes": 10308
+        "sha256": "b6c3ebf6c3a86d9f040b850796eb223be0cc4475d75fb36e5df5af1030c8fd79",
+        "bytes": 10347
       }
     },
     {
       "path": "mm/crucible-percpu-pool.inc.c",
       "identity": {
-        "sha256": "92535222ffbbffe0e1823d3469b1d58438c3ec5c3b72113f4a9fc73dc406fb4e",
-        "bytes": 16973
+        "sha256": "85b6f03a807168b82777dbc5653b84994a6dbf2922b5eaee99c83af07fe28dd1",
+        "bytes": 17045
       }
     },
     {
@@ -1062,6 +1076,13 @@
       "identity": {
         "sha256": "864b53379d140d9bae5ae11611598077d2ec4247006fe300005394decd72ce52",
         "bytes": 25359
+      }
+    },
+    {
+      "path": "mm/memblock.c",
+      "identity": {
+        "sha256": "f4420d70da06224b41b5b18f287083b7d37f5210d1bc38ebbb25256db462898d",
+        "bytes": 81742
       }
     },
     {
@@ -1074,8 +1095,8 @@
     {
       "path": "mm/percpu.c",
       "identity": {
-        "sha256": "79415a081a10fc282dbe8e45256b98974d9005d60ab1643486e4ced0b9b70711",
-        "bytes": 103865
+        "sha256": "d648370c12e4afeb62c484d3d6d168b59b6969da1bb0000666e6fa6d2efd8103",
+        "bytes": 105338
       }
     },
     {

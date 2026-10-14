@@ -4398,6 +4398,40 @@ optional FHS probes remain recorded as failures. Production context generation,
 full emulator and utility links, corresponding-source release gates and native
 Capture/Ready remain unqualified. Raw source/build evidence stays local.
 
+## Original boot metadata and raw-result custody
+
+Kernel source stage 39 accounts for per-CPU setup metadata and original memblock
+allocation attempts before native calls. It preserves nested lower-limit retries,
+allocation cardinalities, original chunk/map bindings and overlapping old/new
+array backing during replacement. Accounting is monotonic; frees do not refund
+credit. Ordinary allocation and cleanup behavior remains unchanged.
+
+Finite token membership is checked before retaining the first raw result. Actor,
+stack and failed-state reconciliation follows that retention. Allocated and final
+resize pointers/results remain distinct, and duplicate or stale completions cannot
+overwrite the original observation. The earlier prototype that reconciled actor
+identity before retaining the raw result is rejected and is not a package stage.
+
+Independent corrected component review
+`ae78fff5d7bd5e72d55951fc510182c8910d33c8ec71849d29a1e5f9d0922148`
+verifies the changed configured per-CPU translation unit, 775 consumed inputs,
+16 positive controls and three causal erasures. The other two configured units
+retain their earlier source scope. The permanent boot keeper measures 552,960
+bytes; the existing 36/40/64 KiB first-chunk, pool and arena symbols are unchanged.
+
+Independent package review
+`24d9857795095c9cf70cb085e8f343acab3f0c630774cc38697aeb8fd060cfa4`
+verifies five package roles, all 38 preceding patch payloads unchanged, strict
+39-stage replay across 176 source roles, sparse AOS replay and formatting.
+The sole appended patch contains the corrected cumulative change. Existing
+memblock notices remain GPL-2.0-or-later; two new files are GPL-2.0-only.
+
+This component does not qualify global boot peak, free-triggered metadata growth,
+PFN/mapping acceptance, native concurrency or whole physical-budget admission.
+Coverage remains 1/2047; selected CREATE before FD allocation, RUN and Ready
+remain fenced. Complete Kbuild and guest-only nested boot plans remain unexecuted.
+Raw compiler and control evidence stays local, outside Git and releases.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

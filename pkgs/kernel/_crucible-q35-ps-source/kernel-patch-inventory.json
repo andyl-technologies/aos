@@ -759,6 +759,10 @@
       "identity": null
     },
     {
+      "path": "include/linux/crucible_percpu_boot.h",
+      "identity": null
+    },
+    {
       "path": "include/linux/kvm_crucible_clock_continuation.h",
       "identity": null
     },
@@ -915,6 +919,10 @@
       }
     },
     {
+      "path": "mm/crucible-percpu-boot-accounting.inc.c",
+      "identity": null
+    },
+    {
       "path": "mm/crucible-percpu-first-chunk.inc.c",
       "identity": null
     },
@@ -925,6 +933,13 @@
     {
       "path": "mm/crucible_allocator.c",
       "identity": null
+    },
+    {
+      "path": "mm/memblock.c",
+      "identity": {
+        "sha256": "ab48ac232aa4244b98b2023c4c784a3a6c65d2d791c3d892309d69ad9abd1fd7",
+        "bytes": 80912
+      }
     },
     {
       "path": "mm/page_alloc.c",
@@ -4243,6 +4258,75 @@
           "after": {
             "sha256": "230dae671fcd3e74990d423cc9a9a2b4364f3e3ef2e6702ef983c5739a4e34ca",
             "bytes": 10308
+          }
+        }
+      ]
+    },
+    {
+      "name": "0050-original-boot-metadata-accounting.patch",
+      "patch": {
+        "sha256": "1360df435329138abe5c241f7604e88dd80825361f7d3807d30b7a06430ea002",
+        "bytes": 29874
+      },
+      "changes": [
+        {
+          "path": "mm/percpu.c",
+          "before": {
+            "sha256": "79415a081a10fc282dbe8e45256b98974d9005d60ab1643486e4ced0b9b70711",
+            "bytes": 103865
+          },
+          "after": {
+            "sha256": "d648370c12e4afeb62c484d3d6d168b59b6969da1bb0000666e6fa6d2efd8103",
+            "bytes": 105338
+          }
+        },
+        {
+          "path": "mm/memblock.c",
+          "before": {
+            "sha256": "ab48ac232aa4244b98b2023c4c784a3a6c65d2d791c3d892309d69ad9abd1fd7",
+            "bytes": 80912
+          },
+          "after": {
+            "sha256": "f4420d70da06224b41b5b18f287083b7d37f5210d1bc38ebbb25256db462898d",
+            "bytes": 81742
+          }
+        },
+        {
+          "path": "mm/crucible-percpu-pool.inc.c",
+          "before": {
+            "sha256": "92535222ffbbffe0e1823d3469b1d58438c3ec5c3b72113f4a9fc73dc406fb4e",
+            "bytes": 16973
+          },
+          "after": {
+            "sha256": "85b6f03a807168b82777dbc5653b84994a6dbf2922b5eaee99c83af07fe28dd1",
+            "bytes": 17045
+          }
+        },
+        {
+          "path": "mm/crucible-percpu-first-chunk.inc.c",
+          "before": {
+            "sha256": "230dae671fcd3e74990d423cc9a9a2b4364f3e3ef2e6702ef983c5739a4e34ca",
+            "bytes": 10308
+          },
+          "after": {
+            "sha256": "b6c3ebf6c3a86d9f040b850796eb223be0cc4475d75fb36e5df5af1030c8fd79",
+            "bytes": 10347
+          }
+        },
+        {
+          "path": "include/linux/crucible_percpu_boot.h",
+          "before": null,
+          "after": {
+            "sha256": "144fd5c41d73a25a1a53b8d2ba362888e2cd5f7950ddd376ee5e2a8ea6da3240",
+            "bytes": 2679
+          }
+        },
+        {
+          "path": "mm/crucible-percpu-boot-accounting.inc.c",
+          "before": null,
+          "after": {
+            "sha256": "0f385371e49cdd0441f0c83f438793961a30c33f2a7070e40b2ae5ce06c4ff6b",
+            "bytes": 15426
           }
         }
       ]

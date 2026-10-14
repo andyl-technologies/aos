@@ -20,4 +20,5 @@
   ./0045-original-percpu-vfree-custody.patch
   ./0047-original-percpu-pool-delivery.patch
   ./0048-original-first-chunk-backing.patch
+  ./0050-original-boot-metadata-accounting.patch
 ]

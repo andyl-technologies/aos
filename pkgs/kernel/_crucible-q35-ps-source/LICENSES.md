@@ -160,3 +160,24 @@ qualify complete first-chunk setup metadata, memblock internal/retry/resize,
 page-remapped boot, concurrency/PFN/maps or global boot physical peak.
 Coverage remains bit0, required coverage2047, and selected CREATE remains fenced
 before FD allocation. No continuation, support bit, RUN or Ready is issued.
+
+Source50 adds the corrected cumulative original boot metadata and memblock
+retry/resize accounting from Source48. All 38 preceding payloads and existing
+source notices remain unchanged; rejected Source49 is not an ordered stage.
+
+| Added or newly catalogued source role | SPDX notice |
+| --- | --- |
+| `include/linux/crucible_percpu_boot.h` | `GPL-2.0-only` |
+| `mm/crucible-percpu-boot-accounting.inc.c` | `GPL-2.0-only` |
+| Modified existing `mm/memblock.c` | `GPL-2.0-or-later` |
+
+The persistent kernel-private ledger retains original metadata roles, native
+range retry and overlapping old/new resize observations. First raw results are
+retained before post-native completion reconciliation; allocation and final
+resize observations stay separate. Cumulative page-rounded attempts deliberately
+overlap, with no refund or complete global physical peak claim. The currently
+configured object contains 552,960 bytes of boot keeper storage; this source
+measurement is not a native Kbuild/boot guarantee. Platform acceptance, PFN/maps,
+global boot and concurrent IRQ/async lifetimes remain outside qualified scope.
+Coverage stays 1, required coverage 2047. Selected CREATE is refused before FD
+allocation; no continuation, capability support, RUN or Ready is issued.
