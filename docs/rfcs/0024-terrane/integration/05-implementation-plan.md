@@ -318,6 +318,10 @@ caller-clock requirement or public trait. A separate reviewed fixture correction
 observes native reads rather than the bypassed store wrapper, preserving its
 canonical results and exact missing-ancestor refusal. Renewed qualification
 must cover both corrections before any task or milestone advances.
+Renewed composition `1a5505b799f1` resolves those production API errors but
+native Clippy stops at the fixture's wrong profile-constructor error type.
+The reviewed one-line collector correction preserves the actual error and
+every assertion. Later compiler phases and runtime remain unstarted.
 The unfiltered SDK qualification must retain all 1,121 actual cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
 cases. Application test-target compilation and strict Clippy/private rustdoc for
