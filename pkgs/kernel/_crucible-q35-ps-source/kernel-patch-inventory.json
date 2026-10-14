@@ -4330,6 +4330,48 @@
           }
         }
       ]
+    },
+    {
+      "name": "0051-original-free-caused-region-resize.patch",
+      "patch": {
+        "sha256": "f55289030177c453dc3653e85e9b64fce287e416c388206d4b11e5ea3634755f",
+        "bytes": 7974
+      },
+      "changes": [
+        {
+          "path": "include/linux/crucible_percpu_boot.h",
+          "before": {
+            "sha256": "144fd5c41d73a25a1a53b8d2ba362888e2cd5f7950ddd376ee5e2a8ea6da3240",
+            "bytes": 2679
+          },
+          "after": {
+            "sha256": "479d72925f8377bcca4240e7c119a346b4165576795a839b912aba09028f6ba1",
+            "bytes": 2901
+          }
+        },
+        {
+          "path": "mm/crucible-percpu-boot-accounting.inc.c",
+          "before": {
+            "sha256": "0f385371e49cdd0441f0c83f438793961a30c33f2a7070e40b2ae5ce06c4ff6b",
+            "bytes": 15426
+          },
+          "after": {
+            "sha256": "2d6ba31ef7f25a4b92482381f964b4ac6a926fcf3058ec2d79873b3a906109a9",
+            "bytes": 20454
+          }
+        },
+        {
+          "path": "mm/memblock.c",
+          "before": {
+            "sha256": "f4420d70da06224b41b5b18f287083b7d37f5210d1bc38ebbb25256db462898d",
+            "bytes": 81742
+          },
+          "after": {
+            "sha256": "263c1abd201781b69ed99fe0cdb1665e062628d80fca8d0562ebe856c32dae9b",
+            "bytes": 81930
+          }
+        }
+      ]
     }
   ]
 }

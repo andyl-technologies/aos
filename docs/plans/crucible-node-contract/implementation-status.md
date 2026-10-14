@@ -4432,6 +4432,30 @@ Coverage remains 1/2047; selected CREATE before FD allocation, RUN and Ready
 remain fenced. Complete Kbuild and guest-only nested boot plans remain unexecuted.
 Raw compiler and control evidence stays local, outside Git and releases.
 
+## Original free-triggered boot metadata growth
+
+Kernel source stage 40 retains the original per-CPU free operation before its
+native effects. A nested memblock region-array resize reenters the same retained
+operation and preserves its parent and depth. First native results are recorded
+before reconciliation; overlapping, duplicate, stale and failed completions do
+not restore consumed accounting credit.
+
+Independent source review
+`4c2664244690378d141cbb79f747586fede636787537af2e6265636a7a984675`
+verifies two configured translation units, 778 consumed inputs, 12 positive
+controls, three causal erasures and the 798,720-byte permanent boot keeper.
+The removal/isolation peer in these controls models the resize path; it does
+not establish actual native isolation, freeing or physical retirement.
+
+Independent package review
+`f5bfe9258e169ea20e3820fdfe3d1ab9aee98968985df47c381efba744c40011`
+verifies the five package roles, 39 preceding payloads unchanged and the sole
+appended three-file delta. Strict 40-stage replay covers the same 176 source
+roles; sparse AOS replay and formatting pass. No new GPL files are introduced.
+
+Coverage remains 1/2047. Complete Kbuild, nested boot, native physical-budget
+admission, CREATE continuation, RUN and Ready remain unqualified.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

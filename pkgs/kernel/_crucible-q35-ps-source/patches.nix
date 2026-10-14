@@ -21,4 +21,5 @@
   ./0047-original-percpu-pool-delivery.patch
   ./0048-original-first-chunk-backing.patch
   ./0050-original-boot-metadata-accounting.patch
+  ./0051-original-free-caused-region-resize.patch
 ]

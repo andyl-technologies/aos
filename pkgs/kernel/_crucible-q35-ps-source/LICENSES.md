@@ -181,3 +181,17 @@ measurement is not a native Kbuild/boot guarantee. Platform acceptance, PFN/maps
 global boot and concurrent IRQ/async lifetimes remain outside qualified scope.
 Coverage stays 1, required coverage 2047. Selected CREATE is refused before FD
 allocation; no continuation, capability support, RUN or Ready is issued.
+
+Source51 accounts for native region-array resize caused by first-chunk trim and
+cleanup. All 39 earlier payloads and notices are unchanged. It modifies the
+existing private header/include and existing GPL-2.0-or-later `mm/memblock.c`;
+no source file or licensing scope is added or removed.
+
+A source-born original free scope retains its allocation/resize lineage before
+native removal, including nested old/new array charges and the native integer
+result before completion reconciliation. There are no byte refunds or renewed
+physical incarnations from address reuse. The configured boot keeper measures
+798,720 bytes; this is component object geometry, not complete native boot peak.
+Native remove/isolate, platform backing, PFN/maps and concurrent IRQ/async
+lifetimes remain unqualified. Coverage stays 1 of required 2047, with selected
+CREATE fenced before descriptor allocation and support/RUN/Ready closed.
