@@ -227,7 +227,8 @@ impl ProtectedBrokerSessionJournalV1 {
         request: &AuthenticatedBrokerMethodRequestV1,
         transcript: &VerifiedBrokerSessionTranscriptV1,
         connection_peer: &ConnectionPeerIdentity,
-    ) -> Result<super::super::ProtectedBrokerOutcomeAdmissionGateV1, BrokerSessionSecurityError> {
+    ) -> Result<super::super::ProtectedBrokerOutcomeAdmissionGateV1, BrokerSessionSecurityError>
+    {
         self.require_floor_method(request.method())?;
 
         let context = self.current_context(transcript)?;
@@ -284,17 +285,21 @@ impl ProtectedBrokerSessionJournalV1 {
         connection_peer: &'authority ConnectionPeerIdentity,
     ) -> Result<
         ProtectedBrokerOutcomeCurrentV1<'authority>,
-        (ProtectedBrokerOutcomeCurrentnessOwnerV1, BrokerSessionSecurityError),
+        (
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+            BrokerSessionSecurityError,
+        ),
     > {
         let fixed = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::ControllerHostClient);
         let checked = if self.directory != Path::new(fixed.journal_root)
             || self.endpoint.role() != BrokerSessionDurableEndpointV1::Client
             || owner.transcript.protocol() != BrokerSessionProtocolV1::Host
             || owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
-            || !matches!(owner.request.method(),
+            || !matches!(
+                owner.request.method(),
                 BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
-                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION)
-        {
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+            ) {
             Err(BrokerSessionSecurityError::Currentness)
         } else {
             self.validate_broker_outcome(&owner, connection_peer)
@@ -315,7 +320,8 @@ impl ProtectedBrokerSessionJournalV1 {
         owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
         connection_peer: &ConnectionPeerIdentity,
     ) -> Result<(), BrokerSessionSecurityError> {
-        let endpoint = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient);
+        let endpoint =
+            fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient);
         if self.directory != Path::new(endpoint.journal_root)
             || self.endpoint.role() != BrokerSessionDurableEndpointV1::Client
             || owner.transcript.protocol() != BrokerSessionProtocolV1::Storage
@@ -356,12 +362,15 @@ impl ProtectedBrokerSessionJournalV1 {
         owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
         connection_peer: &ConnectionPeerIdentity,
     ) -> Result<(), BrokerSessionSecurityError> {
-        let endpoint = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient);
+        let endpoint =
+            fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient);
         if self.directory != Path::new(endpoint.journal_root)
             || self.endpoint.role() != BrokerSessionDurableEndpointV1::Client
             || owner.transcript.protocol() != BrokerSessionProtocolV1::Storage
-            || owner.transcript.audience() != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER
-            || owner.request.method() != BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+            || owner.transcript.audience()
+                != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER
+            || owner.request.method()
+                != BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
             || owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
         {
             return Err(BrokerSessionSecurityError::Currentness);
@@ -400,10 +409,13 @@ impl ProtectedBrokerSessionJournalV1 {
         if self.directory != Path::new(endpoint.journal_root)
             || self.endpoint.role() != BrokerSessionDurableEndpointV1::Broker
             || owner.transcript.protocol() != BrokerSessionProtocolV1::Storage
-            || owner.transcript.audience() != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER
-            || !matches!(owner.request.method(),
+            || owner.transcript.audience()
+                != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER
+            || !matches!(
+                owner.request.method(),
                 BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
-                | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT)
+                    | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+            )
             || owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
         {
             return Err(BrokerSessionSecurityError::Currentness);
