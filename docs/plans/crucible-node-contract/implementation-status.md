@@ -3415,6 +3415,41 @@ Actual phased service consumption and pre-effect admission of the new structures
 and Rc allocations remain required. A transport transition grants no semantic
 birth, Capture, fresh adoption or Ready permission.
 
+## Original QOM instance body and retirement storage
+
+Selected QOM instance bodies, complete alignment padding and allocation metadata
+now spend the same finite constructor arena before native initialization. The
+existing private allocator registration carries the original read-only span
+provider, preserving ordinary allocation/free paths and avoiding system-only
+link dependencies in generic QOM.
+
+Literal finalization binds the source scope, incarnation, class, extent and
+retained free method. Allocation, publication, attempted finalization, completed
+finalization and retained retirement remain distinct. Class and free-method
+checks run again after callbacks; retired bodies and journal generations stay
+retained without refund or reuse.
+
+Four complete object, VL, ordinary-stub and endpoint-utility translation units
+compile with warnings as errors on the coherent signed `5158d178ac` source.
+VL literally includes the changed early setter fragment and private QOM header;
+there is no separate early-fragment translation unit. The exact earlier
+seventeen body/lifetime controls and two class/free erasures retain their
+original component scope. Type/class/init/property/finalizer-scope/history/BQL
+and reference-owner certificates remain modeled in those controls.
+
+The canonical native commit is
+`5be074f96081040b197d5a7a30c3e2991dd9be80`, complete tree
+`5113709f340de95f07e881a3c42b2774747e73c8`. Independent review verifies all
+78,085 entries, exactly five reviewed native roles and one new GPL fragment,
+sole signed base, regenerated cumulative patch, bundle, descriptor and additive
+license inventory. Its receipt is
+`758eeabed4a8650e3b7faf624919a4abff7ddc431384d8b723901eec79bb0e5f`.
+
+Pre-main type/class bootstrap, property/registry/interface/name storage,
+CPUAddressSpace/listener storage and complete original graph/RCU closure remain
+pending. No type/class prototype is included here. Instance storage grants no
+BIOS writer, full seal, Capture, Ready, installed-pair or package qualification.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

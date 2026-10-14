@@ -1,6 +1,6 @@
-From 5158d178ac2f2b98a984cc0cd4b6f713535c86de Mon Sep 17 00:00:00 2001
+From 5be074f96081040b197d5a7a30c3e2991dd9be80 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 13 Oct 2026 23:55:00 +0000
+Date: Wed, 14 Oct 2026 00:10:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -656,6 +656,34 @@ original failed d903 package build is not relabeled; a complete current
 ordinary package/source/runtime rebuild remains required. This correction
 provides no graph seal, constructor authority, Capture/Ready, guest,
 installed-pair, package or release qualification.
+
+Retain selected QOM instance bodies, complete alignment padding and
+source allocation metadata in the same finite constructor arena before
+native initialization. Pass the authentic readonly span provider through
+the existing private Q35 constructor callback registration; generic QOM
+acquires no system-only link dependency. Preserve ordinary allocation/free.
+
+Bind body retirement to the literal finalizer's source scope, incarnation,
+class, extent and exact retained free callback. Keep allocation, publication,
+attempt, completed finalizer and retained retirement distinct. Recheck class
+and free method after callbacks before native free dispatch; retain retired
+body/padding/journal without refund or reuse.
+
+Four fresh complete production-configured object/VL/ordinary-stub/endpoint
+utility TUs pass with warnings as errors on coherent signed5158 source.
+VL literally consumes the changed early.inc setter and private QOM header;
+there is no standalone early.c translation unit. Original seventeen exact
+body/lifetime controls and two class/free check erasures remain separately
+scoped under the unchanged component body. Type/class/init/property/scope,
+history/BQL/ref certificates are explicitly modeled in those controls.
+
+Reconstruct the complete signed5158 tree plus exactly four existing posts
+and one GPL2-or-later fragment with its additive license row. No class/type,
+property, CPUAddressSpace, listener or name prototype is included. Their
+physical storage and complete native graph/RCU closure remain pending;
+body ownership does not issue class/property effect permission or BIOS
+writer, full seal, Capture/Ready, guest, installed-pair, package or release
+qualification.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -104815,10 +104843,10 @@ index 0000000000000000000000000000000000000000..6a85ce28f61e75aa6b1ef76eb8e1bb47
 +#endif
 diff --git a/include/qom/crucible-property-roots.h b/include/qom/crucible-property-roots.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..3bbb4668bd873de7df32b30634a9e0cfa7dc3acc
+index 0000000000000000000000000000000000000000..51a987301b3758a795ee12a79df3515023369d73
 --- /dev/null
 +++ b/include/qom/crucible-property-roots.h
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,54 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#ifndef QOM_CRUCIBLE_PROPERTY_ROOTS_H
 +#define QOM_CRUCIBLE_PROPERTY_ROOTS_H
@@ -104832,7 +104860,8 @@ index 0000000000000000000000000000000000000000..3bbb4668bd873de7df32b30634a9e0cf
 +uint64_t qom_crucible_property_roots_q35_storage_bytes(void);
 +int qom_crucible_property_roots_q35_enable(void *(*allocate)(size_t),
 +                                         void *(*before_allocate)(struct ObjectClass *, size_t),
-+                                         void (*after_allocate)(struct ObjectClass *, void *, void *));
++                                         void (*after_allocate)(struct ObjectClass *, void *, void *),
++                                         bool (*span_current)(const void *, size_t));
 +int qom_crucible_property_roots_seal(void);
 +int qom_crucible_property_roots_validate(void);
 +
@@ -171091,6 +171120,201 @@ index 0000000000000000000000000000000000000000..4c58f54e105e238fc63949133db57e52
 +    }
 +    return false;
 +}
+diff --git a/qom/crucible-instance-storage.inc b/qom/crucible-instance-storage.inc
+new file mode 100644
+index 0000000000000000000000000000000000000000..b25e9cd584ac05a29a317d73f81f2d0d351445a6
+--- /dev/null
++++ b/qom/crucible-instance-storage.inc
+@@ -0,0 +1,189 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Original instance bodies are retained independently of QOM's property maps.
++ * This owns body/alignment storage, not opaque GLib class/property allocation. */
++
++typedef enum CrucibleQomInstancePhase {
++    QOM_INSTANCE_ALLOCATING,
++    QOM_INSTANCE_PUBLISHED,
++    QOM_INSTANCE_RETIRING,
++    QOM_INSTANCE_FINALIZED,
++    QOM_INSTANCE_RETIRED,
++} CrucibleQomInstancePhase;
++
++struct CrucibleQomInstanceAllocation {
++    CrucibleQomInstanceAllocation *previous;
++    CrucibleQomInstanceAllocation *retiring_previous;
++    Object *original;
++    ObjectClass *klass;
++    void *backing;
++    size_t extent;
++    size_t instance_size;
++    size_t alignment;
++    uint64_t incarnation;
++    CrucibleQomInstancePhase phase;
++};
++
++static __thread CrucibleQomInstanceAllocation *qom_instance_retiring;
++
++static bool qom_instance_storage_enabled(void)
++{
++    if (!qom_q35_allocate) {
++        return false;
++    }
++    if (qom_roots.process != getpid()) {
++        _exit(125);
++    }
++    if (!qom_roots.allocation_span_current || !bql_locked() ||
++        qom_roots.failure || qom_roots.sealed || qom_roots.sealing) {
++        qom_crucible_refuse("instance body lost original source context");
++    }
++    return true;
++}
++
++static void *qom_instance_backing_allocate(size_t extent)
++{
++    void *body = qom_q35_allocate(extent);
++
++    if (!body || !qom_roots.allocation_span_current(body, extent)) {
++        qom_crucible_refuse("instance body backing exhausted or unowned");
++    }
++    return body;
++}
++
++static CrucibleQomInstanceAllocation *qom_instance_original(Object *object)
++{
++    uint64_t remaining = qom_roots.instance_allocation_count;
++
++    for (CrucibleQomInstanceAllocation *row = qom_roots.instance_allocations;
++         row && remaining--; row = row->previous) {
++        if (!qom_roots.allocation_span_current(row, sizeof(*row))) {
++            qom_crucible_refuse("instance body journal changed");
++        }
++        if (row->original == object) {
++            if (!row->backing || !row->original ||
++                !qom_roots.allocation_span_current(row->backing, row->extent) ||
++                !qom_roots.allocation_span_current(row->original, row->instance_size)) {
++                qom_crucible_refuse("instance body span changed");
++            }
++            return row;
++        }
++    }
++    return NULL;
++}
++
++static Object *qom_instance_allocate(ObjectClass *klass, size_t size, size_t align)
++{
++    if (!qom_instance_storage_enabled()) {
++        return NULL;
++    }
++    qom_crucible_before_writer("instance body birth changed");
++    size_t alignment = MAX(align, _Alignof(max_align_t));
++    size_t extent;
++
++    if (!klass || size < sizeof(Object) || !is_power_of_2(alignment) ||
++        __builtin_add_overflow(size, alignment - 1, &extent) ||
++        qom_roots.instance_allocation_count == UINT64_MAX) {
++        qom_crucible_refuse("instance body geometry invalid");
++    }
++    CrucibleQomInstanceAllocation *row = qom_instance_backing_allocate(sizeof(*row));
++
++    memset(row, 0, sizeof(*row));
++    row->klass = klass;
++    row->instance_size = size;
++    row->alignment = alignment;
++    row->extent = extent;
++    row->phase = QOM_INSTANCE_ALLOCATING;
++    row->previous = qom_roots.instance_allocations;
++    qom_roots.instance_allocations = row;
++    qom_roots.instance_allocation_count++;
++
++    row->backing = qom_instance_backing_allocate(extent);
++    uintptr_t rounded;
++
++    if (__builtin_add_overflow((uintptr_t)row->backing, alignment - 1, &rounded)) {
++        qom_crucible_refuse("instance body alignment overflow");
++    }
++    row->original = (Object *)(rounded & ~(uintptr_t)(alignment - 1));
++    if (!qom_roots.allocation_span_current(row->original, size)) {
++        qom_crucible_refuse("aligned instance body lost backing");
++    }
++    return row->original;
++}
++
++static void qom_instance_retained_free(void *data)
++{
++    if (!qom_instance_storage_enabled()) {
++        qom_crucible_refuse("retained instance free has no original allocator");
++    }
++    Object *object = data;
++    CrucibleQomInstanceAllocation *row = qom_instance_original(object);
++
++    if (!row || row != qom_instance_retiring || row->phase != QOM_INSTANCE_FINALIZED ||
++        object->class != row->klass || object->free != qom_instance_retained_free ||
++        object->ref || object->parent) {
++        qom_crucible_refuse("instance free has no completed literal finalizer");
++    }
++    row->phase = QOM_INSTANCE_RETIRED;
++    qom_instance_retiring = row->retiring_previous;
++    /* Keep body, alignment padding and original metadata; no refund/reuse. */
++}
++
++static void qom_instance_publish(Object *object)
++{
++    if (!qom_instance_storage_enabled()) {
++        return;
++    }
++    CrucibleQomInstanceAllocation *row = qom_instance_original(object);
++
++    if (!row || row->phase != QOM_INSTANCE_ALLOCATING || object->class != row->klass ||
++        object->free != qom_instance_retained_free) {
++        qom_crucible_refuse("instance body publication changed");
++    }
++    row->incarnation = qom_crucible_property_roots_instance_incarnation(object);
++    if (!row->incarnation) {
++        qom_crucible_refuse("instance body has no original QOM incarnation");
++    }
++    row->phase = QOM_INSTANCE_PUBLISHED;
++}
++
++static CrucibleQomInstanceAllocation *qom_instance_finalize_begin(Object *object)
++{
++    if (!qom_instance_storage_enabled()) {
++        return NULL;
++    }
++    CrucibleQomInstanceAllocation *row = qom_instance_original(object);
++
++    if (!row) {
++        return NULL; /* Embedded original objects own no independent free body. */
++    }
++    if (row->phase != QOM_INSTANCE_PUBLISHED || !qom_original_finalizer ||
++        !qom_original_finalizer->active ||
++        qom_original_finalizer->original.original != object ||
++        qom_original_finalizer->original.incarnation != row->incarnation ||
++        qom_original_finalizer->original.initial_class != row->klass ||
++        qom_original_finalizer->original.instance_extent != row->instance_size ||
++        object->class != row->klass || object->free != qom_instance_retained_free) {
++        qom_crucible_refuse("instance body finalizer lost its native owner");
++    }
++    row->retiring_previous = qom_instance_retiring;
++    row->phase = QOM_INSTANCE_RETIRING;
++    qom_instance_retiring = row;
++    return row;
++}
++
++static void qom_instance_finalize_finish(CrucibleQomInstanceAllocation *row,
++                                         Object *object)
++{
++    if (!row) {
++        return;
++    }
++    if (!qom_instance_storage_enabled() || qom_instance_original(object) != row ||
++        row != qom_instance_retiring || row->phase != QOM_INSTANCE_RETIRING ||
++        !qom_original_finalizer || !qom_original_finalizer->active ||
++        qom_original_finalizer->original.original != object ||
++        object->class != row->klass || object->free != qom_instance_retained_free ||
++        object->ref || object->parent) {
++        qom_crucible_refuse("instance body cleanup tuple changed");
++    }
++    row->phase = QOM_INSTANCE_FINALIZED;
++}
 diff --git a/qom/crucible-property-link-roots.inc b/qom/crucible-property-link-roots.inc
 new file mode 100644
 index 0000000000000000000000000000000000000000..24a0dbbb05e340813fe253e2332a892facc70507
@@ -171422,10 +171646,10 @@ index 0000000000000000000000000000000000000000..42f62dfab6bde021137fd3fc84787542
 +}
 diff --git a/qom/crucible-property-roots.inc b/qom/crucible-property-roots.inc
 new file mode 100644
-index 0000000000000000000000000000000000000000..515ebc1587b24c81ab488c2c501200b894c83900
+index 0000000000000000000000000000000000000000..361062b769635e10af57821a0ee45ad28c01c796
 --- /dev/null
 +++ b/qom/crucible-property-roots.inc
-@@ -0,0 +1,616 @@
+@@ -0,0 +1,623 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Included only by object.c: retains actual private QOM tables without getters. */
 +#define CRUCIBLE_QOM_OBJECT_MAX 4096
@@ -171471,6 +171695,8 @@ index 0000000000000000000000000000000000000000..515ebc1587b24c81ab488c2c501200b8
 +    char *description;
 +};
 +
++typedef struct CrucibleQomInstanceAllocation CrucibleQomInstanceAllocation;
++
 +static void *(*qom_q35_allocate)(size_t);
 +static void *(*qom_q35_before_allocate)(ObjectClass *, size_t);
 +static void (*qom_q35_after_allocate)(ObjectClass *, void *, void *);
@@ -171485,6 +171711,9 @@ index 0000000000000000000000000000000000000000..515ebc1587b24c81ab488c2c501200b8
 +    bool earlier_objects;
 +    pid_t process;
 +    int64_t constructor_thread;
++    CrucibleQomInstanceAllocation *instance_allocations;
++    uint64_t instance_allocation_count;
++    bool (*allocation_span_current)(const void *, size_t);
 +    uint64_t next_incarnation;
 +    unsigned object_count;
 +    unsigned class_count;
@@ -171528,16 +171757,18 @@ index 0000000000000000000000000000000000000000..515ebc1587b24c81ab488c2c501200b8
 +
 +int qom_crucible_property_roots_q35_enable(void *(*allocate)(size_t),
 +                                         void *(*before_allocate)(ObjectClass *, size_t),
-+                                         void (*after_allocate)(ObjectClass *, void *, void *))
++                                         void (*after_allocate)(ObjectClass *, void *, void *),
++                                         bool (*span_current)(const void *, size_t))
 +{
 +    int status;
 +
-+    if (!allocate || !before_allocate || !after_allocate || !bql_locked() || qemu_get_thread_id() != getpid() ||
++    if (!allocate || !before_allocate || !after_allocate || !span_current || !bql_locked() || qemu_get_thread_id() != getpid() ||
 +        qom_q35_allocate) {
 +        return -EPERM;
 +    }
 +    status = qom_crucible_property_roots_enable();
 +    if (!status) {
++        qom_roots.allocation_span_current = span_current;
 +        qom_q35_allocate = allocate;
 +        qom_q35_before_allocate = before_allocate;
 +        qom_q35_after_allocate = after_allocate;
@@ -172043,7 +172274,7 @@ index 0000000000000000000000000000000000000000..515ebc1587b24c81ab488c2c501200b8
 +    return result;
 +}
 diff --git a/qom/object.c b/qom/object.c
-index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20b7b5bde9 100644
+index f79b2cf3618369a87d25685b1bd834f8b2218936..b22c961b0027c4ba61c18ce6790deb9362c7000d 100644
 --- a/qom/object.c
 +++ b/qom/object.c
 @@ -11,6 +11,11 @@
@@ -172058,7 +172289,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
  #include "qapi/error.h"
  #include "qom/compat-properties.h"
  #include "qom/object.h"
-@@ -83,6 +88,12 @@ static GHashTable *type_table;
+@@ -83,6 +88,13 @@ static GHashTable *type_table;
  
  static bool enumerating_types;
  
@@ -172067,11 +172298,12 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
 +
 +#include "crucible-property-roots.inc"
 +#include "crucible-property-release.inc"
++#include "crucible-instance-storage.inc"
 +
  static void type_table_add(TypeImpl *ti)
  {
      assert(!enumerating_types);
-@@ -156,6 +167,8 @@ static bool type_name_is_valid(const char *name)
+@@ -156,6 +168,8 @@ static bool type_name_is_valid(const char *name)
  
  static TypeImpl *type_register_internal(const TypeInfo *info)
  {
@@ -172080,7 +172312,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
      TypeImpl *ti;
  
      if (!type_name_is_valid(info->name)) {
-@@ -199,6 +212,7 @@ static TypeImpl *type_get_or_load_by_name(const char *name, Error **errp)
+@@ -199,6 +213,7 @@ static TypeImpl *type_get_or_load_by_name(const char *name, Error **errp)
  
  #ifdef CONFIG_MODULES
      if (!type) {
@@ -172088,7 +172320,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
          int rv = module_load_qom(name, errp);
          if (rv > 0) {
              type = type_get_by_name_noload(name);
-@@ -334,6 +348,7 @@ static void type_initialize(TypeImpl *ti)
+@@ -334,6 +349,7 @@ static void type_initialize(TypeImpl *ti)
      if (ti->class) {
          return;
      }
@@ -172096,7 +172328,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
  
      ti->class_size = type_class_get_size(ti);
      ti->instance_size = type_object_get_size(ti);
-@@ -489,12 +504,14 @@ static void object_class_property_init_all(Object *obj)
+@@ -489,12 +505,14 @@ static void object_class_property_init_all(Object *obj)
  
  static void object_initialize_with_type(Object *obj, size_t size, TypeImpl *type)
  {
@@ -172111,7 +172343,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
      memset(obj, 0, type->instance_size);
      obj->class = type->class;
      object_ref(obj);
-@@ -587,6 +604,13 @@ static inline bool object_property_is_child(ObjectProperty *prop)
+@@ -587,6 +605,13 @@ static inline bool object_property_is_child(ObjectProperty *prop)
  
  static void object_property_del_all(Object *obj)
  {
@@ -172125,7 +172357,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
      g_autoptr(GHashTable) done = g_hash_table_new(NULL, NULL);
      ObjectProperty *prop;
      ObjectPropertyIterator iter;
-@@ -600,7 +624,10 @@ static void object_property_del_all(Object *obj)
+@@ -600,7 +625,10 @@ static void object_property_del_all(Object *obj)
                  trace_object_property_del(obj, obj->class->type->name,
                                            prop->name, prop->opaque);
                  if (prop->release) {
@@ -172136,7 +172368,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
                      released = true;
                      break;
                  }
-@@ -613,6 +640,8 @@ static void object_property_del_all(Object *obj)
+@@ -613,6 +641,8 @@ static void object_property_del_all(Object *obj)
  
  static void object_property_del_child(Object *obj, Object *child)
  {
@@ -172145,7 +172377,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
      ObjectProperty *prop;
      GHashTableIter iter;
      gpointer key, value;
-@@ -626,7 +655,10 @@ static void object_property_del_child(Object *obj, Object *child)
+@@ -626,7 +656,10 @@ static void object_property_del_child(Object *obj, Object *child)
              trace_object_property_del(obj, obj->class->type->name,
                                        prop->name, prop->opaque);
              if (prop->release) {
@@ -172156,26 +172388,28 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
                  prop->release = NULL;
              }
              break;
-@@ -663,6 +695,10 @@ static void object_deinit(Object *obj, TypeImpl *type)
+@@ -663,6 +696,11 @@ static void object_deinit(Object *obj, TypeImpl *type)
  static void object_finalize(void *data)
  {
      Object *obj = data;
 +
 +    CrucibleQomFinalizerScope finalizer_scope = { 0 };
 +    qom_original_finalizer_begin(obj, &finalizer_scope);
++    CrucibleQomInstanceAllocation *instance = qom_instance_finalize_begin(obj);
 +    qom_crucible_finalize(obj);
      TypeImpl *ti = obj->class->type;
      trace_object_finalize(obj, obj->class->type->name);
      object_property_del_all(obj);
-@@ -670,6 +706,7 @@ static void object_finalize(void *data)
+@@ -670,6 +708,8 @@ static void object_finalize(void *data)
  
      g_assert(obj->ref == 0);
      g_assert(obj->parent == NULL);
++    qom_instance_finalize_finish(instance, obj);
 +    qom_original_finalizer_end(&finalizer_scope);
      if (obj->free) {
          obj->free(obj);
      }
-@@ -677,13 +714,23 @@ static void object_finalize(void *data)
+@@ -677,13 +717,23 @@ static void object_finalize(void *data)
  
  static Object *object_new_with_type(Type type)
  {
@@ -172199,7 +172433,19 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
      size = type->instance_size;
      align = type->instance_align;
  
-@@ -699,6 +746,9 @@ static Object *object_new_with_type(Type type)
+@@ -691,7 +741,10 @@ static Object *object_new_with_type(Type type)
+      * Do not use qemu_memalign unless required.  Depending on the
+      * implementation, extra alignment implies extra overhead.
+      */
+-    if (likely(align <= __alignof__(max_align_t))) {
++    obj = qom_instance_allocate(type->class, size, align);
++    if (obj) {
++        obj_free = qom_instance_retained_free;
++    } else if (likely(align <= __alignof__(max_align_t))) {
+         obj = g_malloc(size);
+         obj_free = g_free;
+     } else {
+@@ -699,8 +752,12 @@ static Object *object_new_with_type(Type type)
          obj_free = qemu_vfree;
      }
  
@@ -172208,8 +172454,11 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
 +    }
      object_initialize_with_type(obj, size, type);
      obj->free = obj_free;
++    qom_instance_publish(obj);
  
-@@ -1332,6 +1382,8 @@ object_property_try_add(Object *obj, const char *name, const char *type,
+     trace_object_new(obj, obj->class->type->name);
+     return obj;
+@@ -1332,6 +1389,8 @@ object_property_try_add(Object *obj, const char *name, const char *type,
                          ObjectPropertyRelease *release,
                          void *opaque, Error **errp)
  {
@@ -172218,7 +172467,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
      ObjectProperty *prop;
      size_t name_len = strlen(name);
  
-@@ -1398,6 +1450,8 @@ object_class_property_add(ObjectClass *klass,
+@@ -1398,6 +1457,8 @@ object_class_property_add(ObjectClass *klass,
                            ObjectPropertyRelease *release,
                            void *opaque)
  {
@@ -172227,7 +172476,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
      ObjectProperty *prop;
  
      assert(!object_class_property_find(klass, name));
-@@ -1500,12 +1554,17 @@ ObjectProperty *object_class_property_find_err(ObjectClass *klass,
+@@ -1500,12 +1561,17 @@ ObjectProperty *object_class_property_find_err(ObjectClass *klass,
  
  void object_property_del(Object *obj, const char *name)
  {
@@ -172245,7 +172494,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
      }
      g_hash_table_remove(obj->properties, name);
  }
-@@ -1513,6 +1572,8 @@ void object_property_del(Object *obj, const char *name)
+@@ -1513,6 +1579,8 @@ void object_property_del(Object *obj, const char *name)
  bool object_property_get(Object *obj, const char *name, Visitor *v,
                           Error **errp)
  {
@@ -172254,7 +172503,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
      Error *err = NULL;
      ObjectProperty *prop = object_property_find_err(obj, name, errp);
  
-@@ -1533,6 +1594,8 @@ bool object_property_get(Object *obj, const char *name, Visitor *v,
+@@ -1533,6 +1601,8 @@ bool object_property_get(Object *obj, const char *name, Visitor *v,
  bool object_property_set(Object *obj, const char *name, Visitor *v,
                           Error **errp)
  {
@@ -172263,7 +172512,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
      ERRP_GUARD();
      ObjectProperty *prop = object_property_find_err(obj, name, errp);
  
-@@ -1688,6 +1751,8 @@ static void object_property_init_defval(Object *obj, ObjectProperty *prop)
+@@ -1688,6 +1758,8 @@ static void object_property_init_defval(Object *obj, ObjectProperty *prop)
  
  static void object_property_set_default(ObjectProperty *prop, QObject *defval)
  {
@@ -172272,7 +172521,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
      assert(!prop->defval);
      assert(!prop->init);
  
-@@ -1998,6 +2063,8 @@ static void object_get_link_property(Object *obj, Visitor *v,
+@@ -1998,6 +2070,8 @@ static void object_get_link_property(Object *obj, Visitor *v,
      }
  }
  
@@ -172281,7 +172530,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
  Object *object_resolve_and_typecheck(const char *path, const char *name,
                                       const char *target_type, Error **errp)
  {
-@@ -2246,6 +2313,7 @@ Object *object_resolve_path_component(Object *parent, const char *part)
+@@ -2246,6 +2320,7 @@ Object *object_resolve_path_component(Object *parent, const char *part)
      }
  
      if (prop->resolve) {
@@ -172289,7 +172538,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
          return prop->resolve(parent, prop->opaque, part);
      } else {
          return NULL;
-@@ -2983,6 +3051,8 @@ object_property_add_alias(Object *obj, const char *name,
+@@ -2983,6 +3058,8 @@ object_property_add_alias(Object *obj, const char *name,
  void object_property_set_description(Object *obj, const char *name,
                                       const char *description)
  {
@@ -172298,7 +172547,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..a97156a372a7b34bdd30f2e3b3eb6a20
      ObjectProperty *op;
  
      op = object_property_find_err(obj, name, &error_abort);
-@@ -2994,6 +3064,8 @@ void object_class_property_set_description(ObjectClass *klass,
+@@ -2994,6 +3071,8 @@ void object_class_property_set_description(ObjectClass *klass,
                                             const char *name,
                                             const char *description)
  {
@@ -183452,10 +183701,10 @@ index 0000000000000000000000000000000000000000..5e51a7f10318fcaf6484bda4b162afa8
 +}
 diff --git a/system/crucible-whole-early.inc.c b/system/crucible-whole-early.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..f4cfdd946d89d04e166418a8c7216c61e3138b6e
+index 0000000000000000000000000000000000000000..905fddf070eb48f50a08c4fe5ba33d1a6f31bbd8
 --- /dev/null
 +++ b/system/crucible-whole-early.inc.c
-@@ -0,0 +1,1872 @@
+@@ -0,0 +1,1873 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Source-owned sealed setup before subsystem, board and guest construction.
 + * A pinned descriptor is a request and original provenance, never Ready. */
@@ -184527,7 +184776,8 @@ index 0000000000000000000000000000000000000000..f4cfdd946d89d04e166418a8c7216c61
 +    }
 +    status = qom_crucible_property_roots_q35_enable(
 +        crucible_whole_setup_constructor_history_allocate,
-+        whole_setup_object_before_allocate, whole_setup_object_after_allocate);
++        whole_setup_object_before_allocate, whole_setup_object_after_allocate,
++        crucible_whole_setup_history_span_current);
 +    if (!status) {
 +        size_t extent = qemu_endpoint_whole_q35_storage_bytes();
 +        void *backing = crucible_whole_setup_constructor_history_allocate(extent);
