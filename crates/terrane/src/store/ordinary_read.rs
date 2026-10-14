@@ -198,6 +198,12 @@ impl NativeOrdinaryRead {
 }
 
 impl NativeOrdinaryRecord {
+    /// Reports whether the native worker captured a present ordinary leaf body.
+    #[cfg(all(test, feature = "tokio", unix))]
+    pub(crate) fn has_present_body_for_test(&self) -> bool {
+        matches!(&self.outcome, OrdinaryReadOutcome::Present(_, _))
+    }
+
     /// Gives the backend actual data without choosing a bucket error identity.
     pub(crate) fn into_outcome(self) -> OrdinaryReadOutcome {
         self.outcome

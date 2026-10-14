@@ -527,7 +527,10 @@ impl LocalFs for TestFs {
 
         let path = read.path_for_test().map(Path::to_owned);
         let result = TokioLocalFs.read_ordinary_record(read).await?;
-        let gate = if result.is_some() {
+        let gate = if result
+            .as_ref()
+            .is_some_and(crate::store::NativeOrdinaryRecord::has_present_body_for_test)
+        {
             let mut pending = self.state.catalog_read_gate.lock().unwrap();
             if pending
                 .as_ref()
