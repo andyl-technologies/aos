@@ -15,6 +15,10 @@ const ENVOY_HOT_FORK_BYTE_CEILING: u64 = 6 * 1024 * 1024 * 1024;
 // This is a cap on completed scheduler quanta across the packaged campaign,
 // independent of the exact logical ticks or retired instructions in each RUN.
 const ENVOY_QUANTUM_BUDGET: &str = "250000";
+// The campaign policy owns the modeled horizon: an absolute deadline from
+// scenario genesis that covers recovery measurement and the follow-up window
+// with room to spare. Every expected boundary must be reached before it.
+const ENVOY_POLICY_VIRTUAL_TIME_PS: u64 = 30_000_000_000_000;
 const WITHDRAW_THEN_RELEARN: [u8; 32] = [0x22; 32];
 const RETAIN_AND_PROBE: [u8; 32] = [0x11; 32];
 
@@ -217,7 +221,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     let (discovery, resource_audit) =
         complete_envoy_discovery(discovery_result, resource_audit_result)?;
     assert_eq!(discovery["attempt"]["configuration"], genesis);
-    assert_eq!(discovery["observation"]["stop"], "reached:next-choice");
+    require_bounded_primary_reached(&discovery, "next-choice")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
     guest_choice::assert_materialization_tier(&materialization, discovery_attempt_id, "HotFork")?;
     resource_audit.verify_source_dirty_growth()?;
@@ -456,10 +460,7 @@ pub(super) fn choose_known(
     let submission = guest_choice::submit_choice(fixture, choice, value, stop, command_byte)?;
     let request = guest_choice::accepted_branch_request(&submission)?;
     let explanation = wait_for_request_attempt(fixture, service, &request, value, ATTEMPT_WAIT)?;
-    assert_eq!(
-        explanation["observation"]["stop"],
-        format!("reached:{stop}")
-    );
+    require_bounded_primary_reached(&explanation, stop)?;
     println!("envoy_five_node_choice={explanation}");
 
     if stop == "next-choice" {
@@ -467,6 +468,25 @@ pub(super) fn choose_known(
         progress.configuration = json_string(&explanation["observation"], "child")?;
     }
     Ok(explanation)
+}
+
+/// Requires an attempt to reach `primary` before the policy deadline.
+///
+/// The policy bounds every attempt, so a reached boundary carries proof of
+/// its virtual-time coordinate rather than the unbounded `reached:` form.
+fn require_bounded_primary_reached(attempt: &Value, primary: &str) -> Result<(), Box<dyn Error>> {
+    let stop = json_string(&attempt["observation"], "stop")?;
+    let frontier = stop
+        .strip_prefix(&format!("bounded-primary-reached:{primary}:frontier-ps="))
+        .and_then(|rest| rest.split_once(":quanta="))
+        .and_then(|(frontier, _quanta)| frontier.parse::<u64>().ok())
+        .ok_or_else(|| {
+            format!("attempt did not reach {primary} before the policy bound: {stop}")
+        })?;
+    if frontier >= ENVOY_POLICY_VIRTUAL_TIME_PS {
+        return Err(format!("{primary} frontier {frontier} reached the policy deadline").into());
+    }
+    Ok(())
 }
 
 fn prove_pending_recovery_exact_replay(
@@ -536,10 +556,7 @@ fn prove_pending_recovery_exact_replay(
     assert_eq!(restored["attempt"]["start"], "after-attempt");
     assert_eq!(restored["attempt"]["origin"], attempt);
     assert_eq!(restored["attempt"]["reached"], source_parent);
-    assert_eq!(
-        restored["observation"]["stop"],
-        "reached:boundary:campaign.complete"
-    );
+    require_bounded_primary_reached(&restored, "boundary:campaign.complete")?;
     assert_eq!(restored["runtime"]["phase"], "completed");
     assert_eq!(restored["runtime"]["origin"], "selected-savepoint");
     assert_eq!(restored["runtime"]["origin_checkpoint"], checkpoint);
@@ -1102,6 +1119,9 @@ retain_all_findings = true
 survivor_limit = 8
 exact_findings = true
 exact_user_pins = true
+
+[attempt_timeout]
+virtual_time_picoseconds = "{ENVOY_POLICY_VIRTUAL_TIME_PS}"
 "#,
             lineage.scenario().to_string(),
         ),

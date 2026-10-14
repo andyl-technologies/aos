@@ -300,7 +300,11 @@ assert !interruptedTransfer
       else "2147483648"
     }
     maximum_execution_quanta = ${
-      if envoyProduct || twoNodeHttp
+      # Five guests at the 250us rendezvous complete about 24,000 quanta per
+      # virtual second. The Envoy policy horizon is 30 virtual seconds.
+      if envoyProduct
+      then "1000000"
+      else if twoNodeHttp
       then "250000"
       # Promotion charges each 10us runnable replay step. Choice sources need
       # about 58,200 steps; the one-guest comparison exhausted 10,000 quanta
