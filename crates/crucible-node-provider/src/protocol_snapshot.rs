@@ -728,6 +728,7 @@ mod tests {
         assert!(exact.issuer.is_none());
         assert_eq!(source.frames().count(), 0);
     }
+
     #[test]
     fn native5_original_mapping_rejects_another_body_from_the_same_original_actor() {
         let (_old_handshake, old) = crate::handshake::tests::authority();

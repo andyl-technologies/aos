@@ -4,6 +4,12 @@
 //! limits, lifetime counts, exact capacities, raw bytes and slot descriptions.
 //! Its decoder charges both complete banks before allocating either one. The
 //! result cannot be installed on a connection or used as a capture issuer.
+//!
+//! For example, a complete outgoing frame with no request ID is encoded as:
+//!
+//! ```json
+//! [64,1,0,1,64,2,[0,0,0,2,123,125],[["outgoing",0,6,6,true,null]]]
+//! ```
 
 use super::*;
 
@@ -408,6 +414,7 @@ mod tests {
             bytes
         );
     }
+
     #[test]
     fn native5_decoded_frames_malformed_tokens_have_no_dynamic_parser_scratch() {
         let original = original();
