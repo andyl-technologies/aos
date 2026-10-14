@@ -1563,6 +1563,12 @@ pub(crate) fn node_set_hot_fork_source(
     node_set_failing_hot_fork_source_with_log(shared_log())
 }
 
+/// Moves a scripted node into the state a failed staging exchange leaves.
+#[cfg(target_os = "linux")]
+pub(crate) fn quarantine_for_test(node: &mut QemuNode) {
+    node.lifecycle_state = QemuNodeLifecycleState::Quarantined;
+}
+
 #[cfg(target_os = "linux")]
 fn node_set_failing_hot_fork_source_with_log(log: SharedLog) -> Result<QemuNode, Box<dyn Error>> {
     let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;

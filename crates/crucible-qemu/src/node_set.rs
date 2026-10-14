@@ -31,7 +31,7 @@ use crate::QemuVmSnapshot;
 #[cfg(target_os = "linux")]
 use crate::{
     QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer, QemuLaunchResourceRequirements,
-    QemuProcessIdentity,
+    QemuNodeLifecycleState, QemuProcessIdentity,
 };
 use crate::{QemuNode, QemuNodeError, QemuNodeIdleState};
 
@@ -816,9 +816,9 @@ impl QemuNodeSet {
     ///
     /// # Errors
     ///
-    /// Returns [`BackendError`] when the node disappeared, changed process or
-    /// QMP transaction generation, or no longer reports a complete prepared
-    /// transaction.
+    /// Returns [`BackendError`] when the node disappeared, left the running
+    /// lifecycle state, changed process or QMP transaction generation, or no
+    /// longer reports a complete prepared transaction.
     #[cfg(target_os = "linux")]
     pub fn validate_retained_hot_fork_template(
         &mut self,
@@ -826,7 +826,7 @@ impl QemuNodeSet {
     ) -> Result<(), BackendError> {
         let current_process = self.process_identity(&prepared.node)?;
         let state = self
-            .node_mut(&prepared.node)?
+            .running_hot_fork_source_mut(&prepared.node)?
             .query_hot_fork_template()
             .map_err(|error| BackendError::Rejected {
                 message: format!("query retained hot-fork template: {error}"),
@@ -842,16 +842,16 @@ impl QemuNodeSet {
     ///
     /// # Errors
     ///
-    /// Returns [`BackendError`] when the token names a missing node, the source
-    /// process incarnation changed, or QEMU no longer owns the exact prepared
-    /// transaction generation.
+    /// Returns [`BackendError`] when the token names a missing or no longer
+    /// running node, the source process incarnation changed, or QEMU no longer
+    /// owns the exact prepared transaction generation.
     #[cfg(target_os = "linux")]
     pub fn prepared_hot_fork_source<'a>(
         &'a mut self,
         prepared: &'a QemuNodeSetPreparedHotForkTemplate,
     ) -> Result<QemuNodeSetPreparedHotForkSource<'a>, BackendError> {
         let current_process = self.process_identity(&prepared.node)?;
-        let source = self.node_mut(&prepared.node)?;
+        let source = self.running_hot_fork_source_mut(&prepared.node)?;
         let state = source
             .query_hot_fork_template()
             .map_err(|error| BackendError::Rejected {
@@ -1694,6 +1694,29 @@ impl QemuNodeSet {
             .ok_or_else(|| BackendError::Rejected {
                 message: format!("QEMU backend set has no node `{}`", node.name),
             })
+    }
+
+    /// Borrows a retained hot-fork source that can still serve fork operations.
+    ///
+    /// A failed child-contract or child-file exchange quarantines its node
+    /// while QEMU may still report the prepared transaction, so the retained
+    /// template alone does not prove the source is reusable.
+    #[cfg(target_os = "linux")]
+    fn running_hot_fork_source_mut(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<&mut QemuNode, BackendError> {
+        let source = self.node_mut(node)?;
+        if source.lifecycle_state() != QemuNodeLifecycleState::Running {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "retained hot-fork source `{}` is {:?}, not running",
+                    node.name,
+                    source.lifecycle_state()
+                ),
+            });
+        }
+        Ok(source)
     }
 
     fn node_mut_for_fault_command(
@@ -2592,6 +2615,48 @@ mod tests {
             .unwrap_or_else(|| panic!("changed incarnation must not mint a source loan"));
 
         assert!(error.to_string().contains("changed incarnation"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn quarantined_source_is_not_revalidated_for_reuse() {
+        let mut nodes = QemuNodeSet::new();
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        nodes.insert(
+            node.clone(),
+            crate::node::tests::node_set_hot_fork_source(false).expect("scripted QEMU source"),
+        );
+        let token = nodes
+            .prepare_retained_hot_fork_template(
+                &node,
+                ContentHash::from_bytes(b"quarantined-source"),
+                EventLog::new(),
+                QemuLaunchResourceRequirements::from_vm_shape(128, 1, true),
+                &[],
+                64 * 1024 * 1024,
+            )
+            .expect("prepare source");
+        nodes
+            .validate_retained_hot_fork_template(&token)
+            .expect("running source revalidates");
+
+        // QEMU still reports the prepared transaction after the host
+        // quarantines the node, so only the lifecycle state refuses reuse.
+        crate::node::tests::quarantine_for_test(
+            nodes.nodes.get_mut(&node).expect("installed source"),
+        );
+        let validation = nodes
+            .validate_retained_hot_fork_template(&token)
+            .expect_err("quarantined source must not revalidate");
+        let loan = nodes
+            .prepared_hot_fork_source(&token)
+            .err()
+            .unwrap_or_else(|| panic!("quarantined source must not mint a source loan"));
+
+        assert!(validation.to_string().contains("not running"));
+        assert!(loan.to_string().contains("not running"));
     }
 
     #[cfg(target_os = "linux")]
