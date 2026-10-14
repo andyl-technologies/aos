@@ -393,6 +393,7 @@ impl OriginalProtocolSnapshot {
     pub fn original_physical_cut_expired(&self) -> bool {
         self.deadline.is_expired()
     }
+
     pub(crate) fn authenticate_native_capture_antecedent(
         &self,
         authority: &ConnectionAuthority,
