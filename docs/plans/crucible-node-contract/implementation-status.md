@@ -4335,6 +4335,43 @@ whole physical-budget admission. Coverage remains 1/2047, with CREATE before
 FD allocation, RUN and Ready still fenced. Full Kbuild and nested/native
 qualification plans remain prospective and unexecuted.
 
+## Complete installed mixed-provider selection
+
+The installed catalog now retains independently authored complete mixed-world
+definitions and resolves their exact portable selections through ordinary
+scenario and preparation routing. Each definition binds the complete disjoint
+provider partition, node/owner/profile/configuration tuple, scenario, execution,
+activation and runtime ceilings. Preparation delegates to the existing single
+global mixed-world source, behavioral acceptance and all-owner barriers.
+Singleton authorities are not combined to manufacture a mixed-world permit.
+The table admits at most 64 definitions and 16 MiB of aggregate serialized data;
+these are metadata limits, not physical retained-capacity or native budgets.
+
+Independent actual review
+`9a938f1b9cf1ba39798b1792957ae9d99a8f00209258fbb0b8f3ac9a58b383c6`
+checks the exact f83 capability source plus four routing changes: 9,635 source
+files, including two new modules. Strict all-target/all-feature checks pass in
+256.280188 seconds. Fresh daemon test code generation passes in 1,948.502910
+seconds using the unchanged repository opt-level=s profile, debug assertions
+and overflow checks. The 155,674,664-byte executable is
+`26382a48e6eb45ff49692afc086ba88844cb50795a4a3396142e5b0f60009a83`.
+Its actual dependency information covers all four routing and seven Compute
+roles. Later kernel and ledger changes are outside that qualification cohort.
+
+Nine exact controls pass in 7.218169 seconds: six new definition/partition/
+preparation/refusal controls and three existing wire/world-binding controls.
+The executable lists 1,277 enabled and 147 ignored cases; that inventory is not
+a whole daemon suite pass. Original waits, release and unchanged source checks
+complete without cancellation or unresolved ownership. Earlier missing-Serialize
+and incorrect hash-accessor compiler failures remain failed. Metadata credit
+now uses the actual execution identifier's fixed 16-byte operational form.
+
+The public export addition is committed separately from its token-equivalent
+rustfmt reflow. Inert installed inspectors in these controls do not establish
+mixed native execution, accepted backend classes, QEMU/gem5 device parity,
+Arm, capture, Ready or ordinary package qualification. Those remain required
+integration and runtime checks.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

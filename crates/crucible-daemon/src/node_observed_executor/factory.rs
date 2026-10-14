@@ -10,6 +10,7 @@ mod gem5_profile;
 mod host_state;
 mod io;
 mod kvm;
+mod mixed_vendor_selection;
 pub(super) mod recorded_ingress;
 mod vendor_selection;
 mod vendors;
@@ -90,6 +91,7 @@ pub use io::{InstalledHostIoProfile, InstalledIoArtifact, InstalledIoArtifactSou
 pub use kvm::{
     MAX_KVM_CANDIDATE_POLICY_BYTES, load_installed_kvm_candidate, prepare_installed_kvm_candidate,
 };
+pub use mixed_vendor_selection::{InstalledMixedVendorWorldRequest, InstalledVendorContribution};
 pub use native_state::behavioral::{
     Gem5BehavioralCase, Gem5BehavioralReport, Gem5BehavioralRequest, Gem5BehavioralRun,
     InstalledGem5BehavioralAcceptance,
@@ -130,6 +132,7 @@ use std::{
     fs::File,
     io::Read,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
     time::Duration,
 };
@@ -537,6 +540,7 @@ pub struct InstalledNodeCatalog {
     behavioral_acceptance: Option<acceptance::InstalledBehavioralAcceptance>,
     vendor_providers: Option<crucible::node_contract::InstalledProviderRegistry>,
     vendor_worlds: BTreeMap<Id, vendor_selection::InstalledVendorWorld>,
+    mixed_vendor_worlds: BTreeMap<Vec<u8>, Rc<mixed_vendor_selection::InstalledMixedVendorWorld>>,
     original_lineage: transcript::original_lineage::selection::Installation,
 }
 
@@ -585,6 +589,7 @@ impl InstalledNodeCatalog {
             behavioral_acceptance: None,
             vendor_providers: None,
             vendor_worlds: BTreeMap::new(),
+            mixed_vendor_worlds: BTreeMap::new(),
             original_lineage: transcript::original_lineage::selection::Installation::new(),
         })
     }
@@ -662,6 +667,9 @@ impl InstalledNodeCatalog {
         &self,
         selections: &[InstalledNodeSelection],
     ) -> Result<NodeScenario, NodeObservedError> {
+        if let Some(original) = mixed_vendor_selection::selected(self, selections)? {
+            return mixed_vendor_selection::scenario(&original);
+        }
         if vendor_selection::is_selected(selections) {
             return vendor_selection::scenario(self, selections);
         }
@@ -754,7 +762,11 @@ impl InstalledNodeCatalog {
             {
                 arm_root::public_catalog::publisher(stored)?
             } else if vendor_selection::is_selected(selections) {
-                vendor_selection::publisher(self, selections, stored)?
+                if mixed_vendor_selection::selected(self, selections)?.is_some() {
+                    Box::new(stored)
+                } else {
+                    vendor_selection::publisher(self, selections, stored)?
+                }
             } else {
                 Box::new(stored)
             };
@@ -789,6 +801,9 @@ impl InstalledNodeCatalog {
         scenario: NodeScenario,
         execution: ExecutionId,
     ) -> Result<InstalledPreparedWorld, NodeObservedError> {
+        if let Some(original) = mixed_vendor_selection::selected(self, selections)? {
+            return mixed_vendor_selection::prepare(self, &original, scenario, execution);
+        }
         if vendor_selection::is_selected(selections) {
             return vendor_selection::prepare(self, selections, scenario, execution);
         }
