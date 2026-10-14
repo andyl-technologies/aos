@@ -95,6 +95,7 @@ impl BlobReceiver {
 pub(crate) struct BlobProtocolView<'a> {
     receiver: &'a BlobReceiver,
     original: Ref<'a, ReceiverState>,
+    compact: bool,
 }
 
 impl BlobReceiver {
@@ -116,7 +117,15 @@ impl BlobReceiver {
         Ok(BlobProtocolView {
             receiver: self,
             original,
+            compact: false,
         })
+    }
+}
+
+impl BlobProtocolView<'_> {
+    pub(crate) fn with_compact_encoding(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
     }
 }
 
@@ -176,7 +185,10 @@ impl Serialize for BlobProtocolView<'_> {
                         (&key.origin, &key.session, &key.incarnation, &key.transfer),
                         &record.content,
                         record.length,
-                        &record.bytes,
+                        crate::protocol_snapshot::ProtocolBytes {
+                            bytes: &record.bytes,
+                            compact: self.compact,
+                        },
                         record.bytes.capacity(),
                         &record.chunks,
                         record.verified,
@@ -189,7 +201,14 @@ impl Serialize for BlobProtocolView<'_> {
                 })
             }),
         )?;
-        snapshot.serialize_field("codec", &"source-private.blob-receiver/5")?;
+        snapshot.serialize_field(
+            "codec",
+            &if self.compact {
+                "source-private.blob-receiver/7"
+            } else {
+                "source-private.blob-receiver/5"
+            },
+        )?;
         snapshot.end()
     }
 }

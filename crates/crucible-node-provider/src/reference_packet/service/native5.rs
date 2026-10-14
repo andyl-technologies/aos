@@ -11,6 +11,9 @@ use std::path::PathBuf;
 use super::{super::control::PacketControlSelection, PacketConnectedSourceProgram};
 use crate::{ProviderError, handshake::Limits, reference_service::InstalledContent};
 
+mod profile;
+pub use profile::PacketNative5CaptureProfile;
+
 /// Selects finite complete-state storage independently of hard implementation ceilings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -110,6 +113,12 @@ pub struct PacketNative5SourceLaunch {
     pub limits: Limits,
     /// Selects actual storage allocations rather than allocating hard maxima.
     pub storage: PacketNative5StorageLimits,
+    /// Selects byte encoding and independent protocol bounds, without authority.
+    #[serde(
+        default,
+        skip_serializing_if = "PacketNative5CaptureProfile::is_original_arrays"
+    )]
+    pub capture_profile: PacketNative5CaptureProfile,
     /// Names the privately owned native effect receiver.
     pub effects: PathBuf,
 }
@@ -134,6 +143,7 @@ impl PacketNative5SourceLaunch {
     pub fn validate(&self) -> Result<(), ProviderError> {
         crate::connection::serialized_credit(self, 1024 * 1024)?;
         self.storage.validate(&self.limits)?;
+        self.capture_profile.validate()?;
         self.controller_executable.validate()?;
         self.selection.provider.validate()?;
         self.selection.realization.validate()?;

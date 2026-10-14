@@ -3717,6 +3717,41 @@ remain refused. Full Kbuild, generated Task offsets, objtool, linking, module
 loading and patched nested-guest execution remain required; no host kernel or
 module was changed, and no runtime qualification follows from these objects.
 
+## Compact protocol representation and original payload transfer
+
+The SDK adds a separate compact byte representation and deterministic ClientContent
+alias edges. First occurrences retain complete payloads; subsequent edges retain
+the same original Rc group, while equal bytes in different allocations remain
+distinct. Every edge retains references, actual capacities and lifetime fields.
+The borrowed decoder plan validates complete grammar before the caller reserves
+its original capacity, then fills that same empty buffer without reallocation.
+Empty buffers with spare capacity remain distinct from unallocated empty data.
+
+The immutable installed codec binds the selected encoding and separate native
+before, native after and settled-host protocol bounds. Captures compare the role,
+cut and exact reservation before binding or writing. The default array profile
+retains its existing serialization. The complete service refuses compact launch
+before reservations or listener creation until its selected mechanism is wired;
+a decoded profile alone cannot activate it.
+
+Source-issued snapshots can move their encoded Vec once with an opaque owner
+retaining original codec, actor, cut and literal history. Digest correspondence
+does not establish allocation identity: archive copies and growth must charge
+their actual current capacities independently from immutable issuance facts.
+
+Source87 passes all 422 enabled SDK units and strict all-target/all-feature
+compilation; 13 units remain ignored. Independent receipt
+`0e6c63dce5f12b4a2c1c1cbcfff29d9534b87aac583a575dcf3aeb2767b39b1e`
+verifies the eighteen exact SDK changes, complete source and tested executable.
+The qualification uses the previous committed parent; the separately committed
+kernel-source extension does not enter these Rust compilation inputs.
+
+This component does not complete the owning-state decoder or native factory.
+The codec-owned coordinator Bytes serializer still allocates a temporary base64
+String and omits its independent Vec capacity from the view. Those remaining
+metadata capacities, serializer/decoder scratch, full 512-MiB admission, local
+settlement and native installation remain explicit requirements.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

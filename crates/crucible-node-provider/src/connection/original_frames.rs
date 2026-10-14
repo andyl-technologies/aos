@@ -73,6 +73,11 @@ impl<S: ProviderStream> Connection<S> {
     ) -> Result<(), ProviderError> {
         self.protocol_capture_preflight(cut)?;
         self.preflight_protocol_reservation(reservation)?;
+        reservation.validate_source_encoding(
+            self.native5_codec.as_ref(),
+            cut,
+            self.role == EndpointRole::Controller,
+        )?;
         reservation.bind(
             &self.authority,
             &self.protocol_owner,
@@ -80,7 +85,15 @@ impl<S: ProviderStream> Connection<S> {
             deadline.original_cut(),
         )?;
         reservation.retain_native5_codec(self.native5_codec.as_ref())?;
-        reservation.encode(&self.protocol_view())?;
+        if reservation.uses_compact_encoding() {
+            reservation.encode(&(
+                "source-private.native-cnp/7",
+                self.original_native5_capture_profile()?,
+                self.protocol_view_with_encoding(true),
+            ))?;
+        } else {
+            reservation.encode(&self.protocol_view())?;
+        }
         self.retain_frozen_protocol_frames(reservation)
     }
 
@@ -135,6 +148,11 @@ impl<S: ProviderStream> Connection<S> {
         }
         let original_blobs = blobs.original_protocol_view(&self.authority)?;
         self.preflight_protocol_reservation(reservation)?;
+        reservation.validate_source_encoding(
+            self.native5_codec.as_ref(),
+            cut,
+            self.role == EndpointRole::Controller,
+        )?;
         reservation.bind(
             &self.authority,
             &self.protocol_owner,
@@ -142,11 +160,20 @@ impl<S: ProviderStream> Connection<S> {
             deadline.original_cut(),
         )?;
         reservation.retain_native5_codec(self.native5_codec.as_ref())?;
-        reservation.encode(&(
-            "source-private.native-cnp/5",
-            self.protocol_view(),
-            original_blobs,
-        ))?;
+        if reservation.uses_compact_encoding() {
+            reservation.encode(&(
+                "source-private.native-cnp/7",
+                self.original_native5_capture_profile()?,
+                self.protocol_view_with_encoding(true),
+                original_blobs.with_compact_encoding(true),
+            ))?;
+        } else {
+            reservation.encode(&(
+                "source-private.native-cnp/5",
+                self.protocol_view(),
+                original_blobs,
+            ))?;
+        }
         self.retain_frozen_protocol_frames(reservation)
     }
 
@@ -396,7 +423,11 @@ impl<S: ProviderStream> Connection<S> {
     }
 
     pub(crate) fn protocol_view(&self) -> impl serde::Serialize + '_ {
-        struct View<'a, S: ProviderStream>(&'a Connection<S>);
+        self.protocol_view_with_encoding(false)
+    }
+
+    pub(crate) fn protocol_view_with_encoding(&self, compact: bool) -> impl serde::Serialize + '_ {
+        struct View<'a, S: ProviderStream>(&'a Connection<S>, bool);
         impl<S: ProviderStream> serde::Serialize for View<'_, S> {
             fn serialize<T: serde::Serializer>(&self, serializer: T) -> Result<T::Ok, T::Error> {
                 use serde::ser::SerializeStruct;
@@ -419,7 +450,7 @@ impl<S: ProviderStream> Connection<S> {
                 state.serialize_field("extensions", &c.authority.selected_extensions())?;
                 state.serialize_field("envelope_extensions", c.authority.envelope_extensions())?;
                 state.serialize_field("correlations", &c.guard.protocol_view())?;
-                state.serialize_field("frames", &bank.protocol_view())?;
+                state.serialize_field("frames", &bank.protocol_view_with_encoding(self.1))?;
                 state.serialize_field("packet_schema", &c.packet_schema)?;
                 state.serialize_field(
                     "native5_codec",
@@ -436,7 +467,7 @@ impl<S: ProviderStream> Connection<S> {
                 state.end()
             }
         }
-        View(self)
+        View(self, compact)
     }
 
     pub(crate) fn retain_original_request_id(

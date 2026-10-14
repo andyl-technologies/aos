@@ -107,6 +107,17 @@ impl ClientCustody {
         )
     }
 
+    pub(super) fn compact_protocol_view(&self) -> impl serde::Serialize + '_ {
+        (
+            self.maximum_requests,
+            self.maximum_bytes,
+            self.retained_bytes,
+            &self.controller,
+            &self.provider,
+            self.content.original_compact_protocol_view(),
+        )
+    }
+
     pub(super) fn preflight_response(
         &self,
         controller_requests: usize,
@@ -321,6 +332,13 @@ impl ClientSession {
         self.connection.authenticate_native5_source_codec()
     }
 
+    pub(super) fn original_native5_capture_profile(
+        &self,
+    ) -> Result<&crate::reference_packet::service::PacketNative5CaptureProfile, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        self.connection.original_native5_capture_profile()
+    }
+
     pub(super) fn original_native5_journal_entries(&self) -> Result<u64, ProviderError> {
         self.authenticate_native5_source_codec()?;
         Ok(self.authority.limits().journal_entries.get())
@@ -362,6 +380,16 @@ impl ClientSession {
         )
     }
 
+    pub(super) fn compact_protocol_view(&self) -> impl serde::Serialize + '_ {
+        (
+            self.connection.protocol_view_with_encoding(true),
+            &self.sequence,
+            self.peer_pid,
+            &self.peer_executable,
+            "original-physical-cut-retained-by-source-not-portable-time",
+        )
+    }
+
     pub(super) fn install_native5_frame_bank(
         &mut self,
         reservation: crate::transport::original_frames::OriginalFrameReservation,
@@ -387,6 +415,22 @@ impl ClientSession {
         }
         self.connection
             .install_native5_controller_codec(bank, selection, coordinator)
+    }
+
+    pub(super) fn install_native5_source_codec_with_profile(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<(), ProviderError> {
+        if self.sequence.get() != 2 || self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "native5 codec requires unused original session without callbacks",
+            ));
+        }
+        self.connection
+            .install_native5_controller_codec_with_profile(bank, selection, coordinator, profile)
     }
 
     pub(super) fn install_native5_connected_frame_bank(

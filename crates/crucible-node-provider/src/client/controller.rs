@@ -72,6 +72,21 @@ impl CnpController {
         self.session.authenticate_native5_source_codec()
     }
 
+    /// Borrows the profile of this controller's same installed immutable codec.
+    ///
+    /// This authenticates the original actor, current registration and actual
+    /// verifier owner. A returned profile does not select source capability.
+    ///
+    /// # Errors
+    /// Refuses another original process/thread, fenced or revoked registration,
+    /// mutable loss callbacks, absent codec or replaced immutable owner.
+    pub fn original_native5_capture_profile(
+        &self,
+    ) -> Result<&crate::reference_packet::service::PacketNative5CaptureProfile, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        self.session.original_native5_capture_profile()
+    }
+
     /// Retains original and genuinely installed fresh native-five codec correspondence.
     ///
     /// This checks durable selected grammar and unchanged negotiated bounds on
@@ -184,6 +199,11 @@ impl CnpController {
         }
         self.session.protocol_capture_preflight(cut)?;
         self.session.preflight_protocol_reservation(reservation)?;
+        reservation.validate_source_encoding(
+            self.session.original_native5_codec_owner(),
+            cut,
+            true,
+        )?;
         reservation.bind(
             self.session.authority(),
             &self.protocol_owner,
@@ -191,6 +211,20 @@ impl CnpController {
             self.session.protocol_original_deadline(),
         )?;
         reservation.retain_native5_codec(self.session.original_native5_codec_owner())?;
+        if reservation.uses_compact_encoding() {
+            reservation.encode(&(
+                "source-private.cnp-protocol/7",
+                &self.route.node,
+                &self.route.execution_owner,
+                crucible_node_contract::U64::new(self.budget.as_secs()),
+                self.budget.subsec_nanos(),
+                self.fenced,
+                self.session.original_native5_capture_profile()?,
+                self.session.compact_protocol_view(),
+                self.custody.compact_protocol_view(),
+            ))?;
+            return self.session.retain_frozen_protocol_frames(reservation);
+        }
         let state = (
             "source-private.cnp-protocol/5",
             &self.route.node,
@@ -309,6 +343,41 @@ impl CnpController {
         }
         self.session
             .install_native5_source_codec(bank, selection, coordinator)
+    }
+
+    /// Installs the same original immutable source codec with an explicit edition.
+    ///
+    /// The supplied profile becomes frozen data in the actual source policy.
+    /// It confers no Capture, semantic settlement or fresh installation right.
+    ///
+    /// # Errors
+    /// Refuses invalid profile bounds, copied or used actors, foreign routes,
+    /// revoked negotiation, replaced policy or already-used literal banks.
+    pub fn install_native5_source_codec_with_profile(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.fenced
+            || self.custody.originals().next().is_some()
+            || selection.realization.bindings.len() != 1
+            || selection.realization.owner_bindings.len() != 1
+            || self.route.node != selection.realization.bindings[0].compatibility.node_id
+            || self.route.execution_owner != selection.realization.owner_bindings[0].owner.id
+        {
+            return Err(ProviderError::Correlation(
+                "native5 codec requires original unused source controller",
+            ));
+        }
+        self.session.install_native5_source_codec_with_profile(
+            bank,
+            selection,
+            coordinator,
+            profile,
+        )
     }
 
     /// Installs the original connected input codec and a precharged literal bank.

@@ -31,6 +31,8 @@ pub(crate) struct Native5Policy {
     coordinator: InstalledContent,
     definition: ContentRef,
     connected: PacketNative5CoordinatorInstallation,
+    #[serde(skip_serializing_if = "super::PacketNative5CaptureProfile::is_original_arrays")]
+    capture_profile: super::PacketNative5CaptureProfile,
 }
 
 impl Native5Policy {
@@ -38,6 +40,19 @@ impl Native5Policy {
         selection: PacketControlSelection,
         coordinator: InstalledContent,
     ) -> Result<Self, ProviderError> {
+        Self::from_original_launch_with_profile(
+            selection,
+            coordinator,
+            super::PacketNative5CaptureProfile::OriginalArrays6,
+        )
+    }
+
+    pub(super) fn from_original_launch_with_profile(
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        capture_profile: super::PacketNative5CaptureProfile,
+    ) -> Result<Self, ProviderError> {
+        capture_profile.validate()?;
         serialized_credit(&selection, 65_536)?;
         coordinator.reference.verify(coordinator.bytes.as_slice())?;
         let connected =
@@ -56,10 +71,15 @@ impl Native5Policy {
             coordinator,
             definition: schema.definition,
             connected,
+            capture_profile,
         };
         serialized_credit(&policy.protocol_view(), 256 * 1024)?;
         policy.validate_immutable_content()?;
         Ok(policy)
+    }
+
+    pub(crate) fn capture_profile(&self) -> &super::PacketNative5CaptureProfile {
+        &self.capture_profile
     }
 
     pub(crate) fn protocol_view(&self) -> impl Serialize + '_ {

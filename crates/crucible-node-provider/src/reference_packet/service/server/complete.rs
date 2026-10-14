@@ -11,6 +11,7 @@ pub(in super::super) fn accept_complete(
     launch: PacketNative5SourceLaunch,
 ) -> Result<PacketSourceService, ProviderError> {
     launch.validate()?;
+    validate_original_service_encoding(&launch.capture_profile)?;
     let hello = OriginalNativeHelloJournal::reserve(65_536, 64)?;
     if hello.allocated_bytes()
         > usize::try_from(launch.storage.hello_bytes.get())
@@ -262,5 +263,35 @@ impl TrustedHandshakeVerifier for CompleteVerifier<'_> {
         Err(ProviderError::Correlation(
             "native5 original connection cannot be substituted",
         ))
+    }
+}
+
+// This current constructor still installs the original six policy and banks.
+// Compact service activation awaits the owning phased consumer and whole budget.
+fn validate_original_service_encoding(
+    profile: &super::super::PacketNative5CaptureProfile,
+) -> Result<(), ProviderError> {
+    if !profile.is_original_arrays() {
+        return Err(ProviderError::Correlation(
+            "compact native5 service requires the selected owning mechanism",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    #[test]
+    fn compact_native5_service_cannot_fall_back_to_original_codec() {
+        let profile = super::super::super::PacketNative5CaptureProfile::CompactBytes7 {
+            native_before_protocol_bytes: U64::new(65536),
+            native_after_protocol_bytes: U64::new(131072),
+            host_protocol_bytes: U64::new(262144),
+        };
+        assert!(profile.validate().is_ok());
+        assert!(validate_original_service_encoding(&profile).is_err());
+        assert!(validate_original_service_encoding(&Default::default()).is_ok());
     }
 }

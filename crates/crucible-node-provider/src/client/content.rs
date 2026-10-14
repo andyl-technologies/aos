@@ -1,5 +1,7 @@
 //! Finite immutable byte custody for authenticated opposite-direction transfers.
 
+mod compact;
+
 use std::collections::BTreeMap;
 use std::rc::Rc;
 

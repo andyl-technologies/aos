@@ -23,7 +23,9 @@ use crate::{ProviderError, handshake::Limits, reference_service::InstalledConten
 mod connected;
 mod native5;
 mod native5_policy;
-pub use native5::{PacketNative5SourceLaunch, PacketNative5StorageLimits};
+pub use native5::{
+    PacketNative5CaptureProfile, PacketNative5SourceLaunch, PacketNative5StorageLimits,
+};
 pub(crate) use native5_policy::Native5Policy;
 mod security;
 mod server;

@@ -555,3 +555,175 @@ mod birth_tests;
 
 #[path = "native5_policy_dynamic_tests.rs"]
 mod policy_dynamic_tests;
+
+#[test]
+fn native5_compact_snapshot_requires_same_installed_profile_and_exact_bound() {
+    use crate::reference_packet::service::PacketNative5CaptureProfile;
+    let (_handshake, authority, selection, coordinator) = scope(true);
+    let (host, _peer) = UnixStream::pair().unwrap();
+    let mut controller = Connection::new(
+        host,
+        authority,
+        Rc::new(Supervisor),
+        Rc::new(Uninstalled),
+        EndpointRole::Controller,
+    )
+    .unwrap();
+    let mut bank = Some(OriginalFrameReservation::reserve(262144, 8).unwrap());
+    let profile = PacketNative5CaptureProfile::CompactBytes7 {
+        native_before_protocol_bytes: U64::new(65536),
+        native_after_protocol_bytes: U64::new(131072),
+        host_protocol_bytes: U64::new(262144),
+    };
+    controller
+        .install_native5_controller_codec_with_profile(
+            &mut bank,
+            selection,
+            coordinator,
+            profile.clone(),
+        )
+        .unwrap();
+    assert_eq!(
+        controller.original_native5_capture_profile().unwrap(),
+        &profile
+    );
+    let original = controller.original_native5_storage_facts().unwrap();
+    let deadline =
+        crate::client::ExchangeDeadline::start(std::time::Duration::from_secs(2)).unwrap();
+
+    let mut legacy = ProtocolSnapshotReservation::reserve_complete(262144, 262144, 8).unwrap();
+    assert!(
+        controller
+            .capture_native_protocol_state(&mut legacy, ProtocolCaptureCut::HostSettled, &deadline)
+            .is_err()
+    );
+    assert_eq!(
+        legacy.original_allocation_facts().unwrap().encoded_length,
+        0
+    );
+    let mut mismatched =
+        ProtocolSnapshotReservation::reserve_complete_compact(131072, 262144, 8).unwrap();
+    assert!(
+        controller
+            .capture_native_protocol_state(
+                &mut mismatched,
+                ProtocolCaptureCut::HostSettled,
+                &deadline
+            )
+            .is_err()
+    );
+    assert_eq!(
+        mismatched
+            .original_allocation_facts()
+            .unwrap()
+            .encoded_length,
+        0
+    );
+    assert_eq!(
+        controller.original_native5_storage_facts().unwrap(),
+        original
+    );
+
+    let mut compact =
+        ProtocolSnapshotReservation::reserve_complete_compact(262144, 262144, 8).unwrap();
+    controller
+        .capture_native_protocol_state(&mut compact, ProtocolCaptureCut::HostSettled, &deadline)
+        .unwrap();
+    let snapshot = controller
+        .take_native_protocol_snapshot(&mut Some(compact), ProtocolCaptureCut::HostSettled)
+        .unwrap();
+    assert!(snapshot.uses_compact_encoding().unwrap());
+    let value: Value = serde_json::from_slice(snapshot.bytes()).unwrap();
+    assert_eq!(value[0], "source-private.native-cnp/7");
+    assert_eq!(value[2]["frames"][6][0], "source-private.compact-bytes/7");
+    assert_eq!(value[2]["frames"][4], original.byte_capacity);
+    assert_eq!(
+        snapshot
+            .original_allocation_facts()
+            .unwrap()
+            .maximum_encoded_bytes,
+        262144
+    );
+
+    let facts = snapshot.original_allocation_facts().unwrap();
+    let pointer = snapshot.bytes().as_ptr();
+    let (owner, mut archive) = snapshot.into_original_payload();
+    assert_eq!(archive.as_ptr(), pointer);
+    assert_eq!(archive.capacity(), facts.encoded_capacity);
+    assert_eq!(owner.original_allocation_facts().unwrap(), facts);
+    owner.validate_original_payload(&archive).unwrap();
+    serde_json::to_vec(&owner.original_association_view().unwrap()).unwrap();
+    owner.original_physical_cut_expired().unwrap();
+
+    let copy = archive.clone();
+    assert_ne!(copy.as_ptr(), archive.as_ptr());
+    owner.validate_original_payload(&copy).unwrap();
+    // Matching bytes do not credit the copy's distinct live allocation.
+    assert_eq!(copy.len(), facts.encoded_length);
+    assert_eq!(archive.capacity(), facts.encoded_capacity);
+    let mut changed = copy;
+    changed[0] ^= 1;
+    assert!(owner.validate_original_payload(&changed).is_err());
+    let additional = archive.capacity() + 1;
+    archive.try_reserve_exact(additional).unwrap();
+    assert!(archive.capacity() > facts.encoded_capacity);
+    owner.validate_original_payload(&archive).unwrap();
+    assert_eq!(owner.original_allocation_facts().unwrap(), facts);
+    // The archive must charge this actual capacity, not immutable issuance facts.
+    assert!(archive.capacity() + changed.capacity() > facts.encoded_capacity);
+}
+
+#[test]
+fn native5_controller_current_codec_refuses_revocation_foreign_scope_and_changed_features() {
+    let (handshake, authority, selection, coordinator) = scope(true);
+    let (host, _peer) = UnixStream::pair().unwrap();
+    let mut controller = Connection::new(
+        host,
+        authority.clone(),
+        Rc::new(Supervisor),
+        Rc::new(Uninstalled),
+        EndpointRole::Controller,
+    )
+    .unwrap();
+    let mut bank = Some(OriginalFrameReservation::reserve(262144, 8).unwrap());
+    controller
+        .install_native5_controller_codec(&mut bank, selection, coordinator)
+        .unwrap();
+    let codec = controller.retained_native5_codec_owner().unwrap().clone();
+    let mut original = crate::envelope::tests::request();
+    original.session_id = Nullable(Some(authority.session_id().clone()));
+    original.incarnation_id = Nullable(Some(authority.incarnation_id().clone()));
+    original.method = Method::Discover;
+    original.body = serde_json::json!({"profile_ids":[],"extensions":{}})
+        .as_object()
+        .unwrap()
+        .clone();
+    original.extensions.clear();
+    let body = ReceivedBody::Request(Box::new(
+        crate::bodies::decode_request(original.method, &original.body).unwrap(),
+    ));
+    codec.verify(&authority, &original, &body).unwrap();
+    let (_foreign_owner, foreign, _, _) = scope_named(true, Some("foreign-controller"), 0);
+    assert!(codec.verify(&foreign, &original, &body).is_err());
+    let (_legacy_owner, legacy, _, _) = scope(false);
+    assert!(codec.verify(&legacy, &original, &body).is_err());
+    let (_limit_owner, limited, _, _) = scope_named_with_limits(
+        true,
+        None,
+        0,
+        Some(Limits {
+            frame_bytes: U64::new(65536),
+            requests: U64::new(8),
+            journal_entries: U64::new(64),
+            nesting: U64::new(64),
+            blob_chunk_bytes: U64::new(8192),
+        }),
+    );
+    assert!(codec.verify(&limited, &original, &body).is_err());
+    codec.verify(&authority, &original, &body).unwrap();
+    drop(handshake);
+    for _ in 0..2 {
+        assert!(codec.verify(&authority, &original, &body).is_err());
+        assert!(controller.authenticate_native5_source_codec().is_err());
+    }
+}

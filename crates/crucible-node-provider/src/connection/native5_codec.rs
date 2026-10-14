@@ -23,6 +23,7 @@ pub(crate) struct ControllerNative5Policy {
     definition: ContentRef,
     connected: PacketNative5CoordinatorInstallation,
     wire: packet_schema::ConnectedPacketSchema,
+    capture_profile: crate::reference_packet::service::PacketNative5CaptureProfile,
 }
 
 impl ControllerNative5Policy {
@@ -31,6 +32,21 @@ impl ControllerNative5Policy {
         selection: PacketControlSelection,
         coordinator: InstalledContent,
     ) -> Result<Self, ProviderError> {
+        Self::from_source_installation_with_profile(
+            authority,
+            selection,
+            coordinator,
+            crate::reference_packet::service::PacketNative5CaptureProfile::OriginalArrays6,
+        )
+    }
+
+    fn from_source_installation_with_profile(
+        authority: &ConnectionAuthority,
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        capture_profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<Self, ProviderError> {
+        capture_profile.validate()?;
         serialized_credit(&selection, 65_536)?;
         coordinator.reference.verify(coordinator.bytes.as_slice())?;
         let connected =
@@ -68,6 +84,7 @@ impl ControllerNative5Policy {
             definition: schema.definition,
             connected,
             wire,
+            capture_profile,
         };
         original.validate_installation(authority)?;
         serialized_credit(&original.protocol_view(), 256 * 1024)?;
@@ -132,6 +149,15 @@ impl ControllerNative5Policy {
 }
 
 impl Native5CodecOwner {
+    pub(crate) fn capture_profile(
+        &self,
+    ) -> &crate::reference_packet::service::PacketNative5CaptureProfile {
+        match self {
+            Self::ControllerPacket(policy) => &policy.capture_profile,
+            Self::NativePacket(policy) => policy.capture_profile(),
+        }
+    }
+
     pub(crate) fn validate_installation(
         &self,
         authority: &ConnectionAuthority,
@@ -157,7 +183,8 @@ impl Native5CodecOwner {
                 "fresh controller mapping requires two actual controller codecs",
             ));
         };
-        if original.definition != target.definition
+        if original.capture_profile != target.capture_profile
+            || original.definition != target.definition
             || !same_durable_selection(&original.selection, &target.selection)
             || original.connected.schema != target.connected.schema
             || original.connected.participants.len() != target.connected.participants.len()
@@ -254,6 +281,24 @@ impl<S: ProviderStream> Connection<S> {
         self.authority.ensure_live()
     }
 
+    /// Borrows the profile from this same actually installed immutable codec.
+    ///
+    /// # Errors
+    /// Refuses changed original actor, revoked registration, absent source codec
+    /// or replaced verifier owner. The profile grants no Capture or adoption.
+    pub fn original_native5_capture_profile(
+        &self,
+    ) -> Result<&crate::reference_packet::service::PacketNative5CaptureProfile, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        let codec = self
+            .native5_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native5 actual immutable source codec is absent",
+            ))?;
+        Ok(codec.capture_profile())
+    }
+
     /// Installs the same source-owned native policy and its original literal bank.
     ///
     /// Only the genuine service5 factory calls this after its private launch,
@@ -292,6 +337,32 @@ impl<S: ProviderStream> Connection<S> {
             &self.authority,
             selection,
             coordinator,
+        )?;
+        self.install_original_native5_codec(
+            bank,
+            Native5CodecOwner::ControllerPacket(Box::new(policy)),
+        )
+    }
+
+    pub(crate) fn install_native5_controller_codec_with_profile(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.check_authority()?;
+        if self.role != EndpointRole::Controller {
+            return Err(ProviderError::Correlation(
+                "native5 profile requires controller endpoint",
+            ));
+        }
+        let policy = ControllerNative5Policy::from_source_installation_with_profile(
+            &self.authority,
+            selection,
+            coordinator,
+            profile,
         )?;
         self.install_original_native5_codec(
             bank,

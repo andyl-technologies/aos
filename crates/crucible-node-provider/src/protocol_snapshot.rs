@@ -5,6 +5,28 @@
 //! write into the same precharged buffer. Decoding never produces an installed
 //! capture, process lease, semantic seal or fresh-adoption permission.
 
+/// Provides bounded source-private compact byte data without authority.
+pub mod compact_bytes;
+
+mod payload;
+pub use payload::OriginalProtocolPayloadOwner;
+
+/// Borrows byte storage under an explicitly selected source-private edition.
+pub(crate) struct ProtocolBytes<'a> {
+    pub(crate) bytes: &'a [u8],
+    pub(crate) compact: bool,
+}
+
+impl serde::Serialize for ProtocolBytes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.compact {
+            compact_bytes::BorrowedCompactBytes::new(self.bytes).serialize(serializer)
+        } else {
+            self.bytes.serialize(serializer)
+        }
+    }
+}
+
 use crate::{ProviderError, handshake::ConnectionAuthority};
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::io::{self, Write};
@@ -129,6 +151,7 @@ impl ProtocolCaptureOwner {
 pub struct ProtocolSnapshotReservation {
     bytes: Vec<u8>,
     maximum: usize,
+    compact: bool,
     complete: bool,
     literal: Option<crate::transport::original_frames::OriginalFrameReservation>,
     codec: Option<Rc<crate::connection::Native5CodecOwner>>,
@@ -158,6 +181,7 @@ impl ProtocolSnapshotReservation {
         Ok(Self {
             bytes,
             maximum,
+            compact: false,
             complete: false,
             literal: None,
             issuer: None,
@@ -186,6 +210,72 @@ impl ProtocolSnapshotReservation {
             )?,
         );
         Ok(original)
+    }
+
+    /// Reserves compact-seven encoded storage and its independent literal copy.
+    ///
+    /// This allocates data banks only. Capturing must authenticate the same
+    /// installed immutable source profile and its exact role-specific bound.
+    ///
+    /// # Errors
+    /// Refuses invalid positive ceilings or byte/descriptor allocation failure.
+    pub fn reserve_complete_compact(
+        maximum: usize,
+        history_bytes: usize,
+        lifetime_frames: usize,
+    ) -> Result<Self, ProviderError> {
+        let mut original = Self::reserve_complete(maximum, history_bytes, lifetime_frames)?;
+        original.compact = true;
+        Ok(original)
+    }
+
+    pub(crate) fn uses_compact_encoding(&self) -> bool {
+        self.compact
+    }
+
+    pub(crate) fn validate_source_encoding(
+        &self,
+        codec: Option<&Rc<crate::connection::Native5CodecOwner>>,
+        cut: ProtocolCaptureCut,
+        controller: bool,
+    ) -> Result<(), ProviderError> {
+        use crate::reference_packet::service::PacketNative5CaptureProfile;
+        let Some(codec) = codec else {
+            return if self.compact {
+                Err(ProviderError::Correlation(
+                    "compact snapshot source codec absent",
+                ))
+            } else {
+                Ok(())
+            };
+        };
+        let profile = codec.capture_profile();
+        match profile {
+            PacketNative5CaptureProfile::OriginalArrays6 if !self.compact => Ok(()),
+            PacketNative5CaptureProfile::CompactBytes7 {
+                native_before_protocol_bytes,
+                native_after_protocol_bytes,
+                host_protocol_bytes,
+            } if self.compact => {
+                let selected = match (controller, cut) {
+                    (true, ProtocolCaptureCut::HostSettled) => host_protocol_bytes,
+                    (false, ProtocolCaptureCut::NativeIncomingCapture) => {
+                        native_before_protocol_bytes
+                    }
+                    (false, ProtocolCaptureCut::HostSettled) => native_after_protocol_bytes,
+                    _ => return Err(ProviderError::Correlation("compact source cut unsupported")),
+                };
+                if selected.get() != self.maximum as u64 {
+                    return Err(ProviderError::Correlation(
+                        "compact reservation differs from installed source profile",
+                    ));
+                }
+                Ok(())
+            }
+            _ => Err(ProviderError::Correlation(
+                "snapshot edition differs from installed source profile",
+            )),
+        }
     }
 
     pub(crate) fn validate_literal_reservation(
@@ -387,6 +477,7 @@ impl ProtocolSnapshotReservation {
 
         Ok(OriginalProtocolSnapshot {
             maximum: original.maximum,
+            compact: original.compact,
             bytes: original.bytes,
             authority,
             owner,
@@ -415,6 +506,7 @@ impl ProtocolSnapshotReservation {
 /// its complete semantic and process custody and literal Hello originals.
 pub struct OriginalProtocolSnapshot {
     maximum: usize,
+    compact: bool,
     codec: Option<Rc<crate::connection::Native5CodecOwner>>,
     bytes: Vec<u8>,
     authority: ConnectionAuthority,
@@ -425,6 +517,15 @@ pub struct OriginalProtocolSnapshot {
 }
 
 impl OriginalProtocolSnapshot {
+    /// Reports the source-bound compact edition of this original snapshot.
+    ///
+    /// # Errors
+    /// Refuses inspection from a different original process or thread.
+    pub fn uses_compact_encoding(&self) -> Result<bool, ProviderError> {
+        self.owner.ensure_current()?;
+        Ok(self.compact)
+    }
+
     /// Reports the actual allocation of this source-issued original snapshot.
     ///
     /// These data-only facts preserve the selected encoded ceiling separately

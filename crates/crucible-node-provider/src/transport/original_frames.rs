@@ -247,6 +247,10 @@ impl OriginalFrameReservation {
     }
 
     pub(crate) fn protocol_view(&self) -> impl serde::Serialize + '_ {
+        self.protocol_view_with_encoding(false)
+    }
+
+    pub(crate) fn protocol_view_with_encoding(&self, compact: bool) -> impl serde::Serialize + '_ {
         (
             &self.maximum_bytes,
             &self.maximum_frames,
@@ -254,7 +258,10 @@ impl OriginalFrameReservation {
             &self.outgoing,
             self.bytes.capacity(),
             self.slots.capacity(),
-            &self.bytes,
+            crate::protocol_snapshot::ProtocolBytes {
+                bytes: &self.bytes,
+                compact,
+            },
             crate::protocol_snapshot::Sequence(|| {
                 self.slots.iter().map(|slot| {
                     (
