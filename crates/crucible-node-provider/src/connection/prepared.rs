@@ -42,6 +42,7 @@ impl<S: ProviderStream> Connection<S> {
         &mut self,
         original: Envelope,
     ) -> Result<PreparedSend<'_, S>, ProviderError> {
+        self.ensure_no_pending_native_restore_response()?;
         self.check_authority()?;
         let limits = self.authority.limits();
         let maximum_bytes = allowance(limits.frame_bytes.get())?;

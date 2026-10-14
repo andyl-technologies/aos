@@ -141,30 +141,8 @@ impl PacketProgram {
         events: Vec<PacketEvent>,
         effect_socket: UnixDatagram,
     ) -> Result<Self, ProviderError> {
-        if events.is_empty() || events.len() > MAXIMUM_EVENTS {
-            return Err(ProviderError::ResourceExhausted("packet native events"));
-        }
+        validate_packet_program_definition(&events)?;
         let zero = Position::new(U64::new(0), U64::new(0), Phase::BoundaryControl);
-        let mut previous = zero;
-        let mut ids = std::collections::BTreeSet::new();
-        for event in &events {
-            event.id.validate()?;
-            event.evaluation.validate()?;
-            event.completion.validate()?;
-            if !ids.insert(&event.id)
-                || event.evaluation < previous
-                || event.evaluation > event.completion
-                || event.evaluation.phase != Phase::Reaction
-                || event.payload.as_ref().is_some_and(|payload| {
-                    payload.as_slice().len() > MAXIMUM_PAYLOAD
-                        || event.completion.phase != Phase::Publication
-                        || event.completion <= event.evaluation
-                })
-            {
-                return Err(ProviderError::Frame("packet native event shape"));
-            }
-            previous = event.completion;
-        }
         Ok(Self {
             effect_socket,
             events,
@@ -439,6 +417,34 @@ impl PacketProgram {
     }
 }
 
+fn validate_packet_program_definition(events: &[PacketEvent]) -> Result<(), ProviderError> {
+    if events.is_empty() || events.len() > MAXIMUM_EVENTS {
+        return Err(ProviderError::ResourceExhausted("packet native events"));
+    }
+    let zero = Position::new(U64::new(0), U64::new(0), Phase::BoundaryControl);
+    let mut previous = zero;
+    let mut ids = std::collections::BTreeSet::new();
+    for event in events {
+        event.id.validate()?;
+        event.evaluation.validate()?;
+        event.completion.validate()?;
+        if !ids.insert(&event.id)
+            || event.evaluation < previous
+            || event.evaluation > event.completion
+            || event.evaluation.phase != Phase::Reaction
+            || event.payload.as_ref().is_some_and(|payload| {
+                payload.as_slice().len() > MAXIMUM_PAYLOAD
+                    || event.completion.phase != Phase::Publication
+                    || event.completion <= event.evaluation
+            })
+        {
+            return Err(ProviderError::Frame("packet native event shape"));
+        }
+        previous = event.completion;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "reference_packet_tests.rs"]
 mod tests;
@@ -446,3 +452,5 @@ mod tests;
 pub mod continuation_contracts;
 
 pub(crate) use service::Native5Policy;
+
+mod restore_fresh;

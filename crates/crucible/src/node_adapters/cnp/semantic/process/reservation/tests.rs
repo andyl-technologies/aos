@@ -229,3 +229,30 @@ fn post_spawn_unwind_retains_the_same_child_in_the_original_supervisor() {
     custody.child.as_mut().unwrap().wait().unwrap();
     assert!(custody.poll_reclamation().unwrap());
 }
+
+#[test]
+fn complete_byte_reservation_is_fixed_before_child_and_retained_on_refusal() {
+    let identities = Rc::new(Cell::new(0));
+    let retained = Rc::new(RefCell::new(None));
+    let original = CnpSemanticLaunchReservation::reserve_complete_bytes(
+        "unlaunched-complete-byte-directory".into(),
+        reference(),
+        Box::new(Slot {
+            identities: identities.clone(),
+            panic_first: false,
+            retained: retained.clone(),
+        }),
+    );
+    assert!(original.complete_bytes);
+    assert!(!original.attempted);
+    assert_eq!(identities.get(), 1);
+
+    let refusal = match original.into_guard() {
+        Ok(_) => panic!("unlaunched complete-byte reservation cannot become a guard"),
+        Err(refusal) => refusal,
+    };
+    assert!(refusal.original.complete_bytes);
+    assert!(!refusal.original.attempted);
+    assert_eq!(identities.get(), 1);
+    assert!(retained.borrow().is_none());
+}

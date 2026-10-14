@@ -43,4 +43,26 @@ impl ClientSession {
             peer,
         ))
     }
+    /// Retains two literal data-model Hello frames for historical decoder controls.
+    ///
+    /// This fixture does not claim actual Hello negotiation, a Child or source
+    /// admission. It leaves the production original-journal path unchanged.
+    pub(in crate::client) fn seed_owned11_model_hello(&mut self) -> Result<(), ProviderError> {
+        use crate::transport::original_frames::{FrameDirection, OriginalFrameReservation};
+        let mut bank = OriginalFrameReservation::reserve(16384, 4)?;
+        for direction in [FrameDirection::Outgoing, FrameDirection::Incoming] {
+            let bytes = b"{}";
+            let slot = bank.begin(direction, 64)?;
+            let length = u32::try_from(bytes.len())
+                .map_err(|_| ProviderError::Frame("model Hello length"))?;
+            bank.append(slot, &length.to_be_bytes())?;
+            bank.append(slot, bytes)?;
+            if direction == FrameDirection::Outgoing {
+                bank.advance(slot, bytes.len() + 4)?;
+            }
+            bank.finish(slot)?;
+        }
+        self.original_ack_hello = Some(Rc::new(std::cell::RefCell::new(bank)));
+        Ok(())
+    }
 }

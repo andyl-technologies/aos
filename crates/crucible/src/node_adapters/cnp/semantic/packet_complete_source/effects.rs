@@ -367,3 +367,26 @@ mod tests {
         assert!(group.authenticate_empty().is_err());
     }
 }
+
+impl super::PacketCompleteSemanticSource {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_original_effect_receiver_source_binding(
+        &self,
+    ) -> Result<(), OperationFailure> {
+        self.ensure_origin()?;
+        let original = self
+            .effect_receiver
+            .as_ref()
+            .ok_or_else(|| refused("complete mechanism original receiver absent"))?;
+        original
+            .group
+            .authenticate_original_path(original.member, &original.path)?;
+        self.ensure_origin()
+    }
+}
+
+
+impl OriginalCompleteEffectReceiver {
+    pub(super) fn retained_path_storage_data(&self) -> usize {
+        self.path.capacity()
+    }
+}

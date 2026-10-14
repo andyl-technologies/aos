@@ -12,6 +12,12 @@ use super::*;
 /// settlement. This type has no public constructor, Clone or Deserialize.
 pub struct OriginalProtocolPayloadOwner {
     compact: bool,
+    owned11_records: Option<MetadataRecordBank>,
+    owned11_aliases: Option<MetadataAliasBank>,
+    original_assigned_cut: Option<crate::operational_time::OperationalDeadline>,
+    original_restore_cut: Option<crate::operational_time::OperationalDeadline>,
+    original_hello:
+        Option<Rc<std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>>>,
     maximum: usize,
     encoded_length: usize,
     encoded_capacity: usize,
@@ -34,6 +40,11 @@ impl OriginalProtocolSnapshot {
     pub fn into_original_payload(self) -> (OriginalProtocolPayloadOwner, Vec<u8>) {
         let original = OriginalProtocolPayloadOwner {
             compact: self.compact,
+            owned11_records: self.owned11_records,
+            owned11_aliases: self.owned11_aliases,
+            original_assigned_cut: self.original_assigned_cut,
+            original_restore_cut: self.original_restore_cut,
+            original_hello: self.original_hello,
             maximum: self.maximum,
             encoded_length: self.bytes.len(),
             encoded_capacity: self.bytes.capacity(),
@@ -50,6 +61,73 @@ impl OriginalProtocolSnapshot {
 }
 
 impl OriginalProtocolPayloadOwner {
+    /// Reads actual historical row and temporary lookup capacities after payload transfer.
+    ///
+    /// # Errors
+    /// Refuses another original process or thread.
+    pub fn original_alias_allocation_facts(
+        &self,
+    ) -> Result<Option<MetadataAliasAllocationFacts>, ProviderError> {
+        self.owner.ensure_current()?;
+        Ok(self
+            .owned11_aliases
+            .as_ref()
+            .map(MetadataAliasBank::allocation_facts))
+    }
+
+    /// Reports the actual record bank still retained after the bytes move once.
+    ///
+    /// # Errors
+    /// Refuses a different original process or thread.
+    pub fn original_metadata_record_allocation_facts(
+        &self,
+    ) -> Result<Option<MetadataRecordAllocationFacts>, ProviderError> {
+        self.owner.ensure_current()?;
+        Ok(self.owned11_records.as_ref().map(metadata_record_facts))
+    }
+
+    /// Authenticates original Hello allocation identity after payload transfer.
+    ///
+    /// # Errors
+    /// Refuses a changed original process/thread, missing or incomplete Hello,
+    /// or another actual journal. Equal body digests grant no allocation credit.
+    pub fn authenticate_original_hello(
+        &self,
+        journal: &crate::client::OriginalHelloJournal,
+    ) -> Result<(), ProviderError> {
+        self.owner.ensure_current()?;
+        journal.original_literal_frame_digests()?;
+        let bank = self
+            .original_hello
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "owned protocol retained Hello absent",
+            ))?;
+        journal.authenticate_original_literal_bank(bank)
+    }
+
+    /// Reports retention of the original restore physical cut.
+    ///
+    /// This provenance observation cannot renew a deadline or create cut authority.
+    ///
+    /// # Errors
+    /// Refuses a different original process or thread.
+    pub fn retains_original_restore_cut(&self) -> Result<bool, ProviderError> {
+        self.owner.ensure_current()?;
+        Ok(self.original_restore_cut.is_some())
+    }
+
+    /// Reports retention of the original assigned physical cut.
+    ///
+    /// This provenance observation cannot renew a deadline or create cut authority.
+    ///
+    /// # Errors
+    /// Refuses a different original process or thread.
+    pub fn retains_original_assigned_cut(&self) -> Result<bool, ProviderError> {
+        self.owner.ensure_current()?;
+        Ok(self.original_assigned_cut.is_some())
+    }
+
     /// Observes actual retained metadata capacities after the payload moves.
     ///
     /// This performs no serialization, allocation, callback or I/O. It counts
@@ -64,15 +142,25 @@ impl OriginalProtocolPayloadOwner {
     pub fn original_retained_metadata_facts(
         &self,
     ) -> Result<super::RetainedProtocolMetadataFacts, ProviderError> {
-        self.owner.ensure_current()?;
-        let mut observer = crate::retained_metadata::MetadataObserver::new();
-        observer.shared_value(std::mem::size_of_val(self.owner.as_ref()))?;
-        self.authority.observe_retained_metadata(&mut observer)?;
-        if let Some(codec) = &self.codec {
-            observer.shared_value(std::mem::size_of_val(codec.as_ref()))?;
-            codec.observe_retained_metadata(&mut observer)?;
-        }
-        Ok(observer.finish())
+        let Self {
+            compact: _,
+            owned11_records: _,
+            owned11_aliases: _,
+            original_assigned_cut: _,
+            original_restore_cut: _,
+            original_hello,
+            maximum: _,
+            encoded_length: _,
+            encoded_capacity: _,
+            body: _,
+            authority,
+            owner,
+            cut: _,
+            deadline: _,
+            literal: _,
+            codec,
+        } = self;
+        original_association_metadata(owner, authority, codec.as_ref(), original_hello.as_ref())
     }
 
     /// Reports immutable issuance allocation facts after the encoded vector moves.
@@ -97,6 +185,14 @@ impl OriginalProtocolPayloadOwner {
                 .as_ref()
                 .map(|literal| literal.snapshot_allocation_facts()),
             allocated_bytes: self.encoded_capacity
+                + self
+                    .owned11_aliases
+                    .as_ref()
+                    .map_or(0, MetadataAliasBank::allocated_bytes)
+                + self
+                    .owned11_records
+                    .as_ref()
+                    .map_or(0, MetadataRecordBank::allocated_bytes)
                 + self
                     .literal
                     .as_ref()

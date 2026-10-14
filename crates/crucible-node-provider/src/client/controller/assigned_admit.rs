@@ -31,6 +31,51 @@ pub(super) struct AssignedOriginalCanonicalAckAdmit {
     response: Option<Envelope>,
 }
 
+impl AssignedOriginalCanonicalAckAdmit {
+    pub(super) fn validate_owned_snapshot(&self) -> Result<(), ProviderError> {
+        if self.phase != Phase::Complete || self.response.is_none() || self.literal_slot.is_none() {
+            return Err(ProviderError::Correlation(
+                "owned protocol assigned Admit unsettled",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn observe_owned_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.validate_owned_snapshot()?;
+        let Self {
+            original,
+            bytes,
+            literal_slot: _,
+            cut: _,
+            phase: _,
+            response,
+        } = self;
+        observer.observe(original)?;
+        observer.vector::<u8>(bytes.capacity())?;
+        observer.observe(response)
+    }
+
+    pub(super) fn original_cut(&self) -> OperationalDeadline {
+        self.cut
+    }
+
+    pub(super) fn owned_protocol_view(&self) -> impl serde::Serialize + '_ {
+        (
+            "complete",
+            &self.original,
+            crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(&self.bytes),
+            self.bytes.capacity(),
+            self.literal_slot,
+            &self.response,
+            "original-physical-cut-retained-by-opaque-owner-not-portable-time",
+        )
+    }
+}
+
 /// Exclusively borrows a controller-owned assigned original Admit preparation.
 ///
 /// Dropping this wrapper leaves its originals, reserved lifetime ID and bank
@@ -203,6 +248,7 @@ impl CnpController {
     }
 
     pub(super) fn ensure_no_pending_original_ack_admit(&self) -> Result<(), ProviderError> {
+        self.ensure_no_pending_original_complete_restore()?;
         if self
             .original_ack_admit
             .as_ref()

@@ -16,6 +16,8 @@ use super::super::{
     coordinator::PacketNative5CoordinatorInstallation,
 };
 mod birth;
+mod complete_restore;
+mod protocol_metadata;
 mod record;
 
 pub use birth::PacketCompleteControlBirthFailure;
@@ -98,6 +100,22 @@ pub struct PacketNative5Record {
     /// Retains expected emitter data bound at this original birth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ack_emitter_selection: Option<super::super::service::PacketNative5AckEmitterSelection>,
+    /// Retains the separately selected complete restoration grammar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete_restore_selection:
+        Option<super::super::service::complete_restore::PacketNative5CompleteRestoreSelection>,
+    /// Retains independent born native metadata row limits for the owning codec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_metadata_limits:
+        Option<super::super::service::PacketNative5ProtocolMetadataLimits>,
+    /// Retains both actual native metadata bank allocation facts at original birth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_metadata_birth_facts:
+        Option<super::super::service::PacketNative5ProtocolMetadataBirthFacts>,
+    /// Retains the separately selected canonical restoration-input writer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_input_emitter_selection:
+        Option<super::super::service::complete_restore::PacketNative5RestoreInputEmitterSelection>,
 }
 
 impl PacketControl {
@@ -383,6 +401,10 @@ impl PacketControl {
             capture_profile: self.complete_capture_profile.clone().unwrap_or_default(),
             confirmation_selection: self.complete_confirmation_selection,
             ack_emitter_selection: self.complete_ack_emitter_selection,
+            complete_restore_selection: self.complete_restore_selection,
+            protocol_metadata_limits: self.complete_protocol_metadata_limits,
+            protocol_metadata_birth_facts: self.complete_protocol_metadata_birth_facts,
+            restore_input_emitter_selection: self.complete_restore_input_emitter_selection,
             storage_selection: self
                 .complete_storage
                 .as_ref()
@@ -391,7 +413,15 @@ impl PacketControl {
                 ))?
                 .clone(),
         };
-        let bytes = encode(&receipt)?;
+        let bytes = if let Some(evidence) = &self.complete_restored_evidence {
+            encode(&evidence.wrap(receipt, request.method == Method::WorldActivate)?)?
+        } else if self.complete_restored_hold.is_some() {
+            return Err(ProviderError::Correlation(
+                "restored native completed pair absent",
+            ));
+        } else {
+            encode(&receipt)?
+        };
         let root = reference(&bytes)?;
         self.install_content(root.clone(), &bytes)?;
         Ok((root, bytes))
@@ -409,8 +439,15 @@ impl PacketControl {
                 "native5 evidence foreign creator",
             ));
         }
-        let receipt: PacketNative5Record = decode_record(&proof.1)?;
         proof.0.verify(&proof.1)?;
+        let receipt: PacketNative5Record = if self.complete_restored_evidence.is_some() {
+            let restored: super::super::service::complete_restore::PacketNativeRestoredRecord =
+                decode_record(&proof.1)?;
+            restored.validate_data()?;
+            restored.native_receipt
+        } else {
+            decode_record(&proof.1)?
+        };
         let raw = self
             .content
             .get(&receipt.native_record)
@@ -605,3 +642,6 @@ impl PacketControl {
         Ok(())
     }
 }
+
+#[path = "native5/restore_input_emitter.rs"]
+mod restore_input_emitter;

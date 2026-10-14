@@ -29,7 +29,7 @@ mod extension_handshake;
 mod negotiation;
 
 pub use extension_contract::*;
-pub use extension_handshake::ExtensionHandshake;
+pub use extension_handshake::{ExtensionHandshake, OriginalExtensionRegistryOwner};
 pub use negotiation::*;
 
 fn optional_nonnull<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -369,3 +369,7 @@ impl Validate for HelloResult {
 // crucible-lint: allow panic-shortcut -- These handshake tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 pub(crate) mod tests;
+
+pub(crate) use extension_handshake::{
+    OriginalEmptyExtensionRegistry, OriginalExtensionNegotiationOwned11,
+};

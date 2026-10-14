@@ -21,6 +21,7 @@ pub(super) struct Validated {
     pub(super) requirements: HashRef,
     pub(super) schemas: Vec<SchemaRef>,
     pub(super) proof: ContentRef,
+    pub(super) interpretation: ContentRef,
     pub(super) connections: Vec<(Id, ContentRef)>,
     pub(super) closures: Vec<Id>,
 }
@@ -39,7 +40,7 @@ pub fn packet_complete_independent_graph_contract() -> Result<Vec<u8>, Qualifica
         "inventory":"native gate/input journals/staged bytes/delivered history/pending reactions/publications/output FIFO/grants/retirement and effects remain in native objects; each host-managed connection history has a separate explicit domain and object",
         "coordinator":"original scheduler reservations/source sequences/delivery heap/payloads/input batches/consumed commits/frontiers/operations/durable placements/owner lifecycle are host state, never represented as native process bytes",
         "capture":"declarations only; bootstrap refuses Capture qualification; actual live factory, selected geometry and original Host2 association are independently mandatory before administrative ticket dispatch",
-        "current":"same original concrete source roster, source-installed issuer revision and measured descriptor/path/read-lease guards; revocation is permanent"
+        "current":"same original concrete source roster and source-installed issuer revision; complete-byte validation selected before acquisition, no notification worker; hash all retained descriptor bytes and check original path/process/metadata at every current read; observed revocation is permanent"
     }))?)
 }
 
@@ -431,6 +432,7 @@ pub(super) fn validate(
         requirements,
         schemas,
         proof,
+        interpretation: interpretation_ref,
         connections,
         closures,
     })
@@ -727,6 +729,20 @@ fn selected_native_definition_bodies(
                     .map_err(|error| QualificationError::Evidence(error.to_string()))?,
             ),
         ]);
+    }
+    if let Some(selection) = source
+        .selected_complete_restore_selection()
+        .map_err(|error| QualificationError::Evidence(error.reason))?
+    {
+        if ack.is_none() || confirmation.is_none() {
+            return Err(refused());
+        }
+        // The same source selection fixes all ten transfer12 schemas or the
+        // original three Owned11 schemas. Features are not envelope extensions.
+        definitions.extend(
+            crucible_node_provider::reference_packet::service::complete_restore::complete_restore_selected_contracts(selection)
+                .map_err(|error| QualificationError::Evidence(error.to_string()))?
+        );
     }
     Ok(definitions)
 }

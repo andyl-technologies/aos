@@ -6,6 +6,8 @@
 //! the same revision retained by every graph-policy view. Native owners and
 //! Refused behavioral collection remain separate mandatory conjunctions.
 
+mod retained;
+
 use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 
 use crucible::node_admission::{
@@ -61,18 +63,24 @@ impl PacketCompleteGraphOwner {
         let validated = records::validate(&request)?;
         // Share only the complete equal role/path/pin tuple. Distinct path
         // selection or future measurement fields remain separate originals.
-        let first = Rc::new(CurrentFiles::install(request.measurements[0])?);
+        let first = Rc::new(CurrentFiles::install_complete_bytes(
+            request.measurements[0],
+        )?);
         let second = if request.measurements[1] == request.measurements[0] {
             Rc::clone(&first)
         } else {
-            Rc::new(CurrentFiles::install(request.measurements[1])?)
+            Rc::new(CurrentFiles::install_complete_bytes(
+                request.measurements[1],
+            )?)
         };
         let third = if request.measurements[2] == request.measurements[0] {
             Rc::clone(&first)
         } else if request.measurements[2] == request.measurements[1] {
             Rc::clone(&second)
         } else {
-            Rc::new(CurrentFiles::install(request.measurements[2])?)
+            Rc::new(CurrentFiles::install_complete_bytes(
+                request.measurements[2],
+            )?)
         };
         let files = [first, second, third];
         let policy = Rc::new(InstalledPacketCompleteGraphPolicy {
@@ -85,6 +93,7 @@ impl PacketCompleteGraphOwner {
             content: request.content.clone(),
             schemas: validated.schemas,
             proof: validated.proof,
+            interpretation: validated.interpretation,
             connections: validated.connections,
             closures: validated.closures,
             files,
@@ -139,6 +148,7 @@ pub struct InstalledPacketCompleteGraphPolicy {
     content: BTreeMap<ContentRef, Vec<u8>>,
     schemas: Vec<SchemaRef>,
     proof: ContentRef,
+    interpretation: ContentRef,
     connections: Vec<(Id, ContentRef)>,
     closures: Vec<Id>,
     files: [Rc<CurrentFiles>; 3],
@@ -174,6 +184,10 @@ impl InstalledPacketCompleteGraphPolicy {
             return Err(refused());
         }
         self.read_current()
+    }
+
+    pub(super) fn capture_static_references(&self) -> (&ContentRef, &ContentRef) {
+        (&self.proof, &self.interpretation)
     }
 
     pub(super) fn measurements(&self) -> &[PacketFixtureMeasurements; 3] {
@@ -246,6 +260,13 @@ impl AdmissionEvidence for InstalledPacketCompleteGraphPolicy {
         }
         let original = if reference == &self.measurements[0].host {
             self.files[0].host_content(reference, maximum)
+        } else if let Some(member) = self.measurements.iter().position(|measurement| {
+            measurement
+                .sources
+                .iter()
+                .any(|source| &source.content == reference)
+        }) {
+            self.files[member].source_content(reference, maximum)
         } else {
             let member = self
                 .measurements

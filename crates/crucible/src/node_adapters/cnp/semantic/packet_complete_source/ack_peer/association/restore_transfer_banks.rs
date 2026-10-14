@@ -1,0 +1,115 @@
+//! Reserves distinct source-owned phase12 banks before private key and Child.
+//!
+//! These encoded comparison banks are not the SDK's assigned request/literal
+//! slots, and do not authorize an upload. Both complete phases remain allocated
+//! independently; reusing one would erase the authenticated prepare history.
+
+use super::*;
+use crucible_node_provider::reference_packet::service::complete_restore::transfer::{
+    MAXIMUM_COMPLETE_RESTORE_TRANSFER_CONTEXT_BYTES, MAXIMUM_COMPLETE_RESTORE_TRANSFER_PROOF_BYTES,
+    MAXIMUM_COMPLETE_RESTORE_TRANSFER_RECEIPT_BYTES,
+    MAXIMUM_COMPLETE_RESTORE_TRANSFER_REQUEST_BYTES,
+};
+
+pub(super) struct OriginalRestoreTransferBanks {
+    prepare: [Vec<u8>; 5],
+    commit: [Vec<u8>; 5],
+}
+
+fn limits(frame_bytes: usize) -> [usize; 5] {
+    [
+        MAXIMUM_COMPLETE_RESTORE_TRANSFER_REQUEST_BYTES,
+        MAXIMUM_COMPLETE_RESTORE_TRANSFER_CONTEXT_BYTES,
+        MAXIMUM_COMPLETE_RESTORE_TRANSFER_PROOF_BYTES,
+        frame_bytes,
+        MAXIMUM_COMPLETE_RESTORE_TRANSFER_RECEIPT_BYTES,
+    ]
+}
+
+impl OriginalRestoreTransferBanks {
+    pub(super) fn allocated_bytes(&self) -> Result<usize, OperationFailure> {
+        self.prepare
+            .iter()
+            .chain(&self.commit)
+            .try_fold(0usize, |sum, bank| {
+                sum.checked_add(bank.capacity())
+                    .ok_or_else(|| refused("selected12 actual phase capacity overflow"))
+            })
+    }
+}
+
+impl OriginalAckPeerAssociation {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn minimum_restore_transfer_phase_bank_bytes(
+        frame_bytes: usize,
+    ) -> Result<usize, OperationFailure> {
+        if frame_bytes == 0 || frame_bytes > 65_536 {
+            return Err(refused("selected12 phase frame selection unsupported"));
+        }
+        limits(frame_bytes)
+            .into_iter()
+            .try_fold(0usize, |sum, bytes| {
+                sum.checked_add(bytes)
+                    .ok_or_else(|| refused("selected12 phase bank minimum overflow"))
+            })?
+            .checked_mul(2)
+            .ok_or_else(|| refused("selected12 two phase banks overflow"))
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn reserve_restore_transfer_phase_banks(
+        &mut self,
+        frame_bytes: usize,
+    ) -> Result<(), OperationFailure> {
+        Self::minimum_restore_transfer_phase_bank_bytes(frame_bytes)?;
+        if self.attempted || self.restore_transfer_banks.is_some() || self.restore.is_none() {
+            return Err(refused(
+                "selected12 phase banks are used, repeated or lack base banks",
+            ));
+        }
+        self.restore_transfer_banks = Some(OriginalRestoreTransferBanks {
+            prepare: std::array::from_fn(|_| Vec::new()),
+            commit: std::array::from_fn(|_| Vec::new()),
+        });
+        let banks = self
+            .restore_transfer_banks
+            .as_mut()
+            .ok_or_else(|| refused("selected12 phase banks absent"))?;
+        for (bank, maximum) in banks
+            .prepare
+            .iter_mut()
+            .zip(limits(frame_bytes))
+            .chain(banks.commit.iter_mut().zip(limits(frame_bytes)))
+        {
+            bank.try_reserve_exact(maximum)
+                .map_err(|_| refused("selected12 phase bank allocation refused"))?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_phase_reservation_keeps_base_banks_and_refuses_replacement() {
+        let mut slot = None;
+        OriginalAckPeerAssociation::reserve_into(8192, &mut slot).unwrap();
+        let association = slot.as_mut().unwrap();
+        association.reserve_complete_restore_banks(8192).unwrap();
+        let before = association.allocated_bank_bytes().unwrap();
+        let minimum =
+            OriginalAckPeerAssociation::minimum_restore_transfer_phase_bank_bytes(8192).unwrap();
+
+        association
+            .reserve_restore_transfer_phase_banks(8192)
+            .unwrap();
+        let total = association.allocated_bank_bytes().unwrap();
+        assert!(total >= before + minimum);
+        assert!(
+            association
+                .reserve_restore_transfer_phase_banks(8192)
+                .is_err()
+        );
+        assert_eq!(association.allocated_bank_bytes().unwrap(), total);
+    }
+}

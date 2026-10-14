@@ -4880,6 +4880,40 @@ Their correction uses the existing fixture and actual public layout types;
 current combined verification remains pending. No combined strict, complete
 Capture or native restoration pass follows from these component results.
 
+The corrected shared contract/provider/core/daemon composition passes normal
+all-feature/all-target checking. Its current source selection contains 304
+Rust and Cargo roles. A fresh Core libtest consumes all 93 selected Core Rust
+roles and passes 25 focused controls; a separate explicit ignored control
+passes with an actual original child. The preceding 22-control run remains
+20 passes and two failures. Its fixture corrections preserve the original
+child-parent check and require the full original node roster. The child
+control initially exceeds an 8 MiB per-file cap while copying its executable;
+the corrected invocation uses a 256 MiB cap for that same executable and
+passes without changing the test or source.
+
+The daemon's concrete mailbox storage observer now has sibling visibility.
+Its erased trait call previously selected the default unknown observer,
+even though the concrete implementation could report the actual reserved
+backing. The regression exercises the real boxed trait slot, including
+exact-byte, one-short and temporary-borrow refusal behavior.
+
+The first fresh daemon executable consumes all 33 selected daemon source Rust
+roles. Three of four focused controls pass; the mailbox regression fails before
+dispatch because its 4 KiB fixture ceiling cannot contain the actual compiled
+mailbox. A reviewed test-only correction derives the finite requested extent
+from that layout and corrects the adjacent test with the same assumption.
+Normal all-target/all-feature checking passes again in 56.13 seconds. A fresh
+daemon executable builds in 478.86 seconds and all five focused controls pass
+in one 9.79-second invocation. Both actual dependency files consume the selected
+33 source roles; the two selected integration roles are checked by the separate
+all-target run. Repository test optimization, debug assertions and overflow
+checks remain unchanged. Earlier failed invocations retain their own outcomes.
+
+Fresh strict Clippy still stops with 20 provider findings, including missing
+restore consumers and ordinary lint issues. No strict or full Capture pass
+is inferred from normal typing or focused controls. Required application
+unit/integration target compilation remains pending the production compiler.
+
 The required application-target invocation reaches its original 10,800-second
 client timeout before application compilation, after building earlier LLVM
 stages. Its original client is waited; external daemon builders are outside that

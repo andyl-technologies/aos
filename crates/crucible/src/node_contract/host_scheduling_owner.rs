@@ -24,6 +24,7 @@ use super::runtime::scheduling_state::OriginalSchedulingSource;
 use super::{ActivationRecord, NodeRoute, OperationFailure, OwnerIdentity, RuntimeError};
 
 mod continuation;
+mod requested_storage;
 pub use continuation::{
     HostSchedulingContinuationLimits, HostSchedulingContinuationRecord,
     HostSchedulingContinuationV2, HostSchedulingRuntimeRecord,
@@ -743,11 +744,33 @@ fn credit<T: Serialize>(value: &T, maximum: usize) -> Result<(), OperationFailur
 pub struct HostSchedulingNodeWitness<'a> {
     source: &'a Rc<HostSchedulingSource>,
     anchor: &'a Rc<()>,
+    original_node: Option<&'a PreparedHostSchedulingNode>,
 }
 
 impl<'a> HostSchedulingNodeWitness<'a> {
     pub(crate) fn new(source: &'a Rc<HostSchedulingSource>, anchor: &'a Rc<()>) -> Self {
-        Self { source, anchor }
+        Self {
+            source,
+            anchor,
+            original_node: None,
+        }
+    }
+
+    pub(super) fn with_original_node(mut self, node: &'a PreparedHostSchedulingNode) -> Self {
+        self.original_node = Some(node);
+        self
+    }
+
+    pub(in crate::node_contract) fn original_node_requested_storage(
+        &self,
+    ) -> Result<usize, RuntimeError> {
+        if !self.matches(self.source)? {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.original_node
+            .ok_or(RuntimeError::UnsupportedFacet)?
+            .retained_requested_storage_excluding_source()
+            .map_err(|_| RuntimeError::UnsupportedFacet)
     }
 
     pub(in crate::node_contract) fn original_capture_source(

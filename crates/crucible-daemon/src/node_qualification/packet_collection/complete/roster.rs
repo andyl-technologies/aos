@@ -107,3 +107,16 @@ impl PacketCompleteRoster {
 fn external(error: OperationFailure) -> QualificationError {
     QualificationError::Evidence(error.reason)
 }
+
+impl PacketCompleteRoster {
+    pub(super) fn charge_retained_storage(
+        &self,
+        counter: &mut super::retained::Counter,
+    ) -> Result<(), QualificationError> {
+        let facts = crucible_node_provider::retained_metadata::observe_retained_native_coordinator(
+            &self.coordinator,
+        )
+        .map_err(|_| refused())?;
+        counter.metadata(&facts)
+    }
+}

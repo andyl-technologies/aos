@@ -17,6 +17,9 @@ pub(super) struct CompleteEndpointState {
     pub(super) storage: PacketNative5StorageLimits,
     pub(super) profile: Option<PacketNative5CaptureProfile>,
     pub(super) hello: OriginalNativeHelloJournal,
+    pub(super) metadata_limits: Option<super::super::service::PacketNative5ProtocolMetadataLimits>,
+    pub(super) metadata_birth_facts:
+        Option<super::super::service::PacketNative5ProtocolMetadataBirthFacts>,
     pub(super) before: Option<ProtocolSnapshotReservation>,
     pub(super) after: Option<ProtocolSnapshotReservation>,
     poisoned: bool,
@@ -34,6 +37,80 @@ impl CompleteEndpointState {
             return Err(ProviderError::Correlation(
                 "native5 endpoint foreign thread",
             ));
+        }
+        Ok(())
+    }
+
+    fn original_metadata_birth_facts(
+        &self,
+        limits: Option<super::super::service::PacketNative5ProtocolMetadataLimits>,
+    ) -> Result<Option<super::super::service::PacketNative5ProtocolMetadataBirthFacts>, ProviderError>
+    {
+        self.ensure_origin()?;
+        let before = self.before.as_ref().ok_or(ProviderError::Correlation(
+            "native metadata before bank absent",
+        ))?;
+        let after = self.after.as_ref().ok_or(ProviderError::Correlation(
+            "native metadata after bank absent",
+        ))?;
+        let Some(limits) = limits else {
+            if before
+                .original_metadata_record_allocation_facts()?
+                .is_some()
+                || after.original_metadata_record_allocation_facts()?.is_some()
+                || before.original_alias_allocation_facts()?.is_some()
+                || after.original_alias_allocation_facts()?.is_some()
+            {
+                return Err(ProviderError::Correlation(
+                    "native legacy metadata banks present",
+                ));
+            }
+            return Ok(None);
+        };
+        let facts = super::super::service::PacketNative5ProtocolMetadataBirthFacts {
+            before: super::super::service::PacketNative5ProtocolMetadataBankFacts::from_original_reservation(before)?,
+            after: super::super::service::PacketNative5ProtocolMetadataBankFacts::from_original_reservation(after)?,
+        };
+        facts.validate_data(&limits)?;
+        Ok(Some(facts))
+    }
+
+    pub(super) fn authenticate_original_metadata_cut(
+        &self,
+        native: &PacketControl,
+        reservation: &ProtocolSnapshotReservation,
+        before: bool,
+    ) -> Result<(), ProviderError> {
+        self.ensure_origin()?;
+        native.authenticate_complete_protocol_metadata_limits(self.metadata_limits)?;
+        native.authenticate_complete_protocol_metadata_birth_facts(self.metadata_birth_facts)?;
+        match (self.metadata_limits, self.metadata_birth_facts) {
+            (Some(limits), Some(facts)) => {
+                facts.validate_data(&limits)?;
+                let expected = if before { facts.before } else { facts.after };
+                let actual = super::super::service::PacketNative5ProtocolMetadataBankFacts::from_original_reservation(reservation)?;
+                if actual != expected {
+                    return Err(ProviderError::Correlation(
+                        "native original metadata bank changed",
+                    ));
+                }
+            }
+            (None, None) => {
+                if reservation
+                    .original_metadata_record_allocation_facts()?
+                    .is_some()
+                    || reservation.original_alias_allocation_facts()?.is_some()
+                {
+                    return Err(ProviderError::Correlation(
+                        "native legacy metadata bank changed",
+                    ));
+                }
+            }
+            _ => {
+                return Err(ProviderError::Correlation(
+                    "native original metadata birth incomplete",
+                ));
+            }
         }
         Ok(())
     }
@@ -195,6 +272,8 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 storage: storage.clone(),
                 profile: None,
                 hello,
+                metadata_limits: None,
+                metadata_birth_facts: None,
                 before: None,
                 after: None,
                 poisoned: false,
@@ -245,6 +324,24 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             original
                 .native
                 .authenticate_complete_confirmation_selection(actual_confirmation)?;
+            original.native.authenticate_complete_restore_selection(
+                original
+                    .connection
+                    .original_native5_complete_restore_selection()?,
+            )?;
+            original
+                .native
+                .authenticate_complete_restore_input_emitter_selection(
+                    original
+                        .connection
+                        .original_native5_restore_input_emitter_selection()?,
+                )?;
+            let metadata = original
+                .connection
+                .original_native5_protocol_metadata_limits()?;
+            original
+                .native
+                .authenticate_complete_protocol_metadata_limits(metadata)?;
             original.state.profile = Some(actual_profile);
 
             let history = usize::try_from(storage.frame_bank_bytes.get())
@@ -301,6 +398,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                     before_maximum,
                     history,
                     frames,
+                    metadata.map(|limits| limits.native_before_rows),
                 )?);
             }
             if original.state.after.is_none() {
@@ -309,7 +407,33 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                     after_maximum,
                     history,
                     frames,
+                    metadata.map(|limits| limits.native_after_rows),
                 )?);
+            }
+            let actual_metadata_facts = original.state.original_metadata_birth_facts(metadata)?;
+            if let Some(retained) = original.state.metadata_birth_facts {
+                if actual_metadata_facts != Some(retained)
+                    || original.state.metadata_limits != metadata
+                {
+                    return Err(ProviderError::Correlation(
+                        "native metadata original birth changed",
+                    ));
+                }
+                original
+                    .native
+                    .authenticate_complete_protocol_metadata_birth_facts(Some(retained))?;
+            } else if let Some(facts) = actual_metadata_facts {
+                // Retain actual facts before the Control binder or any callback.
+                // A failed binder leaves this same attempt sticky in recovery.
+                original.state.metadata_limits = metadata;
+                original.state.metadata_birth_facts = Some(facts);
+                original
+                    .native
+                    .bind_complete_original_protocol_metadata_birth_facts(facts)?;
+            } else {
+                original
+                    .native
+                    .authenticate_complete_protocol_metadata_birth_facts(None)?;
             }
             original.state.preflight_birth(&authority)?;
 
@@ -377,6 +501,9 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             after_confirmation: None,
             canonical_ack_boot: None,
             canonical_ack_admission: None,
+            restore_commit: None,
+            restore_protocol_attempted: false,
+            restore_prepare_admission: None,
         })
     }
 }
@@ -386,6 +513,7 @@ fn reserve_original_protocol_bank(
     maximum: usize,
     history: usize,
     frames: usize,
+    metadata_rows: Option<crucible_node_contract::U64>,
 ) -> Result<ProtocolSnapshotReservation, ProviderError> {
     match profile {
         PacketNative5CaptureProfile::OriginalArrays6 => {
@@ -393,6 +521,14 @@ fn reserve_original_protocol_bank(
         }
         PacketNative5CaptureProfile::CompactBytes7 { .. } => {
             ProtocolSnapshotReservation::reserve_complete_compact(maximum, history, frames)
+        }
+        PacketNative5CaptureProfile::OwnedProtocol11 { .. } => {
+            let rows = metadata_rows.ok_or(ProviderError::Correlation(
+                "native owned metadata row selection absent",
+            ))?;
+            let rows = usize::try_from(rows.get())
+                .map_err(|_| ProviderError::ResourceExhausted("native owned metadata rows"))?;
+            ProtocolSnapshotReservation::reserve_complete_owned11(maximum, history, frames, rows)
         }
     }
 }

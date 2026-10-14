@@ -43,6 +43,53 @@ pub struct ClientContent {
 }
 
 impl ClientContent {
+    pub(super) fn observe_owned_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        // Content eight owns byte aliases and their capacities. This walk counts
+        // each backing view conservatively; it does not mint deduplication credit.
+        let Self {
+            maximum_bytes,
+            maximum_objects,
+            maximum_chunk,
+            reserved,
+            transfers,
+            objects,
+        } = self;
+        observer.observe(maximum_bytes)?;
+        observer.observe(maximum_objects)?;
+        observer.observe(maximum_chunk)?;
+        observer.observe(reserved)?;
+        observer.tree::<Id, Transfer>(transfers.len())?;
+        for (id, transfer) in transfers {
+            let Transfer {
+                reference,
+                bytes,
+                complete,
+            } = transfer;
+            observer.observe(id)?;
+            observer.observe(reference)?;
+            observer.shared_original(
+                crate::retained_metadata::aliases::MetadataSharedKind::ContentBytes,
+                bytes.as_ref(),
+            )?;
+            observer.vector::<u8>(bytes.capacity())?;
+            observer.observe(complete)?;
+        }
+        observer.tree::<String, (ContentRef, Rc<Vec<u8>>)>(objects.len())?;
+        for (key, (reference, bytes)) in objects {
+            observer.observe(key)?;
+            observer.observe(reference)?;
+            observer.shared_original(
+                crate::retained_metadata::aliases::MetadataSharedKind::ContentBytes,
+                bytes.as_ref(),
+            )?;
+            observer.vector::<u8>(bytes.capacity())?;
+        }
+        Ok(())
+    }
+
     pub(super) fn protocol_view(&self) -> impl serde::Serialize + '_ {
         // Alias indices are deterministic local graph edges, never pointers.
         let transfers = super::super::protocol_snapshot::Sequence(move || {

@@ -4,7 +4,7 @@ use super::super::{Native5Policy, PacketNative5SourceLaunch};
 use super::*;
 use crate::transport::original_frames::OriginalFrameReservation;
 
-mod birth;
+pub(in crate::reference_packet::service) mod birth;
 
 pub(in super::super) fn accept_complete(
     socket: &Path,

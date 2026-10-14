@@ -5,6 +5,9 @@
 //! full codec and factory still authenticate all coexisting storage and metadata.
 
 use super::*;
+
+#[path = "capture_banks/retained.rs"]
+mod retained;
 use crate::node_adapters::cnp::CnpSemanticSnapshotReservation;
 use crucible_node_provider::protocol_snapshot::{
     OriginalProtocolPayloadOwner, OriginalProtocolSnapshot, ProtocolSnapshotReservation,
@@ -70,6 +73,7 @@ impl PacketCompleteCaptureBanks {
         selected: &PacketNative5StorageSelection,
         profile: &PacketNative5CaptureProfile,
         limits: PacketCompleteCaptureBankLimits,
+        host_metadata_rows: Option<usize>,
         admitted: usize,
     ) -> Result<Self, OperationFailure> {
         let protocol_maximum = limits.host_protocol_bytes;
@@ -114,6 +118,15 @@ impl PacketCompleteCaptureBanks {
                     protocol_maximum,
                     history,
                     frames,
+                )
+            }
+            PacketNative5CaptureProfile::OwnedProtocol11 { .. } => {
+                ProtocolSnapshotReservation::reserve_complete_owned11(
+                    protocol_maximum,
+                    history,
+                    frames,
+                    host_metadata_rows
+                        .ok_or_else(|| refused("owned host protocol metadata rows absent"))?,
                 )
             }
         }
@@ -182,9 +195,21 @@ impl PacketCompleteCaptureBanks {
                 // but the moved vector is the sole current encoded allocation.
                 let facts = owner.original_allocation_facts().map_err(unknown)?;
                 let literal = facts.literal.map_or(0, |literal| literal.allocated_bytes);
+                let records = owner
+                    .original_metadata_record_allocation_facts()
+                    .map_err(unknown)?
+                    .map_or(0, |facts| facts.allocated_bytes);
+                let aliases = owner
+                    .original_alias_allocation_facts()
+                    .map_err(unknown)?
+                    .map(|facts| facts.row_bytes.checked_add(facts.lookup_bytes))
+                    .unwrap_or(Some(0))
+                    .ok_or_else(|| refused("original protocol alias extent overflow"))?;
                 bytes
                     .capacity()
                     .checked_add(literal)
+                    .and_then(|bytes| bytes.checked_add(records))
+                    .and_then(|bytes| bytes.checked_add(aliases))
                     .ok_or_else(|| refused("original protocol payload allocation overflow"))?
             }
             _ => return Err(refused("original protocol bank association is incomplete")),
@@ -256,7 +281,46 @@ impl PacketCompleteSemanticSource {
         limits: PacketCompleteCaptureBankLimits,
         admitted_bytes: usize,
     ) -> Result<(), OperationFailure> {
+        self.reserve_complete_capture_banks_selected(limits, None, admitted_bytes)
+    }
+
+    /// Reserves the host owning codec with independently selected metadata rows.
+    ///
+    /// Native-before and native-after rows are separate original selections.
+    /// Their numeric bounds cannot supply host metadata or capture authority.
+    ///
+    /// # Errors
+    /// Refuses another source phase/profile, absent or invalid host rows,
+    /// repeated storage, allocation failure or aggregate bank exhaustion.
+    pub fn reserve_complete_capture_banks_owned11(
+        &mut self,
+        limits: PacketCompleteCaptureBankLimits,
+        host_metadata_rows: usize,
+        admitted_bytes: usize,
+    ) -> Result<(), OperationFailure> {
+        self.reserve_complete_capture_banks_selected(
+            limits,
+            Some(host_metadata_rows),
+            admitted_bytes,
+        )
+    }
+
+    fn reserve_complete_capture_banks_selected(
+        &mut self,
+        limits: PacketCompleteCaptureBankLimits,
+        host_metadata_rows: Option<usize>,
+        admitted_bytes: usize,
+    ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
+        if matches!(
+            self.selected_capture_profile()?,
+            PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+        ) != host_metadata_rows.is_some()
+        {
+            return Err(refused(
+                "host protocol metadata selection differs from original profile",
+            ));
+        }
         if self.capture_banks.get_mut().is_some() {
             return Err(refused(
                 "original complete source banks were already selected",
@@ -297,6 +361,7 @@ impl PacketCompleteSemanticSource {
             self.selected_storage_selection()?,
             profile,
             limits,
+            host_metadata_rows,
             admitted,
         )?;
         *self.capture_banks.get_mut() = Some(original);
@@ -348,10 +413,20 @@ impl PacketCompleteSemanticSource {
             ));
         }
 
-        scope.take_settled_original_protocol_snapshot_into(
-            &mut banks.protocol,
-            &mut banks.settled_protocol,
-        )?;
+        if matches!(
+            self.selected_capture_profile()?,
+            PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+        ) {
+            scope.take_settled_original_complete_protocol_snapshot_into(
+                &mut banks.protocol,
+                &mut banks.settled_protocol,
+            )?;
+        } else {
+            scope.take_settled_original_protocol_snapshot_into(
+                &mut banks.protocol,
+                &mut banks.settled_protocol,
+            )?;
+        }
         self.authenticate_witness_scope(&scope.realization()?)
     }
 

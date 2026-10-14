@@ -163,6 +163,11 @@ fn empty_group_rows(count: usize) -> Result<Vec<Option<Rc<Vec<u8>>>>, ProviderEr
     let mut rows = Vec::new();
     rows.try_reserve_exact(count)
         .map_err(|_| ProviderError::ResourceExhausted("compact group index rows"))?;
+    if rows.capacity() != count {
+        return Err(ProviderError::ResourceExhausted(
+            "compact group index capacity",
+        ));
+    }
     rows.resize_with(count, || None);
     Ok(rows)
 }

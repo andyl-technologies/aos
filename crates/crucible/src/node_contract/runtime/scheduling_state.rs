@@ -233,6 +233,18 @@ pub struct OriginalSchedulingSource {
 }
 
 impl OriginalSchedulingSource {
+    pub(in crate::node_contract) fn retained_metadata_bytes_excluding_runtime(
+        &self,
+    ) -> Result<usize, RuntimeError> {
+        self.birth(&self.world)?;
+        // This Weak keeps the original inline allocation reserved after the
+        // runtime releases its strong owner. Scheduler heap fields are owned by
+        // that runtime and are not followed through a dead or foreign pointer.
+        super::super::NodeRuntime::capture_hash_storage(&self.world)?
+            .checked_add(super::super::NodeRuntime::capture_shared_allocation_storage::<Original>())
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+
     /// Checks original process/thread/world custody before observing shared storage.
     ///
     /// # Errors

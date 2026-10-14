@@ -4,7 +4,9 @@
 //! Child. Only concrete original source scopes enroll native bodies; portable
 //! reports cannot supply a journal or replace an independently owned receiver.
 
-use std::{cell::RefCell, os::unix::net::UnixDatagram, rc::Rc};
+mod retained;
+
+use std::{cell::RefCell, rc::Rc};
 
 use crucible::node_adapters::cnp::{
     CnpSemanticRealizationScope, CnpSemanticSource, PacketCompleteNativeRecord,
@@ -26,6 +28,7 @@ use crate::node_qualification::{
 };
 
 mod effects;
+mod execution;
 mod expected;
 mod original;
 
@@ -42,8 +45,12 @@ pub struct PacketCompleteOracleRequest<'a> {
     pub coordinator: &'a PacketNative5CoordinatorInstallation,
     /// Owns each bounded source program in original participant order.
     pub programmes: [PacketConnectedSourceProgram; 3],
-    /// Exclusively owns the original independently observed effect receivers.
-    pub receivers: [UnixDatagram; 3],
+    /// Retains the exact source-bound inspection group without duplicating FDs.
+    pub receiver_group: Rc<crucible::node_adapters::cnp::PacketCompleteEffectReceiverGroup>,
+    /// Owns the sole consuming role for that same original group.
+    pub receiver_reader: crucible::node_adapters::cnp::PacketCompleteEffectReceiverReader,
+    /// Names each original native launch endpoint in participant order.
+    pub effect_paths: [std::path::PathBuf; 3],
     /// Owns all predeclared operations and distinct causal cases.
     pub schedule: PacketConnectedSchedule,
     /// Borrows the complete mandatory and supplemental witness population.
@@ -81,7 +88,9 @@ struct Observed {
 pub struct PacketCompleteNativeOracle {
     roster: PacketCompleteRoster,
     programmes: [PacketConnectedSourceProgram; 3],
-    receivers: [UnixDatagram; 3],
+    receiver_group: Rc<crucible::node_adapters::cnp::PacketCompleteEffectReceiverGroup>,
+    receiver_reader: crucible::node_adapters::cnp::PacketCompleteEffectReceiverReader,
+    effect_paths: [std::path::PathBuf; 3],
     schedule: PacketConnectedSchedule,
     plan: WitnessPlan,
     maximum_bytes: usize,
@@ -102,21 +111,22 @@ impl PacketCompleteNativeOracle {
     pub fn authenticate_empty_effect_queues(&self) -> Result<(), QualificationError> {
         self.roster.current_native().map_err(native_failure)?;
         self.preflight()?;
-        let result = (|| {
-            let mut probe = [0u8; 1];
-            for receiver in &self.receivers {
-                match rustix::net::recv(
-                    receiver,
-                    &mut probe,
-                    rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::DONTWAIT,
-                ) {
-                    Err(rustix::io::Errno::AGAIN) => {}
-                    Ok(_) => return Err(refused()),
-                    Err(error) => return Err(QualificationError::Evidence(error.to_string())),
-                }
-            }
-            Ok(())
-        })();
+        self.receiver_reader
+            .authenticate_original_group(&self.receiver_group)
+            .map_err(native_failure)?;
+        for member in 0..3 {
+            self.roster.sources[member]
+                .authenticate_original_effect_receiver_binding(
+                    &self.receiver_group,
+                    member,
+                    &self.effect_paths[member],
+                )
+                .map_err(native_failure)?;
+        }
+        let result = self
+            .receiver_group
+            .authenticate_empty()
+            .map_err(native_failure);
         self.roster.current_native().map_err(native_failure)?;
         result
     }
@@ -130,6 +140,11 @@ impl PacketCompleteNativeOracle {
         request: PacketCompleteOracleRequest<'_>,
     ) -> Result<Rc<Self>, QualificationError> {
         request.roster.current_scope()?;
+        request
+            .receiver_reader
+            .authenticate_original_group(&request.receiver_group)
+            .map_err(native_failure)?;
+
         request.schedule.validate()?;
         if request.maximum_bytes == 0
             || request.maximum_bytes > MAXIMUM_BYTES
@@ -170,9 +185,13 @@ impl PacketCompleteNativeOracle {
             if request.schedule.nodes[member] != selected.descriptor.id {
                 return Err(refused());
             }
-            request.receivers[member]
-                .set_nonblocking(true)
-                .map_err(|error| QualificationError::Evidence(error.to_string()))?;
+            request.roster.sources[member]
+                .authenticate_original_effect_receiver_binding(
+                    &request.receiver_group,
+                    member,
+                    &request.effect_paths[member],
+                )
+                .map_err(native_failure)?;
         }
         let mut seals = Vec::new();
         seals
@@ -188,7 +207,9 @@ impl PacketCompleteNativeOracle {
         Ok(Rc::new(Self {
             roster: request.roster,
             programmes: request.programmes,
-            receivers: request.receivers,
+            receiver_group: request.receiver_group,
+            receiver_reader: request.receiver_reader,
+            effect_paths: request.effect_paths,
             schedule: request.schedule,
             plan: request.plan.clone(),
             maximum_bytes: request.maximum_bytes,

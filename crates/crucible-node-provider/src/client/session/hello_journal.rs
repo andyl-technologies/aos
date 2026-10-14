@@ -42,6 +42,45 @@ struct LiteralHello {
 }
 
 impl OriginalHelloJournal {
+    /// Reports actual retained native Hello owners and complete bank capacities.
+    ///
+    /// # Errors
+    /// Refuses absent original native custody, foreign origin, a borrowed bank
+    /// or checked traversal overflow. A digest supplies no storage credit.
+    pub fn original_retained_metadata_facts(
+        &self,
+    ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
+        let Self {
+            request,
+            request_value,
+            response,
+            maximum_bytes: _,
+            maximum_nesting: _,
+            attempted: _,
+            received: _,
+            literal,
+        } = self;
+        let LiteralHello {
+            bank,
+            outgoing: _,
+            write_started: _,
+            original_cut,
+        } = literal.as_ref().ok_or(ProviderError::Correlation(
+            "original Hello metadata custody absent",
+        ))?;
+        original_cut.ensure_current()?;
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        observer.observe(request)?;
+        observer.observe(request_value)?;
+        observer.observe(response)?;
+        observer.shared_value(bank.as_ref())?;
+        let bank = bank
+            .try_borrow()
+            .map_err(|_| ProviderError::Conflict("original Hello metadata bank borrowed"))?;
+        bank.observe_owned11_metadata(&mut observer)?;
+        Ok(observer.finish())
+    }
+
     /// Reserves the complete original request and one full incoming frame.
     ///
     /// # Errors
@@ -147,7 +186,7 @@ impl OriginalHelloJournal {
         Ok(original)
     }
 
-    pub(super) fn authenticate_original_literal_bank(
+    pub(crate) fn authenticate_original_literal_bank(
         &self,
         actual: &std::rc::Rc<
             std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>,

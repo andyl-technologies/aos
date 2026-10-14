@@ -9,6 +9,21 @@ use crucible_node_contract::{Bytes, ContentRef, ContractError, Id, U64, canonica
 use serde::Deserialize;
 use std::{cell::RefCell, rc::Rc, thread::ThreadId};
 
+#[path = "owned11.rs"]
+mod owned11;
+
+#[path = "restore.rs"]
+mod restore;
+pub(crate) use restore::{
+    NativeRestoredControlEvidence, OriginalCompleteRestoreCommit, VerifiedCompleteRestoration,
+    VerifiedCompleteRestorationHeld,
+};
+#[path = "restore_prepare.rs"]
+mod restore_prepare;
+pub(crate) use restore_prepare::{
+    VerifiedCanonicalRestoreInputAdmission, VerifiedCompleteRestorePrepare,
+};
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BootData {
@@ -37,6 +52,13 @@ pub(crate) struct NativeAckBoot {
     ready: bool,
     attempted: bool,
     verified: bool,
+    restoration: Option<Rc<RefCell<restore::NativeCompleteRestoreAttempt>>>,
+    transfer: Option<Rc<RefCell<restore_prepare::NativeCompleteRestorePrepareAttempt>>>,
+}
+
+/// Returns the actual shared boot payload layout for historical row validation.
+pub(crate) const fn original_native_ack_boot_layout() -> usize {
+    std::mem::size_of::<RefCell<NativeAckBoot>>()
 }
 
 pub(crate) struct VerifiedCanonicalAckAdmission {
@@ -76,6 +98,8 @@ impl NativeAckBoot {
             ready: false,
             attempted: false,
             verified: false,
+            restoration: None,
+            transfer: None,
         }));
         *completed = Some(Rc::clone(&original));
         let mut owner = original
@@ -116,7 +140,26 @@ impl NativeAckBoot {
             "ack_emitter_selection",
             "codec_metadata_extent",
         ];
-        let schema = if launch.native_codec_metadata_extent.is_some() {
+        let schema = if launch.restore_input_emitter_selection.is_some() {
+            keys.extend(["native_codec_metadata_extent", "protocol_metadata_limits", "complete_restore_selection", "restore_input_emitter_selection"]);
+            "source-owned.packet-canonical-ack-source-binding/11"
+        } else if launch.complete_restore_selection == Some(
+            crate::reference_packet::service::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
+        {
+            keys.push("native_codec_metadata_extent");
+            keys.push("protocol_metadata_limits");
+            keys.push("complete_restore_selection");
+            "source-owned.packet-canonical-ack-source-binding/10"
+        } else if launch.complete_restore_selection.is_some() {
+            keys.push("native_codec_metadata_extent");
+            keys.push("protocol_metadata_limits");
+            keys.push("complete_restore_selection");
+            "source-owned.packet-canonical-ack-source-binding/9"
+        } else if launch.protocol_metadata_limits.is_some() {
+            keys.push("native_codec_metadata_extent");
+            keys.push("protocol_metadata_limits");
+            "source-owned.packet-canonical-ack-source-binding/8"
+        } else if launch.native_codec_metadata_extent.is_some() {
             keys.push("native_codec_metadata_extent");
             "source-owned.packet-canonical-ack-source-binding/7"
         } else {
@@ -135,6 +178,18 @@ impl NativeAckBoot {
         if let Some(extent) = launch.native_codec_metadata_extent {
             expected_source["native_codec_metadata_extent"] =
                 serde_json::to_value(extent).map_err(ContractError::from)?;
+        }
+        if let Some(metadata) = launch.protocol_metadata_limits {
+            expected_source["protocol_metadata_limits"] =
+                serde_json::to_value(metadata).map_err(ContractError::from)?;
+        }
+        if let Some(restoration) = launch.complete_restore_selection {
+            expected_source["complete_restore_selection"] =
+                serde_json::to_value(restoration).map_err(ContractError::from)?;
+        }
+        if let Some(emitter) = launch.restore_input_emitter_selection {
+            expected_source["restore_input_emitter_selection"] =
+                serde_json::to_value(emitter).map_err(ContractError::from)?;
         }
         if *source != expected_source {
             return Err(ProviderError::Correlation(

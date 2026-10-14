@@ -9,6 +9,9 @@ mod bootstrap;
 mod owned_read;
 
 pub(crate) use boot::{
-    NativeAckBoot, OriginalCanonicalAckControlAdmit, VerifiedCanonicalAckAdmission,
+    NativeAckBoot, OriginalCanonicalAckControlAdmit, VerifiedCanonicalAckAdmission, VerifiedCompleteRestoration, VerifiedCompleteRestorePrepare, original_native_ack_boot_layout, VerifiedCanonicalRestoreInputAdmission, NativeRestoredControlEvidence, OriginalCompleteRestoreCommit, VerifiedCompleteRestorationHeld,
 };
 pub(in crate::reference_packet::service) use bootstrap::accept;
+pub(crate) use bootstrap::{
+    OriginalNativeBootstrapOwned11, original_native_private_bootstrap_layout,
+};

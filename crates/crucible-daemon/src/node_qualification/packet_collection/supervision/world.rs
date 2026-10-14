@@ -218,6 +218,13 @@ struct WorldNativeSlot {
 }
 
 impl CnpSemanticProcessSlot for WorldNativeSlot {
+    fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, crucible::node_contract::OperationFailure> {
+        self.original.retained_requested_storage_data(maximum)
+    }
+
     fn identity(&self) -> U64 {
         self.identity
     }

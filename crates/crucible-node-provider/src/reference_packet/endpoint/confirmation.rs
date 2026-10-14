@@ -31,7 +31,29 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             .ok_or(ProviderError::Correlation(
                 "after confirmation original after owner absent",
             ))?;
-        after.original_allocation_facts()?;
+        let actual_after = after.original_allocation_facts()?;
+        if self.complete.as_ref().is_some_and(|state| {
+            matches!(
+                state.profile,
+                Some(super::super::service::PacketNative5CaptureProfile::OwnedProtocol11 { .. })
+            )
+        }) {
+            let capacity =
+                flight
+                    .owned11_after_capacity
+                    .as_ref()
+                    .ok_or(ProviderError::Correlation(
+                        "after confirmation owned11 original admission absent",
+                    ))?;
+            if after.bytes().len() > capacity.maximum_after_encoded_bytes
+                || capacity.maximum_after_encoded_bytes > capacity.reserved_after_encoded_bytes
+                || actual_after.maximum_encoded_bytes != capacity.reserved_after_encoded_bytes
+            {
+                return Err(ProviderError::Correlation(
+                    "after confirmation owned11 actual bank differs",
+                ));
+            }
+        }
         let capture = flight.reservation.request();
         if poll.method != Method::Poll
             || poll.message != MessageKind::Request

@@ -13,6 +13,7 @@
 //! contract; native bytes are interpreted only by their qualified adapter.
 
 mod admitted_graph_references;
+mod borrowed_tree_storage;
 mod closure;
 mod evidence;
 mod host;
@@ -24,7 +25,13 @@ mod validation;
 #[cfg(test)]
 mod tests;
 
-pub use admitted_graph_references::{AdmittedGraphRecord, admitted_graph_records};
+pub use admitted_graph_references::{
+    AdmittedGraphRecord, AdmittedGraphRecordsStorage, admitted_graph_records,
+    admitted_graph_records_storage,
+};
+pub use borrowed_tree_storage::{
+    borrowed_btree_map_requested_storage, borrowed_btree_set_requested_storage,
+};
 pub use closure::VerifiedStateContent;
 pub use evidence::*;
 pub use host::*;

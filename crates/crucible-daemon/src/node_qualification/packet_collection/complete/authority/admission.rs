@@ -70,11 +70,147 @@ impl AdmissionEvidence for InstalledPacketCompleteCollectionAuthority {
 }
 
 impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthority {
+    fn authenticate_collection_world(
+        &self,
+        plan: ConformancePlanEvidence<'_>,
+        request: crucible::node_admission::AdmissionRequest<'_>,
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_plan_view(plan)?;
+        self.original_execution_scene()
+            .map_err(evidence_error)?
+            .world_request(request)
+            .map_err(evidence_error)
+    }
+
+    fn authenticate_collection_current_scope(
+        &self,
+        plan: ConformancePlanEvidence<'_>,
+        request: crucible::node_admission::AdmissionRequest<'_>,
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_plan_view(plan)?;
+        self.original_execution_scene()
+            .map_err(evidence_error)?
+            .world_request(request)
+            .map_err(evidence_error)?;
+        // This compiled source read follows every preceding host callback;
+        // no vendor-provided callback is invoked after the terminal read.
+        self.roster.current_native().map_err(|error| EvidenceError {
+            message: error.reason,
+        })
+    }
+
+    fn authenticate_collection_node(
+        &self,
+        plan: ConformancePlanEvidence<'_>,
+        claim: QualificationClaim<'_>,
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_plan_view(plan)?;
+        let scene = self.original_execution_scene().map_err(evidence_error)?;
+        scene.preparation().map_err(evidence_error)?;
+        let QualificationClaim::Node {
+            binding,
+            binding_hash,
+            qualification_refs,
+        } = claim
+        else {
+            return Err(evidence_error(refused()));
+        };
+        let selected = self
+            .roster
+            .sources
+            .iter()
+            .map(|source| &source.installation().binding)
+            .chain(std::iter::once(&self.host.selection().binding))
+            .find(|selected| &selected.compatibility == binding)
+            .ok_or_else(|| evidence_error(refused()))?;
+        if binding_hash
+            != &selected
+                .compatibility
+                .identity()
+                .map_err(|error| evidence_error(error.into()))?
+            || qualification_refs != selected.compatibility.qualification_refs
+        {
+            return Err(evidence_error(refused()));
+        }
+        scene.preparation().map_err(evidence_error)
+    }
+
+    fn authenticate_collection_exact_inputs(
+        &self,
+        plan: ConformancePlanEvidence<'_>,
+        request: crucible::node_admission::AdmissionRequest<'_>,
+        source: &crucible::node_contract::HostSchedulingSource,
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_plan_view(plan)?;
+        let scene = self.original_execution_scene().map_err(evidence_error)?;
+        scene.world_request(request).map_err(evidence_error)?;
+        scene.exact_source(source).map_err(evidence_error)
+    }
+
+    fn authenticate_collection_inputs(
+        &self,
+        plan: ConformancePlanEvidence<'_>,
+        batch: &crucible::node_scheduling::RuntimeInputBatch,
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_plan_view(plan)?;
+        self.original_execution_scene()
+            .map_err(evidence_error)?
+            .inputs(batch)
+            .map_err(evidence_error)
+    }
+
+    fn authenticate_collection_operation(
+        &self,
+        plan: ConformancePlanEvidence<'_>,
+        node: &crucible_node_contract::Id,
+        operation: &crucible_node_contract::Id,
+        request: &crucible::node_contract::OperationRequest,
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_plan_view(plan)?;
+        self.original_execution_scene()
+            .map_err(evidence_error)?
+            .operation(node, operation, request)
+            .map_err(evidence_error)
+    }
+
     fn authenticate_collection_plan(
         &self,
         plan: ConformancePlanEvidence<'_>,
     ) -> Result<(), EvidenceError> {
         self.authenticate_plan_view(plan)
+    }
+
+    fn authenticate_collection_capture_profile(
+        &self,
+        plan: ConformancePlanEvidence<'_>,
+        claim: QualificationClaim<'_>,
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_plan_view(plan)?;
+        self.original_capture_factory()?
+            .authenticate_capture_profile(claim)
+            .map_err(|error| EvidenceError {
+                message: error.to_string(),
+            })
+    }
+
+    fn authenticate_collection_capture(
+        &self,
+        plan: ConformancePlanEvidence<'_>,
+        request: crucible::node_admission::AdmissionRequest<'_>,
+        source: &HostSchedulingSource,
+        runtime: &crucible::node_contract::OriginalLineageRuntimeRecord,
+        scheduling: &crucible::node_scheduling::SchedulingSnapshot,
+        capture_id: &crucible_node_contract::Id,
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_plan_view(plan)?;
+        crucible_node_contract::Validate::validate(capture_id).map_err(|error| EvidenceError {
+            message: error.to_string(),
+        })?;
+        self.original_capture_factory()?
+            .authenticate_collecting_request(request, source, runtime, scheduling)
+            .map_err(|error| EvidenceError {
+                message: error.to_string(),
+            })
     }
 }
 
@@ -87,6 +223,47 @@ impl CnpSemanticRegistrationPolicy for InstalledPacketCompleteCollectionAuthorit
 }
 
 impl CnpSemanticConformanceAuthority for InstalledPacketCompleteCollectionAuthority {
+    fn authenticate_graph(
+        &self,
+        scope: CnpSemanticRealizationScope<'_>,
+        graph: &crucible::node_admission::ConformanceGraph,
+    ) -> Result<(), OperationFailure> {
+        self.current().map_err(operation_error)?;
+        let member = self.index(scope.installation).map_err(operation_error)?;
+        graph
+            .plan()
+            .authenticate_authority(self)
+            .map_err(|error| operation_error(QualificationError::Evidence(error.to_string())))?;
+        if graph.world() != &self.world {
+            return Err(operation_error(refused()));
+        }
+        graph
+            .reauthenticate()
+            .map_err(|error| operation_error(QualificationError::Evidence(error.to_string())))?;
+        self.original_execution_scene()
+            .map_err(operation_error)?
+            .observe_original(member, scope)
+            .map_err(operation_error)
+    }
+
+    fn authenticate_native_dispatch(
+        &self,
+        scope: CnpSemanticRealizationScope<'_>,
+        plan: &InstalledConformancePlan,
+    ) -> Result<(), OperationFailure> {
+        self.current().map_err(operation_error)?;
+        let member = self.index(scope.installation).map_err(operation_error)?;
+        plan.authenticate_authority(self)
+            .map_err(|error| operation_error(QualificationError::Evidence(error.to_string())))?;
+        self.original_execution_scene()
+            .map_err(operation_error)?
+            .observe_original(member, scope)
+            .map_err(operation_error)?;
+        self.host.authenticate_dispatch_source()?;
+        self.roster.current_native()?;
+        self.current().map_err(operation_error)
+    }
+
     fn authenticate_installation(
         &self,
         selected: &CnpSemanticInstallation,

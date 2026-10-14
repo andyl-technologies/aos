@@ -125,6 +125,52 @@ pub struct IssuedQualification {
 }
 
 impl IssuedQualification {
+    /// Counts actual retained buffers without granting issuance or acceptance.
+    pub(crate) fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, QualificationError> {
+        let reference = |value: &ContentRef| {
+            [
+                value.hash.algorithm.capacity(),
+                value.hash.domain.capacity(),
+                value.hash.digest.capacity(),
+                value.media_type.capacity(),
+            ]
+            .into_iter()
+            .try_fold(0usize, |sum, next| sum.checked_add(next))
+        };
+        let mut total = self
+            .bytes
+            .capacity()
+            .checked_add(
+                self.objects
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<(ContentRef, Bytes)>())
+                    .ok_or(QualificationError::Refused(
+                        "issued allocation slot overflow",
+                    ))?,
+            )
+            .and_then(|sum| sum.checked_add(reference(&self.claim)?))
+            .ok_or(QualificationError::Refused("issued allocation overflow"))?;
+        for (key, body) in &self.objects {
+            total = total
+                .checked_add(reference(key).ok_or(QualificationError::Refused(
+                    "issued reference allocation overflow",
+                ))?)
+                .and_then(|sum| sum.checked_add(body.allocation_capacity()))
+                .ok_or(QualificationError::Refused(
+                    "issued object allocation overflow",
+                ))?;
+        }
+        if total > maximum {
+            return Err(QualificationError::Refused(
+                "issued retained allocation exceeds credit",
+            ));
+        }
+        Ok(total)
+    }
+
     /// Returns the immutable original claim identity.
     pub fn reference(&self) -> &ContentRef {
         &self.claim

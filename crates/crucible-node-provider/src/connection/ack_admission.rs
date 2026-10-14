@@ -117,11 +117,24 @@ impl crate::retained_metadata::ObserveMetadata for OriginalNativeAckConnectionId
             literal_length,
             literal_digest: _,
         } = self;
-        observer.shared_value(std::mem::size_of_val(actor.as_ref()))?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::ProtocolOwner,
+            actor.as_ref(),
+        )?;
         authority.observe_retained_metadata(observer)?;
-        observer.shared_value(std::mem::size_of_val(policy.as_ref()))?;
-        policy.observe_retained_metadata(observer)?;
-        observer.shared_value(std::mem::size_of_val(frames.as_ref()))?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::NativePolicy,
+            policy.as_ref(),
+        )?;
+        policy.observe_owned11_metadata(observer)?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::FrameBank,
+            frames.as_ref(),
+        )?;
+        frames
+            .try_borrow()
+            .map_err(|_| ProviderError::Conflict("native identity original bank borrowed"))?
+            .observe_owned11_metadata(observer)?;
         observer.observe(admit_id)?;
         observer.observe(admit_sequence)?;
         observer.observe(literal_index)?;
@@ -200,5 +213,87 @@ impl<S: ProviderStream> Connection<S> {
             literal_length: frame.bytes.len(),
             literal_digest: blake3::hash(frame.bytes),
         })
+    }
+}
+
+impl OriginalNativeAckConnectionIdentity {
+    /// Borrows exact historical identity fields without exporting live authority.
+    pub(crate) fn borrowed_owned11_protocol_view(&self) -> impl serde::Serialize + '_ {
+        struct View<'a>(&'a OriginalNativeAckConnectionIdentity);
+        impl serde::Serialize for View<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let owner = self.0;
+                owner
+                    .actor
+                    .ensure_current()
+                    .map_err(serde::ser::Error::custom)?;
+                let bank = owner.frames.try_borrow().map_err(|_| {
+                    serde::ser::Error::custom("native identity original bank borrowed")
+                })?;
+                serde::Serialize::serialize(
+                    &(
+                        "source-private.native-ack-connection-identity/11",
+                        "historical-source-owner",
+                        owner.authority.historical_owned_view(),
+                        owner.policy.borrowed_owned11_protocol_view(),
+                        bank.protocol_view_with_encoding(true),
+                        &owner.admit_id,
+                        owner.admit_sequence,
+                        owner.literal_index,
+                        owner.literal_length,
+                        owner.literal_digest.as_bytes(),
+                    ),
+                    serializer,
+                )
+            }
+        }
+        View(self)
+    }
+}
+
+impl<S: ProviderStream> Connection<S> {
+    pub(crate) fn original_native_owned11_admission(
+        &self,
+    ) -> Result<
+        &crate::reference_packet::service::ack_emitter::VerifiedCanonicalAckAdmission,
+        ProviderError,
+    > {
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        let original =
+            self.original_canonical_ack_admission
+                .as_ref()
+                .ok_or(ProviderError::Correlation(
+                    "original native admission absent",
+                ))?;
+        original.authenticate_current(self)?;
+        Ok(original)
+    }
+}
+
+impl<S: ProviderStream> Connection<S> {
+    pub(crate) fn original_native5_protocol_metadata_limits(
+        &self,
+    ) -> Result<
+        Option<crate::reference_packet::service::PacketNative5ProtocolMetadataLimits>,
+        ProviderError,
+    > {
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        if self.role != EndpointRole::Provider {
+            return Err(ProviderError::Correlation(
+                "native metadata selection requires provider",
+            ));
+        }
+        let codec = self
+            .native5_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation("native original codec absent"))?;
+        let Native5CodecOwner::NativePacket(policy) = codec.as_ref() else {
+            return Err(ProviderError::Correlation(
+                "native metadata selection requires original policy",
+            ));
+        };
+        Ok(policy.protocol_metadata_limits())
     }
 }

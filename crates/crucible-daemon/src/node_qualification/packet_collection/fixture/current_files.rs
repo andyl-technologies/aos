@@ -9,6 +9,8 @@
 //! bytes are subsequently restored. This is installed source liveness, not an
 //! accepted class or adversarial root protection.
 
+mod retained;
+
 use std::{
     cell::Cell,
     fs::Metadata,
@@ -94,6 +96,55 @@ impl CurrentFiles {
         Ok(installed)
     }
 
+    /// Selects terminal complete-byte validation before any lease acquisition.
+    ///
+    /// The complete profile owns no notification worker. Every current read
+    /// still hashes all original descriptor bytes and checks the same original
+    /// path/process/metadata before and after; observed drift remains sticky.
+    /// This never downgrades an acquired token or attempts lease acquisition.
+    pub(in super::super) fn install_complete_bytes(
+        selected: &PacketFixtureMeasurements,
+    ) -> Result<Self, QualificationError> {
+        selected.authenticate()?;
+        let files = [
+            (selected.peer.path.as_path(), &selected.peer.content),
+            (Path::new("/proc/self/exe"), &selected.host),
+            (
+                selected.sources[0].path.as_path(),
+                &selected.sources[0].content,
+            ),
+            (
+                selected.sources[1].path.as_path(),
+                &selected.sources[1].content,
+            ),
+            (
+                selected.sources[2].path.as_path(),
+                &selected.sources[2].content,
+            ),
+            (
+                selected.sources[3].path.as_path(),
+                &selected.sources[3].content,
+            ),
+            (
+                selected.sources[4].path.as_path(),
+                &selected.sources[4].content,
+            ),
+            (
+                selected.sources[5].path.as_path(),
+                &selected.sources[5].content,
+            ),
+            (
+                selected.sources[6].path.as_path(),
+                &selected.sources[6].content,
+            ),
+            (
+                selected.sources[7].path.as_path(),
+                &selected.sources[7].content,
+            ),
+        ];
+        complete_byte_originals(&files)
+    }
+
     /// Reads only the original measured peer under the caller's finite fetch credit.
     pub(in super::super) fn peer_content(
         &self,
@@ -157,6 +208,36 @@ impl CurrentFiles {
         Ok(bytes)
     }
 
+    /// Reads a named original measured source file through its retained descriptor.
+    pub(in super::super) fn source_content(
+        &self,
+        expected: &crucible_node_contract::ContentRef,
+        maximum: usize,
+    ) -> Result<Vec<u8>, QualificationError> {
+        self.current()?;
+        let source = self
+            .originals
+            .iter()
+            .skip(2)
+            .find(|original| &original.content == expected)
+            .ok_or_else(refused)?;
+        let extent = usize::try_from(source.facts.bytes).map_err(|_| refused())?;
+        if extent == 0 || extent > maximum || extent > 512 * 1024 * 1024 {
+            return Err(refused());
+        }
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(extent).map_err(|_| refused())?;
+        bytes.resize(extent, 0);
+        source
+            .file
+            .file()
+            .read_exact_at(&mut bytes, 0)
+            .map_err(measurement::io)?;
+        expected.verify(&bytes)?;
+        self.current()?;
+        Ok(bytes)
+    }
+
     pub(in super::super) fn current(&self) -> Result<(), QualificationError> {
         if self.revoked.get() {
             return Err(refused());
@@ -201,6 +282,25 @@ impl CurrentFiles {
         }
         Ok(())
     }
+}
+
+// The fixed complete profile selects existing owner=None validation at birth.
+// No lease owner is constructed and no successful token can enter this route.
+fn complete_byte_originals(
+    files: &[(&Path, &crucible_node_contract::ContentRef); 10],
+) -> Result<CurrentFiles, QualificationError> {
+    let mut originals = Vec::new();
+    originals.try_reserve_exact(10).map_err(|_| refused())?;
+    for (path, reference) in files {
+        originals.push(original(path, reference, None)?);
+    }
+    let installed = CurrentFiles {
+        originals,
+        process: std::process::id(),
+        revoked: Cell::new(false),
+    };
+    installed.current()?;
+    Ok(installed)
 }
 
 fn original(

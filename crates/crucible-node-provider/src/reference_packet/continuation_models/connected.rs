@@ -5,7 +5,7 @@
 
 use super::super::continuation_models::{
     ModelCapacities, PacketDecodedModelSnapshot, PacketModelKind, PacketOriginalModelSnapshot,
-    capture_model, check_definition, decode_state, restore_vec,
+    capture_model, check_definition,
 };
 use super::*;
 
@@ -110,77 +110,16 @@ impl PacketConnectedProgram {
         snapshot: PacketDecodedModelSnapshot,
         effect_socket: UnixDatagram,
     ) -> Result<Self, ProviderError> {
-        let mut record = snapshot.record;
-        if record.kind != PacketModelKind::Reactive {
-            return Err(ProviderError::Correlation("connected model snapshot kind"));
-        }
-        let state: ConnectedState = decode_state(&mut record)?;
-        if u64::from(state.native_pid) != record.captured_process.get()
-            || state.reached != record.cut
-            || state.failed
-            || state.grants.len() > MAXIMUM_OPERATIONS
-            || state.retired.len() > state.grants.len()
-            || state
-                .grants
-                .iter()
-                .any(|(id, grant)| id != &grant.operation || !grant.complete)
-            || state
-                .retired
-                .keys()
-                .any(|id| !state.grants.contains_key(id))
-            || record.capacities.events != 0
-            || state.stages.len() > MAXIMUM_BATCHES
-            || state
-                .stages
-                .iter()
-                .map(|stage| stage.record.batch.events.len())
-                .sum::<usize>()
-                > MAXIMUM_EVENTS
-        {
-            return Err(ProviderError::Correlation(
-                "connected complete model snapshot",
-            ));
-        }
-        check_definition(&record, &state.definition)?;
-        for stage in &state.stages {
-            verify_record(&stage.record_ref, &stage.record)?;
-            verify_reply(&stage.reply)?;
-            if let Some(commit) = &stage.commit {
-                verify_record(&commit.record_ref, &commit.record)?;
-                verify_reply(&commit.reply)?;
-                if commit.record.staged_record != stage.record_ref
-                    || commit.record.cut != stage.record.cut
-                {
-                    return Err(ProviderError::Correlation(
-                        "connected original staged/commit snapshot",
-                    ));
-                }
-            }
-        }
-        let mut model = Self::new(state.definition, effect_socket)?;
-        // New live owner only. Historical record/reply PIDs and IDs are retained.
-        model.reached = state.reached;
-        model.gate_closed = state.gate_closed;
-        model.reactions =
-            restore_vec(state.reactions, record.capacities.reactions, MAXIMUM_EVENTS)?;
-        model.delivered_inputs = restore_vec(
-            state.delivered_inputs,
-            record.capacities.delivered_inputs,
-            MAXIMUM_EVENTS,
-        )?;
-        model.publications = restore_vec(
-            state.publications,
-            record.capacities.publications,
-            MAXIMUM_EVENTS,
-        )?;
-        model.outputs = restore_vec(state.outputs, record.capacities.outputs, MAXIMUM_EVENTS)?;
-        model.stages = restore_vec(state.stages, record.capacities.stages, MAXIMUM_BATCHES)?;
-        model.grants = state.grants;
-        model.retired = state.retired;
-        model.reactions_completed = state.reactions_completed;
-        model.packet_effects = state.packet_effects;
-        model.failed = state.failed;
-        Ok(model)
+        let mut snapshot = Some(snapshot);
+        let mut effect_socket = Some(effect_socket);
+        let mut attempt = None;
+        Self::adopt_model_state_retained_into(&mut snapshot, &mut effect_socket, &mut attempt)?;
+        let mut completed = None;
+        attempt
+            .as_mut()
+            .ok_or(ProviderError::Conflict("model adoption owner absent"))?
+            .take_completed_into(&mut completed)?;
+        completed.ok_or(ProviderError::Conflict("model adoption completion absent"))
     }
 }
 
@@ -200,4 +139,249 @@ fn verify_reply(reply: &PacketInputReply) -> Result<(), ProviderError> {
         reference.verify(bytes)?;
     }
     Ok(())
+}
+
+fn authenticate_connected_data(
+    record: &super::super::continuation_models::ModelRecord,
+    state: &ConnectedState,
+) -> Result<(), ProviderError> {
+    if u64::from(state.native_pid) != record.captured_process.get()
+        || state.reached != record.cut
+        || state.failed
+        || state.grants.len() > MAXIMUM_OPERATIONS
+        || state.retired.len() > state.grants.len()
+        || state
+            .grants
+            .iter()
+            .any(|(id, grant)| id != &grant.operation || !grant.complete)
+        || state
+            .retired
+            .keys()
+            .any(|id| !state.grants.contains_key(id))
+        || record.capacities.events != 0
+        || state.stages.len() > MAXIMUM_BATCHES
+        || state
+            .stages
+            .iter()
+            .map(|stage| stage.record.batch.events.len())
+            .sum::<usize>()
+            > MAXIMUM_EVENTS
+    {
+        return Err(ProviderError::Correlation(
+            "connected complete model snapshot",
+        ));
+    }
+    check_definition(record, &state.definition)?;
+    for stage in &state.stages {
+        verify_record(&stage.record_ref, &stage.record)?;
+        verify_reply(&stage.reply)?;
+        if let Some(commit) = &stage.commit {
+            verify_record(&commit.record_ref, &commit.record)?;
+            verify_reply(&commit.reply)?;
+            if commit.record.staged_record != stage.record_ref
+                || commit.record.cut != stage.record.cut
+            {
+                return Err(ProviderError::Correlation(
+                    "connected original staged/commit snapshot",
+                ));
+            }
+        }
+    }
+    for (length, capacity, maximum) in [
+        (
+            state.reactions.len(),
+            record.capacities.reactions,
+            MAXIMUM_EVENTS,
+        ),
+        (
+            state.delivered_inputs.len(),
+            record.capacities.delivered_inputs,
+            MAXIMUM_EVENTS,
+        ),
+        (
+            state.publications.len(),
+            record.capacities.publications,
+            MAXIMUM_EVENTS,
+        ),
+        (
+            state.outputs.len(),
+            record.capacities.outputs,
+            MAXIMUM_EVENTS,
+        ),
+        (
+            state.stages.len(),
+            record.capacities.stages,
+            MAXIMUM_BATCHES,
+        ),
+    ] {
+        if length > capacity || capacity > maximum {
+            return Err(ProviderError::ResourceExhausted(
+                "packet model vector capacity",
+            ));
+        }
+    }
+    Ok(())
+}
+
+struct ConnectedInventoryData<'a>(&'a ConnectedState);
+impl Serialize for ConnectedInventoryData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let state = self.0;
+        let mut fields = serializer.serialize_struct("PacketConnectedInventory", 10)?;
+        fields.serialize_field("reached", &state.reached)?;
+        fields.serialize_field("gate_closed", &state.gate_closed)?;
+        fields.serialize_field("reactions", &state.reactions)?;
+        fields.serialize_field("delivered_inputs", &state.delivered_inputs)?;
+        fields.serialize_field("publications", &state.publications)?;
+        fields.serialize_field("retained_outputs", &state.outputs)?;
+        fields.serialize_field("reactions_completed", &U64::new(state.reactions_completed))?;
+        fields.serialize_field("packet_effects", &U64::new(state.packet_effects))?;
+        fields.serialize_field(
+            "stages",
+            &crate::protocol_snapshot::Sequence(|| {
+                state.stages.iter().map(|stage| &stage.record_ref)
+            }),
+        )?;
+        fields.serialize_field(
+            "commits",
+            &crate::protocol_snapshot::Sequence(|| {
+                state
+                    .stages
+                    .iter()
+                    .filter_map(|stage| stage.commit.as_ref().map(|commit| &commit.record_ref))
+            }),
+        )?;
+        fields.end()
+    }
+}
+
+pub(in crate::reference_packet) fn capture_boundary_data(
+    record: &super::super::continuation_models::ModelRecord,
+) -> Result<super::super::continuation_models::PacketModelCaptureBoundaryData, ProviderError> {
+    let state = ConnectedState::deserialize(&record.state).map_err(ContractError::from)?;
+    authenticate_connected_data(record, &state)?;
+    let mut earliest = state.publications.iter().map(|row| row.publication).min();
+    for reaction in &state.reactions {
+        let completion = if state.definition.output.is_some() {
+            reaction.evaluation.reaction_publication(U64::new(16))?
+        } else {
+            reaction.evaluation
+        };
+        earliest = Some(earliest.map_or(completion, |prior| prior.min(completion)));
+    }
+    crate::connection::serialized_credit(&ConnectedInventoryData(&state), MAXIMUM_RECORD)?;
+    Ok(
+        super::super::continuation_models::PacketModelCaptureBoundaryData {
+            local_cursor: state.reached,
+            gate_closed: state.gate_closed,
+            retained_outputs: state.outputs.len(),
+            earliest_pending_completion: earliest,
+            inventory_hash: canonical::json_hash(
+                "source-owned.packet-connected-inventory/4",
+                &ConnectedInventoryData(&state),
+            )?,
+        },
+    )
+}
+
+#[path = "connected_retained.rs"]
+mod retained_adoption;
+pub(crate) use retained_adoption::PacketDisplacedReactiveModel;
+pub use retained_adoption::PacketReactiveModelAdoption;
+
+pub(in crate::reference_packet) fn authenticate_record_history_data(
+    model: &super::super::continuation_models::ModelRecord,
+    record: &PacketConnectedNativeRecord,
+    original: &crate::envelope::Envelope,
+    expectation: super::super::continuation_models::PacketModelRecordExpectation,
+) -> Result<(), ProviderError> {
+    use super::super::continuation_models::record_history::{
+        PacketModelRecordExpectation, authenticate_grant_request,
+    };
+    let refused =
+        || ProviderError::Correlation("packet archived reactive record differs from model history");
+    if record.schema != "source-owned.packet-native/4"
+        || record.native_pid != model.captured_process
+        || &record.original != original
+    {
+        return Err(refused());
+    }
+    let state = ConnectedState::deserialize(&model.state).map_err(ContractError::from)?;
+    authenticate_connected_data(model, &state)?;
+    super::validate_connected_program_definition(&state.definition)?;
+    match expectation {
+        PacketModelRecordExpectation::CompletedGrant => {
+            let grant = record.grant.as_ref().ok_or_else(refused)?;
+            authenticate_grant_request(original, &grant.operation, grant.start, grant.limit)?;
+            if !grant.complete
+                || state.grants.get(&grant.operation) != Some(grant)
+                || record.inventory != grant.inventory
+            {
+                return Err(refused());
+            }
+        }
+        PacketModelRecordExpectation::FinalObservation => {
+            let inventory = &record.inventory;
+            if original.method != crate::envelope::Method::Observe
+                || record.grant.is_some()
+                || inventory.reached != state.reached
+                || inventory.gate_closed != state.gate_closed
+                || inventory.reactions != state.reactions
+                || inventory.delivered_inputs != state.delivered_inputs
+                || inventory.publications != state.publications
+                || inventory.retained_outputs != state.outputs
+                || inventory.reactions_completed != U64::new(state.reactions_completed)
+                || inventory.packet_effects != U64::new(state.packet_effects)
+                || !inventory
+                    .stages
+                    .iter()
+                    .eq(state.stages.iter().map(|stage| &stage.record_ref))
+                || !inventory.commits.iter().eq(state
+                    .stages
+                    .iter()
+                    .filter_map(|stage| stage.commit.as_ref().map(|commit| &commit.record_ref)))
+            {
+                return Err(refused());
+            }
+            crate::bodies::decode_request(original.method, &original.body)?;
+        }
+    }
+    Ok(())
+}
+
+pub(in crate::reference_packet) fn original_validation_layouts() -> [usize; 4] {
+    use std::mem::{align_of, size_of};
+    let slots = [
+        size_of::<ConnectedState>(),
+        size_of::<OriginalStage>(),
+        size_of::<OriginalCommit>(),
+        size_of::<PacketConnectedDefinition>(),
+        size_of::<PacketReaction>(),
+        size_of::<PacketDeliveredInput>(),
+        size_of::<PacketPendingPublication>(),
+        size_of::<PacketConnectedPublication>(),
+        size_of::<PacketConnectedInventory>(),
+        size_of::<PacketConnectedGrant>(),
+        size_of::<PacketConnectedNativeRecord>(),
+    ];
+    let alignments = [
+        align_of::<ConnectedState>(),
+        align_of::<OriginalStage>(),
+        align_of::<OriginalCommit>(),
+        align_of::<PacketConnectedDefinition>(),
+        align_of::<PacketReaction>(),
+        align_of::<PacketDeliveredInput>(),
+        align_of::<PacketPendingPublication>(),
+        align_of::<PacketConnectedPublication>(),
+        align_of::<PacketConnectedInventory>(),
+        align_of::<PacketConnectedGrant>(),
+        align_of::<PacketConnectedNativeRecord>(),
+    ];
+    [
+        slots.into_iter().max().unwrap_or(0),
+        alignments.into_iter().max().unwrap_or(1),
+        size_of::<ConnectedState>(),
+        size_of::<OriginalStage>().max(size_of::<OriginalCommit>()),
+    ]
 }

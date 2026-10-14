@@ -5,6 +5,10 @@
 //! semantic, process and restoration custody remain independent conjunctions.
 
 use super::*;
+#[path = "controller_input_emitter.rs"]
+mod controller_input_emitter;
+#[path = "controller_restore.rs"]
+mod controller_restore;
 use crate::reference_packet::{
     Native5Policy, continuation_contracts as contracts, control::PacketControlSelection,
     coordinator::PacketNative5CoordinatorInstallation,
@@ -64,6 +68,13 @@ pub(crate) struct ControllerNative5Policy {
     ack_emitter_selection:
         Option<crate::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
     ack_emitter_definition: Option<ContentRef>,
+    complete_restore_selection: Option<
+        crate::reference_packet::service::complete_restore::PacketNative5CompleteRestoreSelection,
+    >,
+    complete_restore_definitions: Option<[ContentRef; 3]>,
+    complete_restore_transfer_definitions: Option<[ContentRef; 7]>,
+    restore_input_emitter_selection: Option<crate::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection>,
+    restore_input_emitter_definition: Option<ContentRef>,
 }
 
 impl ControllerNative5Policy {
@@ -83,6 +94,11 @@ impl ControllerNative5Policy {
             confirmation_definition,
             ack_emitter_selection,
             ack_emitter_definition,
+            complete_restore_selection,
+            complete_restore_definitions,
+            complete_restore_transfer_definitions,
+            restore_input_emitter_selection,
+            restore_input_emitter_definition,
         } = self;
         // The unit selection is inline; actual retained allocations are walked below.
         match metadata_extent {
@@ -97,7 +113,21 @@ impl ControllerNative5Policy {
         observer.observe(confirmation_selection)?;
         observer.observe(confirmation_definition)?;
         observer.observe(ack_emitter_selection)?;
-        observer.observe(ack_emitter_definition)
+        observer.observe(ack_emitter_definition)?;
+        observer.observe(complete_restore_selection)?;
+        match restore_input_emitter_selection { None | Some(crate::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection::CanonicalSdkRestoreInputs12) => {} }
+        if let Some(definitions) = complete_restore_definitions {
+            for definition in definitions {
+                observer.observe(definition)?;
+            }
+        }
+        if let Some(definitions) = complete_restore_transfer_definitions {
+            for definition in definitions {
+                observer.observe(definition)?;
+            }
+        }
+        observer.observe(restore_input_emitter_definition)?;
+        Ok(())
     }
 
     pub(crate) fn from_source_installation(
@@ -179,6 +209,11 @@ impl ControllerNative5Policy {
             confirmation_definition: None,
             ack_emitter_selection: None,
             ack_emitter_definition: None,
+            complete_restore_selection: None,
+            complete_restore_definitions: None,
+            complete_restore_transfer_definitions: None,
+            restore_input_emitter_selection: None,
+            restore_input_emitter_definition: None,
         };
         original.validate_installation(authority)?;
         serialized_credit(
@@ -387,10 +422,36 @@ impl ControllerNative5Policy {
                 self.ack_emitter_definition.as_ref(),
             )?;
         }
+        self.validate_current_restore(authority)?;
         authority.ensure_live()
     }
 
-    fn compact_protocol_view(&self) -> impl serde::Serialize + '_ {
+    fn base_owned_protocol_view(&self) -> impl serde::Serialize + '_ {
+        // This unpublished edition follows the exhaustive metadata walk exactly.
+        // Legacy array/compact policy tuples remain unchanged.
+        (
+            "source-private.controller-policy/11",
+            self.metadata_extent,
+            &self.selection,
+            (
+                &self.coordinator.reference,
+                self.coordinator.bytes.allocation_capacity(),
+                crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(
+                    self.coordinator.bytes.as_slice(),
+                ),
+            ),
+            &self.definition,
+            &self.connected,
+            self.wire.protocol_view(),
+            &self.capture_profile,
+            self.confirmation_selection,
+            &self.confirmation_definition,
+            self.ack_emitter_selection,
+            &self.ack_emitter_definition,
+        )
+    }
+
+    fn base_compact_protocol_view(&self) -> impl serde::Serialize + '_ {
         struct View<'a>(&'a ControllerNative5Policy);
         impl serde::Serialize for View<'_> {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -447,7 +508,7 @@ impl ControllerNative5Policy {
         View(self)
     }
 
-    fn protocol_view(&self) -> impl serde::Serialize + '_ {
+    fn base_protocol_view(&self) -> impl serde::Serialize + '_ {
         struct View<'a>(&'a ControllerNative5Policy);
         impl serde::Serialize for View<'_> {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -498,6 +559,27 @@ impl ControllerNative5Policy {
     }
 }
 
+impl ControllerNative5Policy {
+    fn owned_protocol_view(&self) -> impl serde::Serialize + '_ {
+        controller_input_emitter::ControllerInputEmitterView {
+            policy: self,
+            encoding: controller_restore::Encoding::Owned,
+        }
+    }
+    fn compact_protocol_view(&self) -> impl serde::Serialize + '_ {
+        controller_input_emitter::ControllerInputEmitterView {
+            policy: self,
+            encoding: controller_restore::Encoding::Compact,
+        }
+    }
+    fn protocol_view(&self) -> impl serde::Serialize + '_ {
+        controller_input_emitter::ControllerInputEmitterView {
+            policy: self,
+            encoding: controller_restore::Encoding::Ordinary,
+        }
+    }
+}
+
 impl Native5CodecOwner {
     pub(crate) fn observe_retained_metadata(
         &self,
@@ -505,13 +587,24 @@ impl Native5CodecOwner {
     ) -> Result<(), ProviderError> {
         match self {
             Self::ControllerPacket(policy) => {
-                observer.boxed_value(std::mem::size_of_val(policy.as_ref()))?;
+                observer.boxed_value(policy.as_ref())?;
                 policy.observe_retained_metadata(observer)
             }
             Self::NativePacket(policy) => {
-                observer.shared_value(std::mem::size_of_val(policy.as_ref()))?;
+                observer.shared_value(policy.as_ref())?;
                 policy.observe_retained_metadata(observer)
             }
+        }
+    }
+
+    pub(crate) fn complete_restore_selection(
+        &self,
+    ) -> Option<
+        crate::reference_packet::service::complete_restore::PacketNative5CompleteRestoreSelection,
+    > {
+        match self {
+            Self::ControllerPacket(policy) => policy.complete_restore_selection,
+            Self::NativePacket(policy) => policy.complete_restore_selection(),
         }
     }
 
@@ -606,6 +699,12 @@ impl Native5CodecOwner {
             ));
         };
         if original.metadata_extent != target.metadata_extent
+            || original.complete_restore_selection != target.complete_restore_selection
+            || original.complete_restore_definitions != target.complete_restore_definitions
+            || original.complete_restore_transfer_definitions
+                != target.complete_restore_transfer_definitions
+            || original.restore_input_emitter_selection != target.restore_input_emitter_selection
+            || original.restore_input_emitter_definition != target.restore_input_emitter_definition
             || original.ack_emitter_selection != target.ack_emitter_selection
             || original.ack_emitter_definition != target.ack_emitter_definition
             || original.confirmation_selection != target.confirmation_selection
@@ -633,6 +732,31 @@ impl Native5CodecOwner {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn owned_protocol_view(&self) -> impl serde::Serialize + '_ {
+        struct View<'a>(&'a Native5CodecOwner);
+        impl serde::Serialize for View<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                match self.0 {
+                    Native5CodecOwner::ControllerPacket(policy) => serde::Serialize::serialize(
+                        &(
+                            "source-private.controller-codec/11",
+                            policy.owned_protocol_view(),
+                        ),
+                        serializer,
+                    ),
+                    Native5CodecOwner::NativePacket(_) => Err(serde::ser::Error::custom(
+                        "complete native bootstrap/admission owning view absent",
+                    )),
+                }
+            }
+        }
+        View(self)
+    }
+
+    pub(crate) fn controller_owned_layout() -> usize {
+        std::mem::size_of::<ControllerNative5Policy>()
     }
 
     pub(crate) fn compact_protocol_view(&self) -> impl serde::Serialize + '_ {
@@ -687,6 +811,13 @@ impl BodySchemaVerifier for Native5CodecOwner {
         match self {
             Self::ControllerPacket(policy) => {
                 policy.validate_current_negotiation(authority)?;
+                if controller_restore::verify_selected_transfer(policy, authority, envelope, body)?
+                {
+                    return authority.ensure_live();
+                }
+                if controller_restore::verify_selected_restore(policy, authority, envelope, body)? {
+                    return authority.ensure_live();
+                }
                 if let Some(proof) = envelope.extensions.get(crate::reference_packet::service::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE) {
                     validate_ack_emitter_selection(authority, policy.ack_emitter_selection, policy.ack_emitter_definition.as_ref())?;
                     if envelope.extensions.len() != 1
@@ -1042,6 +1173,62 @@ impl<S: ProviderStream> Connection<S> {
             ));
         }
         let policy = ControllerNative5Policy::from_source_ack_emitter_with_metadata_extent(
+            &self.authority,
+            selection,
+            coordinator,
+            profile,
+            Some(metadata_extent),
+        )?;
+        self.install_original_native5_codec(
+            bank,
+            Native5CodecOwner::ControllerPacket(Box::new(policy)),
+        )
+    }
+
+    pub(crate) fn install_native5_controller_complete_restore_codec_with_metadata_extent(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: CanonicalAckCodecMetadataExtent,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.check_authority()?;
+        if self.role != EndpointRole::Controller {
+            return Err(ProviderError::Correlation(
+                "canonical ACK source requires controller",
+            ));
+        }
+        let policy = ControllerNative5Policy::from_source_complete_restore_installation(
+            &self.authority,
+            selection,
+            coordinator,
+            profile,
+            Some(metadata_extent),
+        )?;
+        self.install_original_native5_codec(
+            bank,
+            Native5CodecOwner::ControllerPacket(Box::new(policy)),
+        )
+    }
+
+    pub(crate) fn install_native5_controller_complete_restore_transfer_codec_with_metadata_extent(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: CanonicalAckCodecMetadataExtent,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.check_authority()?;
+        if self.role != EndpointRole::Controller {
+            return Err(ProviderError::Correlation(
+                "canonical ACK source requires controller",
+            ));
+        }
+        let policy = ControllerNative5Policy::from_source_complete_restore_transfer_installation(
             &self.authority,
             selection,
             coordinator,

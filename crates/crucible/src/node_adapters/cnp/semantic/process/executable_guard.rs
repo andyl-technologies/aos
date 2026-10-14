@@ -1,9 +1,10 @@
 //! Authenticates one original executable through its retained descriptor.
 //!
-//! A fresh descriptor attempts a Linux read lease exactly once, before the
-//! complete initial measurement. Kernel-backed immutability permits subsequent
-//! checks without rereading bytes. Unsupported acquisition retains complete-byte
-//! validation; a break or changed process, namespace or file fact is terminal.
+//! The ordinary path attempts one Linux read lease before its complete initial
+//! measurement. Complete-source custody can instead select complete-byte checks
+//! before any notification worker exists. Both paths preserve original kernel,
+//! namespace, descriptor and code fences; a mismatch is terminal. An acquired
+//! lease is never converted into the separate prebirth complete-byte selection.
 
 use std::{
     cell::Cell,
@@ -78,15 +79,40 @@ impl OriginalExecutable {
         Self::open_original(process_path, expected, kernel)
     }
 
+    pub(super) fn open_complete_bytes(
+        pid: u32,
+        expected: &ContentRef,
+        kernel: &KernelIdentity,
+    ) -> Result<Self, ProviderError> {
+        kernel.ensure_current()?;
+        let process_path = PathBuf::from(format!("/proc/{pid}/exe"));
+        Self::open_selected(process_path, expected, kernel, true)
+    }
+
     fn open_original(
         process_path: PathBuf,
         expected: &ContentRef,
         kernel: &KernelIdentity,
     ) -> Result<Self, ProviderError> {
+        Self::open_selected(process_path, expected, kernel, false)
+    }
+
+    fn open_selected(
+        process_path: PathBuf,
+        expected: &ContentRef,
+        kernel: &KernelIdentity,
+        complete_bytes: bool,
+    ) -> Result<Self, ProviderError> {
         let original_target = fs::read_link(&process_path)?;
-        let owner = LinuxReadLeaseOwner::new().ok().map(Arc::new);
-        // The wrapper opens its own private descriptor and retains a terminal
-        // acquisition attempt. No read handle can renew or replace its lease.
+        // Choose the complete-only path before any notification owner or
+        // worker exists. An acquired or revoked lease is never converted here.
+        let owner = if complete_bytes {
+            None
+        } else {
+            LinuxReadLeaseOwner::new().ok().map(Arc::new)
+        };
+        // The wrapper opens its own private descriptor and retains its original
+        // validation mode. No read handle can renew or replace an acquired lease.
         let original = LinuxReadLeaseFile::open(&process_path, owner)
             .map_err(|_| changed("generic original executable acquisition failed"))?;
         let revision = FileRevision::read(original.file().metadata()?)?;
@@ -197,3 +223,24 @@ fn changed(reason: &'static str) -> ProviderError {
 
 #[cfg(test)]
 mod tests;
+
+/// Observes only the original executable's retained user-space owner layout.
+impl OriginalExecutable {
+    pub(in crate::node_adapters::cnp::semantic) fn charge_retained_storage_data(
+        &self,
+        counter: &mut super::super::retained_storage::Counter,
+    ) -> Result<(), crate::node_contract::OperationFailure> {
+        self.ensure_origin().map_err(super::super::unknown)?;
+        counter.charge(&self.process_path)?;
+        counter.charge(&self.original_target)?;
+        counter.charge(&self.expected)?;
+        if self.original.lease().is_some() {
+            // The acquired lease retains a notification worker and private std
+            // synchronization backing. File/lease inline fields are already in
+            // Self, but that opaque owner cannot be priced from a byte limit.
+            counter.unknowns.executable_lease_worker = true;
+        }
+        counter.arc_file(self.original.file())?;
+        self.ensure_origin().map_err(super::super::unknown)
+    }
+}

@@ -1,0 +1,346 @@
+//! Binds a complete local settlement journal to archived owners and protocol cuts.
+//!
+//! The journal is a separate acyclic object: it names immutable native bodies,
+//! common semantic/ancestry bodies and the final host protocol leaf. It never
+//! names the later signed archive index. Portable validation creates no live
+//! Source, registrar, target context or installation permission.
+//!
+//! ```text
+//! {schema:source-owned.packet-native-settled-journal/11,owner,participants,
+//!  cut,ordinal,runtime,backend_implementation,semantic,ancestry,
+//!  native_snapshot,native_control,native_anchor,native_after_protocol,
+//!  host_protocol,confirmation_request,confirmation}
+//! ```
+
+use super::*;
+use crate::{
+    node_contract::{NativeStateKey, OriginalLineageRuntimeRecord},
+    node_state::{NativeOwnerState, VerifiedStateContent},
+};
+use crucible_node_contract::{ImplementationIdentity, Position, U64};
+use crucible_node_provider::{
+    envelope::MessageKind,
+    protocol_snapshot::owned11::{
+        native::outer::{
+            COMPLETE_NATIVE_CONNECTION_FORMAT, COMPLETE_NATIVE_SERVICE_FORMAT,
+            HistoricalNativeState,
+        },
+        outer::{
+            COMPLETE_CONNECTION_FORMAT, COMPLETE_CONTROLLER_FORMAT, HistoricalControllerState,
+        },
+    },
+    reference_packet::service::confirmation::PacketNativeAfterConfirmationReceipt,
+    retained_metadata::records::METADATA_CAPACITY_RECORD_FORMAT,
+    transport::original_frames::FrameDirection,
+};
+
+/// Names the explicit local native settled-journal edition.
+pub const PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA: &str =
+    "source-owned.packet-native-settled-journal/11";
+
+/// Retains the complete reference-bearing local Capture/confirmation association.
+///
+/// Every named body is independently retained in the authenticated typed closure.
+/// Decoding or hashing this value issues no archive, fresh target or Capture right.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketCompleteSettledJournal {
+    /// Names the exact source-local journal grammar.
+    pub schema: String,
+    /// Names the unchanged original capture owner.
+    pub owner: Id,
+    /// Retains the complete sorted original participant roster.
+    pub participants: IdSet,
+    /// Preserves the original administrative semantic cut.
+    pub cut: Position,
+    /// Preserves the original event ordinal.
+    pub ordinal: U64,
+    /// Names the complete source Runtime7 object.
+    pub runtime: ContentRef,
+    /// Names the full installed backend/schema/class identity body.
+    pub backend_implementation: ContentRef,
+    /// Names the complete common semantic custody leaf.
+    pub semantic: ContentRef,
+    /// Names the complete first-sealed ancestry leaf.
+    pub ancestry: ContentRef,
+    /// Names the immutable pending native model/Control/endpoint snapshot.
+    pub native_snapshot: ContentRef,
+    /// Names its exact separately retained pending Control body.
+    pub native_control: ContentRef,
+    /// Names the exact unchanged-cut anchor.
+    pub native_anchor: ContentRef,
+    /// Names the actual native HostSettled leaf frozen before the fourth Poll.
+    pub native_after_protocol: ContentRef,
+    /// Names the actual full host complete state after the fourth Poll settles.
+    pub host_protocol: ContentRef,
+    /// Names the distinct original confirmation Poll.
+    pub confirmation_request: Id,
+    /// Retains the exact original confirmation receipt and all four full refs.
+    pub confirmation: PacketNativeAfterConfirmationReceipt,
+}
+
+impl PacketCompleteSettledJournal {
+    /// Decodes bounded closed journal data without constructing any authority.
+    ///
+    /// # Errors
+    /// Refuses malformed/oversized JSON, unknown fields or incomplete references.
+    pub fn decode_data(bytes: &[u8], maximum_bytes: usize) -> Result<Self, OperationFailure> {
+        let value = canonical::parse_json(bytes, maximum_bytes).map_err(unknown)?;
+        let journal: Self = serde_json::from_value(value).map_err(unknown)?;
+        journal.validate_data()?;
+        Ok(journal)
+    }
+
+    /// Checks the exact grammar, participant order and four-body association.
+    ///
+    /// # Errors
+    /// Refuses invalid values, repeated participants or changed confirmation refs.
+    pub fn validate_data(&self) -> Result<(), OperationFailure> {
+        self.confirmation.validate_data().map_err(unknown)?;
+        self.participants.validate().map_err(unknown)?;
+        self.cut.validate().map_err(unknown)?;
+        if self.schema != PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA
+            || self.participants.is_empty()
+            || self.confirmation_request == self.confirmation.capture.capture_request_id
+            || self.native_snapshot != self.confirmation.capture.native_snapshot_ref
+            || self.native_control != self.confirmation.capture.native_control_ref
+            || self.native_anchor != self.confirmation.capture.native_anchor_ref
+            || self.native_after_protocol != self.confirmation.native_after_ref
+        {
+            return Err(refused("complete settled journal role association differs"));
+        }
+        for reference in self.dependencies() {
+            reference.validate().map_err(unknown)?;
+        }
+        Ok(())
+    }
+
+    /// Borrows every fixed dependency occurrence without allocating a roster.
+    pub fn dependencies(&self) -> [&ContentRef; 9] {
+        [
+            &self.runtime,
+            &self.backend_implementation,
+            &self.semantic,
+            &self.ancestry,
+            &self.native_snapshot,
+            &self.native_control,
+            &self.native_anchor,
+            &self.native_after_protocol,
+            &self.host_protocol,
+        ]
+    }
+
+    /// Authenticates exact signed owner membership and unchanged Runtime7 scope.
+    ///
+    /// This check runs before a Core ticket exists. The installed factory also
+    /// validates complete common semantics, ancestry and native Control/model
+    /// transition before accepting the archive source.
+    ///
+    /// # Errors
+    /// Refuses another owner, cut/runtime, missing full evidence body or changed
+    /// referenced bytes. A shared digest never substitutes for a full typed role.
+    pub fn authenticate_owner_data(
+        &self,
+        owner: &NativeOwnerState,
+        runtime: &OriginalLineageRuntimeRecord,
+        runtime_object: &ContentRef,
+        content: &VerifiedStateContent,
+    ) -> Result<(), OperationFailure> {
+        self.validate_data()?;
+        if owner.state != self.native_snapshot
+            || self.owner != owner.owner
+            || self.participants != owner.participants
+            || self.cut != owner.cut
+            || self.cut != runtime.capture_cut
+            || self.ordinal != runtime.capture_ordinal
+            || self.runtime != *runtime_object
+            || !runtime
+                .owners
+                .iter()
+                .any(|one| one.identity.owner == owner.owner)
+        {
+            return Err(refused("complete settled journal owner/runtime differs"));
+        }
+        for reference in self.dependencies() {
+            if reference != runtime_object
+                && reference != &owner.state
+                && !owner.evidence.contains(reference)
+            {
+                return Err(refused(
+                    "complete settled journal owner evidence role absent",
+                ));
+            }
+            let bytes = content
+                .get(reference)
+                .ok_or_else(|| refused("complete settled journal full body absent"))?;
+            reference.verify(bytes).map_err(unknown)?;
+        }
+        Ok(())
+    }
+
+    /// Checks the actual measured backend tuple and all four complete classes.
+    ///
+    /// The factory supplies its originally installed implementation, not a value
+    /// decoded from this journal. The complete canonical tuple is independently
+    /// retained as one immutable body in the signed source closure.
+    ///
+    /// # Errors
+    /// Refuses a different full implementation, native key or complete class tuple.
+    pub fn authenticate_backend_data(
+        &self,
+        installed: &ImplementationIdentity,
+        key: &NativeStateKey,
+        content: &VerifiedStateContent,
+    ) -> Result<(), OperationFailure> {
+        let value = Self::backend_identity_data(installed, key);
+        let bytes = canonical::canonical_json(&value).map_err(unknown)?;
+        self.backend_implementation
+            .verify(&bytes)
+            .map_err(unknown)?;
+        if content.get(&self.backend_implementation) != Some(bytes.as_slice()) {
+            return Err(refused("complete backend implementation body differs"));
+        }
+        Ok(())
+    }
+
+    /// Builds the complete inert measured tuple used by both capture and factory.
+    pub fn backend_identity_data(
+        installed: &ImplementationIdentity,
+        key: &NativeStateKey,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "schema":"source-owned.packet-complete-archive-backend-before/14",
+            "native_snapshot_class":"source-owned.packet-native-continuation/11",
+            "implementation":installed,"native_key":key,
+            "journal":PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA,
+            "ancestry_class":PacketCompleteSemanticSource::REFERENCE_ANCESTRY_SCHEMA,
+            "capacity_records":METADATA_CAPACITY_RECORD_FORMAT,
+            "controller_class":COMPLETE_CONTROLLER_FORMAT,
+            "connection_class":COMPLETE_CONNECTION_FORMAT,
+            "native_connection_class":COMPLETE_NATIVE_CONNECTION_FORMAT,
+            "native_service_class":COMPLETE_NATIVE_SERVICE_FORMAT,
+        })
+    }
+
+    /// Verifies the exact native after boundary and complete host fourth suffix.
+    ///
+    /// The already admitted host/native historical owners remain inert. Their
+    /// complete bank bytes and original ACKs are compared per direction, because
+    /// native prefix slots are reserved before physical publication. Native after
+    /// ends at the actual Capture terminal; the host additionally contains the
+    /// independently validated fourth-object/Poll suffix.
+    ///
+    /// # Errors
+    /// Refuses partial classes, changed literals/registration/assigned Admit,
+    /// extra native suffix, missing terminal or incomplete fourth proof history.
+    pub fn authenticate_protocol_data(
+        &self,
+        host: &HistoricalControllerState,
+        native_after: &HistoricalNativeState,
+    ) -> Result<(), OperationFailure> {
+        self.validate_data()?;
+        host.require_complete_reader_state().map_err(unknown)?;
+        native_after
+            .authenticate_capture_correspondence()
+            .map_err(unknown)?;
+        PacketCompleteSemanticSource::authenticate_archived_capture_settlement_transcript_data(
+            host,
+            &self.confirmation_request,
+            &self.confirmation,
+        )?;
+        let native = &native_after.connection;
+        let authority = &host.session.connection.authority;
+        if authority.session != native.authority.session
+            || authority.incarnation != native.authority.incarnation
+            || authority.limits != native.authority.limits
+            || authority.features != native.authority.features
+            || authority.envelope_extensions != native.authority.envelope_extensions
+            || authority.extensions != native.authority.extensions
+            || host.assigned.is_none()
+        {
+            return Err(refused(
+                "complete archived protocol role registrations differ",
+            ));
+        }
+        // Local connection IDs intentionally differ between the two roles.
+        let admitted = &native.admission.original;
+        let admit_id = admitted
+            .request_id
+            .0
+            .as_ref()
+            .ok_or_else(|| refused("complete native original Admit ID absent"))?;
+        let host_admit = host
+            .custody
+            .controller
+            .get(admit_id)
+            .ok_or_else(|| refused("complete host original Admit absent"))?;
+        if host_admit.request != *admitted || host_admit.response.is_none() {
+            return Err(refused("complete archived assigned Admit differs"));
+        }
+        let capture = host
+            .custody
+            .controller
+            .get(&self.confirmation.capture.capture_request_id)
+            .ok_or_else(|| refused("complete original Capture absent"))?;
+        let terminal = capture
+            .response
+            .as_ref()
+            .ok_or_else(|| refused("complete original Capture terminal absent"))?;
+        let mut boundary = None;
+        for (index, frame) in host.original_frames_data().enumerate() {
+            if frame.direction == FrameDirection::Incoming && frame.bytes.len() >= 4 {
+                let header: BoundaryHeader<'_> =
+                    serde_json::from_slice(&frame.bytes[4..]).map_err(unknown)?;
+                if header.message == MessageKind::Response
+                    && header.request_id
+                        == Some(self.confirmation.capture.capture_request_id.as_str())
+                    && header.sequence.parse::<u64>().map_err(unknown)? == terminal.sequence.get()
+                {
+                    if boundary.replace(index).is_some() {
+                        return Err(refused("complete Capture boundary repeated"));
+                    }
+                }
+            }
+        }
+        let boundary =
+            boundary.ok_or_else(|| refused("complete Capture literal boundary absent"))?;
+        for direction in [FrameDirection::Incoming, FrameDirection::Outgoing] {
+            let mut expected = host
+                .original_frames_data()
+                .take(boundary + 1)
+                .filter(|frame| frame.direction != direction);
+            for actual in native
+                .frames
+                .frames()
+                .filter(|frame| frame.direction == direction)
+            {
+                let expected = expected
+                    .next()
+                    .ok_or_else(|| refused("native after contains an extra literal frame"))?;
+                if !actual.complete
+                    || actual.transferred != actual.bytes.len()
+                    || !expected.complete
+                    || expected.transferred != expected.bytes.len()
+                    || actual.bytes != expected.bytes
+                {
+                    return Err(refused(
+                        "native after literal prefix differs from original host",
+                    ));
+                }
+            }
+            if expected.next().is_some() {
+                return Err(refused("native after omits an original literal frame"));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct BoundaryHeader<'a> {
+    message: MessageKind,
+    #[serde(borrow)]
+    request_id: Option<&'a str>,
+    #[serde(borrow)]
+    sequence: &'a str,
+}

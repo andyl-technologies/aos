@@ -16,12 +16,19 @@ use crate::{
 };
 
 mod capture;
+mod capture_owned11;
 mod complete;
 mod confirmation;
 pub use complete::{PacketCompleteEndpointRecovery, PacketCompleteEndpointRefusal};
 mod prefix;
+mod restore;
+mod restore_commit;
+pub(crate) use restore::PacketEndpointRestoreAllocation;
 
-const EXCHANGES: usize = 256;
+pub(crate) const EXCHANGES: usize = 256;
+// This is the unchanged retained ordinary endpoint-prefix ceiling. The
+// separate complete Capture transport has an independent selected bound.
+pub(crate) const MAXIMUM_PACKET_TRANSPORT_BYTES: usize = 32 * 1024 * 1024;
 const CONTENT: usize = 65_536;
 const STORED_CONTENT: usize = 4 * 1024 * 1024;
 
@@ -42,6 +49,16 @@ pub trait PacketEndpointPolicy: BlobSchemaVerifier {
         authority: &ConnectionAuthority,
         selection: &PacketControlSelection,
     ) -> Result<(), ProviderError>;
+
+    /// Authenticates the installed complete native snapshot definition.
+    ///
+    /// # Errors
+    /// Refuses unless the concrete installer supplies the selected full schema.
+    fn authenticate_owned11_snapshot_definition(&self) -> Result<(), ProviderError> {
+        Err(ProviderError::Correlation(
+            "native owned11 snapshot definition not installed",
+        ))
+    }
 
     /// Selects the independently installed consuming schema for an exact upload.
     ///
@@ -83,6 +100,9 @@ pub struct PacketEndpoint<S: ProviderStream> {
     after_confirmation: Option<confirmation::AfterConfirmation<S>>,
     canonical_ack_boot: Option<Rc<std::cell::RefCell<super::service::ack_emitter::NativeAckBoot>>>,
     canonical_ack_admission: Option<super::service::ack_emitter::VerifiedCanonicalAckAdmission>,
+    restore_commit: Option<restore_commit::RestoreCommitFlight<S>>,
+    restore_protocol_attempted: bool,
+    restore_prepare_admission: Option<super::service::ack_emitter::VerifiedCompleteRestorePrepare>,
 }
 
 /// Returns the same original unopened connection and native owner on refusal.
@@ -104,6 +124,23 @@ impl<S: ProviderStream> PacketEndpointRefusal<S> {
         (self.connection, self.native, self.error)
     }
 }
+
+// Only the concrete original DeadlineStream service installs this entry.
+// Generic stream callers cannot supply an alternate capture implementation.
+type OriginalSelectedCapture<S> = fn(
+    &mut PacketEndpoint<S>,
+    &Envelope,
+    &super::service::OriginalNativeServiceCaptureContext<'_>,
+    &crate::client::ExchangeDeadline,
+) -> Result<(), ProviderError>;
+
+type OriginalSelectedRestore<S> = fn(
+    &mut PacketEndpoint<S>,
+    &Envelope,
+    &RequestBody,
+    &super::service::OriginalNativeServiceCaptureContext<'_>,
+    &crate::client::ExchangeDeadline,
+) -> Result<bool, ProviderError>;
 
 impl<S: ProviderStream> PacketEndpoint<S> {
     /// Takes genuine original native custody and an independently admitted stream.
@@ -174,6 +211,9 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             after_confirmation: None,
             canonical_ack_boot: None,
             canonical_ack_admission: None,
+            restore_commit: None,
+            restore_protocol_attempted: false,
+            restore_prepare_admission: None,
         })
     }
 
@@ -231,7 +271,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             &crate::client::ExchangeDeadline,
         )>,
     ) -> Result<(), ProviderError> {
-        self.step_with_original_context(context, None)
+        self.step_with_original_context(context, None, None, None, None)
     }
 
     pub(crate) fn step_with_selected_context(
@@ -241,7 +281,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
     ) -> Result<(), ProviderError> {
         self.authenticate_selected_registration(handshake)?;
         deadline.remaining()?;
-        self.step_with_original_context(None, Some(deadline))
+        self.step_with_original_context(None, Some(deadline), None, None, None)
     }
 
     fn step_with_original_context(
@@ -251,6 +291,9 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             &crate::client::ExchangeDeadline,
         )>,
         selected_deadline: Option<&crate::client::ExchangeDeadline>,
+        service_context: Option<&super::service::OriginalNativeServiceCaptureContext<'_>>,
+        selected_capture: Option<OriginalSelectedCapture<S>>,
+        selected_restore: Option<OriginalSelectedRestore<S>>,
     ) -> Result<(), ProviderError> {
         self.ensure_complete_origin()?;
         if self.held {
@@ -283,12 +326,39 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             ));
         };
         let request = frame.envelope;
+        if let Some(restore) = selected_restore {
+            if restore(
+                self,
+                &request,
+                body.as_ref(),
+                service_context.ok_or(ProviderError::Correlation(
+                    "native restore actual service context absent",
+                ))?,
+                selected_deadline.ok_or(ProviderError::Correlation(
+                    "native restore original cut absent",
+                ))?,
+            )? {
+                return Ok(());
+            }
+        } else if self.restore_protocol_attempted {
+            return Err(ProviderError::Correlation(
+                "native restore owning route absent",
+            ));
+        }
+
         if let Some(boot) = self.canonical_ack_boot.as_ref() {
             if matches!(body.as_ref(), RequestBody::Begin(begin) if begin.kind == BeginKind::Capture)
             {
-                return Err(ProviderError::Correlation(
-                    "native boot requires whole owning Capture edition",
-                ));
+                let service = service_context.ok_or(ProviderError::Correlation(
+                    "native whole11 requires original service context",
+                ))?;
+                let capture = selected_capture.ok_or(ProviderError::Correlation(
+                    "native whole11 requires original typed service transport",
+                ))?;
+                let deadline = selected_deadline.ok_or(ProviderError::Correlation(
+                    "native whole11 original service cut absent",
+                ))?;
+                return capture(self, &request, service, deadline);
             }
             if request.method == Method::Admit {
                 let complete = self.complete.as_ref().ok_or(ProviderError::Correlation(
@@ -554,5 +624,33 @@ impl PacketEndpoint<crate::client::DeadlineStream> {
         }
 
         result
+    }
+}
+
+impl PacketEndpoint<crate::client::DeadlineStream> {
+    pub(crate) fn step_with_selected_service_context(
+        &mut self,
+        handshake: &crate::handshake::ExtensionHandshake,
+        deadline: &crate::client::ExchangeDeadline,
+        service: &super::service::OriginalNativeServiceCaptureContext<'_>,
+    ) -> Result<(), ProviderError> {
+        self.ensure_complete_origin()?;
+        if !self.complete.as_ref().is_some_and(|state| {
+            matches!(
+                state.profile,
+                Some(super::service::PacketNative5CaptureProfile::OwnedProtocol11 { .. })
+            )
+        }) {
+            return self.step_with_selected_context(handshake, deadline);
+        }
+        self.authenticate_selected_registration(handshake)?;
+        deadline.remaining()?;
+        self.step_with_original_context(
+            None,
+            Some(deadline),
+            Some(service),
+            Some(Self::capture_original_owned11),
+            Some(Self::restore_original_transfer),
+        )
     }
 }

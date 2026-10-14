@@ -24,6 +24,7 @@ use crucible_node_provider::ProviderError;
 
 use super::{PacketPeerJournalCustody, PacketPeerJournalSlot, QualificationError};
 
+mod requested_storage;
 mod world;
 
 pub use world::{

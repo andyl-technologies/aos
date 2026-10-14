@@ -17,7 +17,9 @@ use crucible_node_contract::{Bytes, ContentRef, Id, U64, Validate};
 
 use crate::{ProviderError, envelope::RequestOrigin};
 
+mod owned11;
 mod protocol_snapshot;
+pub(crate) use owned11::original_blob_layouts;
 pub(crate) use protocol_snapshot::BlobProtocolOwner;
 
 /// Selects finite storage, metadata, and chunk allowances for one receiver.

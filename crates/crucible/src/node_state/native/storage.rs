@@ -10,6 +10,9 @@
 //! Nonempty object, dependency, evidence and artifact inventories use pages of
 //! at most 256 elements; an empty inventory uses an empty outer array.
 
+#[path = "complete_original_validation_origin.rs"]
+pub(super) mod complete_original_validation_origin;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},

@@ -11,12 +11,15 @@
 
 mod capture;
 mod collecting_scope;
+mod complete_original_archive_storage;
 mod complete_original_capture;
+mod complete_original_factory_storage;
 pub use collecting_scope::CollectingCompleteCaptureProvenance;
+pub use complete_original_factory_storage::CompleteOriginalCaptureFactoryStorage;
 mod complete_original_geometry;
 mod complete_original_index;
-mod complete_original_source;
 mod complete_original_native_ticket;
+mod complete_original_source;
 mod driver;
 pub(crate) mod extensions;
 mod historical_capture;
@@ -149,6 +152,28 @@ impl AuthenticatedNativeSource<'_> {
 /// complete native ledgers and every image/resource dependency. Source image
 /// certificates never qualify a fresh live peer or grant execution authority.
 pub trait NativeWorldFactory {
+    /// Observes separate complete-factory banks before any cache preparation.
+    ///
+    /// This data callback uses the same closed source/graph and actual current
+    /// retained capacities. Its future term bounds all additional canonical
+    /// projection and dependency-reader scratch. It grants no source permission
+    /// and cannot pad or replace the four original owning-node preflight rows.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects unsupported allocation accounting, changed
+    /// original source scope or an unrepresentable finite closed projection.
+    fn complete_original_capture_factory_storage(
+        &self,
+        _graph: &AdmittedGraph,
+        _runtime: &crate::node_contract::OriginalLineageRuntimeRecord,
+        _scheduling: &crate::node_scheduling::SchedulingSnapshot,
+        _limits: NativeArchiveLimits,
+    ) -> Result<CompleteOriginalCaptureFactoryStorage, StateError> {
+        Err(refused(
+            "installed complete factory storage accounting is unsupported",
+        ))
+    }
+
     /// Narrows native records independently of reserved immutable and portable bytes.
     ///
     /// The legacy default preserves the original limit. A selected installed

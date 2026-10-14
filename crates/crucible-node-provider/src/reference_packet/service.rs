@@ -189,7 +189,10 @@ pub struct PacketSourceService {
 
 enum OriginalServiceHandshake {
     Legacy(crate::handshake::Handshake),
-    Selected(crate::handshake::ExtensionHandshake),
+    Selected {
+        handshake: crate::handshake::ExtensionHandshake,
+        registry: Rc<server::complete::birth::EmptyBootExtensions>,
+    },
 }
 
 impl PacketSourceService {
@@ -264,9 +267,22 @@ impl PacketSourceService {
             OriginalServiceHandshake::Legacy(handshake) => self
                 .endpoint
                 .step_with_complete_context(Some((handshake, &self.deadline))),
-            OriginalServiceHandshake::Selected(handshake) => self
-                .endpoint
-                .step_with_selected_context(handshake, &self.deadline),
+            OriginalServiceHandshake::Selected {
+                handshake,
+                registry: _,
+            } => {
+                let context = owned11::OriginalNativeServiceCaptureContext::new(
+                    &self._handshake,
+                    self._private_bootstrap.as_deref(),
+                    &self._supervisor,
+                    &self.deadline,
+                );
+                self.endpoint.step_with_selected_service_context(
+                    handshake,
+                    &self.deadline,
+                    &context,
+                )
+            }
         }
     }
 
@@ -283,3 +299,22 @@ pub mod ack_emitter;
 pub use ack_emitter::PacketNative5AckEmitterSelection;
 
 pub use ack_emitter::{PacketCanonicalAckAdmissionContext, PacketCanonicalAckAdmissionProof};
+
+mod protocol_metadata;
+pub use protocol_metadata::{
+    PacketNative5ProtocolMetadataBankFacts, PacketNative5ProtocolMetadataBirthFacts,
+    PacketNative5ProtocolMetadataLimits,
+};
+
+mod owned11;
+pub(crate) use owned11::{OriginalNativeCaptureContext, OriginalNativeServiceCaptureContext};
+pub(crate) use security::{
+    HistoricalNativeSupervisorBanks, original_native_supervisor_bank_layouts,
+    original_native_supervisor_layout,
+};
+/// Defines the selected whole native snapshot with exact original protocol bytes.
+pub mod native_snapshot;
+pub use native_snapshot::{native_owned11_snapshot_contract, native_owned11_snapshot_schema};
+pub(crate) use owned11::NativeRestoreServiceAllocationQuote;
+
+pub mod complete_restore;

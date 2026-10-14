@@ -319,3 +319,28 @@ impl<'a> PacketCompleteAckPeerBootMaterial<'a> {
         Ok(&self.original.expected_host_registration)
     }
 }
+
+impl OriginalAckPeerBirth {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn retained_heap_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, OperationFailure> {
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(refused("retained ACK birth foreign origin"));
+        }
+        // File, revision, private key/birth arrays and scalar states are inline
+        // in the Source allocation. No executable read, hash or cut renewal.
+        let reference =
+            crate::node_contract::NodeRuntime::capture_reference_storage(&self.host_executable)
+                .map_err(super::super::unknown)?;
+        super::super::retained_values::sum(
+            [
+                reference,
+                self.private_launch.allocated_capacity(),
+                self.source_birth.capacity(),
+                self.expected_host_registration.capacity(),
+            ],
+            maximum,
+        )
+    }
+}

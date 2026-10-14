@@ -191,3 +191,17 @@ impl<F: FnOnce()> Drop for WorldAdmissionAttempt<F> {
 #[cfg(test)]
 #[path = "world_admission_tests.rs"]
 mod tests;
+
+impl OriginalCompletedCanonicalAckWorldAdmission {
+    pub(in crate::node_adapters::cnp::semantic) fn charge_retained_storage_data(
+        &self,
+        counter: &mut super::super::retained_storage::Counter,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_origin()?;
+        counter.rc(&self.source)?;
+        // The Source's concrete factory/program/DOM/bank owners are separate
+        // obligations. Equal public source labels cannot discharge those heaps.
+        counter.unknowns.installed_source_owners = true;
+        self.authenticate_origin()
+    }
+}

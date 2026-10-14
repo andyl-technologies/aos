@@ -312,3 +312,110 @@ fn copied_callback_answer_refuses_a_break_during_the_callback_interval() {
     assert_eq!(std::fs::read(path).unwrap(), bytes);
     assert!(files.current().is_err());
 }
+
+#[test]
+fn complete_profile_uses_terminal_full_bytes_with_same_descriptor_and_sticky_drift() {
+    use std::io::{Seek, SeekFrom};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("complete-original");
+    let bytes = b"source-one";
+    std::fs::write(&path, bytes).unwrap();
+    let reference = canonical::content_ref(bytes, "text/plain").unwrap();
+    let files = complete_byte_originals(&[(path.as_path(), &reference); 10]).unwrap();
+    assert!(
+        files
+            .originals
+            .iter()
+            .all(|original| original.file.lease().is_none())
+    );
+    let mut descriptor = files.originals[0].file.file();
+    descriptor.seek(SeekFrom::Start(4)).unwrap();
+
+    files.current().unwrap();
+    assert_eq!(descriptor.stream_position().unwrap(), 4);
+    let writer = File::options().write(true).open(&path).unwrap();
+    writer.write_all_at(b"source-two", 0).unwrap();
+    assert!(files.current().is_err());
+    writer.write_all_at(bytes, 0).unwrap();
+
+    assert!(files.current().is_err());
+    assert!(
+        files
+            .originals
+            .iter()
+            .all(|original| original.file.lease().is_none())
+    );
+}
+
+#[test]
+fn complete_profile_equal_replacement_never_adopts_the_replacement_descriptor() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("complete-original");
+    let replacement = directory.path().join("replacement");
+    let bytes = b"original";
+    std::fs::write(&path, bytes).unwrap();
+    std::fs::write(&replacement, bytes).unwrap();
+    let reference = canonical::content_ref(bytes, "text/plain").unwrap();
+    let files = complete_byte_originals(&[(path.as_path(), &reference); 10]).unwrap();
+    let original_inode = files.originals[0].file.file().metadata().unwrap().ino();
+
+    std::fs::rename(&replacement, &path).unwrap();
+
+    assert!(files.current().is_err());
+    assert_eq!(
+        files.originals[0].file.file().metadata().unwrap().ino(),
+        original_inode
+    );
+    assert_ne!(std::fs::metadata(&path).unwrap().ino(), original_inode);
+}
+
+#[test]
+fn complete_descriptor_observer_counts_actual_spare_banks_and_distinct_same_path_opens() {
+    use crate::node_qualification::packet_collection::complete::retained::Counter;
+    use std::mem::{align_of, size_of};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("actual-original-body");
+    std::fs::write(&path, b"same-body").unwrap();
+    let mut files = installed(&path, b"same-body");
+    let mut before = Counter::new(1024 * 1024);
+    files.charge_retained_storage(&mut before).unwrap();
+
+    let old_slots = files.originals.capacity();
+    let old_path = files.originals[0].path.capacity();
+    let old_media = files.originals[0].content.media_type.capacity();
+    files.originals.reserve_exact(64);
+    files.originals[0].path.reserve(4096);
+    files.originals[0].content.media_type.reserve(8192);
+    let added = (files.originals.capacity() - old_slots) * size_of::<Original>()
+        + files.originals[0].path.capacity()
+        - old_path
+        + files.originals[0].content.media_type.capacity()
+        - old_media;
+    let mut after = Counter::new(1024 * 1024);
+    files.charge_retained_storage(&mut after).unwrap();
+    assert_eq!(after.bytes(), before.bytes() + added);
+
+    // Ten independent opens share a pathname, never their Arc<File> backing.
+    let header = size_of::<File>()
+        + 2 * size_of::<usize>()
+        + 2 * (align_of::<File>().max(align_of::<usize>()) - 1);
+    let nested = files
+        .originals
+        .iter()
+        .map(|original| {
+            original.path.capacity()
+                + original.content.hash.algorithm.capacity()
+                + original.content.hash.domain.capacity()
+                + original.content.hash.digest.capacity()
+                + original.content.media_type.capacity()
+        })
+        .sum::<usize>();
+    assert_eq!(
+        after.bytes(),
+        files.originals.capacity() * size_of::<Original>() + nested + 10 * header
+    );
+    let mut insufficient = Counter::new(after.bytes() - 1);
+    assert!(files.charge_retained_storage(&mut insufficient).is_err());
+}

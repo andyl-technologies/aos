@@ -292,3 +292,25 @@ impl InstalledRuntimeWitnessOracle for PacketCompleteNativeOracle {
 fn runtime_failure(error: impl std::fmt::Display) -> QualificationError {
     QualificationError::Evidence(format!("original connected input custody: {error}"))
 }
+
+impl OriginalBindings {
+    pub(super) fn charge_retained_storage(
+        &self,
+        counter: &mut crate::node_qualification::packet_collection::complete::retained::Counter,
+    ) -> Result<(), QualificationError> {
+        let entries = self.entries.try_borrow().map_err(|_| refused())?;
+        counter.add(
+            entries
+                .capacity()
+                .checked_mul(std::mem::size_of::<Option<Binding>>())
+                .ok_or_else(refused)?,
+        )?;
+        for binding in entries.iter().flatten() {
+            counter.charge(binding.token.operation())?;
+            counter.charge(binding.token.route())?;
+            counter.charge(binding.activation.record())?;
+            counter.charge(&binding.reference)?;
+        }
+        Ok(())
+    }
+}

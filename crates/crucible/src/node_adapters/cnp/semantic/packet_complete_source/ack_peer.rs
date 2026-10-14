@@ -23,6 +23,7 @@ mod birth;
 #[path = "ack_peer/frame.rs"]
 mod frame;
 pub(super) use association::OriginalAckPeerAssociation;
+pub use association::PacketCompleteRestorePreparation;
 pub(super) use birth::OriginalAckPeerBirth;
 pub use birth::PacketCompleteAckPeerBootMaterial;
 pub use frame::PacketCompleteAckPeerBootFrame;
@@ -302,12 +303,60 @@ impl PacketCompleteSemanticSource {
                 "complete private ACK registration plan is incomplete",
             ));
         }
+        if let Some(selection) = self.selected_complete_restore_selection()? {
+            use crucible_node_provider::reference_packet::service::complete_restore::{
+                complete_restore_selected_envelope_extensions, complete_restore_selected_features,
+            };
+            let feature_missing =
+                complete_restore_selected_features(selection)
+                    .iter()
+                    .any(|name| {
+                        !registration
+                            .features
+                            .iter()
+                            .any(|feature| feature.as_str() == *name)
+                    });
+            let extension_missing = complete_restore_selected_envelope_extensions(selection)
+                .iter()
+                .any(|name| {
+                    !registration
+                        .envelope_extensions
+                        .iter()
+                        .any(|extension| extension.as_str() == *name)
+                });
+            if feature_missing || extension_missing {
+                return Err(refused(
+                    "complete restore planned registration is incomplete",
+                ));
+            }
+        }
+        if self.selected_restore_input_emitter_selection()?.is_some()
+            && !registration.features.iter().any(|feature| feature.as_str()
+                == crucible_node_provider::reference_packet::service::complete_restore::PACKET_CANONICAL_RESTORE_INPUTS_FEATURE)
+        {
+            return Err(refused("restore input emitter planned feature absent"));
+        }
         let frame_bytes = usize::try_from(launch.limits.frame_bytes.get())
             .map_err(|_| refused("ACK assigned frame bank extent overflow"))?;
         let association_bank_minimum = OriginalAckPeerAssociation::minimum_bank_bytes(frame_bytes)?;
+        let restore_bank_minimum = if self.selected_complete_restore_selection()?.is_some() {
+            OriginalAckPeerAssociation::minimum_complete_restore_bank_bytes(frame_bytes)?
+        } else {
+            0
+        };
+
+        let transfer_phase_bank_minimum = if self.selected_complete_restore_selection()?
+            == Some(crucible_node_provider::reference_packet::service::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
+        {
+            OriginalAckPeerAssociation::minimum_restore_transfer_phase_bank_bytes(frame_bytes)?
+        } else {
+            0
+        };
         let original_bank_bytes = self.original_capture_bank_facts()?.total_bytes;
         let selected_bank_minimum = original_bank_bytes
             .checked_add(association_bank_minimum)
+            .and_then(|sum| sum.checked_add(restore_bank_minimum))
+            .and_then(|sum| sum.checked_add(transfer_phase_bank_minimum))
             .and_then(|sum| sum.checked_add(frame::MAXIMUM_ACK_SOURCE_BIRTH_BYTES))
             .and_then(|sum| sum.checked_add(frame::MAXIMUM_ACK_HOST_REGISTRATION_BYTES))
             .and_then(|sum| sum.checked_add(frame::MAXIMUM_ACK_PRIVATE_BOOT_BYTES + 4))
@@ -318,6 +367,20 @@ impl PacketCompleteSemanticSource {
             ));
         }
         OriginalAckPeerAssociation::reserve_into(frame_bytes, self.ack_peer_association.get_mut())?;
+        if self.selected_complete_restore_selection()?.is_some() {
+            self.ack_peer_association
+                .get_mut()
+                .as_mut()
+                .ok_or_else(|| refused("complete selected restore association slot absent"))?
+                .reserve_complete_restore_banks(frame_bytes)?;
+        }
+        if transfer_phase_bank_minimum != 0 {
+            self.ack_peer_association
+                .get_mut()
+                .as_mut()
+                .ok_or_else(|| refused("selected12 phase association slot absent"))?
+                .reserve_restore_transfer_phase_banks(frame_bytes)?;
+        }
         let association_bank_bytes = self
             .ack_peer_association
             .get_mut()
@@ -354,6 +417,56 @@ impl PacketCompleteSemanticSource {
             value.insert(
                 "native_codec_metadata_extent".into(),
                 serde_json::to_value(extent).map_err(unknown)?,
+            );
+        }
+        if let Some(limits) = self.selected_protocol_metadata_limits()? {
+            let value = birth
+                .as_object_mut()
+                .ok_or_else(|| refused("native metadata source binding is not an object"))?;
+            value.insert(
+                "schema".into(),
+                serde_json::Value::String(
+                    "source-owned.packet-canonical-ack-source-binding/8".into(),
+                ),
+            );
+            value.insert(
+                "protocol_metadata_limits".into(),
+                serde_json::to_value(limits).map_err(unknown)?,
+            );
+        }
+        if let Some(selection) = self.selected_complete_restore_selection()? {
+            let value = birth
+                .as_object_mut()
+                .ok_or_else(|| refused("complete restore source binding is not an object"))?;
+            value.insert(
+                "schema".into(),
+                serde_json::Value::String(
+                    match selection {
+                        crucible_node_provider::reference_packet::service::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedOwned11 =>
+                            "source-owned.packet-canonical-ack-source-binding/9",
+                        crucible_node_provider::reference_packet::service::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12 =>
+                            "source-owned.packet-canonical-ack-source-binding/10",
+                    }.into(),
+                ),
+            );
+            value.insert(
+                "complete_restore_selection".into(),
+                serde_json::to_value(selection).map_err(unknown)?,
+            );
+        }
+        if let Some(selection) = self.selected_restore_input_emitter_selection()? {
+            let value = birth
+                .as_object_mut()
+                .ok_or_else(|| refused("restore input emitter source binding is not an object"))?;
+            value.insert(
+                "schema".into(),
+                serde_json::Value::String(
+                    "source-owned.packet-canonical-ack-source-binding/11".into(),
+                ),
+            );
+            value.insert(
+                "restore_input_emitter_selection".into(),
+                serde_json::to_value(selection).map_err(unknown)?,
             );
         }
         let host = serde_json::json!({
@@ -431,6 +544,10 @@ impl PacketCompleteSemanticSource {
                 != Some(CanonicalAckCodecMetadataExtent::CanonicalAck512KiB)
             || launch.native_codec_metadata_extent
                 != self.selected_native_ack_codec_metadata_extent()?
+            || launch.protocol_metadata_limits != self.selected_protocol_metadata_limits()?
+            || launch.complete_restore_selection != self.selected_complete_restore_selection()?
+            || launch.restore_input_emitter_selection
+                != self.selected_restore_input_emitter_selection()?
             || launch.ack_emitter_selection != self.selected_ack_emitter_selection()?
             || launch.confirmation_selection != self.selected_confirmation_selection()?
             || &launch.capture_profile != self.selected_capture_profile()?

@@ -130,7 +130,40 @@ impl NativeArchive {
                 "known core snapshots exhaust complete content budget",
             ));
         }
+        // Admit the installed factory's separate banks before it creates its
+        // canonical source cache. These do not change any owning-node row.
+        let factory_storage = factory.complete_original_capture_factory_storage(
+            graph,
+            &source,
+            &scheduler,
+            self.limits,
+        )?;
+        factory_storage.validate(self.limits)?;
+        let factory_peak = factory_storage.peak()?;
+        known_snapshot_storage
+            .checked_add(request_storage)
+            .and_then(|total| total.checked_add(factory_peak))
+            .filter(|total| {
+                *total <= self.limits.state.maximum_total_content_bytes
+                    && *total <= self.limits.native.maximum_total_record_bytes
+            })
+            .ok_or_else(|| refused("complete factory preparation exceeds remaining credit"))?;
         factory.authenticate_complete_original_lineage_capture(graph, &source, &scheduler)?;
+        let actual_factory = factory.complete_original_capture_factory_storage(
+            graph,
+            &source,
+            &scheduler,
+            self.limits,
+        )?;
+        actual_factory.validate(self.limits)?;
+        if actual_factory.actual_retained_bytes > factory_storage.maximum_retained_bytes
+            || actual_factory.maximum_retained_bytes > factory_storage.maximum_retained_bytes
+            || actual_factory.maximum_transient_bytes > factory_storage.maximum_transient_bytes
+        {
+            return Err(refused(
+                "complete factory exceeded its original admitted banks",
+            ));
+        }
         if let Some(scope) = collecting {
             scope.authenticate(&source, &scheduler, &capture_id, factory)?;
         }
@@ -155,8 +188,20 @@ impl NativeArchive {
         )?;
         let immutable_refs =
             super::lineage_roots::combine(immutable_refs, additional_roots, self.limits.state)?;
+        let mut immutable_limits = self.limits.state;
+        immutable_limits.maximum_total_content_bytes = self
+            .limits
+            .state
+            .maximum_total_content_bytes
+            .checked_sub(known_snapshot_storage)
+            .and_then(|remaining| remaining.checked_sub(request_storage))
+            .and_then(|remaining| remaining.checked_sub(factory_peak))
+            .ok_or_else(|| refused("complete immutable reader has no remaining factory credit"))?;
+        immutable_limits.maximum_content_bytes = immutable_limits
+            .maximum_content_bytes
+            .min(immutable_limits.maximum_total_content_bytes);
         let content =
-            verify_complete_closure(immutable_refs.clone(), &immutable, self.limits.state)?;
+            verify_complete_closure(immutable_refs.clone(), &immutable, immutable_limits)?;
         let runtime_object = self.lineage_record(&source, ORIGINAL_LINEAGE_RUNTIME_MEDIA)?;
         let scheduler_object = self.lineage_record(&scheduler, "application/json")?;
         let coordinator = OriginalLineageCoordinator {
@@ -428,7 +473,8 @@ impl NativeArchive {
         .map_err(schema)?;
         let known_immutable_banks = content.capture_owned_storage().map_err(schema)?;
         let mut current_core = known_snapshot_storage
-            .checked_add(request_storage)
+            .checked_add(factory_peak)
+            .and_then(|bytes| bytes.checked_add(request_storage))
             .and_then(|bytes| bytes.checked_add(known_immutable_banks))
             .ok_or_else(|| refused("complete current core peak overflow"))?;
         for object in [&runtime_object, &scheduler_object, &coordinator_object] {
@@ -798,7 +844,20 @@ impl NativeArchive {
             owners: states,
         };
         let record = self.record(index.clone())?;
-        record.complete_original_lineage_content(graph, factory, lineage_limits)?;
+        {
+            // Only this actual pre-sign writer can lend OriginalWrite purpose.
+            // Source validation still precedes signing/persistence; this witness
+            // is neither a load receipt nor native/source acceptance.
+            let origin = super::storage::complete_original_validation_origin::CompleteArchiveValidationOrigin::original_write(
+                self, &record, &captures, runtime,
+            )?;
+            record.complete_original_lineage_content_with_origin(
+                graph,
+                factory,
+                lineage_limits,
+                &origin,
+            )?;
+        }
         // The same world remains held on every verification or persistence
         // failure. Release neither drops original bodies nor renews lifetime IDs.
         runtime
@@ -833,6 +892,10 @@ pub struct CompleteOriginalArchiveValidation<'a> {
     pub administrative: &'a crate::node_contract::RuntimeOriginalCaptureJournal,
     /// Borrows the exact verified bounded typed dependency closure.
     pub content: &'a VerifiedStateContent,
+    pub(super) validation_origin:
+        &'a super::storage::complete_original_validation_origin::CompleteArchiveValidationOrigin<
+            'a,
+        >,
 }
 
 impl NativeArchiveRecord {
@@ -840,7 +903,9 @@ impl NativeArchiveRecord {
     ///
     /// This method preserves the separate default-refusing backend/source gate.
     /// Archive grammar, hashes and state keys alone never establish complete
-    /// native restoration or permission to issue fresh readiness.
+    /// native restoration or permission to issue fresh readiness. This historical
+    /// entry requires the actual selected-load accounting receipt. Only the same
+    /// active writer uses the distinct private pre-sign validation origin.
     ///
     /// # Errors
     /// Refuses another graph, missing original history or dependency roles,
@@ -852,6 +917,18 @@ impl NativeArchiveRecord {
         factory: &dyn NativeWorldFactory,
         limits: OriginalInputLineageLimits,
     ) -> Result<VerifiedStateContent, StateError> {
+        let origin = super::storage::complete_original_validation_origin::CompleteArchiveValidationOrigin::selected_load(self)?;
+        self.complete_original_lineage_content_with_origin(graph, factory, limits, &origin)
+    }
+
+    fn complete_original_lineage_content_with_origin(
+        &self,
+        graph: &crate::node_admission::AdmittedGraph,
+        factory: &dyn NativeWorldFactory,
+        limits: OriginalInputLineageLimits,
+        origin: &super::storage::complete_original_validation_origin::CompleteArchiveValidationOrigin<'_>,
+    ) -> Result<VerifiedStateContent, StateError> {
+        origin.authenticate(self)?;
         let administrative = self.original_capture_journal()?;
         if !graph.selected_extensions().is_empty()
             || self.manifest().world_binding_hash != *graph.world_binding_hash()
@@ -924,8 +1001,10 @@ impl NativeArchiveRecord {
                 scheduling: &scheduling,
                 administrative: &administrative,
                 content: &content,
+                validation_origin: origin,
             },
         )?;
+        origin.authenticate(self)?;
         Ok(content)
     }
 }

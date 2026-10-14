@@ -15,7 +15,7 @@ use crate::node_admission::{
     AdmittedGraph, ConnectionPolicy, CoordinatorPolicy, LaneVisibility, ObjectState,
     OwnershipPolicy, PortPolicy, VisibilityConversion,
 };
-use crate::node_scheduling::InputPayload;
+use crate::node_scheduling::{ExactCeiling, ExecutionPolicy, InputPayload};
 
 use super::{StateError, StateErrorCode, StateLimits, closure::limit, schema};
 
@@ -42,12 +42,117 @@ impl AdmittedGraphRecord {
     pub fn dependencies(&self) -> &[ContentRef] {
         &self.dependencies
     }
+
+    /// Moves the original canonical body and dependency vector without copying.
+    ///
+    /// The returned vectors retain their actual allocation capacities. Installed
+    /// readers can account those same owned banks before retention; this data
+    /// move supplies no graph, source, capture or restoration authority.
+    pub fn into_parts(self) -> (InputPayload, Vec<ContentRef>) {
+        (self.object, self.dependencies)
+    }
+}
+
+/// Bounds the original closed graph-record projection before allocation.
+///
+/// The retained term includes the record vector, canonical byte banks and full
+/// reference/dependency clones. The transient term uses core's pinned closed-type
+/// serializer visitor for the largest individual record. It is an allocation
+/// demand, not graph, source or capture authority.
+#[derive(Clone, Copy, Debug)]
+pub struct AdmittedGraphRecordsStorage {
+    /// Counts the fixed outer row slots, independently of body bytes.
+    pub record_count: usize,
+    /// Bounds all retained projected body and dependency requested layouts.
+    pub retained_bytes: usize,
+    /// Bounds additional sequential serialization and canonical output scratch.
+    pub transient_bytes: usize,
+}
+
+/// Computes requested projection storage from the same typed record walk.
+///
+/// No Value tree, canonical body, dependency vector or reference clone is made.
+/// Nonempty extensions are rejected by the same explicit edge visitor. The
+/// pinned canonical writer grows its byte Vec geometrically; twice each complete
+/// encoded extent (with its eight-byte minimum) bounds that requested capacity.
+/// Allocator rounding and process stacks require their enclosing admission.
+///
+/// # Errors
+/// Refuses unsupported records/extensions, overflow or source limits before
+/// creating any projected record bank.
+pub fn admitted_graph_records_storage(
+    graph: &AdmittedGraph,
+    limits: StateLimits,
+) -> Result<AdmittedGraphRecordsStorage, StateError> {
+    use crate::node_contract::NodeRuntime;
+    use std::mem::size_of;
+    let maximum = limits.maximum_total_content_bytes;
+    let mut retained = 0usize;
+    let mut transient = 0usize;
+    let mut records = 0usize;
+    let mut edges = 0usize;
+    let mut encoded = 0usize;
+    walk(graph, |record| {
+        records = charged(records, 1, limits.maximum_content_objects)?;
+        let bytes = record.encoded_size(limits.maximum_record_bytes)?;
+        if bytes > limits.maximum_content_bytes {
+            return Err(limit("admitted graph record bytes"));
+        }
+        encoded = charged(encoded, bytes, maximum)?;
+        retained = charged(retained, size_of::<AdmittedGraphRecord>(), maximum)?;
+        retained = charged(
+            retained,
+            bytes
+                .checked_mul(2)
+                .ok_or_else(|| limit("admitted canonical capacity"))?
+                .max(8),
+            maximum,
+        )?;
+        // canonical::content_ref constructs these four fixed-width strings.
+        let reference_strings =
+            "blake3-256".len() + "cnp.blob.v1".len() + 64 + "application/json".len();
+        retained = charged(retained, reference_strings, maximum)?;
+        record.references(&mut |reference| {
+            edges = charged(edges, 1, limits.maximum_dependency_edges)?;
+            retained = charged(retained, size_of::<ContentRef>(), maximum)?;
+            retained = charged(
+                retained,
+                NodeRuntime::capture_reference_storage(reference).map_err(schema)?,
+                maximum,
+            )?;
+            Ok(())
+        })?;
+        let serialization =
+            NodeRuntime::capture_serialization_storage(&record, maximum).map_err(schema)?;
+        let mut direct_count = 0usize;
+        record.references(&mut |_| {
+            direct_count = charged(direct_count, 1, limits.maximum_dependency_edges)?;
+            Ok(())
+        })?;
+        // The existing stable dependency sort may allocate merge scratch. A
+        // full slot bank bounds that sequential sort without assuming the
+        // implementation uses its smaller half-length temporary allocation.
+        let sorting = direct_count
+            .checked_mul(size_of::<ContentRef>())
+            .ok_or_else(|| limit("admitted dependency sorting storage"))?;
+        let serialization = charged(serialization, sorting, maximum)?;
+        // The retained output bank is counted above; this is the simultaneous
+        // Value/canonical-string/order-key traversal before that bank is final.
+        transient = transient.max(serialization);
+        Ok(())
+    })?;
+    charged(retained, transient, maximum)?;
+    Ok(AdmittedGraphRecordsStorage {
+        record_count: records,
+        retained_bytes: retained,
+        transient_bytes: transient,
+    })
 }
 
 /// Projects closed core records from the exact admitted graph without effects.
 ///
 /// It includes World, Owner, durable BindingCompatibility, Descriptor,
-/// OwnershipPolicy, CoordinatorPolicy, and admitted Port/Connection policies.
+/// OwnershipPolicy, CoordinatorPolicy, and admitted Operating/Port/Connection policies.
 /// Live authority, opaque referenced bytes and selected extension semantics are
 /// excluded. Nonempty extension maps refuse rather than becoming inferred edges.
 /// Every record, aggregate encoded bytes and direct-edge occurrence is charged
@@ -116,6 +221,7 @@ enum Record<'a> {
     Descriptor(&'a NodeDescriptor),
     Ownership(&'a OwnershipPolicy),
     Coordinator(&'a CoordinatorPolicy),
+    Operating(&'a ExecutionPolicy),
     Port(&'a PortPolicy),
     Connection(&'a ConnectionPolicy),
 }
@@ -129,6 +235,7 @@ impl Serialize for Record<'_> {
             Self::Descriptor(value) => value.serialize(serializer),
             Self::Ownership(value) => value.serialize(serializer),
             Self::Coordinator(value) => value.serialize(serializer),
+            Self::Operating(value) => value.serialize(serializer),
             Self::Port(value) => value.serialize(serializer),
             Self::Connection(value) => value.serialize(serializer),
         }
@@ -240,6 +347,25 @@ impl Record<'_> {
                     visit(&closure.proof_ref)?;
                 }
             }
+            Self::Operating(value) => match value {
+                ExecutionPolicy::Exact {
+                    execution_proof_ref,
+                    ceiling,
+                    boundary_settlement_ref,
+                    ..
+                } => {
+                    visit(execution_proof_ref)?;
+                    if let ExactCeiling::InputBlocked { proof_ref } = ceiling {
+                        visit(proof_ref)?;
+                    }
+                    if let Some(reference) = boundary_settlement_ref {
+                        visit(reference)?;
+                    }
+                }
+                ExecutionPolicy::Quantized {
+                    window_proof_ref, ..
+                } => visit(window_proof_ref)?,
+            },
             Self::Port(value) => {
                 visit(&value.arbitration_ref)?;
                 for lane in &value.lanes {
@@ -277,6 +403,11 @@ fn walk(
         let descriptor = graph.descriptor(id).ok_or_else(|| missing("descriptor"))?;
         visit(Record::Compatibility(&binding.compatibility))?;
         visit(Record::Descriptor(descriptor))?;
+        visit(Record::Operating(
+            graph
+                .operating_policy(id)
+                .ok_or_else(|| missing("operating policy"))?,
+        ))?;
         for port in &descriptor.ports {
             visit(Record::Port(
                 graph

@@ -7,6 +7,9 @@
 //! peak. Shared backing is conservatively counted on every retained view; no
 //! serialized identity or deduplication authority is inferred.
 
+pub mod aliases;
+pub mod records;
+
 use crate::ProviderError;
 use crate::bodies::RealizeRequest;
 use crate::reference_packet::{
@@ -14,10 +17,11 @@ use crate::reference_packet::{
     coordinator::{PacketConnectedHostSelection, PacketNative5CoordinatorInstallation},
 };
 use crucible_node_contract::*;
+use records::{MetadataCapacityRecord, MetadataRecordBank, MetadataRecordKind};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    mem::size_of,
+    mem::{align_of, align_of_val, size_of, size_of_val},
 };
 
 /// Reports observed backing capacities and independently charged metadata terms.
@@ -47,21 +51,95 @@ pub struct RetainedProtocolMetadataFacts {
     pub tree_entries: usize,
     /// Bounds one tree entry's actual key and value layout across this view.
     pub maximum_tree_key_value_bytes: usize,
+    /// Reports the largest actual key/value alignment, including zero-sized keys.
+    pub maximum_tree_entry_alignment: usize,
+    /// Reports the largest actual shared payload or slice-element alignment.
+    pub maximum_shared_value_alignment: usize,
     /// Counts visited fields and initialized rows for bounded traversal work.
     pub observed_nodes: usize,
+    /// Counts exact capacity/container records required by this typed traversal.
+    pub capacity_records: usize,
 }
 
-pub(crate) struct MetadataObserver {
+pub(crate) struct MetadataObserver<'a> {
     facts: RetainedProtocolMetadataFacts,
     json_depth: usize,
+    records: Option<&'a mut MetadataRecordBank>,
+    aliases: Option<&'a mut aliases::MetadataAliasBank>,
 }
 
-impl MetadataObserver {
+impl<'a> MetadataObserver<'a> {
     pub(crate) fn new() -> Self {
         Self {
             facts: RetainedProtocolMetadataFacts::default(),
             json_depth: 0,
+            records: None,
+            aliases: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recording(records: &'a mut MetadataRecordBank) -> Self {
+        records.clear();
+        Self {
+            facts: RetainedProtocolMetadataFacts::default(),
+            json_depth: 0,
+            records: Some(records),
+            aliases: None,
+        }
+    }
+
+    pub(crate) fn recording_with_aliases(
+        records: &'a mut MetadataRecordBank,
+        aliases: &'a mut aliases::MetadataAliasBank,
+    ) -> Self {
+        records.clear();
+        aliases.clear();
+        Self {
+            facts: RetainedProtocolMetadataFacts::default(),
+            json_depth: 0,
+            records: Some(records),
+            aliases: Some(aliases),
+        }
+    }
+
+    pub(crate) fn shared_original<T: ?Sized>(
+        &mut self,
+        kind: aliases::MetadataSharedKind,
+        backing: &T,
+    ) -> Result<(), ProviderError> {
+        if let Some(aliases) = &mut self.aliases {
+            aliases.retain(kind, backing)?;
+        }
+        let bytes = size_of_val(backing);
+        let alignment = align_of_val(backing);
+        self.record(MetadataRecordKind::Shared, bytes, 1, alignment)?;
+        self.facts.maximum_shared_value_alignment =
+            self.facts.maximum_shared_value_alignment.max(alignment);
+        add(&mut self.facts.shared_value_bytes, bytes)?;
+        add(&mut self.facts.shared_backing_views, 1)
+    }
+
+    fn record(
+        &mut self,
+        kind: MetadataRecordKind,
+        extent: usize,
+        element_bytes: usize,
+        alignment: usize,
+    ) -> Result<(), ProviderError> {
+        add(&mut self.facts.capacity_records, 1)?;
+        if self.facts.capacity_records > 131_072 {
+            return Err(overflow());
+        }
+        if let Some(records) = &mut self.records {
+            records.append(MetadataCapacityRecord {
+                kind,
+                extent,
+                element_bytes,
+                alignment,
+            })?;
+        }
+        Ok(())
     }
 
     pub(crate) fn finish(self) -> RetainedProtocolMetadataFacts {
@@ -81,27 +159,58 @@ impl MetadataObserver {
         value.observe_metadata(self)
     }
 
-    pub(crate) fn shared_value(&mut self, bytes: usize) -> Result<(), ProviderError> {
+    pub(crate) fn shared_value<T: ?Sized>(&mut self, backing: &T) -> Result<(), ProviderError> {
+        if self.aliases.is_some() {
+            return Err(ProviderError::Correlation(
+                "whole shared backing identity absent",
+            ));
+        }
+        let bytes = size_of_val(backing);
+        let alignment = align_of_val(backing);
+        self.record(MetadataRecordKind::Shared, bytes, 1, alignment)?;
+        self.facts.maximum_shared_value_alignment =
+            self.facts.maximum_shared_value_alignment.max(alignment);
         add(&mut self.facts.shared_value_bytes, bytes)?;
         add(&mut self.facts.shared_backing_views, 1)
     }
 
-    pub(crate) fn boxed_value(&mut self, bytes: usize) -> Result<(), ProviderError> {
+    pub(crate) fn boxed_value<T: ?Sized>(&mut self, backing: &T) -> Result<(), ProviderError> {
+        let bytes = size_of_val(backing);
+        self.record(MetadataRecordKind::Boxed, bytes, 1, align_of_val(backing))?;
         add(&mut self.facts.boxed_value_bytes, bytes)
     }
 
     fn string(&mut self, capacity: usize) -> Result<(), ProviderError> {
+        self.record(MetadataRecordKind::String, capacity, 1, 1)?;
         add(&mut self.facts.string_capacity_bytes, capacity)?;
         add(&mut self.facts.string_banks, 1)
     }
 
-    fn vector<T>(&mut self, capacity: usize) -> Result<(), ProviderError> {
+    pub(crate) fn vector<T>(&mut self, capacity: usize) -> Result<(), ProviderError> {
+        self.record(
+            MetadataRecordKind::Vector,
+            capacity,
+            size_of::<T>(),
+            align_of::<T>(),
+        )?;
         let bytes = capacity.checked_mul(size_of::<T>()).ok_or(overflow())?;
         add(&mut self.facts.vector_capacity_bytes, bytes)?;
         add(&mut self.facts.vector_banks, 1)
     }
 
-    fn tree<K, V>(&mut self, entries: usize) -> Result<(), ProviderError> {
+    pub(crate) fn tree<K, V>(&mut self, entries: usize) -> Result<(), ProviderError> {
+        self.record(
+            MetadataRecordKind::Tree,
+            entries,
+            size_of::<K>()
+                .checked_add(size_of::<V>())
+                .ok_or(overflow())?,
+            align_of::<K>().max(align_of::<V>()),
+        )?;
+        self.facts.maximum_tree_entry_alignment = self
+            .facts
+            .maximum_tree_entry_alignment
+            .max(align_of::<K>().max(align_of::<V>()));
         add(&mut self.facts.tree_containers, 1)?;
         add(&mut self.facts.tree_entries, entries)?;
         self.facts.maximum_tree_key_value_bytes = self.facts.maximum_tree_key_value_bytes.max(
@@ -228,6 +337,42 @@ macro_rules! fields {
         }
     } };
 }
+
+impl<T: ObserveMetadata> ObserveMetadata for crate::envelope::Nullable<T> {
+    fn observe_metadata(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
+        observer.observe(&self.0)
+    }
+}
+
+impl ObserveMetadata for serde_json::Map<String, Value> {
+    fn observe_metadata(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
+        observer.tree::<String, Value>(self.len())?;
+        for (key, value) in self {
+            observer.observe(key)?;
+            observer.observe(value)?;
+        }
+        Ok(())
+    }
+}
+
+inline_only!(crate::envelope::MessageKind, crate::envelope::Method);
+fields!(
+    crate::envelope::Envelope,
+    protocol,
+    message,
+    session_id,
+    incarnation_id,
+    node_id,
+    execution_owner_id,
+    capture_owner_id,
+    request_id,
+    operation_id,
+    sequence,
+    method,
+    body,
+    extensions
+);
+fields!(crate::client::ClientOriginal, request, identity, response);
 
 fields!(ArtifactIdentity, id, role, content, extensions);
 fields!(
@@ -464,6 +609,11 @@ impl ObserveMetadata for crate::reference_packet::service::PacketNative5CaptureP
                 native_before_protocol_bytes,
                 native_after_protocol_bytes,
                 host_protocol_bytes,
+            }
+            | Self::OwnedProtocol11 {
+                native_before_protocol_bytes,
+                native_after_protocol_bytes,
+                host_protocol_bytes,
             } => {
                 observer.observe(native_before_protocol_bytes)?;
                 observer.observe(native_after_protocol_bytes)?;
@@ -567,4 +717,79 @@ mod tests {
         assert_eq!(observer.facts.string_banks, 0);
         assert_eq!(observer.facts.vector_banks, 0);
     }
+
+    #[test]
+    fn empty_overaligned_backings_retain_actual_alignment_without_invented_size() {
+        #[repr(align(256))]
+        struct Aligned;
+
+        let mut records = MetadataRecordBank::reserve(4).unwrap();
+        let mut observer = MetadataObserver::recording(&mut records);
+        observer.tree::<Aligned, ()>(0).unwrap();
+        let empty: [Aligned; 0] = [];
+        observer.shared_value(empty.as_slice()).unwrap();
+        let facts = observer.finish();
+
+        assert_eq!(facts.maximum_tree_key_value_bytes, 0);
+        assert_eq!(facts.maximum_tree_entry_alignment, 256);
+        assert_eq!(facts.maximum_shared_value_alignment, 256);
+        assert_eq!(facts.shared_value_bytes, 0);
+        assert_eq!(facts.tree_containers, 1);
+        assert_eq!(facts.shared_backing_views, 1);
+        assert_eq!(records.rows()[0].alignment, 256);
+        assert_eq!(records.rows()[1].alignment, 256);
+    }
+
+    #[test]
+    fn capacity_roster_requires_explicit_power_of_two_alignment() {
+        use records::ValidatedMetadataRecords;
+        for bytes in [
+            br#"[["tree",0,0]]"#.as_slice(),
+            br#"[["tree",0,0,0]]"#.as_slice(),
+            br#"[["shared",0,1,3]]"#.as_slice(),
+            br#"[["string",0,1,8]]"#.as_slice(),
+        ] {
+            assert!(ValidatedMetadataRecords::validate(bytes, 4, 0).is_err());
+        }
+        let valid = br#"[["tree",0,0,256],["shared",0,1,256]]"#;
+        let rows = ValidatedMetadataRecords::validate(valid, 4, 0).unwrap();
+        assert_eq!(rows.rows().next().unwrap().unwrap().alignment, 256);
+    }
 }
+
+impl<T: ObserveMetadata, const N: usize> ObserveMetadata for [T; N] {
+    fn observe_metadata(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
+        for value in self {
+            observer.observe(value)?;
+        }
+        Ok(())
+    }
+}
+
+mod complete_source;
+pub use complete_source::{
+    RetainedCompleteSourceDefinition, RetainedCompleteSourceMetadata,
+    observe_retained_native_coordinator,
+};
+
+mod native_record;
+pub use native_record::RetainedPacketNativeRecord;
+
+/// Reports the compiled inline metadata observer state layout.
+///
+/// This is not a native-stack bound. Compiler call frames, recursive traversal
+/// stack, unwind machinery and allocator/tree/control-block storage remain
+/// separate terms; no allocation or authority follows from this number.
+pub const fn original_metadata_observer_layout_bytes() -> usize {
+    std::mem::size_of::<MetadataObserver<'static>>()
+}
+
+impl ObserveMetadata for crate::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection {
+    fn observe_metadata(&self, _: &mut MetadataObserver) -> Result<(), ProviderError> {
+        match self { Self::CanonicalSdkRestoreInputs12 => Ok(()) }
+    }
+}
+
+
+mod common_data;
+pub use common_data::RetainedCommonProtocolData;

@@ -170,3 +170,8 @@ mod ack_emitter;
 pub use ack_emitter::{
     PacketNative5AckEmitterDeclaration, complete_packet_ack_emitter_declaration,
 };
+
+mod complete_restore;
+pub use complete_restore::{
+    PacketNative5CompleteRestoreDeclaration, complete_packet_restore_declaration, complete_packet_restore_input_emitter_declaration,
+};

@@ -44,7 +44,7 @@ fn store(archive: &NativeArchive, bytes: &[u8], media: &str) -> ContentRef {
     reference
 }
 
-fn fixture(archive: &NativeArchive) -> NativeArchiveRecord {
+pub(in crate::node_state::native) fn fixture(archive: &NativeArchive) -> NativeArchiveRecord {
     let (graph, _) = crate::node_admission::test_fixture_isolated_execution(false);
     let cut = Position::new(0.into(), 0.into(), Phase::BoundaryControl);
     let runtime = store(
@@ -345,4 +345,101 @@ impl NativeArchive {
         let saved = fixture(self);
         self.load_complete_original(saved.artifact()).unwrap()
     }
+}
+
+#[test]
+fn complete_index_identity_covers_backend_keys_beyond_the_manifest() {
+    let directory = Directory::new();
+    let archive =
+        NativeArchive::open(directory.0.join("archive"), NativeArchiveLimits::default()).unwrap();
+    let saved = fixture(&archive);
+    let selected = archive.load_complete_original(saved.artifact()).unwrap();
+    let first = selected
+        .complete_original_index_identity(1024 * 1024, 0)
+        .unwrap();
+    let bytes =
+        canonical::canonical_json(&serde_json::to_value(selected.index.as_ref()).unwrap()).unwrap();
+    assert_eq!(
+        first,
+        canonical::content_ref(
+            &bytes,
+            "application/vnd.crucible.native-signed-index-body.v3+json",
+        )
+        .unwrap(),
+    );
+    assert_ne!(&first, selected.artifact());
+
+    // A signer can preserve the same manifest while changing a backend schema definition in
+    // its authenticated index. The manifest alone cannot bind a restore request.
+    let mut changed = selected.index.as_ref().clone();
+    changed.owners[0].key.schema.definition = changed.owners[0].state.clone();
+    fs::remove_file(
+        directory
+            .0
+            .join("archive")
+            .join(index_name(saved.artifact())),
+    )
+    .unwrap();
+    let changed = archive.persist(changed).unwrap();
+    let changed = archive.load_complete_original(changed.artifact()).unwrap();
+
+    assert_eq!(changed.artifact(), selected.artifact());
+    assert_ne!(
+        changed
+            .complete_original_index_identity(1024 * 1024, 0)
+            .unwrap(),
+        first,
+    );
+    // An old admitted allocation remains an immutable historical value even
+    // when a later signed file exists under the same manifest-derived name.
+    assert_eq!(
+        selected
+            .complete_original_index_identity(1024 * 1024, 0)
+            .unwrap(),
+        first
+    );
+}
+
+#[test]
+fn complete_index_identity_refuses_unadmitted_foreign_and_exhausted_calls() {
+    let directory = Directory::new();
+    let archive =
+        NativeArchive::open(directory.0.join("archive"), NativeArchiveLimits::default()).unwrap();
+    let saved = fixture(&archive);
+    assert!(
+        saved
+            .complete_original_index_identity(1024 * 1024, 0)
+            .is_err()
+    );
+    assert!(
+        archive
+            .load(saved.artifact())
+            .unwrap()
+            .complete_original_index_identity(1024 * 1024, 0)
+            .is_err(),
+    );
+    let selected = archive.load_complete_original(saved.artifact()).unwrap();
+    assert!(selected.complete_original_index_identity(1, 0).is_err());
+    assert!(
+        selected
+            .complete_original_index_identity(1024 * 1024, usize::MAX)
+            .is_err()
+    );
+    let expected = selected
+        .complete_original_index_identity(1024 * 1024, 0)
+        .unwrap();
+    let foreign = selected.clone();
+
+    assert!(
+        std::thread::spawn(move || foreign.complete_original_index_identity(1024 * 1024, 0))
+            .join()
+            .unwrap()
+            .is_err(),
+    );
+    assert_eq!(
+        selected
+            .complete_original_index_identity(1024 * 1024, 0)
+            .unwrap(),
+        expected
+    );
 }

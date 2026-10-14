@@ -61,14 +61,18 @@ pub(super) fn run() {
     let slots: [Rc<RefCell<Option<CnpSemanticProcessCustody>>>; 3] =
         std::array::from_fn(|_| Rc::new(RefCell::new(None)));
     let mut reservations = std::array::from_fn::<_, 3, _>(|member| {
-        Some(CnpSemanticLaunchReservation::reserve(
-            installed.directories[member].clone(),
-            installed.measurements[member].peer.content.clone(),
-            Box::new(RetainedSlot {
-                identity: U64::new(member as u64 + 1),
-                original: slots[member].clone(),
-            }),
-        ))
+        Some(
+            installed.sources[member]
+                .reserve_original_complete_bytes_launch(
+                    installed.directories[member].clone(),
+                    installed.measurements[member].peer.content.clone(),
+                    Box::new(RetainedSlot {
+                        identity: U64::new(member as u64 + 1),
+                        original: slots[member].clone(),
+                    }),
+                )
+                .unwrap(),
+        )
     });
     let mut preparations: [Option<CnpSemanticPreparation>; 3] = std::array::from_fn(|_| None);
     let mut guards: [Option<CnpSemanticLaunchGuard>; 3] = std::array::from_fn(|_| None);

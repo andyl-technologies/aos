@@ -32,7 +32,9 @@ pub use native5::{
 };
 
 pub use continuation::{
-    PacketDecodedControlSnapshot, PacketOriginalControlSnapshot, decode_packet_control_snapshot,
+    PacketControlSnapshotValidationLayouts, PacketDecodedControlSnapshot,
+    PacketOriginalCaptureTransitionData, PacketOriginalControlSnapshot,
+    decode_packet_control_snapshot, packet_control_snapshot_validation_layouts,
 };
 mod program;
 
@@ -127,6 +129,8 @@ impl ReplyPreparation<'_> {
 pub struct PacketControl {
     selection: PacketControlSelection,
     program: NativeProgram,
+    complete_restored_evidence: Option<super::service::ack_emitter::NativeRestoredControlEvidence>,
+    complete_restored_hold: Option<std::rc::Rc<restore_model::PacketCompleteRestorePhysicalHold>>,
     // These private lifetime facts authenticate the same capture owner. Fresh
     // constructors create new anchors; portable snapshot data cannot mint one.
     capture_creator: u32,
@@ -153,6 +157,13 @@ pub struct PacketControl {
     complete_capture_profile: Option<super::service::PacketNative5CaptureProfile>,
     complete_confirmation_selection: Option<super::service::PacketNative5ConfirmationSelection>,
     complete_ack_emitter_selection: Option<super::service::PacketNative5AckEmitterSelection>,
+    complete_restore_selection:
+        Option<super::service::complete_restore::PacketNative5CompleteRestoreSelection>,
+    complete_protocol_metadata_limits: Option<super::service::PacketNative5ProtocolMetadataLimits>,
+    complete_protocol_metadata_birth_facts:
+        Option<super::service::PacketNative5ProtocolMetadataBirthFacts>,
+    complete_restore_input_emitter_selection:
+        Option<super::service::complete_restore::PacketNative5RestoreInputEmitterSelection>,
 }
 
 impl PacketControl {
@@ -285,6 +296,12 @@ impl PacketControl {
             complete_capture_profile: None,
             complete_confirmation_selection: None,
             complete_ack_emitter_selection: None,
+            complete_restore_selection: None,
+            complete_restored_hold: None,
+            complete_restored_evidence: None,
+            complete_protocol_metadata_limits: None,
+            complete_protocol_metadata_birth_facts: None,
+            complete_restore_input_emitter_selection: None,
         })
     }
 
@@ -920,7 +937,7 @@ impl PacketControl {
                     || activate.prepared_token != self.selection.prepared_token
                     || activate.world_binding_hash != self.selection.world
                     || activate.gate_id != self.selection.gate
-                    || !self.program.inventory()?.gate_closed
+                    || !self.original_physical_gate_held()?
                 {
                     return Err(ProviderError::Correlation(
                         "packet original nonexecuting activation",
@@ -1059,7 +1076,7 @@ impl PacketControl {
         )?;
         preparation.prepare(&response, &mut self.fenced)?;
         self.native_effect_attempted = true;
-        self.program.open_gate()?;
+        self.release_original_physical_gate()?;
         self.active = Some(activate);
         Ok(response)
     }
@@ -1136,6 +1153,9 @@ impl PacketControl {
                             ));
                         }
                         Some((record, reference))
+                    }
+                    NativeProgram::RestorationInProgress => {
+                        return Err(ProviderError::Conflict("packet restored model incomplete"));
                     }
                 };
             super::common::PacketNative5CommonGrant::authenticate_live(
@@ -1593,3 +1613,8 @@ impl std::io::Write for Extent {
         Ok(())
     }
 }
+
+mod restore_model;
+pub(crate) use restore_model::{PacketCompleteRestorePhysicalHold, PacketPreparedCompleteModel};
+mod restore_fresh;
+pub(crate) use restore_fresh::PacketFreshRestoreControlAllocation;

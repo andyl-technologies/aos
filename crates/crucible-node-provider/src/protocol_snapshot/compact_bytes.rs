@@ -132,6 +132,59 @@ impl<'a> ValidatedCompactBytes<'a> {
         self.decoded_length
     }
 
+    /// Copies a validated decoded range into caller-owned fixed storage.
+    ///
+    /// Fixed chunk geometry permits direct quartet lookup for each requested
+    /// byte, without rescanning or allocating the full decoded payload. Bounds
+    /// are checked before writes; the original encoded input remains borrowed.
+    ///
+    /// # Errors
+    /// Refuses an out-of-range extent or inconsistent validated framing.
+    pub fn copy_range(&self, offset: usize, destination: &mut [u8]) -> Result<(), ProviderError> {
+        let end = offset
+            .checked_add(destination.len())
+            .ok_or(ProviderError::Frame("compact borrowed range overflow"))?;
+        if end > self.decoded_length {
+            return Err(ProviderError::Frame("compact borrowed range extent"));
+        }
+        let mut cursor = Cursor {
+            bytes: self.input,
+            position: PREFIX.len(),
+        };
+        cursor.length()?;
+        cursor.take(b',')?;
+        cursor.take(b'[')?;
+        let first_chunk = cursor.position;
+        for (relative, byte) in destination.iter_mut().enumerate() {
+            let index = offset + relative;
+            let chunk = index / RAW_CHUNK_BYTES;
+            let within = index % RAW_CHUNK_BYTES;
+            let position = chunk
+                .checked_mul(ENCODED_CHUNK_BYTES + 3)
+                .and_then(|shift| first_chunk.checked_add(shift))
+                .and_then(|position| position.checked_add(1 + (within / 3) * 4))
+                .ok_or(ProviderError::Frame("compact borrowed range overflow"))?;
+            let quartet_end = position
+                .checked_add(4)
+                .ok_or(ProviderError::Frame("compact borrowed quartet overflow"))?;
+            let quartet = self
+                .input
+                .get(position..quartet_end)
+                .ok_or(ProviderError::Frame("compact borrowed quartet extent"))?;
+            let mut decoded = [0; 3];
+            let mut used = 0;
+            visit_chunk(quartet, |bytes| {
+                decoded[..bytes.len()].copy_from_slice(bytes);
+                used = bytes.len();
+            })?;
+            if within % 3 >= used {
+                return Err(ProviderError::Frame("compact borrowed padding extent"));
+            }
+            *byte = decoded[within % 3];
+        }
+        Ok(())
+    }
+
     /// Fills an empty preowned vector while preserving its actual capacity.
     ///
     /// No reservation, shrinking, intermediate owning buffer or capacity reset
@@ -705,5 +758,45 @@ mod tests {
         assert_eq!(destination, bytes);
         assert_eq!(destination.capacity(), original_capacity);
         assert_eq!(destination.as_ptr(), original_pointer);
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "validated borrowed ranges retain exact original bytes"
+)]
+mod borrowed_range_tests {
+    use super::*;
+
+    #[test]
+    fn exact_ranges_cross_full_chunks_and_final_padding() {
+        for length in [0usize, 1, 2, 3, 3071, 3072, 3073, 6145] {
+            let original = (0..length)
+                .map(|index| (index % 251) as u8)
+                .collect::<Vec<_>>();
+            let encoded = serde_json::to_vec(&BorrowedCompactBytes::new(&original)).unwrap();
+            let plan = ValidatedCompactBytes::validate(&encoded, encoded.len(), length).unwrap();
+            for offset in [0, length / 2, length.saturating_sub(5), length] {
+                let count = (length - offset).min(9);
+                let mut destination = [0u8; 9];
+                plan.copy_range(offset, &mut destination[..count]).unwrap();
+                assert_eq!(&destination[..count], &original[offset..offset + count]);
+            }
+            if length > 3072 {
+                let mut across = [0u8; 5];
+                plan.copy_range(3070, &mut across[..(length - 3070).min(5)])
+                    .unwrap();
+                assert_eq!(
+                    &across[..(length - 3070).min(5)],
+                    &original[3070..(3075.min(length))]
+                );
+            }
+            let mut untouched = [71u8; 2];
+            assert!(plan.copy_range(length, &mut untouched).is_err());
+            assert_eq!(untouched, [71; 2]);
+            assert!(plan.copy_range(usize::MAX, &mut untouched).is_err());
+            assert_eq!(untouched, [71; 2]);
+        }
     }
 }

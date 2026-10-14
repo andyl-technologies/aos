@@ -14,6 +14,34 @@ pub(crate) struct RegistrationRead {
 }
 
 impl RegistrationRead {
+    pub(crate) fn observe_retained_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.ensure_current()?;
+        self.observe_retained_metadata_data(observer)
+    }
+
+    pub(crate) fn observe_retained_metadata_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            gate,
+            current,
+            original,
+        } = self;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::RegistrarGate,
+            gate.as_ref(),
+        )?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::RegistrarEpoch,
+            current.as_ref(),
+        )?;
+        observer.observe(original)
+    }
+
     pub(crate) fn ensure_current(&self) -> Result<(), ProviderError> {
         // A contended gate is uncertainty, rather than permission to wait past
         // the caller's final native-dispatch boundary.

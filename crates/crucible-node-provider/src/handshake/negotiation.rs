@@ -178,6 +178,23 @@ pub struct ConnectionAuthority {
 }
 
 impl ConnectionAuthority {
+    pub(crate) fn historical_owned_view(&self) -> impl serde::Serialize + '_ {
+        // Epoch and registration backing stay in the opaque original owner.
+        // This tuple contains historical data, never an authority constructor.
+        (
+            "source-private.connection-authority/11",
+            &self.connection,
+            &self.session,
+            &self.incarnation,
+            crucible_node_contract::U64::new(self.epoch),
+            self.limits,
+            &self.features,
+            &self.envelope_extensions,
+            &self.extensions,
+            "original-registration-backing-retained-by-opaque-source",
+        )
+    }
+
     pub(crate) fn observe_retained_metadata(
         &self,
         observer: &mut crate::retained_metadata::MetadataObserver,
@@ -194,8 +211,14 @@ impl ConnectionAuthority {
             envelope_extensions,
             extensions,
         } = self;
-        observer.shared_value(std::mem::size_of_val(shared_epoch.as_ref()))?;
-        observer.shared_value(std::mem::size_of_val(registration_gate.as_ref()))?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::RegistrarEpoch,
+            shared_epoch.as_ref(),
+        )?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::RegistrarGate,
+            registration_gate.as_ref(),
+        )?;
         observer.observe(epoch)?;
         observer.observe(connection)?;
         observer.observe(session)?;
@@ -204,7 +227,10 @@ impl ConnectionAuthority {
         observer.observe(features)?;
         observer.observe(envelope_extensions)?;
         if let Some(extensions) = extensions {
-            observer.shared_value(std::mem::size_of_val(extensions.as_ref()))?;
+            observer.shared_original(
+                crate::retained_metadata::aliases::MetadataSharedKind::SelectedExtensions,
+                extensions.as_ref(),
+            )?;
             for extension in extensions.iter() {
                 observer.observe(extension)?;
             }

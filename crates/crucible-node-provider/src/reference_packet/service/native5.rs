@@ -128,6 +128,17 @@ pub struct PacketNative5SourceLaunch {
     /// Selects an independent finite native codec encoding ceiling, without authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_codec_metadata_extent: Option<crate::client::CanonicalAckCodecMetadataExtent>,
+    /// Selects independent native before/after metadata banks before private birth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_metadata_limits: Option<super::PacketNative5ProtocolMetadataLimits>,
+    /// Selects the separately registered source-signed complete restoration path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete_restore_selection:
+        Option<super::complete_restore::PacketNative5CompleteRestoreSelection>,
+    /// Selects the separately source-authenticated canonical restore-input writer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_input_emitter_selection:
+        Option<super::complete_restore::PacketNative5RestoreInputEmitterSelection>,
     /// Names the privately owned native effect receiver.
     pub effects: PathBuf,
 }
@@ -153,6 +164,18 @@ impl PacketNative5SourceLaunch {
         crate::connection::serialized_credit(self, 1024 * 1024)?;
         self.storage.validate(&self.limits)?;
         self.capture_profile.validate()?;
+        let owned = matches!(
+            self.capture_profile,
+            PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+        );
+        if owned != self.protocol_metadata_limits.is_some() {
+            return Err(ProviderError::Correlation(
+                "native protocol metadata profile differs",
+            ));
+        }
+        if let Some(metadata) = self.protocol_metadata_limits {
+            metadata.validate_data()?;
+        }
         self.controller_executable.validate()?;
         self.selection.provider.validate()?;
         self.selection.realization.validate()?;
@@ -213,7 +236,49 @@ impl PacketNative5SourceLaunch {
             .realize
             .configuration
             .verify(&canonical::canonical_json(&configuration)?)?;
-        if let Some(emitter) = self.ack_emitter_selection {
+        if self.restore_input_emitter_selection.is_some() && self.complete_restore_selection != Some(super::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12) {
+            return Err(ProviderError::Correlation("native restore input selection lacks transfer12"));
+        }
+        if let Some(restoration) = self.complete_restore_selection {
+            super::super::Native5Policy::from_original_launch_with_complete_restore(
+                self.selection.clone(),
+                self.initial_coordinator.clone(),
+                self.capture_profile.clone(),
+                self.confirmation_selection
+                    .ok_or(ProviderError::Correlation(
+                        "restoring native confirmation absent",
+                    ))?,
+                self.ack_emitter_selection
+                    .ok_or(ProviderError::Correlation("restoring native ACK absent"))?,
+                self.native_codec_metadata_extent
+                    .ok_or(ProviderError::Correlation(
+                        "restoring native codec extent absent",
+                    ))?,
+                self.protocol_metadata_limits
+                    .ok_or(ProviderError::Correlation(
+                        "restoring native metadata absent",
+                    ))?,
+                restoration,
+            )?
+            .with_restore_input_emitter_selection(self.restore_input_emitter_selection)?;
+        } else if let Some(metadata) = self.protocol_metadata_limits {
+            super::super::Native5Policy::from_original_launch_with_protocol_metadata(
+                self.selection.clone(),
+                self.initial_coordinator.clone(),
+                self.capture_profile.clone(),
+                self.confirmation_selection
+                    .ok_or(ProviderError::Correlation(
+                        "owned native confirmation absent",
+                    ))?,
+                self.ack_emitter_selection
+                    .ok_or(ProviderError::Correlation("owned native ACK absent"))?,
+                self.native_codec_metadata_extent
+                    .ok_or(ProviderError::Correlation(
+                        "owned native codec extent absent",
+                    ))?,
+                metadata,
+            )?;
+        } else if let Some(emitter) = self.ack_emitter_selection {
             let confirmation = self
                 .confirmation_selection
                 .ok_or(ProviderError::Correlation(

@@ -21,6 +21,7 @@ use super::{CnpSemanticLaunchGuard, CnpSemanticProcessCustody, CnpSemanticProces
 #[must_use = "retain the original reservation until supervised reclamation"]
 pub struct CnpSemanticLaunchReservation {
     guard: CnpSemanticLaunchGuard,
+    complete_bytes: bool,
     attempted: bool,
     authenticated: bool,
 }
@@ -46,6 +47,33 @@ impl CnpSemanticLaunchReservation {
         executable: ContentRef,
         slot: Box<dyn CnpSemanticProcessSlot>,
     ) -> Self {
+        Self::reserve_selected(directory, executable, slot, false)
+    }
+
+    /// Reserves complete-only executable custody without creating a lease worker.
+    ///
+    /// The immutable choice precedes the slot identity callback and all Child
+    /// effects. Every executable check still reads and hashes the complete
+    /// retained descriptor, with positional EOF/kernel/PID/namespace fences.
+    /// This reservation grants neither source admission nor execution permission.
+    /// It never converts an already acquired lease to a byte-validation path.
+    ///
+    /// # Panics
+    /// Propagates a trusted slot identity callback panic before any Child exists.
+    pub fn reserve_complete_bytes(
+        directory: PathBuf,
+        executable: ContentRef,
+        slot: Box<dyn CnpSemanticProcessSlot>,
+    ) -> Self {
+        Self::reserve_selected(directory, executable, slot, true)
+    }
+
+    fn reserve_selected(
+        directory: PathBuf,
+        executable: ContentRef,
+        slot: Box<dyn CnpSemanticProcessSlot>,
+        complete_bytes: bool,
+    ) -> Self {
         let creator_process = std::process::id();
         let supervision_id = slot.identity();
         let read_owner = Rc::new(current::ReadOwner::new(supervision_id));
@@ -55,6 +83,7 @@ impl CnpSemanticLaunchReservation {
             provider_pid: 0,
             directory,
             controller: None,
+            protocol_supervisor: std::cell::RefCell::new(None),
             handshake: None,
             extension_handshake: None,
             expected_executable: executable,
@@ -84,6 +113,7 @@ impl CnpSemanticLaunchReservation {
                 slot: Some(slot),
                 supervision_id,
             },
+            complete_bytes,
             attempted: false,
             authenticated: false,
         }
@@ -124,12 +154,20 @@ impl CnpSemanticLaunchReservation {
 
         let identity = current::KernelIdentity::capture(custody.provider_pid)?;
         custody.kernel_identity = Some(identity);
-        custody.executable_guard =
-            Some(Rc::new(super::executable_guard::OriginalExecutable::open(
+        let executable = if self.complete_bytes {
+            super::executable_guard::OriginalExecutable::open_complete_bytes(
                 custody.provider_pid,
                 &custody.expected_executable,
                 &identity,
-            )?));
+            )?
+        } else {
+            super::executable_guard::OriginalExecutable::open(
+                custody.provider_pid,
+                &custody.expected_executable,
+                &identity,
+            )?
+        };
+        custody.executable_guard = Some(Rc::new(executable));
         custody.authenticate_process()?;
         self.authenticated = true;
         Ok(())

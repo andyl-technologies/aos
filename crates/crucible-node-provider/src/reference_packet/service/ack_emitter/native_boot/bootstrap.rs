@@ -5,6 +5,11 @@ use crate::transport::original_frames::OriginalFrameReservation;
 use crate::{ProviderError, client::OriginalNative5BirthCut, transport::FrameReader};
 use std::{cell::RefCell, os::fd::AsFd, path::Path, rc::Rc, time::Duration};
 
+#[path = "bootstrap_owned11.rs"]
+mod owned11;
+
+pub(crate) use owned11::OriginalNativeBootstrapOwned11;
+
 struct Bootstrap<S> {
     reader: FrameReader<super::owned_read::OriginalPrivateBootstrapStream<S>>,
     literals: Rc<RefCell<OriginalFrameReservation>>,
@@ -137,4 +142,8 @@ impl<S: AsFd> Bootstrap<S> {
             Rc::clone(&self.literals),
         )
     }
+}
+
+pub(crate) const fn original_native_private_bootstrap_layout() -> usize {
+    std::mem::size_of::<Bootstrap<std::io::Stdin>>()
 }

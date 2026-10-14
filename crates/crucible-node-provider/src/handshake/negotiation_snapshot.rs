@@ -96,3 +96,91 @@ impl Serialize for OriginalNegotiationView<'_> {
         state.end()
     }
 }
+
+impl OriginalNegotiationView<'_> {
+    pub(crate) fn observe_owned11_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.original.verify_current_authority(self.authority)?;
+        self.original.observe_retained_metadata_data(observer)
+    }
+}
+
+impl Handshake {
+    /// Reports actual retained negotiation allocations as historical data.
+    ///
+    /// The owning process capsule must check its original creator/thread before
+    /// this borrow. A plain Handshake has no process-origin field. This method
+    /// invokes no callback, registration, serializer or native I/O and grants no
+    /// current authority; inline issuer fields remain the caller's layout term.
+    ///
+    /// # Errors
+    /// Reports checked layout overflow or finite metadata traversal exhaustion.
+    pub fn retained_metadata_facts_data(
+        &self,
+    ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        self.observe_retained_metadata_data(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    pub(in crate::handshake) fn observe_retained_metadata_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Handshake {
+            installation,
+            policy,
+            shared_epoch,
+            registration_gate,
+            epoch,
+            current_connection,
+            selected_features,
+            resume_token,
+            contained,
+            hello_request_ids,
+        } = self;
+        let TrustedInstallation {
+            session_id,
+            incarnation_id,
+            measured_implementation,
+            launch_receipt,
+            admission_token: _,
+        } = installation;
+        observer.observe(session_id)?;
+        observer.observe(incarnation_id)?;
+        observer.observe(measured_implementation)?;
+        observer.observe(launch_receipt)?;
+        let NegotiationPolicy {
+            supported_features,
+            required_features,
+            provider_limits,
+            required_schemas,
+            required_guarantees,
+            envelope_extension_features,
+        } = policy;
+        observer.observe(supported_features)?;
+        observer.observe(required_features)?;
+        observer.observe(provider_limits)?;
+        observer.observe(required_schemas)?;
+        observer.observe(required_guarantees)?;
+        observer.observe(envelope_extension_features)?;
+        observer.observe(epoch)?;
+        observer.observe(current_connection)?;
+        observer.observe(selected_features)?;
+        // Both private secrets are fixed inline arrays, never Vec allocations.
+        observer.observe(&resume_token.is_some())?;
+        observer.observe(contained)?;
+        observer.observe(hello_request_ids)?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::RegistrarEpoch,
+            shared_epoch.as_ref(),
+        )?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::RegistrarGate,
+            registration_gate.as_ref(),
+        )?;
+        Ok(())
+    }
+}

@@ -38,10 +38,16 @@ pub(super) fn drain(
         // A complete source trace is bounded before parsing. The extra byte
         // detects oversized/truncated datagrams without accepting a prefix.
         let mut buffer = [0u8; 65_537];
-        let length = match oracle.receivers[member].recv(&mut buffer) {
-            Ok(length) => length,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-            Err(error) => return Err(QualificationError::Evidence(error.to_string())),
+        oracle
+            .receiver_reader
+            .authenticate_original_group(&oracle.receiver_group)
+            .map_err(native_failure)?;
+        let Some(length) = oracle
+            .receiver_reader
+            .receive(member, &mut buffer)
+            .map_err(native_failure)?
+        else {
+            break;
         };
         if length > 65_536 || observed.effects[member].len() == MAXIMUM_EFFECTS {
             return Err(refused());

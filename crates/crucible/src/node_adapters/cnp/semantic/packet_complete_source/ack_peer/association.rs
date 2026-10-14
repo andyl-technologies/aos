@@ -12,8 +12,9 @@ use super::*;
 use crate::node_adapters::cnp::CnpSemanticSourceRead;
 use crucible_node_provider::{
     client::{
-        CnpController, OriginalCanonicalBlobAckEmitter, OriginalHelloJournal,
-        PreparedOriginalCanonicalAckAdmit,
+        CnpController, OriginalCanonicalBlobAckEmitter, OriginalCanonicalRestoreInputEmitter,
+        OriginalHelloJournal, PreparedOriginalCanonicalAckAdmit,
+        PreparedOriginalCompleteRestoreTransfer,
     },
     envelope::{MessageKind, Method},
     reference_packet::service::ack_emitter::{
@@ -25,11 +26,20 @@ use crucible_node_provider::{
 // These independent banks are reserved before Rc/Child. They bound encoded
 // source-owned copies only; parsed trees, canonical string scratch and SDK/native
 // originals remain separately charged at the complete allocation boundary.
+#[path = "association/complete_restore.rs"]
+mod complete_restore;
+#[path = "association/restore_transfer_banks.rs"]
+mod restore_transfer_banks;
+pub use complete_restore::PacketCompleteRestorePreparation;
+
 const CONTEXT_BANK_LIMITS: [usize; 4] = [512 * 1024, 4 * 1024, 416 * 1024, 16 * 1024];
 
 pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct OriginalAckPeerAssociation
 {
+    restore: Option<complete_restore::OriginalCompleteRestoreAttempt>,
+    restore_transfer_banks: Option<restore_transfer_banks::OriginalRestoreTransferBanks>,
     emitter: Option<OriginalCanonicalBlobAckEmitter>,
+    restore_input_emitter: Option<OriginalCanonicalRestoreInputEmitter>,
     native: Option<CnpSemanticSourceRead>,
     hello: Option<OriginalHelloJournal>,
     banks: [Vec<u8>; 5],
@@ -42,6 +52,8 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Origi
     signing_attempted: bool,
     sealed: bool,
     publication_attempted: bool,
+    // Set only after the actual completed SDK pair and same world binding pass.
+    completed_mechanism: std::cell::Cell<bool>,
 }
 
 impl OriginalAckPeerAssociation {
@@ -62,7 +74,10 @@ impl OriginalAckPeerAssociation {
             return Err(refused("ACK association bank slot already occupied"));
         }
         *completed = Some(Self {
+            restore: None,
+            restore_transfer_banks: None,
             emitter: None,
+            restore_input_emitter: None,
             native: None,
             hello: None,
             banks: std::array::from_fn(|_| Vec::new()),
@@ -75,6 +90,7 @@ impl OriginalAckPeerAssociation {
             signing_attempted: false,
             sealed: false,
             publication_attempted: false,
+            completed_mechanism: std::cell::Cell::new(false),
         });
         let original = completed
             .as_mut()
@@ -91,16 +107,51 @@ impl OriginalAckPeerAssociation {
     }
 
     pub(super) fn allocated_bank_bytes(&self) -> Result<usize, OperationFailure> {
-        self.banks.iter().try_fold(0usize, |sum, bank| {
+        let existing = self.banks.iter().try_fold(0usize, |sum, bank| {
             sum.checked_add(bank.capacity())
                 .ok_or_else(|| refused("ACK association capacity overflow"))
-        })
+        })?;
+        let restore = self
+            .restore
+            .as_ref()
+            .map_or(Ok(0), |restore| restore.allocated_bytes())?;
+        let transfer = self
+            .restore_transfer_banks
+            .as_ref()
+            .map_or(Ok(0), |banks| banks.allocated_bytes())?;
+        existing
+            .checked_add(restore)
+            .and_then(|bytes| bytes.checked_add(transfer))
+            .ok_or_else(|| refused("complete restore association capacity overflow"))
     }
 
     fn emitter(&self) -> Result<&OriginalCanonicalBlobAckEmitter, OperationFailure> {
         self.emitter
             .as_ref()
             .ok_or_else(|| refused("ACK original emitter absent"))
+    }
+
+    fn authenticate_restore_input_emitter(
+        &self,
+        controller: &CnpController,
+        expected: Option<crucible_node_provider::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection>,
+    ) -> Result<(), OperationFailure> {
+        if controller
+            .original_native5_restore_input_emitter_selection()
+            .map_err(unknown)?
+            != expected
+        {
+            return Err(refused(
+                "actual restore input emitter selection differs from Source",
+            ));
+        }
+        match (expected, self.restore_input_emitter.as_ref()) {
+            (Some(_), Some(emitter)) => emitter.authenticate_original(controller).map_err(unknown),
+            (None, None) => Ok(()),
+            _ => Err(refused(
+                "original restore input emitter custody differs from selection",
+            )),
+        }
     }
 
     fn native(&self) -> Result<&CnpSemanticSourceRead, OperationFailure> {
@@ -148,6 +199,12 @@ impl PacketCompleteSemanticSource {
         hello: &mut Option<OriginalHelloJournal>,
     ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
+        if matches!(
+            self.selected_capture_profile()?,
+            PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+        ) {
+            self.retain_original_extension_registry_metadata_owner(scope)?;
+        }
         let mut slot = self
             .ack_peer_association
             .try_borrow_mut()
@@ -178,6 +235,10 @@ impl PacketCompleteSemanticSource {
                 .emitter()?
                 .authenticate_original(scope.controller)
                 .map_err(unknown)?;
+            original.authenticate_restore_input_emitter(
+                scope.controller,
+                self.selected_restore_input_emitter_selection()?,
+            )?;
             scope
                 .controller
                 .original_canonical_ack_hello_frame_digests(original.hello()?)
@@ -232,6 +293,24 @@ impl PacketCompleteSemanticSource {
                     .retain_original_canonical_blob_ack_emitter()
                     .map_err(unknown)?,
             );
+            if scope
+                .controller
+                .original_native5_restore_input_emitter_selection()
+                .map_err(unknown)?
+                != self.selected_restore_input_emitter_selection()?
+            {
+                return Err(refused("post-Hello restore input emitter policy differs"));
+            }
+            if self.selected_restore_input_emitter_selection()?.is_some() {
+                // The owning slot precedes every later normalization and guard.
+                // Issuance proves a current SDK writer, never a native upload right.
+                original.restore_input_emitter = Some(
+                    scope
+                        .controller
+                        .retain_original_canonical_restore_input_emitter()
+                        .map_err(unknown)?,
+                );
+            }
             original.native = Some(scope.native.original_source_read().map_err(unknown)?);
             original.hello = hello.take();
 
@@ -287,6 +366,10 @@ impl PacketCompleteSemanticSource {
                 .emitter()?
                 .authenticate_original(scope.controller)
                 .map_err(unknown)?;
+            original.authenticate_restore_input_emitter(
+                scope.controller,
+                self.selected_restore_input_emitter_selection()?,
+            )?;
             original.native()?.ensure_current().map_err(unknown)?;
             birth.authenticate_original()?;
             self.authenticate_witness_scope(scope)?;
@@ -330,6 +413,10 @@ impl PacketCompleteSemanticSource {
             .as_ref()
             .ok_or_else(|| refused("ACK private birth absent"))?
             .authenticate_original()?;
+        original.authenticate_restore_input_emitter(
+            controller,
+            self.selected_restore_input_emitter_selection()?,
+        )?;
         let installation = self.installation();
         let request = AdmitRequest {
             bindings: vec![installation.binding.clone()],
@@ -527,8 +614,15 @@ impl PacketCompleteSemanticSource {
             .emitter()?
             .authenticate_original(scope.controller)
             .map_err(unknown)?;
+        original.authenticate_restore_input_emitter(
+            scope.controller,
+            self.selected_restore_input_emitter_selection()?,
+        )?;
         original.native()?.ensure_current().map_err(unknown)?;
-        self.authenticate_witness_scope(scope)
+        self.authenticate_witness_scope(scope)?;
+        original.native()?.ensure_current().map_err(unknown)?;
+        original.completed_mechanism.set(true);
+        Ok(())
     }
 
     /// Publishes the same sealed original Admit without renewing its cut or sequence.
@@ -743,3 +837,184 @@ fn registration_value(
 fn digest(bytes: &[u8]) -> Bytes {
     Bytes::new(blake3::hash(bytes).as_bytes().to_vec())
 }
+
+impl PacketCompleteSemanticSource {
+    /// Authenticates this original source's installed complete capture mechanism.
+    ///
+    /// This checks availability of the actual measured code/codec and completed
+    /// native ACK association. It does not authenticate a graph, scheduler,
+    /// stopped frontier, all-owner runtime, preflight geometry or Capture ticket.
+    /// The factory must conjoin those original owners before any effects.
+    ///
+    /// # Errors
+    /// Refuses another creator, missing owning profile/physical banks, changed
+    /// source/registration/private birth, unfinished original protocol Admit,
+    /// revoked native custody or a missing exact installed complete definition.
+    pub fn authenticate_original_complete_capture_support(&self) -> Result<(), OperationFailure> {
+        self.authenticate_original_complete_capture_mechanism(true)
+    }
+
+    /// Authenticates original post-Hello mechanism preparation before assigned Admit.
+    ///
+    /// The actual native read, preconstruction, opaque emitter/Hello and private
+    /// birth must exist already. This predicate permits only mechanism/profile
+    /// preparation; active support additionally requires the actual completed
+    /// assigned SDK request/proof/reply and original world-binding checks.
+    ///
+    /// # Errors
+    /// Refuses a foreign source, missing original post-Hello capabilities,
+    /// incomplete physical banks or changed current native/preconstruction.
+    pub fn authenticate_original_complete_capture_preparation_support(
+        &self,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_original_complete_capture_mechanism(false)
+    }
+
+    fn authenticate_original_complete_capture_mechanism(
+        &self,
+        require_completed: bool,
+    ) -> Result<(), OperationFailure> {
+        self.ensure_origin()?;
+        if !matches!(self.selected_capture_profile()?,PacketNative5CaptureProfile::OwnedProtocol11 { .. })
+            || self.selected_confirmation_selection()? != Some(crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection::AfterProtocolPoll5)
+            || self.selected_ack_emitter_selection()? != Some(crucible_node_provider::reference_packet::service::PacketNative5AckEmitterSelection::CanonicalSdkBlob5)
+            || self.selected_complete_restore_selection()?.is_none()
+            || self.selected_protocol_metadata_limits()?.is_none()
+            || self.selected_native_ack_codec_metadata_extent()? != Some(crucible_node_provider::client::CanonicalAckCodecMetadataExtent::CanonicalAck512KiB)
+        {
+            return Err(refused("complete owning mechanism selection absent"));
+        }
+        let schema =
+            crucible_node_provider::reference_packet::service::native_owned11_snapshot_schema()
+                .map_err(unknown)?;
+        let installation = self.installation();
+        if !installation
+            .provider
+            .implementation
+            .formats
+            .contains(&schema)
+            || !installation
+                .binding
+                .compatibility
+                .implementation
+                .formats
+                .contains(&schema)
+        {
+            return Err(refused("complete owning implementation definition differs"));
+        }
+        self.authenticate_current_native()?;
+        self.authenticate_original_preconstruction()?;
+        let original = self
+            .ack_peer_association
+            .try_borrow()
+            .map_err(|_| refused("complete original ACK association busy"))?;
+        let original = original
+            .as_ref()
+            .ok_or_else(|| refused("complete original ACK association absent"))?;
+        original.authenticate_current()?;
+        if self.selected_restore_input_emitter_selection()?.is_some()
+            != original.restore_input_emitter.is_some()
+        {
+            return Err(refused(
+                "complete original restore input writer association absent",
+            ));
+        }
+        if original.emitter.is_none()
+            || original.hello.is_none()
+            || original.normalized[..4].iter().any(Option::is_none)
+            || require_completed
+                && (!original.completed_mechanism.get()
+                    || !original.sealed
+                    || !original.publication_attempted
+                    || original.context.is_none()
+                    || original.proof.is_none())
+        {
+            return Err(refused(
+                "complete original SDK/native mechanism phase is incomplete",
+            ));
+        }
+        self.authenticate_original_preconstruction_native(original.native()?)?;
+        let birth = self
+            .ack_peer_birth
+            .try_borrow()
+            .map_err(|_| refused("complete original private birth busy"))?;
+        birth
+            .as_ref()
+            .ok_or_else(|| refused("complete original private birth absent"))?
+            .authenticate_original()?;
+        self.original_extension_registry_storage_data(512 * 1024 * 1024)?;
+        self.authenticate_original_effect_receiver_source_binding()?;
+        self.original_capture_bank_facts()?;
+        original.native()?.ensure_current().map_err(unknown)?;
+        self.authenticate_current_native()
+    }
+}
+
+impl PacketCompleteSemanticSource {
+    /// Reauthenticates both actual writers in the uniquely owned assigned transfer.
+    ///
+    /// The prepared SDK wrapper retains its actual original sequence, ID, frame
+    /// slot and operation cut. This predicate neither signs a proof nor resets
+    /// that cut. A Prepare signer calls it before and after sealing, in addition
+    /// to actual Core archive/fresh-context checks and the private fresh key.
+    ///
+    /// # Errors
+    /// Refuses foreign or incomplete Source custody, uncompleted original ACK
+    /// Admit, an absent canonical input lease, changed actual controller/codec/
+    /// registration or revoked original native read. Mapping and archive context
+    /// remain separate mandatory signer checks.
+    pub fn authenticate_original_complete_restore_transfer_writers(
+        &self,
+        prepared: &PreparedOriginalCompleteRestoreTransfer<'_>,
+    ) -> Result<(), OperationFailure> {
+        self.ensure_origin()?;
+        self.authenticate_current_native()?;
+        self.authenticate_original_preconstruction()?;
+        if self.selected_restore_input_emitter_selection()?.is_none() {
+            return Err(refused(
+                "source-bound restore input writer selection absent",
+            ));
+        }
+        let slot = self
+            .ack_peer_association
+            .try_borrow()
+            .map_err(|_| refused("restore input writer Source association busy"))?;
+        let original = slot
+            .as_ref()
+            .ok_or_else(|| refused("restore input writer Source association absent"))?;
+        original.authenticate_current()?;
+        if !original.completed_mechanism.get() {
+            return Err(refused(
+                "restore input writer precedes completed original ACK Admit",
+            ));
+        }
+        self.authenticate_original_preconstruction_native(original.native()?)?;
+        prepared
+            .authenticate_original_emitter(original.emitter()?)
+            .map_err(unknown)?;
+        prepared
+            .authenticate_original_restore_input_emitter(
+                original
+                    .restore_input_emitter
+                    .as_ref()
+                    .ok_or_else(|| refused("actual retained restore input emitter absent"))?,
+            )
+            .map_err(unknown)?;
+        prepared
+            .original_canonical_ack_hello_frame_digests(original.hello()?)
+            .map_err(unknown)?;
+        let birth = self
+            .ack_peer_birth
+            .try_borrow()
+            .map_err(|_| refused("restore input writer private birth busy"))?;
+        birth
+            .as_ref()
+            .ok_or_else(|| refused("restore input writer private birth absent"))?
+            .authenticate_original()?;
+        original.native()?.ensure_current().map_err(unknown)?;
+        self.authenticate_current_native()
+    }
+}
+
+#[path = "association/retained.rs"]
+mod retained;

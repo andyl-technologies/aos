@@ -17,7 +17,9 @@ use super::{PacketPublication, input::PacketInputCut};
 mod inputs;
 
 #[path = "continuation_models/connected.rs"]
-mod continuation;
+pub(super) mod continuation;
+pub(crate) use continuation::PacketDisplacedReactiveModel;
+pub use continuation::PacketReactiveModelAdoption;
 mod run;
 
 pub use inputs::causal_parent_ids;
@@ -294,36 +296,7 @@ impl PacketConnectedProgram {
         definition: PacketConnectedDefinition,
         effect_socket: UnixDatagram,
     ) -> Result<Self, ProviderError> {
-        crate::connection::serialized_credit(&definition, MAXIMUM_RECORD)?;
-        if definition.schema != "source-owned.packet-connected-program/4"
-            || definition.connections.is_empty()
-            || definition.connections.len() > 4
-        {
-            return Err(ProviderError::Correlation(
-                "packet connected source definition",
-            ));
-        }
-        let mut ids = std::collections::BTreeSet::new();
-        let node = &definition.connections[0].consumer.node_id;
-        for route in &definition.connections {
-            route.policy.validate()?;
-            if !ids.insert(&route.id)
-                || &route.consumer.node_id != node
-                || route.producer == route.consumer
-                || route.delay_ps.get() > 1024
-            {
-                return Err(ProviderError::Correlation(
-                    "packet connected complete routes",
-                ));
-            }
-        }
-        if definition
-            .output
-            .as_ref()
-            .is_some_and(|output| &output.node_id != node)
-        {
-            return Err(ProviderError::Correlation("packet connected output owner"));
-        }
+        validate_connected_program_definition(&definition)?;
         Ok(Self {
             definition,
             native_pid: std::process::id(),
@@ -407,3 +380,41 @@ impl PacketConnectedProgram {
         Ok(inventory)
     }
 }
+
+fn validate_connected_program_definition(
+    definition: &PacketConnectedDefinition,
+) -> Result<(), ProviderError> {
+    crate::connection::serialized_credit(definition, MAXIMUM_RECORD)?;
+    if definition.schema != "source-owned.packet-connected-program/4"
+        || definition.connections.is_empty()
+        || definition.connections.len() > 4
+    {
+        return Err(ProviderError::Correlation(
+            "packet connected source definition",
+        ));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    let node = &definition.connections[0].consumer.node_id;
+    for route in &definition.connections {
+        route.policy.validate()?;
+        if !ids.insert(&route.id)
+            || &route.consumer.node_id != node
+            || route.producer == route.consumer
+            || route.delay_ps.get() > 1024
+        {
+            return Err(ProviderError::Correlation(
+                "packet connected complete routes",
+            ));
+        }
+    }
+    if definition
+        .output
+        .as_ref()
+        .is_some_and(|output| &output.node_id != node)
+    {
+        return Err(ProviderError::Correlation("packet connected output owner"));
+    }
+    Ok(())
+}
+
+mod restore_fresh;

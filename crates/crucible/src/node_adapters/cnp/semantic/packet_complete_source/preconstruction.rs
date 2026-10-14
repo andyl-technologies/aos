@@ -170,3 +170,38 @@ impl PacketCompleteSemanticSource {
         self.authenticate_preconstruction_protocol_bound(selected)
     }
 }
+
+impl PacketCompleteSemanticSource {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_original_preconstruction_native(
+        &self,
+        expected: &crate::node_adapters::cnp::CnpSemanticSourceRead,
+    ) -> Result<(), OperationFailure> {
+        self.ensure_origin()?;
+        self.authenticate_original_preconstruction()?;
+        let original = self
+            .preconstruction
+            .try_borrow()
+            .map_err(|_| refused("complete mechanism preconstruction busy"))?;
+        let original = original
+            .as_ref()
+            .ok_or_else(|| refused("complete mechanism preconstruction absent"))?;
+        original.native.ensure_current().map_err(unknown)?;
+        expected.ensure_current().map_err(unknown)?;
+        if !original.native.same_original(expected) {
+            return Err(refused(
+                "complete mechanism native differs from actual preconstruction",
+            ));
+        }
+        original.native.ensure_current().map_err(unknown)
+    }
+}
+
+
+impl OriginalCompletePreconstruction {
+    pub(super) fn retained_native_read_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<super::super::retained_storage::CnpRetainedStorageReport, OperationFailure> {
+        self.native.retained_requested_storage_data(maximum)
+    }
+}

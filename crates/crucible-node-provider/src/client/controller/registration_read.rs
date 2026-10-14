@@ -21,6 +21,24 @@ pub struct CnpRegistrarRead {
 }
 
 impl CnpRegistrarRead {
+    /// Reports actual retained original registrar allocation data after revocation.
+    ///
+    /// This reads the two real Arc payload views and inline saved epoch without
+    /// locking, renewal, callbacks or I/O. A plain registrar handle has no creator
+    /// field; the owning source capsule must check its actual PID/thread first.
+    /// These facts do not prove the saved epoch remains current.
+    ///
+    /// # Errors
+    /// Reports checked traversal or requested-layout overflow.
+    pub fn retained_metadata_facts_data(
+        &self,
+    ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
+        let Self { registration } = self;
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        registration.observe_retained_metadata_data(&mut observer)?;
+        Ok(observer.finish())
+    }
+
     /// Compares the actual original gate and epoch without authorizing effects.
     pub fn same_original(&self, other: &Self) -> bool {
         self.registration.same_original(&other.registration)

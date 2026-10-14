@@ -79,6 +79,17 @@ impl PlannedFixtureAudit {
         Ok(Self { issued, record })
     }
 
+    /// Counts only the independently owned issued-byte side of this audit.
+    ///
+    /// The caller separately walks this audit's full AcceptanceRecord; its
+    /// duplicate original/evaluated metadata is not shared by encoded equality.
+    pub(crate) fn issued_retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, QualificationError> {
+        self.issued.retained_requested_storage_data(maximum)
+    }
+
     /// Borrows the original report identity for exact private binding construction.
     pub fn claim(&self) -> &ContentRef {
         self.issued.reference()

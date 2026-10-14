@@ -104,6 +104,21 @@ impl OriginalFrameReservation {
         })
     }
 
+    /// Borrows one exact original slot without rescanning its earlier history.
+    ///
+    /// Returns None for an absent position or inconsistent stored byte range.
+    /// The view preserves partial progress and grants no interpretation authority.
+    pub fn frame(&self, index: usize) -> Option<OriginalFrame<'_>> {
+        let slot = self.slots.get(index)?;
+        let end = slot.start.checked_add(slot.length)?;
+        Some(OriginalFrame {
+            direction: slot.direction,
+            bytes: self.bytes.get(slot.start..end)?,
+            transferred: slot.transferred,
+            complete: slot.complete,
+        })
+    }
+
     pub(crate) fn authenticate_completed_send(
         &self,
         index: usize,
@@ -561,4 +576,65 @@ mod confirmation_suffix_tests {
         assert_eq!(serde_json::to_vec(&bank.protocol_view()).unwrap(), original);
         assert!(!bank.complete());
     }
+}
+
+mod compact_data;
+pub use compact_data::{DecodedCompactOriginalFrames, ValidatedCompactOriginalFrames};
+
+pub(crate) fn original_frame_bank_layout() -> usize {
+    std::mem::size_of::<std::cell::RefCell<OriginalFrameReservation>>()
+}
+
+impl OriginalFrameReservation {
+    /// Observes actual backing vectors and every initialized descriptor field.
+    ///
+    /// Literal bytes and fixed request-ID arrays are already inline in those
+    /// charged vectors; their scalar bytes introduce no additional heap banks.
+    pub(crate) fn observe_owned11_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            bytes,
+            slots,
+            maximum_bytes,
+            maximum_frames,
+            incoming,
+            outgoing,
+        } = self;
+        observer.vector::<u8>(bytes.capacity())?;
+        observer.vector::<Slot>(slots.capacity())?;
+        observer.observe(maximum_bytes)?;
+        observer.observe(maximum_frames)?;
+        observer.observe(incoming)?;
+        observer.observe(outgoing)?;
+        for slot in slots {
+            let Slot {
+                direction,
+                start,
+                length,
+                transferred,
+                complete,
+                request,
+            } = slot;
+            let incoming = match direction {
+                FrameDirection::Incoming => true,
+                FrameDirection::Outgoing => false,
+            };
+            observer.observe(&incoming)?;
+            observer.observe(start)?;
+            observer.observe(length)?;
+            observer.observe(transferred)?;
+            observer.observe(complete)?;
+            // Both the array and its optional discriminator live in Slot. The
+            // retained length is scalar metadata, never a String allocation.
+            observer.observe(&request.as_ref().map(|(_, length)| *length))?;
+        }
+        Ok(())
+    }
+}
+
+/// Reports the actual private descriptor layout to the checked data decoder.
+pub(crate) const fn original_frame_slot_layout() -> usize {
+    std::mem::size_of::<Slot>()
 }

@@ -9,6 +9,13 @@ use std::mem::size_of;
 
 use super::*;
 
+#[path = "host_node_owned.rs"]
+mod host_node_owned;
+#[path = "lineage_owned.rs"]
+mod lineage_owned;
+#[path = "opaque_owned.rs"]
+mod opaque_owned;
+
 pub(super) trait OwnedStorage {
     fn owned_storage(&self) -> Result<usize, RuntimeError>;
 }
@@ -127,11 +134,20 @@ impl OwnedStorage for crate::node_scheduling::ExecutionPolicy {
             Self::Exact {
                 execution_proof_ref,
                 boundary_settlement_ref,
+                ceiling,
                 ..
-            } => storage::add(
-                execution_proof_ref.owned_storage()?,
-                boundary_settlement_ref.owned_storage()?,
-            ),
+            } => {
+                let bytes = storage::add(
+                    execution_proof_ref.owned_storage()?,
+                    boundary_settlement_ref.owned_storage()?,
+                )?;
+                match ceiling {
+                    crate::node_scheduling::ExactCeiling::InputBlocked { proof_ref } => {
+                        storage::add(bytes, proof_ref.owned_storage()?)
+                    }
+                    _ => Ok(bytes),
+                }
+            }
             Self::Quantized {
                 window_proof_ref, ..
             } => window_proof_ref.owned_storage(),
@@ -539,5 +555,41 @@ impl crate::node_contract::NodeRuntime {
 
     pub(crate) fn capture_map_node_storage<K, V>() -> usize {
         value_layout::map_node_bytes_for::<K, V>()
+    }
+    /// Bounds actual protocol tree nodes under the pinned compiler layout.
+    ///
+    /// Inputs come from the same borrowed typed metadata walk. The caller adds
+    /// this term to all other retained and transient terms before admission.
+    ///
+    /// # Errors
+    /// Refuses inconsistent container facts, invalid alignment, arithmetic
+    /// overflow or a tree term exceeding the supplied remaining ceiling.
+    pub(crate) fn capture_protocol_tree_storage(
+        containers: usize,
+        entries: usize,
+        maximum_key_value_bytes: usize,
+        maximum_entry_alignment: usize,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        value_layout::protocol_tree_storage(
+            containers,
+            entries,
+            maximum_key_value_bytes,
+            maximum_entry_alignment,
+            maximum,
+        )
+    }
+
+    /// Bounds shared metadata headers independently of observed payload bytes.
+    ///
+    /// # Errors
+    /// Refuses invalid nonempty alignment, arithmetic overflow or a header term
+    /// exceeding the supplied remaining ceiling.
+    pub(crate) fn capture_protocol_shared_header_storage(
+        views: usize,
+        maximum_data_alignment: usize,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        storage::protocol_shared_header_storage(views, maximum_data_alignment, maximum)
     }
 }

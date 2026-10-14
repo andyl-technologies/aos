@@ -27,7 +27,7 @@ use crate::{
     transport::{FrameReader, write_frame},
 };
 
-mod complete;
+pub(in crate::reference_packet::service) mod complete;
 pub(super) use complete::{accept_complete, accept_complete_with_boot};
 
 pub(super) fn accept(

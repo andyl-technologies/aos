@@ -22,6 +22,7 @@ pub(super) struct CompleteBirth {
     boot: Option<Rc<std::cell::RefCell<super::super::super::ack_emitter::NativeAckBoot>>>,
     bootstrap_literals: Option<Rc<std::cell::RefCell<OriginalFrameReservation>>>,
     selected_handshake: Option<ExtensionHandshake>,
+    selected_registry: Option<Rc<EmptyBootExtensions>>,
     exchange: Option<OriginalNativeHelloExchange<OriginalNative5BirthStream>>,
     raw: Option<UnixStream>,
     bounded_failure: Option<Box<crate::client::OriginalNative5BirthStreamRefusal>>,
@@ -71,6 +72,7 @@ impl CompleteBirth {
             boot: None,
             bootstrap_literals: None,
             selected_handshake: None,
+            selected_registry: None,
             exchange: None,
             raw: None,
             bounded_failure: None,
@@ -123,9 +125,16 @@ impl CompleteBirth {
     pub(super) fn prepare(&mut self, socket: &Path) -> Result<PacketSourceService, ProviderError> {
         self.cut.ensure_current()?;
         self.launch.validate()?;
-        // The compact selection remains closed until its actual codec and
-        // original storage mechanism are installed together.
-        if !self.launch.capture_profile.is_original_arrays() {
+        // Owned11 preparation requires the actual private boot and independent
+        // born metadata selection. Other compact preparation stays closed.
+        let selected_owned11 = matches!(
+            self.launch.capture_profile,
+            super::super::super::PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+        ) && self.launch.protocol_metadata_limits.is_some()
+            && self.launch.native_codec_metadata_extent.is_some()
+            && self.launch.ack_emitter_selection.is_some()
+            && self.boot.is_some();
+        if !self.launch.capture_profile.is_original_arrays() && !selected_owned11 {
             return Err(ProviderError::Conflict(
                 "native5 compact service mechanism not installed",
             ));
@@ -284,6 +293,29 @@ impl CompleteBirth {
                 Id::new(super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE)?,
             );
         }
+        if self.launch.complete_restore_selection.is_some() {
+            for key in [
+                super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_FEATURE,
+                super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_PROOF_EXTENSION,
+                super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_RECEIPT_EXTENSION,
+            ] {
+                selected.push(Id::new(key)?);
+                envelope_extensions.insert(key.into(), Id::new(key)?);
+            }
+        }
+        if self.launch.complete_restore_selection == Some(
+            super::super::super::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
+        {
+            use super::super::super::complete_restore::{*, transfer::*};
+            selected.push(Id::new(PACKET_COMPLETE_RESTORE_TRANSFER_FEATURE)?);
+            selected.push(Id::new(PACKET_NATIVE_RESTORED_RECORD_FEATURE)?);
+            for phase in [PacketCompleteRestoreTransferPhase::Prepare, PacketCompleteRestoreTransferPhase::Commit] {
+                for key in [phase.request_extension(), phase.proof_extension(), phase.receipt_extension()] {
+                    selected.push(Id::new(key)?);
+                    envelope_extensions.insert(key.into(), Id::new(key)?);
+                }
+            }
+        }
         if self.boot.is_some() {
             selected.push(Id::new(EXTENSION_NEGOTIATION_V1)?);
             envelope_extensions.insert(
@@ -344,10 +376,10 @@ impl CompleteBirth {
                 })
                 .map_err(ContractError::from)?,
             );
-            let handshake = self.handshake.take().ok_or_else(absent)?;
-            self.selected_handshake = Some(ExtensionHandshake::new(
-                handshake,
-                Rc::new(EmptyBootExtensions),
+            self.selected_registry = Some(Rc::new(EmptyBootExtensions));
+            self.selected_handshake = Some(ExtensionHandshake::from_original_empty_retained(
+                &mut self.handshake,
+                self.selected_registry.as_ref().ok_or_else(absent)?,
             )?);
         }
         self.authority = Some(if let Some(handshake) = self.selected_handshake.as_mut() {
@@ -379,7 +411,41 @@ impl CompleteBirth {
             .as_mut()
             .ok_or_else(absent)?
             .publish(&serde_json::to_value(&response).map_err(ContractError::from)?)?;
-        let policy = if let Some(emitter) = self.launch.ack_emitter_selection {
+        let policy = if let Some(restoration) = self.launch.complete_restore_selection {
+            Native5Policy::from_original_launch_with_complete_restore(
+                self.launch.selection.clone(),
+                self.launch.initial_coordinator.clone(),
+                self.launch.capture_profile.clone(),
+                self.launch.confirmation_selection.ok_or_else(absent)?,
+                self.launch.ack_emitter_selection.ok_or_else(absent)?,
+                self.launch
+                    .native_codec_metadata_extent
+                    .ok_or_else(absent)?,
+                self.launch.protocol_metadata_limits.ok_or_else(absent)?,
+                restoration,
+            )?
+            .with_restore_input_emitter_selection(self.launch.restore_input_emitter_selection)?
+        } else if let Some(metadata) = self.launch.protocol_metadata_limits {
+            Native5Policy::from_original_launch_with_protocol_metadata(
+                self.launch.selection.clone(),
+                self.launch.initial_coordinator.clone(),
+                self.launch.capture_profile.clone(),
+                self.launch
+                    .confirmation_selection
+                    .ok_or(ProviderError::Correlation(
+                        "owned native confirmation absent",
+                    ))?,
+                self.launch
+                    .ack_emitter_selection
+                    .ok_or(ProviderError::Correlation("owned native ACK absent"))?,
+                self.launch
+                    .native_codec_metadata_extent
+                    .ok_or(ProviderError::Correlation(
+                        "owned native codec extent absent",
+                    ))?,
+                metadata,
+            )?
+        } else if let Some(emitter) = self.launch.ack_emitter_selection {
             let confirmation =
                 self.launch
                     .confirmation_selection
@@ -591,6 +657,24 @@ impl CompleteBirth {
                 .ok_or_else(absent)?
                 .bind_complete_original_ack_emitter_selection(emitter)?;
         }
+        if let Some(metadata) = self.launch.protocol_metadata_limits {
+            self.native
+                .as_mut()
+                .ok_or_else(absent)?
+                .bind_complete_original_protocol_metadata_limits(metadata)?;
+        }
+        if let Some(restoration) = self.launch.complete_restore_selection {
+            self.native
+                .as_mut()
+                .ok_or_else(absent)?
+                .bind_complete_original_restore_selection(restoration)?;
+        }
+        if let Some(emitter) = self.launch.restore_input_emitter_selection {
+            self.native
+                .as_mut()
+                .ok_or_else(absent)?
+                .bind_complete_original_restore_input_emitter_selection(emitter)?;
+        }
         self.cut.ensure_current()?;
         self.endpoint = Some(
             match super::super::super::super::endpoint::PacketEndpoint::new_complete(
@@ -621,16 +705,24 @@ impl CompleteBirth {
         // original birth period or any required phase owner is unavailable.
         self.cut.ensure_current()?;
         let supervisor = self.supervisor.as_ref().ok_or_else(absent)?.clone();
-        let handshake = match (self.handshake.take(), self.selected_handshake.take()) {
-            (Some(handshake), None) => Some(super::super::super::OriginalServiceHandshake::Legacy(
-                handshake,
-            )),
-            (None, Some(handshake)) => Some(
-                super::super::super::OriginalServiceHandshake::Selected(handshake),
+        let handshake = match (
+            self.handshake.take(),
+            self.selected_handshake.take(),
+            self.selected_registry.take(),
+        ) {
+            (Some(handshake), None, None) => Some(
+                super::super::super::OriginalServiceHandshake::Legacy(handshake),
             ),
-            (legacy, selected) => {
+            (None, Some(handshake), Some(registry)) => {
+                Some(super::super::super::OriginalServiceHandshake::Selected {
+                    handshake,
+                    registry,
+                })
+            }
+            (legacy, selected, registry) => {
                 self.handshake = legacy;
                 self.selected_handshake = selected;
+                self.selected_registry = registry;
                 None
             }
         };
@@ -648,8 +740,12 @@ impl CompleteBirth {
                     Some(super::super::super::OriginalServiceHandshake::Legacy(h)) => {
                         self.handshake = Some(h)
                     }
-                    Some(super::super::super::OriginalServiceHandshake::Selected(h)) => {
-                        self.selected_handshake = Some(h)
+                    Some(super::super::super::OriginalServiceHandshake::Selected {
+                        handshake,
+                        registry,
+                    }) => {
+                        self.selected_handshake = Some(handshake);
+                        self.selected_registry = Some(registry);
                     }
                     None => {}
                 }
@@ -666,7 +762,9 @@ fn absent() -> ProviderError {
 
 // This protocol milestone installs no unregistered extension declaration.
 // A nonempty peer roster refuses rather than becoming trusted planning data.
-struct EmptyBootExtensions;
+pub(in crate::reference_packet::service) struct EmptyBootExtensions;
+
+impl crate::handshake::OriginalEmptyExtensionRegistry for EmptyBootExtensions {}
 
 impl InstalledExtensionNegotiationVerifier for EmptyBootExtensions {
     fn supported(&self) -> &[ExtensionSelection] {

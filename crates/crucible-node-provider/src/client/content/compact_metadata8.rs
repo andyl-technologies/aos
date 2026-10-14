@@ -88,6 +88,55 @@ impl<'a> ValidatedCompactMetadata8<'a> {
         })
     }
 
+    pub(crate) fn validate_owned11_capacity_rows<'records>(
+        &self,
+        mut records: crate::retained_metadata::records::MetadataRecordRows<'records>,
+    ) -> Result<crate::retained_metadata::records::MetadataRecordRows<'records>, ProviderError>
+    {
+        use crate::retained_metadata::records::MetadataRecordKind;
+        expect_owned_row(
+            &mut records,
+            MetadataRecordKind::Tree,
+            self.data.transfer_count(),
+            std::mem::size_of::<crucible_node_contract::Id>()
+                + std::mem::size_of::<super::Transfer>(),
+        )?;
+        for (row, capacities) in self.data.transfers().zip(self.transfer_metadata()) {
+            let row = row?;
+            for capacity in capacities? {
+                expect_owned_row(&mut records, MetadataRecordKind::String, capacity, 1)?;
+            }
+            expect_owned_row(
+                &mut records,
+                MetadataRecordKind::Shared,
+                std::mem::size_of::<Vec<u8>>(),
+                1,
+            )?;
+            expect_owned_row(&mut records, MetadataRecordKind::Vector, row.capacity, 1)?;
+        }
+        expect_owned_row(
+            &mut records,
+            MetadataRecordKind::Tree,
+            self.data.object_count(),
+            std::mem::size_of::<String>()
+                + std::mem::size_of::<(ContentRef, std::rc::Rc<Vec<u8>>)>(),
+        )?;
+        for (row, capacities) in self.data.objects().zip(self.object_metadata()) {
+            let row = row?;
+            for capacity in capacities? {
+                expect_owned_row(&mut records, MetadataRecordKind::String, capacity, 1)?;
+            }
+            expect_owned_row(
+                &mut records,
+                MetadataRecordKind::Shared,
+                std::mem::size_of::<Vec<u8>>(),
+                1,
+            )?;
+            expect_owned_row(&mut records, MetadataRecordKind::Vector, row.capacity, 1)?;
+        }
+        Ok(records)
+    }
+
     /// Borrows the original checked byte-group and alias data.
     pub fn data(&self) -> &ValidatedCompactContent<'a> {
         &self.data
@@ -357,6 +406,19 @@ fn capacities(key: usize, reference: &ContentRef) -> [usize; 5] {
         reference.hash.digest.capacity(),
         reference.media_type.capacity(),
     ]
+}
+
+fn expect_owned_row(
+    records: &mut crate::retained_metadata::records::MetadataRecordRows<'_>,
+    kind: crate::retained_metadata::records::MetadataRecordKind,
+    extent: usize,
+    element_bytes: usize,
+) -> Result<(), ProviderError> {
+    let row = records.next().ok_or_else(invalid)??;
+    if row.kind != kind || row.extent != extent || row.element_bytes != element_bytes {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

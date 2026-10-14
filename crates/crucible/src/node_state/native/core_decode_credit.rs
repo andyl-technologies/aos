@@ -73,6 +73,7 @@ pub(super) fn preflight(bytes: &[u8], maximum: usize) -> Result<DecodeCredit, Ru
         maximum,
         NodeRuntime::capture_closed_inline_storage(),
         true,
+        None,
     )
 }
 
@@ -92,7 +93,22 @@ pub(super) fn preflight_archive(
         .max(size_of::<
             super::collecting_scope::CollectingCompleteCaptureProvenance,
         >());
-    preflight_shape(bytes, maximum, typed_slot, false)
+    preflight_shape(bytes, maximum, typed_slot, false, None)
+}
+
+/// Counts a selected closed DTO with its actual largest inline and map layouts.
+/// This reserves each container independently, including empty nested arrays or
+/// objects. Layout facts grant no decoding, source or restoration authority.
+pub(super) fn preflight_selected(
+    bytes: &[u8],
+    typed_slot: usize,
+    typed_map_node: usize,
+    maximum: usize,
+) -> Result<DecodeCredit, RuntimeError> {
+    if typed_slot == 0 || typed_map_node == 0 {
+        return Err(RuntimeError::ResourceLimit);
+    }
+    preflight_shape(bytes, maximum, typed_slot, false, Some(typed_map_node))
 }
 
 fn preflight_shape(
@@ -100,6 +116,7 @@ fn preflight_shape(
     maximum: usize,
     typed_slot: usize,
     host_shape: bool,
+    selected_map_node: Option<usize>,
 ) -> Result<DecodeCredit, RuntimeError> {
     let value_node = NodeRuntime::capture_map_node_storage::<String, serde_json::Value>();
     let ordered_node =
@@ -148,6 +165,9 @@ fn preflight_shape(
                 };
                 pending = Context::Opaque;
                 depth += 1;
+                if selected_map_node.is_some() {
+                    add(&mut credit.typed_containers, multiply(4, typed_slot)?)?;
+                }
                 if bytes[cursor] == b'[' {
                     // Empty arrays request no bank, but the four-slot minimum
                     // is reserved before any later element can trigger growth.
@@ -223,9 +243,12 @@ fn preflight_shape(
                         _ => Context::Opaque,
                     };
                     add(&mut credit.value_containers, value_node)?;
-                    // All closed typed map fields are recursive Extensions;
-                    // other typed inventories are Vecs, not hidden keyed banks.
-                    add(&mut credit.typed_containers, value_node)?;
+                    // Selected source DTOs can retain maps of concrete records,
+                    // whose node layout exceeds a dynamic JSON Value node.
+                    add(
+                        &mut credit.typed_containers,
+                        selected_map_node.unwrap_or(value_node),
+                    )?;
                     add(&mut credit.canonical_temporaries, ordered_node)?;
                     add(
                         &mut credit.canonical_temporaries,
@@ -241,7 +264,7 @@ fn preflight_shape(
                 let slot = depth
                     .checked_sub(1)
                     .map_or(typed_slot, |level| stack[level].typed_slot);
-                add(&mut credit.typed_containers, 4 * slot)?;
+                add(&mut credit.typed_containers, multiply(4, slot)?)?;
             }
             _ => {
                 // Primitive tokens need no owning string. Their array slot is
@@ -257,7 +280,7 @@ fn preflight_shape(
                 let slot = depth
                     .checked_sub(1)
                     .map_or(typed_slot, |level| stack[level].typed_slot);
-                add(&mut credit.typed_containers, 4 * slot)?;
+                add(&mut credit.typed_containers, multiply(4, slot)?)?;
                 pending = Context::Opaque;
             }
         }
@@ -408,6 +431,31 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn selected_layout_counts_concrete_maps_and_every_empty_container() {
+        let maximum = 64 * 1024 * 1024;
+        let bytes = br#"{"operations":[{},{},{},{},{},{}]}"#;
+        let ordinary = preflight(bytes, maximum).expect("finite ordinary shape");
+        let selected =
+            preflight_selected(bytes, 8192, 16384, maximum).expect("finite selected shape");
+        let total = selected.total().expect("finite selected sum");
+
+        assert!(selected.typed_containers > ordinary.typed_containers);
+        assert!(selected.typed_containers >= 6 * 4 * 8192);
+        assert!(matches!(
+            preflight_selected(bytes, 8192, 16384, total - 1),
+            Err(RuntimeError::ResourceLimit)
+        ));
+        assert!(matches!(
+            preflight_selected(bytes, 0, 16384, maximum),
+            Err(RuntimeError::ResourceLimit)
+        ));
+        assert!(matches!(
+            preflight_selected(bytes, usize::MAX, 16384, maximum),
+            Err(RuntimeError::ResourceLimit)
+        ));
+    }
 
     #[test]
     fn borrowed_decode_shape_refuses_complete_total_before_dom() {

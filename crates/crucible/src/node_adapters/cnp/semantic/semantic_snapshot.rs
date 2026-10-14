@@ -22,6 +22,7 @@ pub(super) use view::BatchView;
 /// Reserving this bank grants no capture permission. The complete factory must
 /// charge its actual capacity together with all protocol and settlement banks.
 pub struct CnpSemanticSnapshotReservation {
+    storage_origin: super::retained_storage::StorageOrigin,
     bytes: Vec<u8>,
     maximum: usize,
     started: bool,
@@ -46,6 +47,7 @@ impl CnpSemanticSnapshotReservation {
             ));
         }
         Ok(Self {
+            storage_origin: super::retained_storage::StorageOrigin::current(),
             bytes,
             maximum,
             started: false,
@@ -67,6 +69,7 @@ impl CnpSemanticSnapshotReservation {
 /// Only an owning source capture loan can construct this object. Its activation
 /// association is process local and is never decoded from the data view.
 pub struct CnpOriginalSemanticSnapshot {
+    storage_origin: super::retained_storage::StorageOrigin,
     payload: InputPayload,
     active: WorldActivation,
 }
@@ -153,6 +156,7 @@ impl CnpSemanticCaptureScope<'_> {
             .take()
             .ok_or_else(|| refused("original semantic reservation disappeared"))?;
         Ok(CnpOriginalSemanticSnapshot {
+            storage_origin: super::retained_storage::StorageOrigin::current(),
             payload: InputPayload {
                 reference,
                 bytes: bank.bytes,
@@ -411,5 +415,42 @@ mod tests {
         assert!(retained.bytes.is_empty());
         assert!(record_original_bytes(&mut bank, &reference, &original).is_err());
         reference.verify(&original).unwrap();
+    }
+}
+
+impl CnpSemanticSnapshotReservation {
+    /// Observes metadata apart from the caller's already counted byte-bank capacity.
+    ///
+    /// This object has no independent metadata heap. Its fixed fields belong to
+    /// the caller's containing slot; `allocated_bytes` is a separate actual bank
+    /// term. A zero metadata result grants no capture or reservation permission.
+    ///
+    /// # Errors
+    /// Refuses a view from another original process or creator thread.
+    pub fn retained_metadata_requested_storage_data(&self) -> Result<usize, OperationFailure> {
+        self.storage_origin.check()?;
+        Ok(0)
+    }
+}
+
+impl CnpOriginalSemanticSnapshot {
+    /// Observes actual full-reference and opaque-activation metadata backing.
+    ///
+    /// The payload byte capacity and this value's inline containing slot remain
+    /// separate caller-owned terms. Shared Core allocations receive actual
+    /// identity-bound credit; no serialized activation label identifies them.
+    ///
+    /// # Errors
+    /// Refuses foreign creators, unsupported Core metadata or exhausted credit.
+    pub fn retained_metadata_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<super::CnpRetainedStorageReport, OperationFailure> {
+        self.storage_origin.check()?;
+        let mut counter = super::retained_storage::Counter::new(maximum);
+        counter.charge(&self.payload.reference)?;
+        super::retained_storage::common::activation(&self.active, &mut counter)?;
+        self.storage_origin.check()?;
+        Ok(counter.finish())
     }
 }

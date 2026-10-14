@@ -25,6 +25,10 @@ use crate::{
     reference_service::InstalledContent,
 };
 
+mod restore_input_policy;
+mod restore_policy;
+mod restore_transfer_policy;
+
 #[derive(Serialize)]
 pub(crate) struct Native5Policy {
     selection: PacketControlSelection,
@@ -43,9 +47,95 @@ pub(crate) struct Native5Policy {
     ack_emitter_definition: Option<ContentRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     native_codec_metadata_extent: Option<crate::client::CanonicalAckCodecMetadataExtent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protocol_metadata_limits: Option<super::PacketNative5ProtocolMetadataLimits>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    complete_restore_selection:
+        Option<super::complete_restore::PacketNative5CompleteRestoreSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    complete_restore_definitions: Option<[ContentRef; 3]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    complete_restore_transfer_definitions: Option<[ContentRef; 7]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restore_input_emitter_selection:
+        Option<super::complete_restore::PacketNative5RestoreInputEmitterSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restore_input_emitter_definition: Option<ContentRef>,
 }
 
 impl Native5Policy {
+    pub(crate) fn authenticate_owned11_snapshot_definition(&self) -> Result<(), ProviderError> {
+        let schema = super::native_owned11_snapshot_schema()?;
+        if !matches!(
+            self.capture_profile,
+            super::PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+        ) || !self
+            .selection
+            .provider
+            .implementation
+            .formats
+            .contains(&schema)
+        {
+            return Err(ProviderError::Correlation(
+                "native owned11 full snapshot definition",
+            ));
+        }
+        Ok(())
+    }
+
+    // A distinct exhaustive leaf preserves all selected fields and actual
+    // coordinator backing capacity without changing earlier codec editions.
+    pub(crate) fn borrowed_owned11_protocol_view(&self) -> impl Serialize + '_ {
+        restore_input_policy::InputOwnedPolicyView(self)
+    }
+
+    fn original_owned11_protocol_view(&self) -> impl Serialize + '_ {
+        let Self {
+            selection,
+            coordinator,
+            definition,
+            connected,
+            capture_profile,
+            confirmation_selection,
+            confirmation_definition,
+            ack_emitter_selection,
+            ack_emitter_definition,
+            native_codec_metadata_extent,
+            protocol_metadata_limits: _,
+            complete_restore_selection: _,
+            complete_restore_definitions: _,
+            complete_restore_transfer_definitions: _,
+            restore_input_emitter_selection: _,
+            restore_input_emitter_definition: _,
+        } = self;
+        (
+            "source-private.native5-policy-owned/11",
+            selection,
+            (
+                &coordinator.reference,
+                coordinator.bytes.allocation_capacity(),
+                crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::new(
+                    coordinator.bytes.as_slice(),
+                ),
+            ),
+            definition,
+            connected,
+            capture_profile,
+            confirmation_selection,
+            confirmation_definition,
+            ack_emitter_selection,
+            ack_emitter_definition,
+            native_codec_metadata_extent,
+        )
+    }
+
+    pub(crate) fn observe_owned11_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.observe_retained_metadata(observer)
+    }
+
     pub(crate) fn observe_retained_metadata(
         &self,
         observer: &mut crate::retained_metadata::MetadataObserver,
@@ -61,6 +151,12 @@ impl Native5Policy {
             ack_emitter_selection,
             ack_emitter_definition,
             native_codec_metadata_extent,
+            protocol_metadata_limits,
+            complete_restore_selection,
+            complete_restore_definitions,
+            complete_restore_transfer_definitions,
+            restore_input_emitter_selection,
+            restore_input_emitter_definition,
         } = self;
         observer.observe(selection)?;
         observer.observe(coordinator)?;
@@ -71,7 +167,13 @@ impl Native5Policy {
         observer.observe(confirmation_definition)?;
         observer.observe(ack_emitter_selection)?;
         observer.observe(ack_emitter_definition)?;
-        observer.observe(native_codec_metadata_extent)
+        observer.observe(native_codec_metadata_extent)?;
+        observer.observe(protocol_metadata_limits)?;
+        observer.observe(complete_restore_selection)?;
+        observer.observe(complete_restore_definitions)?;
+        observer.observe(complete_restore_transfer_definitions)?;
+        observer.observe(restore_input_emitter_selection)?;
+        observer.observe(restore_input_emitter_definition)
     }
 
     pub(super) fn from_original_launch(
@@ -126,6 +228,12 @@ impl Native5Policy {
             ack_emitter_selection: None,
             ack_emitter_definition: None,
             native_codec_metadata_extent: None,
+            protocol_metadata_limits: None,
+            complete_restore_selection: None,
+            complete_restore_definitions: None,
+            complete_restore_transfer_definitions: None,
+            restore_input_emitter_selection: None,
+            restore_input_emitter_definition: None,
         };
         Ok(policy)
     }
@@ -238,6 +346,44 @@ impl Native5Policy {
         Ok(policy)
     }
 
+    pub(super) fn from_original_launch_with_protocol_metadata(
+        selection: PacketControlSelection,
+        coordinator: InstalledContent,
+        profile: super::PacketNative5CaptureProfile,
+        confirmation: super::PacketNative5ConfirmationSelection,
+        emitter: super::PacketNative5AckEmitterSelection,
+        extent: crate::client::CanonicalAckCodecMetadataExtent,
+        metadata: super::PacketNative5ProtocolMetadataLimits,
+    ) -> Result<Self, ProviderError> {
+        metadata.validate_data()?;
+        if !matches!(
+            profile,
+            super::PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+        ) {
+            return Err(ProviderError::Correlation(
+                "native metadata requires owned protocol",
+            ));
+        }
+        let mut policy = Self::from_original_launch_with_ack_emitter_metadata_extent(
+            selection,
+            coordinator,
+            profile,
+            confirmation,
+            emitter,
+            extent,
+        )?;
+        policy.protocol_metadata_limits = Some(metadata);
+        policy.validate_immutable_content()?;
+        serialized_credit(&policy.protocol_view(), 512 * 1024)?;
+        Ok(policy)
+    }
+
+    pub(crate) fn protocol_metadata_limits(
+        &self,
+    ) -> Option<super::PacketNative5ProtocolMetadataLimits> {
+        self.protocol_metadata_limits
+    }
+
     pub(crate) fn authenticate_original_control_selection(
         &self,
         selection: &PacketControlSelection,
@@ -273,11 +419,11 @@ impl Native5Policy {
     }
 
     pub(crate) fn protocol_view(&self) -> impl Serialize + '_ {
-        Native5PolicyView(self)
+        restore_input_policy::InputPolicyView(self)
     }
 
     pub(crate) fn compact_protocol_view(&self) -> impl Serialize + '_ {
-        Native5CompactPolicyView(self)
+        restore_input_policy::InputCompactPolicyView(self)
     }
 
     fn original_compact_protocol_view(&self) -> impl Serialize + '_ {
@@ -307,6 +453,18 @@ impl Native5Policy {
     // All fields are privately owned immutable values validated at construction.
     // No callback, decoder or mutable accessor changes them after publication.
     fn validate_immutable_content(&self) -> Result<(), ProviderError> {
+        self.validate_complete_restore_content()?;
+        if let Some(metadata) = self.protocol_metadata_limits {
+            metadata.validate_data()?;
+            if !matches!(
+                self.capture_profile,
+                super::PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+            ) {
+                return Err(ProviderError::Correlation(
+                    "native metadata source profile differs",
+                ));
+            }
+        }
         if self.ack_emitter_selection.is_some() {
             let schema = super::ack_emitter::native_canonical_blob_ack_schema()?;
             let admission_schema = super::ack_emitter::native_canonical_ack_admission_schema()?;
@@ -375,6 +533,7 @@ impl Native5Policy {
         &self,
         authority: &ConnectionAuthority,
     ) -> Result<(), ProviderError> {
+        self.validate_complete_restore_negotiation(authority)?;
         authority.ensure_live()?;
         if self.ack_emitter_selection.is_some()
             && (!authority
@@ -426,6 +585,14 @@ struct Native5PolicyView<'a>(&'a Native5Policy);
 
 impl Serialize for Native5PolicyView<'_> {
     fn serialize<T: serde::Serializer>(&self, serializer: T) -> Result<T::Ok, T::Error> {
+        if let Some(metadata) = self.0.protocol_metadata_limits {
+            return (
+                "source-private.native5-policy-selected-metadata/13",
+                metadata,
+                self.0,
+            )
+                .serialize(serializer);
+        }
         match self.0.native_codec_metadata_extent {
             None => self.0.serialize(serializer),
             Some(extent) => {
@@ -440,6 +607,15 @@ struct Native5CompactPolicyView<'a>(&'a Native5Policy);
 impl Serialize for Native5CompactPolicyView<'_> {
     fn serialize<T: serde::Serializer>(&self, serializer: T) -> Result<T::Ok, T::Error> {
         let policy = self.0;
+        if let Some(metadata) = policy.protocol_metadata_limits {
+            return (
+                "source-private.native5-policy-compact-selected-metadata/13",
+                metadata,
+                policy.native_codec_metadata_extent,
+                Native5CompactLegacyPolicyView(policy),
+            )
+                .serialize(serializer);
+        }
         match policy.native_codec_metadata_extent {
             None => Native5CompactLegacyPolicyView(policy).serialize(serializer),
             Some(extent) => (
@@ -499,6 +675,9 @@ impl BodySchemaVerifier for Native5Policy {
             return Err(ProviderError::Correlation(
                 "native5 body extensions unsupported",
             ));
+        }
+        if self.verify_complete_restore_envelope(authority, envelope, received)? {
+            return authority.ensure_live();
         }
         if let Some(proof) = envelope
             .extensions
@@ -647,6 +826,10 @@ impl BodySchemaVerifier for Native5Policy {
 }
 
 impl crate::reference_packet::endpoint::PacketEndpointPolicy for Native5Policy {
+    fn authenticate_owned11_snapshot_definition(&self) -> Result<(), ProviderError> {
+        Native5Policy::authenticate_owned11_snapshot_definition(self)
+    }
+
     fn authenticate_source(
         &self,
         authority: &ConnectionAuthority,
@@ -784,3 +967,22 @@ pub(crate) fn controlled_native5_policy(
 #[allow(clippy::unwrap_used)]
 #[path = "native5_policy/metadata_tests.rs"]
 mod metadata_tests;
+
+struct NativeOwnedMetadataPolicyView<'a>(&'a Native5Policy);
+
+impl Serialize for NativeOwnedMetadataPolicyView<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0.protocol_metadata_limits {
+            None => self
+                .0
+                .original_owned11_protocol_view()
+                .serialize(serializer),
+            Some(metadata) => (
+                "source-private.native5-policy-owned-selected/13",
+                metadata,
+                self.0.original_owned11_protocol_view(),
+            )
+                .serialize(serializer),
+        }
+    }
+}

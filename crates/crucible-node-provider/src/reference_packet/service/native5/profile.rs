@@ -6,7 +6,7 @@
 
 use super::*;
 
-/// Selects the original array layout or the separate compact-byte edition.
+/// Selects the original array, compact-byte or complete owning edition.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "encoding", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PacketNative5CaptureProfile {
@@ -22,6 +22,17 @@ pub enum PacketNative5CaptureProfile {
         /// Bounds the same original host's fully settled protocol body.
         host_protocol_bytes: U64,
     },
+    /// Selects complete owning protocol eleven with independently charged banks.
+    ///
+    /// This data variant cannot activate the installed serializer or issuer.
+    OwnedProtocol11 {
+        /// Bounds the original native pending-Capture owning protocol body.
+        native_before_protocol_bytes: U64,
+        /// Bounds the native owning protocol body after the complete suffix.
+        native_after_protocol_bytes: U64,
+        /// Bounds the original host owning protocol body and retained histories.
+        host_protocol_bytes: U64,
+    },
 }
 
 impl PacketNative5CaptureProfile {
@@ -30,12 +41,17 @@ impl PacketNative5CaptureProfile {
         matches!(self, Self::OriginalArrays6)
     }
 
-    /// Checks finite positive compact bounds without allocating or installing.
+    /// Checks finite positive selected bounds without allocating or installing.
     ///
     /// # Errors
     /// Refuses zero or greater-than-512-MiB independently selected bounds.
     pub fn validate(&self) -> Result<(), ProviderError> {
         if let Self::CompactBytes7 {
+            native_before_protocol_bytes,
+            native_after_protocol_bytes,
+            host_protocol_bytes,
+        }
+        | Self::OwnedProtocol11 {
             native_before_protocol_bytes,
             native_after_protocol_bytes,
             host_protocol_bytes,
@@ -63,6 +79,10 @@ impl PacketNative5CaptureProfile {
             Self::CompactBytes7 {
                 native_before_protocol_bytes,
                 ..
+            }
+            | Self::OwnedProtocol11 {
+                native_before_protocol_bytes,
+                ..
             } => *native_before_protocol_bytes,
         }
     }
@@ -74,6 +94,10 @@ impl PacketNative5CaptureProfile {
             Self::CompactBytes7 {
                 native_after_protocol_bytes,
                 ..
+            }
+            | Self::OwnedProtocol11 {
+                native_after_protocol_bytes,
+                ..
             } => *native_after_protocol_bytes,
         }
     }
@@ -83,6 +107,10 @@ impl PacketNative5CaptureProfile {
         match self {
             Self::OriginalArrays6 => storage.protocol_snapshot_bytes,
             Self::CompactBytes7 {
+                host_protocol_bytes,
+                ..
+            }
+            | Self::OwnedProtocol11 {
                 host_protocol_bytes,
                 ..
             } => *host_protocol_bytes,

@@ -297,3 +297,22 @@ impl InstalledConnectedCoordinator {
         }
     }
 }
+
+impl PacketConnectedWorldScope {
+    pub(super) fn complete_retained_parts(
+        &self,
+    ) -> Result<
+        (
+            &PacketNative5CoordinatorInstallation,
+            &SavedRuntimeActivation,
+        ),
+        OperationFailure,
+    > {
+        match &self.coordinator {
+            InstalledConnectedCoordinator::Five(coordinator) => {
+                Ok((coordinator.as_ref(), &self.activation))
+            }
+            _ => Err(refused("retained complete coordinator absent")),
+        }
+    }
+}

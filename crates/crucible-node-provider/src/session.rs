@@ -30,6 +30,36 @@ pub struct CorrelationGuard {
 }
 
 impl CorrelationGuard {
+    pub(crate) fn observe_owned_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            session,
+            incarnation,
+            next_received,
+            next_sent,
+            maximum_requests,
+            pending,
+            received_requests,
+            writing_responses,
+            extensions,
+            failed,
+            continuation_installed,
+        } = self;
+        observer.observe(session)?;
+        observer.observe(incarnation)?;
+        observer.observe(next_received)?;
+        observer.observe(next_sent)?;
+        observer.observe(maximum_requests)?;
+        observer.observe(pending)?;
+        observer.observe(received_requests)?;
+        observer.observe(writing_responses)?;
+        observer.observe(extensions)?;
+        observer.observe(failed)?;
+        observer.observe(continuation_installed)
+    }
+
     pub(crate) fn protocol_cut(
         &self,
         cut: crate::protocol_snapshot::ProtocolCaptureCut,
@@ -89,6 +119,28 @@ impl CorrelationGuard {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn preflight_restore_input_sequences(
+        &self,
+        outgoing: usize,
+        incoming: usize,
+    ) -> Result<(), ProviderError> {
+        self.check_live()?;
+        if !self.pending.is_empty()
+            || !self.writing_responses.is_empty()
+            || self.received_requests.len() != 1
+            || self.received_requests.values().any(|frame| {
+                frame.method != Method::Begin
+                    || frame.body.get("kind").and_then(serde_json::Value::as_str)
+                        != Some("prepare_restore")
+            })
+        {
+            return Err(ProviderError::Correlation(
+                "restore input quote original phase",
+            ));
+        }
+        self.preflight_confirmation_sequences(outgoing, incoming)
     }
 
     pub(crate) fn preflight_confirmation_sequences(
@@ -618,3 +670,183 @@ mod tests {
 
 mod continuation_data;
 pub use continuation_data::DecodedSettledCorrelationData;
+
+impl CorrelationGuard {
+    pub(crate) fn authenticate_incoming_complete_restore(
+        &self,
+        original: &Envelope,
+    ) -> Result<(), ProviderError> {
+        self.check_live()?;
+        self.check_scope(original)?;
+        if original.message != MessageKind::Request
+            || original.method != Method::Begin
+            || original
+                .body
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                != Some("prepare_restore")
+            || original.sequence.get().checked_add(1) != Some(self.next_received)
+            || self.received_requests.len() != 1
+            || self.received_requests.values().next() != Some(original)
+            || !self.pending.is_empty()
+            || !self.writing_responses.is_empty()
+        {
+            return Err(ProviderError::Correlation(
+                "complete restore unrelated original correlation",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl CorrelationGuard {
+    pub(crate) fn original_restore_response_sequence(
+        &self,
+        request: &Envelope,
+    ) -> Result<crucible_node_contract::U64, ProviderError> {
+        self.authenticate_incoming_complete_restore(request)?;
+        self.next_sent
+            .checked_add(1)
+            .ok_or(ProviderError::ResourceExhausted(
+                "assigned native restore response sequence",
+            ))?;
+        Ok(crucible_node_contract::U64::new(self.next_sent))
+    }
+}
+
+impl CorrelationGuard {
+    /// Checks the exact completed proof suffix while retaining its sole Commit.
+    pub(crate) fn original_restore_response_after_proof_sequence(
+        &self,
+        request: &Envelope,
+        proof: &crate::connection::CompletedHeldProof,
+    ) -> Result<crucible_node_contract::U64, ProviderError> {
+        self.check_live()?;
+        self.check_scope(request)?;
+        let (received, sent) = proof.counter_boundary(request)?;
+        if request.message != MessageKind::Request
+            || request.method != Method::Begin
+            || request.body.get("kind").and_then(serde_json::Value::as_str)
+                != Some("prepare_restore")
+            || self.next_received != received
+            || self.next_sent != sent
+            || self.received_requests.len() != 1
+            || self.received_requests.values().next() != Some(request)
+            || !self.pending.is_empty()
+            || !self.writing_responses.is_empty()
+        {
+            return Err(ProviderError::Correlation(
+                "held proof has unrelated original Commit correlation",
+            ));
+        }
+        self.next_sent
+            .checked_add(1)
+            .ok_or(ProviderError::ResourceExhausted(
+                "held proof restore response sequence",
+            ))?;
+        Ok(crucible_node_contract::U64::new(self.next_sent))
+    }
+}
+
+/// Owns already allocated outgoing correlation nodes for one exact proof plan.
+pub(crate) struct OriginalRestoreProofRegistration {
+    pending: BTreeMap<Id, Envelope>,
+    next_received: u64,
+    first_sent: u64,
+    next_sent: u64,
+    activated: bool,
+}
+
+impl CorrelationGuard {
+    pub(crate) fn prebuild_original_restore_proof_registration(
+        &self,
+        commit: &Envelope,
+        originals: &[Envelope],
+    ) -> Result<OriginalRestoreProofRegistration, ProviderError> {
+        self.authenticate_incoming_complete_restore(commit)?;
+        if originals.len() < 3 || originals.len() > self.maximum_requests {
+            return Err(ProviderError::ResourceExhausted(
+                "held proof correlation roster",
+            ));
+        }
+        let mut next = self.next_sent;
+        let mut pending = BTreeMap::new();
+        for original in originals {
+            self.check_scope(original)?;
+            if original.message != MessageKind::Request
+                || !matches!(
+                    original.method,
+                    Method::BlobBegin | Method::BlobChunk | Method::BlobFinish
+                )
+                || !original.extensions.is_empty()
+                || original.sequence.get() != next
+            {
+                return Err(ProviderError::Correlation(
+                    "held proof prebuilt original scope",
+                ));
+            }
+            next = next.checked_add(1).ok_or(ProviderError::ResourceExhausted(
+                "held proof correlation sequence",
+            ))?;
+            let id = original
+                .request_id
+                .0
+                .as_ref()
+                .ok_or(ProviderError::Correlation("held proof request ID absent"))?;
+            if pending.contains_key(id) {
+                return Err(ProviderError::Conflict("held proof repeated request ID"));
+            }
+            pending.insert(id.clone(), original.clone());
+        }
+        Ok(OriginalRestoreProofRegistration {
+            pending,
+            next_received: self.next_received,
+            first_sent: self.next_sent,
+            next_sent: next,
+            activated: false,
+        })
+    }
+}
+
+impl OriginalRestoreProofRegistration {
+    pub(crate) fn activate(
+        &mut self,
+        guard: &mut CorrelationGuard,
+        commit: &Envelope,
+    ) -> Result<(), ProviderError> {
+        guard.authenticate_incoming_complete_restore(commit)?;
+        if self.activated
+            || guard.next_received != self.next_received
+            || guard.next_sent != self.first_sent
+            || !guard.pending.is_empty()
+        {
+            return Err(ProviderError::Correlation(
+                "held proof activation changed correlation",
+            ));
+        }
+        // All nodes and deep Envelope copies were allocated before native effect.
+        // Swapping into the proven empty map does not allocate or reencode.
+        std::mem::swap(&mut guard.pending, &mut self.pending);
+        guard.next_sent = self.next_sent;
+        self.activated = true;
+        Ok(())
+    }
+
+    pub(crate) fn observe_retained_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            pending,
+            next_received,
+            first_sent,
+            next_sent,
+            activated,
+        } = self;
+        observer.observe(pending)?;
+        observer.observe(next_received)?;
+        observer.observe(first_sent)?;
+        observer.observe(next_sent)?;
+        observer.observe(activated)
+    }
+}

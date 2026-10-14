@@ -18,20 +18,57 @@ use crate::session::CorrelationGuard;
 use crate::transport::{FrameReader, write_frame_with_limits};
 
 mod capture_prefix;
+mod complete_restore_projection;
+mod restore_transfer_projection;
+pub(crate) use restore_transfer_projection::CompleteRestoreTransferProjection;
 mod confirmation_projection;
+pub(crate) use complete_restore_projection::CompleteRestoreProjection;
 pub(crate) use confirmation_projection::ConfirmationProjection;
 mod ack_admission;
+mod restore_held_proof;
+pub(crate) use restore_held_proof::CompletedHeldProof;
+mod restore_identity;
+mod restore_input_quote;
+mod restore_proof_quote;
+pub(crate) use restore_proof_quote::OriginalRestoreHeldProofAllocationQuote;
+mod restore_inputs;
+mod restore_response;
 pub(crate) use ack_admission::OriginalNativeAckConnectionIdentity;
+pub(crate) use restore_identity::OriginalNativeRestorationConnectionIdentity;
+pub(crate) use restore_input_quote::NativeRestoreInputAllocationQuote;
+pub(crate) use restore_inputs::{
+    OriginalCompleteRestoreInputCustody, OriginalCompleteRestoreInputProgress,
+};
 
 mod assigned_admit;
+mod assigned_restore;
 mod confirmation;
 mod native5_birth;
 pub use native5_birth::{Native5ConnectionBirth, Native5ConnectionBirthRefusal};
 mod exchange;
+pub(crate) use exchange::PreparedOriginalRestoreHeldProof;
 mod native5_codec;
 pub use native5_codec::CanonicalAckCodecMetadataExtent;
 pub(crate) use native5_codec::{Native5CodecOwner, ProtocolCodecView};
+
+pub(crate) fn owned_codec_enum_layout() -> usize {
+    std::mem::size_of::<Native5CodecOwner>()
+}
+
+pub(crate) fn controller_owned_codec_layout() -> usize {
+    Native5CodecOwner::controller_owned_layout()
+}
+
+mod native_owned11;
 mod original_frames;
+mod original_history;
+pub(crate) use native_owned11::NativeOwned11AfterProtocolCapacityFacts;
+mod supervisor_state;
+pub use original_history::OriginalNative5FrameHistory;
+pub use supervisor_state::{
+    OriginalProtocolSupervisor, OriginalSupervisorCallback, OriginalSupervisorProtocolView,
+    OriginalSupervisorState,
+};
 mod packet_schema;
 
 mod prepared;
@@ -104,6 +141,25 @@ pub struct ConnectionIncident {
 pub trait ConnectionSupervisor {
     /// Takes unresolved custody until authentic reconciliation or reclamation.
     fn quarantine(&self, incident: ConnectionIncident);
+
+    /// Lends actual retained supervisor state for a complete protocol snapshot.
+    ///
+    /// Existing supervisors preserve their ordinary transport behavior and refuse
+    /// complete state capture until their measured source implementation supplies
+    /// the same original bank through [`OriginalSupervisorState`]. This callback
+    /// grants data coverage only, never semantic or fresh-world authority.
+    ///
+    /// # Errors
+    /// Refuses unsupported state families, active callbacks or origin/borrow
+    /// failures, and propagates the caller's bounded inspection refusal.
+    fn with_original_protocol_state(
+        &self,
+        _inspect: &mut dyn FnMut(OriginalSupervisorProtocolView<'_>) -> Result<(), ProviderError>,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::Correlation(
+            "original supervisor state unsupported",
+        ))
+    }
 }
 
 /// Verifies installed schemas and negotiated extensions after baseline decoding.
@@ -165,6 +221,11 @@ pub struct Connection<S: ProviderStream> {
     protocol_owner: Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
     native5_blobs: Option<crate::blob::BlobProtocolOwner>,
     native5_codec: Option<Rc<native5_codec::Native5CodecOwner>>,
+    original_restore_inputs: Option<restore_inputs::InstalledCompleteRestoreInputs>,
+    original_restore_responses:
+        [Option<Rc<std::cell::RefCell<restore_response::AssignedNativeRestoreResponse>>>; 2],
+    original_complete_restoration:
+        Option<complete_installation::InstalledNativeCompleteRestoration>,
     original_canonical_ack_admission:
         Option<crate::reference_packet::service::ack_emitter::VerifiedCanonicalAckAdmission>,
     packet_schema: bool,
@@ -179,6 +240,81 @@ pub struct Connection<S: ProviderStream> {
 }
 
 impl<S: ProviderStream> Connection<S> {
+    pub(crate) fn authenticate_original_supervisor<T: ConnectionSupervisor>(
+        &self,
+        supervisor: &Rc<T>,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        if !std::ptr::addr_eq(Rc::as_ptr(&self.supervisor), Rc::as_ptr(supervisor)) {
+            return Err(ProviderError::Correlation(
+                "native original supervisor changed",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn owned_protocol_view(&self) -> impl serde::Serialize + '_ {
+        struct View<'a, S: ProviderStream>(&'a Connection<S>);
+        impl<S: ProviderStream> serde::Serialize for View<'_, S> {
+            fn serialize<T: serde::Serializer>(&self, serializer: T) -> Result<T::Ok, T::Error> {
+                let original = self.0;
+                let bank = original
+                    .original_frames
+                    .as_ref()
+                    .ok_or_else(|| serde::ser::Error::custom("owning literal bank absent"))?
+                    .try_borrow()
+                    .map_err(|_| serde::ser::Error::custom("owning literal bank borrowed"))?;
+                let codec = original
+                    .native5_codec
+                    .as_ref()
+                    .ok_or_else(|| serde::ser::Error::custom("owning codec absent"))?;
+                serde::Serialize::serialize(
+                    &(
+                        "source-private.connection-with-reader/11",
+                        original.authority.historical_owned_view(),
+                        original.guard.protocol_view(),
+                        codec.owned_protocol_view(),
+                        bank.protocol_view_with_encoding(true),
+                        original
+                            .reader
+                            .original_owned11_facts(original.original_frames.as_ref().ok_or_else(
+                                || serde::ser::Error::custom("original reader bank absent"),
+                            )?)
+                            .map_err(serde::ser::Error::custom)?,
+                        original.packet_schema,
+                        original.connected_packet_schema,
+                        original.fenced,
+                        match original.role {
+                            EndpointRole::Controller => "controller",
+                            EndpointRole::Provider => "provider",
+                        },
+                    ),
+                    serializer,
+                )
+            }
+        }
+        View(self)
+    }
+
+    pub(crate) fn observe_owned_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        self.authority.observe_retained_metadata(observer)?;
+        self.guard.observe_owned_metadata(observer)?;
+        let codec = self
+            .native5_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation("owned protocol codec absent"))?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::Codec,
+            codec.as_ref(),
+        )?;
+        codec.observe_retained_metadata(observer)
+    }
+
     pub(crate) fn install_packet_schema(&mut self) -> Result<(), ProviderError> {
         if self.native5_codec.is_some() {
             self.protocol_owner.ensure_current()?;
@@ -293,6 +429,9 @@ impl<S: ProviderStream> Connection<S> {
             native5_blobs: None,
             native5_codec: None,
             original_canonical_ack_admission: None,
+            original_restore_inputs: None,
+            original_restore_responses: [None, None],
+            original_complete_restoration: None,
             packet_schema: false,
             original_frames: None,
             connected_packet_schema: false,
@@ -309,6 +448,7 @@ impl<S: ProviderStream> Connection<S> {
     /// fences and supervises the original connection. Clean EOF returns `None`
     /// after the same containment handoff; EOF is not operation completion.
     pub fn receive(&mut self) -> Result<Option<ReceivedFrame>, ProviderError> {
+        self.ensure_no_pending_native_restore_response()?;
         self.check_authority()?;
         let result = self.receive_inner();
         match &result {
@@ -402,6 +542,7 @@ impl<S: ProviderStream> Connection<S> {
     /// records to the supervisor. Retry uses the original incarnation journal
     /// on an authenticated resumed connection, never a replacement operation.
     pub fn send(&mut self, envelope: Envelope) -> Result<(), ProviderError> {
+        self.ensure_no_pending_native_restore_response()?;
         self.check_authority()?;
         self.validate_body(&envelope, false)?;
 
@@ -598,3 +739,22 @@ fn allowance(value: u64) -> Result<usize, ProviderError> {
 
 #[cfg(all(test, unix))]
 mod tests;
+
+impl Connection<crate::client::DeadlineStream> {
+    pub(crate) fn authenticate_original_service_deadline(
+        &self,
+        deadline: &crate::client::ExchangeDeadline,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        self.reader
+            .stream_ref()
+            .authenticate_original_deadline(deadline)
+    }
+}
+
+mod complete_installation;
+
+mod restore_realize;
+
+mod restore_input_protocol;

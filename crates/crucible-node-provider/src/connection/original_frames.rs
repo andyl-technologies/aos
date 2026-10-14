@@ -71,6 +71,11 @@ impl<S: ProviderStream> Connection<S> {
         cut: crate::protocol_snapshot::ProtocolCaptureCut,
         deadline: &crate::client::ExchangeDeadline,
     ) -> Result<(), ProviderError> {
+        if reservation.uses_owned11_encoding() {
+            return Err(ProviderError::Correlation(
+                "native owning protocol boot/admission owner view not installed",
+            ));
+        }
         self.protocol_capture_preflight(cut)?;
         self.preflight_protocol_reservation(reservation)?;
         reservation.validate_source_encoding(
@@ -136,6 +141,11 @@ impl<S: ProviderStream> Connection<S> {
         deadline: &crate::client::ExchangeDeadline,
         blobs: &crate::blob::BlobReceiver,
     ) -> Result<(), ProviderError> {
+        if reservation.uses_owned11_encoding() {
+            return Err(ProviderError::Correlation(
+                "native owning protocol boot/admission owner view not installed",
+            ));
+        }
         self.protocol_capture_preflight(cut)?;
         if self
             .native5_blobs
@@ -297,7 +307,14 @@ impl<S: ProviderStream> Connection<S> {
         reservation: &mut Option<crate::protocol_snapshot::ProtocolSnapshotReservation>,
         cut: crate::protocol_snapshot::ProtocolCaptureCut,
     ) -> Result<crate::protocol_snapshot::OriginalProtocolSnapshot, ProviderError> {
-        self.protocol_capture_preflight(cut)?;
+        if reservation
+            .as_ref()
+            .is_some_and(|bank| bank.uses_owned11_encoding())
+        {
+            self.native_owned11_preflight(cut)?;
+        } else {
+            self.protocol_capture_preflight(cut)?;
+        }
         crate::protocol_snapshot::ProtocolSnapshotReservation::finish_from_slot(
             reservation,
             &self.authority,

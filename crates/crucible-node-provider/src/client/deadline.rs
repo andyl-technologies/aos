@@ -20,6 +20,16 @@ mod original_deadline_tests;
 pub struct ExchangeDeadline(Rc<Cell<OperationalDeadline>>);
 
 impl ExchangeDeadline {
+    pub(crate) fn observe_owned11_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), crate::ProviderError> {
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::OperationalDeadline,
+            self.0.as_ref(),
+        )
+    }
+
     pub(crate) fn original_cut(&self) -> OperationalDeadline {
         self.0.get()
     }
@@ -122,6 +132,21 @@ impl DeadlineStreamBirthRefusal {
 }
 
 impl DeadlineStream {
+    pub(crate) fn authenticate_original_deadline(
+        &self,
+        deadline: &ExchangeDeadline,
+    ) -> Result<(), crate::ProviderError> {
+        if !Rc::ptr_eq(&self.deadline.0, &deadline.0)
+            || self.deadline.original_cut() != deadline.original_cut()
+        {
+            return Err(crate::ProviderError::Correlation(
+                "original stream deadline differs",
+            ));
+        }
+        deadline.remaining()?;
+        Ok(())
+    }
+
     /// Retains the original socket when its existing complete-source cut refuses.
     ///
     /// The caller starts this absolute deadline before native birth effects.
@@ -256,3 +281,12 @@ mod native5_birth_cut;
 pub use native5_birth_cut::{
     OriginalNative5BirthCut, OriginalNative5BirthStream, OriginalNative5BirthStreamRefusal,
 };
+
+impl DeadlineStream {
+    pub(crate) fn retain_original_operation_deadline(
+        &self,
+    ) -> Result<ExchangeDeadline, crate::ProviderError> {
+        self.deadline.remaining()?;
+        Ok(self.deadline.clone())
+    }
+}

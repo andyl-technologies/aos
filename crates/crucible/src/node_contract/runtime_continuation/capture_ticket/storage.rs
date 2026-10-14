@@ -122,6 +122,35 @@ pub(super) fn shared_allocation<T>() -> usize {
     size_of::<SharedAllocation<T>>()
 }
 
+/// Bounds shared control blocks separately from observed inline payload bytes.
+pub(super) fn protocol_shared_header_storage(
+    views: usize,
+    maximum_data_alignment: usize,
+    maximum: usize,
+) -> Result<usize, RuntimeError> {
+    use std::{alloc::Layout, mem::align_of};
+
+    if views == 0 {
+        return Ok(0);
+    }
+    Layout::from_size_align(0, maximum_data_alignment).map_err(|_| RuntimeError::InvalidReceipt)?;
+    let alignment = maximum_data_alignment.max(align_of::<usize>());
+    let header = (2 * size_of::<usize>())
+        .checked_add(alignment - 1)
+        .map(|n| n & !(alignment - 1))
+        .ok_or(RuntimeError::ResourceLimit)?;
+    // Unsized slices may need trailing padding as well as the aligned header.
+    // Charge every retained view; no reference identity grants a byte discount.
+    let bytes = header
+        .checked_add(alignment - 1)
+        .and_then(|n| n.checked_mul(views))
+        .ok_or(RuntimeError::ResourceLimit)?;
+    if bytes > maximum {
+        return Err(RuntimeError::ResourceLimit);
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod shared_layout_tests {
     use super::*;
@@ -134,5 +163,20 @@ mod shared_layout_tests {
     fn reference_counted_header_accounts_for_data_alignment() {
         assert_eq!(shared_allocation::<Aligned>(), 128);
         assert!(shared_allocation::<Aligned>() > 2 * size_of::<usize>() + size_of::<Aligned>());
+    }
+
+    #[test]
+    fn protocol_shared_headers_cover_aligned_and_unsized_payload_padding()
+    -> Result<(), crate::node_contract::RuntimeError> {
+        let headers =
+            protocol_shared_header_storage(1, std::mem::align_of::<Aligned>(), usize::MAX)?;
+        assert!(headers + size_of::<Aligned>() >= shared_allocation::<Aligned>());
+        let bytes = protocol_shared_header_storage(3, 1, usize::MAX)?;
+        assert!(bytes >= 3 * 2 * size_of::<usize>());
+        assert_eq!(protocol_shared_header_storage(0, 0, 0)?, 0);
+        assert!(protocol_shared_header_storage(1, 3, usize::MAX).is_err());
+        assert!(protocol_shared_header_storage(usize::MAX, 64, usize::MAX).is_err());
+        assert!(protocol_shared_header_storage(1, 8, 1).is_err());
+        Ok(())
     }
 }

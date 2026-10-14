@@ -5,9 +5,18 @@
 //! selected physical geometry remain independent before ticket dispatch.
 
 mod authority;
-mod population;
+mod capture_factory;
+mod capture_records;
+pub use capture_factory::{PacketCompleteCaptureFactory, PacketCompleteWorldCapture};
+mod execution;
+pub use execution::{
+    PacketCompleteExecutionActor, PacketCompleteExecutionError, PacketCompleteExecutionScene,
+    PacketCompleteRuntimeAttachmentFailure,
+};
 mod graph;
+mod population;
 mod records;
+pub(super) mod retained;
 mod roster;
 
 pub use graph::{

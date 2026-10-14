@@ -64,6 +64,9 @@ pub(super) fn launches(
             },
             limits: selected.limits,
             storage: selected.storage,
+            protocol_metadata_limits: None,
+            complete_restore_selection: None,
+            restore_input_emitter_selection: None,
             effects: scene
                 ._directory
                 .path()

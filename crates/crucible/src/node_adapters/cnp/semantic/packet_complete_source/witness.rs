@@ -79,6 +79,34 @@ impl PacketCompleteNativeWitness<'_> {
 }
 
 impl PacketCompleteSemanticSource {
+    /// Borrows actual native metadata birth facts through the original receipt.
+    ///
+    /// The complete witness binds the actual native child, original controller
+    /// reply and unchanged underlying model record. These capacities remain
+    /// accounting facts; live quote and whole-world admission are independent.
+    ///
+    /// # Errors
+    /// Refuses changed original source/native custody, missing live evidence,
+    /// absent or inconsistent born row limits, or invalid actual capacity data.
+    pub fn original_protocol_metadata_birth_facts(
+        &self,
+        scope: &CnpSemanticRealizationScope<'_>,
+    ) -> Result<Option<crucible_node_provider::reference_packet::service::PacketNative5ProtocolMetadataBirthFacts>, OperationFailure>{
+        let witness = self.latest_original_native_witness(scope)?;
+        let facts = witness.receipt.protocol_metadata_birth_facts;
+        match (self.selected_protocol_metadata_limits()?, facts) {
+            (Some(limits), Some(facts)) => facts.validate_data(&limits).map_err(unknown)?,
+            (None, None) => {}
+            _ => {
+                return Err(refused(
+                    "complete original native metadata birth facts absent",
+                ));
+            }
+        }
+        self.authenticate_witness_scope(scope)?;
+        Ok(facts)
+    }
+
     pub(super) fn authenticate_witness_scope(
         &self,
         scope: &CnpSemanticRealizationScope<'_>,
@@ -189,6 +217,16 @@ impl PacketCompleteSemanticSource {
             canonical::parse_json(bytes, self.installation().maximum_result_bytes.min(65_536))
                 .map_err(unknown)?;
         let receipt: PacketNative5Record = serde_json::from_value(value).map_err(unknown)?;
+        if receipt.protocol_metadata_limits != self.selected_protocol_metadata_limits()?
+            || receipt.complete_restore_selection != self.selected_complete_restore_selection()?
+            || receipt.restore_input_emitter_selection
+                != self.selected_restore_input_emitter_selection()?
+        {
+            return Err(refused(
+                "complete native receipt metadata row selection differs",
+            ));
+        }
+
         let native_bytes = scope
             .controller
             .content(&receipt.native_record)

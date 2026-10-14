@@ -4,6 +4,8 @@
 //! launches remain owned throughout preparation. Every normative obligation is
 //! explicit and unexecuted. Capture and operation callbacks inherit refusal.
 
+mod retained;
+
 use super::super::scope;
 use super::{
     InstalledPacketCompleteGraphPolicy, PacketCompletePopulationRequest, PacketCompleteRoster,
@@ -23,7 +25,7 @@ use crucible_node_provider::reference_packet::{
     service::{PacketConnectedSourceProgram, PacketNative5SourceLaunch},
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     collections::BTreeMap,
     path::{Path, PathBuf},
     rc::Rc,
@@ -81,6 +83,8 @@ pub struct InstalledPacketCompleteCollectionAuthority {
     directories: [PathBuf; 3],
     original_ack_hello: RefCell<[Option<OriginalAckHelloSlot>; 3]>,
     original_ack_callback_started: Cell<bool>,
+    capture_factory: OnceCell<std::rc::Weak<super::capture_factory::PacketCompleteCaptureFactory>>,
+    execution_scene: OnceCell<std::rc::Weak<super::execution::PacketCompleteExecutionScene>>,
 }
 
 impl InstalledPacketCompleteCollectionAuthority {
@@ -185,6 +189,8 @@ impl InstalledPacketCompleteCollectionAuthority {
         let original = Rc::new(Self {
             original_ack_hello: RefCell::new(std::array::from_fn(|_| None)),
             original_ack_callback_started: Cell::new(false),
+            capture_factory: OnceCell::new(),
+            execution_scene: OnceCell::new(),
             roster: request.roster,
             host: request.host,
             graph_policy: request.graph_policy,
@@ -240,6 +246,60 @@ impl InstalledPacketCompleteCollectionAuthority {
     pub fn collection_plan(self: &Rc<Self>) -> Result<InstalledConformancePlan, EvidenceError> {
         self.current().map_err(evidence_error)?;
         InstalledConformancePlan::install(self.plan_evidence(), self.clone())
+    }
+
+    pub(super) fn capture_graph_policy(&self) -> &InstalledPacketCompleteGraphPolicy {
+        &self.graph_policy
+    }
+
+    pub(super) fn bind_capture_factory(
+        &self,
+        factory: &Rc<super::capture_factory::PacketCompleteCaptureFactory>,
+    ) -> Result<(), crucible::node_state::StateError> {
+        self.current().map_err(super::capture_records::error)?;
+        factory.authenticate_authority_object(self)?;
+        self.capture_factory
+            .set(Rc::downgrade(factory))
+            .map_err(|_| {
+                super::capture_records::refused("original complete factory was already installed")
+            })
+    }
+
+    pub(super) fn original_capture_factory(
+        &self,
+    ) -> Result<Rc<super::capture_factory::PacketCompleteCaptureFactory>, EvidenceError> {
+        self.current().map_err(evidence_error)?;
+        self.capture_factory
+            .get()
+            .and_then(std::rc::Weak::upgrade)
+            .ok_or_else(|| evidence_error(refused()))
+    }
+
+    pub(super) fn requirements_identity(&self) -> &HashRef {
+        &self.requirements
+    }
+
+    pub(super) fn bind_execution_scene(
+        &self,
+        scene: &Rc<super::execution::PacketCompleteExecutionScene>,
+    ) -> Result<(), QualificationError> {
+        self.current()?;
+        if !scene.has_authority(self) {
+            return Err(refused());
+        }
+        self.execution_scene
+            .set(Rc::downgrade(scene))
+            .map_err(|_| refused())
+    }
+
+    pub(super) fn original_execution_scene(
+        &self,
+    ) -> Result<Rc<super::execution::PacketCompleteExecutionScene>, QualificationError> {
+        self.current()?;
+        self.execution_scene
+            .get()
+            .and_then(std::rc::Weak::upgrade)
+            .ok_or_else(refused)
     }
 
     /// Borrows the complete original unit and all unexecuted normative cases.
@@ -420,6 +480,14 @@ pub(super) fn authenticate_expected_launch_selections(
         || launch.ack_emitter_selection
             != source
                 .selected_ack_emitter_selection()
+                .map_err(operation_qualification)?
+        || launch.complete_restore_selection
+            != source
+                .selected_complete_restore_selection()
+                .map_err(operation_qualification)?
+        || launch.protocol_metadata_limits
+            != source
+                .selected_protocol_metadata_limits()
                 .map_err(operation_qualification)?
         || launch.native_codec_metadata_extent
             != source

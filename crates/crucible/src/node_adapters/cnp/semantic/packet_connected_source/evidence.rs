@@ -37,12 +37,30 @@ impl PacketConnectedSemanticSource {
         let mut dependencies = vec![record.cut.delivery_inventory.clone()];
         for claim in lineage.publications() {
             rows.claim(claim)?;
-            inventory_dependencies.push(claim.origin.measurement.clone());
+            if !self.world.is_complete() {
+                inventory_dependencies.push(claim.origin.measurement.clone());
+            }
             dependencies.push(claim.published.clone());
         }
         for (event, bytes) in record.batch.events.iter().zip(&record.payloads) {
             rows.add(&event.payload, bytes.as_slice(), Vec::new())?;
-            inventory_dependencies.push(event.payload.clone());
+            if !self.world.is_complete() {
+                inventory_dependencies.push(event.payload.clone());
+            }
+        }
+        if self.world.is_complete() {
+            self.add_complete_input_static_rows(rows)?;
+            for delivery in lineage.original().deliveries() {
+                inventory_dependencies.push(delivery.payload.clone());
+                inventory_dependencies.push(delivery.provenance_ref.clone());
+                inventory_dependencies.push(
+                    delivery
+                        .connection_policy_ref
+                        .as_ref()
+                        .ok_or_else(|| refused("complete original delivery policy absent"))?
+                        .clone(),
+                );
+            }
         }
         rows.add(
             &record.cut.delivery_inventory,

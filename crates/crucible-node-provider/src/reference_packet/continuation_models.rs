@@ -11,8 +11,7 @@
 //!  captured_process, configuration, cut, capacities, state: {all model fields}}
 //! ```
 
-use crucible_node_contract::{ContentRef, canonical};
-use serde::de::DeserializeOwned;
+use crucible_node_contract::{ContentRef, ContractError, HashRef, canonical};
 
 use super::*;
 
@@ -198,13 +197,6 @@ fn checked_limit(maximum_bytes: usize) -> Result<usize, ProviderError> {
     Ok(maximum_bytes)
 }
 
-pub(super) fn decode_state<T: DeserializeOwned>(
-    record: &mut ModelRecord,
-) -> Result<T, ProviderError> {
-    Ok(serde_json::from_value(std::mem::take(&mut record.state))
-        .map_err(crucible_node_contract::ContractError::from)?)
-}
-
 pub(super) fn check_definition(
     record: &ModelRecord,
     definition: &impl Serialize,
@@ -218,24 +210,6 @@ pub(super) fn check_definition(
         ));
     }
     Ok(())
-}
-
-pub(super) fn restore_vec<T>(
-    values: Vec<T>,
-    capacity: usize,
-    maximum: usize,
-) -> Result<Vec<T>, ProviderError> {
-    if values.len() > capacity || capacity > maximum {
-        return Err(ProviderError::ResourceExhausted(
-            "packet model vector capacity",
-        ));
-    }
-    let mut restored = Vec::new();
-    restored
-        .try_reserve_exact(capacity)
-        .map_err(|_| ProviderError::ResourceExhausted("packet model vector allocation"))?;
-    restored.extend(values);
-    Ok(restored)
 }
 
 #[derive(Serialize)]
@@ -332,47 +306,170 @@ impl PacketProgram {
         snapshot: PacketDecodedModelSnapshot,
         effect_socket: UnixDatagram,
     ) -> Result<Self, ProviderError> {
-        let mut record = snapshot.record;
-        if record.kind != PacketModelKind::Producer {
-            return Err(ProviderError::Correlation("packet producer model kind"));
-        }
-        let state: ProducerState = decode_state(&mut record)?;
-        if state.reached != record.cut
-            || state.next_event > state.events.len()
-            || state.grants.len() > MAXIMUM_OPERATIONS
-            || state.retired.len() > state.grants.len()
-            || state.failed
-            || state
-                .grants
-                .iter()
-                .any(|(id, grant)| id != &grant.operation || !grant.complete)
-            || state
-                .retired
-                .keys()
-                .any(|id| !state.grants.contains_key(id))
-            || record.capacities.reactions != 0
-            || record.capacities.delivered_inputs != 0
-            || record.capacities.publications != 0
-            || record.capacities.stages != 0
-        {
-            return Err(ProviderError::Correlation("packet producer model state"));
-        }
-        let definition = ProducerDefinitionView {
-            schema: "source-owned.packet-program.v1",
-            events: &state.events,
-        };
-        check_definition(&record, &definition)?;
-        let events = restore_vec(state.events, record.capacities.events, MAXIMUM_EVENTS)?;
-        let mut model = Self::new(events, effect_socket)?;
-        model.next_event = state.next_event;
-        model.reached = state.reached;
-        model.gate_closed = state.gate_closed;
-        model.outputs = restore_vec(state.outputs, record.capacities.outputs, MAXIMUM_EVENTS)?;
-        model.grants = state.grants;
-        model.private_mutations = state.private_mutations;
-        model.packet_effects = state.packet_effects;
-        model.retired = state.retired;
-        model.failed = state.failed;
-        Ok(model)
+        let mut snapshot = Some(snapshot);
+        let mut effect_socket = Some(effect_socket);
+        let mut attempt = None;
+        Self::adopt_model_state_retained_into(&mut snapshot, &mut effect_socket, &mut attempt)?;
+        let mut completed = None;
+        attempt
+            .as_mut()
+            .ok_or(ProviderError::Conflict("model adoption owner absent"))?
+            .take_completed_into(&mut completed)?;
+        completed.ok_or(ProviderError::Conflict("model adoption completion absent"))
     }
+}
+
+fn authenticate_producer_data(
+    record: &ModelRecord,
+    state: &ProducerState,
+) -> Result<(), ProviderError> {
+    if state.reached != record.cut
+        || state.next_event > state.events.len()
+        || state.grants.len() > MAXIMUM_OPERATIONS
+        || state.retired.len() > state.grants.len()
+        || state.failed
+        || state
+            .grants
+            .iter()
+            .any(|(id, grant)| id != &grant.operation || !grant.complete)
+        || state
+            .retired
+            .keys()
+            .any(|id| !state.grants.contains_key(id))
+        || record.capacities.reactions != 0
+        || record.capacities.delivered_inputs != 0
+        || record.capacities.publications != 0
+        || record.capacities.stages != 0
+    {
+        return Err(ProviderError::Correlation("packet producer model state"));
+    }
+    let definition = ProducerDefinitionView {
+        schema: "source-owned.packet-program.v1",
+        events: &state.events,
+    };
+    check_definition(record, &definition)?;
+    if state.events.len() > record.capacities.events
+        || record.capacities.events > MAXIMUM_EVENTS
+        || state.outputs.len() > record.capacities.outputs
+        || record.capacities.outputs > MAXIMUM_EVENTS
+    {
+        return Err(ProviderError::ResourceExhausted(
+            "packet model vector capacity",
+        ));
+    }
+    Ok(())
+}
+
+/// Reports a stopped model's complete inventory hash and Capture boundary data.
+///
+/// This projection authenticates bounded historical data. It constructs no
+/// native model, datagram, registration, activation or restoration permission.
+pub struct PacketModelCaptureBoundaryData {
+    /// Retains the exact stopped local model position.
+    pub local_cursor: Position,
+    /// Reports the captured native gate, independently of host admission.
+    pub gate_closed: bool,
+    /// Counts outputs still owned by the captured model.
+    pub retained_outputs: usize,
+    /// Gives the earliest future callback completion, when one remains.
+    pub earliest_pending_completion: Option<Position>,
+    /// Hashes the exact original producer or reactive inventory grammar.
+    pub inventory_hash: HashRef,
+}
+
+#[derive(Serialize)]
+struct ProducerInventoryData<'a> {
+    reached: Position,
+    gate_closed: bool,
+    pending: &'a [PacketEvent],
+    retained_outputs: &'a [PacketPublication],
+    private_mutations: U64,
+    packet_effects: U64,
+}
+
+impl PacketDecodedModelSnapshot {
+    /// Checks complete typed model data and derives the exact Capture boundary.
+    ///
+    /// The source separately admits the bounded typed projection scratch before
+    /// calling. The model's same original data remains unchanged on refusal.
+    ///
+    /// # Errors
+    /// Refuses invalid selected byte credit, malformed model histories, changed
+    /// configuration/cursor, incomplete grants or impossible retained capacities.
+    pub fn capture_boundary_data(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<PacketModelCaptureBoundaryData, ProviderError> {
+        let maximum = checked_limit(maximum_bytes)?;
+        crate::connection::serialized_credit(&self.record.state, maximum)?;
+        if self.record.kind == PacketModelKind::Reactive {
+            return super::connected::continuation::capture_boundary_data(&self.record);
+        }
+        let state = ProducerState::deserialize(&self.record.state).map_err(ContractError::from)?;
+        authenticate_producer_data(&self.record, &state)?;
+        let pending = &state.events[state.next_event..];
+        let inventory = ProducerInventoryData {
+            reached: state.reached,
+            gate_closed: state.gate_closed,
+            pending,
+            retained_outputs: &state.outputs,
+            private_mutations: U64::new(state.private_mutations),
+            packet_effects: U64::new(state.packet_effects),
+        };
+        Ok(PacketModelCaptureBoundaryData {
+            local_cursor: state.reached,
+            gate_closed: state.gate_closed,
+            retained_outputs: state.outputs.len(),
+            earliest_pending_completion: pending.iter().map(|event| event.completion).min(),
+            inventory_hash: canonical::json_hash("source-owned.packet-inventory.v1", &inventory)?,
+        })
+    }
+}
+
+#[path = "continuation_models/producer_retained.rs"]
+mod retained_adoption;
+pub(crate) use retained_adoption::PacketDisplacedProducerModel;
+pub use retained_adoption::PacketProducerModelAdoption;
+
+pub(in crate::reference_packet) mod record_history;
+pub use record_history::PacketModelRecordExpectation;
+
+// Layout facts are data for Source's nonallocating JSON walk, never a permit.
+pub(in crate::reference_packet) fn original_model_validation_layouts() -> [usize; 6] {
+    use std::mem::{align_of, size_of};
+    let connected = super::connected::continuation::original_validation_layouts();
+    let slot = [
+        size_of::<ModelRecord>(),
+        size_of::<ModelCapacities>(),
+        size_of::<ProducerState>(),
+        size_of::<PacketEvent>(),
+        size_of::<PacketPublication>(),
+        size_of::<PacketInventory>(),
+        size_of::<PacketGrant>(),
+        connected[0],
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0);
+    let alignment = [
+        align_of::<ModelRecord>(),
+        align_of::<ModelCapacities>(),
+        align_of::<ProducerState>(),
+        align_of::<PacketEvent>(),
+        align_of::<PacketPublication>(),
+        align_of::<PacketInventory>(),
+        align_of::<PacketGrant>(),
+        connected[1],
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(1);
+    [
+        slot,
+        alignment,
+        size_of::<ModelRecord>(),
+        size_of::<ProducerState>(),
+        connected[2],
+        connected[3],
+    ]
 }

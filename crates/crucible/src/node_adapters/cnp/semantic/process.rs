@@ -21,6 +21,7 @@ pub use current::CnpSemanticSourceRead;
 pub(super) use current::ReadCall;
 
 mod executable_guard;
+mod retained_storage;
 
 mod reservation;
 pub use reservation::{CnpSemanticLaunchReservation, CnpSemanticReservationFailure};
@@ -36,6 +37,25 @@ pub trait CnpSemanticProcessSlot {
     /// The pre-Child reservation reads this callback before spawning. Its result
     /// is cached; later guard identity reads do not invoke installed callbacks.
     fn identity(&self) -> U64;
+
+    /// Observes actual backing heaps of the same concrete supervision slot.
+    ///
+    /// The caller counts this slot's actual Box inline layout separately. A
+    /// supported implementation walks its retained original typed owners and
+    /// charges shared backing conservatively per view; it performs no retention,
+    /// native operation, Cell extraction, source callback or ownership transfer.
+    /// None identifies missing backing observation, never a zero-byte owner.
+    /// This data-only result confers no supervision or reclamation permission.
+    ///
+    /// # Errors
+    /// Refuses an unsupported mutable/returned phase, changed original owner or
+    /// requested storage above maximum. The default reports unknown ownership.
+    fn retained_requested_storage_data(
+        &self,
+        _maximum: usize,
+    ) -> Result<Option<usize>, crate::node_contract::OperationFailure> {
+        Ok(None)
+    }
 
     /// Retains the original process and complete immutable request/content journals.
     ///
@@ -55,6 +75,8 @@ pub struct CnpSemanticProcessCustody {
     provider_pid: u32,
     pub(super) directory: PathBuf,
     pub(super) controller: Option<CnpController>,
+    pub(super) protocol_supervisor:
+        std::cell::RefCell<Option<crucible_node_provider::connection::OriginalProtocolSupervisor>>,
     pub(super) handshake: Option<Handshake>,
     pub(super) extension_handshake: Option<ExtensionHandshake>,
     pub(super) expected_executable: ContentRef,
@@ -87,6 +109,29 @@ impl CnpSemanticProcessCustody {
             ));
         }
         Ok(())
+    }
+
+    pub(super) fn retain_original_complete_protocol_supervisor(&self) -> Result<(), ProviderError> {
+        self.authenticate_process()?;
+        let call = ReadCall::begin(Rc::clone(&self.read_owner))?;
+        let result = (|| {
+            let controller = self.controller.as_ref().ok_or(ProviderError::Correlation(
+                "original supervisor controller absent",
+            ))?;
+            let mut witness = self
+                .protocol_supervisor
+                .try_borrow_mut()
+                .map_err(|_| ProviderError::Conflict("original supervisor witness borrowed"))?;
+            if witness.is_none() {
+                *witness = Some(controller.retain_original_protocol_supervisor()?);
+            }
+            controller.original_owned11_metadata_facts_with_supervisor(witness.as_ref().ok_or(
+                ProviderError::Correlation("original supervisor witness absent"),
+            )?)?;
+            Ok(())
+        })();
+        call.finish(result.is_ok());
+        result
     }
 
     /// Returns the original actual provider Child ID for native diagnostics.
@@ -241,6 +286,7 @@ impl Drop for CnpSemanticProcessCustody {
         // duplicate allocations are retained until that foreign process exits.
         std::mem::forget(self.child.take());
         std::mem::forget(self.controller.take());
+        std::mem::forget(self.protocol_supervisor.get_mut().take());
         std::mem::forget(self.handshake.take());
         std::mem::forget(self.extension_handshake.take());
         std::mem::forget(self.registration.take());
@@ -313,6 +359,7 @@ impl CnpSemanticLaunchGuard {
                 provider_pid,
                 directory,
                 controller: None,
+                protocol_supervisor: std::cell::RefCell::new(None),
                 handshake: None,
                 extension_handshake: None,
                 expected_executable: executable,

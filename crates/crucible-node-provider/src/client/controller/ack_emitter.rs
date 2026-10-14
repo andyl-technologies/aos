@@ -28,6 +28,30 @@ pub struct OriginalCanonicalBlobAckEmitter {
 }
 
 impl OriginalCanonicalBlobAckEmitter {
+    /// Reports actual retained emitter association fields without granting rights.
+    ///
+    /// # Errors
+    /// Refuses foreign actors, a revoked registrar or traversal overflow.
+    pub fn original_retained_metadata_facts(
+        &self,
+    ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
+        let Self {
+            controller,
+            connection,
+            registration,
+            codec,
+        } = self;
+        controller.ensure_current()?;
+        connection.ensure_current()?;
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        observer.shared_value(controller.as_ref())?;
+        observer.shared_value(connection.as_ref())?;
+        registration.observe_retained_metadata(&mut observer)?;
+        observer.shared_value(codec.as_ref())?;
+        codec.observe_retained_metadata(&mut observer)?;
+        Ok(observer.finish())
+    }
+
     /// Rechecks the original actor, registrar and actual immutable writer owner.
     ///
     /// # Errors

@@ -101,7 +101,7 @@ pub(super) fn prepare<S: ProviderStream>(
                 .and_then(|sent| sent.checked_add(acks))
         })
         .and_then(|new| retained_credit.checked_add(new))
-        .filter(|total| *total <= 32 * 1024 * 1024)
+        .filter(|total| *total <= super::MAXIMUM_PACKET_TRANSPORT_BYTES)
         .ok_or(ProviderError::ResourceExhausted(
             "packet whole transport credit",
         ))?;

@@ -241,3 +241,33 @@ fn initial_unsupported_lease_reads_changed_bytes_and_stays_revoked_after_restore
     assert!(guard.ensure_current(&kernel).is_err());
     assert!(guard.original.lease().is_none());
 }
+
+#[test]
+fn self_process_cannot_supply_original_child_kernel_identity() {
+    assert!(matches!(
+        KernelIdentity::capture(std::process::id()),
+        Err(ProviderError::Correlation(
+            "generic original kernel ownership changed"
+        ))
+    ));
+}
+
+#[test]
+#[ignore = "requires actual source-built original child and complete executable byte checks"]
+fn complete_byte_path_measures_actual_original_child_and_revocation_stays_sticky() {
+    let fixture = NativeFixture::new();
+    let identity = fixture.kernel();
+    let reference = fixture.measured();
+    let mut original =
+        OriginalExecutable::open_complete_bytes(fixture.child.id(), &reference, &identity).unwrap();
+
+    assert!(original.original.lease().is_none());
+    original.ensure_current(&identity).unwrap();
+    let expected = original.expected.clone();
+    original.expected.hash.digest = "0".repeat(64);
+    assert!(original.ensure_current(&identity).is_err());
+    assert!(original.revoked.get());
+    original.expected = expected;
+    assert!(original.ensure_current(&identity).is_err());
+    assert!(original.original.lease().is_none());
+}

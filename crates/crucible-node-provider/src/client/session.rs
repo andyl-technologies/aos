@@ -82,6 +82,37 @@ pub struct ClientCustody {
 }
 
 impl ClientCustody {
+    pub(super) fn observe_owned_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            maximum_requests,
+            maximum_bytes,
+            retained_bytes,
+            controller,
+            provider,
+            content,
+        } = self;
+        observer.observe(maximum_requests)?;
+        observer.observe(maximum_bytes)?;
+        observer.observe(retained_bytes)?;
+        observer.observe(controller)?;
+        observer.observe(provider)?;
+        content.observe_owned_metadata(observer)
+    }
+
+    pub(super) fn owned_protocol_view(&self) -> impl serde::Serialize + '_ {
+        (
+            self.maximum_requests,
+            self.maximum_bytes,
+            self.retained_bytes,
+            &self.controller,
+            &self.provider,
+            self.content.original_compact_metadata8_view(),
+        )
+    }
+
     pub(super) fn original_native5_custody_facts(
         &self,
         negotiated_journal_entries: u64,
@@ -324,6 +355,76 @@ impl From<ExchangeDeadline> for InitialDeadline {
 }
 
 impl ClientSession {
+    pub(super) fn owned_protocol_view(&self) -> impl serde::Serialize + '_ {
+        struct View<'a>(&'a ClientSession);
+        impl serde::Serialize for View<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let original = self.0;
+                let hello = original
+                    .original_ack_hello
+                    .as_ref()
+                    .ok_or_else(|| serde::ser::Error::custom("owning original Hello absent"))?
+                    .try_borrow()
+                    .map_err(|_| serde::ser::Error::custom("owning original Hello borrowed"))?;
+                serde::Serialize::serialize(
+                    &(
+                        "source-private.client-session/11",
+                        original.connection.owned_protocol_view(),
+                        original.authority.historical_owned_view(),
+                        original.sequence,
+                        original.peer_pid,
+                        &original.peer_executable,
+                        hello.protocol_view_with_encoding(true),
+                        "original-physical-cut-retained-by-source-not-portable-time",
+                    ),
+                    serializer,
+                )
+            }
+        }
+        View(self)
+    }
+
+    pub(super) fn retain_owned_hello(
+        &self,
+        reservation: &mut crate::protocol_snapshot::ProtocolSnapshotReservation,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        let bank = self
+            .original_ack_hello
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "owning protocol original Hello association absent",
+            ))?;
+        // A clone retains the same actual allocation, not reconstructed bytes.
+        reservation.retain_owned_hello(bank.clone());
+        Ok(())
+    }
+
+    pub(super) fn observe_owned_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        if self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "owned protocol mutable callback",
+            ));
+        }
+        self.connection.observe_owned_metadata(observer)?;
+        self.authority.observe_retained_metadata(observer)?;
+        observer.observe(&self.sequence)?;
+        observer.observe(&self.peer_pid)?;
+        observer.observe(&self.peer_executable)?;
+        // The actual Hello literal bank is encoded separately with full byte and
+        // descriptor capacities; this metadata walk charges its shared header.
+        if let Some(bank) = &self.original_ack_hello {
+            observer.shared_original(
+                crate::retained_metadata::aliases::MetadataSharedKind::HelloBank,
+                bank.as_ref(),
+            )?;
+        }
+        Ok(())
+    }
+
     pub(super) fn prepare_fresh_native5_protocol_mapping(
         &mut self,
         original: &crate::protocol_snapshot::OriginalProtocolSnapshot,
@@ -365,6 +466,43 @@ impl ClientSession {
         &self,
     ) -> crate::operational_time::OperationalDeadline {
         self.deadline.original_cut()
+    }
+
+    pub(super) fn retain_original_protocol_supervisor(
+        &self,
+    ) -> Result<crate::connection::OriginalProtocolSupervisor, ProviderError> {
+        if self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "supervisor witness refuses mutable loss callback",
+            ));
+        }
+        self.authority.ensure_live()?;
+        self.connection.retain_original_protocol_supervisor()
+    }
+
+    pub(super) fn authenticate_original_protocol_supervisor(
+        &self,
+        witness: &crate::connection::OriginalProtocolSupervisor,
+    ) -> Result<(), ProviderError> {
+        if self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "supervisor witness refuses mutable loss callback",
+            ));
+        }
+        self.authority.ensure_live()?;
+        witness.authenticate(&self.connection)
+    }
+
+    pub(super) fn original_native5_frame_history(
+        &self,
+    ) -> Result<crate::connection::OriginalNative5FrameHistory<'_>, ProviderError> {
+        if self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "original history refuses mutable loss callback",
+            ));
+        }
+        self.authority.ensure_live()?;
+        self.connection.original_native5_frame_history()
     }
 
     pub(super) fn protocol_capture_preflight(
@@ -647,6 +785,79 @@ impl ClientSession {
         }
         self.connection
             .install_native5_controller_ack_emitter_codec_with_metadata_extent(
+                bank,
+                selection,
+                coordinator,
+                profile,
+                metadata_extent,
+            )
+    }
+
+    pub(super) fn install_native5_source_complete_restore_codec_with_metadata_extent(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: crate::connection::CanonicalAckCodecMetadataExtent,
+    ) -> Result<(), ProviderError> {
+        if self.sequence.get() != 2 || self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "canonical ACK codec requires unused original session without callbacks",
+            ));
+        }
+        self.connection
+            .install_native5_controller_complete_restore_codec_with_metadata_extent(
+                bank,
+                selection,
+                coordinator,
+                profile,
+                metadata_extent,
+            )
+    }
+
+    pub(super) fn install_native5_source_complete_restore_transfer_codec_with_metadata_extent(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: crate::connection::CanonicalAckCodecMetadataExtent,
+    ) -> Result<(), ProviderError> {
+        if self.sequence.get() != 2 || self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "canonical ACK codec requires unused original session without callbacks",
+            ));
+        }
+        self.connection
+            .install_native5_controller_complete_restore_transfer_codec_with_metadata_extent(
+                bank,
+                selection,
+                coordinator,
+                profile,
+                metadata_extent,
+            )
+    }
+
+    /// Installs the source-selected original canonical restoration uploader codec.
+    ///
+    /// # Errors
+    /// Refuses used banks, wrong source declarations, role, negotiation or finite codec credit.
+    pub(super) fn install_native5_source_restore_input_emitter_codec_with_metadata_extent(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: crate::connection::CanonicalAckCodecMetadataExtent,
+    ) -> Result<(), ProviderError> {
+        if self.sequence.get() != 2 || self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "canonical ACK codec requires unused original session without callbacks",
+            ));
+        }
+        self.connection
+            .install_native5_controller_restore_input_emitter_codec_with_metadata_extent(
                 bank,
                 selection,
                 coordinator,
@@ -1366,3 +1577,193 @@ pub(super) fn object(value: impl serde::Serialize) -> Result<Map<String, Value>,
 #[cfg(test)]
 #[path = "session/controller_fixture.rs"]
 mod controller_fixture;
+
+impl ClientSession {
+    pub(super) fn prepare_archived_protocol_mapping(
+        &mut self,
+        input: crate::protocol_snapshot::ArchivedProtocolMappingInput<'_>,
+        controller: &Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+    ) -> Result<crate::protocol_snapshot::PreparedArchivedProtocolMapping, ProviderError> {
+        self.protocol_capture_preflight(crate::protocol_snapshot::ProtocolCaptureCut::HostSettled)?;
+        self.connection.prepare_archived_protocol_mapping(
+            input,
+            controller,
+            self.deadline.original_cut(),
+        )
+    }
+
+    pub(super) fn authenticate_archived_protocol_mapping(
+        &self,
+        mapping: &crate::protocol_snapshot::PreparedArchivedProtocolMapping,
+        controller: &Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        self.connection.authenticate_archived_protocol_mapping(
+            mapping,
+            controller,
+            self.deadline.original_cut(),
+        )
+    }
+}
+
+impl ClientSession {
+    pub(super) fn current_original_complete_restore_cut(
+        &self,
+    ) -> Result<(U64, crate::operational_time::OperationalDeadline), ProviderError> {
+        self.authenticate_original_ack_admit_cut(self.sequence, self.deadline.original_cut())?;
+        self.sequence.checked_add(U64::new(1))?;
+        Ok((self.sequence, self.deadline.original_cut()))
+    }
+    pub(super) fn reserve_original_complete_restore(
+        &mut self,
+        original: &Envelope,
+        maximum: usize,
+        result: &mut Option<usize>,
+    ) -> Result<(), ProviderError> {
+        self.connection
+            .reserve_original_assigned_complete_restore(original, maximum, result)
+    }
+    pub(super) fn publish_original_complete_restore(
+        &mut self,
+        custody: &mut ClientCustody,
+        original: &Envelope,
+        bytes: &[u8],
+        slot: Option<usize>,
+        cut: crate::operational_time::OperationalDeadline,
+    ) -> Result<Envelope, ProviderError> {
+        self.authenticate_original_ack_admit_cut(original.sequence, cut)?;
+        self.connection
+            .publish_original_assigned_complete_restore(original, bytes, slot)?;
+        self.sequence = self.sequence.checked_add(U64::new(1))?;
+        loop {
+            let frame = self
+                .connection
+                .receive()?
+                .ok_or(ProviderError::Correlation(
+                    "assigned complete restore response unknown",
+                ))?;
+            match frame.body {
+                ReceivedBody::Response(_) => {
+                    original.matches_response(&frame.envelope)?;
+                    custody.retain_journal_bytes(envelope_bytes(&frame.envelope)?)?;
+                    let id = original
+                        .request_id
+                        .0
+                        .as_ref()
+                        .ok_or(ProviderError::Correlation(
+                            "assigned complete restore ID absent",
+                        ))?;
+                    let retained =
+                        custody
+                            .controller
+                            .get_mut(id)
+                            .ok_or(ProviderError::Correlation(
+                                "assigned complete restore custody absent",
+                            ))?;
+                    retained.response = Some(frame.envelope.clone());
+                    return Ok(frame.envelope);
+                }
+                ReceivedBody::Request(body) => {
+                    self.receive_transfer(custody, frame.envelope, *body)?
+                }
+                ReceivedBody::Notification(_) => {
+                    return Err(ProviderError::Correlation(
+                        "assigned complete restore notification unsupported",
+                    ));
+                }
+            }
+        }
+    }
+}
+
+impl ClientSession {
+    pub(super) fn original_native5_complete_restore_selection(&self) -> Result<Option<crate::reference_packet::service::complete_restore::PacketNative5CompleteRestoreSelection>, ProviderError>{
+        self.connection
+            .original_native5_complete_restore_selection()
+    }
+}
+
+impl ClientSession {
+    pub(super) fn publish_original_complete_restore_transfer(
+        &mut self,
+        custody: &mut ClientCustody,
+        original: &Envelope,
+        bytes: &[u8],
+        slot: Option<usize>,
+        cut: crate::operational_time::OperationalDeadline,
+    ) -> Result<Envelope, ProviderError> {
+        self.authenticate_original_ack_admit_cut(original.sequence, cut)?;
+        self.connection
+            .publish_original_assigned_complete_restore_transfer(original, bytes, slot)?;
+        self.sequence = self.sequence.checked_add(U64::new(1))?;
+        loop {
+            let frame = self
+                .connection
+                .receive()?
+                .ok_or(ProviderError::Correlation(
+                    "assigned complete restore response unknown",
+                ))?;
+            match frame.body {
+                ReceivedBody::Response(_) => {
+                    original.matches_response(&frame.envelope)?;
+                    custody.retain_journal_bytes(envelope_bytes(&frame.envelope)?)?;
+                    let id = original
+                        .request_id
+                        .0
+                        .as_ref()
+                        .ok_or(ProviderError::Correlation(
+                            "assigned complete restore ID absent",
+                        ))?;
+                    let retained =
+                        custody
+                            .controller
+                            .get_mut(id)
+                            .ok_or(ProviderError::Correlation(
+                                "assigned complete restore custody absent",
+                            ))?;
+                    retained.response = Some(frame.envelope.clone());
+                    return Ok(frame.envelope);
+                }
+                ReceivedBody::Request(body) => {
+                    self.receive_transfer(custody, frame.envelope, *body)?
+                }
+                ReceivedBody::Notification(_) => {
+                    return Err(ProviderError::Correlation(
+                        "assigned complete restore notification unsupported",
+                    ));
+                }
+            }
+        }
+    }
+
+    pub(super) fn reserve_original_complete_restore_transfer(
+        &mut self,
+        original: &Envelope,
+        maximum: usize,
+        result: &mut Option<usize>,
+    ) -> Result<(), ProviderError> {
+        self.connection
+            .reserve_original_assigned_complete_restore_transfer(original, maximum, result)
+    }
+
+    pub(super) fn authenticate_archived_protocol_transfer_mapping(
+        &self,
+        mapping: &crate::protocol_snapshot::PreparedArchivedProtocolMapping,
+        controller: &Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+    ) -> Result<(), ProviderError> {
+        self.connection
+            .authenticate_archived_protocol_transfer_mapping(mapping, controller)
+    }
+}
+
+impl ClientSession {
+    /// Observes the actual installed closed uploader selection without granting receive rights.
+    ///
+    /// # Errors
+    /// Refuses a foreign origin, absent codec or revoked original negotiation.
+    pub(super) fn original_native5_restore_input_emitter_selection(&self) -> Result<Option<crate::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection>, ProviderError>{
+        self.authenticate_native5_source_codec()?;
+        self.connection
+            .original_native5_restore_input_emitter_selection()
+    }
+}

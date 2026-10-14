@@ -119,6 +119,78 @@ pub struct OriginalLineageWorldCaptureRead<'a> {
 }
 
 impl OriginalLineageWorldCapture {
+    /// Checks genuine pending write purpose without parsing or releasing history.
+    ///
+    /// The actual writer separately authenticates the complete administrative
+    /// journal and source codecs before persistence. This nonallocating check
+    /// binds its active opaque runtime attempt to the exact settled owner bodies;
+    /// it does not claim those codecs or a durable index have been accepted.
+    pub(crate) fn authenticate_pending_archive_write_origin(
+        &self,
+        runtime: &crate::node_contract::NodeRuntime,
+        archive: &crate::node_state::NativeArchiveRecord,
+    ) -> Result<(), RuntimeError> {
+        let attempt = &self.attempt;
+        if attempt.process != std::process::id() || attempt.thread != thread::current().id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        attempt.original.authenticate_runtime_authority(
+            &attempt.activation.record().world_binding_hash,
+            &runtime.authority,
+        )?;
+        let retained = runtime
+            .original_capture_attempts
+            .get(&attempt.capture_id)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if !Rc::ptr_eq(retained, attempt)
+            || !attempt.active.get()
+            || attempt.persisted.get().is_some()
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        runtime.validate_activation(&attempt.activation)?;
+        let manifest = archive.manifest();
+        if manifest.capture_id != attempt.capture_id
+            || manifest.world_binding_hash != attempt.activation.record().world_binding_hash
+            || manifest.cut != attempt.cut
+            || manifest.event_ordinal != attempt.ordinal
+            || archive.owners().len() != attempt.owners.len()
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let read = self.read()?;
+        for ((reservation, captured), saved) in attempt
+            .owners
+            .iter()
+            .zip(read.owners())
+            .zip(archive.owners())
+        {
+            if reservation.uncertain.get()
+                || !reservation.submitted.get()
+                || captured.native().owner() != &reservation.owner.owner
+                || captured.native().participants() != reservation.participants
+                || captured.native().cut() != attempt.cut
+                || saved.owner != reservation.owner.owner
+                || saved.participants != reservation.participants
+                || saved.cut != attempt.cut
+                || saved.state != captured.native().state().reference
+                || saved.key != *captured.native().key()
+                || !saved.evidence.contains(&captured.journal().reference)
+                || captured
+                    .native()
+                    .evidence()
+                    .iter()
+                    .any(|body| !saved.evidence.contains(&body.reference))
+            {
+                return Err(RuntimeError::InvalidReceipt);
+            }
+        }
+        attempt.original.authenticate_runtime_authority(
+            &attempt.activation.record().world_binding_hash,
+            &runtime.authority,
+        )
+    }
+
     pub(crate) fn release_persisted_archive(
         &self,
         runtime: &mut crate::node_contract::NodeRuntime,
@@ -1059,7 +1131,7 @@ mod tests {
 
     use super::*;
 
-    fn fixture() -> (
+    pub(super) fn fixture() -> (
         crate::node_contract::NodeRuntime,
         OriginalLineageRuntimeRecord,
         OriginalLineageCaptureAttempt,
@@ -1234,7 +1306,7 @@ mod tests {
             super::super::OriginalCaptureOwnerState::Submitted
         );
     }
-    fn modeled_capture(
+    pub(super) fn modeled_capture(
         runtime: &crate::node_contract::NodeRuntime,
     ) -> super::super::InstalledOriginalLineageCapture {
         let binding = runtime.nodes.values().next().unwrap().binding();
@@ -1972,5 +2044,56 @@ mod tests {
             Err(RuntimeError::ResourceLimit)
         );
         assert!(runtime.original_capture_attempts.is_empty());
+    }
+}
+
+#[cfg(test)]
+impl OriginalLineageWorldCapture {
+    /// Supplies actual private Core custody with explicitly modeled native bodies.
+    pub(crate) fn modeled_archive_write_origin_fixture() -> (
+        crate::node_contract::NodeRuntime,
+        OriginalLineageRuntimeRecord,
+        Self,
+    ) {
+        let (mut runtime, source, mut attempt) = tests::fixture();
+        // The ticket fixture selects only a. Original archive write purpose
+        // requires the full shared-owner roster from this same node binding.
+        attempt.owners[0].participants = runtime
+            .nodes
+            .values()
+            .next()
+            .unwrap()
+            .binding()
+            .compatibility
+            .capture_owner
+            .participant_ids
+            .clone();
+        let mut captured = tests::modeled_capture(&runtime);
+        captured.native.cut = attempt.cut;
+        attempt.settlements.borrow_mut()[0] = Some((
+            captured.native.state.reference.clone(),
+            captured.journal.reference.clone(),
+        ));
+        attempt.captures.borrow_mut()[0] = Some(captured);
+        let attempt = Rc::new(attempt);
+        runtime
+            .original_capture_attempts
+            .insert(attempt.capture_id.clone(), Rc::clone(&attempt));
+        (runtime, source, Self { attempt })
+    }
+
+    pub(crate) fn erase_modeled_archive_write_active(&self) {
+        self.attempt.active.set(false);
+    }
+
+    pub(crate) fn modeled_archive_write_hold_retained(
+        &self,
+        runtime: &crate::node_contract::NodeRuntime,
+    ) -> bool {
+        self.attempt.active.get()
+            && runtime
+                .original_capture_attempts
+                .get(&self.attempt.capture_id)
+                .is_some_and(|original| Rc::ptr_eq(original, &self.attempt))
     }
 }

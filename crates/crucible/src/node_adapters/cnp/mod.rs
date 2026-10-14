@@ -43,9 +43,10 @@ pub use process::{
 };
 
 pub use semantic::{
-    CnpNativeAfterConfirmationCall, CnpOriginalSemanticSnapshot, CnpSemanticAcceptance,
-    CnpSemanticAdmissionFailure, CnpSemanticAttachmentFailure, CnpSemanticCaptureScope,
-    CnpSemanticConformanceAuthority, CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
+    CnpNativeAfterConfirmationCall, CnpOriginalSemanticSnapshot, CnpRetainedStorageReport,
+    CnpRetainedStorageUnknowns, CnpSemanticAcceptance, CnpSemanticAdmissionFailure,
+    CnpSemanticAttachmentFailure, CnpSemanticCaptureScope, CnpSemanticConformanceAuthority,
+    CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
     CnpSemanticConformanceWorldProvider, CnpSemanticExactConformanceWorldProvider,
     CnpSemanticExactWorldReservation, CnpSemanticExactWorldReservationFailure,
     CnpSemanticInstallation, CnpSemanticLaunchFailure, CnpSemanticLaunchGuard,
@@ -55,14 +56,7 @@ pub use semantic::{
     CnpSemanticRegistrationPolicy, CnpSemanticRegistry, CnpSemanticReservationFailure,
     CnpSemanticSnapshotReservation, CnpSemanticSource, CnpSemanticSourceRead,
     CnpSemanticTransition, CnpSemanticWorldPreparationFailure, CnpSemanticWorldReservationFailure,
-    InstalledCnpConformanceRole, InstalledCnpSemanticRole, PacketCompleteAckHostRegistrationPlan,
-    PacketCompleteAckPeerBootFrame, PacketCompleteAckPeerBootMaterial,
-    PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits,
-    PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader,
-    PacketCompleteNativeRecord, PacketCompleteNativeWitness, PacketCompleteSemanticSource,
-    PacketCompleteSourceRole, PacketConnectedInputWitness, PacketConnectedNativeWitness,
-    PacketConnectedSemanticSource, PacketNativeWitness, PacketSemanticSource,
-    packet_common_grant_authorization,
+    InstalledCnpConformanceRole, InstalledCnpSemanticRole, PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame, PacketCompleteAckPeerBootMaterial, PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits, PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader, PacketCompleteHistoricalAllocationFacts, PacketCompleteHistoricalNativeGroup, PacketCompleteHistoricalProtocolData, PacketCompleteHistoricalProtocolDataBudget, PacketCompleteNativeRecord, PacketCompleteNativeWitness, PacketCompleteSemanticSource, PacketCompleteSourceRole, PacketConnectedInputWitness, PacketConnectedNativeWitness, PacketConnectedSemanticSource, PacketNativeWitness, PacketSemanticSource, packet_common_grant_authorization, PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA, PacketCompleteSettledJournal, PacketCompleteRestorePreparation, PacketCompleteArchivedOwnerData, PacketCompleteSourceRetainedStorage, PacketCompleteArchivedSemantics,
 };
 
 /// Runs an actual installed public checksum node under the common quantized runtime.

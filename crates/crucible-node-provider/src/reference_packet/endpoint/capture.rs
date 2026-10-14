@@ -14,9 +14,9 @@ use crate::protocol_snapshot::{OriginalProtocolSnapshot, ProtocolCaptureCut, Seq
 use crucible_node_contract::{Extensions, U64, canonical};
 
 pub(super) struct PendingCapture {
-    protocol_before: Option<OriginalProtocolSnapshot>,
-    reservation: Option<PacketOriginalCaptureReservation>,
-    component: Option<PacketOriginalCaptureComponent>,
+    pub(super) protocol_before: Option<OriginalProtocolSnapshot>,
+    pub(super) reservation: Option<PacketOriginalCaptureReservation>,
+    pub(super) component: Option<PacketOriginalCaptureComponent>,
 }
 
 pub(super) struct CaptureFlight<S: ProviderStream> {
@@ -24,6 +24,8 @@ pub(super) struct CaptureFlight<S: ProviderStream> {
     pub(super) component: PacketOriginalCaptureComponent,
     pub(super) protocol_before: OriginalProtocolSnapshot,
     pub(super) after_capacity: Option<crate::protocol_snapshot::Native5AfterProtocolCapacityFacts>,
+    pub(super) owned11_after_capacity:
+        Option<crate::connection::NativeOwned11AfterProtocolCapacityFacts>,
     pub(super) protocol_after: Option<OriginalProtocolSnapshot>,
     pub(super) prefix: Option<PacketCapturePrefix<S>>,
     pub(super) snapshot: (ContentRef, Vec<u8>),
@@ -63,6 +65,10 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 "native5 original connection unavailable",
             ));
         };
+        let before = state.before.as_ref().ok_or(ProviderError::Conflict(
+            "native5 original precharged snapshot absent",
+        ))?;
+        state.authenticate_original_metadata_cut(&self.native, before, true)?;
         let before = state.before.as_mut().ok_or(ProviderError::Conflict(
             "native5 original precharged snapshot absent",
         ))?;
@@ -228,6 +234,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             component,
             protocol_before,
             after_capacity: None,
+            owned11_after_capacity: None,
             protocol_after: None,
             prefix: None,
             snapshot: (reference, bytes),
@@ -270,6 +277,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         let after = state.after.as_ref().ok_or(ProviderError::Conflict(
             "native5 original after snapshot bank absent",
         ))?;
+        state.authenticate_original_metadata_cut(&self.native, after, false)?;
         flight.after_capacity =
             Some(prefix.preflight_after_protocol_capacity(after, &self.uploads)?);
         let retained_transport_credit = self
@@ -298,6 +306,10 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 "native5 after original connection absent",
             ));
         };
+        let after = state.after.as_ref().ok_or(ProviderError::Conflict(
+            "native5 original after snapshot bank absent",
+        ))?;
+        state.authenticate_original_metadata_cut(&self.native, after, false)?;
         let after = state.after.as_mut().ok_or(ProviderError::Conflict(
             "native5 original after snapshot bank absent",
         ))?;
@@ -493,11 +505,11 @@ impl<S: ProviderStream> PacketEndpoint<S> {
     }
 }
 
-fn bounded(value: u64, reason: &'static str) -> Result<usize, ProviderError> {
+pub(super) fn bounded(value: u64, reason: &'static str) -> Result<usize, ProviderError> {
     usize::try_from(value).map_err(|_| ProviderError::ResourceExhausted(reason))
 }
 
-fn preflight_transport_credit(
+pub(super) fn preflight_transport_credit(
     snapshot: usize,
     control: usize,
     authority: &ConnectionAuthority,

@@ -146,6 +146,9 @@ pub(super) fn install() -> Installed {
             initial_coordinator: initial.clone(),
             limits,
             storage: storage.storage.clone(),
+            protocol_metadata_limits: None,
+            complete_restore_selection: None,
+            restore_input_emitter_selection: None,
             effects: effect_paths[member].clone(),
         }
     });

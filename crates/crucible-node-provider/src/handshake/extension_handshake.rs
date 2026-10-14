@@ -25,9 +25,34 @@ pub struct ExtensionHandshake {
     handshake: Handshake,
     installed: Rc<dyn InstalledExtensionNegotiationVerifier>,
     selected: Option<Arc<[ExtensionSelection]>>,
+    original_registry: Option<OriginalExtensionRegistryOwner>,
 }
 
 impl ExtensionHandshake {
+    pub(crate) fn from_original_empty_retained<R: OriginalEmptyExtensionRegistry + 'static>(
+        handshake: &mut Option<Handshake>,
+        registry: &Rc<R>,
+    ) -> Result<Self, ProviderError> {
+        if handshake.is_none()
+            || !registry.supported().is_empty()
+            || !registry.required().is_empty()
+        {
+            return Err(ProviderError::Correlation(
+                "original empty extension registry differs",
+            ));
+        }
+        let original = handshake
+            .take()
+            .ok_or(ProviderError::Correlation("original handshake absent"))?;
+        let installed: Rc<dyn InstalledExtensionNegotiationVerifier> = registry.clone();
+        Ok(Self {
+            handshake: original,
+            installed,
+            selected: None,
+            original_registry: None,
+        })
+    }
+
     /// Retains independently installed peer contracts before any exchange.
     ///
     /// # Errors
@@ -52,6 +77,7 @@ impl ExtensionHandshake {
             handshake,
             installed,
             selected: None,
+            original_registry: None,
         })
     }
 
@@ -199,4 +225,284 @@ impl<V: TrustedHandshakeVerifier> TrustedHandshakeVerifier for SelectionVerifier
     fn fence_connection(&mut self, connection: &Id) -> Result<(), ProviderError> {
         self.original.fence_connection(connection)
     }
+}
+
+/// Brands the audited zero-field native registry without exposing it publicly.
+///
+/// Only SDK service implementations can implement this marker. Its borrowed
+/// projection never dispatches a registry callback or substitutes a wire label
+/// for an unknown trait object's actual hidden state.
+pub(crate) trait OriginalEmptyExtensionRegistry:
+    InstalledExtensionNegotiationVerifier
+{
+}
+
+pub(crate) struct OriginalExtensionNegotiationOwned11<'a, R: OriginalEmptyExtensionRegistry> {
+    original: &'a ExtensionHandshake,
+    authority: &'a ConnectionAuthority,
+    registry: &'a Rc<R>,
+    negotiation: super::OriginalNegotiationView<'a>,
+}
+
+impl ExtensionHandshake {
+    pub(crate) fn original_owned11_negotiation_view<'a, R: OriginalEmptyExtensionRegistry>(
+        &'a self,
+        authority: &'a ConnectionAuthority,
+        registry: &'a Rc<R>,
+    ) -> Result<OriginalExtensionNegotiationOwned11<'a, R>, ProviderError> {
+        self.verify_authority(authority)?;
+        if !std::ptr::addr_eq(Rc::as_ptr(&self.installed), Rc::as_ptr(registry))
+            || std::mem::size_of::<R>() != 0
+        {
+            return Err(ProviderError::Correlation(
+                "original typed registry owner changed",
+            ));
+        }
+        let selected = self.selected.as_ref().ok_or(ProviderError::Correlation(
+            "original typed selection absent",
+        ))?;
+        if authority
+            .extensions
+            .as_ref()
+            .is_none_or(|actual| !Arc::ptr_eq(actual, selected))
+        {
+            return Err(ProviderError::Correlation(
+                "original typed selection backing changed",
+            ));
+        }
+        let negotiation = self.handshake.original_negotiation_view(authority)?;
+        Ok(OriginalExtensionNegotiationOwned11 {
+            original: self,
+            authority,
+            registry,
+            negotiation,
+        })
+    }
+}
+
+impl<R: OriginalEmptyExtensionRegistry> OriginalExtensionNegotiationOwned11<'_, R> {
+    pub(crate) fn observe_owned11_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.original.verify_authority(self.authority)?;
+        let ExtensionHandshake {
+            handshake: _,
+            installed,
+            selected,
+            original_registry,
+        } = self.original;
+        if original_registry.is_some() {
+            return Err(ProviderError::Correlation(
+                "native registry view requires separate host registry class",
+            ));
+        }
+        self.negotiation.observe_owned11_metadata(observer)?;
+        // Both actual strong owners refer to the same audited zero-field value:
+        // the erased installed registry and the service's retained concrete Rc.
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::InstalledRegistry,
+            installed.as_ref(),
+        )?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::InstalledRegistry,
+            self.registry.as_ref(),
+        )?;
+        let selected = selected
+            .as_ref()
+            .ok_or(ProviderError::Correlation("original selection absent"))?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::SelectedExtensions,
+            selected.as_ref(),
+        )?;
+        for definition in selected.iter() {
+            observer.observe(definition)?;
+        }
+        Ok(())
+    }
+}
+
+impl<R: OriginalEmptyExtensionRegistry> serde::Serialize
+    for OriginalExtensionNegotiationOwned11<'_, R>
+{
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.original
+            .verify_authority(self.authority)
+            .map_err(serde::ser::Error::custom)?;
+        serde::Serialize::serialize(
+            &(
+                "source-private.original-extension-negotiation/11",
+                &self.negotiation,
+                "source-private.native-empty-extension-registry/11",
+                "source-private.native-empty-extension-registry/11",
+                &self.original.selected,
+            ),
+            serializer,
+        )
+    }
+}
+
+/// Retains the actual SDK-owned empty registry and its original creator.
+///
+/// This owner has no public constructor, clone, serializer or portable identity.
+/// It describes actual callback storage; it grants no negotiated contract,
+/// process/capture permission or native restoration right.
+pub struct OriginalExtensionRegistryOwner {
+    registry: Rc<OriginalSdkEmptyRegistry>,
+    origin: Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
+}
+
+struct OriginalSdkEmptyRegistry;
+
+impl OriginalEmptyExtensionRegistry for OriginalSdkEmptyRegistry {}
+
+impl InstalledExtensionNegotiationVerifier for OriginalSdkEmptyRegistry {
+    fn supported(&self) -> &[ExtensionSelection] {
+        &[]
+    }
+    fn required(&self) -> &[ExtensionSelection] {
+        &[]
+    }
+    fn verify_selection(
+        &self,
+        selected: &[ExtensionSelection],
+        _: &IdSet,
+    ) -> Result<(), ProviderError> {
+        if selected.is_empty() {
+            Ok(())
+        } else {
+            Err(registry_refused())
+        }
+    }
+}
+
+impl ExtensionHandshake {
+    /// Transfers an original issuer into the closed SDK-owned empty registry.
+    ///
+    /// The same concrete registry Rc remains retained beside its erased callback.
+    /// Its original creator is recorded once. Refusal preserves the supplied
+    /// original Handshake slot; no guessed empty roster substitutes for a known
+    /// callback implementation. Actual allocations need separate source credit.
+    ///
+    /// # Errors
+    /// Refuses an absent original issuer or invalid retained registry preparation.
+    pub fn from_original_empty_registry_retained(
+        original: &mut Option<Handshake>,
+    ) -> Result<Self, ProviderError> {
+        if original.is_none() {
+            return Err(registry_refused());
+        }
+        let owner = OriginalExtensionRegistryOwner {
+            registry: Rc::new(OriginalSdkEmptyRegistry),
+            origin: Rc::new(crate::protocol_snapshot::ProtocolCaptureOwner::new()),
+        };
+        let mut result = Self::from_original_empty_retained(original, &owner.registry)?;
+        result.original_registry = Some(owner);
+        Ok(result)
+    }
+
+    /// Retains the actual known registry owner from this same original wrapper.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator or a generic erased registry without this exact
+    /// SDK-owned implementation. Selection labels cannot grant this owner.
+    pub fn retain_original_registry_metadata_owner(
+        &self,
+    ) -> Result<OriginalExtensionRegistryOwner, ProviderError> {
+        let owner = self
+            .original_registry
+            .as_ref()
+            .ok_or_else(registry_refused)?;
+        owner.authenticate_original(self)?;
+        Ok(OriginalExtensionRegistryOwner {
+            registry: owner.registry.clone(),
+            origin: owner.origin.clone(),
+        })
+    }
+
+    /// Reports actual issuer, selected tuple and known callback allocation data.
+    ///
+    /// The owning process capsule must separately check current source/registrar
+    /// association. Counting retired retained data does not renew authority.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator, another wrapper/registry or traversal overflow.
+    pub fn retained_metadata_facts_data(
+        &self,
+        owner: &OriginalExtensionRegistryOwner,
+    ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
+        owner.authenticate_original(self)?;
+        let Self {
+            handshake,
+            installed,
+            selected,
+            original_registry,
+        } = self;
+        let retained = original_registry.as_ref().ok_or_else(registry_refused)?;
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        handshake.observe_retained_metadata_data(&mut observer)?;
+        observer.shared_value(installed.as_ref())?;
+        retained.observe_retained_metadata(&mut observer)?;
+        if let Some(selected) = selected {
+            observer.shared_value(selected.as_ref())?;
+            for definition in selected.iter() {
+                observer.observe(definition)?;
+            }
+        }
+        Ok(observer.finish())
+    }
+}
+
+impl OriginalExtensionRegistryOwner {
+    /// Authenticates the same actual wrapper, callback Rc and original creator.
+    ///
+    /// # Errors
+    /// Refuses foreign threads/processes, another original wrapper or replaced Rc.
+    pub fn authenticate_original(
+        &self,
+        original: &ExtensionHandshake,
+    ) -> Result<(), ProviderError> {
+        self.origin.ensure_current()?;
+        let retained = original
+            .original_registry
+            .as_ref()
+            .ok_or_else(registry_refused)?;
+        if !Rc::ptr_eq(&self.registry, &retained.registry)
+            || !Rc::ptr_eq(&self.origin, &retained.origin)
+            || !std::ptr::addr_eq(Rc::as_ptr(&original.installed), Rc::as_ptr(&self.registry))
+        {
+            return Err(registry_refused());
+        }
+        Ok(())
+    }
+
+    /// Reports actual opaque owner payload views without serializing callback state.
+    ///
+    /// The outer owner header is caller-owned. Actual shared payload/header
+    /// geometry remains distinct from negotiated capabilities and Node512 credit.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator or checked traversal/layout overflow.
+    pub fn original_retained_metadata_facts(
+        &self,
+    ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
+        self.origin.ensure_current()?;
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        self.observe_retained_metadata(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    fn observe_retained_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self { registry, origin } = self;
+        origin.ensure_current()?;
+        observer.shared_value(registry.as_ref())?;
+        observer.shared_value(origin.as_ref())
+    }
+}
+
+fn registry_refused() -> ProviderError {
+    ProviderError::Correlation("original closed SDK extension registry differs")
 }

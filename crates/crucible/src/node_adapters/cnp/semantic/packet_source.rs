@@ -1396,3 +1396,32 @@ fn native_shape(
     shape.validate().map_err(unknown)?;
     Ok(shape)
 }
+
+impl PacketSemanticSource {
+    pub(super) fn complete_retained_declaration_parts(
+        &self,
+    ) -> Result<(&PacketProgramDefinition, &crucible_node_provider::reference_packet::coordinator::PacketNative5CoordinatorInstallation, &SavedRuntimeActivation), OperationFailure>{
+        let (coordinator, activation) = self
+            .world_scope
+            .as_ref()
+            .ok_or_else(|| refused("retained complete producer world absent"))?
+            .complete_retained_parts()?;
+        Ok((&self.program, coordinator, activation))
+    }
+}
+
+impl PacketSemanticSource {
+    pub(in crate::node_adapters::cnp::semantic) fn complete_retained_native_read_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<super::retained_storage::CnpRetainedStorageReport>, OperationFailure> {
+        // The complete outer Source checks its actual creator first. This is
+        // retained-data observation, so revoked or reaped reads remain data.
+        self.current_native
+            .try_borrow()
+            .map_err(|_| refused("retained source native read already borrowed"))?
+            .as_ref()
+            .map(|read| read.retained_requested_storage_data(maximum))
+            .transpose()
+    }
+}

@@ -13,6 +13,17 @@ struct ProducerAncestry {
     lineages: [(); 0],
 }
 
+/// Names the explicit full-reference complete ancestry edition.
+pub const PACKET_COMPLETE_REFERENCE_ANCESTRY_SCHEMA: &str =
+    "source-owned.packet-original-ancestry/12";
+
+fn producer_reference_ancestry() -> ProducerAncestry {
+    ProducerAncestry {
+        schema: PACKET_COMPLETE_REFERENCE_ANCESTRY_SCHEMA,
+        lineages: [],
+    }
+}
+
 fn producer_ancestry() -> ProducerAncestry {
     ProducerAncestry {
         schema: "source-owned.packet-original-ancestry/5",
@@ -44,10 +55,18 @@ impl PacketCompleteSemanticSource {
             .maximum_bytes();
         let size = match &self.original {
             CompletePacketOriginal::Producer(_) => {
-                budget::serialized_size(&producer_ancestry(), maximum)
+                if self.uses_reference_ancestry()? {
+                    budget::serialized_size(&producer_reference_ancestry(), maximum)
+                } else {
+                    budget::serialized_size(&producer_ancestry(), maximum)
+                }
             }
             CompletePacketOriginal::Reactive(source) => {
-                source.complete_original_ancestry_size(scope, maximum)
+                if self.uses_reference_ancestry()? {
+                    source.complete_original_reference_ancestry_size(scope, maximum)
+                } else {
+                    source.complete_original_ancestry_size(scope, maximum)
+                }
             }
         }?;
         self.authenticate_witness_scope(scope)?;
@@ -61,10 +80,18 @@ impl PacketCompleteSemanticSource {
     ) -> Result<(), OperationFailure> {
         match &self.original {
             CompletePacketOriginal::Producer(_) => {
-                authenticate_component(original, &producer_ancestry())
+                if self.uses_reference_ancestry()? {
+                    authenticate_component(original, &producer_reference_ancestry())
+                } else {
+                    authenticate_component(original, &producer_ancestry())
+                }
             }
             CompletePacketOriginal::Reactive(source) => {
-                source.authenticate_complete_original_ancestry(scope, original)
+                if self.uses_reference_ancestry()? {
+                    source.authenticate_complete_original_reference_ancestry(scope, original)
+                } else {
+                    source.authenticate_complete_original_ancestry(scope, original)
+                }
             }
         }?;
         self.authenticate_witness_scope(scope)
@@ -96,16 +123,29 @@ impl PacketCompleteSemanticSource {
         }
         match &self.original {
             CompletePacketOriginal::Producer(_) => {
-                record_component(&mut banks.ancestry, &producer_ancestry())?;
+                if self.uses_reference_ancestry()? {
+                    record_component(&mut banks.ancestry, &producer_reference_ancestry())?;
+                } else {
+                    record_component(&mut banks.ancestry, &producer_ancestry())?;
+                }
             }
             CompletePacketOriginal::Reactive(source) => {
-                source.record_complete_original_ancestry(&scope, &mut banks.ancestry)?;
+                if self.uses_reference_ancestry()? {
+                    source
+                        .record_complete_original_reference_ancestry(&scope, &mut banks.ancestry)?;
+                } else {
+                    source.record_complete_original_ancestry(&scope, &mut banks.ancestry)?;
+                }
             }
         }
         self.authenticate_witness_scope(&scope)?;
         let original = take_component(
             &mut banks.ancestry,
-            "application/vnd.source-owned.packet-original-ancestry.v5+json",
+            if self.uses_reference_ancestry()? {
+                "application/vnd.source-owned.packet-original-ancestry.v12+json"
+            } else {
+                "application/vnd.source-owned.packet-original-ancestry.v5+json"
+            },
         )?;
         banks.ancestry_record = Some(original);
         Ok(())
@@ -128,5 +168,43 @@ impl PacketCompleteSemanticSource {
             .map_err(|_| refused("original source ancestry has not been recorded"))?;
         self.authenticate_ancestry_record(&scope, &original)?;
         Ok(original)
+    }
+}
+
+impl PacketCompleteSemanticSource {
+    /// Names the explicit full-reference ancestry class bound by the backend.
+    pub const REFERENCE_ANCESTRY_SCHEMA: &'static str = PACKET_COMPLETE_REFERENCE_ANCESTRY_SCHEMA;
+
+    fn uses_reference_ancestry(&self) -> Result<bool, OperationFailure> {
+        self.ensure_origin()?;
+        Ok(matches!(
+            self.selected_capture_profile()?,
+            PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+        ))
+    }
+
+    /// Borrows all first-sealed bodies named by complete reference ancestry.
+    ///
+    /// The factory retains each full referenced body in its actual authenticated
+    /// content pool before sealing the archive. Repeated full references are
+    /// checked against their complete bytes; hashes grant no allocation discount.
+    /// The loan creates no lineage, capture ticket or fresh owner permission.
+    ///
+    /// # Errors
+    /// Refuses foreign/current custody, another ancestry edition or a busy loan.
+    pub fn original_reference_ancestry_lineages(
+        &self,
+        scope: &CnpSemanticRealizationScope<'_>,
+    ) -> Result<Option<Ref<'_, [OriginalInputLineage]>>, OperationFailure> {
+        self.authenticate_witness_scope(scope)?;
+        if !self.uses_reference_ancestry()? {
+            return Err(refused("reference ancestry edition not selected"));
+        }
+        match &self.original {
+            CompletePacketOriginal::Producer(_) => Ok(None),
+            CompletePacketOriginal::Reactive(source) => {
+                source.complete_original_reference_lineages(scope).map(Some)
+            }
+        }
     }
 }

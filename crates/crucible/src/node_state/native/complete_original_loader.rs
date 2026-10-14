@@ -263,6 +263,34 @@ impl NativeArchiveRecord {
         Ok(bytes)
     }
 
+    /// Identifies the full authenticated index-three body independently of its manifest.
+    ///
+    /// This identity covers owner keys, typed dependency edges and administrative
+    /// roots. It describes preservation data and grants no restore or execution
+    /// permission. The caller includes its other retained allocations in the
+    /// finite archive budget before the temporary canonical representation exists.
+    ///
+    /// # Errors
+    /// Refuses absent or foreign complete-load admission, another index edition,
+    /// an oversized index, allocation failure or exhausted aggregate storage.
+    pub fn complete_original_index_identity(
+        &self,
+        maximum_record_bytes: usize,
+        additional_retained_bytes: usize,
+    ) -> Result<ContentRef, StateError> {
+        self.authenticate_complete_load_admission()
+            .map_err(schema)?;
+
+        let reference = super::complete_original_validation_origin::index_identity_data(
+            self,
+            maximum_record_bytes,
+            additional_retained_bytes,
+        )?;
+        self.authenticate_complete_load_admission()
+            .map_err(schema)?;
+        Ok(reference)
+    }
+
     pub(crate) fn authenticate_complete_load_admission(&self) -> Result<(), RuntimeError> {
         let original = self
             .complete_load
@@ -319,4 +347,4 @@ fn index_validation_storage(index: &Index) -> Result<usize, RuntimeError> {
 
 #[cfg(test)]
 #[path = "complete_original_loader_tests.rs"]
-mod tests;
+pub(in crate::node_state::native) mod tests;

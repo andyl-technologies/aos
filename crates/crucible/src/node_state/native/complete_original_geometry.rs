@@ -129,6 +129,16 @@ impl CompleteOriginalCaptureGeometry {
 }
 
 impl crate::node_contract::NodeRuntime {
+    pub(crate) fn capture_selected_json_decode_storage(
+        bytes: &[u8],
+        typed_slot: usize,
+        typed_map_node: usize,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        super::core_decode_credit::preflight_selected(bytes, typed_slot, typed_map_node, maximum)?
+            .total()
+    }
+
     pub(crate) fn capture_host_decode_storage(
         bytes: &[u8],
         maximum: usize,

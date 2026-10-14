@@ -343,3 +343,154 @@ pub(super) fn extensions(edition: u16) -> Result<BTreeMap<String, Id>, ProviderE
         Ok(BTreeMap::new())
     }
 }
+
+// Only a successful service context borrows these banks, after authenticating
+// its original boot/thread. Any retained quarantine makes whole capture refuse.
+pub(super) struct OriginalNativeSupervisorOwned11<'a> {
+    creator: u32,
+    thread: std::thread::ThreadId,
+    incidents: std::cell::Ref<'a, Vec<ConnectionIncident>>,
+    blobs: std::cell::Ref<'a, Vec<BlobQuarantine>>,
+}
+
+impl Supervisor {
+    pub(super) fn borrow_empty_owned11(
+        &self,
+    ) -> Result<OriginalNativeSupervisorOwned11<'_>, ProviderError> {
+        let Self { incidents, blobs } = self;
+        let incidents = incidents
+            .try_borrow()
+            .map_err(|_| ProviderError::Conflict("native whole11 incidents borrowed"))?;
+        let blobs = blobs
+            .try_borrow()
+            .map_err(|_| ProviderError::Conflict("native whole11 blob quarantine borrowed"))?;
+        if !incidents.is_empty() || !blobs.is_empty() {
+            return Err(ProviderError::Correlation(
+                "native whole11 supervisor unresolved",
+            ));
+        }
+        Ok(OriginalNativeSupervisorOwned11 {
+            creator: std::process::id(),
+            thread: std::thread::current().id(),
+            incidents,
+            blobs,
+        })
+    }
+}
+
+impl OriginalNativeSupervisorOwned11<'_> {
+    fn ensure_origin(&self) -> Result<(), ProviderError> {
+        if self.creator != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(ProviderError::Correlation(
+                "native whole11 supervisor loan foreign origin",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn observe_owned11_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.ensure_origin()?;
+        observer.vector::<ConnectionIncident>(self.incidents.capacity())?;
+        observer.vector::<BlobQuarantine>(self.blobs.capacity())
+    }
+}
+
+impl serde::Serialize for OriginalNativeSupervisorOwned11<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.ensure_origin().map_err(serde::ser::Error::custom)?;
+        serde::Serialize::serialize(
+            &(
+                "source-private.native-empty-supervisor/11",
+                (
+                    self.incidents.capacity(),
+                    std::mem::size_of::<ConnectionIncident>(),
+                ),
+                (self.blobs.capacity(), std::mem::size_of::<BlobQuarantine>()),
+            ),
+            serializer,
+        )
+    }
+}
+
+// These typed empty banks preserve historical allocation shape only. They do
+// not implement either quarantine trait and cannot become a live Supervisor.
+pub(crate) struct HistoricalNativeSupervisorBanks {
+    incidents: Vec<ConnectionIncident>,
+    blobs: Vec<BlobQuarantine>,
+}
+
+impl HistoricalNativeSupervisorBanks {
+    pub(crate) fn reconstruct_empty_into(
+        completed: &mut Option<Self>,
+        incident_capacity: usize,
+        blob_capacity: usize,
+        admitted_bank_bytes: usize,
+    ) -> Result<(), ProviderError> {
+        if completed.is_some() {
+            return Err(ProviderError::Conflict(
+                "historical supervisor bank slot occupied",
+            ));
+        }
+        let bytes = incident_capacity
+            .checked_mul(std::mem::size_of::<ConnectionIncident>())
+            .and_then(|incidents| {
+                blob_capacity
+                    .checked_mul(std::mem::size_of::<BlobQuarantine>())
+                    .and_then(|blobs| incidents.checked_add(blobs))
+            })
+            .filter(|bytes| *bytes <= admitted_bank_bytes)
+            .ok_or(ProviderError::ResourceExhausted(
+                "historical supervisor typed bank credit",
+            ))?;
+        *completed = Some(Self {
+            incidents: Vec::new(),
+            blobs: Vec::new(),
+        });
+        let original = completed.as_mut().ok_or(ProviderError::Conflict(
+            "historical supervisor bank slot absent",
+        ))?;
+        original
+            .incidents
+            .try_reserve_exact(incident_capacity)
+            .map_err(|_| ProviderError::ResourceExhausted("historical incident bank allocation"))?;
+        original
+            .blobs
+            .try_reserve_exact(blob_capacity)
+            .map_err(|_| {
+                ProviderError::ResourceExhausted("historical blob quarantine allocation")
+            })?;
+        if original.incidents.capacity() != incident_capacity
+            || original.blobs.capacity() != blob_capacity
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "historical supervisor actual capacity differs",
+            ));
+        }
+        let actual = original.incidents.capacity() * std::mem::size_of::<ConnectionIncident>()
+            + original.blobs.capacity() * std::mem::size_of::<BlobQuarantine>();
+        if actual != bytes {
+            return Err(ProviderError::ResourceExhausted(
+                "historical supervisor actual extent differs",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn capacity_rows(&self) -> (usize, usize) {
+        (self.incidents.capacity(), self.blobs.capacity())
+    }
+}
+
+pub(crate) const fn original_native_supervisor_layout() -> usize {
+    std::mem::size_of::<Supervisor>()
+}
+
+pub(crate) const fn original_native_supervisor_bank_layouts() -> (usize, usize) {
+    (
+        std::mem::size_of::<ConnectionIncident>(),
+        std::mem::size_of::<BlobQuarantine>(),
+    )
+}

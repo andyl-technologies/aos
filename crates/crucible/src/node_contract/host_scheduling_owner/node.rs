@@ -19,6 +19,7 @@ use super::{HostSchedulingSource, canonical, failure, json};
 
 mod capture;
 mod preservation;
+mod requested_storage;
 
 /// Retains the source-created host owner without any unrelated model queue.
 pub struct PreparedHostSchedulingNode {
@@ -184,10 +185,10 @@ impl SimulationNode for PreparedHostSchedulingNode {
     fn original_host_scheduling_owner(
         &self,
     ) -> Option<crate::node_contract::HostSchedulingNodeWitness<'_>> {
-        Some(crate::node_contract::HostSchedulingNodeWitness::new(
-            &self.source,
-            &self.anchor,
-        ))
+        Some(
+            crate::node_contract::HostSchedulingNodeWitness::new(&self.source, &self.anchor)
+                .with_original_node(self),
+        )
     }
 
     fn status(&mut self) -> Result<NodeStatus, OperationFailure> {

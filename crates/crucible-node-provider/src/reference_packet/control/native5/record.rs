@@ -40,6 +40,82 @@ impl PacketNative5Record {
     ) -> Result<PacketNative5UnderlyingRecord, ProviderError> {
         self.storage_selection.validate()?;
         self.capture_profile.validate()?;
+        if let Some(limits) = self.protocol_metadata_limits {
+            limits.validate_data()?;
+        }
+        if matches!(
+            self.capture_profile,
+            super::super::super::service::PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+        ) != self.protocol_metadata_limits.is_some()
+        {
+            return Err(ProviderError::Correlation(
+                "native5 metadata limits differ from owning profile",
+            ));
+        }
+
+        match (
+            self.protocol_metadata_limits,
+            self.protocol_metadata_birth_facts,
+        ) {
+            (Some(limits), Some(facts)) => facts.validate_data(&limits)?,
+            (None, None) => {}
+            _ => {
+                return Err(ProviderError::Correlation(
+                    "native5 metadata birth facts are incomplete",
+                ));
+            }
+        }
+        if let Some(restoration) = self.complete_restore_selection {
+            use crate::reference_packet::service::complete_restore::complete_restore_selected_schemas;
+            if self.protocol_metadata_limits.is_none() || self.ack_emitter_selection.is_none()
+                || self.confirmation_selection.is_none()
+                || !matches!(self.capture_profile, crate::reference_packet::service::PacketNative5CaptureProfile::OwnedProtocol11 { .. })
+            {
+                return Err(ProviderError::Correlation("native5 complete restore receipt selection is incomplete"));
+            }
+            for schema in complete_restore_selected_schemas(restoration)? {
+                if !selection.provider.implementation.formats.contains(&schema)
+                    || !selection.realization.bindings.iter().all(|binding| {
+                        binding
+                            .compatibility
+                            .implementation
+                            .formats
+                            .contains(&schema)
+                    })
+                {
+                    return Err(ProviderError::Correlation(
+                        "native5 complete restore receipt schema differs",
+                    ));
+                }
+            }
+        }
+        if self.restore_input_emitter_selection.is_some() {
+            use crate::reference_packet::service::complete_restore::{
+                PACKET_CANONICAL_RESTORE_INPUTS_FEATURE, PacketNative5CompleteRestoreSelection,
+                canonical_restore_inputs_schema,
+            };
+            let schema = canonical_restore_inputs_schema()?;
+            if self.complete_restore_selection
+                != Some(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
+                || !selection.provider.implementation.formats.contains(&schema)
+                || !selection.realization.bindings.iter().all(|binding| {
+                    binding
+                        .compatibility
+                        .implementation
+                        .formats
+                        .contains(&schema)
+                })
+                || !selection
+                    .provider
+                    .extensions_supported
+                    .iter()
+                    .any(|feature| feature.as_str() == PACKET_CANONICAL_RESTORE_INPUTS_FEATURE)
+            {
+                return Err(ProviderError::Correlation(
+                    "native5 restore input emitter receipt differs",
+                ));
+            }
+        }
         selection.provider.validate()?;
         selection.realization.validate()?;
         original.validate()?;

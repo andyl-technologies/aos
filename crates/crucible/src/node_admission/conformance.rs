@@ -367,6 +367,57 @@ impl InstalledConformancePlan {
         self.reauthenticate()
     }
 
+    /// Counts this original plan's retained backing, excluding its authority.
+    ///
+    /// Actual document/source vector capacities and independently owned full
+    /// reference strings are included together with the private Plan Rc header
+    /// and inline value. The surrounding InstalledConformancePlan handle, any
+    /// outer Rc/Box, and the borrowed authority backing are separate owners.
+    /// This allocates nothing, extracts no graph, and grants no permission.
+    ///
+    /// Repeated views conservatively report the same private backing again;
+    /// callers may deduplicate only an authenticated actual allocation identity,
+    /// never equal plan bytes, source IDs or authority metadata.
+    ///
+    /// # Errors
+    /// Refuses checked arithmetic overflow in actual retained allocation counts.
+    pub fn retained_allocation_bytes_excluding_authority(&self) -> Result<usize, EvidenceError> {
+        use crate::node_contract::NodeRuntime;
+        let mut total = NodeRuntime::capture_shared_allocation_storage::<Plan>();
+        let vector = self
+            .0
+            .sources
+            .capacity()
+            .checked_mul(std::mem::size_of::<ContentRef>())
+            .ok_or_else(|| failure("original plan source slot storage overflow"))?;
+        for bytes in [
+            self.0.plan_bytes.capacity(),
+            self.0.refused_bytes.capacity(),
+            vector,
+        ] {
+            total = total
+                .checked_add(bytes)
+                .ok_or_else(|| failure("original plan buffer storage overflow"))?;
+        }
+        for reference in [&self.0.plan_ref, &self.0.refused_ref]
+            .into_iter()
+            .chain(&self.0.sources)
+        {
+            total = total
+                .checked_add(
+                    NodeRuntime::capture_reference_storage(reference)
+                        .map_err(|_| failure("original plan reference storage overflow"))?,
+                )
+                .ok_or_else(|| failure("original plan reference aggregate overflow"))?;
+        }
+        total
+            .checked_add(
+                NodeRuntime::capture_hash_storage(&self.0.world)
+                    .map_err(|_| failure("original plan world storage overflow"))?,
+            )
+            .ok_or_else(|| failure("original plan retained aggregate overflow"))
+    }
+
     pub(crate) fn retained(&self) -> Self {
         Self(Rc::clone(&self.0))
     }

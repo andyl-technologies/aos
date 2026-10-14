@@ -144,6 +144,74 @@ impl Serialize for MethodResultView<'_> {
     }
 }
 
+impl ExchangeRecord {
+    /// Observes actual complete native Blob-proof exchanges for restore admission.
+    ///
+    /// Other cached decoder families remain unresolved until their full owning
+    /// walker is installed. This observes actual current banks, not wire lengths.
+    pub(crate) fn observe_owned11_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        use crate::bodies::{OperationState, ResponseShape};
+        use crate::retained_metadata::aliases::MetadataSharedKind;
+        let (actor, bank) = self
+            .original_actor
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "restore exchange original actor absent",
+            ))?;
+        actor.ensure_current()?;
+        if self.sent != self.originals.len() || self.original_slots.len() != self.originals.len() {
+            return Err(ProviderError::Correlation("restore exchange unresolved"));
+        }
+        observer.shared_original(MetadataSharedKind::ProtocolOwner, actor.as_ref())?;
+        observer.shared_original(MetadataSharedKind::FrameBank, bank.as_ref())?;
+        bank.try_borrow()
+            .map_err(|_| ProviderError::Conflict("restore exchange literal bank borrowed"))?
+            .observe_owned11_metadata(observer)?;
+        observer.observe(&self.originals)?;
+        observer.observe(&self.canonical)?;
+        observer.observe(&self.original_slots)?;
+        observer.vector::<ReceivedFrame>(self.acknowledgements.capacity())?;
+        for frame in &self.acknowledgements {
+            observer.observe(&frame.envelope)?;
+            let ReceivedBody::Response(body) = &frame.body else {
+                return Err(ProviderError::Correlation(
+                    "restore exchange cached request/notification unresolved",
+                ));
+            };
+            observer.boxed_value(body.as_ref())?;
+            let ResponseShape::Completed {
+                operation_state: OperationState::Completed,
+                result,
+                extensions,
+            } = &body.shape
+            else {
+                return Err(ProviderError::Correlation(
+                    "restore exchange cached noncompleted ACK unresolved",
+                ));
+            };
+            observer.observe(result)?;
+            observer.observe(extensions)?;
+            match body.result.as_ref() {
+                Some(MethodResult::BlobBegin(result)) => observer.observe(&result.transfer_id)?,
+                Some(MethodResult::BlobChunk(result)) => observer.observe(&result.transfer_id)?,
+                Some(MethodResult::BlobFinish(result)) => {
+                    observer.observe(&result.transfer_id)?;
+                    observer.observe(&result.content)?;
+                }
+                _ => {
+                    return Err(ProviderError::Correlation(
+                        "restore exchange cached family unresolved",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- Fixture failures deliberately panic.
 #[allow(clippy::unwrap_used)]

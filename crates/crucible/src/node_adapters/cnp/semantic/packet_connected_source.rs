@@ -33,6 +33,7 @@ use super::{
 };
 
 mod ancestry;
+mod complete_static;
 mod credit;
 mod deferred;
 mod evidence;
@@ -56,6 +57,7 @@ pub struct PacketConnectedSemanticSource {
     definition: PacketConnectedDefinition,
     world: world::PacketConnectedWorldScope,
     input_lineage: RefCell<Vec<OriginalInputLineage>>,
+    complete_input_static: RefCell<Option<complete_static::CompleteInputStaticRows>>,
     process: u32,
     thread: std::thread::ThreadId,
     current_native: RefCell<Option<super::process::CnpSemanticSourceRead>>,
@@ -362,6 +364,7 @@ impl PacketConnectedSemanticSource {
             .map_err(|_| refused("connected original lineage preallocation"))?;
         Ok(Self {
             input_lineage: RefCell::new(input_lineage),
+            complete_input_static: RefCell::new(None),
             installation,
             definition,
             world,
@@ -547,7 +550,7 @@ fn operation_interval(
     }
 }
 
-// Test-only adapters keep production helper visibility inside its owning module.
+// The grant adapter is test-only; complete archive checks share the pure output-bound projection.
 #[cfg(test)]
 pub(super) fn project_grant(
     initial: &PacketConnectedInventory,
@@ -562,7 +565,6 @@ pub(super) fn project_grant(
     native::project_grant(initial, operation, start, limit, output)
 }
 
-#[cfg(test)]
 pub(super) fn output_bound(
     inventory: &PacketConnectedInventory,
     output: bool,
@@ -626,5 +628,52 @@ impl PacketConnectedSemanticSource {
     ) -> Result<(), OperationFailure> {
         self.local_owner()?;
         self.world.authenticate_complete_installation(coordinator)
+    }
+}
+
+impl PacketConnectedSemanticSource {
+    pub(in crate::node_adapters::cnp::semantic) fn complete_original_definition_data(
+        &self,
+    ) -> Result<&PacketConnectedDefinition, OperationFailure> {
+        self.local_owner()?;
+        if !self.world.is_complete() {
+            return Err(refused("original complete reactive definition unavailable"));
+        }
+        Ok(&self.definition)
+    }
+}
+
+impl PacketConnectedSemanticSource {
+    pub(super) fn complete_retained_declaration_parts(
+        &self,
+    ) -> Result<
+        (
+            &PacketConnectedDefinition,
+            &PacketNative5CoordinatorInstallation,
+            &SavedRuntimeActivation,
+        ),
+        OperationFailure,
+    > {
+        let (coordinator, activation) = self.world.complete_retained_parts()?;
+        Ok((&self.definition, coordinator, activation))
+    }
+}
+
+#[path = "packet_connected_source/retained_lineage.rs"]
+mod retained_lineage;
+
+impl PacketConnectedSemanticSource {
+    pub(in crate::node_adapters::cnp::semantic) fn complete_retained_native_read_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<super::retained_storage::CnpRetainedStorageReport>, OperationFailure> {
+        // The complete outer Source checks its actual creator first. This is
+        // retained-data observation, so revoked or reaped reads remain data.
+        self.current_native
+            .try_borrow()
+            .map_err(|_| refused("retained source native read already borrowed"))?
+            .as_ref()
+            .map(|read| read.retained_requested_storage_data(maximum))
+            .transpose()
     }
 }

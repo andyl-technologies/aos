@@ -129,6 +129,10 @@ impl OriginalHostCapturePreparation {
             NodeRuntime::capture_host_record_storage(snapshot.record())?,
             storage::payload(snapshot.encoded())?,
         )?;
+        // Count the actual retained original node (route/activation/readiness,
+        // concrete Box; the source observer counts the anchor) independently of this cached snapshot. Source
+        // metadata is charged once by the same daemon's original Rc observer.
+        retained = storage::add(retained, witness.original_node_requested_storage()?)?;
         // The pinned empty-Vec growth can retain twice the closed journal's
         // 4096-byte extent. Cumulative encoding requests are charged separately.
         retained = storage::add(retained, 8192)?;

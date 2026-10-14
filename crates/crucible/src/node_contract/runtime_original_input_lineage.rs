@@ -132,6 +132,9 @@ impl OriginalInputLineage {
     }
 }
 
+#[path = "runtime_original_input_lineage/requested_storage.rs"]
+mod requested_storage;
+
 #[path = "runtime_original_input_lineage/assembly.rs"]
 mod assembly;
 #[path = "runtime_original_input_lineage/geometry.rs"]

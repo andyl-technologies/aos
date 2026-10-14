@@ -15,6 +15,7 @@ use crate::{ProviderError, envelope::Envelope};
 pub(super) enum NativeProgram {
     OutputOnly(PacketProgram),
     Connected(PacketConnectedProgram),
+    RestorationInProgress,
 }
 
 impl NativeProgram {
@@ -27,10 +28,16 @@ impl NativeProgram {
                 "source-owned.packet-connected-inventory/4",
                 &program.inventory()?,
             )?,
+            Self::RestorationInProgress => {
+                return Err(ProviderError::Conflict("packet restored model incomplete"));
+            }
         })
     }
 
     pub(super) fn attention(&self, grant: &PacketGrant) -> Result<Position, ProviderError> {
+        if matches!(self, Self::RestorationInProgress) {
+            return Err(ProviderError::Conflict("packet restored model incomplete"));
+        }
         if let Self::Connected(program) = self {
             let actual = program.preview(&grant.operation, grant.start, grant.limit)?;
             return Ok(actual
@@ -79,6 +86,9 @@ impl NativeProgram {
         projected: &PacketInventory,
         grant: Option<&PacketGrant>,
     ) -> Result<Option<PacketConnectedNativeRecord>, ProviderError> {
+        if matches!(self, Self::RestorationInProgress) {
+            return Err(ProviderError::Conflict("packet restored model incomplete"));
+        }
         let Self::Connected(program) = self else {
             return Ok(None);
         };
@@ -122,6 +132,9 @@ impl NativeProgram {
         Ok(match self {
             Self::OutputOnly(program) => serde_json::to_value(program.definition()),
             Self::Connected(program) => serde_json::to_value(program.definition()),
+            Self::RestorationInProgress => {
+                return Err(ProviderError::Conflict("packet restored model incomplete"));
+            }
         }
         .map_err(ContractError::from)?)
     }
@@ -130,6 +143,9 @@ impl NativeProgram {
         match self {
             Self::OutputOnly(program) => Ok(program.inventory()),
             Self::Connected(program) => Self::project_inventory(program),
+            Self::RestorationInProgress => {
+                return Err(ProviderError::Conflict("packet restored model incomplete"));
+            }
         }
     }
 
@@ -233,6 +249,9 @@ impl NativeProgram {
         match self {
             Self::OutputOnly(program) => program.open_gate(),
             Self::Connected(program) => program.open_gate(),
+            Self::RestorationInProgress => {
+                return Err(ProviderError::Conflict("packet restored model incomplete"));
+            }
         }
     }
 
@@ -248,6 +267,9 @@ impl NativeProgram {
                 &program.preview(operation, start, limit)?,
                 program.definition().output.is_some(),
             ),
+            Self::RestorationInProgress => {
+                return Err(ProviderError::Conflict("packet restored model incomplete"));
+            }
         }
     }
 
@@ -263,6 +285,9 @@ impl NativeProgram {
                 let emits = program.definition().output.is_some();
                 Self::project_grant(program.run(operation, start, limit)?, emits)
             }
+            Self::RestorationInProgress => {
+                return Err(ProviderError::Conflict("packet restored model incomplete"));
+            }
         }
     }
 
@@ -273,6 +298,9 @@ impl NativeProgram {
                 .original(operation)
                 .map(|grant| Self::project_grant(grant, program.definition().output.is_some()))
                 .transpose(),
+            Self::RestorationInProgress => {
+                return Err(ProviderError::Conflict("packet restored model incomplete"));
+            }
         }
     }
 
@@ -280,6 +308,9 @@ impl NativeProgram {
         match self {
             Self::OutputOnly(program) => program.retire(operation, events),
             Self::Connected(program) => program.retire(operation, events),
+            Self::RestorationInProgress => {
+                return Err(ProviderError::Conflict("packet restored model incomplete"));
+            }
         }
     }
 }

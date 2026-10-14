@@ -16,6 +16,11 @@ mod lifecycle;
 mod node;
 mod operations;
 mod packet_complete_source;
+mod historical_protocol;
+pub use historical_protocol::{
+    PacketCompleteHistoricalAllocationFacts, PacketCompleteHistoricalNativeGroup,
+    PacketCompleteHistoricalProtocolData, PacketCompleteHistoricalProtocolDataBudget,
+};
 mod packet_connected_source;
 mod packet_grant;
 mod packet_lineage;
@@ -24,12 +29,14 @@ mod preparation;
 mod process;
 mod provider;
 mod registry;
+mod retained_storage;
 mod semantic_snapshot;
 mod source;
 mod state;
 mod world_provider;
 
 pub use capture::{CnpNativeAfterConfirmationCall, CnpSemanticCaptureScope};
+pub use retained_storage::{CnpRetainedStorageReport, CnpRetainedStorageUnknowns};
 pub use semantic_snapshot::{CnpOriginalSemanticSnapshot, CnpSemanticSnapshotReservation};
 
 pub use conformance::{
@@ -44,11 +51,7 @@ pub use world_provider::{
 
 pub use node::{CnpSemanticAdmissionFailure, CnpSemanticNode};
 pub use packet_complete_source::{
-    PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame,
-    PacketCompleteAckPeerBootMaterial, PacketCompleteCaptureBankFacts,
-    PacketCompleteCaptureBankLimits, PacketCompleteEffectReceiverGroup,
-    PacketCompleteEffectReceiverReader, PacketCompleteNativeRecord, PacketCompleteNativeWitness,
-    PacketCompleteSemanticSource, PacketCompleteSourceRole,
+    PacketCompleteArchivedSemantics, PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame, PacketCompleteAckPeerBootMaterial, PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits, PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader, PacketCompleteNativeRecord, PacketCompleteNativeWitness, PacketCompleteSemanticSource, PacketCompleteSourceRole, PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA, PacketCompleteRestorePreparation, PacketCompleteSettledJournal, PacketCompleteArchivedOwnerData, PacketCompleteSourceRetainedStorage,
 };
 pub use packet_connected_source::{
     PacketConnectedInputWitness, PacketConnectedNativeWitness, PacketConnectedSemanticSource,

@@ -9,6 +9,10 @@ use super::*;
 #[path = "exchange_snapshot.rs"]
 mod snapshot;
 
+#[path = "restore_proof.rs"]
+mod restore_proof;
+pub(crate) use restore_proof::PreparedOriginalRestoreHeldProof;
+
 const MAXIMUM_EXCHANGE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Retains complete planned frames and actual acknowledgement progress.
@@ -316,6 +320,18 @@ impl<S: ProviderStream> PreparedExchange<S> {
     }
 
     fn prepare(&mut self) -> Result<(), ProviderError> {
+        self.prepare_banks()?;
+        for original in &self.record.originals {
+            self.connection
+                .authority
+                .with_live(|| self.connection.guard.register_outgoing(original.clone()))?;
+        }
+        Ok(())
+    }
+
+    fn prepare_banks(&mut self) -> Result<(), ProviderError> {
+        self.connection
+            .ensure_no_pending_native_restore_response()?;
         self.connection.check_authority()?;
         let limits = self.connection.authority.limits();
         let maximum_frame = allowance(limits.frame_bytes.get())?;
@@ -373,11 +389,6 @@ impl<S: ProviderStream> PreparedExchange<S> {
             self.connection
                 .retain_original_request_id(&self.record.originals[index], slot)?;
             self.record.original_slots.push(slot);
-        }
-        for original in &self.record.originals {
-            self.connection
-                .authority
-                .with_live(|| self.connection.guard.register_outgoing(original.clone()))?;
         }
         Ok(())
     }
@@ -569,4 +580,46 @@ fn publish_with_ack_scope<S: ProviderStream>(
         }
     }
     Ok(())
+}
+
+impl PreparedExchange<crate::client::DeadlineStream> {
+    pub(crate) fn preflight_native_owned11_after_protocol_capacity(
+        &self,
+        reservation: &mut crate::protocol_snapshot::ProtocolSnapshotReservation,
+        blobs: &crate::blob::BlobReceiver,
+        context: &crate::reference_packet::service::OriginalNativeCaptureContext<'_>,
+    ) -> Result<super::native_owned11::NativeOwned11AfterProtocolCapacityFacts, ProviderError> {
+        self.connection.protocol_owner.ensure_current()?;
+        if self.phase != Phase::Prepared || self.record.sent != 0 {
+            return Err(ProviderError::Correlation(
+                "native after quote requires unpublished prepared suffix",
+            ));
+        }
+        let (owner, bank) =
+            self.record
+                .original_actor
+                .as_ref()
+                .ok_or(ProviderError::Correlation(
+                    "native prepared suffix actor absent",
+                ))?;
+        owner.ensure_current()?;
+        if !Rc::ptr_eq(owner, &self.connection.protocol_owner)
+            || self
+                .connection
+                .original_frames
+                .as_ref()
+                .is_none_or(|current| !Rc::ptr_eq(bank, current))
+        {
+            return Err(ProviderError::Correlation(
+                "native prepared suffix actor changed",
+            ));
+        }
+        self.connection
+            .preflight_native_owned11_after_protocol_capacity_inner(
+                reservation,
+                blobs,
+                context,
+                &self.record.originals,
+            )
+    }
 }

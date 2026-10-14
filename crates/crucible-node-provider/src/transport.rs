@@ -35,6 +35,42 @@ pub struct FrameReader<R> {
     last_original_slot: Option<usize>,
 }
 
+/// Reports only existing reader fields after a same-bank correspondence check.
+#[derive(Clone, Copy, serde::Serialize)]
+pub(crate) struct OriginalFrameReaderFacts {
+    pub(crate) maximum_bytes: usize,
+    pub(crate) maximum_nesting: usize,
+    pub(crate) failed: bool,
+    pub(crate) last_original_slot: Option<usize>,
+}
+
+impl<R> FrameReader<R> {
+    /// Borrows the original stream without reading, replacing or duplicating it.
+    pub(crate) fn stream_ref(&self) -> &R {
+        &self.stream
+    }
+
+    /// Observes scalar reader state only when the actual bank Rc is unchanged.
+    pub(crate) fn original_owned11_facts(
+        &self,
+        bank: &Rc<RefCell<OriginalFrameReservation>>,
+    ) -> Result<OriginalFrameReaderFacts, ProviderError> {
+        if self
+            .originals
+            .as_ref()
+            .is_none_or(|original| !Rc::ptr_eq(original, bank))
+        {
+            return Err(ProviderError::Correlation("original reader bank changed"));
+        }
+        Ok(OriginalFrameReaderFacts {
+            maximum_bytes: self.maximum_bytes,
+            maximum_nesting: self.maximum_nesting,
+            failed: self.failed,
+            last_original_slot: self.last_original_slot,
+        })
+    }
+}
+
 impl<R: Read> FrameReader<R> {
     /// Creates a reader with a positive limit within the CNP/1 hard ceiling.
     ///
@@ -598,3 +634,6 @@ mod selected_header_tests {
         );
     }
 }
+
+pub(crate) use original_frames::original_frame_bank_layout;
+pub use original_frames::{DecodedCompactOriginalFrames, ValidatedCompactOriginalFrames};

@@ -359,3 +359,11 @@ mod tests {
         assert_eq!(blob.reserved_bytes().unwrap(), 3);
     }
 }
+
+impl BlobProtocolOwner {
+    pub(crate) fn borrowed_owned11_protocol_view(
+        &self,
+    ) -> Result<super::owned11::BlobStateOwned11View<'_>, ProviderError> {
+        super::owned11::borrow_state(&self.0)
+    }
+}

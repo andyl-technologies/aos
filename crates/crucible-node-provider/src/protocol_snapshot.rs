@@ -10,6 +10,13 @@
 /// Provides bounded source-private compact byte data without authority.
 pub mod compact_bytes;
 
+/// Provides bounded typed historical reconstruction for explicit edition eleven.
+pub mod owned11;
+
+pub use crate::retained_metadata::records::{
+    MetadataCapacityRecord, MetadataRecordBank, MetadataRecordKind, ValidatedMetadataRecords,
+};
+
 mod payload;
 pub use payload::OriginalProtocolPayloadOwner;
 
@@ -29,6 +36,8 @@ impl serde::Serialize for ProtocolBytes<'_> {
     }
 }
 
+pub use crate::retained_metadata::aliases::MetadataAliasAllocationFacts;
+use crate::retained_metadata::aliases::MetadataAliasBank;
 use crate::{ProviderError, handshake::ConnectionAuthority};
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::io::{self, Write};
@@ -111,6 +120,28 @@ pub struct ProtocolSnapshotAllocationFacts {
     pub allocated_bytes: usize,
 }
 
+/// Reports the actual independently precharged metadata record bank.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct MetadataRecordAllocationFacts {
+    /// States the finite selected traversal row ceiling.
+    pub maximum_rows: usize,
+    /// Reports actual allocated row capacity, including spare storage.
+    pub capacity_rows: usize,
+    /// Counts recorded rows currently retained in the bank.
+    pub retained_rows: usize,
+    /// Reports actual requested row storage bytes, separate from physical peak.
+    pub allocated_bytes: usize,
+}
+
+fn metadata_record_facts(bank: &MetadataRecordBank) -> MetadataRecordAllocationFacts {
+    MetadataRecordAllocationFacts {
+        maximum_rows: bank.maximum_rows(),
+        capacity_rows: bank.capacity_rows(),
+        retained_rows: bank.rows().len(),
+        allocated_bytes: bank.allocated_bytes(),
+    }
+}
+
 /// Reports a same-original native snapshot's physical antecedent correspondence.
 ///
 /// These borrowed numeric facts grant no successful Capture, semantic settlement,
@@ -174,6 +205,12 @@ pub struct ProtocolSnapshotReservation {
     bytes: Vec<u8>,
     maximum: usize,
     compact: bool,
+    owned11_records: Option<MetadataRecordBank>,
+    owned11_aliases: Option<MetadataAliasBank>,
+    original_assigned_cut: Option<crate::operational_time::OperationalDeadline>,
+    original_restore_cut: Option<crate::operational_time::OperationalDeadline>,
+    original_hello:
+        Option<Rc<std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>>>,
     complete: bool,
     literal: Option<crate::transport::original_frames::OriginalFrameReservation>,
     codec: Option<Rc<crate::connection::Native5CodecOwner>>,
@@ -186,6 +223,73 @@ pub struct ProtocolSnapshotReservation {
 }
 
 impl ProtocolSnapshotReservation {
+    /// Reports every present original association retained by this reservation.
+    ///
+    /// Encoded, literal-copy, record and alias-bank capacities remain separate
+    /// existing allocation facts. Partial reservations include any retained
+    /// authority, codec and full original Hello bank. The bound issuer's actual
+    /// creator is checked first; an unbound reservation has no issuer permission
+    /// and its owning source capsule must supply its own original-origin guard.
+    ///
+    /// # Errors
+    /// Refuses a foreign bound creator, conflicting Hello borrow or checked
+    /// metadata traversal/layout overflow. It does not require live native rights.
+    pub fn original_retained_metadata_facts(
+        &self,
+    ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+        let Self {
+            bytes: _,
+            maximum: _,
+            compact: _,
+            owned11_records: _,
+            owned11_aliases: _,
+            original_assigned_cut: _,
+            original_restore_cut: _,
+            original_hello,
+            complete: _,
+            literal: _,
+            codec,
+            issuer,
+        } = self;
+        if let Some((authority, owner, _, _)) = issuer {
+            return original_association_metadata(
+                owner,
+                authority,
+                codec.as_ref(),
+                original_hello.as_ref(),
+            );
+        }
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        if let Some(codec) = codec {
+            observer.shared_value(codec.as_ref())?;
+            codec.observe_retained_metadata(&mut observer)?;
+        }
+        if let Some(hello) = original_hello {
+            observer.shared_value(hello.as_ref())?;
+            let bank = hello.try_borrow().map_err(|_| {
+                ProviderError::Conflict("original reserved Hello metadata borrowed")
+            })?;
+            bank.observe_owned11_metadata(&mut observer)?;
+        }
+        Ok(observer.finish())
+    }
+
+    /// Reads actual row and temporary lookup capacities for the original alias bank.
+    ///
+    /// # Errors
+    /// Refuses another bound original process or thread.
+    pub fn original_alias_allocation_facts(
+        &self,
+    ) -> Result<Option<MetadataAliasAllocationFacts>, ProviderError> {
+        if let Some((_, owner, _, _)) = &self.issuer {
+            owner.ensure_current()?;
+        }
+        Ok(self
+            .owned11_aliases
+            .as_ref()
+            .map(MetadataAliasBank::allocation_facts))
+    }
+
     /// Allocates a positive bounded snapshot buffer before native effects.
     ///
     /// # Errors
@@ -204,6 +308,11 @@ impl ProtocolSnapshotReservation {
             bytes,
             maximum,
             compact: false,
+            owned11_records: None,
+            owned11_aliases: None,
+            original_assigned_cut: None,
+            original_restore_cut: None,
+            original_hello: None,
             complete: false,
             literal: None,
             issuer: None,
@@ -251,6 +360,95 @@ impl ProtocolSnapshotReservation {
         Ok(original)
     }
 
+    /// Reserves complete edition-eleven bytes, literal history and metadata rows.
+    ///
+    /// Every bank precedes snapshot copies. The actual installed sealed source
+    /// must separately select OwnedProtocol11 and its exact role-specific bound.
+    ///
+    /// # Errors
+    /// Refuses invalid byte/frame/row ceilings, overflow or allocation failure.
+    pub fn reserve_complete_owned11(
+        maximum: usize,
+        history_bytes: usize,
+        lifetime_frames: usize,
+        maximum_metadata_rows: usize,
+    ) -> Result<Self, ProviderError> {
+        let records = MetadataRecordBank::reserve(maximum_metadata_rows)?;
+        let aliases = MetadataAliasBank::reserve(maximum_metadata_rows)?;
+        let mut original = Self::reserve_complete(maximum, history_bytes, lifetime_frames)?;
+        original.compact = true;
+        original.owned11_records = Some(records);
+        original.owned11_aliases = Some(aliases);
+        Ok(original)
+    }
+
+    pub(crate) fn uses_owned11_encoding(&self) -> bool {
+        self.owned11_records.is_some()
+    }
+
+    pub(crate) fn record_owned_metadata(
+        &mut self,
+        walk: impl FnOnce(&mut crate::retained_metadata::MetadataObserver) -> Result<(), ProviderError>,
+    ) -> Result<(), ProviderError> {
+        let records = self
+            .owned11_records
+            .as_mut()
+            .ok_or(ProviderError::Correlation(
+                "owned protocol metadata bank absent",
+            ))?;
+        let aliases = self
+            .owned11_aliases
+            .as_mut()
+            .ok_or(ProviderError::Correlation(
+                "owned protocol alias bank absent",
+            ))?;
+        let mut observer =
+            crate::retained_metadata::MetadataObserver::recording_with_aliases(records, aliases);
+        walk(&mut observer)?;
+        Ok(())
+    }
+
+    pub(crate) fn retain_owned_hello(
+        &mut self,
+        bank: Rc<std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>>,
+    ) {
+        self.original_hello = Some(bank);
+    }
+
+    pub(crate) fn retain_original_restore_cut(
+        &mut self,
+        cut: Option<crate::operational_time::OperationalDeadline>,
+    ) {
+        self.original_restore_cut = cut;
+    }
+
+    pub(crate) fn retain_original_assigned_cut(
+        &mut self,
+        cut: Option<crate::operational_time::OperationalDeadline>,
+    ) {
+        self.original_assigned_cut = cut;
+    }
+
+    pub(crate) fn encode_owned11<T: Serialize>(&mut self, data: &T) -> Result<(), ProviderError> {
+        let records = self
+            .owned11_records
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "owned protocol metadata bank absent",
+            ))?;
+        let aliases = self
+            .owned11_aliases
+            .as_mut()
+            .ok_or(ProviderError::Correlation(
+                "owned protocol alias bank absent",
+            ))?;
+        aliases.finish_lookup();
+        let view = ("source-private.cnp-protocol/11", data, records, &*aliases);
+        Self::encode_buffer(&mut self.bytes, self.maximum, &view)?;
+        self.complete = true;
+        Ok(())
+    }
+
     pub(crate) fn unused_for_after_preflight(&self) -> bool {
         self.bytes.is_empty() && self.issuer.is_none() && self.codec.is_none() && !self.complete
     }
@@ -277,12 +475,16 @@ impl ProtocolSnapshotReservation {
         };
         let profile = codec.capture_profile();
         match profile {
-            PacketNative5CaptureProfile::OriginalArrays6 if !self.compact => Ok(()),
+            PacketNative5CaptureProfile::OriginalArrays6
+                if !self.compact && !self.uses_owned11_encoding() =>
+            {
+                Ok(())
+            }
             PacketNative5CaptureProfile::CompactBytes7 {
                 native_before_protocol_bytes,
                 native_after_protocol_bytes,
                 host_protocol_bytes,
-            } if self.compact => {
+            } if self.compact && !self.uses_owned11_encoding() => {
                 let selected = match (controller, cut) {
                     (true, ProtocolCaptureCut::HostSettled) => host_protocol_bytes,
                     (false, ProtocolCaptureCut::NativeIncomingCapture) => {
@@ -294,6 +496,30 @@ impl ProtocolSnapshotReservation {
                 if selected.get() != self.maximum as u64 {
                     return Err(ProviderError::Correlation(
                         "compact reservation differs from installed source profile",
+                    ));
+                }
+                Ok(())
+            }
+            PacketNative5CaptureProfile::OwnedProtocol11 {
+                native_before_protocol_bytes,
+                native_after_protocol_bytes,
+                host_protocol_bytes,
+            } if self.compact && self.uses_owned11_encoding() => {
+                let selected = match (controller, cut) {
+                    (true, ProtocolCaptureCut::HostSettled) => host_protocol_bytes,
+                    (false, ProtocolCaptureCut::NativeIncomingCapture) => {
+                        native_before_protocol_bytes
+                    }
+                    (false, ProtocolCaptureCut::HostSettled) => native_after_protocol_bytes,
+                    _ => {
+                        return Err(ProviderError::Correlation(
+                            "owned protocol source cut unsupported",
+                        ));
+                    }
+                };
+                if selected.get() != self.maximum as u64 {
+                    return Err(ProviderError::Correlation(
+                        "owned reservation differs from installed source profile",
                     ));
                 }
                 Ok(())
@@ -328,9 +554,30 @@ impl ProtocolSnapshotReservation {
         Ok(())
     }
 
-    /// Reports the actual snapshot allocation to its source-owned budget.
+    /// Reports actual record storage retained by this precharged reservation.
+    ///
+    /// # Errors
+    /// Refuses a changed original process/thread after issuer binding.
+    pub fn original_metadata_record_allocation_facts(
+        &self,
+    ) -> Result<Option<MetadataRecordAllocationFacts>, ProviderError> {
+        if let Some((_, owner, _, _)) = &self.issuer {
+            owner.ensure_current()?;
+        }
+        Ok(self.owned11_records.as_ref().map(metadata_record_facts))
+    }
+
+    /// Reports all actual precharged snapshot bank backing to the source budget.
     pub fn allocated_bytes(&self) -> usize {
         self.bytes.capacity()
+            + self
+                .owned11_aliases
+                .as_ref()
+                .map_or(0, MetadataAliasBank::allocated_bytes)
+            + self
+                .owned11_records
+                .as_ref()
+                .map_or(0, MetadataRecordBank::allocated_bytes)
             + self
                 .literal
                 .as_ref()
@@ -365,7 +612,17 @@ impl ProtocolSnapshotReservation {
     }
 
     pub(crate) fn encode(&mut self, state: &impl Serialize) -> Result<(), ProviderError> {
-        if !self.bytes.is_empty() {
+        Self::encode_buffer(&mut self.bytes, self.maximum, state)?;
+        self.complete = true;
+        Ok(())
+    }
+
+    fn encode_buffer(
+        bytes: &mut Vec<u8>,
+        maximum: usize,
+        state: &impl Serialize,
+    ) -> Result<(), ProviderError> {
+        if !bytes.is_empty() {
             return Err(ProviderError::Conflict(
                 "protocol snapshot reservation already used",
             ));
@@ -387,10 +644,7 @@ impl ProtocolSnapshotReservation {
                 Ok(())
             }
         }
-        let mut count = Count {
-            used: 0,
-            maximum: self.maximum,
-        };
+        let mut count = Count { used: 0, maximum };
         serde_json::to_writer(&mut count, state)
             .map_err(|_| ProviderError::ResourceExhausted("complete borrowed protocol snapshot"))?;
         struct Bounded<'a> {
@@ -410,17 +664,16 @@ impl ProtocolSnapshotReservation {
             }
         }
         let mut writer = Bounded {
-            bytes: &mut self.bytes,
+            bytes,
             maximum: count.used,
         };
         serde_json::to_writer(&mut writer, state)
             .map_err(|_| ProviderError::Frame("protocol snapshot bounded encoding"))?;
-        if self.bytes.len() != count.used {
+        if bytes.len() != count.used {
             return Err(ProviderError::Conflict(
                 "protocol snapshot state changed during capture",
             ));
         }
-        self.complete = true;
         Ok(())
     }
 
@@ -504,6 +757,11 @@ impl ProtocolSnapshotReservation {
         Ok(OriginalProtocolSnapshot {
             maximum: original.maximum,
             compact: original.compact,
+            owned11_records: original.owned11_records,
+            owned11_aliases: original.owned11_aliases,
+            original_assigned_cut: original.original_assigned_cut,
+            original_restore_cut: original.original_restore_cut,
+            original_hello: original.original_hello,
             bytes: original.bytes,
             authority,
             owner,
@@ -533,6 +791,12 @@ impl ProtocolSnapshotReservation {
 pub struct OriginalProtocolSnapshot {
     maximum: usize,
     compact: bool,
+    owned11_records: Option<MetadataRecordBank>,
+    owned11_aliases: Option<MetadataAliasBank>,
+    original_assigned_cut: Option<crate::operational_time::OperationalDeadline>,
+    original_restore_cut: Option<crate::operational_time::OperationalDeadline>,
+    original_hello:
+        Option<Rc<std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>>>,
     codec: Option<Rc<crate::connection::Native5CodecOwner>>,
     bytes: Vec<u8>,
     authority: ConnectionAuthority,
@@ -543,6 +807,115 @@ pub struct OriginalProtocolSnapshot {
 }
 
 impl OriginalProtocolSnapshot {
+    /// Reports actual retained issuer/codec/registrar and original Hello backing.
+    ///
+    /// Encoded bytes, metadata/alias banks and frozen literal storage are
+    /// reported independently by the existing allocation accessors. The shared
+    /// original Hello header and its actual Vec/Slot capacities are included
+    /// here; repeated shared views receive no alias discount.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, a borrowed Hello bank or traversal overflow.
+    pub fn original_retained_metadata_facts(
+        &self,
+    ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+        let Self {
+            maximum: _,
+            compact: _,
+            owned11_records: _,
+            owned11_aliases: _,
+            original_assigned_cut: _,
+            original_restore_cut: _,
+            original_hello,
+            codec,
+            bytes: _,
+            authority,
+            owner,
+            cut: _,
+            deadline: _,
+            literal: _,
+        } = self;
+        original_association_metadata(owner, authority, codec.as_ref(), original_hello.as_ref())
+    }
+
+    /// Reads actual alias banks retained by the original snapshot.
+    ///
+    /// # Errors
+    /// Refuses another original process or thread.
+    pub fn original_alias_allocation_facts(
+        &self,
+    ) -> Result<Option<MetadataAliasAllocationFacts>, ProviderError> {
+        self.owner.ensure_current()?;
+        Ok(self
+            .owned11_aliases
+            .as_ref()
+            .map(MetadataAliasBank::allocation_facts))
+    }
+
+    /// Reports the explicit owning edition retained by this original issuer.
+    ///
+    /// # Errors
+    /// Refuses a different original process or thread.
+    pub fn uses_owned11_encoding(&self) -> Result<bool, ProviderError> {
+        self.owner.ensure_current()?;
+        Ok(self.owned11_records.is_some())
+    }
+
+    /// Reports actual metadata record storage retained by this original owner.
+    ///
+    /// # Errors
+    /// Refuses a different original process or thread.
+    pub fn original_metadata_record_allocation_facts(
+        &self,
+    ) -> Result<Option<MetadataRecordAllocationFacts>, ProviderError> {
+        self.owner.ensure_current()?;
+        Ok(self.owned11_records.as_ref().map(metadata_record_facts))
+    }
+
+    /// Authenticates the same retained original Hello allocation.
+    ///
+    /// Byte equality cannot substitute another journal or recreate this owner.
+    ///
+    /// # Errors
+    /// Refuses a changed original process/thread, missing bank, incomplete Hello
+    /// or another journal allocation. This grants no live registration right.
+    pub fn authenticate_original_hello(
+        &self,
+        journal: &crate::client::OriginalHelloJournal,
+    ) -> Result<(), ProviderError> {
+        self.owner.ensure_current()?;
+        journal.original_literal_frame_digests()?;
+        let bank = self
+            .original_hello
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "owned protocol retained Hello absent",
+            ))?;
+        journal.authenticate_original_literal_bank(bank)
+    }
+
+    /// Reports retention of the original restore physical cut.
+    ///
+    /// This provenance observation cannot renew a deadline or create cut authority.
+    ///
+    /// # Errors
+    /// Refuses a different original process or thread.
+    pub fn retains_original_restore_cut(&self) -> Result<bool, ProviderError> {
+        self.owner.ensure_current()?;
+        Ok(self.original_restore_cut.is_some())
+    }
+
+    /// Reports retention of the original assigned physical cut.
+    ///
+    /// This provenance observation cannot renew a deadline or create cut authority.
+    ///
+    /// # Errors
+    /// Refuses a different original process or thread.
+    pub fn retains_original_assigned_cut(&self) -> Result<bool, ProviderError> {
+        self.owner.ensure_current()?;
+        Ok(self.original_assigned_cut.is_some())
+    }
+
     /// Reports the source-bound compact edition of this original snapshot.
     ///
     /// # Errors
@@ -572,6 +945,14 @@ impl OriginalProtocolSnapshot {
                 .as_ref()
                 .map(|literal| literal.snapshot_allocation_facts()),
             allocated_bytes: self.bytes.capacity()
+                + self
+                    .owned11_aliases
+                    .as_ref()
+                    .map_or(0, MetadataAliasBank::allocated_bytes)
+                + self
+                    .owned11_records
+                    .as_ref()
+                    .map_or(0, MetadataRecordBank::allocated_bytes)
                 + self
                     .literal
                     .as_ref()
@@ -1180,3 +1561,53 @@ mod owning_finish_tests {
 
 /// Exposes actual retained protocol metadata capacity facts.
 pub use crate::retained_metadata::RetainedProtocolMetadataFacts;
+
+pub(crate) fn protocol_capture_owner_layout() -> usize {
+    std::mem::size_of::<ProtocolCaptureOwner>()
+}
+
+mod native_metadata_quote;
+
+impl ProtocolSnapshotReservation {
+    pub(crate) const fn maximum_bytes(&self) -> usize {
+        self.maximum
+    }
+}
+
+mod archived_mapping;
+pub use archived_mapping::PreparedArchivedProtocolMapping;
+
+pub(crate) use archived_mapping::{
+    ArchivedProtocolMappingIdentity, ArchivedProtocolMappingInput, ArchivedProtocolMappingTarget,
+};
+
+mod native_archived_mapping;
+pub(crate) use native_archived_mapping::{
+    NativeArchivedMappingInput, PreparedArchivedNativeProtocolMapping,
+};
+
+fn original_association_metadata(
+    owner: &Rc<ProtocolCaptureOwner>,
+    authority: &ConnectionAuthority,
+    codec: Option<&Rc<crate::connection::Native5CodecOwner>>,
+    hello: Option<
+        &Rc<std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>>,
+    >,
+) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+    owner.ensure_current()?;
+    let mut observer = crate::retained_metadata::MetadataObserver::new();
+    observer.shared_value(owner.as_ref())?;
+    authority.observe_retained_metadata(&mut observer)?;
+    if let Some(codec) = codec {
+        observer.shared_value(codec.as_ref())?;
+        codec.observe_retained_metadata(&mut observer)?;
+    }
+    if let Some(hello) = hello {
+        observer.shared_value(hello.as_ref())?;
+        let bank = hello
+            .try_borrow()
+            .map_err(|_| ProviderError::Conflict("original Hello metadata borrowed"))?;
+        bank.observe_owned11_metadata(&mut observer)?;
+    }
+    Ok(observer.finish())
+}

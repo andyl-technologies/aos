@@ -418,4 +418,49 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn original_complete_source_observer_counts_original_spare_metadata_and_exact_limit() {
+        // Genuine source creation remains preparation-only; no runtime/Ready or
+        // historical restoration authority is inferred from this data observer.
+        let (selection, world) = complete_selection();
+        let mut owner =
+            HostSchedulingOwner::new_complete_original_continuation(selection, world).unwrap();
+        let before = owner
+            .source
+            .retained_original_metadata_bytes_excluding_runtime(1024 * 1024)
+            .unwrap();
+        let source = Rc::get_mut(&mut owner.source).unwrap();
+        let previous = source.prepared_token.allocated_capacity();
+        let mut token = String::with_capacity(128 * 1024);
+        token.push_str(source.prepared_token.as_str());
+        source.prepared_token = Id::new(token).unwrap();
+        let added = source.prepared_token.allocated_capacity() - previous;
+        let after = source
+            .retained_original_metadata_bytes_excluding_runtime(1024 * 1024)
+            .unwrap();
+        assert_eq!(after, before + added);
+        assert_eq!(
+            source
+                .retained_original_metadata_bytes_excluding_runtime(after)
+                .unwrap(),
+            after
+        );
+        assert!(
+            source
+                .retained_original_metadata_bytes_excluding_runtime(after - 1)
+                .is_err()
+        );
+        source.process = source.process.wrapping_add(1);
+        assert!(
+            source
+                .retained_original_metadata_bytes_excluding_runtime(usize::MAX)
+                .is_err()
+        );
+    }
+}
+
+impl SelectedPreservation {
+    pub(super) fn retained_requested_storage(&self) -> usize {
+        self.profile.allocated_capacity()
+    }
 }

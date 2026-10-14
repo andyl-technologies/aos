@@ -29,8 +29,17 @@ pub use registration_read::CnpRegistrarRead;
 mod ack_emitter;
 pub(crate) use ack_emitter::maximum_canonical_ack_framed_bytes;
 mod assigned_admit;
+mod assigned_restore;
+mod assigned_transfer;
+#[path = "controller/input_emitter.rs"]
+mod input_emitter;
 pub use ack_emitter::OriginalCanonicalBlobAckEmitter;
 pub use assigned_admit::{CompletedOriginalCanonicalAckAdmit, PreparedOriginalCanonicalAckAdmit};
+pub use assigned_restore::{CompletedOriginalCompleteRestore, PreparedOriginalCompleteRestore};
+pub use assigned_transfer::{
+    CompletedOriginalCompleteRestoreTransfer, PreparedOriginalCompleteRestoreTransfer,
+};
+pub use input_emitter::OriginalCanonicalRestoreInputEmitter;
 
 /// Names one node and its indivisible execution owner on an actual connection.
 ///
@@ -61,9 +70,80 @@ pub struct CnpController {
     fenced: bool,
     protocol_owner: std::rc::Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
     original_ack_admit: Option<assigned_admit::AssignedOriginalCanonicalAckAdmit>,
+    original_complete_restore: Option<assigned_restore::AssignedOriginalCompleteRestore>,
+    original_complete_restore_prepare: Option<assigned_restore::AssignedOriginalCompleteRestore>,
+    original_complete_restore_commit: Option<assigned_restore::AssignedOriginalCompleteRestore>,
+    installed_complete_restore: Option<complete_installation::InstalledArchivedProtocolState>,
 }
 
 impl CnpController {
+    /// Observes exact current whole-eleven metadata backing and capacity-row count.
+    ///
+    /// This reads the same owning controller and its actual installed codec. It
+    /// allocates no record bank and invokes no callback, serializer or I/O. Future
+    /// journal growth and physical tree/control-block/stack peak remain separate.
+    ///
+    /// # Errors
+    /// Refuses a foreign or revoked original actor, mutable response-loss callback,
+    /// unsettled assigned Admit, checked extent overflow or traversal exhaustion.
+    pub fn original_owned11_metadata_facts(
+        &self,
+    ) -> Result<crate::protocol_snapshot::RetainedProtocolMetadataFacts, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        if let Some(assigned) = &self.original_ack_admit {
+            assigned.validate_owned_snapshot()?;
+        }
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        self.observe_owned11_metadata(&mut observer)?;
+        self.authenticate_native5_source_codec()?;
+        Ok(observer.finish())
+    }
+
+    fn observe_owned11_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        // Exhaustive destructuring keeps future retained fields visible.
+        let Self {
+            session,
+            custody,
+            route,
+            budget: _,
+            fenced,
+            protocol_owner,
+            original_ack_admit,
+            original_complete_restore,
+            original_complete_restore_prepare,
+            original_complete_restore_commit,
+            installed_complete_restore,
+        } = self;
+        if installed_complete_restore.is_some()
+            || original_complete_restore_prepare.is_some()
+            || original_complete_restore_commit.is_some()
+        {
+            return Err(ProviderError::Correlation(
+                "installed archived graph requires extended host complete class",
+            ));
+        }
+        observer.observe(&route.node)?;
+        observer.observe(&route.execution_owner)?;
+        observer.observe(fenced)?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::ProtocolOwner,
+            protocol_owner.as_ref(),
+        )?;
+        session.observe_owned_metadata(observer)?;
+        custody.observe_owned_metadata(observer)?;
+        if let Some(assigned) = original_ack_admit {
+            assigned.observe_owned_metadata(observer)?;
+        }
+        if let Some(restore) = original_complete_restore {
+            restore.observe_owned_metadata(observer)?;
+        }
+        Ok(())
+    }
+
     /// Returns raw Hello digests from this exact recorded controller connection.
     ///
     /// The source separately binds its own original journal/native/key context.
@@ -247,6 +327,84 @@ impl CnpController {
         self.session.original_native5_storage_facts()
     }
 
+    /// Borrows the actual settled original frame history without copying it.
+    ///
+    /// # Errors
+    /// Refuses a foreign actor, revoked/foreign codec, mutable loss callback,
+    /// unresolved exchange or conflicting literal-bank borrow. It grants no
+    /// source token or semantic permission; the caller brackets journal effects.
+    pub fn original_native5_frame_history(
+        &self,
+    ) -> Result<crate::connection::OriginalNative5FrameHistory<'_>, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if let Some(assigned) = &self.original_ack_admit {
+            assigned.validate_owned_snapshot()?;
+        }
+        self.session.original_native5_frame_history()
+    }
+
+    /// Counts actual full protocol and supervisor metadata without owner copies.
+    ///
+    /// # Errors
+    /// Refuses a foreign witness, active callback, changed original registration
+    /// or bounded traversal/extent exhaustion. Facts grant no source permission.
+    pub fn original_owned11_metadata_facts_with_supervisor(
+        &self,
+        witness: &crate::connection::OriginalProtocolSupervisor,
+    ) -> Result<crate::protocol_snapshot::RetainedProtocolMetadataFacts, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.session
+            .authenticate_original_protocol_supervisor(witness)?;
+        let mut facts = None;
+        witness.with_original_state(&mut |view| {
+            let mut observer = crate::retained_metadata::MetadataObserver::new();
+            self.observe_owned11_metadata(&mut observer)?;
+            witness.observe_original_header(&mut observer)?;
+            view.observe_owned11_metadata(&mut observer)?;
+            facts = Some(observer.finish());
+            Ok(())
+        })?;
+        self.session
+            .authenticate_original_protocol_supervisor(witness)?;
+        facts.ok_or(ProviderError::Correlation(
+            "original supervisor facts absent",
+        ))
+    }
+
+    /// Retains the actual original supervisor witness beside its owning controller.
+    ///
+    /// # Errors
+    /// Refuses a foreign actor, changed codec/registration, mutable response-loss
+    /// callback or a supervisor without a supported actual retained-state loan.
+    pub fn retain_original_protocol_supervisor(
+        &self,
+    ) -> Result<crate::connection::OriginalProtocolSupervisor, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.session.retain_original_protocol_supervisor()
+    }
+
+    /// Captures complete protocol data while holding the same supervisor bank loan.
+    ///
+    /// The source retains the witness and precharged reservation. A successful
+    /// data capture still grants no Core ticket, semantic Capture or fresh world.
+    ///
+    /// # Errors
+    /// Refuses a different witness, unsupported/active supervisor, incomplete
+    /// protocol state or insufficient actual snapshot/metadata bank capacity.
+    pub fn capture_original_protocol_state_with_supervisor(
+        &mut self,
+        reservation: &mut crate::protocol_snapshot::ProtocolSnapshotReservation,
+        cut: crate::protocol_snapshot::ProtocolCaptureCut,
+        witness: &crate::connection::OriginalProtocolSupervisor,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.session
+            .authenticate_original_protocol_supervisor(witness)?;
+        witness.with_original_state(&mut |view| {
+            self.capture_original_protocol_state_inner(reservation, cut, Some((witness, &view)))
+        })
+    }
+
     /// Captures complete actual controller, correlation, content and literal frames.
     ///
     /// The caller supplies snapshot capacity charged before child construction.
@@ -261,14 +419,51 @@ impl CnpController {
         reservation: &mut crate::protocol_snapshot::ProtocolSnapshotReservation,
         cut: crate::protocol_snapshot::ProtocolCaptureCut,
     ) -> Result<(), ProviderError> {
+        self.ensure_no_pending_original_complete_restore()?;
+        self.capture_original_protocol_state_inner(reservation, cut, None)
+    }
+
+    fn capture_original_protocol_state_inner(
+        &mut self,
+        reservation: &mut crate::protocol_snapshot::ProtocolSnapshotReservation,
+        cut: crate::protocol_snapshot::ProtocolCaptureCut,
+        supervisor: Option<(
+            &crate::connection::OriginalProtocolSupervisor,
+            &crate::connection::OriginalSupervisorProtocolView<'_>,
+        )>,
+    ) -> Result<(), ProviderError> {
+        if self.original_complete_restore_prepare.is_some()
+            || self.original_complete_restore_commit.is_some()
+        {
+            return Err(ProviderError::Correlation(
+                "restore transfer retained owner requires extended complete host class",
+            ));
+        }
+        if reservation.uses_owned11_encoding() && supervisor.is_none() {
+            return Err(ProviderError::Correlation(
+                "complete protocol supervisor loan absent",
+            ));
+        }
         if self.fenced {
             return Err(ProviderError::Correlation("captured controller fenced"));
         }
-        if self.original_ack_admit.is_some() {
+        if (self.original_ack_admit.is_some() || self.original_complete_restore.is_some())
+            && !reservation.uses_owned11_encoding()
+        {
             return Err(ProviderError::Correlation(
                 "assigned Admit complete protocol edition not selected",
             ));
         }
+        if reservation.uses_owned11_encoding()
+            && let Some(assigned) = &self.original_ack_admit
+        {
+            assigned.validate_owned_snapshot()?;
+        }
+
+        if let Some(restore) = &self.original_complete_restore {
+            restore.validate_owned_snapshot()?;
+        }
+
         self.session.protocol_capture_preflight(cut)?;
         self.session.preflight_protocol_reservation(reservation)?;
         reservation.validate_source_encoding(
@@ -283,6 +478,47 @@ impl CnpController {
             self.session.protocol_original_deadline(),
         )?;
         reservation.retain_native5_codec(self.session.original_native5_codec_owner())?;
+        if reservation.uses_owned11_encoding() {
+            self.session.retain_owned_hello(reservation)?;
+            let (witness, supervisor) = supervisor.ok_or(ProviderError::Correlation(
+                "complete supervisor loan absent",
+            ))?;
+            reservation.record_owned_metadata(|observer| {
+                self.observe_owned11_metadata(observer)?;
+                witness.observe_original_header(observer)?;
+                supervisor.observe_owned11_metadata(observer)
+            })?;
+            reservation.retain_original_assigned_cut(
+                self.original_ack_admit
+                    .as_ref()
+                    .map(assigned_admit::AssignedOriginalCanonicalAckAdmit::original_cut),
+            );
+            reservation.retain_original_restore_cut(
+                self.original_complete_restore
+                    .as_ref()
+                    .map(assigned_restore::AssignedOriginalCompleteRestore::original_cut),
+            );
+            let data = (
+                crate::protocol_snapshot::owned11::outer::COMPLETE_CONTROLLER_FORMAT,
+                &self.route.node,
+                &self.route.execution_owner,
+                crucible_node_contract::U64::new(self.budget.as_secs()),
+                self.budget.subsec_nanos(),
+                self.fenced,
+                self.session.original_native5_capture_profile()?,
+                self.session.owned_protocol_view(),
+                self.custody.owned_protocol_view(),
+                self.original_ack_admit
+                    .as_ref()
+                    .map(assigned_admit::AssignedOriginalCanonicalAckAdmit::owned_protocol_view),
+                supervisor,
+                self.original_complete_restore
+                    .as_ref()
+                    .map(assigned_restore::AssignedOriginalCompleteRestore::owned_protocol_view),
+            );
+            reservation.encode_owned11(&data)?;
+            return self.session.retain_frozen_protocol_frames(reservation);
+        }
         if reservation.uses_compact_encoding() {
             reservation.encode(&(
                 "source-private.cnp-protocol/7",
@@ -321,10 +557,16 @@ impl CnpController {
         reservation: &mut Option<crate::protocol_snapshot::ProtocolSnapshotReservation>,
         cut: crate::protocol_snapshot::ProtocolCaptureCut,
     ) -> Result<crate::protocol_snapshot::OriginalProtocolSnapshot, ProviderError> {
-        if self.original_ack_admit.is_some() {
-            return Err(ProviderError::Correlation(
-                "assigned Admit complete protocol edition not selected",
-            ));
+        if let Some(assigned) = &self.original_ack_admit {
+            if reservation
+                .as_ref()
+                .is_none_or(|bank| !bank.uses_owned11_encoding())
+            {
+                return Err(ProviderError::Correlation(
+                    "assigned Admit complete protocol edition not selected",
+                ));
+            }
+            assigned.validate_owned_snapshot()?;
         }
         self.session.protocol_capture_preflight(cut)?;
         crate::protocol_snapshot::ProtocolSnapshotReservation::finish_from_slot(
@@ -578,6 +820,110 @@ impl CnpController {
             )
     }
 
+    /// Installs the independently selected complete-restore schema on an unused source controller.
+    ///
+    /// # Errors
+    /// Refuses changed routes, used banks, absent complete schemas/negotiation or
+    /// excessive immutable metadata. This installs grammar and grants no restore right.
+    pub fn install_native5_source_complete_restore_codec_with_metadata_extent(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: crate::connection::CanonicalAckCodecMetadataExtent,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.fenced
+            || self.custody.originals().next().is_some()
+            || selection.realization.bindings.len() != 1
+            || selection.realization.owner_bindings.len() != 1
+            || self.route.node != selection.realization.bindings[0].compatibility.node_id
+            || self.route.execution_owner != selection.realization.owner_bindings[0].owner.id
+        {
+            return Err(ProviderError::Correlation(
+                "canonical ACK codec requires original unused source controller",
+            ));
+        }
+        self.session
+            .install_native5_source_complete_restore_codec_with_metadata_extent(
+                bank,
+                selection,
+                coordinator,
+                profile,
+                metadata_extent,
+            )
+    }
+
+    /// Installs the separately source-selected twelve transfer codec on an unused controller.
+    ///
+    /// # Errors
+    /// Refuses changed source declarations, missing full phase schemas or live
+    /// negotiation, occupied original banks, another role or encoded credit.
+    pub fn install_native5_source_complete_restore_transfer_codec_with_metadata_extent(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: crate::connection::CanonicalAckCodecMetadataExtent,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.fenced
+            || self.custody.originals().next().is_some()
+            || selection.realization.bindings.len() != 1
+            || selection.realization.owner_bindings.len() != 1
+            || self.route.node != selection.realization.bindings[0].compatibility.node_id
+            || self.route.execution_owner != selection.realization.owner_bindings[0].owner.id
+        {
+            return Err(ProviderError::Correlation(
+                "canonical ACK codec requires original unused source controller",
+            ));
+        }
+        self.session
+            .install_native5_source_complete_restore_transfer_codec_with_metadata_extent(
+                bank,
+                selection,
+                coordinator,
+                profile,
+                metadata_extent,
+            )
+    }
+
+    /// Installs the source-selected original canonical restoration uploader codec.
+    ///
+    /// # Errors
+    /// Refuses used banks, wrong source declarations, role, negotiation or finite codec credit.
+    pub fn install_native5_source_restore_input_emitter_codec_with_metadata_extent(
+        &mut self,
+        bank: &mut Option<crate::transport::original_frames::OriginalFrameReservation>,
+        selection: crate::reference_packet::control::PacketControlSelection,
+        coordinator: crate::reference_service::InstalledContent,
+        profile: crate::reference_packet::service::PacketNative5CaptureProfile,
+        metadata_extent: crate::connection::CanonicalAckCodecMetadataExtent,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.fenced
+            || self.custody.originals().next().is_some()
+            || selection.realization.bindings.len() != 1
+            || selection.realization.owner_bindings.len() != 1
+            || self.route.node != selection.realization.bindings[0].compatibility.node_id
+            || self.route.execution_owner != selection.realization.owner_bindings[0].owner.id
+        {
+            return Err(ProviderError::Correlation(
+                "canonical ACK codec requires original unused source controller",
+            ));
+        }
+        self.session
+            .install_native5_source_restore_input_emitter_codec_with_metadata_extent(
+                bank,
+                selection,
+                coordinator,
+                profile,
+                metadata_extent,
+            )
+    }
+
     /// Installs the original connected input codec and a precharged literal bank.
     ///
     /// The source charges the actual bank and schema metadata before Child.
@@ -749,6 +1095,10 @@ impl CnpController {
             budget,
             fenced: false,
             original_ack_admit: None,
+            original_complete_restore: None,
+            original_complete_restore_prepare: None,
+            original_complete_restore_commit: None,
+            installed_complete_restore: None,
             protocol_owner: std::rc::Rc::new(crate::protocol_snapshot::ProtocolCaptureOwner::new()),
         })
     }
@@ -804,6 +1154,10 @@ impl CnpController {
                 budget,
                 fenced: false,
                 original_ack_admit: None,
+                original_complete_restore: None,
+                original_complete_restore_prepare: None,
+                original_complete_restore_commit: None,
+                installed_complete_restore: None,
                 protocol_owner: std::rc::Rc::new(
                     crate::protocol_snapshot::ProtocolCaptureOwner::new(),
                 ),
@@ -1263,3 +1617,88 @@ fn references(value: &Value, output: &mut Vec<ContentRef>) -> Result<(), Provide
 #[cfg(test)]
 #[path = "controller/construction_tests.rs"]
 mod construction_tests;
+
+impl CnpController {
+    /// Retains an archive-only data mapping to this same actual fresh controller.
+    ///
+    /// # Errors
+    /// Refuses an occupied slot, partial historical classes, changed native data,
+    /// unresolved current calls, stale target actors or reused scope/nonce. It
+    /// grants no native restoration permission and requires no old source owner.
+    pub fn prepare_archived_protocol_mapping_into(
+        &mut self,
+        host: &crate::protocol_snapshot::owned11::outer::SealedHistoricalControllerState,
+        native: &crate::protocol_snapshot::owned11::native::outer::SealedHistoricalNativeState,
+        archive_protocol: &ContentRef,
+        native_protocol: &ContentRef,
+        nonce: [u8; 32],
+        completed: &mut Option<crate::protocol_snapshot::PreparedArchivedProtocolMapping>,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if completed.is_some() {
+            return Err(ProviderError::Conflict(
+                "archived mapping result slot occupied",
+            ));
+        }
+        if let Some(assigned) = &self.original_ack_admit {
+            assigned.validate_owned_snapshot()?;
+        }
+        self.ensure_no_pending_original_complete_restore()?;
+        self.session.begin_original_ack_admit(self.budget)?;
+        let input = crate::protocol_snapshot::ArchivedProtocolMappingInput {
+            host,
+            native,
+            archive_protocol,
+            native_protocol,
+            nonce,
+        };
+        let mapping = self
+            .session
+            .prepare_archived_protocol_mapping(input, &self.protocol_owner)?;
+        *completed = Some(mapping);
+        self.authenticate_archived_protocol_mapping(
+            completed
+                .as_ref()
+                .ok_or(ProviderError::Correlation("archived mapping result absent"))?,
+        )
+    }
+
+    /// Authenticates the same live target without installing historical data.
+    ///
+    /// # Errors
+    /// Refuses changed actor, registration, sealed codec or original target cut.
+    pub fn authenticate_archived_protocol_mapping(
+        &self,
+        mapping: &crate::protocol_snapshot::PreparedArchivedProtocolMapping,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.session
+            .authenticate_archived_protocol_mapping(mapping, &self.protocol_owner)
+    }
+}
+
+impl CnpController {
+    /// Returns the actual immutable selected restoration mechanism of this controller.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, revoked registration or a replaced/unselected codec.
+    pub fn original_native5_complete_restore_selection(&self) -> Result<Option<crate::reference_packet::service::complete_restore::PacketNative5CompleteRestoreSelection>, ProviderError>{
+        self.authenticate_native5_source_codec()?;
+        self.session.original_native5_complete_restore_selection()
+    }
+}
+
+mod complete_installation;
+pub use complete_installation::InstalledArchivedProtocolState;
+
+impl CnpController {
+    /// Observes the actual installed closed uploader selection without granting receive rights.
+    ///
+    /// # Errors
+    /// Refuses a foreign origin, absent codec or revoked original negotiation.
+    pub fn original_native5_restore_input_emitter_selection(&self) -> Result<Option<crate::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection>, ProviderError>{
+        self.authenticate_native5_source_codec()?;
+        self.session
+            .original_native5_restore_input_emitter_selection()
+    }
+}

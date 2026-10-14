@@ -185,9 +185,15 @@ impl PacketControl {
             connected_coordinator: None,
             complete_coordinator: Some(coordinator),
             complete_storage: None,
+            complete_restored_hold: None,
+            complete_restored_evidence: None,
             complete_capture_profile: None,
             complete_confirmation_selection: None,
             complete_ack_emitter_selection: None,
+            complete_restore_selection: None,
+            complete_protocol_metadata_limits: None,
+            complete_protocol_metadata_birth_facts: None,
+            complete_restore_input_emitter_selection: None,
         }
     }
 }

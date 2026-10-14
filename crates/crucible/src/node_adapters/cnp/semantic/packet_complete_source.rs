@@ -17,6 +17,16 @@ use crucible_node_provider::{
     },
 };
 
+#[path = "packet_complete_source/archive_semantics.rs"]
+mod archive_semantics;
+pub use archive_semantics::PacketCompleteArchivedSemantics;
+
+#[path = "packet_complete_source/metadata_storage.rs"]
+mod metadata_storage;
+
+#[path = "packet_complete_source/archive_native_input.rs"]
+mod archive_native_input;
+
 #[path = "packet_complete_source/witness.rs"]
 mod witness;
 
@@ -28,6 +38,11 @@ mod ancestry;
 
 #[path = "packet_complete_source/capture_banks.rs"]
 mod capture_banks;
+#[path = "packet_complete_source/capture_transcript.rs"]
+mod capture_transcript;
+
+#[path = "packet_complete_source/protocol_metadata.rs"]
+mod protocol_metadata;
 pub use capture_banks::{PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits};
 
 pub use witness::{PacketCompleteNativeRecord, PacketCompleteNativeWitness};
@@ -46,7 +61,7 @@ mod ack_peer;
 mod world_admission;
 pub use ack_peer::{
     PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame,
-    PacketCompleteAckPeerBootMaterial,
+    PacketCompleteAckPeerBootMaterial, PacketCompleteRestorePreparation,
 };
 pub(super) use world_admission::OriginalCompletedCanonicalAckWorldAdmission;
 
@@ -81,6 +96,13 @@ pub struct PacketCompleteSemanticSource {
     ack_codec_metadata_extent: Option<crucible_node_provider::client::CanonicalAckCodecMetadataExtent>,
     native_ack_codec_metadata_extent: Option<crucible_node_provider::client::CanonicalAckCodecMetadataExtent>,
     ack_birth_input_banks: Option<(Vec<u8>, Vec<u8>)>,
+    complete_restore_selection: Option<Option<crucible_node_provider::reference_packet::service::complete_restore::PacketNative5CompleteRestoreSelection>>,
+    restore_input_emitter_selection: Option<Option<crucible_node_provider::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection>>,
+    protocol_metadata_limits: Option<crucible_node_provider::reference_packet::service::PacketNative5ProtocolMetadataLimits>,
+    original_extension_registry: std::cell::RefCell<Option<crucible_node_provider::handshake::OriginalExtensionRegistryOwner>>,
+    registry_retention_attempted: std::cell::Cell<bool>,
+    registry_retention_failed: std::cell::Cell<bool>,
+    complete_bytes_launch_reserved: std::cell::Cell<bool>,
 }
 
 impl PacketCompleteSemanticSource {
@@ -115,6 +137,13 @@ impl PacketCompleteSemanticSource {
             ack_codec_metadata_extent: None,
             native_ack_codec_metadata_extent: None,
             ack_birth_input_banks: None,
+            protocol_metadata_limits: None,
+            original_extension_registry: std::cell::RefCell::new(None),
+            registry_retention_attempted: std::cell::Cell::new(false),
+            registry_retention_failed: std::cell::Cell::new(false),
+            complete_bytes_launch_reserved: std::cell::Cell::new(false),
+            complete_restore_selection: None,
+            restore_input_emitter_selection: None,
         })
     }
 
@@ -149,6 +178,13 @@ impl PacketCompleteSemanticSource {
             ack_codec_metadata_extent: None,
             native_ack_codec_metadata_extent: None,
             ack_birth_input_banks: None,
+            protocol_metadata_limits: None,
+            original_extension_registry: std::cell::RefCell::new(None),
+            registry_retention_attempted: std::cell::Cell::new(false),
+            registry_retention_failed: std::cell::Cell::new(false),
+            complete_bytes_launch_reserved: std::cell::Cell::new(false),
+            complete_restore_selection: None,
+            restore_input_emitter_selection: None,
         })
     }
 
@@ -361,6 +397,16 @@ impl CnpSemanticSource for PacketCompleteSemanticSource {
 
         // Both reads borrow the SAME controller. Neither comes from the
         // registrar reader, a mirrored count or the launch declaration alone.
+        if matches!(
+            self.selected_capture_profile()?,
+            PacketNative5CaptureProfile::OwnedProtocol11 { .. }
+        ) {
+            scope
+                .native
+                .retain_original_complete_protocol_supervisor()
+                .map_err(unknown)?;
+            self.authenticate_witness_scope(&scope)?;
+        }
         let storage = scope
             .controller
             .original_native5_storage_facts()
@@ -928,3 +974,137 @@ impl PacketCompleteSemanticSource {
 
 #[cfg(test)]
 mod tests;
+
+#[path = "packet_complete_source/complete_restore_selection.rs"]
+mod complete_restore_selection;
+
+#[path = "packet_complete_source/archive_journal.rs"]
+mod archive_journal;
+pub use archive_journal::{PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA, PacketCompleteSettledJournal};
+
+#[path = "packet_complete_source/archive_owner.rs"]
+mod archive_owner;
+pub use archive_owner::PacketCompleteArchivedOwnerData;
+
+impl PacketCompleteSemanticSource {
+    /// Borrows the original typed reactive model used by this complete source.
+    ///
+    /// A producer returns None. The factory separately compares the actual
+    /// installed configuration/model reference and complete canonical bytes;
+    /// this loan avoids reparsing that known definition into another JSON tree.
+    /// It grants no execution, archive or capture permission.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator or a source without its exact complete world.
+    pub fn complete_reactive_definition_data(
+        &self,
+    ) -> Result<Option<&PacketConnectedDefinition>, OperationFailure> {
+        self.ensure_origin()?;
+        match &self.original {
+            CompletePacketOriginal::Producer(_) => Ok(None),
+            CompletePacketOriginal::Reactive(source) => {
+                source.complete_original_definition_data().map(Some)
+            }
+        }
+    }
+}
+
+impl PacketCompleteSemanticSource {
+    /// Retains original graph-authenticated full static input rows before Stage.
+    ///
+    /// The installed graph supplies exact full bodies and explicit direct rows;
+    /// a producer accepts an empty roster. This data operation grants no graph,
+    /// input, Capture or archive authority. Every full measured leaf is retained,
+    /// including executables; a too-small selected bank refuses before copying.
+    ///
+    /// # Errors
+    /// Refuses changed origin, late/repeated differing rows, missing selected
+    /// policy/proof bodies or insufficient actual retained backing allowance.
+    pub fn retain_original_complete_input_static_rows(
+        &self,
+        rows: &[(InputPayload, Vec<ContentRef>)],
+        maximum_retained_bytes: usize,
+    ) -> Result<(), OperationFailure> {
+        self.ensure_origin()?;
+        match &self.original {
+            CompletePacketOriginal::Producer(_) => {
+                if !rows.is_empty() {
+                    return Err(refused("complete producer has no input static rows"));
+                }
+                Ok(())
+            }
+            CompletePacketOriginal::Reactive(source) => {
+                source.retain_complete_input_static_rows(rows, maximum_retained_bytes)
+            }
+        }
+    }
+
+    /// Reports actual retained complete-only static input body/row storage.
+    ///
+    /// The source/factory must include this distinct backing in whole admission;
+    /// it is not covered by encoded protocol or ancestry bank capacities.
+    ///
+    /// # Errors
+    /// Refuses foreign custody or an unbound/incomplete reactive static bank.
+    pub fn original_complete_input_static_storage(&self) -> Result<usize, OperationFailure> {
+        self.ensure_origin()?;
+        match &self.original {
+            CompletePacketOriginal::Producer(_) => Ok(0),
+            CompletePacketOriginal::Reactive(source) => source.complete_input_static_storage(),
+        }
+    }
+}
+
+
+#[path = "packet_complete_source/restore_input_emitter_selection.rs"]
+mod restore_input_emitter_selection;
+
+#[path = "packet_complete_source/retained_installation.rs"]
+mod retained_installation;
+
+#[path = "packet_complete_source/retained_values.rs"]
+mod retained_values;
+
+impl PacketCompleteSemanticSource {
+    /// Counts actual static and first-sealed lineage banks retained by this Source.
+    ///
+    /// Complete producers have no source input-lineage bank. Reactive Sources
+    /// count their original full byte/row/dependency static closure and lineage
+    /// Vec plus actual Core-owned lineage data/batch backing. Only identical
+    /// pairs of original Rc addresses share credit; equal hashes do not.
+    /// Shared Core activation authority and publication owners excluded by the
+    /// Core observer remain separate actual Core owning-row terms.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, busy/missing static custody, unsupported lineage
+    /// population or a combined actual requested-storage overrun.
+    pub fn original_complete_static_lineage_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, OperationFailure> {
+        self.ensure_origin()?;
+        match &self.original {
+            CompletePacketOriginal::Producer(_) => Ok(0),
+            CompletePacketOriginal::Reactive(source) => retained_values::sum(
+                [
+                    source.complete_input_static_storage()?,
+                    source.complete_retained_lineage_storage(maximum)?,
+                ],
+                maximum,
+            ),
+        }
+    }
+}
+
+#[path = "packet_complete_source/retained_holders.rs"]
+mod retained_holders;
+
+#[path = "packet_complete_source/retained_registry.rs"]
+mod retained_registry;
+
+#[path = "packet_complete_source/retained_storage.rs"]
+mod retained_storage;
+pub use retained_storage::PacketCompleteSourceRetainedStorage;
+
+#[path = "packet_complete_source/complete_launch.rs"]
+mod complete_launch;

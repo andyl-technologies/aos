@@ -379,3 +379,24 @@ fn validate_ack(
 
 #[cfg(test)]
 mod tests;
+
+impl PacketCapturePrefix<crate::client::DeadlineStream> {
+    pub(crate) fn preflight_owned11_after_protocol_capacity(
+        &self,
+        after: &mut crate::protocol_snapshot::ProtocolSnapshotReservation,
+        blobs: &crate::blob::BlobReceiver,
+        context: &super::service::OriginalNativeCaptureContext<'_>,
+    ) -> Result<crate::connection::NativeOwned11AfterProtocolCapacityFacts, ProviderError> {
+        if self.state != PrefixState::Prepared {
+            return Err(ProviderError::Conflict(
+                "capture owned11 after preflight phase",
+            ));
+        }
+        let Some(CaptureTransport::Prepared(exchange)) = self.transport.as_ref() else {
+            return Err(ProviderError::Conflict(
+                "capture owned11 original window absent",
+            ));
+        };
+        exchange.preflight_native_owned11_after_protocol_capacity(after, blobs, context)
+    }
+}

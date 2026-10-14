@@ -39,6 +39,70 @@ pub struct CnpSemanticCaptureScope<'a> {
 }
 
 impl CnpSemanticCaptureScope<'_> {
+    /// Captures the complete host controller with its actual supervisor loan.
+    ///
+    /// The opaque witness remains beside the same original controller. Both
+    /// reservation/result slots retain their owning into-slot semantics, and
+    /// this route creates no fresh connection or installation permission.
+    ///
+    /// # Errors
+    /// Refuses changed source/current actor, an unsupported concrete supervisor,
+    /// borrowed/missing original storage, unresolved I/O or exhausted bounds.
+    /// Failure retains the witness and all reservation/completed owners.
+    pub fn take_settled_original_complete_protocol_snapshot_into(
+        &mut self,
+        reservation: &mut Option<
+            crucible_node_provider::protocol_snapshot::ProtocolSnapshotReservation,
+        >,
+        completed: &mut Option<crucible_node_provider::protocol_snapshot::OriginalProtocolSnapshot>,
+    ) -> Result<(), OperationFailure> {
+        self.realization()?;
+        self.native
+            .retain_original_complete_protocol_supervisor()
+            .map_err(unknown)?;
+        self.realization()?;
+        let call = ReadCall::begin(Rc::clone(&self.native.read_owner)).map_err(unknown)?;
+        let result = (|| {
+            if completed.is_some() {
+                return Err(refused("complete original protocol result slot occupied"));
+            }
+            let witness = self
+                .native
+                .protocol_supervisor
+                .try_borrow()
+                .map_err(|_| refused("complete original supervisor witness borrowed"))?;
+            let witness = witness
+                .as_ref()
+                .ok_or_else(|| refused("complete original supervisor witness absent"))?;
+            let controller = self
+                .native
+                .controller
+                .as_mut()
+                .ok_or_else(|| refused("complete original protocol controller absent"))?;
+            let cut = crucible_node_provider::protocol_snapshot::ProtocolCaptureCut::HostSettled;
+            controller
+                .capture_original_protocol_state_with_supervisor(
+                    reservation
+                        .as_mut()
+                        .ok_or_else(|| refused("complete original protocol reservation absent"))?,
+                    cut,
+                    witness,
+                )
+                .map_err(unknown)?;
+            controller
+                .take_original_protocol_snapshot_into(reservation, completed, cut)
+                .map_err(unknown)
+        })();
+        call.finish(result.is_ok());
+        result?;
+        if let Err(error) = self.realization() {
+            self.native.ensure_origin().map_err(unknown)?;
+            self.native.read_owner.revoke();
+            return Err(super::after_effect(error));
+        }
+        Ok(())
+    }
+
     /// Borrows the same independently installed complete source selection.
     pub fn installation(&self) -> &CnpSemanticInstallation {
         self.source.installation()
