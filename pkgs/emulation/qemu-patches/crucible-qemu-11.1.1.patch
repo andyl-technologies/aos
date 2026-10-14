@@ -1,6 +1,6 @@
-From 5be074f96081040b197d5a7a30c3e2991dd9be80 Mon Sep 17 00:00:00 2001
+From d8104fe3cc0a518bbb35b2d3f6c3dfa1bc819734 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 14 Oct 2026 00:10:00 +0000
+Date: Wed, 14 Oct 2026 02:40:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -684,6 +684,26 @@ physical storage and complete native graph/RCU closure remain pending;
 body ownership does not issue class/property effect permission or BIOS
 writer, full seal, Capture/Ready, guest, installed-pair, package or release
 qualification.
+
+
+Retain original KVM file identities and CPU readout metadata before effects.
+Use a separate sealed resource-policy descriptor with explicit argv ownership;
+keep the version-one launch descriptor and ordinary accelerator unchanged.
+Bind the system-file pre-VM quote to its original Task, mm and module. Refuse
+selected CREATE_VM before FD reservation while native coverage is incomplete.
+
+Carry the coherent CPU, timer and resource kernel source chain with the QEMU
+reader. Keep original delivery attempts and raw native results distinct from
+usercopy failure. Current metadata coverage is one of eleven required domains;
+caller ceilings never authorize creation or execution.
+
+Complete configured QEMU, kernel and utility translation units, exact ordered
+source replay and scoped ownership controls retain their original cohorts.
+Regenerate the actual option enum and compile the complete VL translation unit.
+Twelve literal option, FD-role scan and late-case controls cover this CLI join.
+Location, Task, mm, allocator and usercopy peers remain explicitly modeled where
+used. These components do not qualify full qemu_init, a live kernel ioctl,
+backend-two RAM, complete allocation coverage, RUN, Ready or a package build.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -2925,6 +2945,360 @@ index 0000000000000000000000000000000000000000..e032fcdc8bb20f1b324bafdb6c8c34bc
 +    entry->result_known = true;
 +    return 0;
 +}
+diff --git a/accel/kvm/crucible-fd-original.inc.c b/accel/kvm/crucible-fd-original.inc.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7e96d28714fa1210fa0c4f327da0f8de2393a8d
+--- /dev/null
++++ b/accel/kvm/crucible-fd-original.inc.c
+@@ -0,0 +1,348 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Included by kvm-all.c after actual KVM/CPU/QOM declarations. */
++typedef struct KvmCrucibleFdOriginal {
++    KVMState *state;
++    ObjectClass *state_class;
++    const KvmCrucibleQ35LaunchClockOwner *launch;
++    CrucibleFdIssuer *issuer;
++    CrucibleFdLease *leases[6];
++    CrucibleFdBirth births[6];
++    bool unknown;
++} KvmCrucibleFdOriginal;
++
++typedef struct KvmCrucibleFdAllocation {
++    CrucibleFdBirth birth;
++    CrucibleFdLease *lease;
++    bool returned;
++    int raw_return;
++    int saved_errno;
++} KvmCrucibleFdAllocation;
++
++static KvmCrucibleFdOriginal kvm_fd_original;
++static __thread KvmCrucibleFdAllocation *kvm_fd_allocation;
++static __thread KvmCrucibleFdAllocation *kvm_fd_close_attempt;
++
++static G_NORETURN void kvm_fd_original_fault(void)
++{
++    kvm_crucible_q35_launch_process_guard_original();
++    kvm_fd_original.unknown = true;
++    if (kvm_fd_original.issuer) {
++        crucible_fd_issuer_unknown(kvm_fd_original.issuer);
++    }
++    _exit(125);
++}
++
++static bool kvm_fd_original_context(const void *context)
++{
++    const KvmCrucibleQ35LaunchClockOwner *launch;
++    uint64_t incarnation;
++
++    kvm_crucible_q35_launch_process_guard_original();
++    return context == &kvm_fd_original && !kvm_fd_original.unknown &&
++        kvm_fd_original.state && bql_locked() &&
++        object_get_class(OBJECT(kvm_fd_original.state)) ==
++            kvm_fd_original.state_class &&
++        !kvm_crucible_q35_launch_clock_original(&launch, &incarnation) &&
++        launch == kvm_fd_original.launch && incarnation == 1 &&
++        kvm_crucible_q35_launch_fd_constructor_current_original(launch);
++}
++
++static bool kvm_fd_birth_equal(const CrucibleFdBirth *left,
++                               const CrucibleFdBirth *right)
++{
++    return left->role == right->role &&
++        left->original_owner == right->original_owner &&
++        left->original_class == right->original_class &&
++        left->original_parent == right->original_parent &&
++        left->cpu_index == right->cpu_index &&
++        left->native_allocation_argument == right->native_allocation_argument;
++}
++
++static bool kvm_fd_original_birth_current(const void *context,
++                                          const CrucibleFdBirth *birth)
++{
++    CPUState *cpu;
++
++    kvm_crucible_q35_launch_process_guard_original();
++    if (!kvm_fd_original_context(context) || !kvm_fd_allocation ||
++        kvm_fd_allocation->returned ||
++        !kvm_fd_birth_equal(birth, &kvm_fd_allocation->birth)) {
++        return false;
++    }
++    if (birth->role != CRUCIBLE_FD_KVM_VCPU) {
++        KvmCrucibleQ35LaunchOriginal original;
++
++        return birth->original_owner == kvm_fd_original.state &&
++            birth->original_class == kvm_fd_original.state_class &&
++            !kvm_crucible_q35_launch_read_original(&original) &&
++            original.constructor_tid == syscall(SYS_gettid);
++    }
++    cpu = (CPUState *)birth->original_owner;
++    return birth->cpu_index < 4 && cpu->cpu_index == birth->cpu_index &&
++        object_get_class(OBJECT(cpu)) == birth->original_class &&
++        cpu->thread && qemu_thread_is_self(cpu->thread) &&
++        kvm_arch_vcpu_id(cpu) == birth->native_allocation_argument &&
++        birth->native_allocation_argument == birth->cpu_index &&
++        kvm_crucible_q35_workers_original_actor(kvm_fd_original.state);
++}
++
++static bool kvm_fd_original_birth_return(const void *context,
++                                         const CrucibleFdBirth *birth,
++                                         int raw_return, int saved_errno)
++{
++    kvm_crucible_q35_launch_process_guard_original();
++    return kvm_fd_original_context(context) && kvm_fd_allocation &&
++        kvm_fd_allocation->returned &&
++        kvm_fd_birth_equal(birth, &kvm_fd_allocation->birth) &&
++        kvm_fd_allocation->raw_return == raw_return &&
++        kvm_fd_allocation->saved_errno == saved_errno;
++}
++
++static bool kvm_fd_original_object_current(const void *context,
++                                           const CrucibleFdBirth *birth,
++                                           int descriptor)
++{
++    KVMState *state;
++    CPUState *cpu;
++
++    kvm_crucible_q35_launch_process_guard_original();
++    if (!kvm_fd_original_context(context)) {
++        return false;
++    }
++    state = kvm_fd_original.state;
++    if (birth->role == CRUCIBLE_FD_KVM_DRIVER) {
++        return birth->original_owner == state &&
++            birth->original_class == kvm_fd_original.state_class &&
++            state->fd == descriptor;
++    }
++    if (birth->role == CRUCIBLE_FD_KVM_VM) {
++        return birth->original_owner == state &&
++            birth->original_class == kvm_fd_original.state_class &&
++            state->vmfd == descriptor;
++    }
++    cpu = (CPUState *)birth->original_owner;
++    return birth->role == CRUCIBLE_FD_KVM_VCPU && birth->cpu_index < 4 &&
++        cpu->cpu_index == birth->cpu_index &&
++        object_get_class(OBJECT(cpu)) == birth->original_class &&
++        cpu->kvm_state == state && cpu->kvm_fd == descriptor &&
++        kvm_arch_vcpu_id(cpu) == birth->native_allocation_argument;
++}
++
++static bool kvm_fd_original_retirement_current(const void *context,
++                                               const CrucibleFdBirth *birth,
++                                               int descriptor)
++{
++    kvm_crucible_q35_launch_process_guard_original();
++    if (!kvm_fd_original_object_current(context, birth, descriptor)) {
++        return false;
++    }
++    /* No full native output/architecture-I/O retirement issuer exists yet.
++     * A cold worker getter or fd equality cannot grant literal close. */
++    return false;
++}
++
++static bool kvm_fd_original_close_return(const void *context,
++                                         const CrucibleFdBirth *birth,
++                                         int raw_return, int saved_errno)
++{
++    kvm_crucible_q35_launch_process_guard_original();
++    return context == &kvm_fd_original && kvm_fd_close_attempt &&
++        kvm_fd_close_attempt->returned &&
++        kvm_fd_birth_equal(birth, &kvm_fd_close_attempt->birth) &&
++        kvm_fd_close_attempt->raw_return == raw_return &&
++        kvm_fd_close_attempt->saved_errno == saved_errno;
++}
++
++static bool kvm_fd_original_close_attempt_current(const void *context,
++    const CrucibleFdBirth *birth, int descriptor)
++{
++    kvm_crucible_q35_launch_process_guard_original();
++    return context == &kvm_fd_original && !kvm_fd_original.unknown &&
++        kvm_fd_close_attempt && !kvm_fd_close_attempt->returned &&
++        kvm_fd_birth_equal(birth, &kvm_fd_close_attempt->birth) &&
++        (birth->role == CRUCIBLE_FD_KVM_DRIVER ?
++            kvm_fd_original.state->fd == descriptor :
++         birth->role == CRUCIBLE_FD_KVM_VM ?
++            kvm_fd_original.state->vmfd == descriptor :
++            ((CPUState *)birth->original_owner)->kvm_fd == descriptor);
++}
++
++static void kvm_fd_original_begin(KVMState *state)
++{
++    void *backing;
++    const void *launch;
++    CrucibleFdSource source = {
++        .birth_current = kvm_fd_original_birth_current,
++        .birth_return_current = kvm_fd_original_birth_return,
++        .object_current = kvm_fd_original_object_current,
++        .retirement_current = kvm_fd_original_retirement_current,
++        .close_attempt_current = kvm_fd_original_close_attempt_current,
++        .close_return_current = kvm_fd_original_close_return,
++    };
++
++    kvm_crucible_q35_launch_process_guard_original();
++    if (kvm_fd_original.state || !state || !bql_locked()) {
++        kvm_fd_original_fault();
++    }
++    backing = kvm_crucible_q35_launch_fd_backing_original(
++        crucible_fd_backing_bytes(), crucible_fd_backing_alignment(),
++        sizeof(kvm_fd_original) + sizeof(q35_prevm_resource) + 5 *
++            (2 * sizeof(KvmCrucibleFdAllocation) +
++             sizeof(kvm_fd_allocation) + sizeof(kvm_fd_close_attempt)), &launch);
++    kvm_fd_original.state = state;
++    kvm_fd_original.state_class = object_get_class(OBJECT(state));
++    kvm_fd_original.launch = launch;
++    kvm_fd_original.issuer = crucible_fd_issuer_begin(launch, &kvm_fd_original,
++        backing, crucible_fd_backing_bytes(), source);
++    if (!kvm_fd_original.issuer) {
++        kvm_fd_original_fault();
++    }
++}
++
++static unsigned kvm_fd_original_slot(CrucibleFdRole role, CPUState *cpu)
++{
++    return role == CRUCIBLE_FD_KVM_DRIVER ? 0 :
++        role == CRUCIBLE_FD_KVM_VM ? 1 : cpu->cpu_index + 2;
++}
++
++static void kvm_fd_original_require_current(unsigned slot, int descriptor)
++{
++    kvm_crucible_q35_launch_process_guard_original();
++    if (slot >= G_N_ELEMENTS(kvm_fd_original.leases) ||
++        !crucible_fd_current(kvm_fd_original.leases[slot],
++                             &kvm_fd_original.births[slot], descriptor)) {
++        kvm_fd_original_fault();
++    }
++}
++
++static void kvm_fd_original_reserve(KvmCrucibleFdAllocation *allocation,
++    CrucibleFdRole role, CPUState *cpu, uint64_t native_argument)
++{
++    unsigned slot;
++
++    kvm_crucible_q35_launch_process_guard_original();
++    if (kvm_fd_allocation || !allocation ||
++        (role == CRUCIBLE_FD_KVM_VCPU &&
++            (!cpu || cpu->cpu_index < 0 || cpu->cpu_index >= 4))) {
++        kvm_fd_original_fault();
++    }
++    slot = kvm_fd_original_slot(role, cpu);
++    if (slot) {
++        kvm_fd_original_require_current(slot == 1 ? 0 : 1,
++            slot == 1 ? kvm_fd_original.state->fd : kvm_fd_original.state->vmfd);
++    }
++    *allocation = (KvmCrucibleFdAllocation) {
++        .birth = {
++            .role = role,
++            .original_owner = cpu ? (void *)cpu : (void *)kvm_fd_original.state,
++            .original_class = cpu ? object_get_class(OBJECT(cpu)) :
++                kvm_fd_original.state_class,
++            .original_parent = slot ? kvm_fd_original.leases[slot == 1 ? 0 : 1] : NULL,
++            .cpu_index = cpu ? cpu->cpu_index : 0,
++            .native_allocation_argument = native_argument,
++        },
++    };
++    kvm_fd_allocation = allocation;
++    allocation->lease = crucible_fd_reserve(kvm_fd_original.issuer,
++                                            &allocation->birth);
++    if (!allocation->lease) {
++        kvm_fd_original_fault();
++    }
++    kvm_fd_original.leases[slot] = allocation->lease;
++    kvm_fd_original.births[slot] = allocation->birth;
++}
++
++static int kvm_fd_original_claim(KvmCrucibleFdAllocation *allocation,
++                                 int raw_return, int saved_errno)
++{
++    kvm_crucible_q35_launch_process_guard_original();
++    if (kvm_fd_allocation != allocation || allocation->returned) {
++        kvm_fd_original_fault();
++    }
++    allocation->raw_return = raw_return;
++    allocation->saved_errno = saved_errno;
++    allocation->returned = true;
++    if (!crucible_fd_claim_original_raw_return(allocation->lease,
++                                               raw_return, saved_errno)) {
++        kvm_fd_original_fault();
++    }
++    kvm_fd_allocation = NULL;
++    return raw_return;
++}
++
++static int kvm_fd_original_open_driver(KVMState *state)
++{
++    KvmCrucibleFdAllocation allocation;
++    int raw_return, saved_errno;
++
++    kvm_crucible_q35_launch_process_guard_original();
++    if (state->device && strcmp(state->device, "/dev/kvm")) {
++        kvm_fd_original_fault();
++    }
++    kvm_fd_original_begin(state);
++    kvm_fd_original_reserve(&allocation, CRUCIBLE_FD_KVM_DRIVER, NULL,
++                             O_RDWR | O_CLOEXEC);
++    raw_return = open("/dev/kvm", O_RDWR | O_CLOEXEC);
++    saved_errno = raw_return == -1 ? errno : 0;
++    state->fd = kvm_fd_original_claim(&allocation, raw_return, saved_errno);
++    kvm_fd_original_require_current(0, state->fd);
++    return state->fd;
++}
++
++static void kvm_fd_original_close_fence(void)
++{
++    kvm_crucible_q35_launch_process_guard_original();
++    if (kvm_crucible_q35_launch_selected_original()) {
++        /* Seal before any metadata teardown, CPU removal, or close attempt.
++         * Failed admission never grants a cleanup close or fd-number retry. */
++        if (!kvm_fd_original.issuer) {
++            kvm_fd_original_fault();
++        }
++        for (unsigned index = 0; index < G_N_ELEMENTS(kvm_fd_original.leases); index++) {
++            CrucibleFdBirth *birth = &kvm_fd_original.births[index];
++            int descriptor;
++
++            if (!kvm_fd_original.leases[index]) {
++                kvm_fd_original_fault();
++            }
++            descriptor = index == 0 ? kvm_fd_original.state->fd :
++                index == 1 ? kvm_fd_original.state->vmfd :
++                ((CPUState *)birth->original_owner)->kvm_fd;
++            if (!crucible_fd_retire_begin(kvm_fd_original.leases[index], descriptor)) {
++                kvm_fd_original_fault();
++            }
++        }
++    }
++}
++
++static void kvm_fd_original_close_once(unsigned slot, int descriptor)
++{
++    KvmCrucibleFdAllocation attempt;
++    int raw_return, saved_errno;
++
++    kvm_crucible_q35_launch_process_guard_original();
++    if (!kvm_crucible_q35_launch_selected_original()) {
++        close(descriptor);
++        return;
++    }
++    if (slot >= G_N_ELEMENTS(kvm_fd_original.leases) || kvm_fd_close_attempt) {
++        kvm_fd_original_fault();
++    }
++    attempt = (KvmCrucibleFdAllocation) {
++        .birth = kvm_fd_original.births[slot],
++        .lease = kvm_fd_original.leases[slot],
++    };
++    kvm_fd_close_attempt = &attempt;
++    if (!crucible_fd_close_original_begin(attempt.lease, descriptor)) {
++        kvm_fd_original_fault();
++    }
++    raw_return = close(descriptor);
++    saved_errno = raw_return == -1 ? errno : 0;
++    attempt.raw_return = raw_return;
++    attempt.saved_errno = saved_errno;
++    attempt.returned = true;
++    if (!crucible_fd_retire_finish(attempt.lease, raw_return, saved_errno)) {
++        kvm_fd_original_fault();
++    }
++    kvm_fd_close_attempt = NULL;
++}
 diff --git a/accel/kvm/crucible-initialization.c b/accel/kvm/crucible-initialization.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..a0dc5b8b2021219a71a119971bd95afc88ba8e3f
@@ -4114,6 +4488,272 @@ index 0000000000000000000000000000000000000000..db3bb63cc95eff2964eff57507e5e1f3
 +        setup.issued == PIC_VM_SETUP_EFFECTS &&
 +        setup.entries[0].known && setup.entries[1].known &&
 +        setup.entries[2].known;
++}
+diff --git a/accel/kvm/crucible-q35-cpu-history-types.inc.c b/accel/kvm/crucible-q35-cpu-history-types.inc.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..6a2d56fb2d2ca5f7442d06885318db9a642f5cae
+--- /dev/null
++++ b/accel/kvm/crucible-q35-cpu-history-types.inc.c
+@@ -0,0 +1,75 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Kernel-private CPU history controls. None of these pointers/layouts is CNP. */
++#define Q35_CPU_HISTORY_CAP 0xa042
++#define Q35_CPU_HISTORY_METADATA 1
++#define Q35_CPU_HISTORY_READ 2
++#define Q35_CPU_HISTORY_KNOWN 1
++#define Q35_CPU_HISTORY_UNCERTAIN 2
++#define Q35_CPU_HISTORY_NATIVE_RETURNED 16
++#define Q35_CPU_HISTORY_FLAGS 31
++#define Q35_CPU_HISTORY_KERNEL_BYTES (UINT64_C(1) << 20)
++/* The original kernel actor account bounds variable banks. Legacy inline
++ * event rows are also retained, so their actual complete extent is added. */
++#define Q35_CPU_HISTORY_BANK_BYTES \
++    (Q35_CPU_HISTORY_KERNEL_BYTES + Q35_MAX_EFFECTS * sizeof(struct kvm_vcpu_events))
++
++typedef struct Q35CpuBytesRequest {
++    uint32_t version;
++    uint32_t operation;
++    uint64_t enrollment_id;
++    uint32_t native_vcpu_id;
++    uint32_t effect_index;
++    uint32_t native_ioctl;
++    uint32_t flags;
++    uint64_t input_buffer;
++    uint64_t input_capacity;
++    uint64_t output_buffer;
++    uint64_t output_capacity;
++    uint64_t input_bytes;
++    uint64_t output_bytes;
++    int64_t native_result;
++    int64_t original_delivery_result;
++    int64_t reader_delivery_result;
++    uint64_t input_copied_bytes;
++    uint64_t reserved[2];
++} Q35CpuBytesRequest;
++
++QEMU_BUILD_BUG_ON(sizeof(Q35CpuBytesRequest) != 128);
++QEMU_BUILD_BUG_ON(offsetof(Q35CpuBytesRequest, native_result) != 80);
++QEMU_BUILD_BUG_ON(offsetof(Q35CpuBytesRequest, input_copied_bytes) != 104);
++QEMU_BUILD_BUG_ON(offsetof(Q35CpuBytesRequest, reserved) != 112);
++
++typedef struct Q35CpuHistoryRow {
++    Q35InitializerRequest query_original;
++    Q35InitializerRequest query_reply;
++    Q35CpuBytesRequest metadata_original;
++    Q35CpuBytesRequest metadata_reply;
++    Q35CpuBytesRequest read_original;
++    Q35CpuBytesRequest read_reply;
++    int query_result;
++    int metadata_result;
++    int read_result;
++    size_t input_offset;
++    size_t output_offset;
++    bool query_attempted;
++    bool metadata_attempted;
++    bool read_attempted;
++    bool complete;
++} Q35CpuHistoryRow;
++
++typedef struct Q35CpuHistoryWorker {
++    Q35InitializerRequest summary_original;
++    Q35InitializerRequest summary_reply;
++    int summary_result;
++    size_t bytes_used;
++    uint32_t rows;
++    bool summary_attempted;
++    Q35CpuHistoryRow history[Q35_MAX_EFFECTS];
++    uint8_t bytes[Q35_CPU_HISTORY_BANK_BYTES];
++} Q35CpuHistoryWorker;
++
++typedef struct Q35CpuHistory {
++    bool attempted;
++    bool complete;
++    Q35CpuHistoryWorker workers[Q35_CPUS];
++} Q35CpuHistory;
+diff --git a/accel/kvm/crucible-q35-cpu-history.inc.c b/accel/kvm/crucible-q35-cpu-history.inc.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..a30bc7dfed4a45368510b2d9fc5ac7fc9ce66219
+--- /dev/null
++++ b/accel/kvm/crucible-q35-cpu-history.inc.c
+@@ -0,0 +1,179 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* One original constructor readback; native getters are never repeated here. */
++static bool q35_cpu_history_current(unsigned index)
++{
++    kvm_crucible_q35_workers_process_guard();
++
++    return index < Q35_CPUS && q35_workers_constructor() &&
++        q35_workers.cpu_history && q35_workers.cpu_history_owner &&
++        q35_workers_initialized_original(index) &&
++        q35_workers.workers[index].physical_parked &&
++        q35_workers.workers[index].physical_park_sequence &&
++        q35_workers_physically_stopped(&q35_workers.workers[index]);
++}
++
++static int q35_cpu_history_ioctl(Q35CpuBytesRequest *request)
++{
++    kvm_crucible_q35_workers_process_guard();
++
++    struct kvm_enable_cap cap = {
++        .cap = Q35_CPU_HISTORY_CAP, .args = { (uintptr_t)request },
++    };
++
++    return kvm_vm_ioctl(q35_workers.state, KVM_ENABLE_CAP, &cap);
++}
++
++static bool q35_cpu_history_query_matches(const Q35InitializerRequest *reply,
++                                         unsigned index, uint32_t row)
++{
++    Q35InitializerRequest original = q35_workers_request(index, Q35_QUERY,
++        q35_workers.workers[index].initializer_tid);
++
++    return reply->version == original.version &&
++        reply->operation == original.operation &&
++        reply->enrollment_id == original.enrollment_id &&
++        reply->maximum_effects == original.maximum_effects &&
++        reply->native_vcpu_count == Q35_CPUS && reply->native_vcpu_id == index &&
++        reply->initializer_tid == original.initializer_tid &&
++        reply->effect_index == row && reply->issued_effects > 0 &&
++        reply->issued_effects <= q35_workers.maximum_effects &&
++        reply->flags == (Q35_ACTOR_PRESENT | Q35_VCPU_PRESENT | (row ? 1 : 0)) &&
++        !memcmp(reply->reserved, original.reserved, sizeof(reply->reserved));
++}
++
++static bool q35_cpu_history_metadata_matches(const Q35CpuBytesRequest *reply,
++                                            const Q35CpuBytesRequest *original)
++{
++    return reply->version == original->version &&
++        reply->operation == original->operation &&
++        reply->enrollment_id == original->enrollment_id &&
++        reply->native_vcpu_id == original->native_vcpu_id &&
++        reply->effect_index == original->effect_index &&
++        reply->native_ioctl == original->native_ioctl &&
++        (reply->flags & Q35_CPU_HISTORY_KNOWN) &&
++        (reply->flags & Q35_CPU_HISTORY_NATIVE_RETURNED) &&
++        !(reply->flags & Q35_CPU_HISTORY_UNCERTAIN) &&
++        !(reply->flags & ~Q35_CPU_HISTORY_FLAGS) &&
++        !reply->input_buffer && !reply->input_capacity &&
++        !reply->output_buffer && !reply->output_capacity &&
++        reply->input_bytes <= Q35_CPU_HISTORY_KERNEL_BYTES &&
++        reply->output_bytes <= Q35_CPU_HISTORY_KERNEL_BYTES &&
++        reply->input_copied_bytes <= reply->input_bytes &&
++        !reply->reader_delivery_result &&
++        !memcmp(reply->reserved, original->reserved, sizeof(reply->reserved));
++}
++
++static bool q35_cpu_history_read_matches(const Q35CpuHistoryRow *row)
++{
++    Q35CpuBytesRequest expected = row->read_original;
++
++    expected.flags = row->metadata_reply.flags;
++    expected.input_bytes = row->metadata_reply.input_bytes;
++    expected.output_bytes = row->metadata_reply.output_bytes;
++    expected.input_copied_bytes = row->metadata_reply.input_copied_bytes;
++    expected.native_result = row->metadata_reply.native_result;
++    expected.original_delivery_result = row->metadata_reply.original_delivery_result;
++    return !memcmp(&expected, &row->read_reply, sizeof(expected));
++}
++
++static void q35_cpu_history_collect(KVMState *state)
++{
++    kvm_crucible_q35_workers_process_guard();
++
++    Q35CpuHistory *history = q35_workers.cpu_history;
++
++    if (!q35_workers_constructor() || state != q35_workers.state ||
++        !history || history->attempted || history->complete) {
++        q35_workers_fault("reused or missing original CPU history account");
++    }
++    history->attempted = true;
++    for (unsigned index = 0; index < Q35_CPUS; index++) {
++        Q35CpuHistoryWorker *bank = &history->workers[index];
++
++        if (!q35_cpu_history_current(index)) {
++            q35_workers_fault("changed original stopped CPU history owner");
++        }
++        bank->summary_original = q35_workers_request(index, Q35_QUERY,
++            q35_workers.workers[index].initializer_tid);
++        bank->summary_reply = bank->summary_original;
++        bank->summary_attempted = true;
++        bank->summary_result = q35_workers_ioctl(&bank->summary_reply);
++        if (bank->summary_result || !q35_cpu_history_current(index) ||
++            !q35_cpu_history_query_matches(&bank->summary_reply, index, 0) ||
++            bank->summary_reply.native_ioctl || bank->summary_reply.native_result) {
++            q35_workers_fault("unknown original CPU history summary");
++        }
++        bank->rows = bank->summary_reply.issued_effects;
++        for (uint32_t ordinal = 0; ordinal < bank->rows; ordinal++) {
++            Q35CpuHistoryRow *row = &bank->history[ordinal];
++
++            row->query_original = bank->summary_original;
++            row->query_original.effect_index = ordinal + 1;
++            row->query_reply = row->query_original;
++            row->query_attempted = true;
++            row->query_result = q35_workers_ioctl(&row->query_reply);
++            if (row->query_result || !q35_cpu_history_current(index) ||
++                !q35_cpu_history_query_matches(&row->query_reply, index, ordinal + 1) ||
++                row->query_reply.issued_effects != bank->rows ||
++                !row->query_reply.native_ioctl) {
++                q35_workers_fault("unknown original CPU effect row");
++            }
++            if (row->query_reply.native_ioctl == KVM_CREATE_VCPU) {
++                if (ordinal || row->query_reply.native_result !=
++                    q35_workers.workers[index].native_vcpu_fd) {
++                    q35_workers_fault("changed original vCPU birth result");
++                }
++                row->complete = true;
++                continue;
++            }
++            if (!ordinal) {
++                q35_workers_fault("missing original first vCPU birth row");
++            }
++            /* Known native errors and positive scalar returns remain facts.
++             * Complete byte custody does not assert a successful operation. */
++            row->metadata_original = (Q35CpuBytesRequest) {
++                .version = 2, .operation = Q35_CPU_HISTORY_METADATA,
++                .enrollment_id = q35_workers.enrollment_id,
++                .native_vcpu_id = index, .effect_index = ordinal + 1,
++                .native_ioctl = row->query_reply.native_ioctl,
++            };
++            row->metadata_reply = row->metadata_original;
++            row->metadata_attempted = true;
++            row->metadata_result = q35_cpu_history_ioctl(&row->metadata_reply);
++            if (row->metadata_result || !q35_cpu_history_current(index) ||
++                !q35_cpu_history_metadata_matches(&row->metadata_reply,
++                                                 &row->metadata_original)) {
++                q35_workers_fault("unknown original CPU extent offer");
++            }
++            /* All bytes were reserved before any original CPU effect. Only
++             * authenticated cached kernel extents select these bank slices. */
++            if (row->metadata_reply.input_bytes > sizeof(bank->bytes) - bank->bytes_used) {
++                q35_workers_fault("original CPU input bank exhausted");
++            }
++            row->input_offset = bank->bytes_used;
++            bank->bytes_used += row->metadata_reply.input_bytes;
++            if (row->metadata_reply.output_bytes > sizeof(bank->bytes) - bank->bytes_used) {
++                q35_workers_fault("original CPU output bank exhausted");
++            }
++            row->output_offset = bank->bytes_used;
++            bank->bytes_used += row->metadata_reply.output_bytes;
++            row->read_original = row->metadata_original;
++            row->read_original.operation = Q35_CPU_HISTORY_READ;
++            row->read_original.input_capacity = row->metadata_reply.input_bytes;
++            row->read_original.output_capacity = row->metadata_reply.output_bytes;
++            row->read_original.input_buffer = row->read_original.input_capacity ?
++                (uintptr_t)&bank->bytes[row->input_offset] : 0;
++            row->read_original.output_buffer = row->read_original.output_capacity ?
++                (uintptr_t)&bank->bytes[row->output_offset] : 0;
++            row->read_reply = row->read_original;
++            row->read_attempted = true;
++            row->read_result = q35_cpu_history_ioctl(&row->read_reply);
++            if (row->read_result || !q35_cpu_history_current(index) ||
++                !q35_cpu_history_read_matches(row)) {
++                q35_workers_fault("unknown original CPU byte delivery");
++            }
++            row->complete = true;
++        }
++    }
++    history->complete = true;
 +}
 diff --git a/accel/kvm/crucible-q35-devices.c b/accel/kvm/crucible-q35-devices.c
 new file mode 100644
@@ -5791,6 +6431,174 @@ index 0000000000000000000000000000000000000000..a70a78ceae07c6d9e3c3898d46ab7ff9
 +    }
 +    q35_memory = (typeof(q35_memory)) { 0 };
 +}
+diff --git a/accel/kvm/crucible-q35-prevm-resource-types.inc.c b/accel/kvm/crucible-q35-prevm-resource-types.inc.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..3af6d9a3d4f45dd5a7db30f7a6e000dc2ca58c01
+--- /dev/null
++++ b/accel/kvm/crucible-q35-prevm-resource-types.inc.c
+@@ -0,0 +1,60 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Native-endian ordinary ioctl layout, never a portable archive/wire type. */
++typedef struct Q35PreVmResourceRequest {
++    uint32_t version;
++    uint32_t operation;
++    uint64_t enrollment;
++    uint64_t vm_type;
++    uint64_t absolute_deadline_ns;
++    uint64_t resident_ceiling;
++    uint64_t peak_ceiling;
++    uint64_t reserved_ceiling;
++    uint64_t transient_ceiling;
++    uint64_t output_ceiling;
++    uint64_t metadata_ceiling;
++    uint64_t quoted_resident;
++    uint64_t quoted_peak;
++    uint64_t quoted_reserved;
++    uint64_t quoted_transient;
++    uint64_t quoted_output;
++    uint64_t quoted_metadata;
++    uint64_t coverage;
++    uint64_t generation;
++    int64_t native_result;
++    uint32_t flags;
++    uint32_t reserved32;
++    int64_t prepare_delivery_result;
++    uint64_t prepare_delivered_prefix;
++    uint64_t reserved[2];
++} Q35PreVmResourceRequest;
++
++/* Edition1 coverage is a fixed private source contract. Output bits report
++ * the original source walk; only the kernel's retained reservation authorizes
++ * its CREATE_VM allocation. A returned bitmap never creates such a permit. */
++#define Q35_PREVM_PREPARE 1
++#define Q35_PREVM_COMPLETE_COVERAGE UINT64_C(0x7ff)
++#define Q35_PREVM_KNOWN UINT64_C(1)
++#define Q35_PREVM_COMPLETE UINT64_C(2)
++#define Q35_PREVM_UNCERTAIN UINT64_C(4)
++#define Q35_PREVM_PREPARE_DELIVERY_KNOWN UINT64_C(8)
++
++typedef struct Q35PreVmResourceJournal {
++    Q35PreVmResourceRequest offered;
++    Q35PreVmResourceRequest returned;
++    struct kvm_enable_cap offered_cap;
++    struct kvm_enable_cap returned_cap;
++    KvmCrucibleQ35ResourcePolicyOriginal policy;
++    int raw_result;
++    int saved_errno;
++    bool attempted;
++    bool returned_known;
++    bool complete;
++} Q35PreVmResourceJournal;
++
++static Q35PreVmResourceJournal q35_prevm_resource;
++
++QEMU_BUILD_BUG_ON(sizeof(Q35PreVmResourceRequest) != 192);
++QEMU_BUILD_BUG_ON(offsetof(Q35PreVmResourceRequest, resident_ceiling) != 32);
++QEMU_BUILD_BUG_ON(offsetof(Q35PreVmResourceRequest, quoted_resident) != 80);
++QEMU_BUILD_BUG_ON(offsetof(Q35PreVmResourceRequest, native_result) != 144);
++QEMU_BUILD_BUG_ON(offsetof(Q35PreVmResourceRequest, reserved) != 176);
+diff --git a/accel/kvm/crucible-q35-prevm-resource.inc.c b/accel/kvm/crucible-q35-prevm-resource.inc.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..58d6e9330aa58abe8e51ba19022c2fd3fa250fd0
+--- /dev/null
++++ b/accel/kvm/crucible-q35-prevm-resource.inc.c
+@@ -0,0 +1,96 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Original selected constructor only. This quote is not live whole admission,
++ * RAM enrollment, execution or Ready; incomplete native coverage refuses. */
++static bool q35_prevm_policy_same(const KvmCrucibleQ35ResourcePolicyOriginal *left,
++                                  const KvmCrucibleQ35ResourcePolicyOriginal *right)
++{
++    return left->constructor == right->constructor && left->body == right->body &&
++        left->digest == right->digest &&
++        left->absolute_deadline_ns == right->absolute_deadline_ns &&
++        left->kernel_resident_bytes == right->kernel_resident_bytes &&
++        left->kernel_peak_bytes == right->kernel_peak_bytes &&
++        left->kernel_reserved_bytes == right->kernel_reserved_bytes &&
++        left->kernel_transient_bytes == right->kernel_transient_bytes &&
++        left->kernel_output_bytes == right->kernel_output_bytes &&
++        left->kernel_metadata_bytes == right->kernel_metadata_bytes;
++}
++
++static bool q35_prevm_response_current(const Q35PreVmResourceJournal *journal)
++{
++    const Q35PreVmResourceRequest *reply = &journal->returned;
++    const Q35PreVmResourceRequest *request = &journal->offered;
++
++    return !memcmp(reply, request, offsetof(Q35PreVmResourceRequest, quoted_resident)) &&
++        !memcmp(&journal->offered_cap, &journal->returned_cap,
++                 sizeof(journal->offered_cap)) &&
++        reply->quoted_resident && reply->quoted_peak && reply->quoted_reserved &&
++        reply->quoted_output && reply->quoted_metadata &&
++        reply->quoted_resident <= request->resident_ceiling &&
++        reply->quoted_peak <= request->peak_ceiling &&
++        reply->quoted_reserved <= request->reserved_ceiling &&
++        reply->quoted_transient <= request->transient_ceiling &&
++        reply->quoted_output <= request->output_ceiling &&
++        reply->quoted_metadata <= request->metadata_ceiling &&
++        reply->coverage == Q35_PREVM_COMPLETE_COVERAGE && reply->generation &&
++        reply->native_result == 0 &&
++        reply->flags == (Q35_PREVM_KNOWN | Q35_PREVM_COMPLETE) &&
++        !reply->reserved32 && !reply->prepare_delivery_result &&
++        !reply->prepare_delivered_prefix &&
++        !reply->reserved[0] && !reply->reserved[1];
++}
++
++static void q35_prevm_resource_prepare(KVMState *state, int type)
++{
++    KvmCrucibleQ35ResourcePolicyOriginal current;
++    KvmCrucibleQ35LaunchOriginal launch;
++    Q35PreVmResourceJournal *journal = &q35_prevm_resource;
++
++    kvm_crucible_q35_launch_process_guard_original();
++    kvm_fd_original_require_current(0, state->fd);
++    if (journal->attempted || state != kvm_fd_original.state || type < 0 ||
++        kvm_crucible_q35_launch_read_original(&launch) ||
++        kvm_crucible_q35_launch_read_resource_policy_original(&current) ||
++        current.constructor != kvm_fd_original.launch || !current.body ||
++        !current.digest || !current.absolute_deadline_ns) {
++        kvm_fd_original_fault();
++    }
++
++    /* The same original FD account prepays this fixed journal before driver
++     * open. Retain the policy and both exact offers before the first syscall. */
++    journal->attempted = true;
++    journal->policy = current;
++    journal->offered = (Q35PreVmResourceRequest) {
++        .version = 1,
++        .operation = Q35_PREVM_PREPARE,
++        .enrollment = launch.incarnation,
++        .vm_type = type,
++        .absolute_deadline_ns = current.absolute_deadline_ns,
++        .resident_ceiling = current.kernel_resident_bytes,
++        .peak_ceiling = current.kernel_peak_bytes,
++        .reserved_ceiling = current.kernel_reserved_bytes,
++        .transient_ceiling = current.kernel_transient_bytes,
++        .output_ceiling = current.kernel_output_bytes,
++        .metadata_ceiling = current.kernel_metadata_bytes,
++    };
++    journal->returned = journal->offered;
++    journal->offered_cap = (struct kvm_enable_cap) {
++        .cap = 0xa034,
++        .args = { 3, (uintptr_t)&journal->returned, 0, 0 },
++    };
++    journal->returned_cap = journal->offered_cap;
++    errno = 0;
++    journal->raw_result = ioctl(state->fd, KVM_ENABLE_CAP, &journal->returned_cap);
++    journal->saved_errno = journal->raw_result == -1 ? errno : 0;
++    journal->returned_known = true;
++
++    /* Native error/partial delivery/EINTR consume the single attempt; no
++     * QUERY retry can launder that uncertainty into CREATE permission. */
++    if (journal->raw_result || journal->saved_errno ||
++        !q35_prevm_response_current(journal) ||
++        kvm_crucible_q35_launch_read_resource_policy_original(&current) ||
++        !q35_prevm_policy_same(&current, &journal->policy)) {
++        kvm_fd_original_fault();
++    }
++    kvm_fd_original_require_current(0, state->fd);
++    journal->complete = true;
++}
 diff --git a/accel/kvm/crucible-q35-vm-configuration.c b/accel/kvm/crucible-q35-vm-configuration.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..064201993585143f960af0c5c8ba8f82becaf9f6
@@ -6406,10 +7214,10 @@ index 0000000000000000000000000000000000000000..064201993585143f960af0c5c8ba8f82
 +#endif
 diff --git a/accel/kvm/crucible-q35-workers.c b/accel/kvm/crucible-q35-workers.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..e6bbfb7c48850dd70e1b785908df439c41b85c0d
+index 0000000000000000000000000000000000000000..54ac19b576de81fb40d3cbc6698db60f599f805a
 --- /dev/null
 +++ b/accel/kvm/crucible-q35-workers.c
-@@ -0,0 +1,911 @@
+@@ -0,0 +1,927 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/* Original four-worker initialization custody for a separately selected q35
 + * constructor. This source never issues first clock or guest-entry permission. */
@@ -6430,6 +7238,7 @@ index 0000000000000000000000000000000000000000..e6bbfb7c48850dd70e1b785908df439c
 +#include "system/crucible-kvm-q35-vm-configuration.h"
 +#include "system/crucible-kvm-q35-inactive-clock.h"
 +#include "system/crucible-kvm-q35-constructor-clock.h"
++#include "system/crucible-kvm-q35-launch.h"
 +#include "qemu/accel.h"
 +#include "system/crucible-kvm-q35-workers.h"
 +#include "system/crucible-kvm-q35-launch.h"
@@ -6489,6 +7298,8 @@ index 0000000000000000000000000000000000000000..e6bbfb7c48850dd70e1b785908df439c
 +QEMU_BUILD_BUG_ON(offsetof(Q35LoadedCounterRequest, native_result) != 40);
 +QEMU_BUILD_BUG_ON(offsetof(Q35LoadedCounterRequest, reserved) != 64);
 +
++#include "crucible-q35-cpu-history-types.inc.c"
++
 +typedef enum Q35WorkerPhase {
 +    Q35_WORKER_EMPTY,
 +    Q35_WORKER_RESERVED,
@@ -6542,6 +7353,8 @@ index 0000000000000000000000000000000000000000..e6bbfb7c48850dd70e1b785908df439c
 +    unsigned reserved;
 +    int64_t deadline_ms;
 +    QemuCond changed;
++    Q35CpuHistory *cpu_history;
++    const void *cpu_history_owner;
 +    Q35Worker workers[Q35_CPUS];
 +} q35_workers;
 +
@@ -6802,6 +7615,14 @@ index 0000000000000000000000000000000000000000..e6bbfb7c48850dd70e1b785908df439c
 +    qemu_cond_init(&q35_workers.changed);
 +    q35_workers.selected = true;
 +
++    q35_workers.cpu_history = kvm_crucible_q35_launch_cpu_history_original(
++        sizeof(Q35CpuHistory), _Alignof(Q35CpuHistory), sizeof(q35_workers),
++        &q35_workers.cpu_history_owner);
++    if (!q35_workers.cpu_history || !q35_workers.cpu_history_owner ||
++        !q35_workers_constructor()) {
++        q35_workers_fault("missing original CPU history reservation");
++    }
++
 +    /* Publish selected custody before original native construction effects.
 +     * Refusal cannot fall back to ordinary KVM or repeat an allocation. */
 +    result = kvm_vm_ioctl(state, KVM_ENABLE_CAP, &board);
@@ -7044,6 +7865,8 @@ index 0000000000000000000000000000000000000000..e6bbfb7c48850dd70e1b785908df439c
 +        q35_workers_cpu_work_empty(cpu);
 +}
 +
++#include "crucible-q35-cpu-history.inc.c"
++
 +static int q35_workers_counter_ioctl(Q35LoadedCounterRequest *request)
 +{
 +    kvm_crucible_q35_workers_process_guard();
@@ -7233,6 +8056,7 @@ index 0000000000000000000000000000000000000000..e6bbfb7c48850dd70e1b785908df439c
 +        kvm_vm_check_extension(state, Q35_COUNTER_CAP) != 1) {
 +        q35_workers_fault("missing original complete cold counter constructor");
 +    }
++    q35_cpu_history_collect(state);
 +    q35_workers.counters_requested = true;
 +    for (unsigned index = 0; index < Q35_CPUS; index++) {
 +        Q35Worker *worker = &q35_workers.workers[index];
@@ -9349,10 +10173,10 @@ index c8e7aa38709d7f6ff884b00661b5d3575b5d79c2..31584213fe004e124e3bc5ddc39cb45f
  }
  type_init(kvm_accel_ops_register_types);
 diff --git a/accel/kvm/kvm-all.c b/accel/kvm/kvm-all.c
-index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab201e20bcb 100644
+index 83cbd120a84784e3128812c22be952e7af2b5480..dcaa37fa4a75a9748c5bda8a8ffad9e82187d79f 100644
 --- a/accel/kvm/kvm-all.c
 +++ b/accel/kvm/kvm-all.c
-@@ -14,6 +14,17 @@
+@@ -14,11 +14,24 @@
   */
  
  #include "qemu/osdep.h"
@@ -9370,7 +10194,25 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
  #include <sys/ioctl.h>
  #include <poll.h>
  
-@@ -211,6 +222,8 @@ static bool kvm_slots_grow(KVMMemoryListener *kml, unsigned int nr_slots_new)
+ #include <linux/kvm.h>
+ 
++#include "qemu/crucible-fd-custody.h"
++#include <sys/syscall.h>
+ #include "qemu/atomic.h"
+ #include "qemu/option.h"
+ #include "qemu/config-file.h"
+@@ -90,6 +103,10 @@ struct KVMParkedVcpu {
+ };
+ 
+ KVMState *kvm_state;
++
++#include "crucible-q35-prevm-resource-types.inc.c"
++#include "crucible-fd-original.inc.c"
++#include "crucible-q35-prevm-resource.inc.c"
+ VmfdChangeNotifier vmfd_notifier;
+ bool kvm_kernel_irqchip;
+ bool kvm_split_irqchip;
+@@ -211,6 +228,8 @@ static bool kvm_slots_grow(KVMMemoryListener *kml, unsigned int nr_slots_new)
          return false;
      }
  
@@ -9379,7 +10221,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      if (cur == 0) {
          slots = g_new0(KVMSlot, nr_slots_new);
      } else {
-@@ -230,6 +243,7 @@ static bool kvm_slots_grow(KVMMemoryListener *kml, unsigned int nr_slots_new)
+@@ -230,6 +249,7 @@ static bool kvm_slots_grow(KVMMemoryListener *kml, unsigned int nr_slots_new)
  
      kml->slots = slots;
      kml->nr_slots_allocated = nr_slots_new;
@@ -9387,7 +10229,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      trace_kvm_slots_grow(cur, nr_slots_new);
  
      return true;
-@@ -379,6 +393,20 @@ static int kvm_set_user_memory_region(KVMMemoryListener *kml, KVMSlot *slot, boo
+@@ -379,6 +399,20 @@ static int kvm_set_user_memory_region(KVMMemoryListener *kml, KVMSlot *slot, boo
      mem.guest_memfd = slot->guest_memfd;
      mem.guest_memfd_offset = slot->guest_memfd_offset;
  
@@ -9408,7 +10250,16 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      if (slot->memory_size && !new && (mem.flags ^ slot->old_flags) & KVM_MEM_READONLY) {
          /* Set the slot size to 0 before setting the slot to the desired
           * value. This is needed based on KVM commit 75d61fbc. */
-@@ -445,6 +473,10 @@ static int kvm_rebind_vcpus(Error **errp)
+@@ -440,11 +474,19 @@ static void kvm_create_vcpu_internal(CPUState *cpu, KVMState *s, int kvm_fd)
+ 
+ static int kvm_rebind_vcpus(Error **errp)
+ {
++    if (kvm_crucible_q35_launch_selected_original()) {
++        kvm_fd_original_fault();
++    }
++
+     CPUState *cpu;
+     unsigned long vcpu_id;
      KVMState *s = kvm_state;
      int kvm_fd, ret = 0;
  
@@ -9419,8 +10270,91 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      CPU_FOREACH(cpu) {
          vcpu_id = kvm_arch_vcpu_id(cpu);
  
-@@ -583,6 +615,9 @@ int kvm_create_and_park_vcpu(CPUState *cpu)
+@@ -511,6 +553,10 @@ static int kvm_rebind_vcpus(Error **errp)
+ 
+ static void kvm_park_vcpu(CPUState *cpu)
  {
++    if (kvm_crucible_q35_launch_selected_original()) {
++        kvm_fd_original_fault();
++    }
++
+     struct KVMParkedVcpu *vcpu;
+ 
+     trace_kvm_park_vcpu(cpu->cpu_index, kvm_arch_vcpu_id(cpu));
+@@ -523,6 +569,10 @@ static void kvm_park_vcpu(CPUState *cpu)
+ 
+ static int kvm_unpark_vcpu(KVMState *s, unsigned long vcpu_id)
+ {
++    if (kvm_crucible_q35_launch_selected_original()) {
++        kvm_fd_original_fault();
++    }
++
+     struct KVMParkedVcpu *cpu;
+     int kvm_fd = -ENOENT;
+ 
+@@ -542,6 +592,10 @@ static int kvm_unpark_vcpu(KVMState *s, unsigned long vcpu_id)
+ 
+ static void kvm_reset_parked_vcpus(KVMState *s)
+ {
++    if (kvm_crucible_q35_launch_selected_original()) {
++        kvm_fd_original_fault();
++    }
++
+     struct KVMParkedVcpu *cpu;
+ 
+     QLIST_FOREACH(cpu, &s->kvm_parked_vcpus, node) {
+@@ -557,22 +611,41 @@ static void kvm_reset_parked_vcpus(KVMState *s)
+  */
+ static int kvm_create_vcpu(CPUState *cpu)
+ {
++    kvm_crucible_q35_launch_process_guard_original();
++
+     unsigned long vcpu_id = kvm_arch_vcpu_id(cpu);
+     KVMState *s = kvm_state;
+     int kvm_fd;
+ 
+     /* check if the KVM vCPU already exist but is parked */
+-    kvm_fd = kvm_unpark_vcpu(s, vcpu_id);
++    kvm_fd = kvm_crucible_q35_launch_selected_original() ? -ENOENT :
++        kvm_unpark_vcpu(s, vcpu_id);
+     if (kvm_fd < 0) {
+         /* vCPU not parked: create a new KVM vCPU */
+-        kvm_fd = kvm_vm_ioctl(s, KVM_CREATE_VCPU, vcpu_id);
++        if (kvm_crucible_q35_launch_selected_original()) {
++            KvmCrucibleFdAllocation allocation;
++            int saved_errno;
++
++            kvm_fd_original_reserve(&allocation, CRUCIBLE_FD_KVM_VCPU, cpu, vcpu_id);
++            kvm_fd = ioctl(s->vmfd, KVM_CREATE_VCPU, vcpu_id);
++            saved_errno = kvm_fd == -1 ? errno : 0;
++            kvm_fd = kvm_fd_original_claim(&allocation, kvm_fd, saved_errno);
++        } else {
++            kvm_fd = kvm_vm_ioctl(s, KVM_CREATE_VCPU, vcpu_id);
++        }
+         if (kvm_fd < 0) {
++            if (kvm_crucible_q35_launch_selected_original()) {
++                _exit(125);
++            }
+             error_report("KVM_CREATE_VCPU IOCTL failed for vCPU %lu", vcpu_id);
+             return kvm_fd;
+         }
+     }
+ 
+     kvm_create_vcpu_internal(cpu, s, kvm_fd);
++    if (kvm_crucible_q35_launch_selected_original()) {
++        kvm_fd_original_require_current(cpu->cpu_index + 2, kvm_fd);
++    }
+ 
+     trace_kvm_create_vcpu(cpu->cpu_index, vcpu_id, kvm_fd);
+ 
+@@ -581,8 +654,15 @@ static int kvm_create_vcpu(CPUState *cpu)
+ 
+ int kvm_create_and_park_vcpu(CPUState *cpu)
+ {
++    if (kvm_crucible_q35_launch_selected_original()) {
++        kvm_fd_original_fault();
++    }
++
      int ret = 0;
  
 +    if (kvm_state->crucible_userspace_configured) {
@@ -9429,7 +10363,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      ret = kvm_create_vcpu(cpu);
      if (!ret) {
          kvm_park_vcpu(cpu);
-@@ -632,6 +667,14 @@ static int do_kvm_destroy_vcpu(CPUState *cpu)
+@@ -632,6 +712,14 @@ static int do_kvm_destroy_vcpu(CPUState *cpu)
      KVMState *s = kvm_state;
      int ret = 0;
  
@@ -9444,7 +10378,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      trace_kvm_destroy_vcpu(cpu->cpu_index, kvm_arch_vcpu_id(cpu));
  
      ret = kvm_arch_destroy_vcpu(cpu);
-@@ -655,6 +698,8 @@ err:
+@@ -655,6 +743,8 @@ err:
  
  void kvm_destroy_vcpu(CPUState *cpu)
  {
@@ -9453,7 +10387,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      if (do_kvm_destroy_vcpu(cpu) < 0) {
          error_report("kvm_destroy_vcpu failed");
          exit(EXIT_FAILURE);
-@@ -709,11 +754,27 @@ static int map_kvm_dirty_gfns(KVMState *s, CPUState *cpu, Error **errp)
+@@ -709,11 +799,36 @@ static int map_kvm_dirty_gfns(KVMState *s, CPUState *cpu, Error **errp)
  
  int kvm_init_vcpu(CPUState *cpu, Error **errp)
  {
@@ -9465,23 +10399,58 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      trace_kvm_init_vcpu(cpu->cpu_index, kvm_arch_vcpu_id(cpu));
  
 +    if (!kvm_crucible_window_allow_vcpu_create(s)) {
++        if (kvm_crucible_q35_launch_selected_original()) {
++            kvm_fd_original_fault();
++        }
 +        error_setg(errp, "original native window refuses a changed vCPU roster");
 +        return -EBUSY;
 +    }
 +
 +    if (!kvm_crucible_userspace_bind_vcpu(s, cpu)) {
++        if (kvm_crucible_q35_launch_selected_original()) {
++            kvm_fd_original_fault();
++        }
 +        error_setg(errp, "native userspace inventory refuses a reused vCPU identity");
 +        return -ENOTSUP;
 +    }
 +    ret = kvm_crucible_response_service_bind_vcpu(s, cpu);
 +    if (ret < 0) {
++        if (kvm_crucible_q35_launch_selected_original()) {
++            kvm_fd_original_fault();
++        }
 +        error_setg(errp, "original paused response CPU service enrollment refused");
 +        return ret;
 +    }
      ret = kvm_arch_pre_create_vcpu(cpu, errp);
      if (ret < 0) {
          goto err;
-@@ -759,6 +820,12 @@ void kvm_close(void)
+@@ -741,6 +856,9 @@ int kvm_init_vcpu(CPUState *cpu, Error **errp)
+ 
+     ret = kvm_arch_init_vcpu(cpu);
+     if (ret < 0) {
++        if (kvm_crucible_q35_launch_selected_original()) {
++            kvm_fd_original_fault();
++        }
+         error_setg_errno(errp, -ret,
+                          "kvm_init_vcpu: kvm_arch_init_vcpu failed (%lu)",
+                          kvm_arch_vcpu_id(cpu));
+@@ -748,29 +866,40 @@ int kvm_init_vcpu(CPUState *cpu, Error **errp)
+     cpu->kvm_vcpu_stats_fd = kvm_vcpu_ioctl(cpu, KVM_GET_STATS_FD, NULL);
+ 
+ err:
++    if (ret < 0 && kvm_crucible_q35_launch_selected_original()) {
++        kvm_fd_original_fault();
++    }
+     return ret;
+ }
+ 
+ void kvm_close(void)
+ {
++    kvm_fd_original_close_fence();
++
+     CPUState *cpu;
+ 
+     if (!kvm_state || kvm_state->fd == -1) {
          return;
      }
  
@@ -9493,8 +10462,23 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
 +    kvm_crucible_construction_native_destroyed(kvm_state);
      CPU_FOREACH(cpu) {
          cpu_remove_sync(cpu);
-         close(cpu->kvm_fd);
-@@ -1628,7 +1695,7 @@ int kvm_set_memory_attributes_shared(hwaddr start, uint64_t size)
+-        close(cpu->kvm_fd);
++        kvm_fd_original_close_once(cpu->cpu_index + 2, cpu->kvm_fd);
+         cpu->kvm_fd = -1;
+         close(cpu->kvm_vcpu_stats_fd);
+         cpu->kvm_vcpu_stats_fd = -1;
+     }
+ 
+     if (kvm_state && kvm_state->fd != -1) {
+-        close(kvm_state->vmfd);
++        kvm_fd_original_close_once(1, kvm_state->vmfd);
+         kvm_state->vmfd = -1;
+-        close(kvm_state->fd);
++        kvm_fd_original_close_once(0, kvm_state->fd);
+         kvm_state->fd = -1;
+     }
+     kvm_state = NULL;
+@@ -1628,7 +1757,7 @@ int kvm_set_memory_attributes_shared(hwaddr start, uint64_t size)
  }
  
  /* Called with KVMMemoryListener.slots_lock held */
@@ -9503,7 +10487,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
                               MemoryRegionSection *section, bool add)
  {
      KVMSlot *mem;
-@@ -1639,6 +1706,10 @@ static void kvm_set_phys_mem(KVMMemoryListener *kml,
+@@ -1639,6 +1768,10 @@ static void kvm_set_phys_mem(KVMMemoryListener *kml,
      ram_addr_t ram_start_offset;
      void *ram;
  
@@ -9514,7 +10498,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      if (!memory_region_is_ram(mr)) {
          if (writable || !kvm_readonly_mem_allowed) {
              return;
-@@ -1752,6 +1823,16 @@ static void kvm_set_phys_mem(KVMMemoryListener *kml,
+@@ -1752,6 +1885,16 @@ static void kvm_set_phys_mem(KVMMemoryListener *kml,
      } while (size);
  }
  
@@ -9531,7 +10515,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
  static void *kvm_dirty_ring_reaper_thread(void *data)
  {
      KVMState *s = data;
-@@ -2090,6 +2171,8 @@ void kvm_memory_listener_register(KVMState *s, KVMMemoryListener *kml,
+@@ -2090,6 +2233,8 @@ void kvm_memory_listener_register(KVMState *s, KVMMemoryListener *kml,
  {
      int i;
  
@@ -9540,7 +10524,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      kml->as_id = as_id;
  
      kvm_slots_grow(kml, KVM_MEMSLOTS_NR_ALLOC_DEFAULT);
-@@ -2112,7 +2195,9 @@ void kvm_memory_listener_register(KVMState *s, KVMMemoryListener *kml,
+@@ -2112,7 +2257,9 @@ void kvm_memory_listener_register(KVMState *s, KVMMemoryListener *kml,
          kml->listener.log_clear = kvm_log_clear;
      }
  
@@ -9550,7 +10534,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
  
      for (i = 0; i < s->nr_as; ++i) {
          if (!s->as[i].as) {
-@@ -2195,6 +2280,9 @@ void kvm_irqchip_commit_routes(KVMState *s)
+@@ -2195,6 +2342,9 @@ void kvm_irqchip_commit_routes(KVMState *s)
          return;
      }
  
@@ -9560,7 +10544,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      s->irq_routes->flags = 0;
      trace_kvm_irqchip_commit_routes();
      ret = kvm_vm_ioctl(s, KVM_SET_GSI_ROUTING, s->irq_routes);
-@@ -2205,6 +2293,7 @@ void kvm_add_routing_entry(KVMState *s,
+@@ -2205,6 +2355,7 @@ void kvm_add_routing_entry(KVMState *s,
                             struct kvm_irq_routing_entry *entry)
  {
      struct kvm_irq_routing_entry *new;
@@ -9568,7 +10552,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      int n, size;
  
      if (s->irq_routes->nr == s->nr_allocated_irq_routes) {
-@@ -2214,9 +2303,11 @@ void kvm_add_routing_entry(KVMState *s,
+@@ -2214,9 +2365,11 @@ void kvm_add_routing_entry(KVMState *s,
          }
          size = sizeof(struct kvm_irq_routing);
          size += n * sizeof(*new);
@@ -9581,7 +10565,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      n = s->irq_routes->nr++;
      new = &s->irq_routes->entries[n];
  
-@@ -2576,6 +2667,10 @@ void kvm_irqchip_set_qemuirq_gsi(KVMState *s, qemu_irq irq, int gsi)
+@@ -2576,6 +2729,10 @@ void kvm_irqchip_set_qemuirq_gsi(KVMState *s, qemu_irq irq, int gsi)
  static int do_kvm_irqchip_create(KVMState *s)
  {
      int ret;
@@ -9592,7 +10576,42 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      if (kvm_check_extension(s, KVM_CAP_IRQCHIP)) {
          ;
      } else if (kvm_check_extension(s, KVM_CAP_S390_IRQCHIP)) {
-@@ -2780,6 +2875,14 @@ static int kvm_reset_vmfd(MachineState *ms)
+@@ -2677,9 +2834,22 @@ static int do_kvm_create_vm(KVMState *s, int type)
+ {
+     int ret;
+ 
+-    do {
+-        ret = kvm_ioctl(s, KVM_CREATE_VM, type);
+-    } while (ret == -EINTR);
++    /* Selection only prohibits retry; the original typed FD ledger owns
++     * allocation, claim and retirement authority independently. */
++    if (kvm_crucible_q35_launch_selected_original()) {
++        KvmCrucibleFdAllocation allocation;
++        int saved_errno;
++
++        q35_prevm_resource_prepare(s, type);
++        kvm_fd_original_reserve(&allocation, CRUCIBLE_FD_KVM_VM, NULL, type);
++        ret = ioctl(s->fd, KVM_CREATE_VM, (unsigned long)type);
++        saved_errno = ret == -1 ? errno : 0;
++        ret = kvm_fd_original_claim(&allocation, ret, saved_errno);
++    } else {
++        do {
++            ret = kvm_ioctl(s, KVM_CREATE_VM, type);
++        } while (ret == -EINTR);
++    }
+ 
+     if (ret < 0) {
+         error_report("ioctl(KVM_CREATE_VM) failed: %s", strerror(-ret));
+@@ -2775,11 +2945,23 @@ static int kvm_setup_dirty_ring(KVMState *s)
+ 
+ static int kvm_reset_vmfd(MachineState *ms)
+ {
++    if (kvm_crucible_q35_launch_selected_original()) {
++        kvm_fd_original_fault();
++    }
++
+     KVMState *s;
+     KVMMemoryListener *kml;
      int ret = 0, type;
      Error *err = NULL;
  
@@ -9607,7 +10626,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      /*
       * bail if the current architecture does not support VM file
       * descriptor change.
-@@ -2892,6 +2995,8 @@ static int kvm_reset_vmfd(MachineState *ms)
+@@ -2892,6 +3074,8 @@ static int kvm_reset_vmfd(MachineState *ms)
  
  static int kvm_init(AccelState *as, MachineState *ms)
  {
@@ -9616,7 +10635,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      MachineClass *mc = MACHINE_GET_CLASS(ms);
      static const char upgrade_note[] =
          "Please upgrade to at least kernel 4.5.\n";
-@@ -2909,6 +3014,10 @@ static int kvm_init(AccelState *as, MachineState *ms)
+@@ -2909,6 +3093,10 @@ static int kvm_init(AccelState *as, MachineState *ms)
      int ret;
      int type;
  
@@ -9627,10 +10646,26 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      qemu_mutex_init(&kml_slots_lock);
  
      /*
-@@ -2968,6 +3077,38 @@ static int kvm_init(AccelState *as, MachineState *ms)
+@@ -2926,7 +3114,11 @@ static int kvm_init(AccelState *as, MachineState *ms)
+     QTAILQ_INIT(&s->kvm_sw_breakpoints);
+ #endif
+     QLIST_INIT(&s->kvm_parked_vcpus);
+-    s->fd = qemu_open_old(s->device ?: "/dev/kvm", O_RDWR);
++    if (kvm_crucible_q35_launch_selected_original()) {
++        s->fd = kvm_fd_original_open_driver(s);
++    } else {
++        s->fd = qemu_open_old(s->device ?: "/dev/kvm", O_RDWR);
++    }
+     if (s->fd == -1) {
+         error_report("Could not access KVM kernel module: %m");
+         ret = -errno;
+@@ -2968,6 +3160,41 @@ static int kvm_init(AccelState *as, MachineState *ms)
      }
  
      s->vmfd = ret;
++    if (kvm_crucible_q35_launch_selected_original()) {
++        kvm_fd_original_require_current(1, s->vmfd);
++    }
 +    kvm_crucible_q35_launch_prepare_original_vm(s, ms);
 +    ret = kvm_crucible_clock_configure(s);
 +    if (ret < 0) {
@@ -9666,7 +10701,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
  
      s->nr_as = kvm_vm_check_extension(s, KVM_CAP_MULTI_ADDRESS_SPACE);
      if (s->nr_as <= 1) {
-@@ -3049,6 +3190,7 @@ static int kvm_init(AccelState *as, MachineState *ms)
+@@ -3049,6 +3276,7 @@ static int kvm_init(AccelState *as, MachineState *ms)
  #endif
  
      kvm_state = s;
@@ -9674,7 +10709,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
  
      ret = kvm_arch_init(ms, s);
      if (ret < 0) {
-@@ -3097,10 +3239,27 @@ static int kvm_init(AccelState *as, MachineState *ms)
+@@ -3097,10 +3325,28 @@ static int kvm_init(AccelState *as, MachineState *ms)
                              query_stats_schemas_cb);
      }
  
@@ -9685,6 +10720,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      return 0;
  
  err:
++    kvm_fd_original_close_fence();
      assert(ret < 0);
 +    kvm_crucible_q35_memory_destroy(s);
 +    kvm_crucible_q35_vm_destroy(s);
@@ -9702,7 +10738,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      if (s->vmfd >= 0) {
          close(s->vmfd);
      }
-@@ -3184,6 +3343,49 @@ void kvm_flush_coalesced_mmio_buffer(void)
+@@ -3184,6 +3430,49 @@ void kvm_flush_coalesced_mmio_buffer(void)
      s->coalesced_flush_in_progress = false;
  }
  
@@ -9752,7 +10788,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
  static void do_kvm_cpu_synchronize_state(CPUState *cpu, run_on_cpu_data arg)
  {
      if (!cpu->vcpu_dirty && !kvm_state->guest_state_protected) {
-@@ -3215,7 +3417,30 @@ static bool kvm_cpu_synchronize_put(CPUState *cpu, KvmPutState state,
+@@ -3215,7 +3504,30 @@ static bool kvm_cpu_synchronize_put(CPUState *cpu, KvmPutState state,
                                      const char *desc)
  {
      Error *err = NULL;
@@ -9784,7 +10820,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      if (ret) {
          if (err) {
              error_reportf_err(err, "Restoring resisters %s: ", desc);
-@@ -3426,12 +3651,28 @@ out_unref:
+@@ -3426,12 +3738,28 @@ out_unref:
  
  int kvm_cpu_exec(CPUState *cpu)
  {
@@ -9813,7 +10849,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
          return EXCP_HLT;
      }
  
-@@ -3461,7 +3702,17 @@ int kvm_cpu_exec(CPUState *cpu)
+@@ -3461,7 +3789,17 @@ int kvm_cpu_exec(CPUState *cpu)
              kvm_cpu_kick_self();
          }
  
@@ -9831,7 +10867,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
  
          /*
           * After writing cpu->exit_request, cpu_exit() sends a signal that writes
-@@ -3471,6 +3722,18 @@ int kvm_cpu_exec(CPUState *cpu)
+@@ -3471,6 +3809,18 @@ int kvm_cpu_exec(CPUState *cpu)
           */
  
          attrs = kvm_arch_post_run(cpu, run);
@@ -9850,7 +10886,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
  
  #ifdef KVM_HAVE_MCE_INJECTION
          if (unlikely(have_sigbus_pending)) {
-@@ -3514,7 +3777,7 @@ int kvm_cpu_exec(CPUState *cpu)
+@@ -3514,7 +3864,7 @@ int kvm_cpu_exec(CPUState *cpu)
                            run->io.direction,
                            run->io.size,
                            run->io.count);
@@ -9859,7 +10895,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
              break;
          case KVM_EXIT_MMIO:
              /* Called outside BQL */
-@@ -3523,7 +3786,7 @@ int kvm_cpu_exec(CPUState *cpu)
+@@ -3523,7 +3873,7 @@ int kvm_cpu_exec(CPUState *cpu)
                               run->mmio.data,
                               run->mmio.len,
                               run->mmio.is_write);
@@ -9868,7 +10904,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
              break;
          case KVM_EXIT_IRQ_WINDOW_OPEN:
              ret = EXCP_INTERRUPT;
-@@ -3608,7 +3871,9 @@ int kvm_cpu_exec(CPUState *cpu)
+@@ -3608,7 +3958,9 @@ int kvm_cpu_exec(CPUState *cpu)
      cpu_exec_end(cpu);
      bql_lock();
  
@@ -9879,16 +10915,39 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
          cpu_dump_state(cpu, stderr, CPU_DUMP_CODE);
          vm_stop(RUN_STATE_INTERNAL_ERROR);
      }
-@@ -3636,6 +3901,8 @@ int kvm_ioctl(KVMState *s, unsigned long type, ...)
+@@ -3618,6 +3970,14 @@ int kvm_cpu_exec(CPUState *cpu)
+ 
+ int kvm_ioctl(KVMState *s, unsigned long type, ...)
+ {
++    kvm_crucible_q35_launch_process_guard_original();
++    if (kvm_crucible_q35_launch_selected_original()) {
++        if (s != kvm_fd_original.state) {
++            kvm_fd_original_fault();
++        }
++        kvm_fd_original_require_current(0, s->fd);
++    }
++
+     int ret;
+     void *arg;
+     va_list ap;
+@@ -3636,6 +3996,16 @@ int kvm_ioctl(KVMState *s, unsigned long type, ...)
  
  int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
  {
++    kvm_crucible_q35_launch_process_guard_original();
++    if (kvm_crucible_q35_launch_selected_original()) {
++        if (s != kvm_fd_original.state) {
++            kvm_fd_original_fault();
++        }
++        kvm_fd_original_require_current(1, s->vmfd);
++    }
++
 +    kvm_crucible_q35_workers_process_guard();
 +
      int ret;
      void *arg;
      va_list ap;
-@@ -3644,6 +3911,27 @@ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
+@@ -3644,6 +4014,27 @@ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
      arg = va_arg(ap, void *);
      va_end(ap);
  
@@ -9916,16 +10975,24 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      trace_kvm_vm_ioctl(type, arg);
      accel_ioctl_begin();
      ret = ioctl(s->vmfd, type, arg);
-@@ -3656,6 +3944,8 @@ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
+@@ -3656,6 +4047,16 @@ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
  
  int kvm_vcpu_ioctl(CPUState *cpu, unsigned long type, ...)
  {
++    kvm_crucible_q35_launch_process_guard_original();
++    if (kvm_crucible_q35_launch_selected_original()) {
++        if (cpu->cpu_index < 0 || cpu->cpu_index >= 4) {
++            kvm_fd_original_fault();
++        }
++        kvm_fd_original_require_current(cpu->cpu_index + 2, cpu->kvm_fd);
++    }
++
 +    kvm_crucible_q35_workers_process_guard();
 +
      int ret;
      void *arg;
      va_list ap;
-@@ -4266,9 +4556,194 @@ static void kvm_accel_instance_init(Object *obj)
+@@ -4266,9 +4667,194 @@ static void kvm_accel_instance_init(Object *obj)
      s->xen_evtchn_max_pirq = 256;
      s->device = NULL;
      s->msr_energy.enable = false;
@@ -10120,7 +11187,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
  static void kvm_accel_class_init(ObjectClass *oc, const void *data)
  {
      AccelClass *ac = ACCEL_CLASS(oc);
-@@ -4311,6 +4786,35 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
+@@ -4311,6 +4897,35 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
      object_class_property_set_description(oc, "rapl-helper-socket",
          "Socket Path for comminucating with the Virtual MSR helper daemon");
  
@@ -10156,7 +11223,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..7f1b948cc8dfffdfff019740c1fe3ab2
      kvm_arch_accel_class_init(oc);
  }
  
-@@ -4318,6 +4822,19 @@ static void kvm_accel_finalize(Object *obj)
+@@ -4318,6 +4933,19 @@ static void kvm_accel_finalize(Object *obj)
  {
      KVMState *s = KVM_STATE(obj);
  
@@ -101002,6 +102069,86 @@ index 0000000000000000000000000000000000000000..99e2214a7fbfd46155ddd5aa921a6773
 +bool qemu_crucible_fault_dma_identity(uint8_t device_identity[32]);
 +
 +#endif
+diff --git a/include/qemu/crucible-fd-custody.h b/include/qemu/crucible-fd-custody.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b3009cb681e0af4b7a14f7b173fe5d746c45850a
+--- /dev/null
++++ b/include/qemu/crucible-fd-custody.h
+@@ -0,0 +1,74 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef QEMU_CRUCIBLE_FD_CUSTODY_H
++#define QEMU_CRUCIBLE_FD_CUSTODY_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++typedef struct CrucibleFdIssuer CrucibleFdIssuer;
++typedef struct CrucibleFdLease CrucibleFdLease;
++
++typedef enum CrucibleFdRole {
++    CRUCIBLE_FD_KVM_DRIVER = 1,
++    CRUCIBLE_FD_KVM_VM = 2,
++    CRUCIBLE_FD_KVM_VCPU = 3,
++} CrucibleFdRole;
++
++/* These are retained native identities, not a public descriptor or a caller
++ * assertion of custody. The original source callbacks authenticate them. */
++typedef struct CrucibleFdBirth {
++    CrucibleFdRole role;
++    const void *original_owner;
++    const void *original_class;
++    CrucibleFdLease *original_parent;
++    uint32_t cpu_index;
++    uint64_t native_allocation_argument;
++} CrucibleFdBirth;
++
++typedef struct CrucibleFdSource {
++    bool (*birth_current)(const void *context, const CrucibleFdBirth *birth);
++    bool (*birth_return_current)(const void *context,
++                                 const CrucibleFdBirth *birth,
++                                 int raw_return, int saved_errno);
++    bool (*object_current)(const void *context, const CrucibleFdBirth *birth,
++                           int descriptor);
++    bool (*retirement_current)(const void *context, const CrucibleFdBirth *birth,
++                               int descriptor);
++    bool (*close_attempt_current)(const void *context,
++                                  const CrucibleFdBirth *birth, int descriptor);
++    bool (*close_return_current)(const void *context,
++                                 const CrucibleFdBirth *birth,
++                                 int raw_return, int saved_errno);
++} CrucibleFdSource;
++
++/* Shape comes from the actual six-row implementation. The original selected
++ * launch allocates and charges this complete backing before driver open. */
++size_t crucible_fd_backing_bytes(void);
++size_t crucible_fd_backing_alignment(void);
++CrucibleFdIssuer *crucible_fd_issuer_begin(
++    const void *original_launch, const void *original_context,
++    void *original_backing, size_t backing_extent, CrucibleFdSource source);
++
++CrucibleFdLease *crucible_fd_reserve(CrucibleFdIssuer *issuer,
++                                    const CrucibleFdBirth *original);
++
++/* Raw means the literal syscall result, before normalization: -1 with the
++ * saved errno, or the original nonnegative fd. No retry or NoFD guess. */
++bool crucible_fd_claim_original_raw_return(CrucibleFdLease *original,
++                                           int raw_return, int saved_errno);
++bool crucible_fd_current(CrucibleFdLease *original,
++                         const CrucibleFdBirth *actual_original,
++                         int original_descriptor);
++bool crucible_fd_retire_begin(CrucibleFdLease *original,
++                              int original_descriptor);
++bool crucible_fd_close_original_begin(CrucibleFdLease *original,
++                                      int original_descriptor);
++bool crucible_fd_retire_finish(CrucibleFdLease *original,
++                               int raw_close_return, int saved_errno);
++
++/* A refused/partial constructor cannot invent an all-worker retirement cut.
++ * Seal its original issuer before process containment, without closing. */
++void crucible_fd_issuer_unknown(CrucibleFdIssuer *issuer);
++
++#endif
 diff --git a/include/qemu/crucible-hot-fork-async.h b/include/qemu/crucible-hot-fork-async.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..2bc35982a773f42bb33b8fce80a12ec263a48d21
@@ -107198,10 +108345,10 @@ index 0000000000000000000000000000000000000000..fab8c76ee2812c73ff0d8e4cb417ce2b
 +#endif
 diff --git a/include/system/crucible-kvm-q35-launch.h b/include/system/crucible-kvm-q35-launch.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..55c995a62ecd07bea45a88f7cf5f66c500fe187e
+index 0000000000000000000000000000000000000000..8b9cb9a8a901f2904f4ca6a23953222bd5aa6c1a
 --- /dev/null
 +++ b/include/system/crucible-kvm-q35-launch.h
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,92 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +#ifndef SYSTEM_CRUCIBLE_KVM_Q35_LAUNCH_H
 +#define SYSTEM_CRUCIBLE_KVM_Q35_LAUNCH_H
@@ -107222,6 +108369,41 @@ index 0000000000000000000000000000000000000000..55c995a62ecd07bea45a88f7cf5f66c5
 +/* Immutable earliest raw-PID fence only: no owner/native/BQL/QOM pointer
 + * or libc logger/lock access. Ordinary unselected source is unchanged. */
 +void kvm_crucible_q35_launch_process_guard_original(void);
++
++/* Original FD and CPU consumers debit the same source-owned native history
++ * allowance before allocation. These private pointers never leave the process;
++ * successful local admission establishes no kernel/RAM/timer or RUN closure. */
++void *kvm_crucible_q35_launch_fd_backing_original(size_t bytes,
++    size_t alignment, size_t metadata_bytes, const void **original_owner);
++bool kvm_crucible_q35_launch_fd_constructor_current_original(
++    const KvmCrucibleQ35LaunchClockOwner *original_owner);
++
++/* The original constructor precharges actual fixed CPU journal and complete
++ * byte banks before the first CPU effect. This is storage custody only. */
++void *kvm_crucible_q35_launch_cpu_history_original(size_t bytes,
++    size_t alignment, size_t metadata_bytes, const void **original_owner);
++
++/* Sticky source selection never substitutes for original FD/currentness. */
++bool kvm_crucible_q35_launch_selected_original(void);
++
++/* Separate resource-policy edition1, not a reinterpretation of CRKVM001.
++ * These process-private views borrow the same sealed original constructor;
++ * caller-selected ceilings are limits, never allocation/CREATE permission. */
++typedef struct KvmCrucibleQ35ResourcePolicyOriginal {
++    const void *constructor;
++    const uint8_t *body;
++    const uint8_t *digest;
++    uint64_t absolute_deadline_ns;
++    uint64_t kernel_resident_bytes;
++    uint64_t kernel_peak_bytes;
++    uint64_t kernel_reserved_bytes;
++    uint64_t kernel_transient_bytes;
++    uint64_t kernel_output_bytes;
++    uint64_t kernel_metadata_bytes;
++} KvmCrucibleQ35ResourcePolicyOriginal;
++
++int kvm_crucible_q35_launch_read_resource_policy_original(
++    KvmCrucibleQ35ResourcePolicyOriginal *original);
 +
 +/* Selected VL parsing consumes this same retained, read-only argv. Ordinary
 + * unselected mode keeps its original array and behavior. */
@@ -170705,7 +171887,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..b06b1a252d9c965c3083bdecf509cde0
 +  'data': { 'expected-qemu-pid': 'int64', 'install': 'bool' },
 +  'returns': 'CrucibleWholeInstallationState' }
 diff --git a/qemu-options.hx b/qemu-options.hx
-index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..28bc3764e98e9404efc177e551cdd16d667864cb 100644
+index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..ac517f096938ff6a4c99899da305ddbb342e170a 100644
 --- a/qemu-options.hx
 +++ b/qemu-options.hx
 @@ -232,7 +232,7 @@ SRST
@@ -170717,10 +171899,15 @@ index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..28bc3764e98e9404efc177e551cdd16d
      "                select accelerator (kvm, xen, hvf, nitro, nvmm, whpx, mshv or tcg; use 'help' for a list)\n"
      "                igd-passthru=on|off (enable Xen integrated Intel graphics passthrough, default=off)\n"
      "                kernel-irqchip=on|off|split controls accelerated irqchip support (default=on)\n"
-@@ -5313,16 +5313,60 @@ SRST
+@@ -5313,16 +5313,65 @@ SRST
      Windows guest and will re-inject them.
  ERST
  
++DEF("crucible-kvm-resource-policy", HAS_ARG,
++    QEMU_OPTION_crucible_kvm_resource_policy,
++    "-crucible-kvm-resource-policy fd sealed original pre-VM resource policy\n",
++    QEMU_ARCH_ALL)
++
 +DEF("crucible-kvm-construct", HAS_ARG,
 +    QEMU_OPTION_crucible_kvm_construct,
 +    "-crucible-kvm-construct fd sealed original KVM constructor descriptor\n",
@@ -170782,7 +171969,7 @@ index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..28bc3764e98e9404efc177e551cdd16d
      then the virtual cpu speed will be automatically adjusted to keep
      virtual time within a few seconds of real time.
  
-@@ -5339,6 +5383,17 @@ SRST
+@@ -5339,6 +5388,17 @@ SRST
      will not advance if no timer is enabled. This behavior gives
      deterministic execution times from the guest point of view.
      The default if icount is enabled is ``sleep=on``.
@@ -170800,7 +171987,7 @@ index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..28bc3764e98e9404efc177e551cdd16d
      ``sleep=off`` cannot be used together with either ``shift=auto``
      or ``align=on``.
  
-@@ -5348,7 +5403,14 @@ SRST
+@@ -5348,7 +5408,14 @@ SRST
      option. Whenever the guest clock is behind the host clock and if
      ``align=on`` is specified then we print a message to the user to
      inform about the delay. Currently this option does not work when
@@ -181268,10 +182455,10 @@ index 0000000000000000000000000000000000000000..96ec4dab37827529af25451cd321788f
 +}
 diff --git a/system/crucible-kvm-q35-launch-owner.inc.c b/system/crucible-kvm-q35-launch-owner.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef33ddcb66d
+index 0000000000000000000000000000000000000000..62b1f2de5442d0e4a80efca517fe4a2c807c6702
 --- /dev/null
 +++ b/system/crucible-kvm-q35-launch-owner.inc.c
-@@ -0,0 +1,608 @@
+@@ -0,0 +1,964 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/* Original pre-accelerator KVM descriptor custody. This constructor-only
 + * owner grants neither first-clock/RUN permission nor publication authority. */
@@ -181303,6 +182490,14 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +    int64_t constructor_tid;
 +    uint64_t incarnation;
 +    struct timespec constructor_begin;
++    uint8_t resource_policy[128];
++    uint8_t resource_policy_digest[32];
++    uint8_t resource_policy_file_digest[32];
++    struct stat resource_policy_stat;
++    int resource_policy_fd;
++    bool resource_policy_attempted;
++    bool resource_policy_present;
++    ssize_t resource_policy_read_result;
 +};
 +
 +static struct {
@@ -181315,6 +182510,25 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +    bool selected;
 +    bool bound;
 +    bool prepare_attempted;
++    bool fd_backing_attempted;
++    void *fd_backing;
++    size_t fd_backing_extent;
++    struct {
++        bool initialized;
++        bool failed;
++        uint64_t baseline_bytes;
++        uint64_t charged_bytes;
++        struct {
++            bool attempted;
++            bool allocated;
++            uint64_t offered_bytes;
++            uint64_t metadata_bytes;
++            uint64_t rounded_bytes;
++        } fd, cpu;
++    } history;
++    bool cpu_history_attempted;
++    void *cpu_history;
++    size_t cpu_history_extent;
 +} q35_launch;
 +
 +/* This scalar is read before any pointer, QOM/BQL field, or libc lock. */
@@ -181477,6 +182691,89 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +    return true;
 +}
 +
++/* The new original argv operand owns an explicit resource-policy FD role.
++ * Genuine absence leaves
++ * selected pre-VM admission unsupported; a malformed present role is terminal.
++ * No bytes or reserved fields in CRKVM001 acquire a new interpretation. */
++static bool q35_launch_resource_policy_shape(const uint8_t *body,
++                                             const uint8_t descriptor_digest[32])
++{
++    uint64_t resident = ldq_be_p(body + 48), peak = ldq_be_p(body + 56);
++    uint64_t reserved = ldq_be_p(body + 64), transient = ldq_be_p(body + 72);
++    uint64_t output = ldq_be_p(body + 80), metadata = ldq_be_p(body + 88);
++
++    return !memcmp(body, "CRKVRP01", 8) && ldl_be_p(body + 8) == 1 &&
++        ldl_be_p(body + 12) == 128 &&
++        !memcmp(body + 16, descriptor_digest, 32) &&
++        q35_launch_zero(body + 96, 32) &&
++        resident && peak && reserved && transient && output && metadata;
++}
++
++static void q35_launch_resource_policy_capture(KvmCrucibleQ35LaunchClockOwner *owner)
++{
++    static const char domain[] = "CRUCIBLE-KVM-PREVM-RESOURCE-POLICY-V1";
++    struct stat after;
++    struct iovec commitment[2];
++    uint8_t *digest = owner->resource_policy_digest;
++    size_t digest_bytes = sizeof(owner->resource_policy_digest);
++
++    q35_launch_process_guard();
++    if (owner->resource_policy_attempted) {
++        q35_launch_refuse();
++    }
++    owner->resource_policy_attempted = true;
++    if (owner->resource_policy_fd == -1) {
++        return;
++    }
++    if (syscall(SYS_gettid) != owner->constructor_tid ||
++        !q35_launch_deadline(&owner->constructor_begin,
++                             ldl_be_p(owner->shape.body + 304)) ||
++        (ldl_be_p(owner->shape.body + 280) == 1 &&
++         ldl_be_p(owner->shape.body + 284) == (uint32_t)owner->resource_policy_fd) ||
++        !q35_launch_sealed_file(owner->resource_policy_fd, 128, &owner->resource_policy_stat) ||
++        q35_launch_same_file(&owner->resource_policy_stat, &owner->descriptor_stat)) {
++        q35_launch_refuse();
++    }
++    for (unsigned index = 0; index < 4; index++) {
++        if (lduw_be_p(owner->shape.body + 800 + index * 64 + 2) &&
++            q35_launch_same_file(&owner->resource_policy_stat,
++                                 &owner->asset_stat[index])) {
++            q35_launch_refuse();
++        }
++    }
++
++    /* The single actual read and its full/partial prefix stay in the original
++     * owner before interpretation. EINTR and short delivery never renew it. */
++    owner->resource_policy_read_result = pread(owner->resource_policy_fd, owner->resource_policy, 128, 0);
++    if (owner->resource_policy_read_result != 128 ||
++        !q35_launch_resource_policy_shape(owner->resource_policy, owner->digest) ||
++        !q35_launch_sealed_file(owner->resource_policy_fd, 128, &after) ||
++        !q35_launch_same_file(&owner->resource_policy_stat, &after)) {
++        q35_launch_refuse();
++    }
++    commitment[0] = (struct iovec) {
++        .iov_base = (void *)domain, .iov_len = sizeof(domain),
++    };
++    commitment[1] = (struct iovec) {
++        .iov_base = owner->resource_policy, .iov_len = 128,
++    };
++    if (qcrypto_hash_bytesv(QCRYPTO_HASH_ALGO_SHA256, commitment, 2,
++                           &digest, &digest_bytes, NULL) ||
++        digest != owner->resource_policy_digest || digest_bytes != 32 ||
++        !q35_launch_deadline(&owner->constructor_begin,
++                             ldl_be_p(owner->shape.body + 304))) {
++        q35_launch_refuse();
++    }
++    uint8_t *file_digest = owner->resource_policy_file_digest;
++    size_t file_digest_bytes = sizeof(owner->resource_policy_file_digest);
++    if (qcrypto_hash_bytes(QCRYPTO_HASH_ALGO_SHA256, owner->resource_policy, 128,
++                          &file_digest, &file_digest_bytes, NULL) ||
++        file_digest != owner->resource_policy_file_digest || file_digest_bytes != 32) {
++        q35_launch_refuse();
++    }
++    owner->resource_policy_present = true;
++}
++
 +static char **q35_launch_copy_argv(const struct Q35LaunchShape *shape,
 +                                  int argc, char **input)
 +{
@@ -181514,9 +182811,9 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +
 +static bool q35_launch_scan(int argc, char **argv,
 +                             int (*original_option_arity)(const char *option),
-+                             int *descriptor_fd)
++                             int *descriptor_fd, int *resource_policy_fd)
 +{
-+    unsigned selected = 0, accelerators = 0;
++    unsigned selected = 0, accelerators = 0, policies = 0;
 +    bool mixed = false, malformed = false;
 +
 +    /* Classify actual options only; a kernel/cmdline/drive operand cannot
@@ -181533,6 +182830,12 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +            selected++;
 +            if (arity != 1 || index + 1 >= argc ||
 +                !q35_launch_fd_number(argv[index + 1], descriptor_fd)) {
++                malformed = true;
++            }
++        } else if (!strcmp(option, "crucible-kvm-resource-policy")) {
++            policies++;
++            if (arity != 1 || index + 1 >= argc ||
++                !q35_launch_fd_number(argv[index + 1], resource_policy_fd)) {
 +                malformed = true;
 +            }
 +        } else if (g_str_has_prefix(option, "crucible-") ||
@@ -181556,7 +182859,8 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +            index++;
 +        }
 +    }
-+    return selected == 1 && !mixed && !malformed && accelerators == 1;
++    return selected == 1 && accelerators == 1 && policies <= 1 &&
++        !mixed && !malformed && (!policies || *resource_policy_fd != *descriptor_fd);
 +}
 +
 +static bool q35_launch_profile(const KvmCrucibleQ35LaunchClockOwner *owner,
@@ -181640,7 +182944,7 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +void kvm_crucible_q35_launch_pin_original_argv(int argc, char **argv,
 +    int (*original_option_arity)(const char *option))
 +{
-+    unsigned selected = 0;
++    unsigned selected = 0, resource_policies = 0;
 +    int descriptor_fd = -1;
 +    struct timespec begin;
 +    struct stat identity, after;
@@ -181648,7 +182952,7 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +    void *descriptor;
 +    uint8_t *digest;
 +    size_t digest_bytes;
-+    int retained_fd = -1;
++    int retained_fd = -1, resource_policy_fd = -1, retained_policy_fd = -1;
 +    static const char domain[] = "CRUCIBLE-KVM-PREBIRTH-V1";
 +    struct iovec commitment[2];
 +
@@ -181665,6 +182969,9 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +        if (option && !strcmp(option, "crucible-kvm-construct")) {
 +            selected++;
 +        }
++        if (option && !strcmp(option, "crucible-kvm-resource-policy")) {
++            resource_policies++;
++        }
 +        if (arity == 1 && index + 1 < argc) {
 +            index++;
 +        }
@@ -181672,7 +182979,7 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +    q35_launch.scanned = true;
 +    q35_launch.input_argv = argv;
 +    q35_launch.input_argc = argc;
-+    if (!selected) {
++    if (!selected && !resource_policies) {
 +        return;
 +    }
 +    /* Establish the raw process fence before any retained pointer/allocation.
@@ -181680,7 +182987,8 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +    q35_launch_original_process = syscall(SYS_getpid);
 +    q35_launch.selected = true;
 +    if (selected != 1 || argc > 256 ||
-+        !q35_launch_scan(argc, argv, original_option_arity, &descriptor_fd)) {
++        !q35_launch_scan(argc, argv, original_option_arity, &descriptor_fd,
++                         &resource_policy_fd)) {
 +        q35_launch_refuse();
 +    }
 +#if !Q35_LAUNCH_KVM_SUPPORTED
@@ -181704,12 +183012,14 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +    owner->constructor_tid = syscall(SYS_gettid);
 +    owner->incarnation = 1; /* The original singleton birth has no renew path. */
 +    owner->descriptor_fd = descriptor_fd;
++    owner->resource_policy_fd = resource_policy_fd;
 +    owner->descriptor_stat = identity;
 +    owner->constructor_begin = begin;
 +    owner->argv = q35_launch_copy_argv(&owner->shape, argc, argv);
 +
-+    if (!q35_launch_scan(argc, owner->argv, original_option_arity, &retained_fd) ||
-+        retained_fd != descriptor_fd ||
++    if (!q35_launch_scan(argc, owner->argv, original_option_arity, &retained_fd,
++                         &retained_policy_fd) ||
++        retained_fd != descriptor_fd || retained_policy_fd != resource_policy_fd ||
 +        !q35_launch_profile(owner, original_option_arity)) {
 +        q35_launch_refuse();
 +    }
@@ -181727,8 +183037,11 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +    if (qcrypto_hash_bytesv(QCRYPTO_HASH_ALGO_SHA256, commitment, 2,
 +                           &digest, &digest_bytes, NULL) ||
 +        digest != owner->digest || digest_bytes != sizeof(owner->digest) ||
-+        !q35_launch_deadline(&begin, ldl_be_p(owner->shape.body + 304)) ||
-+        mprotect(owner, sizeof(*owner), PROT_READ)) {
++        !q35_launch_deadline(&begin, ldl_be_p(owner->shape.body + 304))) {
++        q35_launch_refuse();
++    }
++    q35_launch_resource_policy_capture(owner);
++    if (mprotect(owner, sizeof(*owner), PROT_READ)) {
 +        q35_launch_refuse();
 +    }
 +    q35_launch.owner = owner;
@@ -181811,6 +183124,236 @@ index 0000000000000000000000000000000000000000..df73c65b98f929c62ea9591da461aef3
 +        .incarnation = q35_launch.owner->incarnation,
 +    };
 +    return 0;
++}
++
++bool kvm_crucible_q35_launch_selected_original(void)
++{
++    q35_launch_process_guard();
++    if (!q35_launch.scanned) {
++        q35_launch_refuse();
++    }
++    return q35_launch.selected;
++}
++
++int kvm_crucible_q35_launch_read_resource_policy_original(
++    KvmCrucibleQ35ResourcePolicyOriginal *original)
++{
++    const KvmCrucibleQ35LaunchClockOwner *owner;
++    struct stat identity;
++    uint64_t begin_ns, deadline;
++
++    q35_launch_process_guard();
++    if (!q35_launch_current()) {
++        return -ENOENT;
++    }
++    owner = q35_launch.owner;
++    if (syscall(SYS_gettid) != owner->constructor_tid || q35_launch.bound ||
++        q35_launch.prepare_attempted || !owner->resource_policy_attempted ||
++        !q35_launch_deadline(&owner->constructor_begin,
++                             ldl_be_p(owner->shape.body + 304))) {
++        q35_launch_refuse();
++    }
++    if (!owner->resource_policy_present) {
++        return -ENOTSUP;
++    }
++    if (!original || !q35_launch_sealed_file(owner->resource_policy_fd, 128, &identity) ||
++        !q35_launch_same_file(&owner->resource_policy_stat, &identity) ||
++        !q35_launch_resource_policy_shape(owner->resource_policy, owner->digest) ||
++        !q35_launch_hash_fd(owner->resource_policy_fd, 128,
++            /* The retained file hash below is recomputed separately; the
++             * domain-bound policy digest is not a raw file digest. */
++            owner->resource_policy_file_digest,
++            &owner->constructor_begin, ldl_be_p(owner->shape.body + 304)) ||
++        owner->constructor_begin.tv_sec < 0 ||
++        (uint64_t)owner->constructor_begin.tv_sec > UINT64_MAX / 1000000000 ||
++        !q35_launch_add((uint64_t)owner->constructor_begin.tv_sec * 1000000000,
++                        owner->constructor_begin.tv_nsec, &begin_ns) ||
++        !q35_launch_add(begin_ns,
++                        (uint64_t)ldl_be_p(owner->shape.body + 304) * 1000000,
++                        &deadline)) {
++        q35_launch_refuse();
++    }
++    *original = (KvmCrucibleQ35ResourcePolicyOriginal) {
++        .constructor = owner,
++        .body = owner->resource_policy,
++        .digest = owner->resource_policy_digest,
++        .absolute_deadline_ns = deadline,
++        .kernel_resident_bytes = ldq_be_p(owner->resource_policy + 48),
++        .kernel_peak_bytes = ldq_be_p(owner->resource_policy + 56),
++        .kernel_reserved_bytes = ldq_be_p(owner->resource_policy + 64),
++        .kernel_transient_bytes = ldq_be_p(owner->resource_policy + 72),
++        .kernel_output_bytes = ldq_be_p(owner->resource_policy + 80),
++        .kernel_metadata_bytes = ldq_be_p(owner->resource_policy + 88),
++    };
++    return 0;
++}
++
++/* These two source consumers share one nonrenewing allowance. Kernel, RAM,
++ * and timer allocations are separate owners and are not covered by this
++ * history ledger; its success is never whole-world admission. */
++#if Q35_LAUNCH_KVM_SUPPORTED
++static bool q35_launch_history_round(uint64_t bytes, uint64_t page_size,
++                                     uint64_t *rounded)
++{
++    uint64_t sum;
++
++    if (!page_size || (page_size & (page_size - 1)) ||
++        !q35_launch_add(bytes, page_size - 1, &sum)) {
++        return false;
++    }
++    *rounded = sum & ~(page_size - 1);
++    return true;
++}
++
++static bool q35_launch_history_baseline(uint64_t page_size, uint64_t *total)
++{
++    const KvmCrucibleQ35LaunchClockOwner *owner = q35_launch.owner;
++    const uint8_t *body = owner->shape.body;
++    uint64_t argv_bytes, rounded, baseline;
++    uint64_t records = ldq_be_p(body + 368), record_bytes = ldq_be_p(body + 376);
++
++    if (!records || record_bytes > UINT64_MAX / records ||
++        owner->shape.bytes < owner->shape.argv_offset ||
++        !q35_launch_add(owner->shape.argc, 1, &argv_bytes) ||
++        argv_bytes > UINT64_MAX / sizeof(char *)) {
++        return false;
++    }
++    argv_bytes *= sizeof(char *);
++    if (!q35_launch_add(argv_bytes, owner->shape.bytes - owner->shape.argv_offset,
++                        &argv_bytes) ||
++        !q35_launch_add(argv_bytes, owner->shape.argc, &argv_bytes)) {
++        return false;
++    }
++    baseline = records * record_bytes;
++    if (!q35_launch_add(baseline, 344 + 2 * 128 + 3 * 24, &baseline) ||
++        !q35_launch_history_round(owner->shape.bytes, page_size, &rounded) ||
++        !q35_launch_add(baseline, rounded, &baseline) ||
++        !q35_launch_history_round(sizeof(*owner), page_size, &rounded) ||
++        !q35_launch_add(baseline, rounded, &baseline) ||
++        !q35_launch_history_round(argv_bytes, page_size, &rounded) ||
++        !q35_launch_add(baseline, rounded, &baseline) ||
++        !q35_launch_add(baseline, sizeof(q35_launch), &baseline)) {
++        return false;
++    }
++    *total = baseline;
++    return true;
++}
++
++static void *q35_launch_history_allocate(bool cpu, size_t bytes,
++    size_t alignment, size_t metadata_bytes, const void **original_owner)
++{
++    const uint8_t *body = q35_launch.owner->shape.body;
++    typeof(q35_launch.history.fd) *row = cpu ? &q35_launch.history.cpu :
++                                              &q35_launch.history.fd;
++    uint64_t total, charge;
++    long page_size;
++    void *bank;
++
++    if (q35_launch.history.failed || row->attempted || !original_owner ||
++        !bytes || !alignment || (alignment & (alignment - 1)) ||
++        q35_launch.bound || (cpu && !q35_launch.prepare_attempted) ||
++        syscall(SYS_gettid) != q35_launch.owner->constructor_tid ||
++        !q35_launch_deadline(&q35_launch.owner->constructor_begin,
++                             ldl_be_p(body + 304))) {
++        q35_launch.history.failed = true;
++        q35_launch_refuse();
++    }
++
++    /* Retain the offered shape before any fallible calculation or allocation.
++     * An uncertain attempt cannot refund its row or reset the original bank. */
++    row->attempted = true;
++    row->offered_bytes = bytes;
++    row->metadata_bytes = metadata_bytes;
++    q35_launch.history.failed = true;
++    page_size = sysconf(_SC_PAGESIZE);
++    if (page_size <= 0 || alignment > (size_t)page_size ||
++        !q35_launch_history_round(bytes, page_size, &row->rounded_bytes)) {
++        q35_launch_refuse();
++    }
++    if (!q35_launch.history.initialized) {
++        if (!q35_launch_history_baseline(page_size,
++                                         &q35_launch.history.baseline_bytes)) {
++            q35_launch_refuse();
++        }
++        q35_launch.history.charged_bytes = q35_launch.history.baseline_bytes;
++        q35_launch.history.initialized = true;
++    }
++    if (!q35_launch_add(row->rounded_bytes, metadata_bytes, &charge) ||
++        !q35_launch_add(q35_launch.history.charged_bytes, charge, &total)) {
++        q35_launch_refuse();
++    }
++    q35_launch.history.charged_bytes = total;
++    if (total > ldq_be_p(body + 416) ||
++        (!cpu && total > ldq_be_p(body + 424))) {
++        q35_launch_refuse();
++    }
++
++    bank = mmap(NULL, row->rounded_bytes, PROT_READ | PROT_WRITE,
++                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    if (cpu) {
++        q35_launch.cpu_history = bank;
++        q35_launch.cpu_history_extent = row->rounded_bytes;
++    } else {
++        q35_launch.fd_backing = bank;
++        q35_launch.fd_backing_extent = row->rounded_bytes;
++    }
++    if (bank == MAP_FAILED || (uintptr_t)bank % alignment ||
++        !q35_launch_deadline(&q35_launch.owner->constructor_begin,
++                             ldl_be_p(body + 304))) {
++        q35_launch_refuse();
++    }
++    row->allocated = true;
++    q35_launch.history.failed = false;
++    *original_owner = q35_launch.owner;
++    return bank;
++}
++#endif
++
++void *kvm_crucible_q35_launch_fd_backing_original(size_t bytes,
++    size_t alignment, size_t metadata_bytes, const void **original_owner)
++{
++    q35_launch_process_guard();
++    if (!q35_launch_current()) {
++        q35_launch_refuse();
++    }
++#if Q35_LAUNCH_KVM_SUPPORTED
++    q35_launch.fd_backing_attempted = true;
++    return q35_launch_history_allocate(false, bytes, alignment, metadata_bytes,
++                                       original_owner);
++#else
++    q35_launch_refuse();
++#endif
++}
++
++bool kvm_crucible_q35_launch_fd_constructor_current_original(
++    const KvmCrucibleQ35LaunchClockOwner *original_owner)
++{
++    q35_launch_process_guard();
++    if (!q35_launch_current()) {
++        return false;
++    }
++    return !q35_launch.history.failed && original_owner == q35_launch.owner &&
++        q35_launch_deadline(&q35_launch.owner->constructor_begin,
++                             ldl_be_p(q35_launch.owner->shape.body + 304));
++}
++
++void *kvm_crucible_q35_launch_cpu_history_original(size_t bytes,
++    size_t alignment, size_t metadata_bytes, const void **original_owner)
++{
++    q35_launch_process_guard();
++    if (original_owner) {
++        *original_owner = NULL;
++    }
++    if (!q35_launch_current()) {
++        return NULL;
++    }
++#if Q35_LAUNCH_KVM_SUPPORTED
++    q35_launch.cpu_history_attempted = true;
++    return q35_launch_history_allocate(true, bytes, alignment, metadata_bytes,
++                                       original_owner);
++#else
++    return NULL;
++#endif
 +}
 +
 +void kvm_crucible_q35_launch_bind_original_vm(KVMState *state)
@@ -191056,7 +192599,7 @@ index 0000000000000000000000000000000000000000..85636f10abe77ea3c996b009e3ac271d
 +        qemu_get_thread_id() == stopped_startup_tid;
 +}
 diff --git a/system/vl.c b/system/vl.c
-index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..1300920cf81da1bff6005918b16779943a0daa2c 100644
+index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..a08f27e9b8ed7f8fc1dde5451a30c78879333124 100644
 --- a/system/vl.c
 +++ b/system/vl.c
 @@ -43,7 +43,9 @@
@@ -191468,10 +193011,11 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..1300920cf81da1bff6005918b1677994
                  break;
              case QEMU_OPTION_k:
                  keyboard_layout = optarg;
-@@ -3549,6 +3856,16 @@ void qemu_init(int argc, char **argv)
+@@ -3549,6 +3856,17 @@ void qemu_init(int argc, char **argv)
                      exit(1);
                  }
                  break;
++            case QEMU_OPTION_crucible_kvm_resource_policy:
 +            case QEMU_OPTION_crucible_kvm_construct:
 +            case QEMU_OPTION_crucible_whole_setup_fd:
 +            case QEMU_OPTION_crucible_node_prefix:
@@ -191485,7 +193029,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..1300920cf81da1bff6005918b1677994
              case QEMU_OPTION_icount:
                  icount_opts = qemu_opts_parse_noisily(qemu_find_opts("icount"),
                                                        optarg, true);
-@@ -3768,6 +4085,13 @@ void qemu_init(int argc, char **argv)
+@@ -3768,6 +4086,13 @@ void qemu_init(int argc, char **argv)
      trace_init_file();
  
      qemu_init_main_loop(&error_fatal);
@@ -256855,6 +258399,354 @@ index 0000000000000000000000000000000000000000..4e16204c95c9c5e356011ffa51676342
 +{
 +    return endpoint_callback_current(kind, binding, true);
 +}
+diff --git a/util/crucible-fd-custody.c b/util/crucible-fd-custody.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..a0b07c0e893a97a1416405474fbdcfbae38b5f47
+--- /dev/null
++++ b/util/crucible-fd-custody.c
+@@ -0,0 +1,342 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Process-private original KVM fd births and nonrenewing retirement. */
++#include "qemu/osdep.h"
++#include "qemu/crucible-fd-custody.h"
++#include <sys/syscall.h>
++
++enum CrucibleFdState {
++    CRUCIBLE_FD_EMPTY,
++    CRUCIBLE_FD_RESERVED,
++    CRUCIBLE_FD_KNOWN,
++    CRUCIBLE_FD_CLOSING,
++    CRUCIBLE_FD_CLOSE_ATTEMPTED,
++    CRUCIBLE_FD_RETIRED,
++    CRUCIBLE_FD_UNKNOWN,
++};
++
++struct CrucibleFdLease {
++    CrucibleFdIssuer *issuer;
++    CrucibleFdBirth birth;
++    enum CrucibleFdState state;
++    int descriptor;
++    int raw_birth_return;
++    int birth_errno;
++    bool birth_return_known;
++    int raw_close_return;
++    int close_errno;
++    bool close_return_known;
++};
++
++struct CrucibleFdIssuer {
++    const void *launch;
++    const void *context;
++    CrucibleFdSource source;
++    pthread_mutex_t lock;
++    bool lock_initialized;
++    bool unknown;
++    CrucibleFdLease rows[6];
++};
++
++/* This immutable source fence is separate from retained backing. A selected
++ * child must exit before reading its issuer or touching inherited locks. */
++static pid_t original_process;
++static CrucibleFdIssuer *original_issuer;
++
++static void fd_process_guard(void)
++{
++    if (original_process && syscall(SYS_getpid) != original_process) {
++        _exit(125);
++    }
++}
++
++size_t crucible_fd_backing_bytes(void)
++{
++    fd_process_guard();
++    return sizeof(CrucibleFdIssuer);
++}
++
++size_t crucible_fd_backing_alignment(void)
++{
++    fd_process_guard();
++    return _Alignof(CrucibleFdIssuer);
++}
++
++static bool fd_birth_equal(const CrucibleFdBirth *left,
++                           const CrucibleFdBirth *right)
++{
++    return left->role == right->role &&
++        left->original_owner == right->original_owner &&
++        left->original_class == right->original_class &&
++        left->original_parent == right->original_parent &&
++        left->cpu_index == right->cpu_index &&
++        left->native_allocation_argument == right->native_allocation_argument;
++}
++
++static bool fd_lease_original(CrucibleFdLease *lease)
++{
++    unsigned index;
++
++    if (!original_issuer) {
++        return false;
++    }
++    for (index = 0; index < G_N_ELEMENTS(original_issuer->rows); index++) {
++        if (lease == &original_issuer->rows[index]) {
++            return lease->issuer == original_issuer;
++        }
++    }
++    return false;
++}
++
++static void fd_unknown_locked(CrucibleFdIssuer *issuer)
++{
++    issuer->unknown = true;
++}
++
++CrucibleFdIssuer *crucible_fd_issuer_begin(
++    const void *original_launch, const void *original_context,
++    void *original_backing, size_t backing_extent, CrucibleFdSource source)
++{
++    CrucibleFdIssuer *issuer = original_backing;
++
++    fd_process_guard();
++    if (original_issuer) {
++        crucible_fd_issuer_unknown(original_issuer);
++        return NULL;
++    }
++    if (!original_launch || !original_context || !issuer ||
++        backing_extent != sizeof(*issuer) ||
++        (uintptr_t)issuer % _Alignof(CrucibleFdIssuer) ||
++        !source.birth_current || !source.birth_return_current ||
++        !source.object_current || !source.retirement_current ||
++        !source.close_attempt_current ||
++        !source.close_return_current) {
++        return NULL;
++    }
++    original_process = syscall(SYS_getpid);
++    memset(issuer, 0, sizeof(*issuer));
++    issuer->launch = original_launch;
++    issuer->context = original_context;
++    issuer->source = source;
++    if (pthread_mutex_init(&issuer->lock, NULL)) {
++        issuer->unknown = true;
++        original_issuer = issuer;
++        return NULL;
++    }
++    issuer->lock_initialized = true;
++    for (unsigned index = 0; index < G_N_ELEMENTS(issuer->rows); index++) {
++        issuer->rows[index].issuer = issuer;
++        issuer->rows[index].descriptor = -1;
++    }
++    original_issuer = issuer;
++    return issuer;
++}
++
++void crucible_fd_issuer_unknown(CrucibleFdIssuer *issuer)
++{
++    fd_process_guard();
++    if (!issuer || issuer != original_issuer || !issuer->lock_initialized) {
++        _exit(125);
++    }
++    pthread_mutex_lock(&issuer->lock);
++    fd_unknown_locked(issuer);
++    pthread_mutex_unlock(&issuer->lock);
++}
++
++CrucibleFdLease *crucible_fd_reserve(CrucibleFdIssuer *issuer,
++                                    const CrucibleFdBirth *original)
++{
++    CrucibleFdLease *lease;
++    unsigned slot;
++    bool valid;
++
++    fd_process_guard();
++    if (!issuer || issuer != original_issuer || !original ||
++        !original->original_owner || !original->original_class) {
++        return NULL;
++    }
++    if (original->role == CRUCIBLE_FD_KVM_DRIVER && !original->cpu_index) {
++        slot = 0;
++    } else if (original->role == CRUCIBLE_FD_KVM_VM && !original->cpu_index) {
++        slot = 1;
++    } else if (original->role == CRUCIBLE_FD_KVM_VCPU && original->cpu_index < 4) {
++        slot = original->cpu_index + 2;
++    } else {
++        crucible_fd_issuer_unknown(issuer);
++        return NULL;
++    }
++    valid = issuer->source.birth_current(issuer->context, original);
++    pthread_mutex_lock(&issuer->lock);
++    lease = &issuer->rows[slot];
++    valid = valid && !issuer->unknown && lease->state == CRUCIBLE_FD_EMPTY;
++    if (slot == 0) {
++        valid = valid && !original->original_parent;
++    } else {
++        CrucibleFdLease *parent = &issuer->rows[slot == 1 ? 0 : 1];
++
++        valid = valid && original->original_parent == parent &&
++            parent->state == CRUCIBLE_FD_KNOWN;
++    }
++    if (valid) {
++        lease->birth = *original;
++        lease->state = CRUCIBLE_FD_RESERVED;
++    } else {
++        fd_unknown_locked(issuer);
++    }
++    pthread_mutex_unlock(&issuer->lock);
++    return valid ? lease : NULL;
++}
++
++bool crucible_fd_claim_original_raw_return(CrucibleFdLease *lease,
++                                           int raw_return, int saved_errno)
++{
++    CrucibleFdIssuer *issuer;
++    bool valid;
++
++    fd_process_guard();
++    if (!fd_lease_original(lease)) {
++        return false;
++    }
++    issuer = lease->issuer;
++    valid = issuer->source.birth_return_current(issuer->context, &lease->birth,
++                                                 raw_return, saved_errno);
++    pthread_mutex_lock(&issuer->lock);
++    if (lease->state == CRUCIBLE_FD_RESERVED) {
++        lease->raw_birth_return = raw_return;
++        lease->birth_errno = saved_errno;
++        lease->birth_return_known = valid;
++        valid = valid && !issuer->unknown && raw_return >= 0 && !saved_errno;
++        for (unsigned index = 0; valid && index < G_N_ELEMENTS(issuer->rows); index++) {
++            CrucibleFdLease *other = &issuer->rows[index];
++
++            if (other != lease && other->state != CRUCIBLE_FD_EMPTY &&
++                other->descriptor == raw_return) {
++                valid = false;
++            }
++        }
++        lease->state = valid ? CRUCIBLE_FD_KNOWN : CRUCIBLE_FD_UNKNOWN;
++        if (valid) {
++            lease->descriptor = raw_return;
++        }
++    } else {
++        valid = false;
++    }
++    if (!valid) {
++        fd_unknown_locked(issuer);
++    }
++    pthread_mutex_unlock(&issuer->lock);
++    return valid;
++}
++
++bool crucible_fd_current(CrucibleFdLease *lease,
++                         const CrucibleFdBirth *actual, int descriptor)
++{
++    CrucibleFdIssuer *issuer;
++    bool valid;
++
++    fd_process_guard();
++    if (!fd_lease_original(lease) || !actual) {
++        return false;
++    }
++    issuer = lease->issuer;
++    pthread_mutex_lock(&issuer->lock);
++    valid = !issuer->unknown && lease->state == CRUCIBLE_FD_KNOWN &&
++        lease->descriptor == descriptor && fd_birth_equal(&lease->birth, actual);
++    if (!valid) {
++        fd_unknown_locked(issuer);
++    }
++    pthread_mutex_unlock(&issuer->lock);
++    if (!valid) {
++        return false;
++    }
++    valid = issuer->source.object_current(issuer->context, actual, descriptor);
++    pthread_mutex_lock(&issuer->lock);
++    valid = valid && !issuer->unknown && lease->state == CRUCIBLE_FD_KNOWN;
++    if (!valid) {
++        fd_unknown_locked(issuer);
++    }
++    pthread_mutex_unlock(&issuer->lock);
++    return valid;
++}
++
++bool crucible_fd_retire_begin(CrucibleFdLease *lease, int descriptor)
++{
++    CrucibleFdIssuer *issuer;
++    bool valid;
++
++    fd_process_guard();
++    if (!fd_lease_original(lease)) {
++        return false;
++    }
++    issuer = lease->issuer;
++    pthread_mutex_lock(&issuer->lock);
++    valid = !issuer->unknown && lease->state == CRUCIBLE_FD_KNOWN &&
++        lease->descriptor == descriptor;
++    pthread_mutex_unlock(&issuer->lock);
++    if (valid) {
++        valid = issuer->source.retirement_current(issuer->context,
++                                                  &lease->birth, descriptor);
++    }
++    pthread_mutex_lock(&issuer->lock);
++    valid = valid && !issuer->unknown && lease->state == CRUCIBLE_FD_KNOWN;
++    if (valid) {
++        lease->state = CRUCIBLE_FD_CLOSING;
++    } else {
++        fd_unknown_locked(issuer);
++    }
++    pthread_mutex_unlock(&issuer->lock);
++    return valid;
++}
++
++bool crucible_fd_retire_finish(CrucibleFdLease *lease,
++                               int raw_close_return, int saved_errno)
++{
++    CrucibleFdIssuer *issuer;
++    bool valid;
++
++    fd_process_guard();
++    if (!fd_lease_original(lease)) {
++        return false;
++    }
++    issuer = lease->issuer;
++    valid = issuer->source.close_return_current(issuer->context, &lease->birth,
++                                                 raw_close_return, saved_errno);
++    pthread_mutex_lock(&issuer->lock);
++    if (lease->state == CRUCIBLE_FD_CLOSE_ATTEMPTED) {
++        lease->raw_close_return = raw_close_return;
++        lease->close_errno = saved_errno;
++        lease->close_return_known = valid;
++        valid = valid && !issuer->unknown && !raw_close_return && !saved_errno;
++        lease->state = valid ? CRUCIBLE_FD_RETIRED : CRUCIBLE_FD_UNKNOWN;
++    } else {
++        valid = false;
++    }
++    if (!valid) {
++        fd_unknown_locked(issuer);
++    }
++    pthread_mutex_unlock(&issuer->lock);
++    return valid;
++}
++
++bool crucible_fd_close_original_begin(CrucibleFdLease *lease, int descriptor)
++{
++    CrucibleFdIssuer *issuer;
++    bool valid;
++
++    fd_process_guard();
++    if (!fd_lease_original(lease)) {
++        return false;
++    }
++    issuer = lease->issuer;
++    valid = issuer->source.close_attempt_current(issuer->context,
++                                                  &lease->birth, descriptor);
++    pthread_mutex_lock(&issuer->lock);
++    valid = valid && !issuer->unknown && lease->state == CRUCIBLE_FD_CLOSING &&
++        lease->descriptor == descriptor;
++    if (valid) {
++        lease->state = CRUCIBLE_FD_CLOSE_ATTEMPTED;
++    } else {
++        fd_unknown_locked(issuer);
++    }
++    pthread_mutex_unlock(&issuer->lock);
++    return valid;
++}
 diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..e7eee6cdc9d8a4c33a3545864fd8b1931a7d29ae
@@ -260620,17 +262512,20 @@ index 65e5dbcc941bd2d397c42befad5b212959329714..73c93c2a7ddbc115e8ae9f06abe34c13
 +    return 0;
 +}
 diff --git a/util/meson.build b/util/meson.build
-index fa174c07a57a422f19315e990147ea9364782ba7..2376112dfe2e5bb3f8546561dc9006a809ac67c8 100644
+index fa174c07a57a422f19315e990147ea9364782ba7..43bbb2d2659863f51cc45dadebb596c1968017a2 100644
 --- a/util/meson.build
 +++ b/util/meson.build
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,8 @@
 -util_ss.add(files('osdep.c', 'cutils.c', 'unicode.c', 'qemu-timer-common.c'))
 +util_ss.add(files('osdep.c', 'cutils.c', 'unicode.c', 'qemu-timer-common.c',
 +                  'crucible-endpoint-roots.c'))
++if host_os == 'linux'
++  util_ss.add(files('crucible-fd-custody.c'))
++endif
  util_ss.add(files('thread-context.c'), numa)
  if host_os != 'windows'
    util_ss.add(files('aio-posix.c'))
-@@ -71,6 +72,7 @@ if have_system
+@@ -71,6 +75,7 @@ if have_system
    util_ss.add(files('crc-ccitt.c'))
    util_ss.add(when: gio, if_true: files('dbus.c'))
    if host_os == 'linux'
@@ -260638,7 +262533,7 @@ index fa174c07a57a422f19315e990147ea9364782ba7..2376112dfe2e5bb3f8546561dc9006a8
      util_ss.add(files('userfaultfd.c'))
    endif
  endif
-@@ -83,6 +85,7 @@ if have_block or have_ga
+@@ -83,6 +88,7 @@ if have_block or have_ga
    util_ss.add(files('qemu-coroutine.c', 'qemu-coroutine-lock.c', 'qemu-coroutine-io.c'))
    util_ss.add(files(f'coroutine-@coroutine_backend@.c'))
    util_ss.add(files('thread-pool.c', 'qemu-timer.c'))

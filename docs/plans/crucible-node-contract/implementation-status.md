@@ -3563,6 +3563,41 @@ This descriptor minimum excludes prior lifetime history. Frame-byte capacity,
 window credit and the complete four-owner allocation peak remain separate
 checks before any full capture admission or Arm permission.
 
+## Original KVM resource policy and matching kernel source
+
+The integrated source chain retains original KVM file identities and CPU
+readout metadata before effects. QEMU accepts a separate sealed resource-policy
+FD through its original argv, preserving the existing launch descriptor. The
+kernel pre-VM quote binds its system file, Task, mm and module; incomplete native
+coverage refuses selected CREATE_VM before reserving an FD. Caller ceilings do
+not authorize creation. The current quote covers one of eleven required domains.
+
+The separate PS kernel variant and source check preserve the ordinary kernel
+and constructor variant. Their ordered 27-stage source chain reconstructs the
+complete 162-role descendant. Matching source collection includes the upstream
+archive, patched tree, AOS/bootstrap inputs, configuration and actual generated
+Kbuild records when a kernel is built. Component source replay already passes;
+full kernel/package execution remains pending.
+
+Fourteen configured QEMU, utility and kernel translation units compile across
+their retained cohorts. Fresh option generation and a complete VL compile add
+twelve literal option, FD-role and late-dispatch controls. Location, Task, mm,
+allocator and usercopy peers remain modeled where used. Independent CLI receipt
+`4957df74313563a4bea0339ee4961cc1a99443ae650f799751a3154c9f103bd8`
+preserves the earlier thirteen-role evidence scope.
+
+The signed native revision is `d8104fe3cc0a518bbb35b2d3f6c3dfa1bc819734`.
+Independent reconstruction receipt
+`360e4ecc996eb671a9ab9203a2259f0143fb13d0c3300955b7f3a771bb8ab4d5`
+verifies its sole upstream parent, all 78,085 preceding entries outside the exact
+fourteen-file delta, seven additive GPL source rows, patch and source bundle.
+The failed automatic-thread packing attempt is retained; the same signed tree
+packs successfully with one worker.
+
+Complete allocation coverage, backend-two RAM, active timers, worker stop and
+output closure remain pending. This source integration grants no selected RUN,
+Ready, positive live ioctl, package or ABI/license-gate qualification.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

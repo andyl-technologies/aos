@@ -44,12 +44,18 @@ The atomic integration patch creates these QEMU source files:
 | `accel/kvm/crucible-pic-handoff.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `accel/kvm/crucible-pic-memory.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `accel/kvm/crucible-pic-vm-setup.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `accel/kvm/crucible-fd-original.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/kvm/crucible-q35-cpu-history.inc.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `accel/kvm/crucible-q35-cpu-history-types.inc.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `accel/kvm/crucible-q35-prevm-resource.inc.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `accel/kvm/crucible-q35-prevm-resource-types.inc.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `accel/kvm/crucible-q35-devices.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `accel/kvm/crucible-q35-inactive-clock.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `accel/kvm/crucible-q35-initial-routing.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `accel/kvm/crucible-q35-memory.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `accel/kvm/crucible-q35-vm-configuration.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `accel/kvm/crucible-q35-workers.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `include/qemu/crucible-fd-custody.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/system/crucible-kvm-construction.h` | GPL-2.0-only | Explicit SPDX identifier |
 | `include/system/crucible-kvm-continuation.h` | GPL-2.0-only | Explicit SPDX identifier |
 | `include/system/crucible-kvm-initialization.h` | GPL-2.0-only | Explicit SPDX identifier |
@@ -70,6 +76,7 @@ The atomic integration patch creates these QEMU source files:
 | `system/crucible-kvm-q35-launch-owner.inc.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `system/crucible-kvm-q35-launch-stub.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `system/crucible-kvm-q35-launch.c` | GPL-2.0-only | Explicit SPDX identifier |
+| `util/crucible-fd-custody.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `accel/kvm/crucible-clock.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `include/system/crucible-kvm-clock.h` | GPL-2.0-only | Explicit SPDX identifier |
 | `accel/kvm/crucible-window.c` | GPL-2.0-only | Explicit SPDX identifier |

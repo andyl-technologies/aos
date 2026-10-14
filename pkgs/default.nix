@@ -2031,6 +2031,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       linux-controller-q35-cold-source = callPackage ./kernel/linux-controller-q35-cold-source.nix {
         inherit linuxSource;
       };
+      linux-controller-q35-ps-kernel = callPackage ./kernel/linux-controller-q35-ps-kernel.nix {
+        inherit linuxSource;
+      };
+      linux-controller-q35-ps-source = callPackage ./kernel/linux-controller-q35-ps-source.nix {
+        inherit linuxSource;
+      };
       linux-controller-pic-source-check = callPackage ./kernel/linux-controller-pic-source-check.nix {
         inherit linuxSource;
         linuxStage7Check = self.linux-controller-response-bytes-stage7-check;
