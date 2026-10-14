@@ -547,8 +547,16 @@ replay in 106.792 seconds. The direct physical fault matrix and ancestry
 collection still time out under their original 120-second limits. Coordinator
 review verifies the sealed results and preserved scratch. A separate test-only
 repair retains all twelve positive and twelve negative physical walks while
-publishing one fixture per mode and running destructive corruption last; its
-runtime remains pending. Ancestry diagnosis, owning gates, final-source
+publishing one fixture per mode and running destructive corruption last.
+Combined candidate `40ad37b46359` (tree `d23b540c225c`) also captures reopen
+configuration from freshly verified parent Commit bytes and adds bounded,
+test-only native timing diagnostics. Full coordinator and independent source
+reviews pass; all thirteen compiler phases pass with 1,147 identities and none
+ignored. Under the unchanged normal limits, the repaired physical matrix passes
+in 23.234 seconds and indexed overlay replay passes in 107.272 seconds; ancestry
+collection still times out at 120 seconds. Coordinator review verifies all 95
+runtime payloads and preserved scratch. A separate ancestry diagnostic remains
+outside normal qualification. Ancestry diagnosis, owning gates, final-source
 qualification and task acceptance remain required.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
