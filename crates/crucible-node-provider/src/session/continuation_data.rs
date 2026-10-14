@@ -4,6 +4,12 @@
 //! counters, credit, all three empty correlation maps, extensions, failure and
 //! previous-install state. Pending Capture is refused here: its exact owning
 //! source settlement must supply a distinct verified transition.
+//!
+//! A settled, unused guard with no extensions has this source-private form:
+//!
+//! ```json
+//! ["source-private.correlations/6","session-old","incarnation-old","2","2",8,{},{},{},[],false,false]
+//! ```
 
 use super::*;
 
@@ -33,7 +39,7 @@ impl DecodedSettledCorrelationData {
     /// A borrowed fixed-state cursor validates all grammar before owning copies;
     /// no parser scratch or BTree nodes are allocated.
     /// This is a conservative data-decoder allowance, not exact captured nested
-    /// allocator geometry. Admission precedes owning deserialization.
+    /// allocator geometry. Admission precedes owning copies.
     ///
     /// # Errors
     /// Refuses low credit, oversized/unsupported data, failed or pending state,
@@ -355,6 +361,7 @@ impl<'a> DataCursor<'a> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
     fn guard(scope: &str) -> CorrelationGuard {
         CorrelationGuard::new(
             Id::new(format!("session-{scope}")).unwrap(),
@@ -442,6 +449,7 @@ mod tests {
             .is_err()
         );
     }
+
     #[test]
     fn native5_settled_correlation_malformed_strings_and_pending_keys_have_no_parser_scratch() {
         let original = guard("old");
