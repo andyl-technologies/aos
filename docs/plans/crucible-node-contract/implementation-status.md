@@ -4257,6 +4257,49 @@ capture, restoration, whole-factory allocation peak or device parity. Actual
 Cargo target compilation does not substitute for the outstanding Nix
 application unit/integration target gate.
 
+## Fresh native64 compiler-runtime context
+
+Genuine source configuration and header generation now complete after the
+initial GCC stage is established serially before parallel prerequisites. The
+previous parallel attempt failed when several recursive stage1-start calls
+rotated the same directories. The correction retains the original compiler,
+flags, dependencies, features and subsequent parallel targets. Earlier process
+observation and configuration failures remain separate recorded outcomes.
+
+The original configure35 work completes with status zero in 158.392440 seconds.
+The same original Root issuing handle reaps its operator with status zero;
+original work and group terminal receipts remain independent of incomplete
+sampled ancestry observations. All eleven generated or linked headers exist.
+The 1,616 sampled rows retain their actual retirement classifications, including
+129 rejected birth observations and 28 descriptor-retired BirthUnknown rows.
+Neither these rows nor unavailable topology observations establish complete
+process ancestry or namespace authentication.
+
+Independent full-context review
+`cab1788d154b3d3af77dd47c2406ce79d60293b281c4c79056e9390c37f19ce3`
+checks 148 direct selectors and 594 before/after source-body hashes. The complete
+169,755-entry source roster has exactly 297 admitted fixups and no unexplained
+extra paths. Generated-build and wrapper inventories, raw and resolved sysroot
+inputs, all 121 original input provenance records, eleven headers, four raw
+links and eight native ELF64 artifacts are retained and verified. This accepts
+the newly configured native64 diagnostic context, with candidate identity
+`ec033cbf700ac5359a746ed14b2afa21edfee7e31f0e1dc372e4a55420267301`.
+
+The first read-only finishing audit failed at an incorrect gcc/dwarf2.h locator
+after completing its inventories. Its failure remains recorded. A bounded
+finishing audit reuses those exact inventories and verifies actual
+include/dwarf2.h and resolved header links, then completes with status zero.
+No GNU build is rerun or relabeled by that audit correction.
+
+Optional /usr/bin/file invocations fail in the actual configure diagnostics.
+The native x86_64 probe leaves the explicitly selected AOS linker at its native
+64-bit default; pointer size and generator ELF class agree. No successful host
+tool execution is inferred. Production hermeticity remains unqualified until
+a declared predecessor-built file helper and audited source substitution avoid
+the bootstrap dependency cycle. Private-unwind member compilation, scoped
+linking, ordinary compiler/package qualification and complete QEMU binary/source
+qualification remain separate unfinished requirements.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
