@@ -62,6 +62,7 @@ mod event_log_retention;
 mod network_fault_boundary;
 #[path = "qemu_campaign_driver/observation_candidate.rs"]
 mod observation_candidate;
+mod quantum_budget_report;
 mod resume_progress;
 mod selection_projection;
 mod stop_boundary;
@@ -1882,6 +1883,7 @@ fn drive_modeled_attempt_inner(
             ));
         }
         context.charge_execution_quantum().map_err(|error| {
+            quantum_budget_report::report_quantum_budget_exhaustion(&event_log, completed_quanta);
             AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::ResourceRefusal(error))
         })?;
         let quantum_start_completed_quanta = completed_quanta;
