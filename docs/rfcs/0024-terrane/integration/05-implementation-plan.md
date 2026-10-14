@@ -455,6 +455,13 @@ samples and no deadline changes. Fresh thirteen-phase compiler qualification
 starts on this frozen source; its expected inventory retains all 1,131 existing
 tests and exactly four new collector witnesses. Compiler completion and every
 runtime result on this candidate remain pending; no task is accepted.
+That compiler run stops at native SDK Clippy: a new handoff assertion calls
+`ref_get` without importing `RefStore`. Four phases pass, one fails and eight
+remain unstarted; no SDK executable, inventory or runtime result is inferred.
+Independent review verifies the 121-payload failure packet and preserves all
+five scratch directories. Import-only correction `f2cfcd9a89fe` is composed
+through an ordinary merge at `4ab8fbd1cc62` (tree `c952b61e2d14`). Its source
+and renewed compiler preparation pass review before another qualification.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
