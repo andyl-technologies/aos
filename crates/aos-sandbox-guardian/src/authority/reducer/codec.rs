@@ -11,6 +11,7 @@
 
 use aos_sandbox_core::{
     AssignmentEpoch, IncarnationId, LeaseAssignment, NodeId, ObjectDigest, SandboxId,
+    bounded_codec::BoundedReader,
 };
 
 use super::*;
@@ -25,11 +26,11 @@ pub(super) fn decode_protected_admission(
     bytes: &[u8],
 ) -> Result<GuardianEffectAdmissionV1, GuardianReducerError> {
     let mut input = Reader::new(bytes);
-    if input.array::<9>()? != *ADMISSION_MAGIC {
+    if input.reader.array::<9>()? != *ADMISSION_MAGIC {
         return Err(GuardianReducerError::ObservationMismatch);
     }
     let value = decode_admission(&mut input)?;
-    input.finish()?;
+    input.reader.finish()?;
     Ok(value)
 }
 
@@ -37,11 +38,11 @@ pub(super) fn decode_protected_current(
     bytes: &[u8],
 ) -> Result<ProtectedGuardianCurrentV1, GuardianReducerError> {
     let mut input = Reader::new(bytes);
-    if input.array::<9>()? != *CURRENT_MAGIC {
+    if input.reader.array::<9>()? != *CURRENT_MAGIC {
         return Err(GuardianReducerError::ObservationMismatch);
     }
     let value = decode_current(&mut input)?;
-    input.finish()?;
+    input.reader.finish()?;
     Ok(value)
 }
 
@@ -49,11 +50,11 @@ pub(super) fn decode_protected_outcome(
     bytes: &[u8],
 ) -> Result<ProtectedGuardianOutcomeV1, GuardianReducerError> {
     let mut input = Reader::new(bytes);
-    if input.array::<9>()? != *OUTCOME_MAGIC {
+    if input.reader.array::<9>()? != *OUTCOME_MAGIC {
         return Err(GuardianReducerError::ObservationMismatch);
     }
     let value = decode_outcome(&mut input)?;
-    input.finish()?;
+    input.reader.finish()?;
     Ok(value)
 }
 
@@ -61,11 +62,11 @@ pub(super) fn decode_protected_worker_death(
     bytes: &[u8],
 ) -> Result<ProtectedGuardianWorkerDeathSupersessionV1, GuardianReducerError> {
     let mut input = Reader::new(bytes);
-    if input.array::<9>()? != *WORKER_DEATH_MAGIC {
+    if input.reader.array::<9>()? != *WORKER_DEATH_MAGIC {
         return Err(GuardianReducerError::ObservationMismatch);
     }
     let value = decode_supersession(&mut input)?;
-    input.finish()?;
+    input.reader.finish()?;
     Ok(value)
 }
 
@@ -101,17 +102,17 @@ pub(super) fn decode_snapshot(
         return Err(GuardianReducerError::ObservationMismatch);
     }
     let mut input = Reader::new(bytes);
-    if input.array::<10>()? != *MAGIC {
+    if input.reader.array::<10>()? != *MAGIC {
         return Err(GuardianReducerError::ObservationMismatch);
     }
     let snapshot = GuardianRecoverySnapshotV1 {
         authority: decode_authority(&mut input)?,
         network: decode_network(&mut input)?,
         managed: decode_managed(&mut input)?,
-        worker_identity_digest: input.digest()?,
+        worker_identity_digest: input.reader.digest()?,
         timer: decode_timer(&mut input)?,
-        highest_sequence: input.u64()?,
-        receipt_floor_sequence: input.u64()?,
+        highest_sequence: input.reader.u64()?,
+        receipt_floor_sequence: input.reader.u64()?,
         receipt_anchor_digest: input.optional_digest()?,
         pending: input.optional(decode_pending)?,
         compacted_receipt_index: input.sequence(
@@ -121,9 +122,9 @@ pub(super) fn decode_snapshot(
         receipts: input.sequence(MAXIMUM_GUARDIAN_RECEIPTS, decode_receipt)?,
         terminal: input.boolean()?,
         poisoned: input.boolean()?,
-        digest: input.digest()?,
+        digest: input.reader.digest()?,
     };
-    input.finish()?;
+    input.reader.finish()?;
     Ok(snapshot)
 }
 
@@ -136,10 +137,10 @@ fn encode_assignment(out: &mut Writer, value: LeaseAssignment) {
 
 fn decode_assignment(input: &mut Reader<'_>) -> Result<LeaseAssignment, GuardianReducerError> {
     LeaseAssignment::new(
-        SandboxId::from_bytes(input.array()?),
-        IncarnationId::from_bytes(input.array()?),
-        AssignmentEpoch::new(input.u64()?),
-        input.digest()?,
+        SandboxId::from_bytes(input.reader.array()?),
+        IncarnationId::from_bytes(input.reader.array()?),
+        AssignmentEpoch::new(input.reader.u64()?),
+        input.reader.digest()?,
     )
     .map_err(|_| GuardianReducerError::ObservationMismatch)
 }
@@ -163,16 +164,16 @@ fn decode_authority(
 ) -> Result<GuardianAuthoritySnapshotV1, GuardianReducerError> {
     let value = GuardianAuthoritySnapshotV1 {
         assignment: decode_assignment(input)?,
-        node: NodeId::from_bytes(input.array()?),
-        desired_generation: input.u64()?,
-        plan_digest: input.digest()?,
-        lease_generation: input.u64()?,
-        lease_digest: input.digest()?,
-        host_boot_id: input.array()?,
-        clock_provenance: input.array()?,
-        fail_stop_boottime_nanoseconds: input.u64()?,
-        durable_state_digest: input.digest()?,
-        digest: input.digest()?,
+        node: NodeId::from_bytes(input.reader.array()?),
+        desired_generation: input.reader.u64()?,
+        plan_digest: input.reader.digest()?,
+        lease_generation: input.reader.u64()?,
+        lease_digest: input.reader.digest()?,
+        host_boot_id: input.reader.array()?,
+        clock_provenance: input.reader.array()?,
+        fail_stop_boottime_nanoseconds: input.reader.u64()?,
+        durable_state_digest: input.reader.digest()?,
+        digest: input.reader.digest()?,
     };
     if value.digest != authority_digest(value) {
         return Err(GuardianReducerError::ObservationMismatch);
@@ -207,23 +208,23 @@ fn encode_network(out: &mut Writer, value: GuardianNetworkFenceV1) {
 fn decode_network(input: &mut Reader<'_>) -> Result<GuardianNetworkFenceV1, GuardianReducerError> {
     let value = GuardianNetworkFenceV1::new(
         decode_assignment(input)?,
-        input.array()?,
-        input.array()?,
-        input.u64()?,
-        input.u64()?,
-        input.digest()?,
-        input.digest()?,
-        input.digest()?,
-        input.digest()?,
-        input.digest()?,
-        input.digest()?,
-        input.u64()?,
-        input.digest()?,
-        input.u64()?,
-        input.digest()?,
-        input.digest()?,
+        input.reader.array()?,
+        input.reader.array()?,
+        input.reader.u64()?,
+        input.reader.u64()?,
+        input.reader.digest()?,
+        input.reader.digest()?,
+        input.reader.digest()?,
+        input.reader.digest()?,
+        input.reader.digest()?,
+        input.reader.digest()?,
+        input.reader.u64()?,
+        input.reader.digest()?,
+        input.reader.u64()?,
+        input.reader.digest()?,
+        input.reader.digest()?,
     )?;
-    if input.digest()? != value.digest() {
+    if input.reader.digest()? != value.digest() {
         return Err(GuardianReducerError::ObservationMismatch);
     }
     Ok(value)
@@ -243,13 +244,13 @@ fn decode_managed_state(
     input: &mut Reader<'_>,
 ) -> Result<GuardianManagedStateV1, GuardianReducerError> {
     GuardianManagedStateV1::new(
-        domain(input.u8()?)?,
-        input.u64()?,
-        input.digest()?,
-        input.digest()?,
-        input.digest()?,
-        input.digest()?,
-        status(input.u8()?)?,
+        domain(input.reader.u8()?)?,
+        input.reader.u64()?,
+        input.reader.digest()?,
+        input.reader.digest()?,
+        input.reader.digest()?,
+        input.reader.digest()?,
+        status(input.reader.u8()?)?,
     )
 }
 
@@ -277,11 +278,11 @@ fn decode_managed(
     let value = GuardianManagedSnapshotV1::new(
         assignment,
         entries,
-        input.u64()?,
-        input.digest()?,
-        input.digest()?,
+        input.reader.u64()?,
+        input.reader.digest()?,
+        input.reader.digest()?,
     )?;
-    if input.digest()? != value.digest() {
+    if input.reader.digest()? != value.digest() {
         return Err(GuardianReducerError::ObservationMismatch);
     }
     Ok(value)
@@ -298,12 +299,12 @@ fn encode_timer(out: &mut Writer, value: GuardianRenewalTimerV1) {
 
 fn decode_timer(input: &mut Reader<'_>) -> Result<GuardianRenewalTimerV1, GuardianReducerError> {
     Ok(GuardianRenewalTimerV1 {
-        host_boot_id: input.array()?,
-        clock_provenance: input.array()?,
-        armed_boottime_nanoseconds: input.u64()?,
-        early_freeze_boottime_nanoseconds: input.u64()?,
-        hard_stop_boottime_nanoseconds: input.u64()?,
-        policy_digest: input.digest()?,
+        host_boot_id: input.reader.array()?,
+        clock_provenance: input.reader.array()?,
+        armed_boottime_nanoseconds: input.reader.u64()?,
+        early_freeze_boottime_nanoseconds: input.reader.u64()?,
+        hard_stop_boottime_nanoseconds: input.reader.u64()?,
+        policy_digest: input.reader.digest()?,
     })
 }
 
@@ -322,14 +323,14 @@ fn decode_cause(
     input: &mut Reader<'_>,
 ) -> Result<ProtectedGuardianCauseEvidenceV1, GuardianReducerError> {
     Ok(ProtectedGuardianCauseEvidenceV1 {
-        kind: cause(input.u8()?)?,
+        kind: cause(input.reader.u8()?)?,
         assignment: decode_assignment(input)?,
-        authority_digest: input.digest()?,
-        source_digest: input.digest()?,
-        session_digest: input.digest()?,
-        currentness_digest: input.digest()?,
-        observation_ordinal: input.u64()?,
-        digest: input.digest()?,
+        authority_digest: input.reader.digest()?,
+        source_digest: input.reader.digest()?,
+        session_digest: input.reader.digest()?,
+        currentness_digest: input.reader.digest()?,
+        observation_ordinal: input.reader.u64()?,
+        digest: input.reader.digest()?,
     })
 }
 
@@ -352,19 +353,19 @@ fn decode_admission(
     input: &mut Reader<'_>,
 ) -> Result<GuardianEffectAdmissionV1, GuardianReducerError> {
     let value = GuardianEffectAdmissionV1::new(
-        input.array()?,
-        input.u64()?,
-        action(input.u8()?)?,
+        input.reader.array()?,
+        input.reader.u64()?,
+        action(input.reader.u8()?)?,
         decode_authority(input)?,
         decode_network(input)?,
         decode_managed(input)?,
         decode_timer(input)?,
-        input.digest()?,
+        input.reader.digest()?,
         input.optional_digest()?,
         input.optional_digest()?,
         input.optional(decode_cause)?,
     )?;
-    if input.digest()? != value.digest() {
+    if input.reader.digest()? != value.digest() {
         return Err(GuardianReducerError::ObservationMismatch);
     }
     Ok(value)
@@ -408,20 +409,20 @@ fn decode_current(
     input: &mut Reader<'_>,
 ) -> Result<ProtectedGuardianCurrentV1, GuardianReducerError> {
     Ok(ProtectedGuardianCurrentV1 {
-        admission_digest: input.digest()?,
-        durable_reducer_digest: input.digest()?,
-        authority_digest: input.digest()?,
-        prior_network_fence_digest: input.digest()?,
-        admitted_network_fence_digest: input.digest()?,
-        managed_snapshot_digest: input.digest()?,
+        admission_digest: input.reader.digest()?,
+        durable_reducer_digest: input.reader.digest()?,
+        authority_digest: input.reader.digest()?,
+        prior_network_fence_digest: input.reader.digest()?,
+        admitted_network_fence_digest: input.reader.digest()?,
+        managed_snapshot_digest: input.reader.digest()?,
         managed: decode_managed(input)?,
-        host_boot_id: input.array()?,
-        clock_provenance: input.array()?,
-        observed_boottime_nanoseconds: input.u64()?,
-        observation_ordinal: input.u64()?,
-        worker_identity_digest: input.digest()?,
-        worker_resource_digest: input.digest()?,
-        worker_currentness_digest: input.digest()?,
+        host_boot_id: input.reader.array()?,
+        clock_provenance: input.reader.array()?,
+        observed_boottime_nanoseconds: input.reader.u64()?,
+        observation_ordinal: input.reader.u64()?,
+        worker_identity_digest: input.reader.digest()?,
+        worker_resource_digest: input.reader.digest()?,
+        worker_currentness_digest: input.reader.digest()?,
         current_worker_live: input.boolean()?,
         old_worker_dead: input.boolean()?,
         admitted_worker_absent: input.boolean()?,
@@ -472,20 +473,20 @@ fn decode_outcome(
     input: &mut Reader<'_>,
 ) -> Result<ProtectedGuardianOutcomeV1, GuardianReducerError> {
     Ok(ProtectedGuardianOutcomeV1 {
-        admission_digest: input.digest()?,
-        authority_digest: input.digest()?,
-        network_fence_digest: input.digest()?,
-        worker_identity_digest: input.digest()?,
-        worker_resource_digest: input.digest()?,
-        worker_currentness_digest: input.digest()?,
+        admission_digest: input.reader.digest()?,
+        authority_digest: input.reader.digest()?,
+        network_fence_digest: input.reader.digest()?,
+        worker_identity_digest: input.reader.digest()?,
+        worker_resource_digest: input.reader.digest()?,
+        worker_currentness_digest: input.reader.digest()?,
         managed: decode_managed(input)?,
-        observation_ordinal: input.u64()?,
-        effect_evidence_digest: input.digest()?,
-        step_attempt_digest: input.digest()?,
-        release_digest: input.digest()?,
-        predecessor_digest: input.digest()?,
-        first_snapshot_digest: input.digest()?,
-        second_snapshot_digest: input.digest()?,
+        observation_ordinal: input.reader.u64()?,
+        effect_evidence_digest: input.reader.digest()?,
+        step_attempt_digest: input.reader.digest()?,
+        release_digest: input.reader.digest()?,
+        predecessor_digest: input.reader.digest()?,
+        first_snapshot_digest: input.reader.digest()?,
+        second_snapshot_digest: input.reader.digest()?,
         old_worker_dead: input.boolean()?,
         admitted_worker_live: input.boolean()?,
         network_default_drop: input.boolean()?,
@@ -494,7 +495,7 @@ fn decode_outcome(
         renewal_timer_current: input.boolean()?,
         network_lease_gate_current: input.boolean()?,
         payload_released: input.boolean()?,
-        digest: input.digest()?,
+        digest: input.reader.digest()?,
     })
 }
 
@@ -514,15 +515,15 @@ fn decode_supersession(
     input: &mut Reader<'_>,
 ) -> Result<ProtectedGuardianWorkerDeathSupersessionV1, GuardianReducerError> {
     Ok(ProtectedGuardianWorkerDeathSupersessionV1 {
-        admission_digest: input.digest()?,
-        superseded_action: action(input.u8()?)?,
-        step: step(input.u8()?)?,
-        attempt_ordinal: input.u64()?,
-        step_attempt_digest: input.digest()?,
+        admission_digest: input.reader.digest()?,
+        superseded_action: action(input.reader.u8()?)?,
+        step: step(input.reader.u8()?)?,
+        attempt_ordinal: input.reader.u64()?,
+        step_attempt_digest: input.reader.digest()?,
         predecessor_current: decode_current(input)?,
-        death_evidence_digest: input.digest()?,
+        death_evidence_digest: input.reader.digest()?,
         current: decode_current(input)?,
-        digest: input.digest()?,
+        digest: input.reader.digest()?,
     })
 }
 
@@ -565,30 +566,30 @@ fn encode_pending(out: &mut Writer, value: PendingGuardianEffectV1) {
 fn decode_pending(input: &mut Reader<'_>) -> Result<PendingGuardianEffectV1, GuardianReducerError> {
     Ok(PendingGuardianEffectV1 {
         admission: decode_admission(input)?,
-        phase: phase_decode(input.u8()?)?,
+        phase: phase_decode(input.reader.u8()?)?,
         observation_digest: input.optional_digest()?,
         observed_managed: input.optional(decode_managed)?,
         released_boottime_nanoseconds: input.optional_u64()?,
         released_observation_ordinal: input.optional_u64()?,
         last_observation_ordinal: input.optional_u64()?,
         effect_evidence_digest: input.optional_digest()?,
-        step: input.optional(|input| step(input.u8()?))?,
-        next_attempt_ordinal: input.u64()?,
+        step: input.optional(|input| step(input.reader.u8()?))?,
+        next_attempt_ordinal: input.reader.u64()?,
         active_attempt_ordinal: input.optional_u64()?,
-        step_evidence_count: input.u64()?,
+        step_evidence_count: input.reader.u64()?,
         step_evidence_anchor: input.optional_digest()?,
         prior_step_evidence_anchor: input.optional_digest()?,
         predecessor_current: input.optional(decode_current)?,
         step_attempt_digest: input.optional_digest()?,
         last_outcome: input.optional(decode_outcome)?,
-        last_completed_action: input.optional(|input| action(input.u8()?))?,
-        last_completed_step: input.optional(|input| step(input.u8()?))?,
+        last_completed_action: input.optional(|input| action(input.reader.u8()?))?,
+        last_completed_step: input.optional(|input| step(input.reader.u8()?))?,
         last_completed_predecessor: input.optional(decode_current)?,
         last_completed_attempt_digest: input.optional_digest()?,
         last_completed_attempt_ordinal: input.optional_u64()?,
         last_completed_released_boottime_nanoseconds: input.optional_u64()?,
         last_completed_released_observation_ordinal: input.optional_u64()?,
-        containment_override: input.optional(|input| override_decode(input.u8()?))?,
+        containment_override: input.optional(|input| override_decode(input.reader.u8()?))?,
         worker_death_supersession: input.optional(decode_supersession)?,
         release_timer_handoffs: [
             input.optional(decode_release_timer_handoff)?,
@@ -615,17 +616,17 @@ fn decode_release_timer_handoff(
     input: &mut Reader<'_>,
 ) -> Result<GuardianReleaseTimerHandoffV1, GuardianReducerError> {
     Ok(GuardianReleaseTimerHandoffV1 {
-        source_action: action(input.u8()?)?,
-        target_action: action(input.u8()?)?,
-        step: step(input.u8()?)?,
-        attempt_ordinal: input.u64()?,
-        step_attempt_digest: input.digest()?,
-        release_digest: input.digest()?,
+        source_action: action(input.reader.u8()?)?,
+        target_action: action(input.reader.u8()?)?,
+        step: step(input.reader.u8()?)?,
+        attempt_ordinal: input.reader.u64()?,
+        step_attempt_digest: input.reader.digest()?,
+        release_digest: input.reader.digest()?,
         predecessor_current: decode_current(input)?,
-        released_boottime_nanoseconds: input.u64()?,
-        released_observation_ordinal: input.u64()?,
+        released_boottime_nanoseconds: input.reader.u64()?,
+        released_observation_ordinal: input.reader.u64()?,
         current: decode_current(input)?,
-        digest: input.digest()?,
+        digest: input.reader.digest()?,
     })
 }
 
@@ -665,33 +666,33 @@ fn decode_compacted_receipt(
     input: &mut Reader<'_>,
 ) -> Result<CompactedGuardianReceiptV1, GuardianReducerError> {
     Ok(CompactedGuardianReceiptV1 {
-        request_id: input.array()?,
-        sequence: input.u64()?,
-        action: action(input.u8()?)?,
-        admission_digest: input.digest()?,
-        receipt_digest: input.digest()?,
+        request_id: input.reader.array()?,
+        sequence: input.reader.u64()?,
+        action: action(input.reader.u8()?)?,
+        admission_digest: input.reader.digest()?,
+        receipt_digest: input.reader.digest()?,
     })
 }
 
 fn decode_receipt(input: &mut Reader<'_>) -> Result<GuardianEffectReceiptV1, GuardianReducerError> {
     Ok(GuardianEffectReceiptV1 {
-        request_id: input.array()?,
-        sequence: input.u64()?,
-        admitted_action: action(input.u8()?)?,
-        action: action(input.u8()?)?,
-        admission_digest: input.digest()?,
-        authority_digest: input.digest()?,
-        network_fence_digest: input.digest()?,
-        managed_snapshot_digest: input.digest()?,
-        observation_digest: input.digest()?,
-        step_evidence_count: input.u64()?,
-        step_evidence_anchor: input.digest()?,
-        last_released_boottime_nanoseconds: input.u64()?,
-        last_released_observation_ordinal: input.u64()?,
-        last_observation_ordinal: input.u64()?,
+        request_id: input.reader.array()?,
+        sequence: input.reader.u64()?,
+        admitted_action: action(input.reader.u8()?)?,
+        action: action(input.reader.u8()?)?,
+        admission_digest: input.reader.digest()?,
+        authority_digest: input.reader.digest()?,
+        network_fence_digest: input.reader.digest()?,
+        managed_snapshot_digest: input.reader.digest()?,
+        observation_digest: input.reader.digest()?,
+        step_evidence_count: input.reader.u64()?,
+        step_evidence_anchor: input.reader.digest()?,
+        last_released_boottime_nanoseconds: input.reader.u64()?,
+        last_released_observation_ordinal: input.reader.u64()?,
+        last_observation_ordinal: input.reader.u64()?,
         worker_death_supersession_digest: input.optional_digest()?,
         terminal: input.boolean()?,
-        digest: input.digest()?,
+        digest: input.reader.digest()?,
     })
 }
 
@@ -853,57 +854,32 @@ impl Writer {
 }
 
 struct Reader<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
+    reader: BoundedReader<'a, GuardianReducerError>,
 }
 impl<'a> Reader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, cursor: 0 }
-    }
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], GuardianReducerError> {
-        let end = self
-            .cursor
-            .checked_add(N)
-            .ok_or(GuardianReducerError::ObservationMismatch)?;
-        let value = self
-            .bytes
-            .get(self.cursor..end)
-            .ok_or(GuardianReducerError::ObservationMismatch)?
-            .try_into()
-            .map_err(|_| GuardianReducerError::ObservationMismatch)?;
-        self.cursor = end;
-        Ok(value)
-    }
-    fn u8(&mut self) -> Result<u8, GuardianReducerError> {
-        Ok(self.array::<1>()?[0])
-    }
-    fn u32(&mut self) -> Result<u32, GuardianReducerError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-    fn u64(&mut self) -> Result<u64, GuardianReducerError> {
-        Ok(u64::from_be_bytes(self.array()?))
+        Self {
+            reader: BoundedReader::new(bytes, |_| GuardianReducerError::ObservationMismatch),
+        }
     }
     fn boolean(&mut self) -> Result<bool, GuardianReducerError> {
-        match self.u8()? {
+        match self.reader.u8()? {
             0 => Ok(false),
             1 => Ok(true),
             _ => Err(GuardianReducerError::ObservationMismatch),
         }
     }
-    fn digest(&mut self) -> Result<ObjectDigest, GuardianReducerError> {
-        Ok(ObjectDigest::from_bytes(self.array()?))
-    }
     fn optional_digest(&mut self) -> Result<Option<ObjectDigest>, GuardianReducerError> {
-        self.optional(Self::digest)
+        self.optional(|input| input.reader.digest())
     }
     fn optional_u64(&mut self) -> Result<Option<u64>, GuardianReducerError> {
-        self.optional(Self::u64)
+        self.optional(|input| input.reader.u64())
     }
     fn optional<T>(
         &mut self,
         decode: fn(&mut Self) -> Result<T, GuardianReducerError>,
     ) -> Result<Option<T>, GuardianReducerError> {
-        match self.u8()? {
+        match self.reader.u8()? {
             0 => Ok(None),
             1 => decode(self).map(Some),
             _ => Err(GuardianReducerError::ObservationMismatch),
@@ -914,7 +890,7 @@ impl<'a> Reader<'a> {
         maximum_count: usize,
         decode: fn(&mut Self) -> Result<T, GuardianReducerError>,
     ) -> Result<Vec<T>, GuardianReducerError> {
-        let count = self.u32()? as usize;
+        let count = self.reader.u32()? as usize;
         if count > maximum_count {
             return Err(GuardianReducerError::Exhausted);
         }
@@ -923,12 +899,5 @@ impl<'a> Reader<'a> {
             values.push(decode(self)?);
         }
         Ok(values)
-    }
-    fn finish(self) -> Result<(), GuardianReducerError> {
-        if self.cursor == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(GuardianReducerError::ObservationMismatch)
-        }
     }
 }
