@@ -3848,6 +3848,29 @@ The caller must still charge fixed cursor scratch, temporary row indices, Rc,
 metadata and tree storage alongside byte groups. Full protocol reconstruction,
 source-local settlement, physical memory and native fresh adoption remain open.
 
+## Original retained protocol metadata observations
+
+Protocol snapshot owners report actual retained String, Id, Bytes and Vec
+capacities from their original authority and codec. The observer exhaustively
+visits typed policy fields and uses checked arithmetic, finite node counts and
+JSON depth. It performs no serialization, copying, callbacks or I/O. Tree
+container, entry and layout terms are separate observations; repeated shared
+backing is conservatively counted per view, rather than declared unique storage.
+
+The coherent Source91 cohort passes all 446 enabled provider units, six contract
+units and strict checks, with 13 provider units ignored. It includes the owning
+decoder, identifier-capacity control and complete frame-bank boundary tests.
+Independent receipt
+`a51326925ad48947d9e96cd2c678729e822c060a627251ad16f87dc86f816120`
+verifies nine exact roles, current source, matching executables and release.
+The actual metadata payload control covers ControllerPacket; NativePacket is
+compiled, without a new native execution claim.
+
+Hidden tree nodes, control blocks, allocator alignment, native and thread memory
+remain separate peak terms. These observations cannot grant whole-budget or
+capture permission, and content edition7 still cannot reconstruct omitted
+metadata capacities. Source settlement and full native restoration remain open.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

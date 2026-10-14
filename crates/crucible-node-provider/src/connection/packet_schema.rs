@@ -41,6 +41,24 @@ pub(super) struct ConnectedPacketSchema {
 }
 
 impl ConnectedPacketSchema {
+    pub(super) fn observe_retained_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            node,
+            execution_owner,
+            owner_generation,
+            input_epoch,
+            binding_hash,
+        } = self;
+        observer.observe(node)?;
+        observer.observe(execution_owner)?;
+        observer.observe(owner_generation)?;
+        observer.observe(input_epoch)?;
+        observer.observe(binding_hash)
+    }
+
     pub(super) fn protocol_view(&self) -> impl serde::Serialize + '_ {
         (
             &self.node,

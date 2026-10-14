@@ -1177,3 +1177,6 @@ mod owning_finish_tests {
         );
     }
 }
+
+/// Exposes actual retained protocol metadata capacity facts.
+pub use crate::retained_metadata::RetainedProtocolMetadataFacts;

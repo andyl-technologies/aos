@@ -42,6 +42,26 @@ pub(crate) struct ControllerNative5Policy {
 }
 
 impl ControllerNative5Policy {
+    fn observe_retained_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            selection,
+            coordinator,
+            definition,
+            connected,
+            wire,
+            capture_profile,
+        } = self;
+        observer.observe(selection)?;
+        observer.observe(coordinator)?;
+        observer.observe(definition)?;
+        observer.observe(connected)?;
+        wire.observe_retained_metadata(observer)?;
+        observer.observe(capture_profile)
+    }
+
     pub(crate) fn from_source_installation(
         authority: &ConnectionAuthority,
         selection: PacketControlSelection,
@@ -181,6 +201,22 @@ impl ControllerNative5Policy {
 }
 
 impl Native5CodecOwner {
+    pub(crate) fn observe_retained_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        match self {
+            Self::ControllerPacket(policy) => {
+                observer.boxed_value(std::mem::size_of_val(policy.as_ref()))?;
+                policy.observe_retained_metadata(observer)
+            }
+            Self::NativePacket(policy) => {
+                observer.shared_value(std::mem::size_of_val(policy.as_ref()))?;
+                policy.observe_retained_metadata(observer)
+            }
+        }
+    }
+
     pub(crate) fn capture_profile(
         &self,
     ) -> &crate::reference_packet::service::PacketNative5CaptureProfile {

@@ -36,6 +36,24 @@ pub(crate) struct Native5Policy {
 }
 
 impl Native5Policy {
+    pub(crate) fn observe_retained_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            selection,
+            coordinator,
+            definition,
+            connected,
+            capture_profile,
+        } = self;
+        observer.observe(selection)?;
+        observer.observe(coordinator)?;
+        observer.observe(definition)?;
+        observer.observe(connected)?;
+        observer.observe(capture_profile)
+    }
+
     pub(super) fn from_original_launch(
         selection: PacketControlSelection,
         coordinator: InstalledContent,

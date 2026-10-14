@@ -178,6 +178,40 @@ pub struct ConnectionAuthority {
 }
 
 impl ConnectionAuthority {
+    pub(crate) fn observe_retained_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            shared_epoch,
+            registration_gate,
+            epoch,
+            connection,
+            session,
+            incarnation,
+            limits,
+            features,
+            envelope_extensions,
+            extensions,
+        } = self;
+        observer.shared_value(std::mem::size_of_val(shared_epoch.as_ref()))?;
+        observer.shared_value(std::mem::size_of_val(registration_gate.as_ref()))?;
+        observer.observe(epoch)?;
+        observer.observe(connection)?;
+        observer.observe(session)?;
+        observer.observe(incarnation)?;
+        observer.observe(limits)?;
+        observer.observe(features)?;
+        observer.observe(envelope_extensions)?;
+        if let Some(extensions) = extensions {
+            observer.shared_value(std::mem::size_of_val(extensions.as_ref()))?;
+            for extension in extensions.iter() {
+                observer.observe(extension)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Compares the original host registration lease without granting authority.
     ///
     /// Matching wire IDs and epochs are insufficient: both leases must originate

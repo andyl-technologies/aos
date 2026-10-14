@@ -782,6 +782,14 @@ fn native5_compact_snapshot_requires_same_installed_profile_and_exact_bound() {
     let facts = snapshot.original_allocation_facts().unwrap();
     let pointer = snapshot.bytes().as_ptr();
     let (owner, mut archive) = snapshot.into_original_payload();
+    let retained_metadata = owner.original_retained_metadata_facts().unwrap();
+    assert!(retained_metadata.string_capacity_bytes > 0);
+    assert!(retained_metadata.vector_capacity_bytes > 0);
+    assert!(retained_metadata.shared_backing_views >= 4);
+    assert_eq!(
+        owner.original_retained_metadata_facts().unwrap(),
+        retained_metadata
+    );
     assert_eq!(archive.as_ptr(), pointer);
     assert_eq!(archive.capacity(), facts.encoded_capacity);
     assert_eq!(owner.original_allocation_facts().unwrap(), facts);

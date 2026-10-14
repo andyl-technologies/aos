@@ -50,6 +50,31 @@ impl OriginalProtocolSnapshot {
 }
 
 impl OriginalProtocolPayloadOwner {
+    /// Observes actual retained metadata capacities after the payload moves.
+    ///
+    /// This performs no serialization, allocation, callback or I/O. It counts
+    /// shared backing conservatively per retained view, independently of the
+    /// archive Vec's current storage and the snapshot's issuance byte facts.
+    /// The caller separately admits tree/control-block layout and traversal
+    /// stack terms; these facts cannot restore metadata omitted by edition7.
+    ///
+    /// # Errors
+    /// Refuses a different original process/thread, extent overflow or traversal
+    /// beyond the fixed node/depth allowance.
+    pub fn original_retained_metadata_facts(
+        &self,
+    ) -> Result<super::RetainedProtocolMetadataFacts, ProviderError> {
+        self.owner.ensure_current()?;
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        observer.shared_value(std::mem::size_of_val(self.owner.as_ref()))?;
+        self.authority.observe_retained_metadata(&mut observer)?;
+        if let Some(codec) = &self.codec {
+            observer.shared_value(std::mem::size_of_val(codec.as_ref()))?;
+            codec.observe_retained_metadata(&mut observer)?;
+        }
+        Ok(observer.finish())
+    }
+
     /// Reports immutable issuance allocation facts after the encoded vector moves.
     ///
     /// These describe the original snapshot, not the archive's current buffer.
