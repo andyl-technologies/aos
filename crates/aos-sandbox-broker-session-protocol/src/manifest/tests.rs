@@ -106,10 +106,7 @@ fn exact_golden_offsets_binding_and_round_trip() {
         hex::encode(manifest.binding().as_bytes()),
         GOLDEN_BINDING_HEX
     );
-    assert_eq!(
-        BrokerSessionManifestV1::decode(&encoded),
-        Ok(manifest)
-    );
+    assert_eq!(BrokerSessionManifestV1::decode(&encoded), Ok(manifest));
 }
 
 #[test]
