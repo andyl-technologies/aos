@@ -3,6 +3,7 @@
   nativePatch = ./gem5-patches/native-original-scope-and-diagnostic-atomic-owners.patch;
   tableGeometryPatch = ./gem5-patches/native-selected-table-geometry.patch;
   lruBirthPatch = ./gem5-patches/native-lru-constructor-provenance.patch;
+  walkerStatePatch = ./gem5-patches/native-arm-walker-source-state.patch;
   nativeCheck = ./_gem5/native-original-scope-check.py;
   diagnosticGuest = ./_gem5/native-diagnostic-guest.py;
   record = builtins.toFile "gem5-native-original-scope-source.json" (builtins.toJSON {
@@ -10,6 +11,7 @@
     recipeSha256 = builtins.hashFile "sha256" ./gem5-native-original-scope-foundation.nix;
     patchSha256 = builtins.hashFile "sha256" nativePatch;
     lruBirthPatchSha256 = builtins.hashFile "sha256" lruBirthPatch;
+    walkerStatePatchSha256 = builtins.hashFile "sha256" walkerStatePatch;
     diagnosticProfileVersion = 3;
     fixedTableEntrySlots = 1280;
     tableGeometryPatchSha256 = builtins.hashFile "sha256" tableGeometryPatch;
@@ -34,7 +36,7 @@
   });
 in
   gem5-closed-block-foundation.overrideAttrs (previous: {
-    nativePatchFiles = previous.nativePatchFiles ++ [nativePatch lruBirthPatch tableGeometryPatch];
+    nativePatchFiles = previous.nativePatchFiles ++ [nativePatch lruBirthPatch tableGeometryPatch walkerStatePatch];
     pname = "gem5-native-original-scope-foundation";
     phases =
       map (phase:
@@ -48,6 +50,7 @@ in
                 patch --fuzz=0 -p1 < ${nativePatch}
                 patch --fuzz=0 -p1 < ${lruBirthPatch}
                 patch --fuzz=0 -p1 < ${tableGeometryPatch}
+                patch --fuzz=0 -p1 < ${walkerStatePatch}
               '';
           }
         else phase)
@@ -63,6 +66,7 @@ in
             cp ${nativePatch} "$out/share/gem5/native-original-scope-source/native.patch"
             cp ${lruBirthPatch} "$out/share/gem5/native-original-scope-source/lru-births.patch"
             cp ${tableGeometryPatch} "$out/share/gem5/native-original-scope-source/table-geometry.patch"
+            cp ${walkerStatePatch} "$out/share/gem5/native-original-scope-source/walker-state.patch"
             cp ${nativeCheck} "$out/share/gem5/native-original-scope-source/native-check.py"
             cp ${diagnosticGuest} "$out/share/gem5/native-original-scope-source/guest-source.py"
             cp ${./gem5-native-original-scope-foundation.nix} "$out/share/gem5/native-original-scope-source/recipe.nix"

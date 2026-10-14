@@ -195,3 +195,12 @@ profile version 3 binds both table and LRU constructor-bank geometry.
 independently authored MIT host/component controls. They retain exact selected
 method source and capacity data; they grant no native process, graph, capture,
 restore or execution authority. Complete configured native checks stay required.
+
+## ARM walker source state
+
+`native-arm-walker-source-state.patch` modifies `src/arch/arm/table_walker.cc`
+under its existing BSD-3-Clause license. It initializes the original cached
+release and pending-statistics fields, binds the release from the actual MMU,
+and checks that source relationship during the diagnostic closure walk.
+The complete patched file, this patch, and the invoked recipe remain in the
+matching gem5 corresponding-source output. No new native file is introduced.

@@ -4779,10 +4779,19 @@ A bounded diagnostic using that same installed executable identifies the deepest
 leaf as the ARM table walker, after closing all 64 ITB table entries. Source and
 disassembly show uninitialized cached release and pending fields in its birth
 state. The real MMU release exists before its sole initialization/binding path.
-A reviewed draft initializes the fields and binds the cached pointer to that
-actual MMU release, retaining the visitor's ownership checks. Configured
-compilation, component execution and fresh native qualification remain pending;
-the original failed walk remains failed.
+The reviewed correction initializes those fields and binds the cached pointer
+to the actual MMU release, authenticating its owner before inspecting the getter.
+All nine source-method component controls pass, including nonzero birth time,
+rebinding, stale cache and foreign-owner refusal. The genuine configured ARM
+translation unit compiles with the exact SCons producer flags; its relocatable
+object has 573 verified dependencies, including the actual MMU and generated
+parameters. Native source SHA256 is
+`825aca2876a0ca8ef24c3f59227a230d69414d7f7122a61fabbcffe0e82c38d4`.
+The first configured attempt timed out while generating cold prerequisites;
+subsequent generated comment-path classification retains that and its own
+validation failures. The six source, recipe, control and license changes are
+ready for a fresh ordinary native/package/source build and mandatory owned walk.
+Those complete checks remain pending, and the original failed walk remains failed.
 
 ## Complete SDK composition qualification
 
