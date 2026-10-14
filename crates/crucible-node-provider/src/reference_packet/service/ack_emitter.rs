@@ -100,4 +100,6 @@ mod admission_projection;
 pub(crate) use admission_projection::validate_proof_value;
 
 pub(in crate::reference_packet::service) mod native_boot;
-pub(crate) use native_boot::{NativeAckBoot, VerifiedCanonicalAckAdmission};
+pub(crate) use native_boot::{
+    NativeAckBoot, OriginalCanonicalAckControlAdmit, VerifiedCanonicalAckAdmission,
+};

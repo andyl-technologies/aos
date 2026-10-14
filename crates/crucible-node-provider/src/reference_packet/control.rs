@@ -560,6 +560,7 @@ impl PacketControl {
                 callback: None,
                 attempted: false,
             },
+            None,
         )
     }
 
@@ -597,6 +598,42 @@ impl PacketControl {
                 callback: Some(prepare),
                 attempted: false,
             },
+            None,
+        )
+    }
+
+    pub(crate) fn dispatch_original_canonical_ack_admit_with_preflight(
+        &mut self,
+        request: &Envelope,
+        handoff: super::service::ack_emitter::OriginalCanonicalAckControlAdmit<'_>,
+        prepare: &mut dyn FnMut(&PacketControlReply) -> Result<(), ProviderError>,
+    ) -> Result<&PacketControlReply, ProviderError> {
+        if self.capture_creator != std::process::id() {
+            return Err(ProviderError::Correlation(
+                "packet original dispatch foreign creator",
+            ));
+        }
+        handoff.authenticate_request(request, &self.selection)?;
+        if !self.immediate
+            || request
+                .request_id
+                .0
+                .as_ref()
+                .is_none_or(|id| self.originals.contains_key(id))
+        {
+            return Err(ProviderError::Correlation(
+                "native ACK Control original already dispatched",
+            ));
+        }
+        // The full signed request remains the journal/proof original. This
+        // consumed private handoff authorizes only its request-only extension.
+        self.dispatch_prepared(
+            request,
+            &mut ReplyPreparation {
+                callback: Some(prepare),
+                attempted: false,
+            },
+            Some(&handoff),
         )
     }
 
@@ -604,6 +641,9 @@ impl PacketControl {
         &mut self,
         request: &Envelope,
         preparation: &mut ReplyPreparation<'_>,
+        canonical_ack_admit: Option<
+            &super::service::ack_emitter::OriginalCanonicalAckControlAdmit<'_>,
+        >,
     ) -> Result<&PacketControlReply, ProviderError> {
         if self.capture_creator != std::process::id() {
             return Err(ProviderError::Correlation(
@@ -617,6 +657,14 @@ impl PacketControl {
         }
         encode(request)?;
         request.validate()?;
+        // A previously authenticated row does not authorize generic replay of
+        // its request-only proof. Check this before any cached reply/callback.
+        if canonical_ack_admit.is_none()
+            && request.method == Method::Admit
+            && !request.extensions.is_empty()
+        {
+            return Err(ProviderError::Correlation("packet original native route"));
+        }
         let id = request
             .request_id
             .0
@@ -644,6 +692,12 @@ impl PacketControl {
                 "packet original native dispatch",
             ));
         }
+        let authenticated_admit = if let Some(handoff) = canonical_ack_admit {
+            handoff.authenticate_request(request, &self.selection)?;
+            true
+        } else {
+            false
+        };
         let binding = &self.selection.realization.bindings[0];
         if request.session_id.0.as_ref() != Some(&binding.authority.session_id)
             || request.incarnation_id.0.as_ref() != Some(&binding.authority.incarnation_id)
@@ -659,7 +713,8 @@ impl PacketControl {
                 .is_some_and(|owner| owner != &self.selection.realization.owners[0].id)
             || request.capture_owner_id.0.is_some()
             || (!request.extensions.is_empty()
-                && !(self.program.is_connected() && request.method == Method::Input))
+                && !(self.program.is_connected() && request.method == Method::Input)
+                && !authenticated_admit)
         {
             return Err(ProviderError::Correlation("packet original native route"));
         }

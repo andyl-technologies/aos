@@ -522,3 +522,161 @@ fn complete_capture_profile_refuses_invalid_and_dispatched_birth() {
     );
     assert!(control.complete_capture_profile.is_none());
 }
+
+#[test]
+fn generic_admit_proof_extension_refuses_before_original_or_callback() {
+    let coordinator = fixture::five();
+    let mut control = PacketControl::new_complete_producer(
+        coordinator.participants[0].clone(),
+        producer(),
+        coordinator,
+    )
+    .unwrap();
+    bind_storage(&mut control);
+    control.realized = true;
+    let mut original = request(&control);
+    original.method = Method::Admit;
+    original.body = serde_json::to_value(AdmitRequest {
+        bindings: control.selection.realization.bindings.clone(),
+        world_binding_hash: control.selection.world.clone(),
+        admission_receipt: control.selection.admission_receipt.clone(),
+        extensions: Extensions::new(),
+    })
+    .unwrap()
+    .as_object()
+    .unwrap()
+    .clone();
+    original.extensions.insert(
+        crate::reference_packet::service::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE.into(),
+        serde_json::json!({"schema":"source-owned.packet-canonical-ack-admission/5","algorithm":"blake3-keyed-canonical/1","context_digest":Bytes::new(vec![0;32]),"mac":Bytes::new(vec![0;32])}),
+    );
+    let before = control.program.inventory_hash().unwrap();
+    let mut callbacks = 0;
+    for _ in 0..2 {
+        assert!(
+            control
+                .dispatch_with_preflight(&original, &mut |_| {
+                    callbacks += 1;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(control.originals.is_empty());
+        assert!(!control.admitted);
+        assert!(!control.fenced);
+    }
+    assert_eq!(callbacks, 0);
+    assert_eq!(control.program.inventory_hash().unwrap(), before);
+}
+
+#[test]
+fn generic_admit_no_extension_retains_original_baseline_result() {
+    let coordinator = fixture::five();
+    let mut control = PacketControl::new_complete_producer(
+        coordinator.participants[0].clone(),
+        producer(),
+        coordinator,
+    )
+    .unwrap();
+    bind_storage(&mut control);
+    control.realized = true;
+    let mut original = request(&control);
+    original.method = Method::Admit;
+    original.body = serde_json::to_value(AdmitRequest {
+        bindings: control.selection.realization.bindings.clone(),
+        world_binding_hash: control.selection.world.clone(),
+        admission_receipt: control.selection.admission_receipt.clone(),
+        extensions: Extensions::new(),
+    })
+    .unwrap()
+    .as_object()
+    .unwrap()
+    .clone();
+    let mut callbacks = 0;
+    control
+        .dispatch_with_preflight(&original, &mut |_| {
+            callbacks += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(callbacks, 1);
+    assert!(control.admitted);
+    let retained = control
+        .originals
+        .get(original.request_id.0.as_ref().unwrap())
+        .unwrap();
+    assert_eq!(
+        retained.0,
+        original.request_hash(RequestOrigin::Controller).unwrap()
+    );
+    assert!(matches!(
+        decode_response(
+            &decode_request(Method::Admit, &original.body).unwrap(),
+            &retained.1.body
+        )
+        .unwrap()
+        .result,
+        Some(MethodResult::Admit(_))
+    ));
+}
+
+#[test]
+fn generic_signed_admit_cached_original_refuses_before_preparation() {
+    let coordinator = fixture::five();
+    let mut control = PacketControl::new_complete_producer(
+        coordinator.participants[0].clone(),
+        producer(),
+        coordinator,
+    )
+    .unwrap();
+    bind_storage(&mut control);
+    control.realized = true;
+    let mut original = request(&control);
+    original.method = Method::Admit;
+    original.body = serde_json::to_value(AdmitRequest {
+        bindings: control.selection.realization.bindings.clone(),
+        world_binding_hash: control.selection.world.clone(),
+        admission_receipt: control.selection.admission_receipt.clone(),
+        extensions: Extensions::new(),
+    })
+    .unwrap()
+    .as_object()
+    .unwrap()
+    .clone();
+    control
+        .dispatch_with_preflight(&original, &mut |_| Ok(()))
+        .unwrap();
+    original.extensions.insert(
+        crate::reference_packet::service::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE.into(),
+        serde_json::json!({"schema":"source-owned.packet-canonical-ack-admission/5","algorithm":"blake3-keyed-canonical/1","context_digest":Bytes::new(vec![0;32]),"mac":Bytes::new(vec![0;32])}),
+    );
+    let id = original.request_id.0.as_ref().unwrap();
+    // The completed baseline result is real. This private fixture substitutes
+    // only its stored request hash to model the exact signed original cache
+    // that successful selected handoff creates; it mints no verified token.
+    let signed_hash = original.request_hash(RequestOrigin::Controller).unwrap();
+    control.originals.get_mut(id).unwrap().0 = signed_hash.clone();
+    let body = control.originals[id].1.body.clone();
+    let inventory = control.program.inventory_hash().unwrap();
+    let evidence_count = control.originals[id].1.evidence.len();
+    let mut callbacks = 0;
+    for _ in 0..2 {
+        assert!(
+            control
+                .dispatch_with_preflight(&original, &mut |_| {
+                    callbacks += 1;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(control.dispatch(&original).is_err());
+    }
+    assert_eq!(callbacks, 0);
+    assert_eq!(control.originals.len(), 1);
+    assert_eq!(control.originals[id].0, signed_hash);
+    assert_eq!(control.originals[id].1.body, body);
+    assert_eq!(control.originals[id].1.evidence.len(), evidence_count);
+    assert_eq!(control.program.inventory_hash().unwrap(), inventory);
+    assert!(control.admitted);
+    assert!(!control.fenced);
+}

@@ -641,3 +641,21 @@ fn native5_original_immutable_bank_facts_read_same_retained_connection() {
     assert!(borrowed.original_native5_storage_facts().is_err());
     assert!(original_hello(&hello));
 }
+
+#[test]
+fn native_control_admit_handoff_requires_actual_installed_token() {
+    let (_handshake, connection, _control, _policy, _storage, _hello, _host) =
+        retained_endpoint_fixture();
+    let mut original = crate::envelope::tests::request();
+    original.method = Method::Admit;
+    assert!(
+        connection
+            .retain_original_canonical_ack_control_admit(&original)
+            .is_err()
+    );
+    assert!(
+        connection
+            .original_canonical_blob_ack_framed_bytes()
+            .is_err()
+    );
+}

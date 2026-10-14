@@ -350,6 +350,22 @@ impl<S: ProviderStream> Connection<S> {
         Ok(())
     }
 
+    pub(crate) fn retain_original_canonical_ack_control_admit<'a>(
+        &self,
+        original: &'a Envelope,
+    ) -> Result<
+        crate::reference_packet::service::ack_emitter::OriginalCanonicalAckControlAdmit<'a>,
+        ProviderError,
+    > {
+        self.protocol_owner.ensure_current()?;
+        self.original_canonical_ack_admission
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native ACK Control token not installed",
+            ))?
+            .retain_original_control_admit(self, original)
+    }
+
     pub(crate) fn original_canonical_blob_ack_framed_bytes(&self) -> Result<usize, ProviderError> {
         self.protocol_owner.ensure_current()?;
         self.original_canonical_ack_admission

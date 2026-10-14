@@ -238,6 +238,18 @@ impl Native5Policy {
         Ok(policy)
     }
 
+    pub(crate) fn authenticate_original_control_selection(
+        &self,
+        selection: &PacketControlSelection,
+    ) -> Result<(), ProviderError> {
+        if selection != &self.selection {
+            return Err(ProviderError::Correlation(
+                "native ACK Control selection differs",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn ack_emitter_selection(&self) -> Option<super::PacketNative5AckEmitterSelection> {
         self.ack_emitter_selection
     }

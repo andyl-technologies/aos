@@ -365,3 +365,7 @@ impl VerifiedCanonicalAckAdmission {
         Ok(())
     }
 }
+
+#[path = "control_admit.rs"]
+mod control_admit;
+pub(crate) use control_admit::OriginalCanonicalAckControlAdmit;

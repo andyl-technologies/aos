@@ -4555,6 +4555,15 @@ proof extension before replying. The original provider I/O times out; both
 retained processes retire without supervisor signals or unknown cleanup.
 The failure remains a required fix, not genuine native admission qualification.
 
+The next source correction hands the exact verified original to Control through
+a private, consumed admission witness. It rechecks the installed token, boot,
+policy, connection authority and original request; the unchanged signed proof
+and request identity remain in the journal. Generic proof-bearing Admit refuses
+before cached-response lookup or preparation callbacks. Four regression controls
+cover the generic route, ordinary baseline, missing installed token and cached
+proof replay. Source review passes; the corrected executable build and genuine
+process test remain pending, and the original failed attempt is preserved.
+
 ## Production QOM observer inputs and stopped-current observation
 
 The production recipes add a source-built private GNU unwind observer through

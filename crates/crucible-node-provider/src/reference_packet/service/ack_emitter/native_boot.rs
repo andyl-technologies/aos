@@ -8,5 +8,7 @@ mod boot;
 mod bootstrap;
 mod owned_read;
 
-pub(crate) use boot::{NativeAckBoot, VerifiedCanonicalAckAdmission};
+pub(crate) use boot::{
+    NativeAckBoot, OriginalCanonicalAckControlAdmit, VerifiedCanonicalAckAdmission,
+};
 pub(in crate::reference_packet::service) use bootstrap::accept;

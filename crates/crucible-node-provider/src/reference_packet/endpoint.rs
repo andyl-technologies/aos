@@ -337,6 +337,17 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                     .install_original_canonical_ack_admission(&mut self.canonical_ack_admission)?;
             }
         }
+        let control_admit = if self.canonical_ack_boot.is_some() && request.method == Method::Admit
+        {
+            let Some(Transport::Connected(connection)) = self.transport.as_ref() else {
+                return Err(ProviderError::Correlation(
+                    "native ACK Control connection absent",
+                ));
+            };
+            Some(connection.retain_original_canonical_ack_control_admit(&request)?)
+        } else {
+            None
+        };
         if self.complete.is_some()
             && matches!(body.as_ref(), RequestBody::Begin(begin) if begin.kind == BeginKind::Capture)
         {
@@ -360,10 +371,20 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             let sequence = &mut self.next_sequence;
             let credit = &mut self.transport_credit;
             let authority = &self.authority;
-            self.native
-                .dispatch_with_preflight(&request, &mut |reply| {
-                    prefix::prepare(transport, sequence, credit, authority, &request, reply)
-                })?;
+            let mut prepare = |reply: &super::control::PacketControlReply| {
+                prefix::prepare(transport, sequence, credit, authority, &request, reply)
+            };
+            if let Some(handoff) = control_admit {
+                self.native
+                    .dispatch_original_canonical_ack_admit_with_preflight(
+                        &request,
+                        handoff,
+                        &mut prepare,
+                    )?;
+            } else {
+                self.native
+                    .dispatch_with_preflight(&request, &mut prepare)?;
+            }
         }
         let (exchange, acknowledgements) = match self.transport.as_mut() {
             Some(Transport::Prepared(exchange, acknowledgements)) => (exchange, acknowledgements),
