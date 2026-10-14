@@ -8,6 +8,7 @@
 //! All integers are big endian. The final SHA-256 digest covers a domain
 //! separator and every preceding byte.
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use sha2::{Digest as _, Sha256};
 
 use super::{Identity, NamespaceTargetError, Record};
@@ -58,19 +59,21 @@ impl Record {
         bytes
     }
 
-    pub(super) fn decode(mut bytes: &[u8]) -> Result<Self, NamespaceTargetError> {
-        if bytes.len() != RECORD_BYTES || take::<8>(&mut bytes)? != *MAGIC {
+    pub(super) fn decode(bytes: &[u8]) -> Result<Self, NamespaceTargetError> {
+        let mut reader = BoundedReader::new(bytes, |_| NamespaceTargetError::CorruptState);
+
+        if bytes.len() != RECORD_BYTES || reader.array::<8>()? != *MAGIC {
             return Err(NamespaceTargetError::CorruptState);
         }
         let record = Self {
-            identity: (take(&mut bytes)?, take(&mut bytes)?),
-            observed_generation: u64::from_be_bytes(take(&mut bytes)?),
-            observed_audit_digest: take(&mut bytes)?,
-            target_generation: u64::from_be_bytes(take(&mut bytes)?),
-            predecessor: take(&mut bytes)?,
-            digest: take(&mut bytes)?,
+            identity: (reader.array()?, reader.array()?),
+            observed_generation: u64::from_be_bytes(reader.array()?),
+            observed_audit_digest: reader.array()?,
+            target_generation: u64::from_be_bytes(reader.array()?),
+            predecessor: reader.array()?,
+            digest: reader.array()?,
         };
-        if !bytes.is_empty()
+        if !reader.is_empty()
             || record.identity.0 == [0; 16]
             || record.identity.1 == [0; 16]
             || record.observed_generation == 0
@@ -86,16 +89,19 @@ impl Record {
 }
 
 pub(super) fn decode_head(
-    mut key: &[u8],
-    mut bytes: &[u8],
+    key: &[u8],
+    bytes: &[u8],
 ) -> Result<(Identity, Head), NamespaceTargetError> {
-    if key.len() != 33 || bytes.len() != 48 || take::<1>(&mut key)? != [b'h'] {
+    let mut key_reader = BoundedReader::new(key, |_| NamespaceTargetError::CorruptState);
+    let mut reader = BoundedReader::new(bytes, |_| NamespaceTargetError::CorruptState);
+
+    if key.len() != 33 || bytes.len() != 48 || key_reader.array::<1>()? != [b'h'] {
         return Err(NamespaceTargetError::CorruptState);
     }
-    let identity = (take(&mut key)?, take(&mut key)?);
-    let observed_generation = u64::from_be_bytes(take(&mut bytes)?);
-    let target_generation = u64::from_be_bytes(take(&mut bytes)?);
-    let digest = take(&mut bytes)?;
+    let identity = (key_reader.array()?, key_reader.array()?);
+    let observed_generation = u64::from_be_bytes(reader.array()?);
+    let target_generation = u64::from_be_bytes(reader.array()?);
+    let digest = reader.array()?;
     if identity.0 == [0; 16]
         || identity.1 == [0; 16]
         || observed_generation == 0
@@ -105,15 +111,4 @@ pub(super) fn decode_head(
         return Err(NamespaceTargetError::CorruptState);
     }
     Ok((identity, (observed_generation, target_generation, digest)))
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], NamespaceTargetError> {
-    let (prefix, remaining) = bytes
-        .split_at_checked(N)
-        .ok_or(NamespaceTargetError::CorruptState)?;
-    let value = prefix
-        .try_into()
-        .map_err(|_| NamespaceTargetError::CorruptState)?;
-    *bytes = remaining;
-    Ok(value)
 }

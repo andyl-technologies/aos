@@ -9,6 +9,7 @@
 //! The version is part of the magic. All integers are big endian; the final
 //! SHA-256 digest covers a domain separator and every preceding byte.
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use sha2::{Digest as _, Sha256};
 
 use super::{Facts, Identity, Record, RuntimeGenerationError};
@@ -62,29 +63,31 @@ impl Record {
         bytes
     }
 
-    pub(super) fn decode(mut bytes: &[u8]) -> Result<Self, RuntimeGenerationError> {
-        if bytes.len() != RECORD_BYTES || take::<8>(&mut bytes)? != *MAGIC {
+    pub(super) fn decode(bytes: &[u8]) -> Result<Self, RuntimeGenerationError> {
+        let mut reader = BoundedReader::new(bytes, |_| RuntimeGenerationError::CorruptState);
+
+        if bytes.len() != RECORD_BYTES || reader.array::<8>()? != *MAGIC {
             return Err(RuntimeGenerationError::CorruptState);
         }
-        let identity = (take(&mut bytes)?, take(&mut bytes)?);
-        let generation = u64::from_be_bytes(take(&mut bytes)?);
+        let identity = (reader.array()?, reader.array()?);
+        let generation = u64::from_be_bytes(reader.array()?);
         let facts = Facts {
             identity,
-            runtime: take(&mut bytes)?,
-            scope: take(&mut bytes)?,
-            pid: u32::from_be_bytes(take(&mut bytes)?),
-            leaf_cgroup: u64::from_be_bytes(take(&mut bytes)?),
-            anchor: u64::from_be_bytes(take(&mut bytes)?),
-            binding_revision: u64::from_be_bytes(take(&mut bytes)?),
-            binding_digest: take(&mut bytes)?,
+            runtime: reader.array()?,
+            scope: reader.array()?,
+            pid: u32::from_be_bytes(reader.array()?),
+            leaf_cgroup: u64::from_be_bytes(reader.array()?),
+            anchor: u64::from_be_bytes(reader.array()?),
+            binding_revision: u64::from_be_bytes(reader.array()?),
+            binding_digest: reader.array()?,
         };
         let record = Self {
             facts,
             generation,
-            predecessor: take(&mut bytes)?,
-            digest: take(&mut bytes)?,
+            predecessor: reader.array()?,
+            digest: reader.array()?,
         };
-        if !bytes.is_empty()
+        if !reader.is_empty()
             || identity.0 == [0; 16]
             || identity.1 == [0; 16]
             || generation == 0
@@ -106,28 +109,20 @@ impl Record {
 }
 
 pub(super) fn decode_head(
-    mut key: &[u8],
-    mut bytes: &[u8],
+    key: &[u8],
+    bytes: &[u8],
 ) -> Result<(Identity, (u64, [u8; 32])), RuntimeGenerationError> {
-    if key.len() != 33 || bytes.len() != 40 || take::<1>(&mut key)? != [b'h'] {
+    let mut key_reader = BoundedReader::new(key, |_| RuntimeGenerationError::CorruptState);
+    let mut reader = BoundedReader::new(bytes, |_| RuntimeGenerationError::CorruptState);
+
+    if key.len() != 33 || bytes.len() != 40 || key_reader.array::<1>()? != [b'h'] {
         return Err(RuntimeGenerationError::CorruptState);
     }
-    let identity = (take(&mut key)?, take(&mut key)?);
-    let generation = u64::from_be_bytes(take(&mut bytes)?);
-    let digest = take(&mut bytes)?;
+    let identity = (key_reader.array()?, key_reader.array()?);
+    let generation = u64::from_be_bytes(reader.array()?);
+    let digest = reader.array()?;
     if identity.0 == [0; 16] || identity.1 == [0; 16] || generation == 0 || digest == [0; 32] {
         return Err(RuntimeGenerationError::CorruptState);
     }
     Ok((identity, (generation, digest)))
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], RuntimeGenerationError> {
-    let (prefix, remaining) = bytes
-        .split_at_checked(N)
-        .ok_or(RuntimeGenerationError::CorruptState)?;
-    let value = prefix
-        .try_into()
-        .map_err(|_| RuntimeGenerationError::CorruptState)?;
-    *bytes = remaining;
-    Ok(value)
 }
