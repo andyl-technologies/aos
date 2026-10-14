@@ -1,6 +1,6 @@
-From 02bdf2de185682e4d211dff441527fcb4e7f7383 Mon Sep 17 00:00:00 2001
+From f32fdf3fddad79ea95f84b77df68fa897f6c74d2 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 14 Oct 2026 20:53:00 +0000
+Date: Wed, 14 Oct 2026 21:15:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -745,6 +745,19 @@ clock behavior, test selection and the existing file license.
 The full previous package build failed at this unit link. Source review
 confirms the production no-journal NULL branch and unchanged public
 prototype; fresh native package and unit qualification remain required.
+
+
+Cover the isolated fixture's separate direct timer constructor import.
+The timer_new_full inline calls qemu_timer_whole_q35_new even when no
+selected pool exists. Supply the exact typed inactive-pool NULL result
+so the unchanged ordinary allocation and fixture initialization remain
+local, without importing the real timer backend and its event loop.
+
+The fresh preceding build still failed at the isolated unit link; its
+endpoint backing stub alone was insufficient. Preserve that failure,
+production code, timer behavior and test inventory. Source review confirms
+the second direct dependency; fresh full compilation and all ptimer policy
+checks remain required for this corrected source.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -218490,13 +218503,14 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8abc12d2d6ceac649d99065e05911e3d
 +  )
 +endif
 diff --git a/tests/unit/ptimer-test-stubs.c b/tests/unit/ptimer-test-stubs.c
-index da46dda32d2e69f12a4ce531a91806ee07b027d0..8a0a713ba9f811779c53430ce958fe081b1f5713 100644
+index da46dda32d2e69f12a4ce531a91806ee07b027d0..b672a9aed079b790b773d7abb1751b6504cbada6 100644
 --- a/tests/unit/ptimer-test-stubs.c
 +++ b/tests/unit/ptimer-test-stubs.c
-@@ -10,16 +10,21 @@
+@@ -10,16 +10,22 @@
  
  #include "qemu/osdep.h"
  #include "qemu/main-loop.h"
++#include "qemu/timer.h"
 +#include "qemu/crucible-endpoint-roots.h"
 +#include "exec/icount.h"
  #include "exec/replay-core.h"
@@ -218515,7 +218529,7 @@ index da46dda32d2e69f12a4ce531a91806ee07b027d0..8a0a713ba9f811779c53430ce958fe08
  
  struct QEMUBH {
      QEMUBHFunc *cb;
-@@ -28,10 +33,75 @@ struct QEMUBH {
+@@ -28,10 +34,82 @@ struct QEMUBH {
  
  QEMUTimerListGroup main_loop_tlg;
  
@@ -218525,6 +218539,13 @@ index da46dda32d2e69f12a4ce531a91806ee07b027d0..8a0a713ba9f811779c53430ce958fe08
 +void *qemu_endpoint_whole_owned_backing(
 +    void *original_birth, CrucibleOriginalBackingSlot slot,
 +    size_t extent, size_t alignment)
++{
++    return NULL;
++}
++
++/* No selected timer pool exists in this fixture. Let timer_new_full use
++ * its ordinary allocation path without importing the real timer backend. */
++QEMUTimer *qemu_timer_whole_q35_new(void)
 +{
 +    return NULL;
 +}
@@ -218592,7 +218613,7 @@ index da46dda32d2e69f12a4ce531a91806ee07b027d0..8a0a713ba9f811779c53430ce958fe08
  bool qtest_allowed;
  
  void timer_init_full(QEMUTimer *ts,
-@@ -68,6 +138,45 @@ void timer_mod(QEMUTimer *ts, int64_t expire_time)
+@@ -68,6 +146,45 @@ void timer_mod(QEMUTimer *ts, int64_t expire_time)
      t->next = ts;
  }
  
@@ -218638,7 +218659,7 @@ index da46dda32d2e69f12a4ce531a91806ee07b027d0..8a0a713ba9f811779c53430ce958fe08
  void timer_del(QEMUTimer *ts)
  {
      QEMUTimerList *timer_list = ts->timer_list;
-@@ -83,6 +192,48 @@ void timer_del(QEMUTimer *ts)
+@@ -83,6 +200,48 @@ void timer_del(QEMUTimer *ts)
      }
  }
  

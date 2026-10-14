@@ -4650,8 +4650,15 @@ inventory. The next fresh full build reuses the successful context, observer
 and toolchain but fails at the same unit link. The timer constructor inline
 also imports the real timer backend; the first stub blocks only the separate
 oslib dependency. Both failures remain recorded, without installed-QEMU or
-complete-package credit. A second typed inactive-pool stub correction is under
-source review.
+complete-package credit. The second reviewed correction adds the exact typed
+inactive-pool result to the same fixture, retaining every existing timer/clock
+body and assertion. Signed native source
+`f32fdf3fddad79ea95f84b77df68fa897f6c74d2`, tree
+`74887a346dd284b0420c24fa9c7e54210d51af5c`, and its complete matching patch/bundle
+pass independent signature, sole-file and source-tuple review. The production
+recipe now runs all ptimer policy combinations, unfiltered, with a fixed GLib
+seed and a 60-second timeout plus five-second grace. Fresh full compilation and
+those runtime checks remain required for this source.
 
 Corresponding-source assembly also unnecessarily pulls Cargo and Git into a
 registry-only vendoring operation. A supplied lockfile now selects the required

@@ -1721,6 +1721,9 @@ in
               build/tests/unit/test-crucible-rc4030-period --tap
               build/tests/unit/test-crucible-riscv-cpc-clock --tap
               build/tests/unit/test-crucible-mips-gic-migration --tap
+              # Cover every ptimer policy with the isolated timer implementations.
+              timeout -k 5 60 build/tests/unit/ptimer-test --tap \
+                --seed=R02S00000000000000000000000000000000
               build/tests/unit/test-crucible-ptimer-wide-clock --tap
               build/tests/unit/test-crucible-openrisc-wide-clock --tap
               build/tests/unit/test-crucible-s390-tod-wide-clock --tap
