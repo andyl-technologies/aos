@@ -358,19 +358,28 @@ accounting and canonical output assertions. Complete sealed results and owned
 cleanup pass coordinator review. The other five growth populations, unfiltered
 SDK, owning Nix gates and full current trunk floor remain pending. DRV-29's
 qualification blocker stays in place; no task or milestone advances.
-The unchanged unfiltered SDK run has passed five original growth populations:
-1,024 ordinary and adversarial in 417.337 and 396.149 seconds, 2,048 ordinary
-and adversarial in 723.832 and 701.314 seconds, and 4,096 adversarial in
-1,396.038 seconds, all under their unchanged 1,800-second limits. Its final
-4,096 ordinary case remains running. The run continues with three actual
-failures and one 120.009-second ancestry-collection timeout preserved. Independent
+The unchanged unfiltered SDK run completes all 1,131 cases: 1,122 pass,
+eight fail and one times out, with none skipped. All six original growth
+populations pass: 1,024 ordinary and adversarial in 417.337 and 396.149 seconds,
+2,048 ordinary and adversarial in 723.832 and 701.314 seconds, and 4,096
+ordinary and adversarial in 1,422.045 and 1,396.038 seconds, all under their
+unchanged 1,800-second limits. The failed outcomes and 120.009-second
+ancestry-collection timeout remain qualification failures. Independent
 source review supports isolated fixture corrections: stage the genuine surviving
 Chunk in the nested overlay proposal and observe actual native admission reads
 instead of the bypassed wrapper. Exact roots, parents, refs, typed refusal sources
 and no-effect assertions remain. Aggregate counters do not establish per-identity
 counts or ACL ordering. The ancestry timeout remains unexplained; existing opt-in
 phase markers prepare a separate diagnostic without changing its original limit.
-These corrections remain uncompiled and unexecuted outside the frozen active run.
+These corrections remain uncompiled and unexecuted. Five additional failures
+identify two obsolete join/fold wrapper-read assertions, two rotation failures
+from checking proposed configuration against the still-selected old Guard, and
+an auxiliary I/O assertion that assumes a direct diagnostic instead of its
+preserved source chain. Isolated repairs retain the exact independent fork-base
+refusal, both full current Admin/history checks before role effects, retained
+control pins through publication, and the exact injected auxiliary I/O error.
+All require fresh execution. Final archive verification and owned cleanup remain
+pending; no failed result is reclassified or task accepted.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
