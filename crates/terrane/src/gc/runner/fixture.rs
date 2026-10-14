@@ -545,7 +545,15 @@ impl Fixture {
     }
 }
 
-fn request(parents: Vec<[u8; 32]>, plaintext: &[u8], count: Option<u64>) -> CommitRequest {
+/// Constructs an ordinary unsigned request with the real fixture signing inputs.
+///
+/// # Panics
+/// Panics if the bounded fixture identity or canonical tree construction fails.
+pub(super) fn request(
+    parents: Vec<[u8; 32]>,
+    plaintext: &[u8],
+    count: Option<u64>,
+) -> CommitRequest {
     let chunk = TERRANE_V1
         .calculate(IdentityKind::Chunk, plaintext)
         .unwrap();
