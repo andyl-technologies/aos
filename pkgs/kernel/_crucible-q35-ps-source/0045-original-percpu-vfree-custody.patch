@@ -1,0 +1,376 @@
+--- a/include/linux/crucible_allocator.h
++++ b/include/linux/crucible_allocator.h
+@@ -12,6 +12,7 @@
+ struct page;
+ struct vm_struct;
+ struct work_struct;
++struct llist_head;
+ struct crucible_allocator_scope;
+ 
+ /* Source snapshots remain separate: slab backing and object stride overlap.
+@@ -95,6 +96,18 @@
+ 	u32 native_path;
+ 	struct work_struct *native_work;
+ 	void (*native_method)(struct work_struct *);
++	struct llist_head *original_list;
++	struct llist_head *native_list;
++	const void *published_address;
++	bool atomic_publication;
++	bool producer_in_task;
++	struct task_struct *native_producer;
++	const void *observed_bind_address;
++	const void *first_rejected_bind_address;
++	u32 address_bind_attempts;
++	bool address_bound;
++	bool address_duplicate;
++	bool address_mismatch;
+ 	bool route_same;
+ 	bool enqueue_attempted;
+ 	bool native_running;
+@@ -139,6 +152,7 @@
+ 	const struct crucible_allocator_ops *original_ops;
+ 	bool callback_active;
+ 	bool failed;
++	bool cleanup_observer;
+ };
+ 
+ struct crucible_allocator_token {
+@@ -179,4 +193,18 @@
+ 	struct crucible_vm_area_token *token);
+ void crucible_allocator_vm_area_cleanup_complete(struct crucible_vm_area_token *token);
+ 
++/* These callbacks observe an already source-born area. An interrupt producer
++ * never obtains the original constructor Task's allocation permission.
++ */
++bool crucible_allocator_vm_area_address_bind(struct vm_struct *area,
++	const void *canonical_address);
++void crucible_allocator_vm_address_defer(const void *canonical_address,
++	const void *published_address, struct llist_head *list,
++	struct work_struct *work, void (*method)(struct work_struct *),
++	struct crucible_vm_area_token *token);
++void crucible_allocator_vm_address_cleanup_begin(const void *canonical_address,
++	const void *published_address, struct llist_head *list,
++	struct work_struct *work, void (*method)(struct work_struct *),
++	struct crucible_vm_area_token *token);
++
+ #endif
+--- a/mm/crucible_allocator.c
++++ b/mm/crucible_allocator.c
+@@ -19,6 +19,16 @@
+ 		scope->original_ops->complete_slab;
+ }
+ 
++/* The temporary cleanup observer is a refusal scope even in IRQ context.
++ * Ordinary interrupts still bypass constructor enrollment; an observer cannot
++ * use that inverse to allocate recursively through its original callback.
++ */
++static bool crucible_allocator_cleanup_observer(struct crucible_allocator_scope *scope)
++{
++	return scope && scope->original_task == current &&
++		READ_ONCE(scope->cleanup_observer);
++}
++
+ static bool crucible_allocator_current(struct crucible_allocator_scope *scope)
+ {
+ 	bool valid;
+@@ -78,6 +88,8 @@
+ 	token->original_lease = NULL;
+ 	token->original_cache = NULL;
+ 	scope = READ_ONCE(current->crucible_allocator_scope);
++	if (crucible_allocator_cleanup_observer(scope))
++		return false;
+ 	/* An interrupt sharing this Task is not the original constructor actor.
+ 	 * Its allocations remain outside this currently incomplete source scope. */
+ 	if (!scope || !in_task())
+@@ -141,6 +153,8 @@
+ 	struct crucible_allocator_scope *scope;
+ 
+ 	scope = READ_ONCE(current->crucible_allocator_scope);
++	if (crucible_allocator_cleanup_observer(scope))
++		return false;
+ 	if (!scope || !in_task())
+ 		return true;
+ 	if (request && crucible_allocator_actor(scope) &&
+@@ -167,6 +181,8 @@
+ 	u64 pages = requested_pages;
+ 
+ 	scope = READ_ONCE(current->crucible_allocator_scope);
++	if (crucible_allocator_cleanup_observer(scope))
++		return false;
+ 	if (!scope || !in_task())
+ 		return true;
+ 	if (!crucible_allocator_current(scope)) {
+@@ -231,6 +247,7 @@
+ 	const struct crucible_allocator_ops *original_ops;
+ 	void *original_lease;
+ 	struct vm_struct *original_area;
++	const void *original_address;
+ 	u64 generation;
+ 	u32 state;
+ 	struct crucible_vm_area_cleanup cleanup;
+@@ -258,6 +275,7 @@
+ 		.original_owner = record->original_owner,
+ 		.original_ops = record->original_ops,
+ 		.callback_active = true,
++		.cleanup_observer = true,
+ 	};
+ 
+ 	WRITE_ONCE(current->crucible_allocator_scope, &guard);
+@@ -314,6 +332,8 @@
+ 
+ 	token->original_record = NULL;
+ 	token->generation = 0;
++	if (crucible_allocator_cleanup_observer(scope))
++		return false;
+ 	if (!scope || !in_task())
+ 		return true;
+ 	if (!request || !crucible_allocator_current(scope) ||
+@@ -380,6 +400,152 @@
+ 		record->original_lease, area, native_attempted);
+ }
+ EXPORT_SYMBOL_GPL(crucible_allocator_vm_area_complete);
++
++bool crucible_allocator_vm_area_address_bind(struct vm_struct *area,
++	const void *canonical_address)
++{
++	struct crucible_vm_area_origin *record;
++	struct crucible_vm_area_cleanup output;
++	unsigned long flags;
++	bool accepted;
++
++	raw_spin_lock_irqsave(&crucible_vm_area_lock, flags);
++	record = crucible_vm_area_find(area);
++	if (!record) {
++		raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++		return true;
++	}
++	record->cleanup.original_area = record->original_area;
++	record->cleanup.observed_bind_address = canonical_address;
++	record->cleanup.address_duplicate = record->cleanup.address_bound &&
++		record->original_address == canonical_address;
++	accepted = record->state == CRUCIBLE_VM_AREA_BOUND && canonical_address &&
++		!record->cleanup.address_mismatch &&
++		record->cleanup.address_bind_attempts != U32_MAX &&
++		(!record->cleanup.address_bound || record->cleanup.address_duplicate);
++	if (record->cleanup.address_bind_attempts != U32_MAX)
++		record->cleanup.address_bind_attempts++;
++	/* The first source-issued canonical address is immutable. Both literal
++	 * constructors may observe that same address; neither can renew it.
++	 */
++	if (accepted && !record->cleanup.address_bound) {
++		record->original_address = canonical_address;
++		record->cleanup.address_bound = true;
++	}
++	if (!accepted && !record->cleanup.address_mismatch) {
++		record->cleanup.first_rejected_bind_address = canonical_address;
++		record->cleanup.address_mismatch = true;
++	}
++	output = record->cleanup;
++	raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++	crucible_vm_area_observe(record, &output, false);
++	return accepted;
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_vm_area_address_bind);
++
++static struct crucible_vm_area_origin *
++crucible_vm_address_find(const void *canonical_address)
++{
++	u32 index;
++
++	lockdep_assert_held(&crucible_vm_area_lock);
++	if (!canonical_address)
++		return NULL;
++	for (index = 0; index < crucible_vm_area_used; index++) {
++		struct crucible_vm_area_origin *record = &crucible_vm_areas.records[index];
++
++		if (record->original_address == canonical_address &&
++		    (record->state == CRUCIBLE_VM_AREA_BOUND ||
++		     record->state == CRUCIBLE_VM_AREA_DEFERRED))
++			return record;
++	}
++	return NULL;
++}
++
++void crucible_allocator_vm_address_defer(const void *canonical_address,
++	const void *published_address, struct llist_head *list,
++	struct work_struct *work, void (*method)(struct work_struct *),
++	struct crucible_vm_area_token *token)
++{
++	struct crucible_vm_area_origin *record;
++	struct crucible_vm_area_cleanup output;
++	unsigned long flags;
++
++	token->original_record = NULL;
++	token->generation = 0;
++	raw_spin_lock_irqsave(&crucible_vm_area_lock, flags);
++	record = crucible_vm_address_find(canonical_address);
++	if (!record || record->state != CRUCIBLE_VM_AREA_BOUND) {
++		raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++		return;
++	}
++	/* No vm_struct or backing-address follow occurs on the IRQ producer.
++	 * The literal per-CPU list/work/method tuple precedes publication.
++	 */
++	record->cleanup.original_area = record->original_area;
++	record->cleanup.native_address = (void *)canonical_address;
++	record->cleanup.published_address = published_address;
++	record->cleanup.original_list = list;
++	record->cleanup.original_work = work;
++	record->cleanup.original_method = method;
++	record->cleanup.atomic_publication = true;
++	record->cleanup.producer_in_task = in_task();
++	record->cleanup.native_producer = current;
++	record->cleanup.enqueue_attempted = true;
++	record->cleanup.native_path = 3;
++	record->cleanup.route_same = !record->cleanup.address_mismatch &&
++		list && work && method && work->func == method;
++	record->state = CRUCIBLE_VM_AREA_DEFERRED;
++	output = record->cleanup;
++	token->original_record = record;
++	token->generation = record->generation;
++	raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++	crucible_vm_area_observe(record, &output, false);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_vm_address_defer);
++
++void crucible_allocator_vm_address_cleanup_begin(const void *canonical_address,
++	const void *published_address, struct llist_head *list,
++	struct work_struct *work, void (*method)(struct work_struct *),
++	struct crucible_vm_area_token *token)
++{
++	struct crucible_vm_area_origin *record;
++	struct crucible_vm_area_cleanup output;
++	unsigned long flags;
++
++	token->original_record = NULL;
++	token->generation = 0;
++	raw_spin_lock_irqsave(&crucible_vm_area_lock, flags);
++	record = crucible_vm_address_find(canonical_address);
++	if (!record) {
++		raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++		return;
++	}
++	record->cleanup.native_actor = current;
++	record->cleanup.native_work = work;
++	record->cleanup.native_method = method;
++	record->cleanup.native_list = list;
++	record->cleanup.native_running = true;
++	record->cleanup.closing = true;
++	record->cleanup.route_same = record->state == CRUCIBLE_VM_AREA_DEFERRED &&
++		!record->cleanup.address_mismatch &&
++		record->cleanup.atomic_publication &&
++		record->cleanup.original_list == list &&
++		record->cleanup.original_work == work &&
++		record->cleanup.original_method == method &&
++		record->cleanup.published_address == published_address &&
++		list && work && method && work->func == method;
++	/* This receiver owns completion; nested vfree helpers cannot issue a
++	 * second completion after the original record enters Closing.
++	 */
++	record->state = CRUCIBLE_VM_AREA_CLOSING;
++	output = record->cleanup;
++	token->original_record = record;
++	token->generation = record->generation;
++	raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++	crucible_vm_area_observe(record, &output, false);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_vm_address_cleanup_begin);
+ 
+ void crucible_allocator_vm_area_defer(struct vm_struct *area,
+ 	struct work_struct *work, void (*method)(struct work_struct *),
+@@ -408,7 +574,8 @@
+ 	record->cleanup.native_pages = area->pages;
+ 	record->cleanup.native_page_count = area->nr_pages;
+ 	record->cleanup.native_path = area->pages ? 2 : 1;
+-	record->cleanup.route_same = work && method && work->func == method;
++	record->cleanup.route_same = !record->cleanup.address_mismatch &&
++		work && method && work->func == method;
+ 	record->state = CRUCIBLE_VM_AREA_DEFERRED;
+ 	output = record->cleanup;
+ 	token->original_record = record;
+@@ -474,13 +641,14 @@
+ 	record->cleanup.native_work = work;
+ 	record->cleanup.native_method = method;
+ 	if (record->state == CRUCIBLE_VM_AREA_DEFERRED)
+-		record->cleanup.route_same = record->cleanup.original_work == work &&
++		record->cleanup.route_same = !record->cleanup.address_mismatch &&
++			record->cleanup.original_work == work &&
+ 			record->cleanup.original_method == method && work && method &&
+ 			work->func == method && record->cleanup.native_address == area->addr &&
+ 			record->cleanup.native_pages == area->pages &&
+ 			record->cleanup.native_page_count == area->nr_pages;
+ 	else
+-		record->cleanup.route_same = !work && !method;
++		record->cleanup.route_same = !record->cleanup.address_mismatch && !work && !method;
+ 	if (record->state == CRUCIBLE_VM_AREA_BOUND) {
+ 		record->cleanup.native_address = area->addr;
+ 		record->cleanup.native_pages = area->pages;
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -3285,6 +3285,12 @@
+ 	if (!(flags & VM_ALLOC))
+ 		area->addr = kasan_unpoison_vmalloc(area->addr, requested_size,
+ 						    KASAN_VMALLOC_PROT_NORMAL);
++	/* A refused native address has no cleanup authority. Retain the Unknown
++	 * area instead of freeing through a substituted address.
++	 */
++	if (!crucible_allocator_vm_area_address_bind(area,
++			kasan_reset_tag(area->addr)))
++		return NULL;
+ 
+ 	return area;
+ }
+@@ -3432,9 +3438,14 @@
+ {
+ 	struct vfree_deferred *p = container_of(w, struct vfree_deferred, wq);
+ 	struct llist_node *t, *llnode;
+-
+-	llist_for_each_safe(llnode, t, llist_del_all(&p->list))
++	struct crucible_vm_area_token closing;
++
++	llist_for_each_safe(llnode, t, llist_del_all(&p->list)) {
++		crucible_allocator_vm_address_cleanup_begin(kasan_reset_tag(llnode),
++			llnode, &p->list, w, delayed_vfree_work, &closing);
+ 		vfree(llnode);
++		crucible_allocator_vm_area_cleanup_complete(&closing);
++	}
+ }
+ 
+ /**
+@@ -3447,6 +3458,8 @@
+ void vfree_atomic(const void *addr)
+ {
+ 	struct vfree_deferred *p = raw_cpu_ptr(&vfree_deferred);
++	struct crucible_vm_area_token publication;
++	bool empty, accepted = false;
+ 
+ 	BUG_ON(in_nmi());
+ 	kmemleak_free(addr);
+@@ -3457,8 +3470,14 @@
+ 	 * implementation is lockless, so it works even if we are adding to
+ 	 * another cpu's list. schedule_work() should be fine with this too.
+ 	 */
+-	if (addr && llist_add((struct llist_node *)addr, &p->list))
+-		schedule_work(&p->wq);
++	if (!addr)
++		return;
++	crucible_allocator_vm_address_defer(kasan_reset_tag(addr), addr,
++		&p->list, &p->wq, delayed_vfree_work, &publication);
++	empty = llist_add((struct llist_node *)addr, &p->list);
++	if (empty)
++		accepted = schedule_work(&p->wq);
++	crucible_allocator_vm_area_enqueued(&publication, empty, empty, accepted);
+ }
+ 
+ /*
+@@ -4160,6 +4179,10 @@
+ 	/* KASAN_VMALLOC_PROT_NORMAL already set if required. */
+ 	if (!skip_vmalloc_kasan)
+ 		area->addr = kasan_unpoison_vmalloc(area->addr, size, kasan_flags);
++	/* KASAN may change a tag, never the original canonical address lineage. */
++	if (!crucible_allocator_vm_area_address_bind(area,
++			kasan_reset_tag(area->addr)))
++		return NULL;
+ 
+ 	/*
+ 	 * In this function, newly allocated vm_struct has VM_UNINITIALIZED

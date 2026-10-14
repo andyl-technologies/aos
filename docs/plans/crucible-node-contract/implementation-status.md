@@ -4070,6 +4070,28 @@ retains exact executable identities and original process retirement. All 1,410
 enabled cases therefore pass across the explicit fixture conditions; the first
 invocation stays failed. These results are not a current-HEAD full-suite claim.
 
+## Original per-CPU vfree publication and immutable address lineage
+
+The additive kernel stage records the original per-CPU list, work item and
+method before atomic vfree publication, then records Closing before its worker
+frees native storage. Late enqueue observations retain the original generation
+without following a freed area. Cleanup observers cannot recursively allocate
+through the constructor scope. The first canonical address is immutable:
+matching observations preserve it, while substitutions, invalid phases and
+counter exhaustion retain a sticky refusal before either constructor returns.
+
+Independent receipt `6bd2d03da4ac920ee0a56aa414d23259ba1df5f2a49bfa7aac7ddff6bdb9c1ae` verifies three configured translation units,
+880 source inputs, 33 modeled positive controls and five causal erasures. It
+also verifies the five package roles and complete 36-stage, 170-role replay.
+All prior 35 patch payloads remain unchanged; the new stage applies the corrected
+Source43-to45 delta directly, excluding the rejected Source44 address rebinding.
+Per-file licenses and corresponding-source catalogs match the new patch.
+
+Coverage remains 1/2047. Shared backing, allocator families, full Kbuild/linking,
+native concurrency and physical retirement remain unqualified; selected CREATE,
+RUN and Ready remain refused. These source and modeled controls do not grant
+full native kernel execution or complete allocation accounting.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

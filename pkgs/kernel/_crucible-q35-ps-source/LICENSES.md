@@ -112,3 +112,14 @@ archive preimage before every stage. Current coverage stays bit0, required
 coverage stays 2047, selected CREATE stays fenced before descriptor allocation,
 and no continuation/RUN/Ready permission is issued. Full native Kbuild, workqueue
 execution, physical budget and retirement remain unqualified.
+
+Source45 adds original per-CPU deferred-vfree list/work/method custody and corrects
+its original canonical address lineage. It modifies only existing GPL roles;
+no native file is added or removed and all per-file notices remain intact.
+The first canonical address is immutable, exact repeat is observational, and
+unrelated replacement stays sticky Unknown before constructor return. The
+known faulty private Source44 is excluded from this production chain.
+
+Native IRQ/workqueue/per-CPU allocation, shared physical backing and retirement
+remain unqualified. Coverage stays bit0, required coverage2047, and selected
+CREATE remains refused before descriptor allocation; RUN and Ready stay closed.

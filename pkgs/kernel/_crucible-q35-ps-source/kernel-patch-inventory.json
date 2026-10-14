@@ -4089,6 +4089,48 @@
           }
         }
       ]
+    },
+    {
+      "name": "0045-original-percpu-vfree-custody.patch",
+      "patch": {
+        "sha256": "31075b82d4ad49364b40cf460d1d968991357f498204537db91ec955236fa5b4",
+        "bytes": 13844
+      },
+      "changes": [
+        {
+          "path": "include/linux/crucible_allocator.h",
+          "before": {
+            "sha256": "6aeb7225f81afcbe61fa9a29ad72fc154df8b7c2d4d5b79b106beb3ef39cdbd6",
+            "bytes": 6207
+          },
+          "after": {
+            "sha256": "3d7b4d95df63b60c89057131e315590dc2ccb1ccc735c3d658be2afbbaf4d163",
+            "bytes": 7347
+          }
+        },
+        {
+          "path": "mm/crucible_allocator.c",
+          "before": {
+            "sha256": "063cc398a61a17dbf15222d00880343193e86b674917fc96876a2a2f18f521ab",
+            "bytes": 18897
+          },
+          "after": {
+            "sha256": "864b53379d140d9bae5ae11611598077d2ec4247006fe300005394decd72ce52",
+            "bytes": 25359
+          }
+        },
+        {
+          "path": "mm/vmalloc.c",
+          "before": {
+            "sha256": "048bbee6e6729ea5d8ea79081c3ddecb2c2336f1dbccea9d516f32142067b6e0",
+            "bytes": 150202
+          },
+          "after": {
+            "sha256": "1c80303cc216903a0a62a1bc84d65be2887ecffaa898da52e9b718c7e2545e52",
+            "bytes": 151158
+          }
+        }
+      ]
     }
   ]
 }
