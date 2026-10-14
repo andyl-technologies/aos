@@ -358,11 +358,12 @@ accounting and canonical output assertions. Complete sealed results and owned
 cleanup pass coordinator review. The other five growth populations, unfiltered
 SDK, owning Nix gates and full current trunk floor remain pending. DRV-29's
 qualification blocker stays in place; no task or milestone advances.
-The unchanged unfiltered SDK run has also passed the original 1,024-entry
-ordinary and adversarial populations in 417.337 and 396.149 seconds, and the
-2,048-entry adversarial population in 701.314 seconds, all under their unchanged
-1,800-second limits. The run continues with three actual failures and one
-120.009-second ancestry-collection timeout preserved. Independent
+The unchanged unfiltered SDK run has passed five original growth populations:
+1,024 ordinary and adversarial in 417.337 and 396.149 seconds, 2,048 ordinary
+and adversarial in 723.832 and 701.314 seconds, and 4,096 adversarial in
+1,396.038 seconds, all under their unchanged 1,800-second limits. Its final
+4,096 ordinary case remains running. The run continues with three actual
+failures and one 120.009-second ancestry-collection timeout preserved. Independent
 source review supports isolated fixture corrections: stage the genuine surviving
 Chunk in the nested overlay proposal and observe actual native admission reads
 instead of the bypassed wrapper. Exact roots, parents, refs, typed refusal sources
@@ -370,6 +371,14 @@ and no-effect assertions remain. Aggregate counters do not establish per-identit
 counts or ACL ordering. The ancestry timeout remains unexplained; existing opt-in
 phase markers prepare a separate diagnostic without changing its original limit.
 These corrections remain uncompiled and unexecuted outside the frozen active run.
+Full historical source review now covers the separate dictionary-reader task's
+three paths and the index-format task's ten paths, plus all 143 paths of its
+carrier branch. Eight independent review groups and the coordinator reviewed
+the uncovered carrier diffs; 86 previously reviewed versions have exact mode
+and blob matches. Every removed line was reviewed. Historical fixture and
+interpretation defects are corrected in the current candidate and must remain
+through ordinary merges. This completes source review only; task gates, the
+current trunk floor and final-source qualification remain required.
 The unfiltered SDK qualification must retain all 1,121 original cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
 cases. It must also execute the seven new direct-reader cases and registered
