@@ -154,6 +154,35 @@ impl AdmissionEvidence for Collection {
 }
 
 impl ConformanceAdmissionAuthority for Collection {
+    fn authenticate_collection_capture_profile(
+        &self,
+        plan: ConformancePlanEvidence<'_>,
+        claim: QualificationClaim<'_>,
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_collection_plan(plan)?;
+        let QualificationClaim::Capture {
+            world_binding_hash,
+            capture_owner_id,
+            procedure_ref,
+        } = claim
+        else {
+            return Err(error("non-Capture dormant collection profile"));
+        };
+        let ownership_bytes = self
+            .evidence
+            .content(&self.world.ownership_ref, 8 * 1024 * 1024)?;
+        let ownership: crate::node_admission::OwnershipPolicy =
+            serde_json::from_slice(&ownership_bytes).unwrap();
+        if world_binding_hash != &self.world.identity().unwrap()
+            || !ownership.capture_owners.iter().any(|owner| {
+                &owner.owner_id == capture_owner_id && &owner.cut_procedure_ref == procedure_ref
+            })
+        {
+            return Err(error("foreign dormant model collection Capture profile"));
+        }
+        Ok(())
+    }
+
     fn authenticate_collection_current_scope(
         &self,
         plan: ConformancePlanEvidence<'_>,

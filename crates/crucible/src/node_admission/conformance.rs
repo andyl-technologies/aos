@@ -1,8 +1,8 @@
 //! Seals a source-authenticated collection world without ordinary Node acceptance.
 //!
 //! The opaque graph preserves every ordinary structural, content, schema and
-//! ownership check. Only the Node behavioral claim uses explicit collection
-//! authorization. Its private ordinary graph cannot escape through a getter or
+//! ownership check. Node behavioral claims and dormant Capture profiles use
+//! explicit collection authorization. Its private ordinary graph cannot escape through a getter or
 //! serialized record, so missing class evidence cannot become ordinary admission.
 
 use std::rc::Rc;
@@ -40,7 +40,8 @@ pub struct ConformancePlanEvidence<'a> {
 
 /// Authenticates source-installed collection separately from ordinary acceptance.
 ///
-/// Existing non-Node admission claims retain their original meanings through
+/// Node behavioral claims and dormant Capture profiles use separate collection
+/// callbacks. Every other admission claim retains its original meaning through
 /// [`AdmissionEvidence`]. Collection authorization must never issue an accepted
 /// class or use vendor-selected omissions as a normative witness population.
 pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
@@ -86,6 +87,27 @@ pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
         Err(EvidenceError {
             message: "installed collection Node scope is unavailable".into(),
         })
+    }
+
+    /// Authenticates a dormant Capture profile for the original collection plan.
+    ///
+    /// The source authority must authenticate the same preassociated complete
+    /// factory, native source custody and host preparation before graph creation.
+    /// Decoded bounds, portable claims and active runtime capture geometry cannot
+    /// establish that association. Success grants neither ordinary Capture
+    /// qualification nor active capture, restoration or execution authority.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects non-Capture claims, foreign world/owner/cut
+    /// procedures, stale original plans or unavailable preconstruction custody.
+    fn authenticate_collection_capture_profile(
+        &self,
+        _plan: ConformancePlanEvidence<'_>,
+        _claim: QualificationClaim<'_>,
+    ) -> Result<(), EvidenceError> {
+        Err(failure(
+            "installed dormant collection Capture profile is unavailable",
+        ))
     }
 
     /// Authenticates one exact installed extension solely for original collection.
@@ -499,9 +521,10 @@ impl ConformanceGraph {
 
 /// Seals only an independently authorized original collection world.
 ///
-/// Every ordinary admission check remains. Only Node behavioral qualification
-/// is replaced by the explicit installed collection callback; all other claims
-/// are delegated unchanged. No accepted class or ordinary graph is returned.
+/// Every ordinary structural admission check remains. Node behavioral claims
+/// and dormant Capture profiles use explicit installed collection callbacks;
+/// all other claims are delegated unchanged. This returns neither an accepted
+/// class, an ordinary graph nor active capture authority.
 ///
 /// # Errors
 /// Refuses wrong plan/world/source, failed default authority, missing ordinary
@@ -614,6 +637,11 @@ impl AdmissionEvidence for CollectionEvidence<'_> {
                 .0
                 .authority
                 .authenticate_collection_node(self.plan.evidence(), claim),
+            QualificationClaim::Capture { .. } => self
+                .plan
+                .0
+                .authority
+                .authenticate_collection_capture_profile(self.plan.evidence(), claim),
             _ => self.plan.0.authority.qualify(claim),
         }
     }

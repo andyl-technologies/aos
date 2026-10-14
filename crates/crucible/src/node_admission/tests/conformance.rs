@@ -31,6 +31,10 @@ struct Authority {
     revoke_inputs: Cell<bool>,
     plan_calls: Cell<usize>,
     node_calls: Cell<usize>,
+    capture_calls: Cell<usize>,
+    ordinary_capture_calls: Cell<usize>,
+    reject_capture: Cell<bool>,
+    revoke_capture: Cell<bool>,
     dispatch: initial::dispatch::Probe,
 }
 
@@ -68,6 +72,10 @@ impl Authority {
             revoke_inputs: Cell::new(false),
             plan_calls: Cell::new(0),
             node_calls: Cell::new(0),
+            capture_calls: Cell::new(0),
+            ordinary_capture_calls: Cell::new(0),
+            reject_capture: Cell::new(false),
+            revoke_capture: Cell::new(false),
             dispatch: initial::dispatch::Probe::default(),
         })
     }
@@ -132,6 +140,10 @@ impl AdmissionEvidence for Authority {
     }
 
     fn qualify(&self, claim: QualificationClaim<'_>) -> Result<(), EvidenceError> {
+        if matches!(claim, QualificationClaim::Capture { .. }) {
+            self.ordinary_capture_calls
+                .set(self.ordinary_capture_calls.get() + 1);
+        }
         if matches!(claim, QualificationClaim::Node { .. }) {
             return Err(failure());
         }
@@ -140,6 +152,35 @@ impl AdmissionEvidence for Authority {
 }
 
 impl ConformanceAdmissionAuthority for Authority {
+    fn authenticate_collection_capture_profile(
+        &self,
+        plan: ConformancePlanEvidence<'_>,
+        claim: QualificationClaim<'_>,
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_collection_plan(plan)?;
+        self.capture_calls.set(self.capture_calls.get() + 1);
+        let QualificationClaim::Capture {
+            world_binding_hash,
+            capture_owner_id,
+            procedure_ref,
+        } = claim
+        else {
+            return Err(failure());
+        };
+        if self.reject_capture.get()
+            || world_binding_hash != &self.fixture.world.identity().unwrap()
+            || !self.fixture.ownership.capture_owners.iter().any(|owner| {
+                &owner.owner_id == capture_owner_id && &owner.cut_procedure_ref == procedure_ref
+            })
+        {
+            return Err(failure());
+        }
+        if self.revoke_capture.replace(false) {
+            self.current.set(false);
+        }
+        Ok(())
+    }
+
     fn authenticate_collection_current_scope(
         &self,
         plan: ConformancePlanEvidence<'_>,
@@ -621,3 +662,6 @@ fn final_collection_revision_authority_is_unavailable_by_default() {
     );
     assert!(plan.reauthenticate().is_ok());
 }
+
+#[path = "conformance/capture_profile.rs"]
+mod capture_profile;

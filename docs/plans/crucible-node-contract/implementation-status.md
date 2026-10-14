@@ -3598,6 +3598,27 @@ Complete allocation coverage, backend-two RAM, active timers, worker stop and
 output closure remain pending. This source integration grants no selected RUN,
 Ready, positive live ioctl, package or ABI/license-gate qualification.
 
+## Dormant collection capture-profile admission
+
+Collection graph admission now uses an explicit, default-refusing Capture-profile
+callback. The installed authority must authenticate the original preassociated
+factory, native source custody and host preparation before graph creation. This
+preconstruction step is separate from the active Runtime7 capture memory check.
+It cannot be satisfied by decoded bounds or a fabricated initialized graph.
+
+Ordinary Capture qualification is unchanged. The collection route reauthenticates
+its plan before the callback, refuses without falling back to ordinary evidence
+and checks the original final scope before sealing. Six controls cover default
+refusal, dispatch, foreign claims, no fallback and revocation. All 102 admission
+tests and strict all-target/all-feature checks pass in the retained Core cohort;
+1246 other unit tests are filtered. Independent receipt
+`d269646949a2ece35051569e582c01f3c758e2ff771e03154351dd53f9be75c0`
+verifies the four exact current preimages and executable/dependency evidence.
+
+The test authorities model their own dormant profiles. The production complete
+factory association remains pending, so this hook grants no native Arm, active
+Capture, fresh restoration, accepted class or Ready permission.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
