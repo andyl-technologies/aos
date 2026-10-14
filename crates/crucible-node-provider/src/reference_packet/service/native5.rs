@@ -211,12 +211,15 @@ impl PacketNative5SourceLaunch {
             // Additional source grammar is authenticated before any service
             // allocation or listener effect; selecting it grants no mechanism.
             super::super::Native5Policy::from_original_launch_with_confirmation(
-                self.selection.clone(), self.initial_coordinator.clone(),
-                self.capture_profile.clone(), confirmation,
+                self.selection.clone(),
+                self.initial_coordinator.clone(),
+                self.capture_profile.clone(),
+                confirmation,
             )?;
         } else {
             super::super::Native5Policy::from_original_launch(
-                self.selection.clone(), self.initial_coordinator.clone(),
+                self.selection.clone(),
+                self.initial_coordinator.clone(),
             )?;
         }
         Ok(())
