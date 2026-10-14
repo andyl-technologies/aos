@@ -3573,8 +3573,9 @@ coverage refuses selected CREATE_VM before reserving an FD. Caller ceilings do
 not authorize creation. The current quote covers one of eleven required domains.
 
 The separate PS kernel variant and source check preserve the ordinary kernel
-and constructor variant. Their ordered 27-stage source chain reconstructs the
-complete 162-role descendant. Matching source collection includes the upstream
+and constructor variant. The initial ordered 27-stage source chain reconstructed
+the complete 162-role descendant; the allocator integration below extends that
+same chain to 33 stages and 169 roles. Matching source collection includes the upstream
 archive, patched tree, AOS/bootstrap inputs, configuration and actual generated
 Kbuild records when a kernel is built. Component source replay already passes;
 full kernel/package execution remains pending.
@@ -3687,6 +3688,34 @@ roles and the disclosed implementation ledger, which compilation does not use.
 These changes retain custody rather than grant Capture or restoration rights.
 Compact encoding, archive payload transfer, source settlement, full peak memory
 admission and the installed native factory remain separate requirements.
+
+## Original kernel allocator scope and currentness
+
+The selected kernel source chain now appends six explicit allocator stages to
+the original CPU, clock and timer composition. Original Task control-delivery
+scope retains its source references and allocation journal; selected large,
+bulk, direct-page and nolock-page routes refuse uncovered allocation. A separate
+final correction checks failed/current source state before reading a nodemask.
+Ordinary null-scope and interrupt routes retain their existing behavior.
+
+The unchanged production source guard replays all 33 stages across the complete
+169-role roster without fuzz or offsets. Six complete configured translation
+units pass with 1366 retained dependency bodies checked against that current
+roster. The initial and final configuration bodies remain separately identified:
+recursive configuration preparation changed the initial snapshot before actual
+compilation. Protected-memory controls reproduce the prior currentness gap and
+verify its correction. Independent receipt
+`d1b515fa7be4cc4b6d7e5346a40d457e467aadbd5194ae4bab0c920fb18af81c`
+verifies all ten source/package preimages, ordered composition and these scopes.
+The earlier defective stage remains inspectable before its explicit correction.
+Two new GPL source roles are recorded in the matching kernel license inventory.
+
+Coverage remains one of eleven domains. These control-delivery and refusal paths
+do not complete VM creation, aggregate backing, retry/reclaim, per-CPU/vmalloc,
+asynchronous lifetimes or physical retirement. Selected CREATE, RUN and Ready
+remain refused. Full Kbuild, generated Task offsets, objtool, linking, module
+loading and patched nested-guest execution remain required; no host kernel or
+module was changed, and no runtime qualification follows from these objects.
 
 ## Performance evidence
 

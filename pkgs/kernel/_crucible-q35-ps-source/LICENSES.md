@@ -71,3 +71,20 @@ remain unsupported; source byte closure does not establish runtime admission.
 | `arch/x86/kvm/crucible-q35-ps-timer-bank.inc.c` | `GPL-2.0-only` |
 | `virt/kvm/crucible-original-kernel-resource.inc.c` | `GPL-2.0-only` |
 | `virt/kvm/crucible-q35-ps-pit-route.inc.c` | `GPL-2.0-only` |
+
+The explicit original Task allocator/refusal source stages add two private GPL
+roles and preserve every existing native MM/Task license notice. Their callback
+owners, original Task/mm/file/module references and allocation journals remain
+kernel-private; no process protocol carries those native objects.
+
+| Added source role | SPDX notice |
+| --- | --- |
+| `include/linux/crucible_allocator.h` | `GPL-2.0-only` |
+| `mm/crucible_allocator.c` | `GPL-2.0-only` |
+
+These stages cover only original control-delivery metadata and explicit refused
+allocator paths. Actual aggregate physical peak/backing retirement remains
+incomplete. Source41 currentness precedes mask observation; historical Source40
+is retained as its separately inspectable predecessor. Constructor coverage
+stays bit0 and selected CREATE_VM is refused before native allocation. Full
+Kbuild/module/guest execution, RUN and Ready remain unqualified.

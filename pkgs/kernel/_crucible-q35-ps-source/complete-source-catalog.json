@@ -498,17 +498,17 @@
       }
     },
     {
-      "path": "arch/x86/kvm/mmu/page_track.h",
-      "identity": {
-        "sha256": "43f7310945acd967925f8f802f3eda2c5ff268edc1fdfd5b4b7a98bf43497ee6",
-        "bytes": 1963
-      }
-    },
-    {
       "path": "arch/x86/kvm/mmu.h",
       "identity": {
         "sha256": "cc63348e766b4fb0fc0034c1e37afc6e6686680a38cfeb7683179e55204b63aa",
         "bytes": 10533
+      }
+    },
+    {
+      "path": "arch/x86/kvm/mmu/page_track.h",
+      "identity": {
+        "sha256": "43f7310945acd967925f8f802f3eda2c5ff268edc1fdfd5b4b7a98bf43497ee6",
+        "bytes": 1963
       }
     },
     {
@@ -869,6 +869,13 @@
       }
     },
     {
+      "path": "include/linux/crucible_allocator.h",
+      "identity": {
+        "sha256": "a26c8aaf4b59c622d9b0ec3ffd530bb787173bf1bc3a4536911b4207166817a8",
+        "bytes": 3581
+      }
+    },
+    {
       "path": "include/linux/kvm_crucible_clock_continuation.h",
       "identity": {
         "sha256": "ce2cf23b4facc72236ac3960e2c8a952068c4b079ed9b2eec38123cf7f7c7b8a",
@@ -901,6 +908,13 @@
       "identity": {
         "sha256": "c4d17b87ef9477a23bef33c11557224b6ad4f83d7d87c123bb6ede976fd65fd7",
         "bytes": 93401
+      }
+    },
+    {
+      "path": "include/linux/sched.h",
+      "identity": {
+        "sha256": "5a466c12349b21414d52ffd41ec0a0be9448545f465e37db8dc55cdaff13fdc4",
+        "bytes": 74012
       }
     },
     {
@@ -1016,6 +1030,41 @@
       }
     },
     {
+      "path": "kernel/fork.c",
+      "identity": {
+        "sha256": "747686d65ec370d2049f2ab3ce733a82ab5446f9d0d4678dd9ee88d5704e56d4",
+        "bytes": 85840
+      }
+    },
+    {
+      "path": "mm/Makefile",
+      "identity": {
+        "sha256": "c33193878328b7430bf3d0fe5e3d952fdcf28bc622cf513b92c007fd0b25aecb",
+        "bytes": 5467
+      }
+    },
+    {
+      "path": "mm/crucible_allocator.c",
+      "identity": {
+        "sha256": "f5ffdc6510c064ed19a031d27f395e4c6e64937f862e8797172871dfdf0daac4",
+        "bytes": 7569
+      }
+    },
+    {
+      "path": "mm/page_alloc.c",
+      "identity": {
+        "sha256": "49ecc47f167f21b02cea88cde77b4249344417886236061b8c4153dcf778ba34",
+        "bytes": 228686
+      }
+    },
+    {
+      "path": "mm/slub.c",
+      "identity": {
+        "sha256": "04f2408f4f115e38a2482eac4188918e90cdbe0b7ee56059c28a0118bee95bc8",
+        "bytes": 256134
+      }
+    },
+    {
       "path": "tools/arch/x86/tools/gen-insn-attr-x86.awk",
       "identity": {
         "sha256": "7dee6e733c1c5881bf9c2b4a29a08dfd5404bcfa6334da685d7a54b426c01575",
@@ -1067,8 +1116,8 @@
     {
       "path": "virt/kvm/crucible-original-kernel-resource.inc.c",
       "identity": {
-        "sha256": "041dc1150d8b4e100332646c7e071e539f78313a2fff1ff0c2dac07e46af8482",
-        "bytes": 13813
+        "sha256": "28f62bb30e80afaec1ba87c2ebcf1ff6df14219eb36ef492cf71774b53172a15",
+        "bytes": 21741
       }
     },
     {

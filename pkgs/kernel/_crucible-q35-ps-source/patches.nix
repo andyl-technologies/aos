@@ -9,4 +9,10 @@
   ./ps-ceiling-observation.patch
   ./ps-control-history.patch
   ./original-cpu-resource-and-timer-source.patch
+  ./original-task-allocator-scope.patch
+  ./original-control-allocator-binding.patch
+  ./original-large-bulk-refusal.patch
+  ./original-direct-bulk-page-refusal.patch
+  ./original-nolock-page-refusal.patch
+  ./original-page-input-currentness.patch
 ]

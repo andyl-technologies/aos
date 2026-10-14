@@ -755,6 +755,10 @@
       }
     },
     {
+      "path": "include/linux/crucible_allocator.h",
+      "identity": null
+    },
+    {
       "path": "include/linux/kvm_crucible_clock_continuation.h",
       "identity": null
     },
@@ -775,6 +779,13 @@
       "identity": {
         "sha256": "b1bba4c5c635488e7ad2f0b1bc5727ea24cf37a944331f4d85dc760c8a6ecf23",
         "bytes": 80635
+      }
+    },
+    {
+      "path": "include/linux/sched.h",
+      "identity": {
+        "sha256": "927ab1530a1e714b223d7b8ed154902d824d1075643fe3addd9212469db510cd",
+        "bytes": 73878
       }
     },
     {
@@ -887,6 +898,38 @@
       "identity": {
         "sha256": "8c71c12d7b82e867166072aeaabf6a3c36c37335ae726133984fb039520a7eb9",
         "bytes": 51645
+      }
+    },
+    {
+      "path": "kernel/fork.c",
+      "identity": {
+        "sha256": "359882ea981b58f5289293e5644f7c0085a8350e4f1937f39dcb94ae1cd0dd1d",
+        "bytes": 85725
+      }
+    },
+    {
+      "path": "mm/Makefile",
+      "identity": {
+        "sha256": "704499c19968267b08e5034b6f23be0ecc753789c89c56009891b766278e74c3",
+        "bytes": 5446
+      }
+    },
+    {
+      "path": "mm/crucible_allocator.c",
+      "identity": null
+    },
+    {
+      "path": "mm/page_alloc.c",
+      "identity": {
+        "sha256": "439ae8ec1e47cbf38770865e53e98bf2229e32a20c4b0f8178e6f19f34edbc50",
+        "bytes": 228331
+      }
+    },
+    {
+      "path": "mm/slub.c",
+      "identity": {
+        "sha256": "1a4608f9bb036309e7da69dca75fec27f4e9bd56e110594c29eec89fbbb111fd",
+        "bytes": 254062
       }
     },
     {
@@ -3684,6 +3727,252 @@
           "after": {
             "sha256": "5e7c92ac099edfb17ea6452a92f2433865ad22d12a10349d5f8e0222245a7108",
             "bytes": 190387
+          }
+        }
+      ]
+    },
+    {
+      "name": "original-task-allocator-scope.patch",
+      "patch": {
+        "sha256": "dd807baf8aa77b5bd8d3563a096cd34d6cf69bb84fa246cc8f092628cc172961",
+        "bytes": 11026
+      },
+      "changes": [
+        {
+          "path": "include/linux/sched.h",
+          "before": {
+            "sha256": "927ab1530a1e714b223d7b8ed154902d824d1075643fe3addd9212469db510cd",
+            "bytes": 73878
+          },
+          "after": {
+            "sha256": "5a466c12349b21414d52ffd41ec0a0be9448545f465e37db8dc55cdaff13fdc4",
+            "bytes": 74012
+          }
+        },
+        {
+          "path": "kernel/fork.c",
+          "before": {
+            "sha256": "359882ea981b58f5289293e5644f7c0085a8350e4f1937f39dcb94ae1cd0dd1d",
+            "bytes": 85725
+          },
+          "after": {
+            "sha256": "747686d65ec370d2049f2ab3ce733a82ab5446f9d0d4678dd9ee88d5704e56d4",
+            "bytes": 85840
+          }
+        },
+        {
+          "path": "mm/Makefile",
+          "before": {
+            "sha256": "704499c19968267b08e5034b6f23be0ecc753789c89c56009891b766278e74c3",
+            "bytes": 5446
+          },
+          "after": {
+            "sha256": "c33193878328b7430bf3d0fe5e3d952fdcf28bc622cf513b92c007fd0b25aecb",
+            "bytes": 5467
+          }
+        },
+        {
+          "path": "mm/slub.c",
+          "before": {
+            "sha256": "1a4608f9bb036309e7da69dca75fec27f4e9bd56e110594c29eec89fbbb111fd",
+            "bytes": 254062
+          },
+          "after": {
+            "sha256": "00c9de4795a7d818e69f7ac319c5e8119e44780f1c489dcc5601fd64058132ce",
+            "bytes": 255593
+          }
+        },
+        {
+          "path": "include/linux/crucible_allocator.h",
+          "before": null,
+          "after": {
+            "sha256": "0a09c85ee8dded0d045a6950b8ada9860260b31752fc4c087f95eef15fb734c4",
+            "bytes": 2605
+          }
+        },
+        {
+          "path": "mm/crucible_allocator.c",
+          "before": null,
+          "after": {
+            "sha256": "71f0353faf2268372a18de55f9b42b47d362e4b74b01b80508dbe29abd5d5866",
+            "bytes": 4633
+          }
+        }
+      ]
+    },
+    {
+      "name": "original-control-allocator-binding.patch",
+      "patch": {
+        "sha256": "dbd52e62db5966a4c12f241db6943883c29109c520663356ade0a953a7b4863d",
+        "bytes": 9743
+      },
+      "changes": [
+        {
+          "path": "virt/kvm/crucible-original-kernel-resource.inc.c",
+          "before": {
+            "sha256": "041dc1150d8b4e100332646c7e071e539f78313a2fff1ff0c2dac07e46af8482",
+            "bytes": 13813
+          },
+          "after": {
+            "sha256": "6e4c19930009ffde324bd4e6aa86f085da29505f7eb6ad47b44a3faa578e1c6c",
+            "bytes": 20547
+          }
+        }
+      ]
+    },
+    {
+      "name": "original-large-bulk-refusal.patch",
+      "patch": {
+        "sha256": "8b6840b293d3a72b7a1ca42fa2910117263f1977f590d12881988649b6417577",
+        "bytes": 5539
+      },
+      "changes": [
+        {
+          "path": "include/linux/crucible_allocator.h",
+          "before": {
+            "sha256": "0a09c85ee8dded0d045a6950b8ada9860260b31752fc4c087f95eef15fb734c4",
+            "bytes": 2605
+          },
+          "after": {
+            "sha256": "5220a7f9fe248dfcdb539670532b59f5bcfd77048858e9043144706d0d41cc1f",
+            "bytes": 3050
+          }
+        },
+        {
+          "path": "mm/crucible_allocator.c",
+          "before": {
+            "sha256": "71f0353faf2268372a18de55f9b42b47d362e4b74b01b80508dbe29abd5d5866",
+            "bytes": 4633
+          },
+          "after": {
+            "sha256": "f1dcbc615c1f62d54ba7ead2df8334e8c35a9a49a552deb9b74cd4cb80bfd21c",
+            "bytes": 5490
+          }
+        },
+        {
+          "path": "mm/slub.c",
+          "before": {
+            "sha256": "00c9de4795a7d818e69f7ac319c5e8119e44780f1c489dcc5601fd64058132ce",
+            "bytes": 255593
+          },
+          "after": {
+            "sha256": "04f2408f4f115e38a2482eac4188918e90cdbe0b7ee56059c28a0118bee95bc8",
+            "bytes": 256134
+          }
+        },
+        {
+          "path": "virt/kvm/crucible-original-kernel-resource.inc.c",
+          "before": {
+            "sha256": "6e4c19930009ffde324bd4e6aa86f085da29505f7eb6ad47b44a3faa578e1c6c",
+            "bytes": 20547
+          },
+          "after": {
+            "sha256": "28f62bb30e80afaec1ba87c2ebcf1ff6df14219eb36ef492cf71774b53172a15",
+            "bytes": 21741
+          }
+        }
+      ]
+    },
+    {
+      "name": "original-direct-bulk-page-refusal.patch",
+      "patch": {
+        "sha256": "bb639cdac5d6b12468e49e101266d93d30441855ea7e6ae3aa550ef30bdf5d28",
+        "bytes": 4037
+      },
+      "changes": [
+        {
+          "path": "include/linux/crucible_allocator.h",
+          "before": {
+            "sha256": "5220a7f9fe248dfcdb539670532b59f5bcfd77048858e9043144706d0d41cc1f",
+            "bytes": 3050
+          },
+          "after": {
+            "sha256": "ec1562e2fde447271f8c3f90ad4074d2c900abf48178e0a47fb4f34e35673c56",
+            "bytes": 3446
+          }
+        },
+        {
+          "path": "mm/crucible_allocator.c",
+          "before": {
+            "sha256": "f1dcbc615c1f62d54ba7ead2df8334e8c35a9a49a552deb9b74cd4cb80bfd21c",
+            "bytes": 5490
+          },
+          "after": {
+            "sha256": "2d8979b81064cf59128c915587317e1609d42d2419c76802a1d147055f75581e",
+            "bytes": 6893
+          }
+        },
+        {
+          "path": "mm/page_alloc.c",
+          "before": {
+            "sha256": "439ae8ec1e47cbf38770865e53e98bf2229e32a20c4b0f8178e6f19f34edbc50",
+            "bytes": 228331
+          },
+          "after": {
+            "sha256": "35ece71c1a2b98bbfb9a105ac3d7672e451b3432e392966de837cdd8bd027583",
+            "bytes": 228599
+          }
+        }
+      ]
+    },
+    {
+      "name": "original-nolock-page-refusal.patch",
+      "patch": {
+        "sha256": "71b8e7902ff71e6d43de5898828dad734558a8b81bea7b1326622f9c5406625f",
+        "bytes": 3144
+      },
+      "changes": [
+        {
+          "path": "include/linux/crucible_allocator.h",
+          "before": {
+            "sha256": "ec1562e2fde447271f8c3f90ad4074d2c900abf48178e0a47fb4f34e35673c56",
+            "bytes": 3446
+          },
+          "after": {
+            "sha256": "a26c8aaf4b59c622d9b0ec3ffd530bb787173bf1bc3a4536911b4207166817a8",
+            "bytes": 3581
+          }
+        },
+        {
+          "path": "mm/crucible_allocator.c",
+          "before": {
+            "sha256": "2d8979b81064cf59128c915587317e1609d42d2419c76802a1d147055f75581e",
+            "bytes": 6893
+          },
+          "after": {
+            "sha256": "af28a0cc2c8f54397da8f47299baad0f9ae0475493dfbca2cbad422bad64a94f",
+            "bytes": 7604
+          }
+        },
+        {
+          "path": "mm/page_alloc.c",
+          "before": {
+            "sha256": "35ece71c1a2b98bbfb9a105ac3d7672e451b3432e392966de837cdd8bd027583",
+            "bytes": 228599
+          },
+          "after": {
+            "sha256": "49ecc47f167f21b02cea88cde77b4249344417886236061b8c4153dcf778ba34",
+            "bytes": 228686
+          }
+        }
+      ]
+    },
+    {
+      "name": "original-page-input-currentness.patch",
+      "patch": {
+        "sha256": "667636dc503401d4ffcb978c1cc566bcb759c920a77d95c2ec4fd2a87d369277",
+        "bytes": 360
+      },
+      "changes": [
+        {
+          "path": "mm/crucible_allocator.c",
+          "before": {
+            "sha256": "af28a0cc2c8f54397da8f47299baad0f9ae0475493dfbca2cbad422bad64a94f",
+            "bytes": 7604
+          },
+          "after": {
+            "sha256": "f5ffdc6510c064ed19a031d27f395e4c6e64937f862e8797172871dfdf0daac4",
+            "bytes": 7569
           }
         }
       ]

@@ -1,0 +1,84 @@
+--- a/include/linux/crucible_allocator.h
++++ b/include/linux/crucible_allocator.h
+@@ -33,6 +33,7 @@
+ 	CRUCIBLE_ALLOCATOR_BULK = 3,
+ 	CRUCIBLE_ALLOCATOR_PAGE = 4,
+ 	CRUCIBLE_ALLOCATOR_PAGE_BULK = 5,
++	CRUCIBLE_ALLOCATOR_PAGE_NOLOCK = 6,
+ };
+ 
+ struct crucible_uncovered_request {
+@@ -99,6 +100,8 @@
+ bool crucible_allocator_page_uncovered(gfp_t flags, unsigned int order,
+ 	int native_node, const nodemask_t *nodemask, unsigned long requested_pages,
+ 	unsigned long populated_pages, bool bulk);
++bool crucible_allocator_page_nolock_uncovered(gfp_t flags, unsigned int order,
++	int native_node);
+ void crucible_allocator_slab_complete(struct crucible_allocator_token *token,
+ 	const struct crucible_slab_output *output);
+ 
+--- a/mm/crucible_allocator.c
++++ b/mm/crucible_allocator.c
+@@ -155,9 +155,9 @@
+ /* Snapshot only for an enrolled original Task. The ordinary/interrupt inverse
+  * does not inspect an otherwise unused nodemask. This retains a refusal input;
+  * no page-array ownership or complete page-allocation coverage is issued. */
+-bool crucible_allocator_page_uncovered(gfp_t flags, unsigned int order,
++static bool crucible_allocator_page_refuse(gfp_t flags, unsigned int order,
+ 	int native_node, const nodemask_t *nodemask, unsigned long requested_pages,
+-	unsigned long populated_pages, bool bulk)
++	unsigned long populated_pages, enum crucible_allocator_family family)
+ {
+ 	struct crucible_allocator_scope *scope;
+ 	struct crucible_uncovered_request request = { };
+@@ -171,12 +171,12 @@
+ 		return false;
+ 	}
+ 
+-	if (!bulk)
++	if (family != CRUCIBLE_ALLOCATOR_PAGE_BULK)
+ 		pages = order < 64 ? 1ULL << order : 0;
+ 	request.requested_objects = pages;
+ 	if (pages <= U64_MAX / PAGE_SIZE)
+ 		request.requested_bytes = pages * PAGE_SIZE;
+-	request.family = bulk ? CRUCIBLE_ALLOCATOR_PAGE_BULK : CRUCIBLE_ALLOCATOR_PAGE;
++	request.family = family;
+ 	request.allocation_flags = flags;
+ 	request.native_node = native_node;
+ 	request.page_order = order;
+@@ -187,4 +187,23 @@
+ 
+ 	return crucible_allocator_uncovered(&request);
+ }
++
++bool crucible_allocator_page_uncovered(gfp_t flags, unsigned int order,
++	int native_node, const nodemask_t *nodemask, unsigned long requested_pages,
++	unsigned long populated_pages, bool bulk)
++{
++	enum crucible_allocator_family family = bulk ?
++		CRUCIBLE_ALLOCATOR_PAGE_BULK : CRUCIBLE_ALLOCATOR_PAGE;
++
++	return crucible_allocator_page_refuse(flags, order, native_node, nodemask,
++		requested_pages, populated_pages, family);
++}
+ EXPORT_SYMBOL_GPL(crucible_allocator_page_uncovered);
++
++bool crucible_allocator_page_nolock_uncovered(gfp_t flags, unsigned int order,
++	int native_node)
++{
++	return crucible_allocator_page_refuse(flags, order, native_node, NULL,
++		0, 0, CRUCIBLE_ALLOCATOR_PAGE_NOLOCK);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_page_nolock_uncovered);
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -7900,6 +7900,9 @@
+ 	struct alloc_context ac = { };
+ 	struct page *page;
+ 
++	if (!crucible_allocator_page_nolock_uncovered(gfp_flags, order, nid))
++		return NULL;
++
+ 	VM_WARN_ON_ONCE(gfp_flags & ~__GFP_ACCOUNT);
+ 	/*
+ 	 * In PREEMPT_RT spin_trylock() will call raw_spin_lock() which is
