@@ -347,6 +347,17 @@ signed audit parent after the public predecessor while excluding its verified
 history. The reviewed fixture correction captures that exact ordered pair from
 independently published inputs. The full focus set, renewed SDK, growth and
 owning gates remain unqualified.
+Corrected composition `f4a69abc3935` (tree `be26a68cfa29`) passes all thirteen
+compiler phases and retains all 1,131 nonignored test identities across three
+SDK executables. Its remaining 27 focused cases pass once each with unchanged
+source, compiler inputs, executables, profiles and limits. The earlier eight
+passes remain historical evidence, pending renewal in the full SDK run.
+The original 4,096-entry ordinary growth case now passes in 1,318.821 seconds
+under its unchanged 1,800-second limit, including the original independent
+accounting and canonical output assertions. Complete sealed results and owned
+cleanup pass coordinator review. The other five growth populations, unfiltered
+SDK, owning Nix gates and full current trunk floor remain pending. DRV-29's
+qualification blocker stays in place; no task or milestone advances.
 The unfiltered SDK qualification must retain all 1,121 original cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
 cases. It must also execute the seven new direct-reader cases and registered
