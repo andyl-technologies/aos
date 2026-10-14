@@ -1,6 +1,6 @@
-From 103158b08fa6fd92cab2ae9911ef2b76f7599fdc Mon Sep 17 00:00:00 2001
+From 01b7a428d447a5ffa181c29729a2db45085b6183 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 14 Oct 2026 23:30:00 +0000
+Date: Wed, 14 Oct 2026 23:55:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -769,6 +769,19 @@ The preceding full build passed the ptimer link and then exposed these
 missing direct device-observer dependencies. Preserve that failure.
 The new helper and complete fixture inventory require fresh full native
 compilation and unfiltered package tests.
+
+
+Align the extracted network-output fixture with the actual typed sender
+argument and unchanged original-endpoint callback admission. Its ordinary
+fixture has no original-bound endpoint; unexpected selected branches abort
+rather than supplying positive authority. Retain every existing assertion
+and mutation control. Locate a unique typed function definition, excluding
+prototypes, with bounded pure source controls before fixture compilation.
+
+The preceding full build completes all 3792 native steps and 589 selected
+unit cases, then fails this stale source selector. Preserve that failure.
+Pure extraction controls verify all 48 actual selected definitions; C fixture
+execution, full package and matching source realization remain required.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -241472,22 +241485,25 @@ index 0000000000000000000000000000000000000000..7c0e740270c5f06ea7e1dde755888dfe
 +    main()
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..43b5095fd7bf48043fd2674bce887509e993747d
+index 0000000000000000000000000000000000000000..c26789ee712f92419d3342e5acebbe82b2ca829b
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-output-stop.py
-@@ -0,0 +1,857 @@
+@@ -0,0 +1,922 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production TX, VM-stop, clock completion, and RR parking bodies.
 +
 +The fixture supplies CPU/device topology and serialized event-loop scheduling.
 +It does not substitute the production admission, send, clock mutation,
 +completion, or parking logic. A linked running-guest test is still required to
-+prove translated execution and a real NIC descriptor batch.
++prove translated execution and a real NIC descriptor batch. The fixture
++has no original-bound endpoint; unexpected selected binding/admission
++dependencies refuse instead of substituting positive authority.
 +"""
 +
 +import argparse
 +import json
 +import os
++import re
 +from pathlib import Path
 +import shlex
 +import subprocess
@@ -241497,9 +241513,23 @@ index 0000000000000000000000000000000000000000..43b5095fd7bf48043fd2674bce887509
 +
 +
 +def definition(source, signature):
-+    """Extract one complete production function definition."""
-+    start = source.index(signature)
-+    opening = source.index("{", start)
++    """Extract a unique definition, excluding matching forward declarations."""
++    candidates = []
++    for match in re.finditer(re.escape(signature), source):
++        start = match.start()
++        line_start = source.rfind("\n", 0, start) + 1
++        if source[line_start:start].strip():
++            continue
++        opening = source.find("{", start)
++        semicolon = source.find(";", start)
++        if opening < 0 or 0 <= semicolon < opening:
++            continue
++        candidates.append((start, opening))
++    if len(candidates) != 1:
++        raise AssertionError(
++            f"expected one definition, found {len(candidates)}: {signature}"
++        )
++    start, opening = candidates[0]
 +    depth = 0
 +    for index in range(opening, len(source)):
 +        if source[index] == "{":
@@ -241509,6 +241539,32 @@ index 0000000000000000000000000000000000000000..43b5095fd7bf48043fd2674bce887509
 +            if depth == 0:
 +                return source[start:index + 1]
 +    raise AssertionError(f"unterminated definition: {signature}")
++
++
++def locator_self_test():
++    """Reject stale types, absent/duplicate bodies, and incomplete definitions."""
++    signature = (
++        "static ssize_t crucible_net_tx_submit(NetClientState *sender, "
++        "const uint8_t *data, size_t len)"
++    )
++    body = signature + "\n{\n    if (len) { return len; }\n    return -1;\n}"
++    assert definition(body, signature) == body
++    assert definition(signature + ";\n" + body, signature) == body
++
++    def expect_refusal(candidate, selector):
++        try:
++            definition(candidate, selector)
++        except AssertionError:
++            return
++        raise AssertionError("locator accepted an invalid source mutation")
++
++    expect_refusal("", signature)
++    expect_refusal(body + "\n" + body, signature)
++    expect_refusal(body.replace("NetClientState *sender", "void *sender"), signature)
++    expect_refusal(body, "static ssize_t crucible_net_tx_submit(const uint8_t *data, size_t len)")
++    expect_refusal(signature + ";\n", signature)
++    expect_refusal(body[:-1], signature)
++    expect_refusal("/* " + body + " */", signature)
 +
 +
 +PRELUDE = r"""
@@ -241523,6 +241579,7 @@ index 0000000000000000000000000000000000000000..43b5095fd7bf48043fd2674bce887509
 +#include <sys/uio.h>
 +#include <glib.h>
 +#include "qemu/typedefs.h"
++#include "qemu/crucible-endpoint-roots.h"
 +#define qemu_build_assert(condition) _Static_assert(condition, #condition)
 +#include "qemu/atomic.h"
 +#include "qemu/iov.h"
@@ -241568,6 +241625,7 @@ index 0000000000000000000000000000000000000000..43b5095fd7bf48043fd2674bce887509
 +    struct NetClientState *peer;
 +    bool link_down;
 +    NetQueue *incoming_queue;
++    void *crucible_original_birth;
 +} NetClientState;
 +typedef int RunState;
 +enum { RUN_STATE_RUNNING, RUN_STATE_PAUSED, RUN_STATE_SUSPENDED };
@@ -241808,6 +241866,19 @@ index 0000000000000000000000000000000000000000..43b5095fd7bf48043fd2674bce887509
 +static void replay_mutex_lock(void) { }
 +static void bql_unlock(void) { locked = false; }
 +static void bql_lock(void) { locked = true; }
++/* The fixture has no original-bound endpoint. Retain the actual
++ * net_original_callback_admit body below, and refuse either selected branch
++ * dependency rather than manufacturing an endpoint binding or permission. */
++static CrucibleEndpointOriginalBinding net_original_binding(NetClientState *client)
++{
++    g_assert_not_reached();
++}
++int qemu_endpoint_whole_callback_admit(
++    CrucibleEndpointOriginalKind kind,
++    const CrucibleEndpointOriginalBinding *binding)
++{
++    g_assert_not_reached();
++}
 +static int filter_receive(NetClientState *sender, int direction,
 +    NetClientState *source, unsigned flags, const uint8_t *data, int length,
 +    NetPacketSent *cb) { g_assert_not_reached(); }
@@ -241989,6 +242060,7 @@ index 0000000000000000000000000000000000000000..43b5095fd7bf48043fd2674bce887509
 +
 +static void reset(void)
 +{
++    g_assert_null(sender.crucible_original_birth);
 +    g_assert_cmpint(qemu_plugin_time_advance_pending, ==, 0);
 +    g_assert_cmpuint(event_write, ==, 0);
 +    cpu = (CPUState){0};
@@ -242111,13 +242183,13 @@ index 0000000000000000000000000000000000000000..43b5095fd7bf48043fd2674bce887509
 +    invalid = (struct iovec){.iov_base = frame, .iov_len = NET_BUFSIZE + 1};
 +    g_assert_cmpint(qemu_sendv_packet_async(&sender, &invalid, 1, NULL), ==, -1);
 +    locked = false;
-+    g_assert_cmpint(crucible_net_tx_submit((const uint8_t *)"abc", 3), ==, -1);
++    g_assert_cmpint(crucible_net_tx_submit(&sender, (const uint8_t *)"abc", 3), ==, -1);
 +    locked = true;
 +    mttcg = true;
-+    g_assert_cmpint(crucible_net_tx_submit((const uint8_t *)"abc", 3), ==, -1);
++    g_assert_cmpint(crucible_net_tx_submit(&sender, (const uint8_t *)"abc", 3), ==, -1);
 +    mttcg = false;
 +    count_mode = 0;
-+    g_assert_cmpint(crucible_net_tx_submit((const uint8_t *)"abc", 3), ==, -1);
++    g_assert_cmpint(crucible_net_tx_submit(&sender, (const uint8_t *)"abc", 3), ==, -1);
 +    count_mode = ICOUNT_PRECISE;
 +    g_assert_cmpuint(frames, ==, 0);
 +    g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==, generation);
@@ -242177,7 +242249,7 @@ index 0000000000000000000000000000000000000000..43b5095fd7bf48043fd2674bce887509
 +    current_cpu = NULL;
 +    qemu_plugin_crucible_control_boundary_depth++;
 +    qemu_plugin_crucible_exact_boundary_enter();
-+    g_assert_cmpint(crucible_net_tx_submit((const uint8_t *)"abc", 3), ==, 3);
++    g_assert_cmpint(crucible_net_tx_submit(&sender, (const uint8_t *)"abc", 3), ==, 3);
 +    qemu_plugin_crucible_exact_boundary_leave();
 +    qemu_plugin_crucible_control_boundary_depth--;
 +    g_assert_cmpint(qemu_plugin_crucible_vmstop_state, ==, QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED);
@@ -242192,12 +242264,17 @@ index 0000000000000000000000000000000000000000..43b5095fd7bf48043fd2674bce887509
 +def main():
 +    parser = argparse.ArgumentParser()
 +    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--locator-self-test", action="store_true")
 +    parser.add_argument("--negative-control", choices=["callback-scope",
 +                        "queued-advance-guard", "reservation-guard",
 +                        "native-registration-guard", "native-service-guard",
 +                        "prefix-notifier-pid", "prefix-notifier-bql",
 +                        "prefix-notifier-lists", "prefix-notifier-writer"])
 +    arguments = parser.parse_args()
++    locator_self_test()
++    if arguments.locator_self_test:
++        print("PASS unique typed function locator and seven refusal mutations")
++        return
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
 +
 +    selections = {
@@ -242224,8 +242301,9 @@ index 0000000000000000000000000000000000000000..43b5095fd7bf48043fd2674bce887509
 +            "int icount_advance_virtual_time_to_tick(uint64_t target_tick)",
 +        ],
 +        "net/net.c": [
++            "static void net_original_callback_admit(NetClientState *client)",
 +            "static bool crucible_net_tx_callback_ready(NetClientState *sender)",
-+            "static ssize_t crucible_net_tx_submit(const uint8_t *data, size_t len)",
++            "static ssize_t crucible_net_tx_submit(NetClientState *sender, const uint8_t *data, size_t len)",
 +            "static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,",
 +            "ssize_t qemu_sendv_packet_async(NetClientState *sender,",
 +        ],

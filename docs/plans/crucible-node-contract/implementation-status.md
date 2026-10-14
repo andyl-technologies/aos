@@ -4672,9 +4672,23 @@ patch, complete source bundle and updated license inventory. The recipe runs
 all four complete fixtures with the fixed seed and bounded timeout, in addition
 to every ptimer policy combination. Ordinary builds use QEMU's supported
 `make -k` forwarding so independent failures are collected without changing
-failure status. Source review and Nix formatting pass; fresh native compilation,
-the complete fixture commands and corresponding-source realization remain
-required. Earlier link failures remain recorded.
+failure status. The next build completes all 3,792 native build steps. Its four
+unfiltered device fixtures pass eleven cases and the complete ptimer suite passes
+578 cases. A later network-output source fixture fails because its extracted TX
+signature and four direct calls still omit the actual sender argument. This is
+a failed package check, not installed-emulator or corresponding-source success.
+
+The reviewed correction preserves the actual original-endpoint admission body,
+passes the real sender in the four fixture calls and keeps selected authority
+unavailable in the isolated fixture. Every previous assertion and all nine
+negative controls remain. Its locator checks reject missing, duplicate, prototype,
+stale-type and truncated definitions; pure source extraction verifies all 48
+selected production functions. Signed native source
+`01b7a428d447a5ffa181c29729a2db45085b6183`, tree
+`9cbc7d23f7cd9c3b35af89195badb52a3fff3544`, changes that existing Python fixture
+only. The matching atomic patch, source bundle and unchanged license inventory
+pass independent reconstruction review. C fixture execution, full package checks
+and matching-source realization remain required. Earlier failures remain recorded.
 
 Corresponding-source assembly also unnecessarily pulls Cargo and Git into a
 registry-only vendoring operation. A supplied lockfile now selects the required
@@ -4741,8 +4755,21 @@ evaluation verifies that fixture-only edits preserve native derivation identity,
 while a native command change alters it. The coherent current source passes the
 ordinary package catalog and registered derivation checks. Its fresh native
 compiler is `jrmwlbjxqllw5p1sg1pwvxdvjslvziby`, with a separate public wrapper and
-mandatory native-scope check. The full local ALL build is underway; neither
-component controls nor derivation evaluation qualify its result.
+mandatory native-scope check. The full local ALL build links and registers the
+native/public products and their corresponding-source outputs. The two installed
+ELFs are byte-identical. Base, platform, terminal, causal, closed-block and eleven
+origin checks pass; the mandatory check also passes nine LRU and nine table cases.
+Its first complete owned walk still refuses an unknown visitor with unchanged
+queues, so the complete invocation fails. The later four modes never execute.
+
+A bounded diagnostic using that same installed executable identifies the deepest
+leaf as the ARM table walker, after closing all 64 ITB table entries. Source and
+disassembly show uninitialized cached release and pending fields in its birth
+state. The real MMU release exists before its sole initialization/binding path.
+A reviewed draft initializes the fields and binds the cached pointer to that
+actual MMU release, retaining the visitor's ownership checks. Configured
+compilation, component execution and fresh native qualification remain pending;
+the original failed walk remains failed.
 
 ## Complete SDK composition qualification
 
@@ -4770,6 +4797,51 @@ The second invocation runs only those two corrected selectors. The controls
 include legacy policy wire-byte preservation and selected-field serialization.
 They provide no whole-world Capture or native restoration claim. Actual Commit,
 held-proof publication and complete suffix admission are still being integrated.
+
+The later Source/Host/Core composition first fails three internal visibility
+checks, then reports 103 diagnostics, largely cascading from incorrect module
+paths and missing imports. Scoped corrections retain the selected reconstruction
+limits and count the actual retained protocol supervisor. Integrating the actual
+Commit/Held consumers exposes seven provider errors, including two callers
+reverted to an older constructor form. Their correction restores the exact
+selected arguments and retains the source-bound input-emitter chain. A new
+private canonical encoder counts raw serialized extent before constructing its
+DOM, counts bounded canonical output, then reserves and writes the exact bank.
+These checks do not issue whole-memory or restoration authority.
+
+The resulting provider passes normal all-target/all-feature typing in 35.20
+seconds and emits a fresh libtest in 138.72 seconds. Its compiler dependency
+file consumes all 174 selected provider Rust roles. One exact invocation runs
+59 enabled controls: 58 pass and one fails. All 43 earlier controls and the three
+new finite-encoding controls pass. The failed late-field test exposes a real
+production defect: the borrowed scanner returns a quoted CNP U64, but sequence
+and offset readers pass it to an unquoted integer parser. A reviewed correction
+unwraps the string grammar before checked canonical-digit parsing; its new
+runtime and compiler checks initially remain pending. The corrected provider
+then emits another fresh libtest in 140.73 seconds and passes all 59 selected
+controls in one invocation, including the strengthened quoted-number, actual-bank
+and negative wire assertions. The earlier 58/1 invocation remains failed.
+
+The shared four-crate compiler progresses through the provider and core
+libraries after the corresponding corrections, then fails sixteen daemon
+diagnostics involving eight attempts to format a structured OperationFailure
+through a Display-only mapper. Those daemon corrections and the complete
+unit/integration targets initially remain pending. The next shared run passes
+those production branches and reaches the core unit tests, where five test-only
+errors expose a fixture path, ambiguous enum and outdated demand initializer.
+Their correction uses the existing fixture and actual public layout types;
+current combined verification remains pending. No combined strict, complete
+Capture or native restoration pass follows from these component results.
+
+The required application-target invocation reaches its original 10,800-second
+client timeout before application compilation, after building earlier LLVM
+stages. Its original client is waited; external daemon builders are outside that
+release observation. Read-only evaluation of a separately captured current target
+finds 49 missing derivations, including LLVM 22 and 25 Rust stages. The selected
+48 application bodies remain separately identified; their transitive Crucible
+libraries still require current-source qualification. The next dependency build
+will warm the exact required production compiler before reevaluating current
+application targets. Neither the timeout nor the dry-run supplies a gate pass.
 
 ## Performance evidence
 
