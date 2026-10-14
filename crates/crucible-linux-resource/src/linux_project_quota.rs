@@ -25,6 +25,8 @@ use rustix::fs::{FileType, Mode, OFlags, RawDir, fstat, fstatfs, fsync, openat};
 use rustix::ioctl::{Getter, Setter, ioctl, opcode};
 use thiserror::Error;
 
+mod deleted_holders;
+
 const EXT4_QUOTA_BLOCK_BYTES: u64 = 1 << 10;
 const PROJECT_QUOTA_TYPE: u32 = 2;
 const QUOTA_SUBCOMMAND_SHIFT: u32 = 8;
@@ -282,10 +284,11 @@ impl LinuxProjectQuotaReservation {
         let filesystem = self.filesystem()?;
         let usage = get_project_quota(filesystem, &self.path, self.project_id)?;
         if usage.dqb_curspace != 0 || usage.dqb_curinodes != 0 {
-            return Err(LinuxProjectQuotaError::ProjectInUse {
+            return Err(LinuxProjectQuotaError::ReleasedProjectInUse {
                 project_id: self.project_id,
                 bytes: usage.dqb_curspace,
                 inodes: usage.dqb_curinodes,
+                holders: deleted_holders::deleted_file_holders(&self.path),
             });
         }
         clear_project_quota(filesystem, &self.path, self.project_id)?;
@@ -567,6 +570,23 @@ pub enum LinuxProjectQuotaError {
         bytes: u64,
         /// Existing accounted inode count.
         inodes: u64,
+    },
+    /// An emptied run directory's project still accounts content at release.
+    ///
+    /// The usual cause is a process that holds an unlinked project file open
+    /// or mapped; `holders` names any such processes found in `/proc`.
+    #[error(
+        "project-quota identifier {project_id} retains quota state ({bytes} bytes, {inodes} inodes); deleted-file holders: {holders}"
+    )]
+    ReleasedProjectInUse {
+        /// Released project identifier.
+        project_id: u32,
+        /// Remaining accounted bytes.
+        bytes: u64,
+        /// Remaining accounted inode count.
+        inodes: u64,
+        /// Diagnostic list of processes holding deleted project files.
+        holders: String,
     },
     /// Kernel directory attributes did not match the requested transaction.
     #[error("project-quota directory attributes did not verify: {path}")]
