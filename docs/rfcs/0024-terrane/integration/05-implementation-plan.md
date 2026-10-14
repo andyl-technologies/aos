@@ -482,6 +482,17 @@ all six scratch directories remain preserved. Only those two timed-out cases
 enter separate diagnostics using the quieter value of the existing trace flag.
 Those diagnostics preserve the original profile, limits and retries and cannot
 qualify the normal failures. Owning gates and the T1 exit remain unqualified.
+Both quiet diagnostics also time out. Independent review verifies all 101
+sealed payloads, unchanged source and executable bindings, and all 1,076
+archived entries; both scratch directories remain preserved. The indexed
+case spends 10.045 seconds in one source revalidation, whose internal costs
+remain unmeasured. The ancestry case completes three pack retirements in a
+68.247-second bracket and enters deletion at 104.411 seconds, before its
+mandatory local deletion wait can complete within the test limit. Those
+observations motivate narrower diagnostic brackets and operation-local parsed
+catalog sharing with separate native refusal witnesses. Neither observation
+establishes that history verification alone dominates the delay. All required
+checks, deletion windows and test limits remain unchanged; no task advances.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
