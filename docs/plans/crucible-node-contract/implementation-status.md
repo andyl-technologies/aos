@@ -4657,8 +4657,24 @@ body and assertion. Signed native source
 `74887a346dd284b0420c24fa9c7e54210d51af5c`, and its complete matching patch/bundle
 pass independent signature, sole-file and source-tuple review. The production
 recipe now runs all ptimer policy combinations, unfiltered, with a fixed GLib
-seed and a 60-second timeout plus five-second grace. Fresh full compilation and
-those runtime checks remain required for this source.
+seed and a 60-second timeout plus five-second grace. The next full build
+successfully links ptimer, then fails at two isolated device fixture links:
+their direct hwcore dependency now needs the inactive selected-node setup/reset
+observer functions. No package runtime tests execute in this failed build.
+
+The correction links a shared, explicitly licensed fixture helper into those
+two executables and the two existing qdev fixtures with the same dependency.
+Its typed false/no-op functions match production's inactive branches; production
+observers and all test bodies remain unchanged. Native source
+`103158b08fa6fd92cab2ae9911ef2b76f7599fdc`, tree
+`f73ccacd9776301cef4b2e30f979802728434494`, carries the matching signed atomic
+patch, complete source bundle and updated license inventory. The recipe runs
+all four complete fixtures with the fixed seed and bounded timeout, in addition
+to every ptimer policy combination. Ordinary builds use QEMU's supported
+`make -k` forwarding so independent failures are collected without changing
+failure status. Source review and Nix formatting pass; fresh native compilation,
+the complete fixture commands and corresponding-source realization remain
+required. Earlier link failures remain recorded.
 
 Corresponding-source assembly also unnecessarily pulls Cargo and Git into a
 registry-only vendoring operation. A supplied lockfile now selects the required

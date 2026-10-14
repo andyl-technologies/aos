@@ -1,6 +1,6 @@
-From f32fdf3fddad79ea95f84b77df68fa897f6c74d2 Mon Sep 17 00:00:00 2001
+From 103158b08fa6fd92cab2ae9911ef2b76f7599fdc Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 14 Oct 2026 21:15:00 +0000
+Date: Wed, 14 Oct 2026 23:30:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -758,6 +758,17 @@ endpoint backing stub alone was insufficient. Preserve that failure,
 production code, timer behavior and test inventory. Source review confirms
 the second direct dependency; fresh full compilation and all ptimer policy
 checks remain required for this corrected source.
+
+
+Keep four isolated hwcore unit fixtures independent of selected-node
+observers. Supply the exact typed inactive false/no-op branches in one
+GPL-compatible fixture helper, linked only into those four executables.
+Production observer implementations and every test body remain unchanged.
+
+The preceding full build passed the ptimer link and then exposed these
+missing direct device-observer dependencies. Preserve that failure.
+The new helper and complete fixture inventory require fresh full native
+compilation and unfiltered package tests.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -217797,8 +217808,95 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
  
      return g_test_run();
  }
+diff --git a/tests/unit/crucible-inactive-device-stubs.c b/tests/unit/crucible-inactive-device-stubs.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..0134a5e2142edf1fbb6004ce1b513cbc827fc7cc
+--- /dev/null
++++ b/tests/unit/crucible-inactive-device-stubs.c
+@@ -0,0 +1,81 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++#include "qemu/osdep.h"
++#include "system/crucible-whole-early.h"
++
++/* These isolated hwcore fixtures never select a whole-node constructor or
++ * activate its reset bank. Keep the production inactive observer behavior;
++ * the real qdev and resettable code still performs every ordinary operation. */
++bool crucible_whole_setup_selected(void)
++{
++    return false;
++}
++
++void crucible_whole_setup_q35_device_birth(struct DeviceState *device)
++{
++}
++
++void crucible_whole_setup_q35_bus_birth(struct BusState *bus)
++{
++}
++
++void crucible_whole_setup_q35_device_parent(struct DeviceState *device,
++                                          struct BusState *bus)
++{
++}
++
++void crucible_whole_setup_q35_bus_parent(struct BusState *bus,
++                                       struct DeviceState *parent)
++{
++}
++
++void crucible_whole_setup_q35_bus_realize_begin(struct BusState *bus, bool value)
++{
++}
++
++void crucible_whole_setup_q35_realize_begin(struct DeviceState *device,
++                                         bool value)
++{
++}
++
++void crucible_whole_setup_q35_realize_finish(struct DeviceState *device)
++{
++}
++
++void qemu_reset_whole_q35_observe(struct Object *object, unsigned reset_type)
++{
++}
++
++void qemu_reset_whole_q35_parent_change(struct Object *object)
++{
++}
++
++void qemu_reset_whole_q35_phase_kind(struct Object *object, unsigned reset_type,
++                                   unsigned kind)
++{
++}
++
++bool qemu_reset_whole_q35_phase_callback_current(struct Object *object,
++                                              unsigned kind)
++{
++    return false;
++}
++
++void qemu_reset_whole_q35_phase_callback_begin(struct Object *object,
++                                            unsigned kind)
++{
++}
++
++void qemu_reset_whole_q35_phase_callback_end(struct Object *object, unsigned kind)
++{
++}
++
++void qemu_reset_whole_q35_device_callback_begin(
++    struct DeviceState *device, void (*method)(struct DeviceState *))
++{
++}
++
++void qemu_reset_whole_q35_device_callback_end(
++    struct DeviceState *device, void (*method)(struct DeviceState *))
++{
++}
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8abc12d2d6ceac649d99065e05911e3d4669e032 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8979bad236d6ef89336b85ae2c403213e1bc0e2e 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -125,6 +125,11 @@ if have_block
@@ -217821,11 +217919,11 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8abc12d2d6ceac649d99065e05911e3d
 +    tests += {
 +      'test-crucible-mos6522-clock': [
 +        meson.project_source_root() / 'hw/misc/mos6522.c',
-+        migration, io, qom, hwcore
++        migration, io, qom, hwcore, 'crucible-inactive-device-stubs.c'
 +      ],
 +      'test-crucible-i3c-timer': [
 +        meson.project_source_root() / 'hw/i3c/mock-i3c-target.c',
-+        migration, io, qom, hwcore
++        migration, io, qom, hwcore, 'crucible-inactive-device-stubs.c'
 +      ],
 +      'test-crucible-slirp-time': [],
 +      'test-crucible-xtensa-timer': [],
@@ -217851,6 +217949,19 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8abc12d2d6ceac649d99065e05911e3d
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
+@@ -162,10 +198,10 @@ if have_system
+     endif
+ 
+     tests += {
+-      'test-qdev-global-props': [qom, hwcore]
++      'test-qdev-global-props': [qom, hwcore, 'crucible-inactive-device-stubs.c']
+     }
+   endif
+-  tests += {'test-qdev': [qom, hwcore]}
++  tests += {'test-qdev': [qom, hwcore, 'crucible-inactive-device-stubs.c']}
+ endif
+ 
+ if have_ga and host_os == 'linux'
 @@ -207,3 +243,650 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])

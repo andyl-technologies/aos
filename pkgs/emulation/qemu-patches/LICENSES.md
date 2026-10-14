@@ -304,6 +304,7 @@ The atomic integration patch creates these QEMU source files:
 | `qom/crucible-class-properties.inc` | GPL-2.0-or-later | Original class property storage and retained release lineage; SPDX notice. |
 | `qom/crucible-class-defaults.inc` | GPL-2.0-or-later | Original class defaults and finite constructor storage; SPDX notice. |
 | `qom/crucible-instance-properties.inc` | GPL-2.0-or-later | Original instance property storage and retained lifetime events; SPDX notice. |
+| `tests/unit/crucible-inactive-device-stubs.c` | GPL-2.0-or-later | Explicit SPDX identifier; inactive setup/reset observers for isolated hwcore unit fixtures only. |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated

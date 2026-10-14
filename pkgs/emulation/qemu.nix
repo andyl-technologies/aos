@@ -890,7 +890,8 @@ in
                   storage-daemon/qemu-storage-daemon qemu-system-x86_64
                 make -C build Makefile.mtest
               ''
-              else "make -j$NIX_BUILD_CORES"
+              # QEMU maps make -k to Ninja -k0; keep all job/dependency flags.
+              else "make -k -j$NIX_BUILD_CORES"
             }
           '';
         }
@@ -1721,6 +1722,12 @@ in
               build/tests/unit/test-crucible-rc4030-period --tap
               build/tests/unit/test-crucible-riscv-cpc-clock --tap
               build/tests/unit/test-crucible-mips-gic-migration --tap
+              # Run each isolated hwcore fixture without a case filter.
+              for device_fixture in test-crucible-i3c-timer \
+                test-crucible-mos6522-clock test-qdev test-qdev-global-props; do
+                timeout -k 5 60 "build/tests/unit/$device_fixture" --tap \
+                  --seed=R02S00000000000000000000000000000000
+              done
               # Cover every ptimer policy with the isolated timer implementations.
               timeout -k 5 60 build/tests/unit/ptimer-test --tap \
                 --seed=R02S00000000000000000000000000000000
