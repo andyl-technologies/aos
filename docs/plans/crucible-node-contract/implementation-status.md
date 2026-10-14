@@ -4013,6 +4013,33 @@ journal issuance, the fourth native-after transfer/confirmation, complete
 physical admission, genuine factory/adopter activation and fresh restoration
 remain required; this association does not qualify Arm, Capture or Ready.
 
+## Selected complete-archive preparse admission
+
+The selected complete loader admits original file extents, exact read banks and
+named parser/typed/canonical/validation storage before reads and decoding. A
+direct edition-three envelope decoder avoids legacy variant retries. The
+accounting includes authenticated index, manifest, administrator and coordinator
+data; a private original loader receipt is required for later source issuance.
+Parsed labels or a legacy load cannot recreate that receipt.
+
+Independent review found that an ordinary readonly open could block on a FIFO
+before checking its type. The corrected selected route opens nonblocking and
+refuses nonregular entries before body reads. Regular files use the admitted
+exact bank and a one-byte growth sentinel, preserving their existing bytes.
+Legacy loading, formats, schema tags and MAC framing remain unchanged.
+
+Independent receipt
+`93f5298207d62449a18e12952b256cdbc324929197f25b1c47c6c4bcb31a060e`
+verifies eight production roles and one necessary test role against current
+Source60 preimages. Matching strict checks and a fresh executable pass the
+no-writer FIFO control under its original ten-second guard and all four loader
+controls. The earlier ten storage/four journal regressions, blocked FIFO review
+and failed test-clock lint cohort retain their original identities.
+
+This loader accounts selected host data and grants no native installation or
+factory/adopter authority. Both Core42 and Packet148 safeguards remain; complete
+physical capture, local source settlement and fresh worlds remain required.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

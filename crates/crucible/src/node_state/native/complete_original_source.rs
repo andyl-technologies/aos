@@ -223,6 +223,8 @@ impl NativeArchiveRecord {
         factory: &dyn NativeWorldFactory,
         limits: HostSchedulingContinuationLimits,
     ) -> Result<CompleteOriginalRestorationSource, StateError> {
+        self.authenticate_complete_load_admission()
+            .map_err(super::super::schema)?;
         if self.collecting_complete_capture_provenance()?.is_some() {
             return Err(refused(
                 "collecting archive requires its original collecting restoration route",
@@ -238,8 +240,16 @@ impl NativeArchiveRecord {
         limits: HostSchedulingContinuationLimits,
         collecting_plan: Option<crate::node_admission::InstalledConformancePlan>,
     ) -> Result<CompleteOriginalRestorationSource, StateError> {
+        self.authenticate_complete_load_admission()
+            .map_err(super::super::schema)?;
         let content = self.complete_original_lineage_content(graph, factory, limits.lineage)?;
-        let administrative = self.original_capture_journal()?;
+        let administrative = super::complete_original_index::authenticate_admitted(
+            &self,
+            content
+                .capture_owned_storage()
+                .map_err(super::super::schema)?,
+            self.limits.state.maximum_total_content_bytes,
+        )?;
         let original = administrative
             .attempts
             .last()

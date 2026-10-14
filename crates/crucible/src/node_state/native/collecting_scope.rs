@@ -35,18 +35,65 @@ impl NativeArchiveRecord {
     pub fn collecting_complete_capture_provenance(
         &self,
     ) -> Result<Option<CollectingCompleteCaptureProvenance>, StateError> {
+        if self.complete_load_is_selected() {
+            self.authenticate_complete_load_admission()
+                .map_err(super::super::schema)?;
+            return self.collecting_complete_capture_provenance_admitted(
+                0,
+                self.limits.state.maximum_total_content_bytes,
+            );
+        }
+        self.collecting_provenance_inner(0, None)
+    }
+
+    pub(super) fn collecting_complete_capture_provenance_admitted(
+        &self,
+        extra_retained: usize,
+        maximum_total: usize,
+    ) -> Result<Option<CollectingCompleteCaptureProvenance>, StateError> {
+        self.collecting_provenance_inner(extra_retained, Some(maximum_total))
+    }
+
+    fn collecting_provenance_inner(
+        &self,
+        extra_retained: usize,
+        admitted: Option<usize>,
+    ) -> Result<Option<CollectingCompleteCaptureProvenance>, StateError> {
         let reference = &self.manifest().provenance_ref;
-        let bytes = self.object(reference, self.limits.state.maximum_record_bytes)?;
-        let value = crucible_node_contract::canonical::parse_json(
+        let bytes = match admitted {
+            Some(maximum) => {
+                self.read_complete_object_admitted(reference, extra_retained, maximum)?
+            }
+            None => self.object(reference, self.limits.state.maximum_record_bytes)?,
+        };
+        if let Some(maximum) = admitted {
+            let retained = self
+                .capture_owned_storage()
+                .map_err(super::super::schema)?
+                .checked_add(extra_retained)
+                .ok_or_else(|| refused("collecting retained overflow"))?;
+            super::storage::admit_decode(&bytes, retained, maximum)?;
+        }
+        let mut value = crucible_node_contract::canonical::parse_json(
             &bytes,
             self.limits.state.maximum_record_bytes,
         )
         .map_err(super::super::schema)?;
-        let Some(scope) = value.get("collecting_capture") else {
-            return Ok(None);
+        let scope: CollectingCompleteCaptureProvenance = if admitted.is_some() {
+            let Some(scope) = value
+                .as_object_mut()
+                .and_then(|body| body.remove("collecting_capture"))
+            else {
+                return Ok(None);
+            };
+            // Move the selected subtree once; no second DOM is created.
+            serde_json::from_value(scope).map_err(super::super::schema)?
+        } else {
+            let Some(scope) = value.get("collecting_capture") else {
+                return Ok(None);
+            };
+            serde_json::from_value(scope.clone()).map_err(super::super::schema)?
         };
-        let scope: CollectingCompleteCaptureProvenance =
-            serde_json::from_value(scope.clone()).map_err(super::super::schema)?;
         if scope.schema != "source-owned.collecting-complete-capture/1"
             || scope.ordinary_acceptance
             || scope.world != self.manifest().world_binding_hash

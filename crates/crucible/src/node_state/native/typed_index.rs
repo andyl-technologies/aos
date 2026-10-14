@@ -196,3 +196,33 @@ impl<'de> Deserialize<'de> for Index {
         }
     }
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompleteEnvelope {
+    body: CompleteOriginalIndex,
+    authentication: [u8; 32],
+}
+
+/// Decodes the selected edition directly, without allocating legacy retry trees.
+pub(super) fn decode_complete_envelope(
+    value: serde_json::Value,
+) -> Result<(Index, [u8; 32]), super::StateError> {
+    let wire: CompleteEnvelope = serde_json::from_value(value).map_err(super::super::schema)?;
+    if wire.body.schema_version != 3 || wire.body.typed_inventory.schema_version != 2 {
+        return Err(super::refused(
+            "complete loader requires index three/inventory two",
+        ));
+    }
+    Ok((
+        Index {
+            schema_version: 3,
+            artifact: wire.body.artifact,
+            objects: wire.body.typed_inventory.objects,
+            owners: wire.body.owners,
+            selected_extensions: None,
+            original_capture_journal: Some(wire.body.original_capture_journal),
+        },
+        wire.authentication,
+    ))
+}

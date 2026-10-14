@@ -1,4 +1,4 @@
-//! Preflights closed Host2 JSON allocation shapes without constructing a DOM.
+//! Preflights closed Host2 and complete-archive JSON without constructing a DOM.
 //!
 //! This credit describes requested decoder storage only. Canonical grammar,
 //! source validation, signed closure and fresh-target authority stay separate.
@@ -60,10 +60,47 @@ struct Container {
     typed_slot: usize,
 }
 
+/// Names the fixed nonallocating scanner stack separately from DOM/typed banks.
+pub(super) fn scanner_storage() -> usize {
+    size_of::<[Container; 64]>() + size_of::<DecodeCredit>()
+}
+
 /// Counts occurrences before parse, including duplicate keys that the original
 /// parser will reject. No duplicate collapse is assumed to release storage.
 pub(super) fn preflight(bytes: &[u8], maximum: usize) -> Result<DecodeCredit, RuntimeError> {
-    let typed_slot = NodeRuntime::capture_closed_inline_storage();
+    preflight_shape(
+        bytes,
+        maximum,
+        NodeRuntime::capture_closed_inline_storage(),
+        true,
+    )
+}
+
+/// Counts only the direct complete-index/manifest/journal closed archive types.
+/// The archive reader never uses untagged legacy index retries in this route.
+pub(super) fn preflight_archive(
+    bytes: &[u8],
+    maximum: usize,
+) -> Result<DecodeCredit, RuntimeError> {
+    use super::storage::{Index, NativeArtifactState, NativeOwnerState, Object};
+    let typed_slot = NodeRuntime::capture_closed_inline_storage()
+        .max(size_of::<Index>())
+        .max(size_of::<NativeArtifactState>())
+        .max(size_of::<NativeOwnerState>())
+        .max(size_of::<Object>())
+        .max(size_of::<super::lineage_source::OriginalLineageCoordinator>())
+        .max(size_of::<
+            super::collecting_scope::CollectingCompleteCaptureProvenance,
+        >());
+    preflight_shape(bytes, maximum, typed_slot, false)
+}
+
+fn preflight_shape(
+    bytes: &[u8],
+    maximum: usize,
+    typed_slot: usize,
+    host_shape: bool,
+) -> Result<DecodeCredit, RuntimeError> {
     let value_node = NodeRuntime::capture_map_node_storage::<String, serde_json::Value>();
     let ordered_node =
         NodeRuntime::capture_map_node_storage::<Vec<u16>, (&str, &serde_json::Value)>();
@@ -88,7 +125,7 @@ pub(super) fn preflight(bytes: &[u8], maximum: usize) -> Result<DecodeCredit, Ru
                 if depth == stack.len() {
                     return Err(RuntimeError::ResourceLimit);
                 }
-                let context = if depth == 0 && bytes[cursor] == b'{' {
+                let context = if host_shape && depth == 0 && bytes[cursor] == b'{' {
                     Context::Host
                 } else if matches!(pending, Context::Opaque)
                     && depth > 0

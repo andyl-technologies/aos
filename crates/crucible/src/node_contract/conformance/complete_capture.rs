@@ -205,6 +205,9 @@ impl ConformanceRuntime {
         graph.reauthenticate().map_err(|error| {
             crate::node_state::schema(RuntimeError::SchedulerRefused(error.message))
         })?;
+        archive
+            .authenticate_complete_load_admission()
+            .map_err(crate::node_state::schema)?;
         let historical = archive
             .collecting_complete_capture_provenance()?
             .ok_or_else(|| crate::node_state::schema(RuntimeError::ForeignAuthority))?;

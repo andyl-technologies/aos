@@ -22,6 +22,28 @@ pub(super) const JOURNAL_MEDIA: &str =
 pub(super) fn authenticate(
     record: &NativeArchiveRecord,
 ) -> Result<RuntimeOriginalCaptureJournal, StateError> {
+    if record.complete_load_is_selected() {
+        record
+            .authenticate_complete_load_admission()
+            .map_err(schema)?;
+        return authenticate_admitted(record, 0, record.limits.state.maximum_total_content_bytes);
+    }
+    authenticate_inner(record, 0, None)
+}
+
+pub(super) fn authenticate_admitted(
+    record: &NativeArchiveRecord,
+    extra_retained: usize,
+    maximum_total: usize,
+) -> Result<RuntimeOriginalCaptureJournal, StateError> {
+    authenticate_inner(record, extra_retained, Some(maximum_total))
+}
+
+fn authenticate_inner(
+    record: &NativeArchiveRecord,
+    extra_retained: usize,
+    admitted: Option<usize>,
+) -> Result<RuntimeOriginalCaptureJournal, StateError> {
     if record.index.schema_version != 3 {
         return Err(refused(
             "complete original administrative reader requires index three",
@@ -42,9 +64,57 @@ pub(super) fn authenticate(
         ));
     }
     let maximum = record.limits.state.maximum_record_bytes;
-    let bytes = record.object(reference, maximum)?;
+    let retained = if admitted.is_some() {
+        record
+            .capture_owned_storage()
+            .map_err(schema)?
+            .checked_add(extra_retained)
+            .ok_or_else(|| refused("administrative retained overflow"))?
+    } else {
+        0
+    };
+    let bytes = match admitted {
+        Some(total) => record.read_complete_object_admitted(reference, extra_retained, total)?,
+        None => record.object(reference, maximum)?,
+    };
+    if let Some(total) = admitted {
+        super::storage::admit_decode(&bytes, retained, total)?;
+    }
     let journal: RuntimeOriginalCaptureJournal = decode_record(&bytes, maximum)?;
+    let journal_storage = if admitted.is_some() {
+        crate::node_contract::NodeRuntime::capture_admin_storage(&journal).map_err(schema)?
+    } else {
+        0
+    };
+    if let Some(total) = admitted {
+        // Validation counts JSON without a DOM, formats closed decimal values,
+        // and holds borrowed lifetime-ID and per-attempt participant sets.
+        let identity_nodes = journal
+            .attempts
+            .len()
+            .checked_add(5)
+            .and_then(|count| {
+                count.checked_mul(
+                    crate::node_contract::NodeRuntime::capture_map_node_storage::<
+                        &crucible_node_contract::Id,
+                        (),
+                    >(),
+                )
+            })
+            .ok_or_else(|| refused("administrative identity set overflow"))?;
+        super::storage::admit(
+            retained
+                .checked_add(bytes.capacity())
+                .and_then(|n| n.checked_add(journal_storage))
+                .ok_or_else(|| refused("administrative validation overflow"))?,
+            identity_nodes
+                .checked_add(super::storage::fixed_storage())
+                .ok_or_else(|| refused("administrative fixed storage overflow"))?,
+            total,
+        )?;
+    }
     validate_journal(&journal, maximum)?;
+    drop(bytes);
     let current = journal
         .attempts
         .last()
@@ -59,7 +129,25 @@ pub(super) fn authenticate(
             "administrative journal names another original capture",
         ));
     }
-    let coordinator_bytes = record.object(&manifest.coordinator_state_ref, maximum)?;
+    let coordinator_bytes = match admitted {
+        Some(total) => record.read_complete_object_admitted(
+            &manifest.coordinator_state_ref,
+            extra_retained
+                .checked_add(journal_storage)
+                .ok_or_else(|| refused("coordinator retained overflow"))?,
+            total,
+        )?,
+        None => record.object(&manifest.coordinator_state_ref, maximum)?,
+    };
+    if let Some(total) = admitted {
+        super::storage::admit_decode(
+            &coordinator_bytes,
+            retained
+                .checked_add(journal_storage)
+                .ok_or_else(|| refused("coordinator decode overflow"))?,
+            total,
+        )?;
+    }
     let coordinator: OriginalLineageCoordinator = decode_record(&coordinator_bytes, maximum)?;
     coordinator.runtime.validate().map_err(schema)?;
     coordinator.scheduler.validate().map_err(schema)?;
@@ -87,16 +175,72 @@ pub(super) fn authenticate(
             ));
         }
     }
-    let mut expected = core_references(&journal, maximum)?;
-    expected.sort();
-    expected.dedup();
     let object = record
         .index
         .objects
         .iter()
         .find(|object| &object.reference == reference)
         .ok_or_else(|| refused("administrative journal is outside signed typed inventory"))?;
-    if object.dependencies != expected {
+    let matches = if let Some(total) = admitted {
+        // The closed journal has one Runtime7 reference and two settlement
+        // references per owner. A borrowed ordered set avoids cloning a DOM,
+        // every reference subtree and a traversal Vec in this selected route.
+        let count = journal
+            .attempts
+            .iter()
+            .try_fold(1usize, |count, attempt| {
+                count
+                    .checked_add(1)?
+                    .checked_add(attempt.owners.len().checked_mul(2)?)
+            })
+            .ok_or_else(|| refused("administrative reference count overflow"))?;
+        let reference_nodes = count
+            .checked_mul(
+                crate::node_contract::NodeRuntime::capture_map_node_storage::<
+                    &crucible_node_contract::ContentRef,
+                    (),
+                >(),
+            )
+            .ok_or_else(|| refused("administrative reference set overflow"))?;
+        let coordinator_storage =
+            crate::node_contract::NodeRuntime::capture_reference_storage(&coordinator.runtime)
+                .map_err(schema)?
+                .checked_add(
+                    crate::node_contract::NodeRuntime::capture_reference_storage(
+                        &coordinator.scheduler,
+                    )
+                    .map_err(schema)?,
+                )
+                .ok_or_else(|| refused("coordinator metadata overflow"))?;
+        super::storage::admit(
+            retained
+                .checked_add(journal_storage)
+                .and_then(|n| n.checked_add(coordinator_bytes.capacity()))
+                .and_then(|n| n.checked_add(coordinator_storage))
+                .ok_or_else(|| refused("administrative closure peak overflow"))?,
+            reference_nodes
+                .checked_add(super::storage::fixed_storage())
+                .ok_or_else(|| refused("administrative reference fixed overflow"))?,
+            total,
+        )?;
+        let mut expected = BTreeSet::new();
+        for attempt in &journal.attempts {
+            expected.insert(&attempt.source_runtime);
+            for owner in &attempt.owners {
+                if let OriginalCaptureOwnerState::Settled { snapshot, journal } = &owner.state {
+                    expected.insert(snapshot);
+                    expected.insert(journal.as_ref());
+                }
+            }
+        }
+        object.dependencies.iter().eq(expected)
+    } else {
+        let mut expected = core_references(&journal, maximum)?;
+        expected.sort();
+        expected.dedup();
+        object.dependencies == expected
+    };
+    if !matches {
         return Err(refused(
             "administrative journal dependency inventory is incomplete or changed",
         ));

@@ -28,7 +28,11 @@ use zeroize::Zeroizing;
 
 use super::super::{StateError, StateErrorCode, schema};
 use super::{NativeArchiveLimits, decode_record, native_error, refused, storage_error};
+
+#[path = "complete_original_loader.rs"]
+mod complete_original_loader;
 use crate::node_contract::{NativeCaptureArtifact, NativeStateKey};
+pub(super) use complete_original_loader::{admit, admit_decode, fixed_storage};
 
 const AUTHENTICATION_DOMAIN: &[u8] = b"crucible.native-world-archive.authentication.v1\0";
 type ArchiveMac = Hmac<Sha256>;
@@ -106,6 +110,7 @@ pub struct NativeArchive {
 /// Retains authenticated native metadata and independently owned durable backing.
 #[derive(Clone)]
 pub struct NativeArchiveRecord {
+    complete_load: Option<complete_original_loader::CompleteLoadAdmission>,
     pub(super) index: Arc<Index>,
     pub(super) manifest: CaptureManifest,
     directory: Arc<File>,
@@ -340,6 +345,7 @@ impl NativeArchive {
         let manifest: CaptureManifest =
             canonical::decode(&bytes, self.limits.state.maximum_record_bytes).map_err(schema)?;
         let record = NativeArchiveRecord {
+            complete_load: None,
             index: Arc::new(index),
             manifest,
             directory: Arc::clone(&self.directory),
@@ -812,125 +818,132 @@ impl NativeArchiveRecord {
         &self,
     ) -> Result<usize, crate::node_contract::RuntimeError> {
         use crate::node_contract::{NodeRuntime, RuntimeError};
-        use std::mem::size_of;
         let add = |a: usize, b: usize| a.checked_add(b).ok_or(RuntimeError::ResourceLimit);
         // Arc<Index> retains the actual index once. Charging each owning view
         // conservatively does not treat equal portable metadata as shared bytes.
-        let mut bytes = NodeRuntime::capture_shared_allocation_storage::<Index>();
-        bytes = add(
-            bytes,
+        let mut bytes = add(
+            std::mem::size_of::<Self>(),
             NodeRuntime::capture_shared_allocation_storage::<File>(),
         )?;
         bytes = add(
             bytes,
             NodeRuntime::capture_manifest_storage(&self.manifest)?,
         )?;
+        bytes = add(bytes, index_owned_storage(&self.index)?)?;
+        Ok(bytes)
+    }
+}
+
+fn index_owned_storage(index: &Index) -> Result<usize, crate::node_contract::RuntimeError> {
+    use crate::node_contract::{NodeRuntime, RuntimeError};
+    use std::mem::size_of;
+    let add = |a: usize, b: usize| a.checked_add(b).ok_or(RuntimeError::ResourceLimit);
+    let mut bytes = NodeRuntime::capture_shared_allocation_storage::<Index>();
+    bytes = add(
+        bytes,
+        NodeRuntime::capture_reference_storage(&index.artifact)?,
+    )?;
+    for reference in [
+        index.selected_extensions.as_ref(),
+        index.original_capture_journal.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        bytes = add(bytes, NodeRuntime::capture_reference_storage(reference)?)?;
+    }
+    bytes = add(
+        bytes,
+        index
+            .objects
+            .capacity()
+            .checked_mul(size_of::<Object>())
+            .ok_or(RuntimeError::ResourceLimit)?,
+    )?;
+    for object in &index.objects {
         bytes = add(
             bytes,
-            NodeRuntime::capture_reference_storage(&self.index.artifact)?,
+            NodeRuntime::capture_reference_storage(&object.reference)?,
         )?;
-        for reference in [
-            self.index.selected_extensions.as_ref(),
-            self.index.original_capture_journal.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        bytes = add(
+            bytes,
+            object
+                .dependencies
+                .capacity()
+                .checked_mul(size_of::<ContentRef>())
+                .ok_or(RuntimeError::ResourceLimit)?,
+        )?;
+        for reference in &object.dependencies {
+            bytes = add(bytes, NodeRuntime::capture_reference_storage(reference)?)?;
+        }
+    }
+    bytes = add(
+        bytes,
+        index
+            .owners
+            .capacity()
+            .checked_mul(size_of::<NativeOwnerState>())
+            .ok_or(RuntimeError::ResourceLimit)?,
+    )?;
+    for owner in &index.owners {
+        if !owner.key.schema.extensions.is_empty() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        for id in [
+            &owner.owner,
+            &owner.key.implementation,
+            &owner.key.profile,
+            &owner.key.schema.id,
+        ] {
+            bytes = add(bytes, id.allocated_capacity())?;
+        }
+        bytes = add(
+            bytes,
+            NodeRuntime::capture_reference_storage(&owner.key.schema.definition)?,
+        )?;
+        bytes = add(
+            bytes,
+            NodeRuntime::capture_map_node_storage::<String, serde_json::Value>(),
+        )?;
+        bytes = add(
+            bytes,
+            owner
+                .participants
+                .capacity()
+                .checked_mul(size_of::<Id>())
+                .ok_or(RuntimeError::ResourceLimit)?,
+        )?;
+        for participant in &owner.participants {
+            bytes = add(bytes, participant.allocated_capacity())?;
+        }
+        bytes = add(bytes, NodeRuntime::capture_reference_storage(&owner.state)?)?;
+        bytes = add(
+            bytes,
+            owner
+                .evidence
+                .capacity()
+                .checked_mul(size_of::<ContentRef>())
+                .ok_or(RuntimeError::ResourceLimit)?,
+        )?;
+        for reference in &owner.evidence {
             bytes = add(bytes, NodeRuntime::capture_reference_storage(reference)?)?;
         }
         bytes = add(
             bytes,
-            self.index
-                .objects
+            owner
+                .artifacts
                 .capacity()
-                .checked_mul(size_of::<Object>())
+                .checked_mul(size_of::<NativeArtifactState>())
                 .ok_or(RuntimeError::ResourceLimit)?,
         )?;
-        for object in &self.index.objects {
+        for artifact in &owner.artifacts {
+            bytes = add(bytes, artifact.role.allocated_capacity())?;
+            bytes = add(bytes, artifact.name.capacity())?;
             bytes = add(
                 bytes,
-                NodeRuntime::capture_reference_storage(&object.reference)?,
+                NodeRuntime::capture_reference_storage(&artifact.content)?,
             )?;
-            bytes = add(
-                bytes,
-                object
-                    .dependencies
-                    .capacity()
-                    .checked_mul(size_of::<ContentRef>())
-                    .ok_or(RuntimeError::ResourceLimit)?,
-            )?;
-            for reference in &object.dependencies {
-                bytes = add(bytes, NodeRuntime::capture_reference_storage(reference)?)?;
-            }
         }
-        bytes = add(
-            bytes,
-            self.index
-                .owners
-                .capacity()
-                .checked_mul(size_of::<NativeOwnerState>())
-                .ok_or(RuntimeError::ResourceLimit)?,
-        )?;
-        for owner in &self.index.owners {
-            if !owner.key.schema.extensions.is_empty() {
-                return Err(RuntimeError::UnsupportedFacet);
-            }
-            for id in [
-                &owner.owner,
-                &owner.key.implementation,
-                &owner.key.profile,
-                &owner.key.schema.id,
-            ] {
-                bytes = add(bytes, id.allocated_capacity())?;
-            }
-            bytes = add(
-                bytes,
-                NodeRuntime::capture_reference_storage(&owner.key.schema.definition)?,
-            )?;
-            bytes = add(
-                bytes,
-                NodeRuntime::capture_map_node_storage::<String, serde_json::Value>(),
-            )?;
-            bytes = add(
-                bytes,
-                owner
-                    .participants
-                    .capacity()
-                    .checked_mul(size_of::<Id>())
-                    .ok_or(RuntimeError::ResourceLimit)?,
-            )?;
-            for participant in &owner.participants {
-                bytes = add(bytes, participant.allocated_capacity())?;
-            }
-            bytes = add(bytes, NodeRuntime::capture_reference_storage(&owner.state)?)?;
-            bytes = add(
-                bytes,
-                owner
-                    .evidence
-                    .capacity()
-                    .checked_mul(size_of::<ContentRef>())
-                    .ok_or(RuntimeError::ResourceLimit)?,
-            )?;
-            for reference in &owner.evidence {
-                bytes = add(bytes, NodeRuntime::capture_reference_storage(reference)?)?;
-            }
-            bytes = add(
-                bytes,
-                owner
-                    .artifacts
-                    .capacity()
-                    .checked_mul(size_of::<NativeArtifactState>())
-                    .ok_or(RuntimeError::ResourceLimit)?,
-            )?;
-            for artifact in &owner.artifacts {
-                bytes = add(bytes, artifact.role.allocated_capacity())?;
-                bytes = add(bytes, artifact.name.capacity())?;
-                bytes = add(
-                    bytes,
-                    NodeRuntime::capture_reference_storage(&artifact.content)?,
-                )?;
-            }
-        }
-        Ok(bytes)
     }
+    Ok(bytes)
 }
