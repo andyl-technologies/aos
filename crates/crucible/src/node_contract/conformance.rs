@@ -18,8 +18,10 @@ mod quantized;
 
 #[path = "conformance/complete_capture.rs"]
 mod complete_capture;
-pub use complete_capture::{CollectingOriginalLineageCaptureRequest, CollectingCompleteRestorationSource};
 pub(crate) use complete_capture::OriginalCollectingCaptureScope;
+pub use complete_capture::{
+    CollectingCompleteRestorationSource, CollectingOriginalLineageCaptureRequest,
+};
 
 #[path = "conformance/exact_inputs.rs"]
 mod exact_inputs;

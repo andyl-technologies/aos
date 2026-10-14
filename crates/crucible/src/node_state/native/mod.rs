@@ -51,9 +51,9 @@ pub use complete_original_geometry::{
     CompleteOriginalCaptureGeometry, CompleteOriginalOwnerCaptureGeometry,
     CompleteOriginalOwnerCapturePreflight,
 };
+pub use complete_original_native_ticket::CompleteOriginalNativeTicket;
 pub(crate) use complete_original_source::CompleteOriginalSource;
 pub use complete_original_source::{CompleteOriginalHostTicket, CompleteOriginalRestorationSource};
-pub use complete_original_native_ticket::CompleteOriginalNativeTicket;
 pub(crate) use core_future_metadata::CompleteCaptureAllocationBudget;
 pub use driver::NativeWorldRestoreDriver;
 pub use extensions::NativeExtensionPreservationPolicy;
