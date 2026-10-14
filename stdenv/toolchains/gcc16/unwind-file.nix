@@ -51,7 +51,8 @@ in
           # No optional upstream capability is disabled for this private tool.
           "$CONFIG_SHELL" ./configure --prefix="$out" \
             --build=${buildPlatform.config} --host=${hostPlatform.config} \
-            --target=${hostPlatform.config}
+            --target=${hostPlatform.config} \
+            --enable-static
           # The predecessor wrapper produces static executables. Tell libtool
           # about that policy for file and its test, while retaining both
           # shared and static libmagic builds and every upstream capability.

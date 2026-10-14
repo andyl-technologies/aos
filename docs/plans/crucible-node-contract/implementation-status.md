@@ -4553,7 +4553,8 @@ assigned Admit after 66.53 seconds. The native endpoint verifies its MAC and
 installs the token, but the ordinary Control dispatcher rejects the retained
 proof extension before replying. The original provider I/O times out; both
 retained processes retire without supervisor signals or unknown cleanup.
-The failure remains a required fix, not genuine native admission qualification.
+The failed attempt remains preserved separately from the corrected
+qualification below.
 
 The next source correction hands the exact verified original to Control through
 a private, consumed admission witness. It rechecks the installed token, boot,
@@ -4561,8 +4562,18 @@ policy, connection authority and original request; the unchanged signed proof
 and request identity remain in the journal. Generic proof-bearing Admit refuses
 before cached-response lookup or preparation callbacks. Four regression controls
 cover the generic route, ordinary baseline, missing installed token and cached
-proof replay. Source review passes; the corrected executable build and genuine
-process test remain pending, and the original failed attempt is preserved.
+proof replay. Independent source review and current all-target/all-feature
+provider strict checks pass. Fresh provider tests, ordinary peer and host
+integration binaries compile with size optimization, debug assertions and
+overflow checks. All 29 selected provider controls pass, including the four new
+regressions. The corrected three-child fixture passes: each actual child
+completes source registration, typed Hello/Discover/Realize and once-keyed
+protocol Admit, then reaps in its original private group. Its test reports
+1.51 seconds; the complete supervised invocation takes 6.92 seconds without
+signals or unknown cleanup. These results bind committed source
+`0f664e33327cffb576314ba03163cad33e144678`. They establish genuine admission;
+semantic Arm, complete-world execution, Capture and fresh restoration remain
+separate requirements. The original failure is preserved.
 
 ## Production QOM observer inputs and stopped-current observation
 
@@ -4591,10 +4602,27 @@ pending for this source.
 The ordinary production catalog passes for all 764 packages and the current
 source tuple passes 14 checks. The first context build fails in its predecessor
 `file` helper: its static compiler wrapper encounters shared libmagic during
-the executable link. A narrow correction selects libtool's static executable
-link mode for `file` and its test program, preserving default features, both
-libmagic library forms and the complete upstream checks. Source review passes;
-the failed build remains recorded and the corrected realization is pending.
+the executable link. Selecting libtool's static executable link mode alone
+still fails: the actual configure output reports that upstream disables static libraries by default.
+The follow-up enables static libmagic alongside its shared library and retains
+the executable link policy, all features and full upstream checks. Both failed
+builds remain recorded. Independent source review passes; the corrected context,
+provider and emulator realization remains pending.
+
+## Full gem5 production build and ownership check
+
+The ordinary local ALL build links the native simulator and emits its matching
+source output. Its base execution check reaches tick 10,944,163, and the inherited
+platform, terminal, causal and closed-block checks pass. Build information retains
+X86, ARM, MIPS, POWER, RISCV and SPARC, together with GPU, SystemC and multi-protocol
+Ruby support. The native product is
+`dmpzig3wdxrarca5kg51xcc21ny96y1i-gem5-native-original-scope-foundation-25.1.0.1`.
+
+The mandatory separate native-original-scope check then fails its first owned
+case: phase zero reports Refused rather than Walked, with unchanged before/after
+queues. The complete invocation exits unsuccessfully. Its source, product and
+failure remain retained for diagnosis; linking and the base checks do not qualify
+the complete native backend, readiness, Linux boot or exact preservation.
 
 ## Performance evidence
 
