@@ -4109,6 +4109,28 @@ The latter is not an actual cross-thread or forked native execution. Both Core42
 and Packet148 safeguards remain intact. This sequencing correction does not
 qualify a native Capture, source factory, restoration context or fresh adopter.
 
+## Indexed signal-fault decision selection
+
+Branch resolution now formats only its selected override instead of constructing
+and discarding every override. Bulk and indexed selection share the original
+canonical formatter. Public mutable or deserialized rosters still undergo full
+validation before selection; candidate limits, parent authentication and error
+behavior remain unchanged.
+
+Independent review `69bfe00d418fb23cf51f1449bc87f85b9f02e6ae9f5d453a4a278fa8fd015ef1` verifies the two exact current
+preimages, matching strict checks and twelve relevant test passes. The qualified
+source is Source60 plus those two changes, without later loader/SDK/kernel work.
+Its unchanged maximum-frontier test takes 33.095112 seconds in the baseline and
+9.823934 seconds in the candidate (3.37x, 70.32% less wall time) in one matched
+pair using the repository test profile and identical assertions. Wait-derived
+child CPU falls from 32.889567 to 9.673638 seconds. Receipt
+`3800fd5203cd1008043fc1c0b9e15c9d2c9afb6702bd48ead84d77704db49a1c`
+retains both executables, source bodies, original waits and the earlier no-spawn
+preflight refusal. No allocator event count was collected. This single workload
+pair is not a repeated statistical benchmark, a Linux-boot improvement or a
+current-HEAD full-suite result; native qualification and final boot comparisons
+remain separate.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

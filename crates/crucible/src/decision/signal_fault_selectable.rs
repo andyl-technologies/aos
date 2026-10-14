@@ -440,9 +440,7 @@ impl SignalFaultSelectable {
                 overridden: true,
             };
             let override_decision = basis
-                .override_decisions(self.parent.id())
-                .into_iter()
-                .nth(index as usize)
+                .override_decision(self.parent.id(), index)
                 .ok_or(SignalFaultSelectableError::CandidateOutsideDomain)?;
             decisions.push(Decision::Override(override_decision));
         }
