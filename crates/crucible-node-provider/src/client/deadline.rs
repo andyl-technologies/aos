@@ -251,3 +251,8 @@ mod tests {
         assert!(deadline.tighten(Duration::from_secs(1)).is_err());
     }
 }
+
+mod native5_birth_cut;
+pub use native5_birth_cut::{
+    OriginalNative5BirthCut, OriginalNative5BirthStream, OriginalNative5BirthStreamRefusal,
+};

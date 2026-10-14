@@ -3386,6 +3386,35 @@ not seal an immutable birth cut. The separate immutable-cut successor, actual
 phased service consumer, complete factory geometry, Capture and fresh adoption
 remain required. No whole partial-birth closure or Ready permission is claimed.
 
+## Immutable native birth cut and origin-guarded containment
+
+Complete native birth now has a separate immutable cut captured before effects.
+Its Unix stream wrapper checks the original process/thread and unchanged,
+unexpired cut before read, write, flush, cloning or explicit control-stream
+transition. Resetting an external clone of the legacy mutable deadline cannot
+renew that birth. Refusal remains sticky and retains the same socket and cut;
+legacy resettable control-stream behavior remains unchanged.
+
+Containment authenticates the original owner before shutdown, independently of
+cut expiration. An actual different-thread owner control leaves both Unix
+socket directions usable; the legitimate original owner still fences an
+expired or reset cut to kernel EOF. This successor corrects the earlier
+unguarded fence path, whose failed review remains retained. The control is not
+an actual fork qualification.
+
+The qualification source is committed `70b54fe3f8` plus only three client paths,
+with index
+`94c5bb470ebd0c2369eea02e1bfc799fdcd0b5ce2f8c050497b4fbe68b133398`.
+Sixty-five focused controls, all 386 enabled provider unit tests and strict
+all-target/all-feature checks pass; 13 existing unit tests remain ignored.
+Independent review verifies exact source/preimages, executable and dependency
+bodies, raw results and original resource retirement:
+`035f91182b2bc3f372592b56e1be92804cba4d64c6abaa76dcb28f45febb4a19`.
+
+Actual phased service consumption and pre-effect admission of the new structures
+and Rc allocations remain required. A transport transition grants no semantic
+birth, Capture, fresh adoption or Ready permission.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
