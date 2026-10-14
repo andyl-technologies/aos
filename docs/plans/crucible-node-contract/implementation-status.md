@@ -4300,6 +4300,41 @@ the bootstrap dependency cycle. Private-unwind member compilation, scoped
 linking, ordinary compiler/package qualification and complete QEMU binary/source
 qualification remain separate unfinished requirements.
 
+## Original embedded per-CPU group backing
+
+Kernel source stage 38 records each original embedded first-chunk group before
+its allocation and retains the raw result before publication or observation.
+It preserves complete CPU-map padding, group requests and unit offsets, then
+binds the pool's actual runtime arrays and aliases to that original geometry.
+Selected backing accounting conservatively charges complete padded allocation
+requests without subtracting later hole or tail frees. Virtual NUMA address
+gaps are recorded separately and are not counted as physical backing.
+Ordinary boot and failure cleanup retain their original behavior.
+
+Independent Source48 review
+`b7ef0ca8104f4622c585bfd1172536e26eab30c1c8cdb9041d8578402fa0eec4`
+verifies four sparse roles, two complete configured translation units and
+880 actual compiler/configuration inputs. Nineteen positive controls and three
+causal erasures pass with their explicitly modeled peers. Native configured
+objects measure a 36 KiB first-chunk keeper, 40 KiB pool keeper and 64 KiB
+per-CPU arena. An unrelated mutable Rust metadata leaf in historical ancestry
+is explicitly excluded; it is not a current C input or historical proof.
+
+Independent five-role package review
+`f67b5733ee1e853833f54862cbe573b13e23386e86ad82d67abe11bc7edd5255`
+verifies all 37 previous patch payloads unchanged, the appended source patch,
+strict 38-stage replay across 173 source roles, sparse package replay and Nix
+formatting. The sole new first-chunk include is catalogued as GPL-2.0-only;
+existing source notices remain unchanged. Raw compiler and control artifacts
+remain local, outside Git and releases.
+
+This closes the selected embedded group-backing and alias-origin gap. It does
+not close first-chunk setup metadata, memblock internals, retries or resizing,
+global boot peak, page-remapped/fallback paths, native PFNs/maps, concurrency or
+whole physical-budget admission. Coverage remains 1/2047, with CREATE before
+FD allocation, RUN and Ready still fenced. Full Kbuild and nested/native
+qualification plans remain prospective and unexecuted.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

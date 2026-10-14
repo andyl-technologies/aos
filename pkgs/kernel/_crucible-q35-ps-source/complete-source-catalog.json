@@ -871,8 +871,8 @@
     {
       "path": "include/linux/crucible_allocator.h",
       "identity": {
-        "sha256": "364e7f4da2c446ee51301ff0a1e02347de79c365cb6c8c8843a80fd21c021ff2",
-        "bytes": 9297
+        "sha256": "b2356484ac3e36ee472c4a81d022876a9915083f1e91514d9a67170ec6564fa5",
+        "bytes": 9479
       }
     },
     {
@@ -1044,10 +1044,17 @@
       }
     },
     {
+      "path": "mm/crucible-percpu-first-chunk.inc.c",
+      "identity": {
+        "sha256": "230dae671fcd3e74990d423cc9a9a2b4364f3e3ef2e6702ef983c5739a4e34ca",
+        "bytes": 10308
+      }
+    },
+    {
       "path": "mm/crucible-percpu-pool.inc.c",
       "identity": {
-        "sha256": "126d8d9e869f68a2985c1864bb992bd07f85808c7553cd31c5d5e07390c7f2bc",
-        "bytes": 16205
+        "sha256": "92535222ffbbffe0e1823d3469b1d58438c3ec5c3b72113f4a9fc73dc406fb4e",
+        "bytes": 16973
       }
     },
     {
@@ -1067,8 +1074,8 @@
     {
       "path": "mm/percpu.c",
       "identity": {
-        "sha256": "227ca6d2562ea20e8c50b1cd80c5a2329c7c31711c6e781070eed9ec571e55de",
-        "bytes": 103403
+        "sha256": "79415a081a10fc282dbe8e45256b98974d9005d60ab1643486e4ced0b9b70711",
+        "bytes": 103865
       }
     },
     {

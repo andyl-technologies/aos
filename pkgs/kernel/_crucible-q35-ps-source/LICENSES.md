@@ -143,3 +143,20 @@ whole first-chunk allocation, unused unit/group slack, NUMA padding or boot peak
 Actual boot, IRQ/concurrency, physical budget and complete SRCU remain unqualified.
 Coverage remains bit0, required coverage 2047, and selected CREATE remains fenced
 before FD allocation. No continuation, RUN, support bit or Ready is issued.
+
+Source48 retains the literal embedded first-chunk group allocation lineage and
+its complete padded CPU map before native group allocation/publication. It
+modifies existing per-CPU/private allocator source and adds one private include;
+all existing notices and 37 preceding patch payloads are unchanged.
+
+| Added source role | SPDX notice |
+| --- | --- |
+| `mm/crucible-percpu-first-chunk.inc.c` | `GPL-2.0-only` |
+
+Original group tokens/results and native CPU/group metadata remain kernel-private.
+Conservative original group-request charges include padding/tails without trim
+refunds; virtual NUMA gaps stay separate from allocated bytes. This does not
+qualify complete first-chunk setup metadata, memblock internal/retry/resize,
+page-remapped boot, concurrency/PFN/maps or global boot physical peak.
+Coverage remains bit0, required coverage2047, and selected CREATE remains fenced
+before FD allocation. No continuation, support bit, RUN or Ready is issued.
