@@ -184,6 +184,9 @@
     "guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_2048_adversarial"
     "guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_4096_ordinary"
     "guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_4096_adversarial"
+    "guard::direct_history::tests::direct_history_verifies_historical_target_with_fresh_walks_in_both_modes"
+    "guard::direct_history::tests::configuration::direct_history_preserves_caller_profiles_and_uses_genuine_factory_clock"
+    "guard::direct_history::tests::physical::direct_history_closes_actual_pack_catalog_and_index_inputs"
   ];
 
   # Registered growing-population witnesses must qualify before this blocker

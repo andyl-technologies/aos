@@ -290,14 +290,23 @@ remain required; no performance fix or task acceptance is claimed.
 The six-file read-preparation refinement is frozen at `1fb5bb48ccea`
 (tree `cbd7de3fe0de`) after complete coordinator and independent source review.
 Its decoder groups exclude binding checks and digest work; catalog artifact
-reads, verification and shard decoding are distinct. Fresh compiler
-qualification runs in that isolated worktree; runtime remains unstarted.
+reads, verification and shard decoding are distinct. All thirteen compiler
+phases pass in that isolated worktree, with 1,121 cases and three fresh SDK
+binaries. Complete sealed receipts and owned cleanup pass coordinator review;
+runtime remains unstarted.
 Separate T-PROV-1/T-DRV-2 implementation and regression worklines prepare an
 ordinary immutable-history reader. It must preserve each complete walk,
 actual caller inputs, Original records and invocation-local physical closing;
 historical targets need not equal the current ref. Shared private module
 registrations provide no completion or authorization. Existing current, held,
 candidate, maintenance and paired scopes retain their existing routes.
+Production freeze `8e682da9652e` passes full coordinator and independent source
+review across sixteen paths; the existing current reader is byte-identical.
+Seven isolated regressions are registered in the owning provenance gate, with
+three also required by index maintenance. Their reviewed correction replaces
+an inapplicable raw MANIFEST fault with a genuinely consumed merged catalog
+shard. Compilation and runtime acceptance of this combined reader remain
+pending; the DRV-29 qualification blocker and all original bounds remain.
 The unfiltered SDK qualification must retain all 1,121 actual cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
 cases. Application test-target compilation and strict Clippy/private rustdoc for

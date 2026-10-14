@@ -114,6 +114,15 @@ in {
 
   prov-commit-verify = sourceGate "prov-commit-verify" ''
     cd crates
+    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "guard::direct_history::tests::" [
+      "guard::direct_history::tests::direct_history_verifies_historical_target_with_fresh_walks_in_both_modes"
+      "guard::direct_history::tests::direct_history_retains_genuine_legacy_historical_control"
+      "guard::direct_history::tests::configuration::direct_history_preserves_caller_profiles_and_uses_genuine_factory_clock"
+      "guard::direct_history::tests::physical::direct_history_rechecks_target_and_ancestor_original_records"
+      "guard::direct_history::tests::physical::direct_history_closes_actual_pack_catalog_and_index_inputs"
+      "guard::direct_history::tests::physical::direct_history_closes_the_original_selected_guard_incarnation"
+      "guard::direct_history::tests::cancellation::direct_history_submitted_closing_keeps_both_exclusions_after_cancellation"
+    ]}
     ${nativeSuite "ref_advance::" boundaryTests}
     ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "guard::current_history::tests::" [
       "guard::current_history::tests::native_current_history_rejects_invalid_token_before_content_reads"
