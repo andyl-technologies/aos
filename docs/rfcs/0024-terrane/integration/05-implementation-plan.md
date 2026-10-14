@@ -307,6 +307,17 @@ three also required by index maintenance. Their reviewed correction replaces
 an inapplicable raw MANIFEST fault with a genuinely consumed merged catalog
 shard. Compilation and runtime acceptance of this combined reader remain
 pending; the DRV-29 qualification blocker and all original bounds remain.
+Fresh isolated composition `878c8e8984bb` passes the formatter pair and strict
+default and std-send Clippy, then native Clippy reports three API errors:
+the retained native clock has no `Clone`, and issuer records have no
+`PartialEq`. The remaining compiler phases and every runtime case are
+unstarted. Its complete failed receipts, unchanged source and owned cleanup
+pass coordinator review. The reviewed three-file correction uses the existing
+native retention hook and compares all issuer fields explicitly; it adds no
+caller-clock requirement or public trait. A separate reviewed fixture correction
+observes native reads rather than the bypassed store wrapper, preserving its
+canonical results and exact missing-ancestor refusal. Renewed qualification
+must cover both corrections before any task or milestone advances.
 The unfiltered SDK qualification must retain all 1,121 actual cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
 cases. Application test-target compilation and strict Clippy/private rustdoc for
