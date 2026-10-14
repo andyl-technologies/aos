@@ -378,8 +378,13 @@ an auxiliary I/O assertion that assumes a direct diagnostic instead of its
 preserved source chain. Isolated repairs retain the exact independent fork-base
 refusal, both full current Admin/history checks before role effects, retained
 control pins through publication, and the exact injected auxiliary I/O error.
-All require fresh execution. Final archive verification and owned cleanup remain
-pending; no failed result is reclassified or task accepted.
+All require fresh execution. Final archive verification, exact source/input and
+six-executable parity, and owned cleanup now pass independent review. The sealed
+397-payload packet preserves all failed outcomes and all six bounded growth
+passes; no failed result is reclassified or task accepted. The corrected private
+candidate `6297a4455965` (tree `3898e56e33a0`) adds only the reviewed join/fold,
+rotation-ordering and nested I/O diagnostic repairs to the earlier fixture
+candidate. Its compiler profiles and targeted runtime checks remain pending.
 Full historical source review now covers the separate dictionary-reader task's
 three paths and the index-format task's ten paths, plus all 143 paths of its
 carrier branch. Eight independent review groups and the coordinator reviewed
