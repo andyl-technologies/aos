@@ -483,6 +483,11 @@ receive/commit stages borrowing the original session. Controller retains prepara
 competing-operation gates, method context, pending custody, polling and native
 error parking within this same complete owner.
 
+Security stores the canonical Protocol historical checkpoint directly,
+without a second checkpoint wrapper. Historical failures retain the original
+redacted Security error at native frontiers; protected session and Journal
+owners retain their private fields, actual custody and currentness checks.
+
 Security's private `dormant_handshake::host_catalog_publication` retains complete
 catalog descriptor/recovery reservoirs, execution, physical readback, proven-absent
 retry and error-terminal recipes, original fields/drop order/native failures/
