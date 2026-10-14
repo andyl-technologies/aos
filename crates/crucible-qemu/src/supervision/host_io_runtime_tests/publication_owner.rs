@@ -250,13 +250,19 @@ fn drive_checkpoint_publication(
     }
     let mut notifications = mapped.notifications;
     notifications.set_nonblocking(false)?;
-    notifications.set_read_timeout(Some(budget.max(Duration::from_secs(1))))?;
+    // The responder polls for the driver's completion between doorbells.
+    notifications.set_read_timeout(Some(Duration::from_millis(20)))?;
     let responder =
         crucible_shmem::mmap_setup_region(mapped.file.as_fd(), mapped.layout.region_size)?;
     let (mut target, _hold_open) = owner_fixture(mapped.channel)?;
     let mut runtime = mapped.runtime;
     let policy = crate::QemuAsyncDriverPolicy::new(budget, budget, budget, budget);
 
+    // The responder serves every clamp until the driver returns. Exiting once
+    // the guest reached its advance ceiling raced the driver's later
+    // post-device boundary request whenever the fresh pause landed first.
+    let driver_returned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let responder_stop = std::sync::Arc::clone(&driver_returned);
     let writer = std::thread::spawn(move || -> Result<(), String> {
         let slot = responder.node_slot(0).map_err(|error| error.to_string())?;
         loop {
@@ -269,11 +275,16 @@ fn drive_checkpoint_publication(
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                     ) =>
                 {
-                    return Ok(());
+                    if responder_stop.load(std::sync::atomic::Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    continue;
                 }
                 Err(error) => return Err(error.to_string()),
             }
-            if u64::from_ne_bytes(counter) != 1 {
+            // Doorbells that arrive before the responder reads coalesce in
+            // the eventfd counter and request one clamp service.
+            if u64::from_ne_bytes(counter) == 0 {
                 return Err("unexpected mapped doorbell".into());
             }
             let snapshot = slot.snapshot();
@@ -286,9 +297,6 @@ fn drive_checkpoint_publication(
                 )
                 .map_err(|error| error.to_string())?;
                 slot.acknowledge_control_boundary();
-                if snapshot.max_advance_icount == snapshot.current_icount {
-                    return Ok(());
-                }
             }
         }
     });
@@ -312,8 +320,10 @@ fn drive_checkpoint_publication(
                 })
         },
     );
+    driver_returned.store(true, std::sync::atomic::Ordering::Release);
     // Reap the one owned builtin-only child even if the driver returned an
-    // error; the responder has its own bounded read and cannot outlive a join.
+    // error; the responder stops at its next bounded read and cannot outlive
+    // a join.
     let cleanup = target.shutdown_after_crash();
     let writer_result = writer.join().map_err(|_| "modeled responder panicked")?;
     writer_result.map_err(std::io::Error::other)?;
