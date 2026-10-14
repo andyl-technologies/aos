@@ -187,6 +187,7 @@
     "guard::direct_history::tests::direct_history_verifies_historical_target_with_fresh_walks_in_both_modes"
     "guard::direct_history::tests::configuration::direct_history_preserves_caller_profiles_and_uses_genuine_factory_clock"
     "guard::direct_history::tests::physical::direct_history_closes_actual_pack_catalog_and_index_inputs"
+    "ref_advance::active_completion_tests::native_active_completion_direct_history_refuses_missing_required_auxiliary"
   ];
 
   # Registered growing-population witnesses must qualify before this blocker

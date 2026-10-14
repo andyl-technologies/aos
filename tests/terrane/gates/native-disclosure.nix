@@ -32,6 +32,8 @@
     "disclosure_boundary_rejects_uncovered_siblings_attributes_and_unanchored_parents"
     "disclosure_boundary_uses_public_introducer_and_public_ancestry"
     "disclosure_boundary_preserves_historical_key_windows_and_current_revocation"
+    "disclosure_direct_history_refuses_pending_guard_mismatch"
+    "disclosure_direct_history_closes_retained_import_controls"
     "disclosure_rotation_retains_historical_certificates_and_issues_with_new_key"
     "disclosure_rotation_denies_current_admin_and_ambiguous_issue_time_without_effects"
     "disclosure_original_binding_rejects_copied_or_conflicting_import_controls"
@@ -114,6 +116,9 @@ in {
 
   prov-commit-verify = sourceGate "prov-commit-verify" ''
     cd crates
+    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "ref_advance::active_completion_tests::native_active_completion_direct_history_refuses_missing_required_auxiliary" [
+      "ref_advance::active_completion_tests::native_active_completion_direct_history_refuses_missing_required_auxiliary"
+    ]}
     ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "guard::direct_history::tests::" [
       "guard::direct_history::tests::direct_history_verifies_historical_target_with_fresh_walks_in_both_modes"
       "guard::direct_history::tests::direct_history_retains_genuine_legacy_historical_control"
