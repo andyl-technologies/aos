@@ -335,6 +335,13 @@ factory. No exact failure line was measured. All six renewed growth populations
 remain pending. Separately registered auxiliary-only and imported
 control refusal witnesses are test-only work awaiting fresh qualification.
 These results advance no task or milestone.
+Composition `ea8a81dd2dd9` (tree `99a525d05fba`) includes the reviewed fresh
+fixture and auxiliary/imported-control tests. The auxiliary test uses existing
+accessible History and Tree APIs; the Guard-private combined API is unchanged.
+All thirteen compiler phases pass. The actual inventory retains all prior
+1,128 identities plus exactly three refusal cases, with none ignored. Its
+reviewed 35-case focus queue is authorized; runtime, growth and owning gates
+remain unqualified.
 The unfiltered SDK qualification must retain all 1,121 original cases: 1,115
 library cases, one attribute SDK integration case and five local SDK integration
 cases. It must also execute the seven new direct-reader cases and registered
