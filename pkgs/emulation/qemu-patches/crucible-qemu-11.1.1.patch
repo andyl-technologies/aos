@@ -1,12 +1,11 @@
-From 94fa9e7092d79381bcf34c4405cf13f5a4f71ffe Mon Sep 17 00:00:00 2001
+From 1422002342f3b4708308e8af0c446c55859ba442 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 08:23:27 -0700
-Subject: [PATCH] plugins: retain startup ownership and restore current unit
- controls
+Date: Thu, 15 Oct 2026 08:50:43 -0700
+Subject: [PATCH] plugins: retain startup ownership and current plugin controls
 
-Retain nominal startup, workspace and command ownership through physical
-cleanup. Bind generator controls to current Source2 interfaces and use
-the declared preexec selector without accepting obsolete selections.
+Retain nominal startup, workspace and command custody through cleanup.
+Keep extracted controls aligned with the current interfaces and declared
+preexec selector, and make the RAM endpoint flag usable from C++23.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -64036,7 +64035,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5a4c04bc7f69976c6f292aa76e82e733
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..a807f9279b845fe1a74a124a24b46f80ef20d869 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..782f9314200cbf3e9b507ccb9dc0edd61225e49f 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -67981,7 +67980,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..a807f9279b845fe1a74a124a24b46f80
 +    const uint8_t *target_node;
 +    uint64_t owner_generation;
 +    uint64_t arena_generation;
-+    uint32_t template;
++    uint32_t is_template;
 +    uint32_t reserved2;
 +};
 +QEMU_PLUGIN_API
@@ -158501,7 +158500,7 @@ index 0000000000000000000000000000000000000000..85e0007223fe4cedc5bd88b561174bdc
 +}
 diff --git a/plugins/crucible-ram-control.inc.h b/plugins/crucible-ram-control.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..74ed2993291628e24a656ba2a003923f61675175
+index 0000000000000000000000000000000000000000..00e9840e6aa58ac4d10d2b7fb099ea5b31b1a3bb
 --- /dev/null
 +++ b/plugins/crucible-ram-control.inc.h
 @@ -0,0 +1,2071 @@
@@ -158622,7 +158621,7 @@ index 0000000000000000000000000000000000000000..74ed2993291628e24a656ba2a003923f
 +        .target_node = record->ram_target_node,
 +        .owner_generation = record->ram_owner_generation,
 +        .arena_generation = record->ram_arena_generation,
-+        .template = record->ram_template,
++        .is_template = record->ram_template,
 +    };
 +    *out = borrowed;
 +    return 0;
@@ -182342,7 +182341,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..faf15d8394a2e38928582257f73931259cef1a05
+index 0000000000000000000000000000000000000000..29b2ea8be88cd2c1aef317b0d8e57c717bde06ea
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,83 @@
@@ -182368,9 +182367,9 @@ index 0000000000000000000000000000000000000000..faf15d8394a2e38928582257f7393125
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '93573ce1d72875412dc10b68a273761af892f1ca08b1bdbfeafdab1b1a2849f2',
++        'e90a655812ce9e96eaec89a7bcb45594984e405cb3b5bf7acb59887932b8aa7e',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '02b0d5cb3de21890aeb9088ad4fb63e8bd140d57b60fbb8c4c2a508706af3f97',
++        '29e613d7190c4192668b65378e8d49d4ec75e02c63a10f6ae2b6a0030e85632a',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -222581,7 +222580,7 @@ index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..0d6626bed34a0e279c423d48d6d216feadf338f7
+index 0000000000000000000000000000000000000000..683325255967eafee8f6a92dcfb1f52a14b27775
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -222599,7 +222598,7 @@ index 0000000000000000000000000000000000000000..0d6626bed34a0e279c423d48d6d216fe
 +    'include/system/crucible-ram-quiescence.h':
 +        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '02b0d5cb3de21890aeb9088ad4fb63e8bd140d57b60fbb8c4c2a508706af3f97',
++        '29e613d7190c4192668b65378e8d49d4ec75e02c63a10f6ae2b6a0030e85632a',
 +}
 +
 +FUNCTIONS = (
@@ -222687,7 +222686,7 @@ index 0000000000000000000000000000000000000000..0d6626bed34a0e279c423d48d6d216fe
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5de072c92cb5246f34bab6aa287c3dee84c93e24
+index 0000000000000000000000000000000000000000..047da7e58010b1df2abd5ae761c81f55d184e058
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -222712,13 +222711,13 @@ index 0000000000000000000000000000000000000000..5de072c92cb5246f34bab6aa287c3dee
 +    'plugins/crucible-startup-source.h':
 +        '340c7c2a53c189405951f4276ddaa8ffa38cb993c7568d834e7924ee1fa64ebb',
 +    'include/plugins/qemu-plugin.h':
-+        '93573ce1d72875412dc10b68a273761af892f1ca08b1bdbfeafdab1b1a2849f2',
++        'e90a655812ce9e96eaec89a7bcb45594984e405cb3b5bf7acb59887932b8aa7e',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'include/system/crucible-ram-quiescence.h':
 +        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '02b0d5cb3de21890aeb9088ad4fb63e8bd140d57b60fbb8c4c2a508706af3f97',
++        '29e613d7190c4192668b65378e8d49d4ec75e02c63a10f6ae2b6a0030e85632a',
 +}
 +
 +FUNCTIONS = (
@@ -222934,7 +222933,7 @@ index 0000000000000000000000000000000000000000..5de072c92cb5246f34bab6aa287c3dee
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..6e4e68fe2003dd155f04940e7c53d12207838299
+index 0000000000000000000000000000000000000000..6709daa1900746d25f0d96f7e2162d201aab5480
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -222958,7 +222957,7 @@ index 0000000000000000000000000000000000000000..6e4e68fe2003dd155f04940e7c53d122
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '02b0d5cb3de21890aeb9088ad4fb63e8bd140d57b60fbb8c4c2a508706af3f97',
++        '29e613d7190c4192668b65378e8d49d4ec75e02c63a10f6ae2b6a0030e85632a',
 +}
 +
 +FUNCTIONS = (
@@ -223052,7 +223051,7 @@ index 0000000000000000000000000000000000000000..6e4e68fe2003dd155f04940e7c53d122
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c049bf7ed9365786a6ff37e3bdcab5227e9d23e0
+index 0000000000000000000000000000000000000000..1d7c5eacb55625b0665d47b69c5ff5ace498b207
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -223087,15 +223086,15 @@ index 0000000000000000000000000000000000000000..c049bf7ed9365786a6ff37e3bdcab522
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '93573ce1d72875412dc10b68a273761af892f1ca08b1bdbfeafdab1b1a2849f2',
++        'e90a655812ce9e96eaec89a7bcb45594984e405cb3b5bf7acb59887932b8aa7e',
 +    'plugins/crucible-process-purpose.c':
 +        'e37d3d2052c3b9f9de91359bae2e31d8ddeb8551d76d51f18bf0914e8ab6cb0c',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '02b0d5cb3de21890aeb9088ad4fb63e8bd140d57b60fbb8c4c2a508706af3f97',
++        '29e613d7190c4192668b65378e8d49d4ec75e02c63a10f6ae2b6a0030e85632a',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '2b69c2440dfa02e7e9c8b32f289fc1f73c0dea113b529463a90d5e74817d1f1c',
++        '2f27f98de50747c25f43e678bee449f145cf8fbabec3d83c5dac3a2146604498',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -223231,7 +223230,7 @@ index 0000000000000000000000000000000000000000..c049bf7ed9365786a6ff37e3bdcab522
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7abb50101df55997b78cb949653fddc4098325ce
+index 0000000000000000000000000000000000000000..7f5c430c80370f271837a14de87eb4af9d983da2
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,812 @@
@@ -223285,7 +223284,7 @@ index 0000000000000000000000000000000000000000..7abb50101df55997b78cb949653fddc4
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '93573ce1d72875412dc10b68a273761af892f1ca08b1bdbfeafdab1b1a2849f2',
++        'e90a655812ce9e96eaec89a7bcb45594984e405cb3b5bf7acb59887932b8aa7e',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
@@ -223295,7 +223294,7 @@ index 0000000000000000000000000000000000000000..7abb50101df55997b78cb949653fddc4
 +    'plugins/crucible-callback-publication.inc.h':
 +        '79faed4ff36b426c3b03d672b60d33383d6b0f7ae636872f3a6481cc3787a24a',
 +    'plugins/crucible-ram-control.inc.h':
-+        '55367a0d0048fe8daef7d8d9343733b9d0ea50cb923a468714d74bdf15dc4ff4',
++        '8e91784184cfed22bf0d2986a9eaea18f6d0fda4872420a4c7cf5420d960ccbf',
 +    'plugins/crucible-ram-record.inc.h':
 +        '08a624a8798efd82601fd1d91324afefcf7a056a681df51a7c89262430bc0f9d',
 +    'include/qemu/crucible-shared-region-layout.h':
