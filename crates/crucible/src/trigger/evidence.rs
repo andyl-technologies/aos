@@ -777,16 +777,6 @@ pub(super) fn eventually_deadline(triggered_at: VirtualTime, deadline: VirtualTi
     }
 }
 
-pub(super) fn condition_prefix_from_recorded_entries(
-    entries: &[SchedulerEventLogEntry],
-) -> Result<ConditionEventLogPrefix, ConditionEvaluationError> {
-    if entries.is_empty() {
-        Ok(ConditionEventLogPrefix::genesis())
-    } else {
-        ConditionEventLogPrefix::from_scheduler_event_log_entries(entries.to_vec())
-    }
-}
-
 pub(super) fn validate_recorded_event_log_entries(
     entries: &[SchedulerEventLogEntry],
 ) -> Result<(), ConditionEvaluationError> {
@@ -1787,32 +1777,6 @@ pub(super) fn external_hex_bytes(bytes: &[u8]) -> String {
         encoded.push(HEX[(byte & 0x0f) as usize] as char);
     }
     encoded
-}
-
-pub(super) fn condition_prefix_from_recorded_log(
-    recorded_log: &RecordedAssertionLog,
-    prefix_len: usize,
-    require_recorded_offset: bool,
-) -> Result<ConditionEventLogPrefix, OfflineAssertionCheckError> {
-    let entries = &recorded_log.entries()[..prefix_len];
-    let prefix = condition_prefix_from_recorded_entries(entries)?
-        .with_prefix_offsets(std::sync::Arc::clone(&recorded_log.prefix_offsets));
-    let prefix_len = u64::try_from(prefix_len)
-        .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len })?;
-    let Some(offset) = recorded_log.event_log_offset(prefix_len) else {
-        return if require_recorded_offset {
-            Err(OfflineAssertionCheckError::MissingEventLogOffset { prefix_len })
-        } else {
-            Ok(prefix)
-        };
-    };
-    if offset.events != prefix_len {
-        return Err(OfflineAssertionCheckError::EventLogOffsetMismatch {
-            prefix_len,
-            offset_events: offset.events,
-        });
-    }
-    Ok(prefix.with_event_log_offset(offset))
 }
 
 /// Applies guest assertion markers from observable event `start` onward.

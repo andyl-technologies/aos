@@ -1,4 +1,4 @@
-//! Incremental recorded prefixes match whole-prefix reconstruction.
+//! Streaming offline checks defer atomic batches and validate the declared shape.
 
 use super::*;
 use crate::model::{NodeTemplate, VmArchitecture, WorldNode};
@@ -70,33 +70,92 @@ fn white_box_world() -> TestResult<World> {
     }])?)
 }
 
-#[test]
-fn cursor_prefixes_match_whole_prefix_reconstruction() {
-    let recorded = RecordedAssertionLog::from_entries(atomic_marker_log(3, 2));
-    let mut cursor = RecordedPrefixCursor::new(&recorded);
-    let mut refused = 0;
-
-    for prefix_len in 1..=recorded.entries().len() {
-        let rebuilt = condition_prefix_from_recorded_log(&recorded, prefix_len, false);
-        let extended = cursor.prefix(prefix_len, false).cloned();
-        if rebuilt.is_err() {
-            refused += 1;
-        }
-        assert_eq!(extended, rebuilt, "prefix length {prefix_len}");
-    }
-
-    // Each batch hides one marker behind its predecessor.
-    assert_eq!(refused, 3);
+fn marker_properties(world: &World) -> TestResult<Properties> {
+    Ok(Properties::from_assertions_for_world(
+        world,
+        vec![AssertionDef::guest_sometimes(
+            AssertionId::from_name("traffic"),
+            "traffic is observed",
+        )],
+    )?)
 }
 
 #[test]
-fn cursor_refuses_a_request_that_does_not_extend_its_prefix() {
-    let recorded = RecordedAssertionLog::from_entries(atomic_marker_log(1, 2));
-    let mut cursor = RecordedPrefixCursor::new(&recorded);
+fn atomic_batches_closed_by_a_boundary_are_deferred() -> TestResult {
+    let world = white_box_world()?;
+    let properties = marker_properties(&world)?;
+    let event_log = atomic_marker_log(3, 2);
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
 
-    assert!(cursor.prefix(2, false).is_ok());
-    assert!(cursor.prefix(2, false).is_err());
-    assert!(cursor.prefix(recorded.entries().len() + 1, false).is_err());
+    let whole = checker.check_run(&properties, &event_log)?;
+    let mut oracle = BlackBoxHostOracle;
+    let mut streamed = checker.start_check(&properties, RecordedLogShape::of(&event_log));
+    for entry in &event_log {
+        streamed.push(entry.clone(), &mut oracle);
+    }
+
+    assert_eq!(streamed.finish(&mut oracle)?, whole);
+    Ok(())
+}
+
+#[test]
+fn an_atomic_batch_without_its_boundary_is_refused() -> TestResult {
+    let world = white_box_world()?;
+    let properties = marker_properties(&world)?;
+    let mut event_log = atomic_marker_log(1, 2);
+    // Replace the batch's closing boundary with a diagnostic entry, so the
+    // late marker's prefix hides the earlier one with no boundary to defer to.
+    let closing = event_log.len() - 1;
+    let at = event_log[closing].at();
+    event_log[closing] =
+        SchedulerEventLogEntry::execution_budget_exhausted(closing as u64, at, "virtual-time");
+    event_log.push(boundary_entry(next_sequence(&event_log), at.ticks + 10));
+
+    let checked = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(&world)
+        .check_run(&properties, &event_log);
+
+    assert!(
+        matches!(
+            checked,
+            Err(OfflineAssertionCheckError::ConditionEvaluation(
+                ConditionEvaluationError::FutureEventLogEntry { .. }
+            ))
+        ),
+        "an unclosed atomic batch cannot be deferred: {checked:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn entries_must_match_the_declared_shape() -> TestResult {
+    let world = white_box_world()?;
+    let properties = marker_properties(&world)?;
+    let event_log = atomic_marker_log(1, 2);
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+    let mut oracle = BlackBoxHostOracle;
+
+    let mut short = checker.start_check(&properties, RecordedLogShape::of(&event_log));
+    for entry in &event_log[..event_log.len() - 1] {
+        short.push(entry.clone(), &mut oracle);
+    }
+    assert_eq!(
+        short.finish(&mut oracle),
+        Err(OfflineAssertionCheckError::RecordedLogShapeMismatch)
+    );
+
+    let mut long = checker.start_check(
+        &properties,
+        RecordedLogShape::of(&event_log[..event_log.len() - 1]),
+    );
+    for entry in &event_log {
+        long.push(entry.clone(), &mut oracle);
+    }
+    assert_eq!(
+        long.finish(&mut oracle),
+        Err(OfflineAssertionCheckError::RecordedLogShapeMismatch)
+    );
+    Ok(())
 }
 
 /// Mirrors a long production log: mostly boundaries with sparse observations

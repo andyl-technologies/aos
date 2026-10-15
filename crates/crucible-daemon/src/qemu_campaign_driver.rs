@@ -2357,12 +2357,16 @@ fn check_pending_assertions(
     if pending.stop.continues_run() {
         checker = checker.with_continuing_prefix();
     }
-    // The offline checker still grades an in-memory log. It becomes a bounded
-    // fold under RFC-0020 section 15.4 (T-CAM-3.7), which removes this copy.
-    let entries = pending.event_log.materialize()?;
-    checker
-        .check_run(pending.input.scenario().properties(), &entries)
-        .map_err(Into::into)
+    // The check consumes the retained segments in order (RFC-0020 CMEAS-21).
+    let shape =
+        crucible::RecordedLogShape::new(pending.event_log.len() as u64, pending.event_log.last());
+    let mut oracle = crucible::BlackBoxHostOracle;
+    let mut check = checker.start_check(pending.input.scenario().properties(), shape);
+    pending.event_log.try_for_each_entry(|entry| {
+        check.push(entry.clone(), &mut oracle);
+        Ok(())
+    })?;
+    check.finish(&mut oracle).map_err(Into::into)
 }
 
 fn retain_modeled_timeout(

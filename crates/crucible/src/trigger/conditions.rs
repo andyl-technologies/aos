@@ -7,6 +7,7 @@ mod console_folds;
 mod host_oracle;
 mod point_index;
 
+pub(crate) use append::AppendedEntryCheck;
 pub(crate) use console_folds::ConsoleMatchFolds;
 pub(crate) use console_folds::property_console_patterns;
 pub use console_folds::scenario_console_patterns;

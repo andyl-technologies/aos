@@ -847,6 +847,11 @@ fn offline_assertion_checker_implementation_reads_log_without_guest_reexecution(
         .split("pub struct HostAssertionEvaluator")
         .next()
         .expect("host assertion evaluator follows offline checker");
+    // The prefix-by-prefix fold lives in the streaming check.
+    let checker_block = format!(
+        "{checker_block}{}",
+        include_str!("../src/trigger/streaming_check.rs")
+    );
 
     for required in [
         "pub fn check_run",
@@ -855,7 +860,7 @@ fn offline_assertion_checker_implementation_reads_log_without_guest_reexecution(
         "ConditionEventLogPrefix",
         "HostAssertionEvaluator::new",
         "finalize_prefix",
-        "for index in 0..event_log.len()",
+        "self.evaluator.observe_prefix(&evaluation.prefix, oracle)",
     ] {
         assert!(
             checker_block.contains(required),

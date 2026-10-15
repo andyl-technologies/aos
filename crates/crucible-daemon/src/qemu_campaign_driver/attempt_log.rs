@@ -252,15 +252,13 @@ impl RetainedAttemptLog {
         Ok(found)
     }
 
-    /// Copies the complete log into memory.
-    ///
-    /// Only the offline assertion checker still needs a materialized log; it
-    /// becomes a bounded fold under RFC-0020 section 15.4 (T-CAM-3.7).
+    /// Copies the complete log into memory for test comparisons.
     ///
     /// # Errors
     ///
     /// Returns [`QemuFreshModeledDriverError::EventLog`] when a sealed segment
     /// cannot be read back.
+    #[cfg(test)]
     pub(crate) fn materialize(
         &self,
     ) -> Result<Vec<SchedulerEventLogEntry>, QemuFreshModeledDriverError> {

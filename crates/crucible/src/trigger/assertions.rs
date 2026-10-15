@@ -580,12 +580,12 @@ impl ExternalFormalTraceExporter {
 /// sets can be graded against retained runs.
 #[derive(Clone, Debug, Default)]
 pub struct OfflineAssertionChecker {
-    white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
-    guest_assertion_catalog: Vec<GuestAssertionMarker>,
-    code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
-    mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
-    terminal_quiescence: Option<SchedulerQuiescence>,
-    prefix_end: AssertionPrefixEnd,
+    pub(super) white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
+    pub(super) guest_assertion_catalog: Vec<GuestAssertionMarker>,
+    pub(super) code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    pub(super) mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    pub(super) terminal_quiescence: Option<SchedulerQuiescence>,
+    pub(super) prefix_end: AssertionPrefixEnd,
 }
 
 /// How the last retained prefix relates to the end of the run.
@@ -697,8 +697,11 @@ impl OfflineAssertionChecker {
         event_log: &[SchedulerEventLogEntry],
     ) -> Result<HostAssertionReport, OfflineAssertionCheckError> {
         let mut oracle = BlackBoxHostOracle;
-        let recorded = RecordedAssertionLog::from_entries(event_log.to_vec());
-        self.check_run_internal(properties, &recorded, &mut oracle, false)
+        let mut check = self.start_check(properties, RecordedLogShape::of(event_log));
+        for entry in event_log {
+            check.push(entry.clone(), &mut oracle);
+        }
+        check.finish(&mut oracle)
     }
 
     /// Grades `properties` against a retained event log using `oracle`.
@@ -735,112 +738,23 @@ impl OfflineAssertionChecker {
     where
         O: HostAssertionOracle + ?Sized,
     {
-        self.check_run_internal(properties, recorded_log, oracle, true)
-    }
-
-    fn check_run_internal<O>(
-        &self,
-        properties: &Properties,
-        recorded_log: &RecordedAssertionLog,
-        oracle: &mut O,
-        require_recorded_offsets: bool,
-    ) -> Result<HostAssertionReport, OfflineAssertionCheckError>
-    where
-        O: HostAssertionOracle + ?Sized,
-    {
-        let mut evaluator = HostAssertionEvaluator::new(properties)
-            .with_white_box_policies(self.white_box_policies.clone())
-            .with_guest_assertion_catalog(self.guest_assertion_catalog.clone())
-            .with_resolved_code_points(
-                self.code_points
-                    .iter()
-                    .map(|(key, value)| ((key.0.clone(), key.1.clone()), *value)),
-            )
-            .with_resolved_mem_places(
-                self.mem_places
-                    .iter()
-                    .map(|(key, value)| ((key.0.clone(), key.1.clone()), value.clone())),
-            );
-        if let Some(quiescence) = self.terminal_quiescence.clone() {
-            evaluator = evaluator.with_terminal_scheduler_quiescence(quiescence);
+        let entries = recorded_log.entries();
+        let mut check = AssertionLogCheck::new(
+            self,
+            properties,
+            RecordedLogShape::of(entries),
+            std::sync::Arc::clone(&recorded_log.prefix_offsets),
+            true,
+        );
+        for entry in entries {
+            check.push(entry.clone(), oracle);
         }
-        let event_log = recorded_log.entries();
-        let terminal_prefix_len = event_log.len();
-        let console_patterns = property_console_patterns(properties);
-        let mut terminal_prefix = condition_prefix_from_recorded_log(
-            recorded_log,
-            terminal_prefix_len,
-            require_recorded_offsets,
-        )?;
-        declare_console_patterns(&mut terminal_prefix, &console_patterns)?;
-
-        // With no host or declared guest states, only new enabled markers can
-        // change intermediate outcomes. Reapplying retained marker payloads is
-        // idempotent; guest marker states have no deadlines or lifecycle triggers.
-        // Prove temporal eligibility first, retaining the original loop
-        // for offsets, catalogs, and invalid or unsupported atomic histories.
-        let observe_new_markers_only = !require_recorded_offsets
-            && recorded_log.prefix_offsets.is_empty()
-            && evaluator.states.is_empty()
-            && evaluator.guest_marker_states.is_empty()
-            && self.guest_assertion_catalog.is_empty()
-            && intermediate_prefix_times_are_visible_or_atomic(event_log);
-        let mut pending_enabled_marker = false;
-        let mut latest_entry_ticks = 0;
-        let mut prefixes = RecordedPrefixCursor::new(recorded_log);
-        declare_console_patterns(prefixes.prefix_mut(), &console_patterns)?;
-
-        for index in 0..event_log.len() {
-            let prefix_len = index + 1;
-            if prefix_len == terminal_prefix_len {
-                continue;
-            }
-            if observe_new_markers_only {
-                let entry = &event_log[index];
-                latest_entry_ticks = latest_entry_ticks.max(entry.at().ticks);
-                pending_enabled_marker |= matches!(
-                    entry.payload(),
-                    SchedulerEventLogPayload::Observable(
-                        ObservableEventPayload::GuestAssertionMarker { node, .. }
-                    ) if self.white_box_policies.get(node) == Some(&WhiteBoxPolicy::Enabled)
-                );
-                // An atomic batch can hide a marker until a later visible entry.
-                // Observe its first valid original prefix, even before the batch's
-                // closing boundary, so violation coordinates remain unchanged.
-                if !pending_enabled_marker
-                    || latest_entry_ticks > EventEvaluationPoint::event_log_entry(entry).at().ticks
-                {
-                    continue;
-                }
-            }
-
-            let prefix_len_u64 = u64::try_from(prefix_len)
-                .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len })?;
-            let recorded_offset = recorded_log.event_log_offset(prefix_len_u64);
-            if require_recorded_offsets && recorded_offset.is_none() {
-                continue;
-            }
-            let prefix = match prefixes.prefix(prefix_len, require_recorded_offsets) {
-                Ok(prefix) => prefix,
-                Err(OfflineAssertionCheckError::ConditionEvaluation(
-                    ConditionEvaluationError::FutureEventLogEntry { .. },
-                )) if entry_awaits_atomic_evaluation_boundary(event_log, index)
-                    && (!require_recorded_offsets || recorded_offset.is_none()) =>
-                {
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            evaluator.observe_prefix(prefix, oracle);
-            pending_enabled_marker = false;
-        }
-
-        Ok(evaluator.finalize_prefix_at_end(&terminal_prefix, oracle, self.prefix_end))
+        check.finish(oracle)
     }
 }
 
 /// Declares every property console pattern on an offline prefix.
-fn declare_console_patterns(
+pub(super) fn declare_console_patterns(
     prefix: &mut ConditionEventLogPrefix,
     patterns: &std::collections::BTreeSet<(NodeId, String)>,
 ) -> Result<(), OfflineAssertionCheckError> {
@@ -852,95 +766,6 @@ fn declare_console_patterns(
             })?;
     }
     Ok(())
-}
-
-/// Proves that intermediate prefixes are visible or deferred by the original atomic rule.
-///
-/// A hidden observable prefix requires its first non-observable successor to be
-/// an evaluation boundary. A hidden causal prefix permits causal and observable
-/// successors until that boundary. Resolve these obligations at their first
-/// incompatible payload, even if later entries are temporally visible. This
-/// authenticates no new facts and visits each already authenticated entry once.
-fn intermediate_prefix_times_are_visible_or_atomic(event_log: &[SchedulerEventLogEntry]) -> bool {
-    let mut latest_entry_ticks = 0;
-    let mut awaiting_observable_boundary = false;
-    let mut awaiting_causal_boundary = false;
-
-    for entry in event_log {
-        match entry.payload() {
-            SchedulerEventLogPayload::EvaluationBoundary(_) => {
-                awaiting_observable_boundary = false;
-                awaiting_causal_boundary = false;
-            }
-            SchedulerEventLogPayload::Observable(_) => {}
-            SchedulerEventLogPayload::ResolvedHappening(_)
-            | SchedulerEventLogPayload::Decision(_) => {
-                if awaiting_observable_boundary {
-                    return false;
-                }
-            }
-            _ => {
-                if awaiting_observable_boundary || awaiting_causal_boundary {
-                    return false;
-                }
-            }
-        }
-
-        latest_entry_ticks = latest_entry_ticks.max(entry.at().ticks);
-        if latest_entry_ticks > EventEvaluationPoint::event_log_entry(entry).at().ticks {
-            match entry.payload() {
-                SchedulerEventLogPayload::Observable(_) => awaiting_observable_boundary = true,
-                SchedulerEventLogPayload::ResolvedHappening(_)
-                | SchedulerEventLogPayload::Decision(_) => {
-                    awaiting_causal_boundary = true;
-                }
-                _ => return false,
-            }
-        }
-    }
-
-    !awaiting_observable_boundary && !awaiting_causal_boundary
-}
-
-/// Reports whether an unpublished entry belongs to a completed atomic batch.
-fn entry_awaits_atomic_evaluation_boundary(
-    event_log: &[SchedulerEventLogEntry],
-    index: usize,
-) -> bool {
-    let trailing_batch = &event_log[index + 1..];
-    match event_log[index].payload() {
-        SchedulerEventLogPayload::Observable(_) => trailing_batch
-            .iter()
-            .find(|entry| !matches!(entry.payload(), SchedulerEventLogPayload::Observable(_)))
-            .is_some_and(|entry| {
-                matches!(
-                    entry.payload(),
-                    SchedulerEventLogPayload::EvaluationBoundary(_)
-                )
-            }),
-        SchedulerEventLogPayload::ResolvedHappening(_) | SchedulerEventLogPayload::Decision(_) => {
-            // Quantum EMIT publishes causal entries and their evaluation boundary
-            // in one segment. A physical delivery can precede the prior point,
-            // but no reader can observe its intermediate flat prefix.
-            trailing_batch
-                .iter()
-                .find(|entry| {
-                    !matches!(
-                        entry.payload(),
-                        SchedulerEventLogPayload::ResolvedHappening(_)
-                            | SchedulerEventLogPayload::Decision(_)
-                            | SchedulerEventLogPayload::Observable(_)
-                    )
-                })
-                .is_some_and(|entry| {
-                    matches!(
-                        entry.payload(),
-                        SchedulerEventLogPayload::EvaluationBoundary(_)
-                    )
-                })
-        }
-        _ => false,
-    }
 }
 
 /// Retained assertion-checking view of a recorded scheduler event log.
@@ -1119,6 +944,8 @@ pub enum OfflineAssertionCheckError {
         /// Pattern compiler diagnostic.
         reason: String,
     },
+    /// A streamed log's entries differ from its declared count or final time.
+    RecordedLogShapeMismatch,
 }
 
 impl fmt::Display for OfflineAssertionCheckError {
@@ -1161,6 +988,10 @@ impl fmt::Display for OfflineAssertionCheckError {
             Self::InvalidConsolePattern { reason } => {
                 write!(formatter, "offline assertion console pattern: {reason}")
             }
+            Self::RecordedLogShapeMismatch => write!(
+                formatter,
+                "offline assertion log entries differ from the declared count or final time"
+            ),
         }
     }
 }
@@ -1175,7 +1006,8 @@ impl Error for OfflineAssertionCheckError {
             | Self::EventLogSegmentLengthOverflow { .. }
             | Self::EventLogByteOffsetOverflow { .. }
             | Self::EventLogEventCountOverflow { .. }
-            | Self::InvalidConsolePattern { .. } => None,
+            | Self::InvalidConsolePattern { .. }
+            | Self::RecordedLogShapeMismatch => None,
         }
     }
 }

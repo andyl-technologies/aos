@@ -453,6 +453,7 @@ fn assertion_log_fold_implementation_exposes_distinct_never_taxonomy() {
         include_str!("../src/trigger/event_graph.rs"),
         include_str!("../src/trigger/evidence.rs"),
         include_str!("../src/trigger/observability.rs"),
+        include_str!("../src/trigger/streaming_check.rs"),
     );
 
     for required in [
@@ -467,7 +468,7 @@ fn assertion_log_fold_implementation_exposes_distinct_never_taxonomy() {
         "finalize_prefix",
         "ObservableEventPayload::AssertionStateChanged",
         "ObservableEventPayload::GuestAssertionMarker",
-        "condition_prefix_from_recorded_log",
+        "AssertionLogCheck",
     ] {
         assert!(
             trigger.contains(required),

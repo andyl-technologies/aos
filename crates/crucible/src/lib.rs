@@ -284,7 +284,7 @@ pub use sim_backend::{
 };
 pub use tracing_bridge::{TracingBridge, TracingBridgeConfig};
 pub use trigger::{
-    Action, AssertionQuantifierKind, AssertionViolationArtifactReplay,
+    Action, AssertionLogCheck, AssertionQuantifierKind, AssertionViolationArtifactReplay,
     AssertionViolationBisectionRequest, AssertionViolationDivergence,
     AssertionViolationReplayError, AssertionViolationReplayReport, BLACK_BOX_OBSERVATION_CONTRACTS,
     BLACK_BOX_OBSERVATION_KIND_COUNT, BLACK_BOX_OBSERVATION_KINDS, BasicBlockCoverageConfig,
@@ -306,11 +306,12 @@ pub use trigger::{
     LogLevel, LoweredPlanEventGraph, MAX_CONSOLE_AUTOMATON_BYTES, ObservableEvent,
     ObservableEventPayload, ObservedOrderingFact, ObservedState, OfflineAssertionCheckError,
     OfflineAssertionChecker, PropertyLifecycleState, ReadyPointResolution,
-    ReadyPointResolutionError, ReadyPointResolutionKind, RecordedAssertionLog, ResolvedCodePoint,
-    ResolvedMemPlace, SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths,
-    TcgExecBasicBlock, basic_block_coverage_map_index, check_assertion_violation_reproduction,
-    check_assertion_violation_reproduction_with_oracles, lint_host_assertion_harness_source,
-    observable_event_from_whitebox_marker_payload, resolve_ready_point, scenario_console_patterns,
+    ReadyPointResolutionError, ReadyPointResolutionKind, RecordedAssertionLog, RecordedLogShape,
+    ResolvedCodePoint, ResolvedMemPlace, SearchScheduleNamedPredicateKey,
+    SearchScheduleNamedPredicateTruths, TcgExecBasicBlock, basic_block_coverage_map_index,
+    check_assertion_violation_reproduction, check_assertion_violation_reproduction_with_oracles,
+    lint_host_assertion_harness_source, observable_event_from_whitebox_marker_payload,
+    resolve_ready_point, scenario_console_patterns,
 };
 
 #[cfg(any(debug_assertions, feature = "test-support"))]

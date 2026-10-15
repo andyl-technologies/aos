@@ -47,56 +47,20 @@ impl ConditionEventLogPrefix {
         let mut observable_events = Vec::new();
         let mut black_box_observation_kinds = BTreeSet::new();
         let mut ordering_facts = Vec::new();
-        let mut previous_black_box_observation = self.last_black_box_observation;
-        for (offset, entry) in entries.iter().enumerate() {
-            let expected = self
-                .scheduler_entries
-                .len()
-                .checked_add(offset)
-                .and_then(|offset| u64::try_from(offset).ok())
-                .and_then(|offset| self.base_sequence.checked_add(offset))
-                .ok_or(ConditionEvaluationError::NonPrefixEventLogSequence {
-                    expected: u64::MAX,
-                    actual: entry.sequence(),
-                })?;
-            if entry.sequence() != expected {
-                return Err(ConditionEvaluationError::NonPrefixEventLogSequence {
-                    expected,
-                    actual: entry.sequence(),
-                });
-            }
-            if !entry.has_valid_content_hash() {
-                return Err(ConditionEvaluationError::InvalidEventLogEntryHash {
-                    sequence: entry.sequence(),
-                });
-            }
-            if scheduler_entry_black_box_observation_kind(entry).is_some() {
-                if let Some((previous_sequence, previous_at)) = previous_black_box_observation
-                    && entry.at().ticks < previous_at.ticks
-                {
-                    return Err(ConditionEvaluationError::OutOfOrderEventLogEntry {
-                        previous_sequence,
-                        previous_at,
-                        sequence: entry.sequence(),
-                        event_at: entry.at(),
-                    });
-                }
-                previous_black_box_observation = Some((entry.sequence(), entry.at()));
-            }
-            if entry.at().ticks > point.at().ticks {
-                return Err(ConditionEvaluationError::FutureEventLogEntry {
-                    point: point.at(),
-                    sequence: entry.sequence(),
-                    event_at: entry.at(),
-                });
-            }
-            push_observed_state_facts(
+        let first_sequence = u64::try_from(self.scheduler_entries.len())
+            .ok()
+            .and_then(|length| self.base_sequence.checked_add(length));
+        let mut check =
+            AppendedEntryCheck::new(first_sequence, point.at(), self.last_black_box_observation);
+        for entry in &entries {
+            check.check(
                 entry,
                 &mut observable_events,
                 &mut black_box_observation_kinds,
                 &mut ordering_facts,
             )?;
         }
+        let previous_black_box_observation = check.last_black_box_observation();
         let events = self
             .scheduler_entries
             .len()
@@ -137,5 +101,96 @@ impl ConditionEventLogPrefix {
     /// Binds the successfully appended prefix to its canonical segment identity.
     pub(crate) fn set_event_log_offset(&mut self, offset: EventLogOffset) {
         self.event_log_offset = offset;
+    }
+}
+
+/// Per-entry checks for one appended batch whose final entry is at `point_at`.
+///
+/// Appends and the streaming offline validator apply exactly these checks in
+/// entry order, so both report the same first refusal.
+pub(crate) struct AppendedEntryCheck {
+    expected: Option<u64>,
+    point_at: VirtualTime,
+    last_black_box_observation: Option<(u64, VirtualTime)>,
+}
+
+impl AppendedEntryCheck {
+    /// Starts checking at sequence `expected`; `None` means it overflowed.
+    pub(crate) fn new(
+        expected: Option<u64>,
+        point_at: VirtualTime,
+        last_black_box_observation: Option<(u64, VirtualTime)>,
+    ) -> Self {
+        Self {
+            expected,
+            point_at,
+            last_black_box_observation,
+        }
+    }
+
+    /// Checks the next entry and collects the facts it contributes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionEvaluationError`] for a non-dense sequence, an
+    /// invalid content hash, a backwards black-box observation, an entry after
+    /// the batch's final time, or an invalid observation.
+    pub(crate) fn check(
+        &mut self,
+        entry: &SchedulerEventLogEntry,
+        observable_events: &mut Vec<ObservableEvent>,
+        black_box_observation_kinds: &mut BTreeSet<BlackBoxObservationKind>,
+        ordering_facts: &mut Vec<ObservedOrderingFact>,
+    ) -> Result<(), ConditionEvaluationError> {
+        let expected =
+            self.expected
+                .ok_or(ConditionEvaluationError::NonPrefixEventLogSequence {
+                    expected: u64::MAX,
+                    actual: entry.sequence(),
+                })?;
+        if entry.sequence() != expected {
+            return Err(ConditionEvaluationError::NonPrefixEventLogSequence {
+                expected,
+                actual: entry.sequence(),
+            });
+        }
+        if !entry.has_valid_content_hash() {
+            return Err(ConditionEvaluationError::InvalidEventLogEntryHash {
+                sequence: entry.sequence(),
+            });
+        }
+        if scheduler_entry_black_box_observation_kind(entry).is_some() {
+            if let Some((previous_sequence, previous_at)) = self.last_black_box_observation
+                && entry.at().ticks < previous_at.ticks
+            {
+                return Err(ConditionEvaluationError::OutOfOrderEventLogEntry {
+                    previous_sequence,
+                    previous_at,
+                    sequence: entry.sequence(),
+                    event_at: entry.at(),
+                });
+            }
+            self.last_black_box_observation = Some((entry.sequence(), entry.at()));
+        }
+        if entry.at().ticks > self.point_at.ticks {
+            return Err(ConditionEvaluationError::FutureEventLogEntry {
+                point: self.point_at,
+                sequence: entry.sequence(),
+                event_at: entry.at(),
+            });
+        }
+        push_observed_state_facts(
+            entry,
+            observable_events,
+            black_box_observation_kinds,
+            ordering_facts,
+        )?;
+        self.expected = expected.checked_add(1);
+        Ok(())
+    }
+
+    /// Returns the latest black-box observation accepted so far.
+    pub(crate) fn last_black_box_observation(&self) -> Option<(u64, VirtualTime)> {
+        self.last_black_box_observation
     }
 }
