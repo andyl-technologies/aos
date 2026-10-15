@@ -1,4 +1,4 @@
-//! One bounded placement insertion over the existing pack publication group.
+//! One bounded whole-group placement insertion with unchanged on-disk pages.
 //!
 //! Each affected subtree authenticates once on entry and each old parent is
 //! freshly revalidated after child work. Only final affected pages are appended;
@@ -6,13 +6,51 @@
 //! iterative, paid work stack keeps per-level ledgers off the native call stack.
 
 use super::{Bytes, ContentId, IndexEntry, Key, Node, Operation, PackedBlobBackend};
-use super::{Child, Replacement, Root, Update, changed_header, lookup, seal_pending};
+use super::{Child, Root, Update, changed_header, lookup, seal_pending};
 use super::{PageReference, StoreError, Value, wire};
 use crate::content_store::batch;
 use crate::owned_decode::DecodeScratch;
 
 #[cfg(test)]
 mod tests;
+
+const MAX_REPLACEMENT_PAGES: usize = batch::MAX_PUBLICATION_OBJECTS.div_ceil(wire::MAX_ROWS) + 1;
+
+// A node starts with at most 64 rows/references and receives at most 256
+// inputs. Its balanced result occupies at most five unchanged-width pages.
+#[derive(Clone, Copy)]
+struct Replacement {
+    children: [Option<Child>; MAX_REPLACEMENT_PAGES],
+}
+
+impl Replacement {
+    fn empty() -> Self {
+        Self {
+            children: [None; MAX_REPLACEMENT_PAGES],
+        }
+    }
+
+    fn one(child: Child) -> Self {
+        let mut result = Self::empty();
+        result.children[0] = Some(child);
+        result
+    }
+
+    fn count(self) -> usize {
+        self.children().count()
+    }
+
+    fn children(&self) -> impl Iterator<Item = Child> + Clone + '_ {
+        self.children.iter().copied().flatten()
+    }
+
+    fn push(&mut self, child: Child) -> Result<(), StoreError> {
+        let slot = self.count();
+        let output = self.children.get_mut(slot).ok_or(StoreError::Quota)?;
+        *output = Some(child);
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Row {
@@ -48,6 +86,16 @@ impl<T> Ledger<T> {
     }
 }
 
+// Fixed validation copies borrow the same control admission as their caller.
+type ValidationControls = (
+    wire::Header,
+    wire::Header,
+    Key,
+    Value,
+    Option<Key>,
+    StoreError,
+);
+
 // Concrete simultaneous loop/constructor controls, not a whole native-stack
 // certificate. No caller derives authority from this target-sized floor.
 type BatchControls = (
@@ -63,6 +111,7 @@ type BatchControls = (
     ChildWork,
     StoreError,
     PageScratch,
+    ValidationControls,
 );
 
 // One input and one output retain their original loans across this traversal.
@@ -172,7 +221,22 @@ enum Prepared {
 }
 
 impl Update {
-    /// Inserts the existing bounded group without publishing point ancestors.
+    /// Validates the entire unpublished object group before compaction writes.
+    ///
+    /// # Errors
+    ///
+    /// Refuses its original control admission, malformed/unordered/duplicate
+    /// inputs or overflowing object counters before any page IO.
+    pub(in crate::content_store::packed) fn validate_absent_batch(
+        header: wire::Header,
+        entries: &[(ContentId, IndexEntry)],
+        operation: &Operation<'_>,
+    ) -> Result<(), StoreError> {
+        let _controls = operation.reserve_array::<ValidationControls>(1)?;
+        validate_header(header, entries).map(|_| ())
+    }
+
+    /// Inserts the whole bounded group without publishing window ancestors.
     ///
     /// Partial errors retain the actual arena in this owner. The caller must
     /// preserve its uncommitted-backing outcome before propagating the refusal.
@@ -188,7 +252,7 @@ impl Update {
         entries: &[(ContentId, IndexEntry)],
         operation: &mut Operation<'_>,
     ) -> Result<(), StoreError> {
-        if entries.is_empty() || entries.len() > wire::MAX_ROWS {
+        if entries.is_empty() || entries.len() > batch::MAX_PUBLICATION_OBJECTS {
             return Err(StoreError::Incompatible);
         }
         // Covers fixed live wrappers/copies before their construction. Each
@@ -201,19 +265,9 @@ impl Update {
             value.validate_for(key)?;
             rows.values.push(Row { key, value });
         }
-        // Production manifests already order ContentId exactly as Key.
-        // Refuse a broken private caller invariant before any page effect.
-        for pair in rows.values.windows(2) {
-            match pair[0].key.cmp(&pair[1].key) {
-                std::cmp::Ordering::Less => {}
-                std::cmp::Ordering::Equal => return Err(duplicate()),
-                std::cmp::Ordering::Greater => return Err(StoreError::Incompatible),
-            }
-        }
-        let mut header = self.header;
-        for row in &rows.values {
-            header = changed_header(header, row.key, None, Some(row.value))?;
-        }
+        // One unpublished group validates all arithmetic before its page effects.
+        // The former per-window arithmetic/native-effect ordering is retired.
+        let header = validate_header(self.header, entries)?;
 
         let replacement = match &self.root {
             Root::Inline(old) => {
@@ -228,6 +282,7 @@ impl Update {
                     .ok_or(StoreError::Quota)?;
                 if count <= wire::MAX_ROWS {
                     let mut output = None;
+                    require_absent(&node, &rows.values)?;
                     merged_leaf(&node, &rows.values, 0, count, &mut output, operation)?;
                     Root::Inline(output.ok_or(StoreError::Incompatible)?)
                 } else {
@@ -235,7 +290,11 @@ impl Update {
                     let children =
                         self.insert_leaf(backend, &node, &rows.values, &mut output, operation)?;
                     drop(output);
-                    Root::Page(self.make_root(backend, children, operation)?)
+                    Root::Page(self.make_root_from_children(
+                        backend,
+                        children.children(),
+                        operation,
+                    )?)
                 }
             }
             Root::Page(reference) => {
@@ -248,10 +307,14 @@ impl Update {
                     end: rows.values.len(),
                 };
                 let children = self.insert_pages(backend, task, &rows.values, operation)?;
-                Root::Page(match (children.first, children.second) {
-                    (Some(first), None) => first.reference,
-                    (Some(_), Some(_)) => self.make_root(backend, children, operation)?,
-                    _ => return Err(StoreError::Incompatible),
+                Root::Page(if children.count() == 1 {
+                    children
+                        .children()
+                        .next()
+                        .ok_or(StoreError::Incompatible)?
+                        .reference
+                } else {
+                    self.make_root_from_children(backend, children.children(), operation)?
                 })
             }
         };
@@ -365,18 +428,17 @@ impl Update {
             .count
             .checked_add(rows.len())
             .ok_or(StoreError::Quota)?;
-        let first_count = split_count(count)?;
-        let bytes = merged_leaf(node, rows, 0, first_count, output, operation)?;
-        let first = self.append_page(backend, &bytes.value, operation)?;
-        if first_count == count {
-            return Ok(Replacement::one(first));
+        let pages = output_pages(count)?;
+        // Every duplicate is checked before the first output append, even when
+        // a concentrated group produces more than two physical leaf pages.
+        require_absent(node, rows)?;
+        let mut replacement = Replacement::empty();
+        for page in 0..pages {
+            let (start, end) = output_range(count, pages, page)?;
+            let bytes = merged_leaf(node, rows, start, end, output, operation)?;
+            replacement.push(self.append_page(backend, &bytes.value, operation)?)?;
         }
-        let bytes = merged_leaf(node, rows, first_count, count, output, operation)?;
-        let second = self.append_page(backend, &bytes.value, operation)?;
-        Ok(Replacement {
-            first: Some(first),
-            second: Some(second),
-        })
+        Ok(replacement)
     }
 
     fn finish_branch(
@@ -413,18 +475,14 @@ impl Update {
                 sum.checked_add(child.replacement.count())
                     .ok_or(StoreError::Quota)
             })?;
-        let first_count = split_count(count)?;
-        let bytes = merged_branch(frame, 0, first_count, &mut scratch.output, operation)?;
-        let first = self.append_page(backend, &bytes.value, operation)?;
-        if first_count == count {
-            return Ok(Replacement::one(first));
+        let pages = output_pages(count)?;
+        let mut replacement = Replacement::empty();
+        for page in 0..pages {
+            let (start, end) = output_range(count, pages, page)?;
+            let bytes = merged_branch(frame, start, end, &mut scratch.output, operation)?;
+            replacement.push(self.append_page(backend, &bytes.value, operation)?)?;
         }
-        let bytes = merged_branch(frame, first_count, count, &mut scratch.output, operation)?;
-        let second = self.append_page(backend, &bytes.value, operation)?;
-        Ok(Replacement {
-            first: Some(first),
-            second: Some(second),
-        })
+        Ok(replacement)
     }
 }
 
@@ -434,15 +492,68 @@ fn duplicate() -> StoreError {
     }
 }
 
-fn split_count(count: usize) -> Result<usize, StoreError> {
-    if count == 0 || count > wire::MAX_ROWS * 2 {
+// Production manifests already order ContentId exactly as Key. Whole-group
+// arithmetic and geometry are checked without page reads or allocations.
+fn validate_header(
+    mut header: wire::Header,
+    entries: &[(ContentId, IndexEntry)],
+) -> Result<wire::Header, StoreError> {
+    if entries.is_empty() || entries.len() > batch::MAX_PUBLICATION_OBJECTS {
+        return Err(StoreError::Incompatible);
+    }
+    let mut prior = None;
+    for (id, entry) in entries {
+        let key = Key::object(*id);
+        let value = Value::object(*entry);
+        value.validate_for(key)?;
+        if let Some(previous) = prior {
+            match key.cmp(&previous) {
+                std::cmp::Ordering::Greater => {}
+                std::cmp::Ordering::Equal => return Err(duplicate()),
+                std::cmp::Ordering::Less => return Err(StoreError::Incompatible),
+            }
+        }
+        header = changed_header(header, key, None, Some(value))?;
+        prior = Some(key);
+    }
+    Ok(header)
+}
+
+fn output_pages(count: usize) -> Result<usize, StoreError> {
+    let maximum = wire::MAX_ROWS
+        .checked_add(batch::MAX_PUBLICATION_OBJECTS)
+        .ok_or(StoreError::Quota)?;
+    if count == 0 || count > maximum {
         return Err(StoreError::Quota);
     }
-    Ok(if count > wire::MAX_ROWS {
-        count / 2
-    } else {
-        count
-    })
+    Ok(count.div_ceil(wire::MAX_ROWS))
+}
+
+fn output_range(count: usize, pages: usize, page: usize) -> Result<(usize, usize), StoreError> {
+    if pages != output_pages(count)? || page >= pages {
+        return Err(StoreError::Incompatible);
+    }
+    // Balanced contiguous ranges preserve the old two-page split and place
+    // at least 32 rows in each output whenever a nonroot split is required.
+    let start = page.checked_mul(count).ok_or(StoreError::Quota)? / pages;
+    let end = page
+        .checked_add(1)
+        .and_then(|next| next.checked_mul(count))
+        .ok_or(StoreError::Quota)?
+        / pages;
+    if end - start > wire::MAX_ROWS || (pages > 1 && end - start < wire::MIN_ROWS) {
+        return Err(StoreError::Incompatible);
+    }
+    Ok((start, end))
+}
+
+fn require_absent(node: &Node<'_>, rows: &[Row]) -> Result<(), StoreError> {
+    for row in rows {
+        if lookup(node, row.key)?.is_some() {
+            return Err(duplicate());
+        }
+    }
+    Ok(())
 }
 
 fn merged_leaf<'a>(
@@ -459,12 +570,6 @@ fn merged_leaf<'a>(
         || end - start > wire::MAX_ROWS
     {
         return Err(StoreError::Incompatible);
-    }
-    // Check the whole affected leaf before appending either output page.
-    for row in rows {
-        if lookup(node, row.key)?.is_some() {
-            return Err(duplicate());
-        }
     }
     let out = page_buffer(output, operation)?;
     wire::begin_node(&mut out.value, 0);
@@ -507,10 +612,7 @@ fn merged_branch<'a>(
     wire::begin_node(&mut out.value, frame.height);
     let mut slot = 0;
     for child in &frame.children.values {
-        for replacement in [child.replacement.first, child.replacement.second]
-            .into_iter()
-            .flatten()
-        {
+        for replacement in child.replacement.children() {
             if slot >= start && slot < end {
                 super::append_child(&mut out.value, replacement);
             }

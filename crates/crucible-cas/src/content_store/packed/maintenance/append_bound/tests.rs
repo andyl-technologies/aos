@@ -413,8 +413,7 @@ fn point_geometry_and_invalid_private_inputs_keep_their_existing_bound() -> Resu
 }
 
 #[test]
-fn four_window_transaction_bounds_actual_append_and_keeps_unpublished_root()
--> Result<(), FixtureError> {
+fn whole_group_bounds_actual_append_and_keeps_unpublished_root() -> Result<(), FixtureError> {
     let fixture = Fixture::new()?;
     let snapshot = seeded(&fixture, 1024)?;
     let old_root = fs::read(fixture.backend.admin.join(INDEX_FILE))?;
@@ -485,22 +484,16 @@ fn four_window_transaction_bounds_actual_append_and_keeps_unpublished_root()
 }
 
 #[test]
-fn aggregate_windows_include_every_raised_height_without_changing_node_width()
--> Result<(), FixtureError> {
+fn whole_group_bound_counts_balanced_outputs_and_separate_pack_update() -> Result<(), FixtureError>
+{
     assert_eq!(wire::MAX_ROWS, 64);
     for height in 0..wire::MAX_HEIGHT as u8 {
         for count in [65_u64, 127, 128, 129, 255, 256] {
-            let mut remaining = count;
-            let mut raised = height;
-            let mut expected = 0;
-            while remaining != 0 {
-                let width = remaining.min(64);
-                expected += AppendBound::batch(raised, width)?.bytes()?;
-                remaining -= width;
-                raised = height + 1;
-            }
+            let root_outputs = 1 + count.div_ceil(64);
+            let lower_outputs = (2 * count + count / 64) * u64::from(height);
+            let point = AppendBound::point(height + 1, 1)?;
             let bound = AppendBound::batch(height, count)?;
-            assert_eq!(bound.bytes()?, expected);
+            assert_eq!(bound.pages, root_outputs + lower_outputs + 1 + point.pages);
             assert_eq!(bound.changes, count + 1);
         }
     }

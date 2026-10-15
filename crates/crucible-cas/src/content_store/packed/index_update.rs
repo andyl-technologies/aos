@@ -474,19 +474,40 @@ impl Update {
     ) -> Result<PageReference, StoreError> {
         let first = children.first.ok_or(StoreError::Incompatible)?;
         let second = children.second.ok_or(StoreError::Incompatible)?;
+        self.make_root_from_children(backend, [first, second].into_iter(), operation)
+    }
+
+    // Point and whole-group splits share the exact same physical root writer.
+    fn make_root_from_children(
+        &mut self,
+        backend: &PackedBlobBackend,
+        children: impl Iterator<Item = Child> + Clone,
+        operation: &mut Operation<'_>,
+    ) -> Result<PageReference, StoreError> {
+        let first = children.clone().next().ok_or(StoreError::Incompatible)?;
         let height = first
             .reference
             .height
             .checked_add(1)
             .ok_or(StoreError::Quota)?;
-        if height as usize >= wire::MAX_HEIGHT || second.reference.height != first.reference.height
-        {
+        if height as usize >= wire::MAX_HEIGHT {
             return Err(StoreError::Quota);
+        }
+        let mut count = 0;
+        for child in children.clone() {
+            if child.reference.height != first.reference.height {
+                return Err(StoreError::Quota);
+            }
+            count += 1;
+        }
+        if !(2..=wire::MAX_ROWS).contains(&count) {
+            return Err(StoreError::Incompatible);
         }
         let mut bytes = operation.buffer(wire::PAGE_BYTES)?;
         wire::begin_node(&mut bytes.value, height);
-        append_child(&mut bytes.value, first);
-        append_child(&mut bytes.value, second);
+        for child in children {
+            append_child(&mut bytes.value, child);
+        }
         seal_pending(&mut bytes.value, height)?;
         Ok(self
             .append_page(backend, &bytes.value, operation)?

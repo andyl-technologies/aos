@@ -1,6 +1,8 @@
 //! Differential placement, real append-work and refusal custody controls.
 
 use super::*;
+
+mod whole_group;
 use crate::content_store::packed::placement_tests::{Fixture, FixtureError, object, value};
 use crate::content_store::packed::{
     checked_publication::Progress, index_build, index_format::Header, maintenance,
@@ -495,14 +497,32 @@ fn paid_pages_reuse_actual_loans_through_leaf_and_parent_work() -> Result<(), Fi
         };
         assert_eq!(fixture.usage()?, usage);
         assert_eq!(
-            first.first.expect("first output").reference.records,
-            split_count(child.reference.records as usize + rows.len())? as u64
+            first
+                .children()
+                .next()
+                .expect("first output")
+                .reference
+                .records,
+            output_range(
+                child.reference.records as usize + rows.len(),
+                output_pages(child.reference.records as usize + rows.len())?,
+                0,
+            )?
+            .1 as u64
         );
         frame.accept(second)?;
         assert!(frame.next(&rows)?.is_none());
         let parent =
             update.finish_branch(&fixture.backend, &frame, &mut scratch, &mut operation)?;
-        assert_eq!(parent.first.expect("parent output").reference.records, 67);
+        assert_eq!(
+            parent
+                .children()
+                .next()
+                .expect("parent output")
+                .reference
+                .records,
+            67
+        );
         assert_eq!(fixture.usage()?, usage);
     }
     assert_eq!(fixture.usage()?, baseline);

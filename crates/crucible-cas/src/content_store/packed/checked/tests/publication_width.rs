@@ -116,9 +116,23 @@ fn above_width_refuses_before_opening_any_source_or_publishing() {
     );
 }
 
+// Encode the actual near-overflow root through the production format. This
+// is a component counter boundary, not an installed native/runtime history.
+fn install_later_group_overflow(fixture: &Fixture) {
+    let index = fixture.backend.load_index().expect("current root");
+    let mut header = index.header;
+    header.generation = u64::MAX - 64;
+    let mut bytes = Vec::with_capacity(super::super::super::index_format::PAGE_BYTES);
+    header
+        .append(fixture.backend.configuration, index.body(), &mut bytes)
+        .expect("valid encoded root boundary");
+    fs::write(fixture.backend.index_path(), bytes).expect("actual component root");
+}
+
 #[test]
-fn late_corrupt_source_keeps_every_earlier_source_before_refusing_commit() {
+fn late_corrupt_source_precedes_future_whole_group_overflow() {
     let fixture = Fixture::new(b"prior object").expect("component fixture");
+    install_later_group_overflow(&fixture);
     let supplied = inputs();
     let mut objects = supplied
         .iter()
@@ -159,7 +173,7 @@ fn late_corrupt_source_keeps_every_earlier_source_before_refusing_commit() {
 }
 
 #[test]
-fn cancellation_after_first_window_has_no_intermediate_durable_index() {
+fn cancellation_after_source_65_has_no_intermediate_durable_index() {
     let fixture = Fixture::new(b"prior object").expect("component fixture");
     let supplied = inputs();
     let objects = supplied
@@ -234,6 +248,77 @@ fn denied_transaction_metadata_precedes_source_effects() {
     drop((error, original, pressure));
     assert_eq!(
         fixture.quota.resources.usage().expect("same account"),
+        baseline
+    );
+}
+
+#[test]
+fn actual_pack_write_refusal_precedes_future_whole_group_overflow() {
+    let fixture = Fixture::new(b"prior object").expect("component fixture");
+    install_later_group_overflow(&fixture);
+    let supplied = inputs();
+    let objects = supplied
+        .iter()
+        .map(|(id, source, _)| (*id, source.clone()))
+        .collect::<Vec<_>>();
+    let before = fs::read(fixture.backend.index_path()).expect("old root");
+    let baseline = fixture.quota.resources.usage().expect("same original");
+    let mut observed_write = false;
+    let error = fixture
+        .backend
+        .put_many_if_absent_with_boundary(&fixture.original, &objects, &mut || {
+            // Observe the actual private pack candidate after its first native
+            // write. Published packs do not have this staging-name prefix.
+            for entry in
+                fs::read_dir(&fixture.backend.packs).map_err(|source| StoreError::StreamIo {
+                    operation: "observe-component-pack-write",
+                    source,
+                })?
+            {
+                let entry = entry.map_err(|source| StoreError::StreamIo {
+                    operation: "observe-component-pack-write",
+                    source,
+                })?;
+                if entry
+                    .file_name()
+                    .as_encoded_bytes()
+                    .starts_with(b".pack.tmp-")
+                    && entry
+                        .metadata()
+                        .map_err(|source| StoreError::StreamIo {
+                            operation: "observe-component-pack-write",
+                            source,
+                        })?
+                        .len()
+                        != 0
+                {
+                    observed_write = true;
+                    return Err(StoreError::Unavailable);
+                }
+            }
+            Ok(())
+        })
+        .expect_err("initiating post-pack-write boundary refusal");
+    assert!(observed_write);
+    let StoreError::PackedScope { source } = &error else {
+        panic!("own actual publication failure: {error:?}");
+    };
+    assert!(matches!(
+        source.first_boundary(),
+        Some(StoreError::Unavailable)
+    ));
+    assert_eq!(source.outcome().durable_objects, 0);
+    assert_eq!(
+        fs::read(fixture.backend.index_path()).expect("old published root"),
+        before
+    );
+    drop(error);
+    assert_eq!(
+        fixture
+            .quota
+            .resources
+            .usage()
+            .expect("candidate loans retired"),
         baseline
     );
 }

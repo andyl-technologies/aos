@@ -12,7 +12,7 @@ use super::placement_index::IndexSnapshot;
 use super::placement_index::{FreshRoot, Reader};
 use super::*;
 use crate::owned_decode::DecodeScratch;
-use append_bound::AppendBound;
+pub(super) use append_bound::AppendBound;
 
 pub(super) struct Manifest {
     pub(super) entries: Vec<PackManifestEntry>,
@@ -388,6 +388,9 @@ pub(super) fn replacement(
     if entries.iter().any(|(_, entry)| entry.pack != pack) {
         return Err(StoreError::Incompatible);
     }
+    // The whole object's header/geometry refusal precedes even a compaction
+    // candidate. Earlier source/pack effects belong to the owning publisher.
+    index_update::Update::validate_absent_batch(index.header, entries, operation)?;
     let mut update = prepared_update(
         backend,
         index,
@@ -395,14 +398,12 @@ pub(super) fn replacement(
         operation,
         progress,
     )?;
-    // A wider physical transaction preserves the proven <=64-row mutation
-    // kernel. No intermediate root is published; all source bytes already
-    // authenticated in caller order before this one durable replacement.
-    for window in entries.chunks(wire::MAX_ROWS) {
-        let work = update.insert_absent_batch(backend, window, operation);
-        progress.outcome.index_reclamation_pending |= update.uncommitted_backing();
-        work?;
-    }
+    // The complete unpublished group validates before its page effects. All
+    // source bytes already authenticated in caller order; only final affected
+    // pages are emitted, with the same 64-row on-disk geometry.
+    let work = update.insert_absent_batch(backend, entries, operation);
+    progress.outcome.index_reclamation_pending |= update.uncommitted_backing();
+    work?;
     let key = Key::pack(pack);
     let prior = update
         .find(key, operation)?
