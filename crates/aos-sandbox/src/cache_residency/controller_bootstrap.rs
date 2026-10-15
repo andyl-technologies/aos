@@ -329,9 +329,7 @@ impl CacheReplayControllerBootstrapOwnerV1 {
             Path::new(CONTROLLER_CACHE_ROOT), CONTROLLER_CACHE_JOURNAL,
             self.owner_uid, controller_cache_journal_limits(),
         )?;
-        if read_source_records(&mut self.journal)? != self.records {
-            return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
-        }
+        require_original_source_records(&mut self.journal, &self.records)?;
         Ok(())
     }
 
@@ -349,9 +347,7 @@ impl CacheReplayControllerBootstrapOwnerV1 {
         partition: ObjectDigest,
     ) -> Result<CacheResidencyReplayPartitionEvidenceV1, CacheReplayControllerBootstrapErrorV1>
     {
-        if read_source_records(&mut self.journal)? != self.records {
-            return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
-        }
+        require_original_source_records(&mut self.journal, &self.records)?;
         let bytes = self
             .records
             .get(&partition)
@@ -359,6 +355,62 @@ impl CacheReplayControllerBootstrapOwnerV1 {
         decode_cache_replay_manifest(bytes, CacheRecoveryLimitsV1::default())
             .map_err(|_| CacheReplayControllerBootstrapErrorV1::InvalidSource)
     }
+}
+
+
+// Original capture validated every canonical manifest before storing this map.
+// Later checks compare the complete current bytes against those originals; the
+// private writer cannot substitute a new manifest by presenting a digest.
+fn require_original_source_records(
+    journal: &mut Journal,
+    original: &BTreeMap<ObjectDigest, Vec<u8>>,
+) -> Result<(), CacheReplayControllerBootstrapErrorV1> {
+    if journal
+        .all_records()
+        .any(|(namespace, _, _)| namespace != RecordNamespace::DesiredState)
+    {
+        return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
+    }
+
+    let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    require_source_record_equality(authority.records()?, original)
+}
+
+// The iterator borrows the actual protected authority above. Keeping this pure
+// byte comparison separate also permits boundary tests without issuing owners.
+fn require_source_record_equality<'record>(
+    records: impl IntoIterator<Item = (&'record [u8], &'record [u8])>,
+    original: &BTreeMap<ObjectDigest, Vec<u8>>,
+) -> Result<(), CacheReplayControllerBootstrapErrorV1> {
+    if original.is_empty() || original.len() > MAXIMUM_SOURCE_PARTITIONS {
+        return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
+    }
+
+    let mut count = 0_usize;
+    let mut expected = original.iter();
+    for (key, bytes) in records {
+        count = count.checked_add(1)
+            .filter(|count| *count <= MAXIMUM_SOURCE_PARTITIONS)
+            .ok_or(CacheReplayControllerBootstrapErrorV1::InvalidSource)?;
+        if !key.starts_with(SOURCE_KEY_PREFIX)
+            || key.len() != SOURCE_KEY_PREFIX.len() + 32
+        {
+            return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
+        }
+
+        let (partition, original_bytes) = expected.next()
+            .ok_or(CacheReplayControllerBootstrapErrorV1::InvalidSource)?;
+        if key.get(SOURCE_KEY_PREFIX.len()..) != Some(partition.as_bytes().as_slice())
+            || original_bytes.as_slice() != bytes
+        {
+            return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
+        }
+    }
+
+    if count != original.len() || expected.next().is_some() {
+        return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
+    }
+    Ok(())
 }
 
 fn read_source_records(
@@ -663,5 +715,145 @@ fn controller_cache_journal_limits() -> JournalLimits {
         maximum_records_per_transaction: MAXIMUM_SOURCE_PARTITIONS,
         maximum_transaction_bytes: 128 * 1024 * 1024,
         ..JournalLimits::default()
+    }
+}
+
+
+#[cfg(test)]
+mod original_source_tests {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use super::*;
+
+    fn partition(index: u64) -> ObjectDigest {
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(&index.to_be_bytes());
+        ObjectDigest::from_bytes(bytes)
+    }
+
+    // These bytes test exact comparison only; they never construct a bootstrap
+    // owner or replace its required complete canonical capture validator.
+    fn original() -> BTreeMap<ObjectDigest, Vec<u8>> {
+        BTreeMap::from([(partition(1), b"original manifest bytes".to_vec())])
+    }
+
+    fn rows(original: &BTreeMap<ObjectDigest, Vec<u8>>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        original.iter().map(|(partition, bytes)| {
+            (source_key(*partition), bytes.clone())
+        }).collect()
+    }
+
+    fn compare(
+        rows: &[(Vec<u8>, Vec<u8>)],
+        original: &BTreeMap<ObjectDigest, Vec<u8>>,
+    ) -> Result<(), CacheReplayControllerBootstrapErrorV1> {
+        require_source_record_equality(
+            rows.iter().map(|(key, bytes)| (key.as_slice(), bytes.as_slice())),
+            original,
+        )
+    }
+
+    #[test]
+    fn borrowed_comparison_rejects_changed_missing_extra_and_orphan_records() {
+        let original = original();
+        let exact = rows(&original);
+
+        assert!(compare(&exact, &original).is_ok());
+        assert!(compare(&[], &original).is_err());
+
+        let mut changed = exact.clone();
+        changed[0].1[0] ^= 1;
+        assert!(compare(&changed, &original).is_err());
+
+        let mut extra = exact.clone();
+        extra.push((source_key(partition(2)), b"extra".to_vec()));
+        assert!(compare(&extra, &original).is_err());
+
+        let mut orphan = exact.clone();
+        orphan[0].0[0] ^= 1;
+        assert!(compare(&orphan, &original).is_err());
+
+        let mut tail = exact;
+        tail[0].0.push(0);
+        assert!(compare(&tail, &original).is_err());
+    }
+
+    #[test]
+    fn fixed_partition_limit_and_count_are_checked_before_matching() {
+        let original = (1..=MAXIMUM_SOURCE_PARTITIONS)
+            .map(|index| (partition(index as u64), vec![1]))
+            .collect::<BTreeMap<_, _>>();
+        let exact = rows(&original);
+
+        assert!(compare(&exact, &original).is_ok());
+        assert!(compare(&exact[..exact.len() - 1], &original).is_err());
+
+        let mut excessive = original;
+        excessive.insert(partition((MAXIMUM_SOURCE_PARTITIONS + 1) as u64), vec![2]);
+        assert!(compare(&rows(&excessive), &excessive).is_err());
+        assert!(compare(&[], &BTreeMap::new()).is_err());
+    }
+
+    fn fixture() -> (tempfile::TempDir, Journal, BTreeMap<ObjectDigest, Vec<u8>>) {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(directory.path()).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(), "source.journal", controller_cache_journal_limits(), uid,
+        ).unwrap();
+        let original = original();
+        let transaction = JournalTransaction::new([1; 16], vec![JournalRecord::put(
+            RecordNamespace::DesiredState, source_key(partition(1)),
+            original.get(&partition(1)).unwrap().clone(),
+        )]).unwrap();
+        journal.claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap().commit(&transaction).unwrap();
+        (directory, journal, original)
+    }
+
+    // The temporary-root check exercises the same native named-writer check;
+    // production recheck_existing additionally requires its fixed original path.
+    fn check_fixture(
+        journal: &mut Journal,
+        original: &BTreeMap<ObjectDigest, Vec<u8>>,
+    ) -> Result<(), CacheReplayControllerBootstrapErrorV1> {
+        journal.require_protected_names_current_for_test()?;
+        require_original_source_records(journal, original)
+    }
+
+    #[test]
+    fn committed_native_mutations_and_foreign_namespaces_are_not_hidden() {
+        for case in 0..4 {
+            let (_directory, mut journal, original) = fixture();
+            assert!(check_fixture(&mut journal, &original).is_ok());
+            let record = match case {
+                0 => JournalRecord::put(RecordNamespace::DesiredState,
+                    source_key(partition(1)), b"changed".to_vec()),
+                1 => JournalRecord::delete(RecordNamespace::DesiredState, source_key(partition(1))),
+                2 => JournalRecord::put(RecordNamespace::DesiredState,
+                    source_key(partition(2)), b"extra".to_vec()),
+                _ => JournalRecord::put(RecordNamespace::Operation,
+                    b"foreign".to_vec(), b"foreign".to_vec()),
+            };
+            let transaction = JournalTransaction::new([2; 16], vec![record]).unwrap();
+            journal.commit(&transaction).unwrap();
+
+            assert!(check_fixture(&mut journal, &original).is_err());
+        }
+    }
+
+    #[test]
+    fn identical_file_and_lock_replacements_fail_native_name_check() {
+        for suffix in ["", ".lock"] {
+            let (directory, mut journal, original) = fixture();
+            assert!(check_fixture(&mut journal, &original).is_ok());
+            let named = directory.path().join(format!("source.journal{suffix}"));
+            let retained = directory.path().join(format!("source.journal{suffix}.retained"));
+            fs::rename(&named, &retained).unwrap();
+            fs::copy(&retained, &named).unwrap();
+
+            assert!(check_fixture(&mut journal, &original).is_err());
+        }
     }
 }

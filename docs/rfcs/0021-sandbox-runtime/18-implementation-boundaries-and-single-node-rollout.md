@@ -417,6 +417,18 @@ refunding its inclusive capacity, clearing Q04 history or opening Storage effect
 Seeded append/reopen regressions cover these journal mechanics, not installed
 Root/PID1 admission or the complete Create continuation.
 
+Cache bootstrap rechecks compare complete borrowed records with the retained
+validated originals. Held physical Cache checks stream the original manifest
+with fixed scratch; initial unknown-file replay keeps its complete decoder.
+Changed payloads with valid headers, nonzero generations and checksums are
+stale heads. Verified sessions share the authority's immutable checkpoint
+evidence while preserving independent per-partition verification and currentness.
+Broker owned decoding and exact sealed-member matching share field parsers.
+Selected Nix Storage preparation adds its actual admitted plan/lease/request
+deadline check immediately before the ordinary native append, retaining the
+kernel sample and native result independently. This adds no receiving payment
+or exception to the existing journal authority guards.
+
 Private `protected_domain_journal::capacity` owns complete domain reservation
 admission, authenticated recovery and terminal settlement on the original Journal.
 The unused ID-plus-binding adapter recipe is retired; exact pending, full-request

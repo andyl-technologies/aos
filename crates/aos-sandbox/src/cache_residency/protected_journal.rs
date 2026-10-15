@@ -266,6 +266,11 @@ pub(crate) struct CacheResidencyReplayPartitionEvidenceV1 {
     pub(crate) floor: CacheHistoryFloorV1,
 }
 
+// The actual protected authority owns each validated original once. Short
+// verified sessions share immutable bytes and retain independent scope checks.
+type CacheReplayPartitionEvidenceMapV1 =
+    BTreeMap<ObjectDigest, Arc<CacheResidencyReplayPartitionEvidenceV1>>;
+
 /// Supplies rollback-resistant current time to protected cache replay.
 pub(crate) trait CacheResidencyCurrentTimeAuthorityV1: Send + Sync {
     /// Advances and returns the protected wall-clock floor.
@@ -276,7 +281,7 @@ pub(crate) struct ProtectedCacheResidencyReplayAuthorityV1 {
     journal: Mutex<Journal>,
     owner_scope: ObjectDigest,
     maximum_record_bytes: usize,
-    partitions: Mutex<BTreeMap<ObjectDigest, CacheResidencyReplayPartitionEvidenceV1>>,
+    partitions: Mutex<CacheReplayPartitionEvidenceMapV1>,
     current_time: Arc<dyn CacheResidencyCurrentTimeAuthorityV1>,
     limits: CacheRecoveryLimitsV1,
 }
@@ -288,7 +293,7 @@ struct CacheResidencyAuthoritySessionV1 {
 }
 
 struct CacheResidencyAuthoritySessionPartitionV1 {
-    evidence: CacheResidencyReplayPartitionEvidenceV1,
+    evidence: Arc<CacheResidencyReplayPartitionEvidenceV1>,
     scope: CacheAuthorityScopeV1,
     record_digest: ObjectDigest,
 }
@@ -458,7 +463,7 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
                 .lock()
                 .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?
                 .values()
-                .cloned()
+                .map(|evidence| evidence.as_ref().clone())
                 .collect();
             refresh()?;
             Ok(evidence)
@@ -473,7 +478,7 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
         self.while_authority_current_resident(destination, postcheck, |_owner, _now, _validator| {
             Ok(self.partitions.lock()
                 .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?
-                .values().cloned().collect())
+                .values().map(|evidence| evidence.as_ref().clone()).collect())
         });
     }
 
@@ -686,7 +691,7 @@ impl CacheResidencyReplayValidatorV1 {
             let session = CacheResidencyAuthoritySessionPartitionV1 {
                 scope: item.scope,
                 record_digest: capability.record_digest(),
-                evidence: item,
+                evidence: Arc::new(item),
             };
             if partitions
                 .insert(session.evidence.partition.digest(), session)
@@ -2544,7 +2549,7 @@ fn validate_protected_replay_parts(
     limits: CacheRecoveryLimitsV1,
     current_time: &dyn CacheResidencyCurrentTimeAuthorityV1,
 ) -> Result<
-    (CacheRecoveryLimitsV1, BTreeMap<ObjectDigest, CacheResidencyReplayPartitionEvidenceV1>),
+    (CacheRecoveryLimitsV1, CacheReplayPartitionEvidenceMapV1),
     CacheResidencyProtectedJournalErrorV1,
 > {
     if owner_scope.as_bytes() == &[0; 32] || evidence.is_empty() {
@@ -2594,7 +2599,7 @@ fn validate_protected_replay_parts(
                 now,
             )
             .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-            if partitions.insert(item.partition.digest(), item).is_some() {
+            if partitions.insert(item.partition.digest(), Arc::new(item)).is_some() {
                 return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
             }
         }

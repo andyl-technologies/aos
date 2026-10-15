@@ -47,6 +47,7 @@ use hmac::{Hmac, Mac as _};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
+mod borrowed;
 mod fuse_intent;
 
 const AUTHENTICATED_VERSION: u16 = 1;
@@ -289,24 +290,42 @@ impl BrokerAuthorizationFenceV1 {
     }
 
     fn validate(&self) -> Result<(), AuthorizationRecordError> {
-        let lease_assignment = self.local_lease_record.assignment();
-        if self.node.as_bytes() == &[0; 16]
-            || self.plan_digest.as_bytes() == &[0; 32]
-            || self.plan_expires_seconds <= 0
-            || self.ownership_authority.usage() != KeyUsage::OwnershipLease
-            || self.ownership_authority.generation() == 0
-            || self.ownership_authority.public_key_sha256().as_bytes() == &[0; 32]
-            || self.local_lease_record.authority_expires_seconds() <= 0
-            || lease_assignment.sandbox() != self.assignment.sandbox()
-            || lease_assignment.incarnation() != self.assignment.incarnation()
-            || lease_assignment.epoch() != self.assignment.epoch()
-            || lease_assignment.digest() != self.assignment.digest()
-            || self.local_lease_record.node() != self.node
-        {
-            return Err(AuthorizationRecordError::InvalidPayload);
-        }
-        Ok(())
+        validate_fence_fields(
+            self.assignment, self.node, self.plan_digest, self.plan_expires_seconds,
+            self.ownership_authority.generation(), self.ownership_authority.public_key_sha256(),
+            self.ownership_authority.usage(), &self.local_lease_record,
+        )
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_fence_fields(
+    assignment: BrokerAssignment,
+    node: NodeId,
+    plan_digest: ObjectDigest,
+    plan_expires_seconds: i64,
+    authority_generation: u64,
+    authority_public_key: ObjectDigest,
+    authority_usage: KeyUsage,
+    local_lease_record: &LocalLeaseRecord,
+) -> Result<(), AuthorizationRecordError> {
+    let lease_assignment = local_lease_record.assignment();
+    if node.as_bytes() == &[0; 16]
+        || plan_digest.as_bytes() == &[0; 32]
+        || plan_expires_seconds <= 0
+        || authority_usage != KeyUsage::OwnershipLease
+        || authority_generation == 0
+        || authority_public_key.as_bytes() == &[0; 32]
+        || local_lease_record.authority_expires_seconds() <= 0
+        || lease_assignment.sandbox() != assignment.sandbox()
+        || lease_assignment.incarnation() != assignment.incarnation()
+        || lease_assignment.epoch() != assignment.epoch()
+        || lease_assignment.digest() != assignment.digest()
+        || local_lease_record.node() != node
+    {
+        return Err(AuthorizationRecordError::InvalidPayload);
+    }
+    Ok(())
 }
 
 /// Identifies whether a durable effect is pending or has a stored receipt.
@@ -512,6 +531,12 @@ impl BrokerEffectIntentV1 {
         self.admitted_boottime_nanoseconds
     }
 
+    /// Returns the original request-local BOOTTIME deadline without renewing it.
+    #[must_use]
+    pub const fn request_deadline_boottime_nanoseconds(&self) -> u64 {
+        self.request_deadline_boottime_nanoseconds
+    }
+
     /// Returns the exclusive intersection deadline for the effect.
     #[must_use]
     pub const fn effect_deadline_boottime_nanoseconds(&self) -> u64 {
@@ -531,6 +556,10 @@ impl BrokerEffectIntentV1 {
     }
 
     fn validate(&self) -> Result<(), AuthorizationRecordError> {
+        self.validate_with_receipt(&self.receipt)
+    }
+
+    fn validate_with_receipt(&self, receipt: &[u8]) -> Result<(), AuthorizationRecordError> {
         let target_valid = match (self.verb, self.target) {
             (
                 BrokerVerb::HostLaunch
@@ -570,7 +599,7 @@ impl BrokerEffectIntentV1 {
                     && self.maximum_request_bytes as usize
                         <= aos_sandbox_protocol::nix_build::NIX_REQUEST_MAXIMUM_BYTES_V2
                     && (self.status == BrokerEffectStatusV1::Pending
-                        || self.receipt.len() == 32)
+                        || receipt.len() == 32)
             }
             (
                 BrokerVerb::MountCreate | BrokerVerb::MountMaterializeDestinationSlot,
@@ -623,9 +652,9 @@ impl BrokerEffectIntentV1 {
             _ => false,
         };
         let receipt_valid = match self.status {
-            BrokerEffectStatusV1::Pending => self.receipt.is_empty(),
+            BrokerEffectStatusV1::Pending => receipt.is_empty(),
             BrokerEffectStatusV1::Complete => {
-                !self.receipt.is_empty() && self.receipt.len() <= MAXIMUM_RECEIPT_BYTES
+                !receipt.is_empty() && receipt.len() <= MAXIMUM_RECEIPT_BYTES
             }
         };
         let conservative_plan_deadline = self
@@ -772,6 +801,58 @@ pub fn open_effect_intent(
         AuthenticatedValueKind::MountFuseIntent => fuse_intent::decode(payload),
         _ => decode_effect(payload, mac_key.domain),
     }
+}
+
+/// Authenticates the same Storage Prepare fence without copying its key text.
+///
+/// Returns `false` for another semantically valid authenticated fence.
+///
+/// # Errors
+/// Rejects another domain/location, authentication, framing or invalid fence semantics.
+pub(crate) fn require_exact_storage_prepare_fence(
+    mac_key: &NodeJournalMacKey,
+    namespace: RecordNamespace,
+    journal_key: &[u8],
+    bytes: &[u8],
+    expected: &BrokerAuthorizationFenceV1,
+) -> Result<bool, AuthorizationRecordError> {
+    if mac_key.domain != BrokerDomain::Storage
+        || !matches!(namespace, RecordNamespace::DesiredState | RecordNamespace::AuthorityPublication)
+    {
+        return Err(AuthorizationRecordError::InvalidPayload);
+    }
+    let payload = open(
+        mac_key, namespace, journal_key,
+        AuthenticatedValueKind::AuthorizationFence, bytes,
+    )?;
+    borrowed::decode_fence_fields(payload, mac_key.domain)?.require_exact(expected)
+}
+
+/// Authenticates the same pending Storage Prepare effect without copying a receipt.
+///
+/// Returns `false` for another semantically valid authenticated effect.
+///
+/// # Errors
+/// Rejects another domain/purpose, authentication, framing or invalid effect semantics.
+pub(crate) fn require_exact_storage_prepare_effect(
+    mac_key: &NodeJournalMacKey,
+    request_id: &[u8; 16],
+    bytes: &[u8],
+    expected: &BrokerEffectIntentV1,
+) -> Result<bool, AuthorizationRecordError> {
+    if mac_key.domain != BrokerDomain::Storage
+        || expected.status != BrokerEffectStatusV1::Pending
+        || expected.verb != BrokerVerb::StoragePrepareCatalog
+        || expected.target != BrokerGrantTarget::Assignment
+    {
+        return Err(AuthorizationRecordError::InvalidPayload);
+    }
+    let payload = open(
+        mac_key, RecordNamespace::Effect, request_id,
+        AuthenticatedValueKind::EffectIntent, bytes,
+    )?;
+    borrowed::decode_effect_fields(payload, EffectPayloadProfile::Ordinary(mac_key.domain))?
+        .require_exact_pending(expected)
 }
 
 pub(crate) fn seal_local_record(
@@ -998,42 +1079,7 @@ fn decode_fence(
     bytes: &[u8],
     domain: BrokerDomain,
 ) -> Result<BrokerAuthorizationFenceV1, AuthorizationRecordError> {
-    let mut decoder = Decoder::new(bytes, payload_read_error);
-    if decoder.array::<8>()? != *domain.fence_magic() || decoder.u16()? != FENCE_VERSION {
-        return Err(AuthorizationRecordError::InvalidPayload);
-    }
-    let assignment = decode_assignment(&mut decoder)?;
-    let node = NodeId::from_bytes(decoder.array::<16>()?);
-    let plan_digest = ObjectDigest::from_bytes(decoder.array::<32>()?);
-    let plan_expires_seconds = decoder.i64()?;
-    let stable_key_id_length = decoder.u8()? as usize;
-    if stable_key_id_length == 0 || stable_key_id_length > MAXIMUM_STABLE_KEY_ID_BYTES {
-        return Err(AuthorizationRecordError::InvalidPayload);
-    }
-    let stable_key_id_text = std::str::from_utf8(decoder.bytes(stable_key_id_length)?)
-        .map_err(|_| AuthorizationRecordError::InvalidPayload)?;
-    let stable_key_id = StableKeyId::new(stable_key_id_text.to_owned())
-        .map_err(|_| AuthorizationRecordError::InvalidPayload)?;
-    let authority_generation = decoder.u64()?;
-    let authority_public_key = ObjectDigest::from_bytes(decoder.array::<32>()?);
-    let authority_usage = decode_key_usage(decoder.u8()?)?;
-    let ownership_authority = KeyReference::new(
-        stable_key_id,
-        authority_generation,
-        authority_public_key,
-        authority_usage,
-    );
-    let local_lease_record = decode_local_lease_record(decoder.bytes(LOCAL_LEASE_RECORD_BYTES)?)
-        .map_err(|_| AuthorizationRecordError::InvalidPayload)?;
-    decoder.finish()?;
-    BrokerAuthorizationFenceV1::new(
-        assignment,
-        node,
-        plan_digest,
-        plan_expires_seconds,
-        ownership_authority,
-        local_lease_record,
-    )
+    borrowed::decode_fence_fields(bytes, domain)?.into_owned()
 }
 
 fn encode_effect(
@@ -1109,79 +1155,7 @@ fn decode_effect_fields(
     bytes: &[u8],
     profile: EffectPayloadProfile,
 ) -> Result<BrokerEffectIntentV1, AuthorizationRecordError> {
-    let magic = match profile {
-        EffectPayloadProfile::Ordinary(domain) => domain.effect_magic(),
-        EffectPayloadProfile::MountFuseIntent => fuse_intent::MAGIC,
-    };
-    let mut decoder = Decoder::new(bytes, payload_read_error);
-    if decoder.array::<8>()? != *magic || decoder.u16()? != EFFECT_VERSION {
-        return Err(AuthorizationRecordError::InvalidPayload);
-    }
-    let status = match decoder.u8()? {
-        0 => BrokerEffectStatusV1::Pending,
-        1 => BrokerEffectStatusV1::Complete,
-        _ => return Err(AuthorizationRecordError::InvalidPayload),
-    };
-    let code = decoder.u8()?;
-    let verb = match profile {
-        EffectPayloadProfile::Ordinary(domain) => decode_verb(domain, code)?,
-        EffectPayloadProfile::MountFuseIntent if code == 1 => {
-            BrokerVerb::MountReserveFuseWorkerIntent
-        }
-        EffectPayloadProfile::MountFuseIntent => {
-            return Err(AuthorizationRecordError::InvalidPayload);
-        }
-    };
-    let target = decode_target(&mut decoder)?;
-    let request_id = decoder.array::<16>()?;
-    let transport_request_digest = ObjectDigest::from_bytes(decoder.array::<32>()?);
-    let request_digest = ObjectDigest::from_bytes(decoder.array::<32>()?);
-    let plan_digest = ObjectDigest::from_bytes(decoder.array::<32>()?);
-    let lease_digest = ObjectDigest::from_bytes(decoder.array::<32>()?);
-    let maximum_request_bytes = decoder.u32()?;
-    let maximum_descriptors = decoder.u16()?;
-    let plan_expires_seconds = decoder.i64()?;
-    let authority_expires_seconds = decoder.i64()?;
-    let host_boot_id = decoder.array::<16>()?;
-    let fail_stop_boottime_nanoseconds = decoder.u64()?;
-    let clock_provenance = decoder.array::<16>()?;
-    let admitted_wall_seconds = decoder.i64()?;
-    let admitted_boottime_nanoseconds = decoder.u64()?;
-    let request_deadline_boottime_nanoseconds = decoder.u64()?;
-    let effect_deadline_boottime_nanoseconds = decoder.u64()?;
-    let local_lease_record = decode_local_lease_record(decoder.bytes(LOCAL_LEASE_RECORD_BYTES)?)
-        .map_err(|_| AuthorizationRecordError::InvalidPayload)?;
-    let receipt_length = decoder.u32()? as usize;
-    if receipt_length > MAXIMUM_RECEIPT_BYTES {
-        return Err(AuthorizationRecordError::InvalidPayload);
-    }
-    let receipt = decoder.bytes(receipt_length)?.to_vec();
-    decoder.finish()?;
-    let intent = BrokerEffectIntentV1 {
-        status,
-        request_id,
-        transport_request_digest,
-        request_digest,
-        plan_digest,
-        lease_digest,
-        verb,
-        target,
-        maximum_request_bytes,
-        maximum_descriptors,
-        plan_expires_seconds,
-        authority_expires_seconds,
-        host_boot_id,
-        fail_stop_boottime_nanoseconds,
-        clock_provenance,
-        admitted_wall_seconds,
-        admitted_boottime_nanoseconds,
-        request_deadline_boottime_nanoseconds,
-        effect_deadline_boottime_nanoseconds,
-        local_lease_record,
-        receipt,
-    };
-    intent.validate()?;
-    Ok(intent)
+    borrowed::decode_effect_fields(bytes, profile)?.into_owned()
 }
 
 fn encode_mount_effect_with_shared_codec(

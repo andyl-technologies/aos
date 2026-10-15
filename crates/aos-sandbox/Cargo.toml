@@ -26,6 +26,7 @@ aos-sandbox-coordinator-protocol = { workspace = true, optional = true }
 aos-sandbox-agent.workspace = true
 aos-sandbox-guest-root-tree.workspace = true
 aos-sandbox-broker-session-protocol.workspace = true
+aos-sandbox-broker.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-journal = { workspace = true, features = ["protected-unix"] }
 aos-sandbox-policy.workspace = true

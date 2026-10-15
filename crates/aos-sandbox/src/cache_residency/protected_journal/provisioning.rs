@@ -4,6 +4,8 @@
 //! candidate partition has no records. This authority claim then checks the
 //! checkpoint against a preexisting Replay record and publishes its manifest.
 
+use std::sync::Arc;
+
 use sha2::{Digest as _, Sha256};
 
 use crate::cache_residency::protected_owner::{
@@ -492,7 +494,7 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
         if authority.get(&manifest_key)? != Some(manifest.as_slice()) {
             return Err(ProtectedDomainJournalErrorV1::DivergentRecovery.into());
         }
-        partitions.insert(partition.digest(), evidence);
+        partitions.insert(partition.digest(), Arc::new(evidence));
         Ok(())
     }
 }

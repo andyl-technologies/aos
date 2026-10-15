@@ -34,12 +34,8 @@ pub(crate) enum StorageGenerationCauseV1 {
 /// Lends only the disjoint resident native result and its chronological marker.
 pub(crate) struct StorageGenerationNativeLoanV1<'original> {
     pub(crate) native: &'original mut Option<Result<CommitResult, JournalError>>,
-    pub(crate) clock: &'original mut Option<Result<RawPairedClockSample, crate::StorageRuntimeError>>,
-    pub(crate) clock_validation: &'original mut Option<StorageAdmissionError>,
+    pub(crate) clock: &'original mut aos_sandbox::journal::StoragePrepareNativeClockCaptureV1,
     pub(crate) first: &'original mut Option<StorageGenerationCauseV1>,
-    pub(crate) initial: RawPairedClockSample,
-    pub(crate) boot: [u8; 16],
-    pub(crate) deadline: u64,
 }
 
 /// Owns one selected original request, native result and Prepared result.
@@ -54,8 +50,7 @@ pub struct StorageGenerationAttemptV1 {
     >>,
     pub(crate) initial: Option<Result<RawPairedClockSample, StorageAdmissionError>>,
     pub(crate) native: Option<Result<CommitResult, JournalError>>,
-    pub(crate) native_clock: Option<Result<RawPairedClockSample, crate::StorageRuntimeError>>,
-    pub(crate) native_clock_validation: Option<StorageAdmissionError>,
+    pub(crate) native_clock: aos_sandbox::journal::StoragePrepareNativeClockCaptureV1,
     pub(crate) prepared: Option<Result<StorageCatalogPreparationOutcomeV1, StorageBrokerError>>,
     pub(crate) runtime_error: Option<crate::StorageRuntimeError>,
     pub(crate) kernel: Option<Result<
@@ -91,8 +86,7 @@ impl StorageGenerationAttemptV1 {
             checked: None,
             initial: None,
             native: None,
-            native_clock: None,
-            native_clock_validation: None,
+            native_clock: aos_sandbox::journal::StoragePrepareNativeClockCaptureV1::new(),
             prepared: None,
             runtime_error: None,
             kernel: None,
@@ -119,14 +113,7 @@ impl StorageGenerationAttemptV1 {
                 .map(|error| error as &(dyn std::error::Error + 'static)),
             StorageGenerationCauseV1::Clock => self.initial.as_ref()?.as_ref().err()
                 .map(|error| error as &(dyn std::error::Error + 'static)),
-            StorageGenerationCauseV1::NativeClock => {
-                if let Some(Err(error)) = &self.native_clock {
-                    Some(error)
-                } else {
-                    self.native_clock_validation.as_ref()
-                        .map(|error| error as &(dyn std::error::Error + 'static))
-                }
-            }
+            StorageGenerationCauseV1::NativeClock => self.native_clock.failure(),
             StorageGenerationCauseV1::Occupied => None,
             StorageGenerationCauseV1::Kernel => self.kernel.as_ref()?.as_ref().err()
                 .map(|error| error as &(dyn std::error::Error + 'static)),

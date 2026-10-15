@@ -5,6 +5,9 @@
 //! records. Returned records are not executable authority until durably
 //! committed and checked again through [`BrokerAuthority::check_before_effect`].
 
+mod storage_prepare_clock;
+pub use storage_prepare_clock::StoragePrepareNativeClockLoanV1;
+
 use aos_sandbox_core::RecordNamespace;
 use aos_sandbox_core::format::decode_signature;
 use aos_sandbox_core::{

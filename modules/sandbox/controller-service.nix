@@ -408,7 +408,11 @@ in {
         {
           assertion = !cfg.createQ04PolicySubgate.enable
             || (!cfg.sourceSuccessorIssuance.enable && normalRootProfile != null
-              && cfg.package == pkgs.aos-sandboxd
+              && cfg.package == (
+                if onlineNix.enable
+                then onlineNix._package
+                else pkgs.aos-sandboxd
+              )
               && cacheSignerView.enable && sourceSignerView.enable
               && cacheSignerService.enable && sourceSignerService.enable);
           message = "Q04 policy subgate requires the genuine selected normal-Root profile and both existing signer views/services; it is not issue mode or public Create activation";

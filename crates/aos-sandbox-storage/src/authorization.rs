@@ -307,6 +307,24 @@ pub(crate) struct VerifiedStoragePreparationAdmissionV1 {
     request_id: [u8; 16],
 }
 
+/// Borrows only the real verified selected Prepare for a final clock restriction.
+pub(crate) struct StoragePreparationNativeAdmissionV1<'original> {
+    authority: &'original StorageAuthorityV1,
+    admission: &'original VerifiedStoragePreparationAdmissionV1,
+    selected: &'original aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1,
+}
+
+impl StoragePreparationNativeAdmissionV1<'_> {
+    pub(crate) fn borrow_clock<'transaction>(
+        &'transaction self,
+        transaction: &'transaction aos_sandbox::JournalTransaction,
+    ) -> Result<aos_sandbox_broker::StoragePrepareNativeClockLoanV1<'transaction>, StorageAdmissionError> {
+        self.authority.0.borrow_nix_storage_prepare_native_clock(
+            &self.admission.admission, self.selected, transaction,
+        )
+    }
+}
+
 impl VerifiedStoragePreparationAdmissionV1 {
     pub(crate) const fn resolution(&self) -> &AuthorizedStorageResolutionV1 {
         &self.resolution
@@ -1003,6 +1021,15 @@ impl StorageAuthorityV1 {
         require_snapshot_base(&base, &operation)?;
         self.check_current_fence(&base)?;
         Ok(operation)
+    }
+
+    /// Retains actual verifier, admission and checked original through Native.
+    pub(crate) fn borrow_preparation_native_admission<'original>(
+        &'original self,
+        admission: &'original VerifiedStoragePreparationAdmissionV1,
+        selected: &'original aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1,
+    ) -> StoragePreparationNativeAdmissionV1<'original> {
+        StoragePreparationNativeAdmissionV1 { authority: self, admission, selected }
     }
 
     pub(crate) fn check_preparation_before_effect<F>(

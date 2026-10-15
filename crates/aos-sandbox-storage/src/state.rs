@@ -3602,7 +3602,10 @@ impl StorageTransactionStore {
         sealed_operation_fence: Vec<u8>,
         sealed_preparation: Vec<u8>,
         policy_binding: StorageResolverPolicyBindingV1,
-        generation: Option<crate::nix_generation::StorageGenerationNativeLoanV1<'_>>,
+        generation: Option<(
+            crate::nix_generation::StorageGenerationNativeLoanV1<'_>,
+            crate::authorization::StoragePreparationNativeAdmissionV1<'_>,
+        )>,
     ) -> Result<(), StorageStateError> {
         self.ensure_authority_readable()?;
         if operation_id == [0; 16]
@@ -3661,47 +3664,32 @@ impl StorageTransactionStore {
             JournalTransaction::new(catalog_preparation_transaction_id(operation_id), records)?;
         match generation {
             None => self.commit_journal(&transaction)?,
-            Some(original) => {
+            Some((original, admission)) => {
                 if self.has_held_repair_guard() || original.native.is_some()
-                    || original.first.is_some()
+                    || original.first.is_some() || original.clock.attempted()
                     || self.journal.snapshot_sequence().checked_add(6).is_none()
                 {
                     return Err(StorageStateError::InvalidTransition);
                 }
                 self.journal.preflight_transactions(std::slice::from_ref(&transaction))?;
 
-                // Preflight may be slow. The selected original gets a fresh
-                // SAME production pair after it, immediately before its write.
-                *original.clock = Some(crate::runtime::trusted_paired_clock_sample());
-                let clock = match original.clock.as_ref() {
-                    Some(Ok(clock)) => *clock,
-                    _ => {
-                        original.first.get_or_insert(crate::nix_generation::StorageGenerationCauseV1::NativeClock);
-                        return Err(StorageStateError::InvalidTransition);
-                    }
-                };
-                let valid = original.initial.validate_later_sample(clock)
-                    .map_err(|_| crate::authorization::StorageAdmissionError::FenceRejected)
-                    .and_then(|()| {
-                        if clock.host_boot_id() != original.boot
-                            || clock.boottime_nanoseconds() >= original.deadline
-                        {
-                            return Err(crate::authorization::StorageAdmissionError::FenceRejected);
-                        }
-                        Ok(())
-                    });
-                if let Err(error) = valid {
-                    *original.clock_validation = Some(error);
-                    original.first.get_or_insert(crate::nix_generation::StorageGenerationCauseV1::NativeClock);
-                    return Err(StorageStateError::InvalidTransition);
-                }
-
-                // The actual native Result is resident before readback or any
-                // upper clock/Session check. An Err is never classified retryable.
-                *original.native = Some(self.journal.commit(&transaction));
+                // Native retains the fixed kernel observation after all of its
+                // semantic/frame/capacity work, immediately before append_exact.
+                // Both the original Nix prefix and the actual admitted effect's
+                // earlier plan/lease/request cut use that same returned pair.
+                let clock_loan = admission.borrow_clock(&transaction);
+                *original.native = Some(self.journal.commit_storage_prepare_with_clock_v1(
+                    clock_loan, original.clock,
+                ));
                 if original.native.as_ref().is_none_or(Result::is_err) {
-                    self.commit_failed = true;
-                    original.first.get_or_insert(crate::nix_generation::StorageGenerationCauseV1::Native);
+                    // Clock refusal is preappend; a later Native error may have
+                    // committed and requires protected reopen of this same store.
+                    if original.clock.failure().is_some() {
+                        original.first.get_or_insert(crate::nix_generation::StorageGenerationCauseV1::NativeClock);
+                    } else {
+                        self.commit_failed = true;
+                        original.first.get_or_insert(crate::nix_generation::StorageGenerationCauseV1::Native);
+                    }
                     return Err(StorageStateError::InvalidTransition);
                 }
                 if transaction.records().iter().any(|record| {

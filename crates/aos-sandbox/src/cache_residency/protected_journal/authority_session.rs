@@ -55,7 +55,7 @@ pub(super) fn verify_replay(
     owner: &CacheAuthorityOwner<'_, '_>,
     owner_scope: ObjectDigest,
     limits: CacheRecoveryLimitsV1,
-    partitions: &BTreeMap<ObjectDigest, CacheResidencyReplayPartitionEvidenceV1>,
+    partitions: &CacheReplayPartitionEvidenceMapV1,
     capabilities: Vec<super::super::VerifiedCacheCapabilityV1>,
     now: u64,
 ) -> Result<VerifiedCacheAuthorityViewV1, CacheResidencyProtectedJournalErrorV1> {
@@ -71,7 +71,7 @@ pub(super) fn verify_replay(
         session_partitions.insert(
             evidence.partition.digest(),
             CacheResidencyAuthoritySessionPartitionV1 {
-                evidence: evidence.clone(),
+                evidence: Arc::clone(evidence),
                 scope: capability.scope(),
                 record_digest: capability.record_digest(),
             },
@@ -132,7 +132,7 @@ struct Q04BorrowedCacheTerminalReadbackV1<'original, 'journal, 'cut> {
     clock: &'original CacheClockWriterReadbackGuard<'original>,
     position: Q04BorrowedCacheReadPositionV1<'original, 'cut>,
     snapshot: ProtectedJournalSnapshot,
-    partitions: BTreeMap<ObjectDigest, CacheResidencyReplayPartitionEvidenceV1>,
+    partitions: CacheReplayPartitionEvidenceMapV1,
     view: VerifiedCacheAuthorityViewV1,
 }
 
@@ -314,7 +314,7 @@ pub(in crate::cache_residency) struct RetainedCacheAuthoritySessionV1<
     gate: CacheMutationGateV1<'gate>,
     clock: &'clock CacheClockWriterReadbackGuard<'clock>,
     source: &'claim ProtectedCacheResidencyReplayAuthorityV1,
-    partitions: BTreeMap<ObjectDigest, CacheResidencyReplayPartitionEvidenceV1>,
+    partitions: CacheReplayPartitionEvidenceMapV1,
     snapshot: ProtectedJournalSnapshot,
     original_records: BTreeMap<Vec<u8>, Vec<u8>>,
 }
@@ -884,6 +884,30 @@ mod tests {
             })
             .unwrap();
         assert_eq!(std::fs::read(clock).unwrap(), before);
+    }
+
+    #[test]
+    fn verified_views_share_the_actual_original_checkpoint_bytes() {
+        let (_root, mut owner) = retained_owner_fixture();
+        owner.with_retained_mutable_authority_v1(|session, _state| {
+            let retained = Arc::clone(session.partitions.values().next().unwrap());
+            let source = session.source.partitions.lock().unwrap();
+            let original = source.get(&retained.partition.digest()).unwrap();
+            assert!(Arc::ptr_eq(original, &retained));
+            let original_bytes = original.typed_checkpoint.as_ptr();
+            drop(source);
+
+            session.while_current_records(&[], |_, _, _, _validator, refresh| {
+                // Authority, original held cut, this test and verified session
+                // independently retain the same immutable evidence allocation.
+                assert!(Arc::strong_count(&retained) >= 4);
+                assert_eq!(retained.typed_checkpoint.as_ptr(), original_bytes);
+                refresh()?;
+                Ok(())
+            })?;
+            assert_eq!(retained.typed_checkpoint.as_ptr(), original_bytes);
+            Ok(())
+        }).unwrap();
     }
 
     #[test]

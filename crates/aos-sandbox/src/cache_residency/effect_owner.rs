@@ -48,6 +48,7 @@ const MAXIMUM_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 
 #[cfg(test)]
 mod descriptor_tests;
+mod held_manifest;
 mod signer_view;
 
 pub(crate) use signer_view::SIGNER_OBJECT_VIEW;
@@ -1307,6 +1308,13 @@ impl DormantCacheOwnerV1 {
         self.completed_resident_manifests.clear();
     }
 
+    // The same physical stream state is reused sequentially by all original
+    // held checks. This fixed supplier neither parses caller maxima nor grants
+    // an owner; Q's private pricing recipe calls it before entering the cut.
+    pub(crate) const fn original_q04_recheck_scratch_bytes() -> usize {
+        held_manifest::original_recheck_scratch_bytes()
+    }
+
     /// Borrows a replayable Cache head and its held fixed-root descriptors.
     ///
     /// This local snapshot prevents mutation through this owner for its
@@ -1457,6 +1465,8 @@ impl DormantCacheOwnerV1 {
         Ok(())
     }
 
+    // The original held cut refuses changed valid-header/checksum heads as stale.
+    // Initial unknown-file replay keeps the decoder's detailed payload errors.
     fn validate_held_snapshot(
         &self,
         root_identity: RootIdentity,
@@ -1475,10 +1485,14 @@ impl DormantCacheOwnerV1 {
         }
         ensure_held_lock(&self.root, &self._owner_lock)?;
         require_manifest_identity(&self.root, manifest_identity)?;
-        if replayed_manifest_head(&self.root, self.limits)? != current {
+        if self.currentness() != current {
             return Err(CacheOwnerErrorV1::Stale);
         }
-        self.validate_current(current)?;
+        held_manifest::require_original(&self.root, manifest_identity, current)?;
+        // Keep the second independent root/head observation in its original
+        // order. Both rereads share fixed scratch and the actual original cut.
+        self.recheck_root()?;
+        held_manifest::require_original(&self.root, manifest_identity, current)?;
         require_manifest_identity(&self.root, manifest_identity)
     }
 

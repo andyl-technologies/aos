@@ -920,6 +920,33 @@ impl Journal {
         &mut self,
         transaction: &JournalTransaction,
         scope: AppendScope,
+        cache_gate: CacheMutationGateV1<'_>,
+        #[cfg(target_os = "linux")] q04_transition: Option<
+            Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
+        >,
+        project_genesis: Option<ProjectNativeTransitionV3<'_, '_>>,
+        #[cfg(target_os = "linux")] resource_reservation: Option<
+            &crate::controller_resource_reservation::Transition,
+        >,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_native_scope_and_storage_clock(
+            transaction, scope, cache_gate,
+            #[cfg(target_os = "linux")]
+            q04_transition,
+            project_genesis,
+            #[cfg(target_os = "linux")]
+            resource_reservation,
+            #[cfg(target_os = "linux")]
+            None,
+        )
+    }
+
+    // The Storage restriction is additive. Its only entrypoint selects the
+    // ordinary scope; every existing owner guard and final crossing stays here.
+    pub(super) fn commit_with_native_scope_and_storage_clock(
+        &mut self,
+        transaction: &JournalTransaction,
+        scope: AppendScope,
         mut cache_gate: CacheMutationGateV1<'_>,
         #[cfg(target_os = "linux")] q04_transition: Option<
             Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
@@ -928,6 +955,10 @@ impl Journal {
         #[cfg(target_os = "linux")] resource_reservation: Option<
             &crate::controller_resource_reservation::Transition,
         >,
+        #[cfg(target_os = "linux")] mut storage_clock: Option<(
+            &aos_sandbox_broker::StoragePrepareNativeClockLoanV1<'_>,
+            &mut super::StoragePrepareNativeClockCaptureV1,
+        )>,
     ) -> Result<CommitResult, JournalError> {
         let AppendScope {
             settling_reservation,
@@ -1270,7 +1301,18 @@ impl Journal {
             )?;
         }
 
+        #[cfg(target_os = "linux")]
+        if let Some((loan, capture)) = storage_clock.as_mut() {
+            capture.require_final_clock(loan)?;
+        }
         let durable_bytes = self.native.append_exact(&frames, expected_length)?;
+        #[cfg(all(target_os = "linux", any(test, feature = "test-fixtures")))]
+        if storage_clock.as_mut().is_some_and(|(_, capture)| capture.take_durable_append_failure()) {
+            self.native.poison();
+            return Err(JournalError::Io(std::io::Error::other(
+                "injected Storage Prepare failure after durable native append",
+            )));
+        }
 
         for record in transaction.records() {
             self.native.apply_mutation(RecordMutationRef::from(record));

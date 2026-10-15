@@ -1404,7 +1404,14 @@ impl StorageAdmissionCoordinator {
             sealed.operation_fence,
             sealed_record,
             policy_binding,
-            native,
+            match (native, generation) {
+                (Some(original), Some(selected)) => Some((
+                    original,
+                    self.authority.borrow_preparation_native_admission(&admission, selected),
+                )),
+                (None, None) => None,
+                _ => return Err(StorageBrokerError::Authority),
+            },
         )?;
         record.outcome().map_err(Into::into)
     }
@@ -1458,11 +1465,7 @@ impl StorageAdmissionCoordinator {
                     let loan = StorageGenerationNativeLoanV1 {
                         native: &mut original.native,
                         clock: &mut original.native_clock,
-                        clock_validation: &mut original.native_clock_validation,
                         first: &mut original.first,
-                        initial,
-                        boot: selected.prefix().host_boot_id,
-                        deadline: selected.prefix().deadline_boottime_nanoseconds,
                     };
                     let result = self.prepare_catalog_fields(
                         bytes, artifacts, resolver_policies, protocol_version, peer, policy,
@@ -4379,6 +4382,8 @@ pub(crate) fn native_runtime_fixture_for_test(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+
+    mod storage_prepare_native_clock;
 
     use std::cell::Cell;
     use std::fs;

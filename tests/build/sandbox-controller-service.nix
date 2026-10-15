@@ -128,6 +128,10 @@
           type = lib.types.bool;
           default = false;
         };
+        options.aos.sandbox.nixBroker._package = lib.mkOption {
+          type = lib.types.nullOr lib.types.package;
+          default = null;
+        };
         options.aos.sandbox.nixBroker.storageGenerationPrepare.enable = lib.mkOption {
           type = lib.types.bool;
           default = false;
@@ -185,6 +189,63 @@
   };
   ownershipService = ownershipComplete.config.systemd.services.aos-sandboxd;
 
+  # These option-presence fixtures isolate the Q04 package assertion. The
+  # opaque profile package and credential names grant no installed authority.
+  q04Evaluation = controllerEvaluation.extendModules {
+    modules = [
+      ({lib, ...}: {
+        options.aos.sandbox = lib.genAttrs [
+          "policyAuthority"
+          "cacheSignerView"
+          "sourceSignerView"
+          "cacheSignerService"
+          "sourceSignerService"
+        ] (_: lib.mkOption {
+          type = lib.types.attrsOf lib.types.anything;
+          default = {};
+        });
+
+        config.aos.sandbox = {
+          controllerService.createQ04PolicySubgate.enable = true;
+          policyAuthority = {
+            enable = true;
+            _normalStartupProfile = pkgs.aos-sandboxd;
+          };
+          cacheSignerView.enable = true;
+          sourceSignerView.enable = true;
+          cacheSignerService.enable = true;
+          sourceSignerService.enable = true;
+        };
+      })
+    ];
+  };
+  q04OnlinePackage = pkgs.aosNixOnlineControllerWith {
+    domainIdHex = "01010101010101010101010101010101";
+  };
+  q04OtherOnlinePackage = pkgs.aosNixOnlineControllerWith {
+    domainIdHex = "02020202020202020202020202020202";
+  };
+  q04OnlineEvaluation = q04Evaluation.extendModules {
+    modules = [{
+      aos.sandbox.nixBroker = {
+        enable = true;
+        _package = q04OnlinePackage;
+      };
+      aos.sandbox.controllerService.package = q04OnlinePackage;
+    }];
+  };
+  q04WrongPackage = package: q04OnlineEvaluation.extendModules {
+    modules = [({lib, ...}: {
+      aos.sandbox.controllerService.package = lib.mkForce package;
+    })];
+  };
+  q04PackageAdmitted = evaluation: let
+    checks = lib.filter
+      (check: check.message == "Q04 policy subgate requires the genuine selected normal-Root profile and both existing signer views/services; it is not issue mode or public Create activation")
+      evaluation.config.assertions;
+  in
+    builtins.length checks == 1 && (builtins.head checks).assertion;
+
   hostEvaluation = lib.evalModules {
     specialArgs = {inherit pkgs;};
     modules = [
@@ -224,6 +285,11 @@ in
   assert builtins.length completeCredentials.loadCredentials == 3;
   assert builtins.length completeCredentials.installCommands == 6;
   assert builtins.elem "host-record-key:/run/credentials/@system/test-record" completeCredentials.loadCredentials;
+  assert q04PackageAdmitted q04Evaluation;
+  assert q04PackageAdmitted q04OnlineEvaluation;
+  assert !(q04PackageAdmitted (q04WrongPackage pkgs.aos-sandboxd));
+  assert !(q04PackageAdmitted (q04WrongPackage pkgs.coreutils));
+  assert !(q04PackageAdmitted (q04WrongPackage q04OtherOnlinePackage));
   assert controllerServiceConfig.Type == "notify";
   assert controllerServiceConfig.CapabilityBoundingSet == "";
   assert controllerServiceConfig.User == "aos-sandboxd";

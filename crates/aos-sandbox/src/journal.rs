@@ -75,6 +75,10 @@ pub(crate) struct JournalShape {
 mod delete_batch;
 mod semantic_append;
 #[cfg(target_os = "linux")]
+mod storage_prepare_clock;
+#[cfg(target_os = "linux")]
+pub use storage_prepare_clock::StoragePrepareNativeClockCaptureV1;
+#[cfg(target_os = "linux")]
 mod original_release_capture;
 #[cfg(target_os = "linux")]
 mod original_currentness;
