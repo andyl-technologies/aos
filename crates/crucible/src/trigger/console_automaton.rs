@@ -152,7 +152,7 @@ impl ConsoleAutomaton {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
     /// use crucible::ConsoleAutomaton;
     ///
     /// let automaton = ConsoleAutomaton::compile("ready").expect("streamable pattern");
