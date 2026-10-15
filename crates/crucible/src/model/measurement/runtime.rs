@@ -8,18 +8,18 @@
 use super::*;
 
 mod boundary;
+mod replay;
 
-use boundary::evaluate_window;
+pub use replay::{MeasurementReplay, ModelSampleProjector};
 
 /// Maximum normalized metric samples accepted by one evaluation.
 pub const MAX_MEASUREMENT_RUNTIME_SAMPLES: usize = 1_000_000;
 /// Maximum aggregate canonical bytes across normalized runtime samples.
 pub const MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
-/// Maximum definition-by-event visits accepted by one evaluation.
-pub const MAX_MEASUREMENT_EVENT_VISITS: usize = 4_000_000;
-/// Maximum model-metric-by-event visits accepted by sample projection.
-pub const MAX_MODEL_MEASUREMENT_EVENT_VISITS: usize = 4_000_000;
-/// Maximum canonical scheduler entries accepted by one evaluation.
+/// Maximum scheduler entries accepted by the slice-based entry points.
+///
+/// [`MeasurementReplay`] streams entries and has no entry bound; this bound
+/// applies only where a caller already holds the complete log in memory.
 pub const MAX_MEASUREMENT_EVENT_ENTRIES: usize = 1_000_000;
 /// Maximum terminal per-node counters accepted by one evaluation.
 pub const MAX_MEASUREMENT_TERMINAL_NODES: usize = 65_536;
@@ -395,7 +395,7 @@ pub enum MeasurementWindowOutcome {
 }
 
 impl MeasurementWindowOutcome {
-    fn includes_entry(&self, entry: &SchedulerEventLogEntry) -> bool {
+    fn includes(&self, at: VirtualTime, sequence: u64) -> bool {
         let begin = match self {
             Self::NotStarted => return false,
             Self::Open { begin } | Self::Completed { begin, .. } | Self::TimedOut { begin, .. } => {
@@ -408,17 +408,17 @@ impl MeasurementWindowOutcome {
             Self::NotStarted | Self::Open { .. } => None,
         };
 
-        let after_begin = entry.at() > begin.at
-            || (entry.at() == begin.at
+        let after_begin = at > begin.at
+            || (at == begin.at
                 && begin
                     .sequence
-                    .is_none_or(|sequence| entry.sequence() >= sequence));
+                    .is_none_or(|boundary| sequence >= boundary));
         let before_end = end.is_none_or(|end| {
-            entry.at() < end.at
-                || (entry.at() == end.at
+            at < end.at
+                || (at == end.at
                     && end
                         .sequence
-                        .is_none_or(|sequence| entry.sequence() <= sequence))
+                        .is_none_or(|boundary| sequence <= boundary))
         });
         after_begin && before_end
     }
@@ -678,64 +678,26 @@ pub fn append_model_measurement_samples(
         });
     }
 
-    let model_metrics = definitions
-        .definitions()
-        .iter()
-        .flat_map(|definition| {
-            definition
-                .metrics
-                .iter()
-                .filter(|metric| metric.source != MetricSource::Guest)
-                .map(move |metric| (&definition.id, metric))
-        })
-        .collect::<Vec<_>>();
-    let visits = model_metrics.len().checked_mul(entries.len()).ok_or(
-        MeasurementEvaluationError::LimitExceeded {
-            limit: "model-measurement-event-visits",
-        },
-    )?;
-    if visits > MAX_MODEL_MEASUREMENT_EVENT_VISITS {
-        return Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "model-measurement-event-visits",
-        });
-    }
-
-    let remaining = MAX_MEASUREMENT_RUNTIME_SAMPLES
-        .checked_sub(samples.len())
-        .ok_or(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-runtime-samples",
-        })?;
-    samples.reserve(visits.min(remaining).min(4_096));
+    let projector = ModelSampleProjector::new(definitions);
     let mut sample_bytes = preflight_runtime_sample_bytes(samples)?;
-    for (measurement, metric) in model_metrics {
-        for entry in entries {
-            let Some(value) = model_sample_value(metric, entry)? else {
-                continue;
-            };
+    let mut projected = Vec::new();
+    for entry in entries {
+        projector.project(entry, &mut projected)?;
+        for sample in projected.drain(..) {
             if samples.len() == MAX_MEASUREMENT_RUNTIME_SAMPLES {
                 return Err(MeasurementEvaluationError::LimitExceeded {
                     limit: "measurement-runtime-samples",
                 });
             }
-            let sample = MeasurementRuntimeSample::new(
-                entry.sequence(),
-                measurement.clone(),
-                metric.id.clone(),
-                value,
-            );
             let separator = usize::from(!samples.is_empty());
             let encoded_sample_bytes = encoded_runtime_sample_len(&sample)?;
             sample_bytes = sample_bytes
                 .checked_add(separator)
                 .and_then(|length| length.checked_add(encoded_sample_bytes))
+                .filter(|length| *length <= MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES)
                 .ok_or(MeasurementEvaluationError::LimitExceeded {
                     limit: "measurement-runtime-sample-bytes",
                 })?;
-            if sample_bytes > MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES {
-                return Err(MeasurementEvaluationError::LimitExceeded {
-                    limit: "measurement-runtime-sample-bytes",
-                });
-            }
             samples.push(sample);
         }
     }
@@ -843,94 +805,27 @@ pub fn evaluate_measurements(
     terminal: &MeasurementTerminalState,
 ) -> Result<MeasurementEvaluation, MeasurementEvaluationError> {
     validate_measurement_event_log(entries)?;
-    validate_terminal_state(entries, terminal)?;
     if samples.len() > MAX_MEASUREMENT_RUNTIME_SAMPLES {
         return Err(MeasurementEvaluationError::LimitExceeded {
             limit: "measurement-runtime-samples",
         });
     }
-    preflight_runtime_sample_bytes(&samples)?;
-    let boundary_nodes =
-        definitions
-            .definitions()
-            .iter()
-            .try_fold(0_usize, |total, definition| {
-                let begin = boundary_node_count(&definition.begin)?;
-                let end = boundary_node_count(&definition.end)?;
-                total
-                    .checked_add(begin)
-                    .and_then(|total| total.checked_add(end))
-                    .ok_or(MeasurementEvaluationError::LimitExceeded {
-                        limit: "measurement-event-visits",
-                    })
-            })?;
-    let visits = boundary_nodes
-        .checked_mul(entries.len().saturating_add(1))
-        .ok_or(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-event-visits",
-        })?;
-    if visits > MAX_MEASUREMENT_EVENT_VISITS {
-        return Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-event-visits",
+
+    let mut by_sequence = BTreeMap::<u64, Vec<MeasurementRuntimeSample>>::new();
+    for sample in samples {
+        by_sequence.entry(sample.sequence).or_default().push(sample);
+    }
+    let mut replay = MeasurementReplay::new(definitions, terminal)?;
+    for entry in entries {
+        let carried = by_sequence.remove(&entry.sequence()).unwrap_or_default();
+        replay.observe(entry, carried)?;
+    }
+    if let Some(sequence) = by_sequence.keys().next() {
+        return Err(MeasurementEvaluationError::UnknownSampleSequence {
+            sequence: *sequence,
         });
     }
-    let samples = validate_and_index_samples(definitions, entries, samples)?;
-    let mut outcomes = BTreeMap::new();
-    for definition in definitions.definitions() {
-        let window = evaluate_window(definition, entries, terminal)?;
-        let mut metrics = BTreeMap::new();
-        for metric in &definition.metrics {
-            let retained = samples
-                .get(&(definition.id.clone(), metric.id.clone()))
-                .into_iter()
-                .flatten()
-                .filter(|sample| {
-                    event_for_sequence(entries, sample.sequence)
-                        .is_some_and(|entry| window.includes_entry(entry))
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            let values = retained
-                .iter()
-                .map(|sample| sample.value.clone())
-                .collect::<Vec<_>>();
-            // Only a completed window commits a measurement. A window that
-            // never opened, is still open, or timed out may lack every sample,
-            // so an aggregation undefined on empty input is reported absent
-            // rather than failing the whole evaluation.
-            let aggregate = if values.is_empty()
-                && !matches!(window, MeasurementWindowOutcome::Completed { .. })
-                && aggregation_requires_samples(&metric.aggregation)
-            {
-                None
-            } else {
-                Some(aggregate_metric_samples(metric, &values)?)
-            };
-            let evidence = retained
-                .iter()
-                .map(|sample| {
-                    event_for_sequence(entries, sample.sequence)
-                        .map(SchedulerEventLogEntry::content_hash)
-                        .ok_or(MeasurementEvaluationError::UnknownSampleSequence {
-                            sequence: sample.sequence,
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            metrics.insert(
-                metric.id.clone(),
-                MeasurementMetricOutcome {
-                    samples: retained,
-                    aggregate,
-                    evidence,
-                },
-            );
-        }
-        outcomes.insert(
-            definition.id.clone(),
-            MeasurementOutcome { window, metrics },
-        );
-    }
-    MeasurementEvaluation::new(definitions.content_hash(), outcomes)
+    replay.finish()
 }
 
 /// Recomputes and authenticates one retained canonical evaluation body.
@@ -1166,129 +1061,7 @@ pub fn validate_measurement_event_log(
     Ok(())
 }
 
-fn validate_terminal_state(
-    entries: &[SchedulerEventLogEntry],
-    terminal: &MeasurementTerminalState,
-) -> Result<(), MeasurementEvaluationError> {
-    if terminal.node_icounts.len() > MAX_MEASUREMENT_TERMINAL_NODES {
-        return Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-terminal-nodes",
-        });
-    }
-    for entry in entries {
-        if entry.at() > terminal.at {
-            return Err(MeasurementEvaluationError::TerminalBeforeEvent {
-                sequence: entry.sequence(),
-            });
-        }
-        if let Some(node) = &entry.time().stamp.node
-            && terminal
-                .node_icounts
-                .get(node)
-                .zip(entry.time().stamp.retired)
-                .is_some_and(|(terminal, observed)| terminal.retired < observed.retired)
-        {
-            return Err(MeasurementEvaluationError::TerminalIcountRegression {
-                node: node.clone(),
-            });
-        }
-    }
-    if terminal
-        .scenario_ready_at
-        .is_some_and(|ready| ready > terminal.at)
-    {
-        return Err(MeasurementEvaluationError::TerminalBeforeEvent {
-            sequence: entries.last().map_or(0, SchedulerEventLogEntry::sequence),
-        });
-    }
-    Ok(())
-}
-
-fn boundary_node_count(selector: &BoundarySelector) -> Result<usize, MeasurementEvaluationError> {
-    let children = match selector {
-        BoundarySelector::All { selectors } | BoundarySelector::Any { selectors } => selectors,
-        _ => return Ok(1),
-    };
-    children.iter().try_fold(1_usize, |total, child| {
-        total.checked_add(boundary_node_count(child)?).ok_or(
-            MeasurementEvaluationError::LimitExceeded {
-                limit: "measurement-event-visits",
-            },
-        )
-    })
-}
-
 type SampleIndex = BTreeMap<(MeasurementId, MetricId), Vec<MeasurementRuntimeSample>>;
-
-fn validate_and_index_samples(
-    definitions: &MeasurementDefinitions,
-    entries: &[SchedulerEventLogEntry],
-    mut samples: Vec<MeasurementRuntimeSample>,
-) -> Result<SampleIndex, MeasurementEvaluationError> {
-    samples.sort_by(|left, right| {
-        (left.sequence, &left.measurement, &left.metric).cmp(&(
-            right.sequence,
-            &right.measurement,
-            &right.metric,
-        ))
-    });
-    let definitions_by_id = definitions
-        .definitions()
-        .iter()
-        .map(|definition| (&definition.id, definition))
-        .collect::<BTreeMap<_, _>>();
-    let mut indexed = BTreeMap::<_, Vec<_>>::new();
-    let mut previous: Option<(u64, &MeasurementId, &MetricId)> = None;
-    for sample in &samples {
-        if event_for_sequence(entries, sample.sequence).is_none() {
-            return Err(MeasurementEvaluationError::UnknownSampleSequence {
-                sequence: sample.sequence,
-            });
-        }
-        if previous
-            .as_ref()
-            .is_some_and(|(sequence, measurement, metric)| {
-                *sequence == sample.sequence
-                    && *measurement == &sample.measurement
-                    && *metric == &sample.metric
-            })
-        {
-            return Err(MeasurementEvaluationError::DuplicateSample {
-                measurement: sample.measurement.clone(),
-                metric: sample.metric.clone(),
-                sequence: sample.sequence,
-            });
-        }
-        let definition = definitions_by_id.get(&sample.measurement).ok_or_else(|| {
-            MeasurementEvaluationError::UnknownSampleTarget {
-                kind: "measurement",
-                id: sample.measurement.as_str().to_owned(),
-            }
-        })?;
-        let metric = definition
-            .metrics
-            .iter()
-            .find(|metric| metric.id == sample.metric)
-            .ok_or_else(|| MeasurementEvaluationError::UnknownSampleTarget {
-                kind: "metric",
-                id: sample.metric.as_str().to_owned(),
-            })?;
-        if !sample_matches_type(&sample.value, &metric.value_type) {
-            return Err(MeasurementEvaluationError::SampleTypeMismatch {
-                measurement: sample.measurement.clone(),
-                metric: sample.metric.clone(),
-            });
-        }
-        previous = Some((sample.sequence, &sample.measurement, &sample.metric));
-    }
-    for sample in samples {
-        indexed
-            .entry((sample.measurement.clone(), sample.metric.clone()))
-            .or_default()
-            .push(sample);
-    }
-    Ok(indexed)
-}
 
 fn sample_matches_type(value: &MeasurementSampleValue, kind: &MetricValueType) -> bool {
     match (value, kind) {
@@ -1315,19 +1088,6 @@ fn sample_matches_type(value: &MeasurementSampleValue, kind: &MetricValueType) -
         ) => usize::try_from(*maximum_elements).is_ok_and(|maximum| values.len() <= maximum),
         _ => false,
     }
-}
-
-fn event_for_sequence(
-    entries: &[SchedulerEventLogEntry],
-    sequence: u64,
-) -> Option<&SchedulerEventLogEntry> {
-    let first = entries.first()?.sequence();
-    let index = sequence
-        .checked_sub(first)
-        .and_then(|value| usize::try_from(value).ok())?;
-    entries
-        .get(index)
-        .filter(|entry| entry.sequence() == sequence)
 }
 
 fn aggregate_sum(

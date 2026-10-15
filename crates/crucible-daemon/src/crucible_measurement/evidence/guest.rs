@@ -2,20 +2,40 @@
 
 use super::*;
 
-pub(super) fn normalize_guest_measurements(
-    definitions: &MeasurementDefinitions,
-    entries: &[SchedulerEventLogEntry],
-) -> Result<Vec<MeasurementRuntimeSample>, CrucibleMeasurementError> {
-    let definitions_by_id = definitions
-        .definitions()
-        .iter()
-        .map(|definition| (definition.id.clone(), definition))
-        .collect::<BTreeMap<_, _>>();
-    let mut open = BTreeSet::<(NodeId, MeasurementId, MeasurementInstanceKey)>::new();
-    let mut samples = Vec::new();
-    let mut sample_work_bytes = 0usize;
+/// Projects guest protocol events into samples one scheduler entry at a time.
+///
+/// The normalizer tracks open measurement instances across entries, so a
+/// caller can stream a log from storage. [`Self::finish`] rejects instances
+/// that were never ended.
+pub(super) struct GuestMeasurementNormalizer<'definitions> {
+    definitions: &'definitions MeasurementDefinitions,
+    definitions_by_id: BTreeMap<MeasurementId, &'definitions MeasurementDefinition>,
+    open: BTreeSet<(NodeId, MeasurementId, MeasurementInstanceKey)>,
+    sample_count: usize,
+    sample_work_bytes: usize,
+}
 
-    for entry in entries {
+impl<'definitions> GuestMeasurementNormalizer<'definitions> {
+    pub(super) fn new(definitions: &'definitions MeasurementDefinitions) -> Self {
+        let definitions_by_id = definitions
+            .definitions()
+            .iter()
+            .map(|definition| (definition.id.clone(), definition))
+            .collect();
+        Self {
+            definitions,
+            definitions_by_id,
+            open: BTreeSet::new(),
+            sample_count: 0,
+            sample_work_bytes: 0,
+        }
+    }
+
+    /// Validates one entry's guest protocol event and returns its sample.
+    pub(super) fn observe(
+        &mut self,
+        entry: &SchedulerEventLogEntry,
+    ) -> Result<Option<MeasurementRuntimeSample>, CrucibleMeasurementError> {
         match entry.payload() {
             SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMeasurement {
                 node,
@@ -27,19 +47,19 @@ pub(super) fn normalize_guest_measurements(
                     instance,
                 } => {
                     let (measurement, instance, definition) = guest_measurement_basis(
-                        &definitions_by_id,
+                        &self.definitions_by_id,
                         node,
                         measurement,
                         instance,
                         entry.sequence(),
                     )?;
-                    if open.len() >= MAX_OPEN_GUEST_MEASUREMENT_INSTANCES {
+                    if self.open.len() >= MAX_OPEN_GUEST_MEASUREMENT_INSTANCES {
                         return Err(guest_measurement_error(
                             entry.sequence(),
                             "open measurement instance limit exceeded",
                         ));
                     }
-                    if !open.insert((node.clone(), measurement, instance)) {
+                    if !self.open.insert((node.clone(), measurement, instance)) {
                         return Err(guest_measurement_error(
                             entry.sequence(),
                             format!("measurement `{}` instance is already open", definition.id),
@@ -53,13 +73,13 @@ pub(super) fn normalize_guest_measurements(
                     value,
                 } => {
                     let (measurement, instance, definition) = guest_measurement_basis(
-                        &definitions_by_id,
+                        &self.definitions_by_id,
                         node,
                         measurement,
                         instance,
                         entry.sequence(),
                     )?;
-                    if !open.contains(&(node.clone(), measurement.clone(), instance)) {
+                    if !self.open.contains(&(node.clone(), measurement.clone(), instance)) {
                         return Err(guest_measurement_error(
                             entry.sequence(),
                             format!("measurement `{measurement}` instance is not open"),
@@ -87,7 +107,7 @@ pub(super) fn normalize_guest_measurements(
                             format!("metric `{metric}` is not guest-sourced"),
                         ));
                     }
-                    if samples.len() == MAX_MEASUREMENT_RUNTIME_SAMPLES {
+                    if self.sample_count == MAX_MEASUREMENT_RUNTIME_SAMPLES {
                         return Err(crucible::model::MeasurementEvaluationError::LimitExceeded {
                             limit: "measurement-runtime-samples",
                         }
@@ -96,7 +116,7 @@ pub(super) fn normalize_guest_measurements(
                     validate_guest_measurement_value(value, contract).map_err(|error| {
                         guest_measurement_error(entry.sequence(), error.to_string())
                     })?;
-                    sample_work_bytes = sample_work_bytes
+                    self.sample_work_bytes = self.sample_work_bytes
                         .checked_add(guest_sample_normalization_work(
                             measurement.as_str(),
                             metric.as_str(),
@@ -105,7 +125,7 @@ pub(super) fn normalize_guest_measurements(
                         .ok_or(crucible::model::MeasurementEvaluationError::LimitExceeded {
                             limit: "measurement-runtime-sample-bytes",
                         })?;
-                    if sample_work_bytes > MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES {
+                    if self.sample_work_bytes > MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES {
                         return Err(crucible::model::MeasurementEvaluationError::LimitExceeded {
                             limit: "measurement-runtime-sample-bytes",
                         }
@@ -114,25 +134,26 @@ pub(super) fn normalize_guest_measurements(
                     let value = normalize_guest_measurement_value(value).map_err(|error| {
                         guest_measurement_error(entry.sequence(), error.to_string())
                     })?;
-                    samples.push(MeasurementRuntimeSample::new(
+                    self.sample_count += 1;
+                    return Ok(Some(MeasurementRuntimeSample::new(
                         entry.sequence(),
                         measurement,
                         metric,
                         value,
-                    ));
+                    )));
                 }
                 GuestMeasurementEvent::End {
                     measurement,
                     instance,
                 } => {
                     let (measurement, instance, _definition) = guest_measurement_basis(
-                        &definitions_by_id,
+                        &self.definitions_by_id,
                         node,
                         measurement,
                         instance,
                         entry.sequence(),
                     )?;
-                    if !open.remove(&(node.clone(), measurement.clone(), instance)) {
+                    if !self.open.remove(&(node.clone(), measurement.clone(), instance)) {
                         return Err(guest_measurement_error(
                             entry.sequence(),
                             format!("measurement `{measurement}` instance is not open"),
@@ -152,7 +173,7 @@ pub(super) fn normalize_guest_measurements(
                     MeasurementInstanceKey::parse(instance.clone()).map_err(|error| {
                         guest_measurement_error(entry.sequence(), error.to_string())
                     })?;
-                if !definitions.definitions().iter().any(|definition| {
+                if !self.definitions.definitions().iter().any(|definition| {
                     cohort_contains(&definition.cohort, node)
                         && (boundary_accepts_semantic_marker(&definition.begin, marker, &instance)
                             || boundary_accepts_semantic_marker(&definition.end, marker, &instance))
@@ -165,17 +186,40 @@ pub(super) fn normalize_guest_measurements(
             }
             _ => {}
         }
+        Ok(None)
     }
 
-    if let Some((_node, measurement, instance)) = open.into_iter().next() {
-        return Err(guest_measurement_error(
-            entries
-                .last()
-                .map_or(0, SchedulerEventLogEntry::sequence)
-                .saturating_add(1),
-            format!("measurement `{measurement}` instance `{instance}` was not ended"),
-        ));
+    /// Rejects any measurement instance still open after the last entry.
+    ///
+    /// `next_sequence` is the sequence after the last observed entry, which
+    /// the protocol error names as the point where the instance should have
+    /// ended.
+    pub(super) fn finish(self, next_sequence: u64) -> Result<(), CrucibleMeasurementError> {
+        if let Some((_node, measurement, instance)) = self.open.into_iter().next() {
+            return Err(guest_measurement_error(
+                next_sequence,
+                format!("measurement `{measurement}` instance `{instance}` was not ended"),
+            ));
+        }
+        Ok(())
     }
+}
+
+pub(super) fn normalize_guest_measurements(
+    definitions: &MeasurementDefinitions,
+    entries: &[SchedulerEventLogEntry],
+) -> Result<Vec<MeasurementRuntimeSample>, CrucibleMeasurementError> {
+    let mut normalizer = GuestMeasurementNormalizer::new(definitions);
+    let mut samples = Vec::new();
+    for entry in entries {
+        samples.extend(normalizer.observe(entry)?);
+    }
+    normalizer.finish(
+        entries
+            .last()
+            .map_or(0, SchedulerEventLogEntry::sequence)
+            .saturating_add(1),
+    )?;
     Ok(samples)
 }
 

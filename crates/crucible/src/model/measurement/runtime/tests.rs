@@ -708,6 +708,17 @@ fn model_sources_project_exact_replay_samples() -> Result<(), Box<dyn Error>> {
         samples_for_metric(&first, "scheduler-events"),
         vec![1, 1, 1, 1]
     );
+
+    let terminal = terminal(40);
+    let whole = evaluate_measurements(&definitions, &entries, first, &terminal)?;
+    let projector = ModelSampleProjector::new(&definitions);
+    let mut replay = MeasurementReplay::new(&definitions, &terminal)?;
+    for entry in &entries {
+        let mut samples = Vec::new();
+        projector.project(entry, &mut samples)?;
+        replay.observe(entry, samples)?;
+    }
+    assert_eq!(replay.finish()?, whole);
     Ok(())
 }
 
@@ -770,7 +781,7 @@ fn malformed_model_source_events_fail_closed() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn model_source_projection_rejects_visit_amplification_before_sampling()
+fn model_source_projection_amplification_stops_at_the_sample_bound()
 -> Result<(), Box<dyn Error>> {
     let fixture = crate::happy_path_scenario()?;
     let server = node("server");
@@ -831,10 +842,12 @@ fn model_source_projection_rejects_visit_amplification_before_sampling()
             * entries.len(),
         4_001_792
     );
+    // Projection work is linear in entries times declared metrics; the
+    // runtime sample bounds, not a whole-log visit bound, stop amplification.
     assert!(matches!(
         derive_model_measurement_samples(&definitions, &entries),
         Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "model-measurement-event-visits"
+            limit: "measurement-runtime-samples" | "measurement-runtime-sample-bytes"
         })
     ));
     Ok(())
