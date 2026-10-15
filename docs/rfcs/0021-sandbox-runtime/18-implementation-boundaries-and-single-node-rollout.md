@@ -116,6 +116,16 @@ whole-ledger reconciliation and public projection; their Journal bytes remain
 intact, with no inferred context, automatic upgrade or deletion. Context-bearing
 history, broker Effects and reserved Observe children retain their own semantics.
 
+Public specification descriptors share one closed V1/V2 role validator, including
+the original Q04 descriptor frontier. Retained specification lookups compare the
+complete descriptor, and local slot/Storage/Network metadata checks require the
+media version selected by decoded canonical bytes. Native `AOSSLT02` and Mount
+`AOSMSL02` slot records retain that explicit version in their digests and replay;
+earlier PR-only slot records are refused unchanged, without migration or deletion.
+Genuine V1 specifications retain their semantics and cannot supply implicit
+execution credentials. These descriptor checks grant no Create authority or
+Ready state and do not enable V2 remote transfer.
+
 ### Local authority and Controller
 
 | Crate | Ownership | Excluded |
