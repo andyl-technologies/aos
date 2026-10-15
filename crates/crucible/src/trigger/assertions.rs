@@ -952,7 +952,7 @@ fn entry_awaits_atomic_evaluation_boundary(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordedAssertionLog {
     pub(super) entries: Vec<SchedulerEventLogEntry>,
-    pub(super) prefix_offsets: BTreeMap<u64, EventLogOffset>,
+    pub(super) prefix_offsets: std::sync::Arc<BTreeMap<u64, EventLogOffset>>,
 }
 
 impl RecordedAssertionLog {
@@ -966,7 +966,7 @@ impl RecordedAssertionLog {
     pub fn from_entries(entries: Vec<SchedulerEventLogEntry>) -> Self {
         Self {
             entries,
-            prefix_offsets: BTreeMap::new(),
+            prefix_offsets: std::sync::Arc::default(),
         }
     }
 
@@ -1056,7 +1056,7 @@ impl RecordedAssertionLog {
 
         Ok(Self {
             entries,
-            prefix_offsets,
+            prefix_offsets: std::sync::Arc::new(prefix_offsets),
         })
     }
 
@@ -1198,6 +1198,7 @@ pub struct HostAssertionEvaluator {
     terminal_quiescence: Option<SchedulerQuiescence>,
     last_position: Option<HostAssertionPrefixPosition>,
     guest_marker_cursor: Option<ObservableEventCursor>,
+    deadline_base: Option<ConditionEventLogPrefix>,
 }
 
 // Deadline crossing needs only the prior point; checkpoint binding needs its
@@ -1375,6 +1376,7 @@ impl HostAssertionEvaluatorCheckpoint {
             .last_prefix
             .map(|_| HostAssertionPrefixPosition::from_prefix(current_prefix));
         staged.guest_marker_cursor = None;
+        staged.deadline_base = None;
         *evaluator = staged;
         Ok(())
     }
@@ -1445,6 +1447,7 @@ impl HostAssertionEvaluator {
             terminal_quiescence: None,
             last_position: None,
             guest_marker_cursor: None,
+            deadline_base: None,
         }
     }
 
@@ -1544,6 +1547,14 @@ impl HostAssertionEvaluator {
             &self.white_box_policies,
         ));
         self.guest_marker_cursor = Some(ObservableEventCursor::at_end(prefix.observable_events()));
+        // A pending `eventually` deadline is evaluated from this prefix plus
+        // the entries that arrive before it, so keep the prefix only while
+        // some obligation can still expire. Its histories are shared.
+        let pending_deadline = self
+            .states
+            .iter()
+            .any(|state| state.terminal.is_none() && !state.pending_eventually.is_empty());
+        self.deadline_base = pending_deadline.then(|| prefix.clone());
         self.last_position = Some(HostAssertionPrefixPosition::from_prefix(prefix));
         sort_host_assertion_outcomes(&mut outcomes);
         outcomes
@@ -1601,9 +1612,10 @@ impl HostAssertionEvaluator {
 
         let mut outcomes = Vec::new();
         for deadline in deadlines {
-            let Some(deadline_prefix) =
-                prefix.with_facts_through_point(EventEvaluationPoint::assertion_deadline(deadline))
-            else {
+            let Some(deadline_prefix) = prefix.with_facts_through_point_after(
+                self.deadline_base.as_ref(),
+                EventEvaluationPoint::assertion_deadline(deadline),
+            ) else {
                 continue;
             };
             let once_latches = &mut self.once_latches;

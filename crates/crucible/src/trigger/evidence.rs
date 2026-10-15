@@ -378,9 +378,13 @@ pub(super) fn condition_prefix_for_evidence_at(
     if entries.is_empty() {
         return ConditionEventLogPrefix::genesis().with_point(point);
     }
-    ConditionEventLogPrefix::from_scheduler_event_log_entries(entries)
-        .map(|prefix| prefix.with_point(point))
-        .unwrap_or_else(|_| prefix.clone().with_point(point))
+    // A resumed prefix starts at its restored sequence, not at zero.
+    ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(
+        entries,
+        prefix.base_sequence,
+    )
+    .map(|prefix| prefix.with_point(point))
+    .unwrap_or_else(|_| prefix.clone().with_point(point))
 }
 
 pub(super) fn condition_observed_evidence(
@@ -1792,7 +1796,7 @@ pub(super) fn condition_prefix_from_recorded_log(
 ) -> Result<ConditionEventLogPrefix, OfflineAssertionCheckError> {
     let entries = &recorded_log.entries()[..prefix_len];
     let prefix = condition_prefix_from_recorded_entries(entries)?
-        .with_prefix_offsets(recorded_log.prefix_offsets.clone());
+        .with_prefix_offsets(std::sync::Arc::clone(&recorded_log.prefix_offsets));
     let prefix_len = u64::try_from(prefix_len)
         .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len })?;
     let Some(offset) = recorded_log.event_log_offset(prefix_len) else {

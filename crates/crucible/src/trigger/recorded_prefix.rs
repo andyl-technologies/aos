@@ -28,7 +28,7 @@ impl<'log> RecordedPrefixCursor<'log> {
         Self {
             recorded_log,
             prefix: ConditionEventLogPrefix::genesis()
-                .with_prefix_offsets(recorded_log.prefix_offsets.clone()),
+                .with_prefix_offsets(std::sync::Arc::clone(&recorded_log.prefix_offsets)),
             appended: 0,
         }
     }

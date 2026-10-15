@@ -1170,7 +1170,7 @@ pub struct ConditionEventLogPrefix {
     pub(super) point: EventEvaluationPoint,
     pub(super) base_sequence: u64,
     pub(super) event_log_offset: EventLogOffset,
-    pub(super) prefix_offsets: BTreeMap<u64, EventLogOffset>,
+    pub(super) prefix_offsets: std::sync::Arc<BTreeMap<u64, EventLogOffset>>,
     pub(super) scheduler_entries: crate::History<SchedulerEventLogEntry>,
     last_black_box_observation: Option<(u64, VirtualTime)>,
     pub(super) observable_events: crate::History<ObservableEvent>,
@@ -1190,7 +1190,7 @@ impl ConditionEventLogPrefix {
             point: EventEvaluationPoint::genesis(),
             base_sequence: 0,
             event_log_offset: EventLogOffset::default(),
-            prefix_offsets: BTreeMap::new(),
+            prefix_offsets: std::sync::Arc::default(),
             scheduler_entries: crate::History::new(),
             last_black_box_observation: None,
             observable_events: crate::History::new(),
@@ -1324,7 +1324,7 @@ impl ConditionEventLogPrefix {
 
     pub(crate) fn with_prefix_offsets(
         mut self,
-        prefix_offsets: BTreeMap<u64, EventLogOffset>,
+        prefix_offsets: std::sync::Arc<BTreeMap<u64, EventLogOffset>>,
     ) -> Self {
         self.prefix_offsets = prefix_offsets;
         self
@@ -1333,6 +1333,91 @@ impl ConditionEventLogPrefix {
     pub(crate) fn with_point(mut self, point: EventEvaluationPoint) -> Self {
         self.point = point;
         self
+    }
+
+    /// Rebuilds the facts visible at `point`, which precedes this prefix's end.
+    ///
+    /// The result holds the longest run of leading entries at or before
+    /// `point` and is evaluated at `point`. When `observed` is an earlier
+    /// prefix of this same log whose entries all precede `point`, only the
+    /// entries after it are appended to a copy of it (RFC-0020 CMEAS-15);
+    /// otherwise the facts are rebuilt from the retained history.
+    ///
+    /// Returns `None` when a recorded log has no offset for the rebuilt length.
+    pub(crate) fn with_facts_through_point_after(
+        &self,
+        observed: Option<&Self>,
+        point: EventEvaluationPoint,
+    ) -> Option<Self> {
+        match observed.and_then(|observed| self.observed_prefix_through(observed, point)) {
+            Some(prefix) => prefix,
+            None => self.with_facts_through_point(point),
+        }
+    }
+
+    /// Extends `observed` with this prefix's entries through `point`.
+    ///
+    /// The outer `None` means `observed` cannot serve as the base: it is not
+    /// an earlier prefix of this log, it holds an entry after `point`, or it
+    /// declares different console matchers. The inner value is the rebuilt
+    /// prefix, as for [`Self::with_facts_through_point`].
+    fn observed_prefix_through(
+        &self,
+        observed: &Self,
+        point: EventEvaluationPoint,
+    ) -> Option<Option<Self>> {
+        let through = point.at().ticks;
+        let start = observed.scheduler_entries.len();
+        let extends = observed.base_sequence == self.base_sequence
+            && start <= self.scheduler_entries.len()
+            && start.checked_sub(1).is_none_or(|last| {
+                self.scheduler_entries.get(last) == observed.scheduler_entries.last()
+            })
+            && observed
+                .scheduler_entries
+                .last()
+                .is_none_or(|last| last.at().ticks <= through)
+            && observed
+                .console_folds
+                .declares_same_patterns(&self.console_folds);
+        if !extends {
+            return None;
+        }
+
+        // Every observed entry is at or before `point`, so the leading run of
+        // entries through `point` is the observed prefix plus the entries
+        // after it up to the first one past `point`.
+        let tail = self
+            .scheduler_entries
+            .iter_from(start)
+            .take_while(|entry| entry.at().ticks <= through)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut prefix = observed.clone();
+        if !tail.is_empty() {
+            prefix.append_scheduler_entries(tail).ok()?;
+        }
+
+        // Match the offsets a whole rebuild assigns: the recorded offset for
+        // the rebuilt length, else the synthetic offset of a rebuilt prefix.
+        let length = u64::try_from(prefix.scheduler_entries.len()).ok()?;
+        let prefix_events = self.base_sequence.checked_add(length)?;
+        let offset = if !self.prefix_offsets.is_empty() {
+            match self.prefix_offsets.get(&prefix_events) {
+                Some(offset) => *offset,
+                None => return Some(None),
+            }
+        } else if length == 0 {
+            EventLogOffset::default()
+        } else {
+            EventLogOffset::new(ContentHash::default(), 0, prefix_events)
+        };
+        Some(Some(
+            prefix
+                .with_event_log_offset(offset)
+                .with_prefix_offsets(std::sync::Arc::clone(&self.prefix_offsets))
+                .with_point(point),
+        ))
     }
 
     pub(crate) fn with_facts_through_point(&self, point: EventEvaluationPoint) -> Option<Self> {
@@ -1354,7 +1439,7 @@ impl ConditionEventLogPrefix {
             return Some(
                 prefix
                     .with_base_sequence(self.base_sequence)
-                    .with_prefix_offsets(self.prefix_offsets.clone())
+                    .with_prefix_offsets(std::sync::Arc::clone(&self.prefix_offsets))
                     .with_point(point),
             );
         }
@@ -1367,7 +1452,7 @@ impl ConditionEventLogPrefix {
         }
         Some(
             prefix
-                .with_prefix_offsets(self.prefix_offsets.clone())
+                .with_prefix_offsets(std::sync::Arc::clone(&self.prefix_offsets))
                 .with_point(point),
         )
     }

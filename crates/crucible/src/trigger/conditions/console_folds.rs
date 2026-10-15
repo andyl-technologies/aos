@@ -123,6 +123,11 @@ impl ConsoleMatchFolds {
         refolded
     }
 
+    /// Reports whether both fold sets declare exactly the same matchers.
+    pub(crate) fn declares_same_patterns(&self, other: &Self) -> bool {
+        self.folds.keys().eq(other.folds.keys())
+    }
+
     /// Reports whether a declared matcher saw a match end at `at`.
     ///
     /// Returns `None` when the pattern was not declared for `node`.

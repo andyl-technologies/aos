@@ -112,7 +112,9 @@ impl ConditionEventLogPrefix {
         // entry order so cancellations can remove timers from earlier batches.
         self.point = point;
         self.event_log_offset = EventLogOffset::new(ContentHash::default(), 0, events);
-        self.prefix_offsets.clear();
+        if !self.prefix_offsets.is_empty() {
+            self.prefix_offsets = std::sync::Arc::default();
+        }
         self.last_black_box_observation = previous_black_box_observation;
         self.console_folds.observe(observable_events.iter());
         self.point_events.observe(point.at(), &observable_events);
