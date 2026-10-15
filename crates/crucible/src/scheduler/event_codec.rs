@@ -1973,23 +1973,13 @@ pub(super) struct SchedulerEventLogSegmentMaterial {
 impl SchedulerEventLogSegmentMaterial {
     pub(super) fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(EVENT_LOG_SEGMENT_BINARY_MAGIC);
-        bytes.extend_from_slice(&EVENT_LOG_SEGMENT_BINARY_VERSION.to_le_bytes());
-        bytes.extend_from_slice(&self.previous_prefix.bytes);
-        write_u64_le(&mut bytes, self.entries.len() as u64);
+        encode_scheduler_event_log_segment_header(
+            &mut bytes,
+            self.previous_prefix,
+            self.entries.len() as u64,
+        );
         for entry in &self.entries {
-            write_u64_le(&mut bytes, entry.sequence);
-            write_u64_le(&mut bytes, entry.at_virtual_time_ticks);
-            write_u64_le(&mut bytes, entry.at_tick);
-            write_optional_u64(&mut bytes, entry.at_raw_retired);
-            write_optional_string(&mut bytes, entry.at_node.as_deref());
-            write_string(&mut bytes, &entry.source_material);
-            bytes.push(event_level_code(entry.level));
-            bytes.push(event_class_code(entry.class));
-            write_string(&mut bytes, &entry.payload_kind);
-            write_u64_le(&mut bytes, entry.payload_attribute_count);
-            bytes.extend_from_slice(&entry.content_hash.bytes);
-            write_string(&mut bytes, &entry.entry_material);
+            entry.encode_into(&mut bytes);
         }
         bytes
     }
@@ -2195,35 +2185,69 @@ pub(super) fn scheduler_event_log_segment_material(
 ) -> SchedulerEventLogSegmentMaterial {
     let entries = entries
         .iter()
-        .map(|entry| {
-            let entry_material = scheduler_event_log_entry_material(
-                entry.sequence,
-                &entry.at,
-                &entry.source,
-                entry.level,
-                entry.class,
-                &entry.event_payload,
-                &entry.payload,
-            );
-            SchedulerEventLogSegmentEntryMaterial {
-                sequence: entry.sequence,
-                at_virtual_time_ticks: entry.at.virtual_time.ticks,
-                at_tick: entry.at.stamp.tick.ticks,
-                at_raw_retired: entry.at.stamp.retired.map(|count| count.retired),
-                at_node: entry.at.stamp.node.as_ref().map(|node| node.name.clone()),
-                source_material: scheduler_event_log_source_material("entry.source", &entry.source),
-                level: entry.level,
-                class: entry.class,
-                payload_kind: entry.event_payload.kind().to_owned(),
-                payload_attribute_count: entry.event_payload.attributes().len() as u64,
-                content_hash: entry.content_hash,
-                entry_material,
-            }
-        })
+        .map(SchedulerEventLogSegmentEntryMaterial::from_entry)
         .collect();
     SchedulerEventLogSegmentMaterial {
         previous_prefix,
         entries,
+    }
+}
+
+/// Writes the fixed segment header that precedes `entry_count` entries.
+///
+/// The count precedes the entries, so a streaming encoder must know it before
+/// the first entry is written.
+pub(super) fn encode_scheduler_event_log_segment_header(
+    bytes: &mut Vec<u8>,
+    previous_prefix: ContentHash,
+    entry_count: u64,
+) {
+    bytes.extend_from_slice(EVENT_LOG_SEGMENT_BINARY_MAGIC);
+    bytes.extend_from_slice(&EVENT_LOG_SEGMENT_BINARY_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&previous_prefix.bytes);
+    write_u64_le(bytes, entry_count);
+}
+
+impl SchedulerEventLogSegmentEntryMaterial {
+    pub(super) fn from_entry(entry: &SchedulerEventLogEntry) -> Self {
+        let entry_material = scheduler_event_log_entry_material(
+            entry.sequence,
+            &entry.at,
+            &entry.source,
+            entry.level,
+            entry.class,
+            &entry.event_payload,
+            &entry.payload,
+        );
+        Self {
+            sequence: entry.sequence,
+            at_virtual_time_ticks: entry.at.virtual_time.ticks,
+            at_tick: entry.at.stamp.tick.ticks,
+            at_raw_retired: entry.at.stamp.retired.map(|count| count.retired),
+            at_node: entry.at.stamp.node.as_ref().map(|node| node.name.clone()),
+            source_material: scheduler_event_log_source_material("entry.source", &entry.source),
+            level: entry.level,
+            class: entry.class,
+            payload_kind: entry.event_payload.kind().to_owned(),
+            payload_attribute_count: entry.event_payload.attributes().len() as u64,
+            content_hash: entry.content_hash,
+            entry_material,
+        }
+    }
+
+    pub(super) fn encode_into(&self, bytes: &mut Vec<u8>) {
+        write_u64_le(bytes, self.sequence);
+        write_u64_le(bytes, self.at_virtual_time_ticks);
+        write_u64_le(bytes, self.at_tick);
+        write_optional_u64(bytes, self.at_raw_retired);
+        write_optional_string(bytes, self.at_node.as_deref());
+        write_string(bytes, &self.source_material);
+        bytes.push(event_level_code(self.level));
+        bytes.push(event_class_code(self.class));
+        write_string(bytes, &self.payload_kind);
+        write_u64_le(bytes, self.payload_attribute_count);
+        bytes.extend_from_slice(&self.content_hash.bytes);
+        write_string(bytes, &self.entry_material);
     }
 }
 

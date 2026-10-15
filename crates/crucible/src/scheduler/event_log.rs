@@ -5,8 +5,11 @@ use crate::{DebugCoordinate, RuntimeState};
 use crucible_campaign::ChoiceDiscovery;
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod backend_loop;
+mod causal_digest;
 pub(super) use backend_loop::HeldDeliveryCeiling;
 pub(super) use backend_loop::HeldRunLineage;
+use causal_digest::causal_projection_entry;
+pub use causal_digest::{EventLogCausalDigest, EventLogCausalSummary, is_causal_event_log_entry};
 mod observation_append;
 pub use backend_loop::{
     BackendNetworkOutputInterceptor, BackendNetworkSettlement, BackendQuantumLoop,
@@ -1962,20 +1965,12 @@ pub fn event_log_causal_projection(entries: &[SchedulerEventLogEntry]) -> EventL
     let entries = entries
         .iter()
         .enumerate()
-        .filter(|(_, entry)| entry.class == SchedulerEventLogClass::Causal)
+        .filter(|(_, entry)| is_causal_event_log_entry(entry))
         .enumerate()
         .map(
             |(causal_index, (raw_index, entry))| EventLogCausalProjectionEntry {
                 raw_index,
-                entry: scheduler_event_log_entry_with_material(
-                    causal_index as u64,
-                    entry.at.clone(),
-                    entry.source.clone(),
-                    entry.level,
-                    SchedulerEventLogClass::Causal,
-                    entry.event_payload.clone(),
-                    entry.payload.clone(),
-                ),
+                entry: causal_projection_entry(causal_index as u64, entry),
             },
         )
         .collect::<Vec<_>>();

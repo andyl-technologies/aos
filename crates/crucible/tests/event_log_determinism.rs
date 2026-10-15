@@ -18,7 +18,7 @@ use crucible::{
     EventDiagnosticPayload, EventLevel, EventLog, EventSource, MaterializedState, RngDecision,
     RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
     TemporalGraph, VirtualTime, World, bake, compare_event_log_determinism,
-    event_log_causal_projection,
+    event_log_causal_projection, is_causal_event_log_entry,
 };
 
 fn time(ticks: u64) -> VirtualTime {
@@ -106,6 +106,32 @@ fn causal_projection_renumbers_past_observational_interleaving() {
             .collect::<Vec<_>>(),
         vec![0, 1]
     );
+}
+
+#[test]
+fn streaming_causal_digest_matches_the_materialized_projection() {
+    let log = vec![
+        diagnostic_entry(0, 0, "executor.poll", EventLevel::Debug, BTreeMap::new()),
+        rng_entry(1, 1, "causal-digest-a", 11),
+        boundary_entry(2, 1),
+        diagnostic_entry(3, 1, "executor.poll", EventLevel::Trace, BTreeMap::new()),
+        rng_entry(4, 2, "causal-digest-b", 17),
+    ];
+    let causal = log
+        .iter()
+        .filter(|entry| is_causal_event_log_entry(entry))
+        .count() as u64;
+
+    let mut digest = crucible::EventLogCausalDigest::new(causal);
+    log.iter().for_each(|entry| digest.observe(entry));
+    let mut short = crucible::EventLogCausalDigest::new(causal + 1);
+    log.iter().for_each(|entry| short.observe(entry));
+
+    assert_eq!(
+        digest.finish(),
+        Some(event_log_causal_projection(&log).summary())
+    );
+    assert_eq!(short.finish(), None);
 }
 
 #[test]
