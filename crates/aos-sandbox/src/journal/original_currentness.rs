@@ -460,6 +460,33 @@ impl Journal {
         Ok((sequence, names, ObjectDigest::from_bytes(digest.finalize().into())))
     }
 
+    /// Checks the exact original terminal predecessor without issuing a permit.
+    ///
+    /// The caller keeps the actual eight native Results borrowed. The passive
+    /// terminal comparison cannot substitute copied history for that owner.
+    ///
+    /// # Errors
+    /// Rejects failed or missing Results, changed protected names, additional
+    /// history, changed durable extent or differing original commit positions.
+    pub(crate) fn require_q04_terminal_preappend_positions_v1(
+        &self,
+        terminal: aos_sandbox_protocol::domain_ledger::resource_bank::TerminalBinding,
+        returned: &[Option<Result<CommitResult, crate::policy_compiler::create_q04::CreateQ04ErrorV1>>; 8],
+    ) -> Result<(), JournalError> {
+        self.validate_held_protected_names()?;
+        terminal.require_preappend_positions(
+            self.protected_writer_physical_names_v1()?,
+            self.snapshot_sequence(),
+            self.native.file().metadata()?.len(),
+            returned.iter().map(|result| result.as_ref().and_then(|result| {
+                result.as_ref().ok().map(|position| (position.commit_sequence, position.durable_bytes))
+            })),
+        ).map_err(|cause| JournalError::Q04RootOriginal(Box::new(
+            crate::policy_compiler::create_q04::CreateQ04ErrorV1::ResourceReservation(Box::new(cause.into())),
+        )))?;
+        self.validate_held_protected_names()
+    }
+
     /// Checks retained Q04 recipe DATA against this same original native file.
     ///
     /// This private observation issues no authority or reusable current token.

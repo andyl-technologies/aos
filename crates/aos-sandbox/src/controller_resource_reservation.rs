@@ -19,6 +19,9 @@ pub(crate) use root_component::RootReceivingOriginalV1;
 mod preparation;
 mod q04;
 mod settlement;
+mod terminal_append;
+
+pub(crate) use terminal_append::Q04TerminalBankAppendV1;
 pub(crate) mod service_interval;
 mod nix_intake;
 mod q04_intake;
@@ -191,6 +194,12 @@ pub(crate) struct Transition<'original> {
     crossing: Option<NativeCrossing<'original>>,
 }
 
+struct Q04TerminalOriginalsV1<'original> {
+    original: &'original Q04ResourceTransferV1,
+    native: &'original [Option<Result<crate::journal::CommitResult, CreateQ04ErrorV1>>; 8],
+    posts: &'original [Option<Result<(), CreateQ04ErrorV1>>; 7],
+}
+
 struct NativeCrossing<'original> {
     original: aos_sandbox_core::RawPairedClockSample,
     deadline: u64,
@@ -199,6 +208,7 @@ struct NativeCrossing<'original> {
 
 enum TransitionOriginal<'original> {
     Account(&'original AccountTransition),
+    Q04Terminal(Q04TerminalBankAppendV1<'original>),
     Enrollment(&'original bootstrap::EnrollmentTransition),
     Q04(&'original Q04ResourceTransferV1),
 }
@@ -210,7 +220,8 @@ impl Transition<'_> {
         let Some(crossing) = &self.crossing else {
             return match self.original {
                 TransitionOriginal::Enrollment(_) => Ok(()),
-                TransitionOriginal::Account(_) | TransitionOriginal::Q04(_) =>
+                TransitionOriginal::Account(_) | TransitionOriginal::Q04(_)
+                | TransitionOriginal::Q04Terminal(_) =>
                     Err(crate::JournalError::ProtectedBoundary),
             };
         };
@@ -260,8 +271,12 @@ impl Transition<'_> {
         state: &State,
         transaction: &JournalTransaction,
     ) -> Result<(), crate::JournalError> {
-        match self.original {
-            TransitionOriginal::Account(original) => original.require_current(state, transaction),
+        match &self.original {
+            TransitionOriginal::Account(original) if original.terminal.is_none() => {
+                original.require_current(state, transaction)
+            }
+            TransitionOriginal::Account(_) => Err(crate::JournalError::ProtectedBoundary),
+            TransitionOriginal::Q04Terminal(original) => original.require_current(state, transaction),
             TransitionOriginal::Enrollment(original) => original.require_current(state, transaction),
             TransitionOriginal::Q04(original) => original.require_current(state, transaction)
                 .map_err(|_| crate::JournalError::ProtectedBoundary),
@@ -413,6 +428,26 @@ impl ReturnedAppend {
         journal: &mut crate::Journal,
         original: Result<AccountTransition, ResourceReservationErrorV1>,
     ) {
+        self.append_for(journal, original, None);
+    }
+
+    // Only the parent retaining the actual moved child lends these originals.
+    // The common engine parks the transition before selecting its typed loan.
+    fn append_q04_terminal_into(
+        &mut self,
+        journal: &mut crate::Journal,
+        original: Result<AccountTransition, ResourceReservationErrorV1>,
+        retained: Q04TerminalOriginalsV1<'_>,
+    ) {
+        self.append_for(journal, original, Some(retained));
+    }
+
+    fn append_for(
+        &mut self,
+        journal: &mut crate::Journal,
+        original: Result<AccountTransition, ResourceReservationErrorV1>,
+        retained: Option<Q04TerminalOriginalsV1<'_>>,
+    ) {
         if self.original.is_some() {
             return;
         }
@@ -433,7 +468,12 @@ impl ReturnedAppend {
                 self.native = Some(journal.commit_controller_resource_transition_v1(
                     transaction,
                     &Transition {
-                        original: TransitionOriginal::Account(original),
+                        original: match retained {
+                            Some(retained) => TransitionOriginal::Q04Terminal(
+                                Q04TerminalBankAppendV1::new(original, retained),
+                            ),
+                            None => TransitionOriginal::Account(original),
+                        },
                         crossing: match (
                             original.original_clock,
                             original.claim.native_fields().cut,

@@ -445,7 +445,19 @@ impl ProjectPreparationReservationAttemptV1 {
                     .and_then(|result| result
                         .map(|disposition| disposition.transition)
                         .map_err(|error| ResourceReservationErrorV1::Terminal(Box::new(error))));
-                self.terminal.append_into(journal, original);
+                let Some(child) = self.child.as_ref() else {
+                    self.terminal.append_into(journal, Err(ResourceReservationErrorV1::Conflict));
+                    return;
+                };
+                self.terminal.append_q04_terminal_into(
+                    journal,
+                    original,
+                    super::Q04TerminalOriginalsV1 {
+                        original: &child.original,
+                        native: &child.native,
+                        posts: &child.posts,
+                    },
+                );
             }
             Err(_) => self.terminal_bank = Some(Err(ResourceReservationErrorV1::EnrollmentUnavailable)),
         }

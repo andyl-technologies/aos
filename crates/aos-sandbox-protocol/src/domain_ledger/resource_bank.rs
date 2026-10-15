@@ -1042,6 +1042,17 @@ impl InputAssociation {
 }
 
 impl CoissuanceBinding {
+    /// Compares complete original Q04 identity joins without issuing authority.
+    ///
+    /// This comparison DATA neither observes a writer nor renews its clock cut.
+    pub fn matches_q04_cut(self, identity: &Q04CutIdentityV1) -> bool {
+        self.original.matches_q04_cut(identity)
+            && self.grant.sandbox == identity.sandbox().into_bytes()
+            && self.use_claim.sandbox == identity.sandbox().into_bytes()
+            && self.candidate == identity.bytes()[488..520]
+            && self.policy_binding == *identity.binding().as_bytes()
+    }
+
     /// Assembles all eleven ordered co-issuance fields without validation.
     ///
     /// The tuple contains original preparation, inclusive grant, retained use, Spec
@@ -1137,6 +1148,39 @@ impl CoissuanceBinding {
 }
 
 impl TerminalBinding {
+    /// Checks original returned positions and the exact preappend native head.
+    ///
+    /// These are passive comparisons. The Native caller must supply its actual
+    /// retained results, writer names and file observations independently.
+    ///
+    /// # Errors
+    /// Rejects a changed name, sequence, end, missing result, extra result or
+    /// differing returned commit position. No native format changes occur.
+    pub fn require_preappend_positions(
+        self,
+        names: ProtectedJournalNamesV1,
+        next: u64,
+        end: u64,
+        returned: impl IntoIterator<Item = Option<(u64, u64)>>,
+    ) -> Result<(), ResourceBankDataError> {
+        if names != self.names || next != self.next || end != self.prior_end {
+            return Err(ResourceBankDataError::Conflict);
+        }
+        let mut returned = returned.into_iter();
+        for origin in self.origins {
+            if returned.next() != Some(Some((
+                origin.returned.commit_sequence,
+                origin.returned.durable_bytes,
+            ))) {
+                return Err(ResourceBankDataError::Conflict);
+            }
+        }
+        if returned.next().is_some() {
+            return Err(ResourceBankDataError::Conflict);
+        }
+        Ok(())
+    }
+
     fn original_id(self) -> [u8; 16] {
         self.original
     }
@@ -1380,6 +1424,25 @@ mod physical_history_tests {
             root_final: [31; 32],
             origins,
         };
+
+        let returned = origins.map(|origin| {
+            Some((origin.returned.commit_sequence, origin.returned.durable_bytes))
+        });
+        terminal
+            .require_preappend_positions(names, 33, 800, returned)
+            .unwrap();
+        assert!(terminal
+            .require_preappend_positions(names, 33, 800, returned.into_iter().take(7))
+            .is_err());
+        assert!(terminal
+            .require_preappend_positions(
+                names,
+                33,
+                800,
+                returned.into_iter().chain(std::iter::once(None)),
+            )
+            .is_err());
+
         let mut state = State::new();
         state.insert(
             (

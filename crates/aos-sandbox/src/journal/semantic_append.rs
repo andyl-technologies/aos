@@ -268,12 +268,21 @@ fn require_q04_journal_transition(
     transition: Option<
         Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
     >,
+    terminal: Option<&crate::controller_resource_reservation::Q04TerminalBankAppendV1<'_>>,
 ) -> Result<(), JournalError> {
+    if transition.is_some() && terminal.is_some() {
+        return Err(JournalError::ProtectedBoundary);
+    }
     match transition {
         Some(Q04JournalTransitionV1::Controller(recipe, _)) => {
             controller_policy_hold::require_q04_transition(state, transaction, recipe)?;
         }
-        _ => controller_policy_hold::require_q04_ordinary_boundary(state, transaction)?,
+        _ => match terminal {
+            Some(original) => controller_policy_hold::require_q04_terminal_bank_successor(
+                state, transaction, original,
+            )?,
+            None => controller_policy_hold::require_q04_ordinary_boundary(state, transaction)?,
+        },
     }
     match transition {
         Some(Q04JournalTransitionV1::Source(recipes, index, ..)) => {
@@ -1051,11 +1060,22 @@ impl Journal {
             }
         }
         #[cfg(target_os = "linux")]
-        require_q04_journal_transition(self.native.state(), transaction, q04_transition)?;
+        let terminal = resource_reservation.and_then(|original| original.q04_terminal());
+        #[cfg(target_os = "linux")]
+        if let Some(original) = terminal {
+            original.require_native_position(self)?;
+        }
+        #[cfg(target_os = "linux")]
+        require_q04_journal_transition(self.native.state(), transaction, q04_transition, terminal)?;
         if !allow_policy_hold_transition {
             #[cfg(target_os = "linux")]
             if !matches!(q04_transition, Some(Q04JournalTransitionV1::Controller(..))) {
-                controller_policy_hold::require_no_mutation(self.native.state(), transaction)?;
+                match terminal {
+                    Some(original) => controller_policy_hold::require_q04_terminal_bank_successor(
+                        self.native.state(), transaction, original,
+                    )?,
+                    None => controller_policy_hold::require_no_mutation(self.native.state(), transaction)?,
+                }
             }
             #[cfg(not(target_os = "linux"))]
             controller_policy_hold::require_no_mutation(self.native.state(), transaction)?;
@@ -1227,6 +1247,9 @@ impl Journal {
 
         #[cfg(target_os = "linux")]
         if let Some(original) = resource_reservation {
+            if let Some(terminal) = original.q04_terminal() {
+                terminal.require_native_position(self)?;
+            }
             original.final_crossing()?;
         }
 
@@ -1506,7 +1529,7 @@ impl Journal {
                 return Err(JournalError::ProtectedBoundary);
             }
             #[cfg(target_os = "linux")]
-            require_q04_journal_transition(&state, transaction, q04_transition)?;
+            require_q04_journal_transition(&state, transaction, q04_transition, None)?;
             if !allow_policy_hold_transition {
                 #[cfg(target_os = "linux")]
                 if !matches!(q04_transition, Some(Q04JournalTransitionV1::Controller(..))) {

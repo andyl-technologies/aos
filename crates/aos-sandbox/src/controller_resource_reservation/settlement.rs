@@ -185,6 +185,21 @@ mod terminal_layout_tests {
                 size_of::<OriginPositions>(),
                 align_of::<OriginPositions>(),
             ),
+            (
+                "TerminalOriginalBorrow",
+                size_of::<super::super::Q04TerminalOriginalsV1<'static>>(),
+                align_of::<super::super::Q04TerminalOriginalsV1<'static>>(),
+            ),
+            (
+                "TerminalAppendLoan",
+                size_of::<super::super::Q04TerminalBankAppendV1<'static>>(),
+                align_of::<super::super::Q04TerminalBankAppendV1<'static>>(),
+            ),
+            (
+                "NativeBankTransition",
+                size_of::<super::super::Transition<'static>>(),
+                align_of::<super::super::Transition<'static>>(),
+            ),
         ];
 
         for (name, bytes, alignment) in widths {

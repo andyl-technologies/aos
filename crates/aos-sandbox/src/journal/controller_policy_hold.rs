@@ -659,6 +659,47 @@ pub(super) fn require_q04_ordinary_boundary(
     Ok(())
 }
 
+// This exception borrows the actual moved Q04 child and its whole Results.
+// It cannot select any policy phase, Effect change or ordinary bank mutation.
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_terminal_bank_successor(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+    terminal: &crate::controller_resource_reservation::Q04TerminalBankAppendV1<'_>,
+) -> Result<(), JournalError> {
+    terminal.require_current(state, transaction)?;
+    let readback = current_readback(state)?;
+    let history = readback.q04.ok_or(JournalError::ProtectedBoundary)?;
+    if readback.hold.is_none_or(ControllerPolicyHoldV1::is_held)
+        || history.phases.len() != 8
+        || history.phases.last().is_none_or(|phase| phase.phase() != 8)
+        || !terminal.matches_identity(&history.identity)
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+
+    let key = aos_sandbox_protocol::domain_ledger::operation::effect_key(
+        history.identity.operation(),
+        0,
+    );
+    let bytes = state
+        .get(&(RecordNamespace::Effect, key.to_vec()))
+        .ok_or(JournalError::ProtectedBoundary)?;
+    let (_, gate) = aos_sandbox_protocol::domain_ledger::effect_history::decode_effect_with_q04(bytes)
+        .map_err(crate::reconciler::ReconcilerError::from)
+        .map_err(|cause| JournalError::Q04ControllerLedger(Box::new(cause)))?;
+    let gate = gate.ok_or(JournalError::ProtectedBoundary)?;
+    gate.require_cut_identity(&history.identity)?;
+    let last = history.phases.last().ok_or(JournalError::ProtectedBoundary)?;
+    if gate.status() != 4
+        || gate.acknowledgement() != last.acknowledgement()
+        || gate.historical_consumed_record()?.digest().as_bytes() != &last.bytes()[128..160]
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn q04_history(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,

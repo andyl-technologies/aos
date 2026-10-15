@@ -408,6 +408,15 @@ validation/errors, state-clone/frame lifetimes, Cache locks, clocks, first cause
 publication, caller outcomes and postchecks. Selectors stay within Journal and
 descendants; protected constructors and crate/public APIs do not widen.
 
+Q04 terminal resource retention uses that same append engine with a private loan
+of the retained co-issuance, eight commit results and seven posts. Both Controller
+history guards validate the exact terminal successor; native name, position and
+original-input checks repeat before the final clock crossing. Ordinary terminal
+DATA and advisory forecasts remain closed. This commits the retained use without
+refunding its inclusive capacity, clearing Q04 history or opening Storage effects.
+Seeded append/reopen regressions cover these journal mechanics, not installed
+Root/PID1 admission or the complete Create continuation.
+
 Private `protected_domain_journal::capacity` owns complete domain reservation
 admission, authenticated recovery and terminal settlement on the original Journal.
 The unused ID-plus-binding adapter recipe is retired; exact pending, full-request

@@ -308,3 +308,6 @@ impl Q04ResourceTransferV1 {
             && record.value() == Some(self.input_origin.as_slice())
     }
 }
+
+#[cfg(test)]
+mod terminal_native_tests;
