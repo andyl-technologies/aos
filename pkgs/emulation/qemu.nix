@@ -1691,7 +1691,8 @@ in
                 (
                   cd build
                   ./pyvenv/bin/meson test --no-rebuild --verbose \
-                    test-crucible-process-purpose test-qmp-cmds
+                    test-crucible-process-purpose test-qmp-cmds \
+                    test-crucible-hot-fork-coordinator
                 )
               ''}
 

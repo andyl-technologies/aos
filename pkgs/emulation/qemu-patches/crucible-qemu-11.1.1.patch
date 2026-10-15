@@ -1,9 +1,12 @@
-From fe5b9c08383dc57ea4a880f1820fc97327db7066 Mon Sep 17 00:00:00 2001
+From f71c4caaeb30625f34c2e6b0d06b014920a6ae0a Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 11:20:58 -0700
-Subject: [PATCH] plugins: retain startup ownership and ordinary control paths
+Date: Thu, 15 Oct 2026 11:42:20 -0700
+Subject: [PATCH] plugins: retain owner lifetimes and ordinary target
+ boundaries
 
-Retain current startup and checkpoint custody, align wire fixtures, and preserve ordinary tool and storage-daemon operation without issuing Source ownership.
+Preserve checkpoint ownership, monitor dispatch and ordinary target absence
+handling, and keep the hot-fork actor fixture explicit about its unavailable
+dependencies while retaining its existing coordinator cases.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -246584,10 +246587,10 @@ index 0000000000000000000000000000000000000000..57b2f5de179724dbb072619030cc86ec
 +}
 diff --git a/tests/unit/test-crucible-hot-fork-coordinator.c b/tests/unit/test-crucible-hot-fork-coordinator.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..e042d74cc53f08b3c596e0605ace05dac11c97f3
+index 0000000000000000000000000000000000000000..a2eb613ddd0356e47614042b96e80c6ec6bbb1f9
 --- /dev/null
 +++ b/tests/unit/test-crucible-hot-fork-coordinator.c
-@@ -0,0 +1,1074 @@
+@@ -0,0 +1,1162 @@
 +/*
 + * Crucible main-loop hot-fork coordinator tests.
 + *
@@ -246597,6 +246600,7 @@ index 0000000000000000000000000000000000000000..e042d74cc53f08b3c596e0605ace05da
 +
 +#include "qemu/osdep.h"
 +
++#include "hw/core/cpu.h"
 +#include "qapi/error.h"
 +#include "qemu/atomic.h"
 +#include "qemu/crucible-hot-fork-plugin.h"
@@ -246669,6 +246673,93 @@ index 0000000000000000000000000000000000000000..e042d74cc53f08b3c596e0605ace05da
 +static bool ram_test_quiesced;
 +static unsigned int owner_diagnostic_calls;
 +static bool startup_source_retained;
++
++/* This actor fixture has no CPU or published checkpoint transaction. */
++__thread CPUState *current_cpu;
++
++int qemu_crucible_checkpoint_scheduled_dispatch_check(void)
++{
++    return 0;
++}
++
++/* Fingerprint execution and transaction retirement are outside this fixture.
++ * Unexpected entry must fail without publishing or returning any holder. */
++int qemu_plugin_crucible_wake_watcher_execution_holder_current_v1(
++    QemuCrucibleFingerprintWakeWatcher *watcher,
++    QemuCrucibleFingerprintMainExecution **holder)
++{
++    g_assert_not_reached();
++}
++
++int qemu_plugin_crucible_installed_wake_watcher_borrow_v1(
++    QemuCrucibleFingerprintWakeWatcher **out, int *fd,
++    uint64_t *registration_serial, QemuCrucibleFingerprintWakeKeeper **keeper)
++{
++    g_assert_not_reached();
++}
++
++int qemu_crucible_startup_source_wake_execution_storage_current_v1(
++    QemuCrucibleFingerprintWakeKeeper *keeper)
++{
++    g_assert_not_reached();
++}
++
++int qemu_crucible_startup_source_wake_execution_borrow_v1(
++    QemuCrucibleFingerprintWakeKeeper *keeper,
++    QemuCrucibleFingerprintMainExecution *execution,
++    QemuCrucibleFingerprintMainExecution **holder)
++{
++    g_assert_not_reached();
++}
++
++int qemu_crucible_startup_source_wake_execution_instance_current_v1(
++    QemuCrucibleFingerprintWakeKeeper *keeper,
++    QemuCrucibleFingerprintMainExecution *execution,
++    QemuCrucibleFingerprintMainExecution **holder)
++{
++    g_assert_not_reached();
++}
++
++int qemu_crucible_startup_source_fingerprint_intent_identity_return_v1(
++    QemuCrucibleFingerprintMainReadyFrame *frame, void *execution,
++    QemuCrucibleFingerprintIntentObservation **holder)
++{
++    g_assert_not_reached();
++}
++
++int qemu_plugin_crucible_wake_watcher_snapshot_leave_v1(
++    QemuCrucibleFingerprintWakeWatcher *watcher,
++    QemuCrucibleFingerprintMainReadyFrame *frame, uint64_t registration_serial)
++{
++    g_assert_not_reached();
++}
++
++int qemu_plugin_crucible_wake_watcher_snapshot_enter_v1(
++    QemuCrucibleFingerprintWakeWatcher *watcher,
++    QemuCrucibleFingerprintMainReadyFrame *frame, uint64_t registration_serial)
++{
++    g_assert_not_reached();
++}
++
++int qemu_crucible_startup_source_main_ready_dispatch_v1(
++    QemuCrucibleFingerprintMainReadyFrame *frame, void *execution)
++{
++    g_assert_not_reached();
++}
++
++int qemu_crucible_startup_source_wake_execution_identity_return_v1(
++    QemuCrucibleFingerprintWakeKeeper *keeper,
++    QemuCrucibleFingerprintMainExecution *execution,
++    QemuCrucibleFingerprintMainExecution **holder)
++{
++    g_assert_not_reached();
++}
++
++int qemu_crucible_checkpoint_transaction_retirement_current(
++    QemuCrucibleCheckpointHeldTransaction *transaction)
++{
++    g_assert_not_reached();
++}
 +
 +/* This harness supplies actor handoff, not physical-owner or RAM proof. */
 +void qemu_crucible_ram_diagnostic_paused_owner(void)
