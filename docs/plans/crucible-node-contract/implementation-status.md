@@ -4814,9 +4814,40 @@ parameters. Native source SHA256 is
 `825aca2876a0ca8ef24c3f59227a230d69414d7f7122a61fabbcffe0e82c38d4`.
 The first configured attempt timed out while generating cold prerequisites;
 subsequent generated comment-path classification retains that and its own
-validation failures. The six source, recipe, control and license changes are
-ready for a fresh ordinary native/package/source build and mandatory owned walk.
-Those complete checks remain pending, and the original failed walk remains failed.
+validation failures. The six source, recipe, control and license changes form the source for the next
+ordinary build. The original failed walk remains failed.
+
+The subsequent ordinary AOS build of the committed ARM walker correction
+completes successfully. Its native compiler, public wrapper and mandatory check
+produce five registered outputs under the exact new derivations:
+
+| Output | Registered store path |
+| --- | --- |
+| Native executable | `/nix/store/d8nyi127z2v8lbwsh61rbksp9295dh9z-gem5-native-original-scope-foundation-native-compiler-25.1.0.1` |
+| Native corresponding source | `/nix/store/if5sb67kwfj2w0m5zhba7nh0q8rwzvpi-gem5-native-original-scope-foundation-native-compiler-25.1.0.1-source` |
+| Public executable | `/nix/store/cxndhqs2c52flv9dxrpa385p1scrhg15-gem5-native-original-scope-foundation-25.1.0.1` |
+| Public corresponding source | `/nix/store/fnax50863kwjzcpf8ipsz6h044avvazf-gem5-native-original-scope-foundation-25.1.0.1-source` |
+| Mandatory check | `/nix/store/n849pv4f2sxnl8vflnpfm32sgnn9mrlg-gem5-native-original-scope-check-1` |
+
+The native and public executables are byte-identical (SHA256
+`99c91413ac69986c4e22a8f993115eae1706fe7b6f4ba579c08c18409f61d5cc`),
+as are their complete patched-native source archives (SHA256
+`1d75f007b746b67df7a7eb930b5c7d59139de725dda44b6adcba34be263eae1d`).
+The retained generated ALL configuration preserves all six ISAs and the enabled
+features. The mandatory native diagnostic completes its owned and foreign-helper
+cases, requires refusal for the unknown-bus and changed-clock cases, and observes
+the required unarmed exit 126. All five preserve their event queues. Nine LRU,
+nine table-bank and nine walker component controls pass, together with eleven
+source-enrichment data tests and the inherited scoped checks. The component
+fixtures retain their modeled-collaborator and physical-allocation exclusions.
+
+These results qualify this package, matching source and mandatory diagnostic
+invocation. The earlier failed invocations remain failed. They do not qualify
+native Ready, a source-cut issuer, capture or fresh restored-branch adoption,
+Linux boot, general ISA accuracy, complete device parity, or complete native
+process/allocator/resource ownership. Store NAR identities are registration
+readbacks rather than independent whole-NAR serializations; the executable and
+source-archive hashes were streamed from the installed products.
 
 ## Complete SDK composition qualification
 
