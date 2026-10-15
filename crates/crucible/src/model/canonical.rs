@@ -46,6 +46,36 @@ pub(super) fn configuration_hash(configuration: &Configuration) -> ContentHash {
     }
 }
 
+/// Extends a schedule's running decision chain by one decision.
+///
+/// The chain commits to every decision in order, so a chain value together
+/// with the decision count identifies one exact schedule.
+pub(super) fn decision_chain_step(previous: &ContentHash, decision: &Decision) -> ContentHash {
+    let mut hasher = MaterialHasher::new();
+    hasher.write_bytes(b"crucible.schedule.decision-chain.v1");
+    write_content_hash(&mut hasher, previous);
+    write_decision(&mut hasher, decision);
+    ContentHash {
+        bytes: hasher.finish(),
+    }
+}
+
+/// Binds a configuration's definition and exact schedule in constant time.
+///
+/// Unlike [`configuration_hash`], this reads the schedule's maintained decision
+/// chain instead of rehashing every decision.
+pub(super) fn configuration_admission_digest(configuration: &Configuration) -> ContentHash {
+    let mut hasher = MaterialHasher::new();
+    hasher.write_bytes(b"crucible.configuration.admission.v1");
+    write_content_hash(&mut hasher, &configuration.def.id());
+    write_seed(&mut hasher, configuration.def.seed());
+    hasher.write_u64(configuration.schedule.len() as u64);
+    write_content_hash(&mut hasher, &configuration.schedule.decision_chain());
+    ContentHash {
+        bytes: hasher.finish(),
+    }
+}
+
 pub(super) fn schedule_hash(schedule: &Schedule) -> ContentHash {
     let mut hasher = MaterialHasher::new();
     hasher.write_bytes(b"crucible.schedule.v2");

@@ -196,3 +196,45 @@ fn baked_genesis_with_search_frontier(
     ));
     Ok(baked)
 }
+
+fn delivery_at(ticks: u64) -> Decision {
+    Decision::DeliveryOrder(DeliveryOrderDecision {
+        at: VirtualTime { ticks },
+        order: Vec::new(),
+    })
+}
+
+#[test]
+fn admission_digest_binds_the_exact_schedule_without_rehashing_it() {
+    let def = ScenarioDef::from_canonical_material("admission-digest", "fixture");
+    let first = Schedule::from_decisions([delivery_at(1), delivery_at(2)]);
+    let appended = Schedule::from_decisions([delivery_at(1)]).appended(delivery_at(2));
+    let reordered = Schedule::from_decisions([delivery_at(2), delivery_at(1)]);
+    let configuration = |schedule: &Schedule| Configuration {
+        def: def.clone(),
+        schedule: schedule.clone(),
+    };
+
+    assert_eq!(first.decision_chain(), appended.decision_chain());
+    assert_eq!(
+        configuration(&first).admission_digest(),
+        configuration(&appended).admission_digest()
+    );
+    assert_ne!(first.decision_chain(), reordered.decision_chain());
+    assert_ne!(
+        configuration(&first).admission_digest(),
+        configuration(&reordered).admission_digest()
+    );
+    assert_ne!(
+        configuration(&first).admission_digest(),
+        configuration(&first.prefix(1).expect("prefix")).admission_digest()
+    );
+    assert_ne!(
+        Configuration::genesis(def.clone()).admission_digest(),
+        Configuration::genesis(ScenarioDef::from_canonical_material(
+            "admission-digest",
+            "other"
+        ))
+        .admission_digest()
+    );
+}

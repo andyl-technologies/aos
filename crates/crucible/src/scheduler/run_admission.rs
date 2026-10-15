@@ -338,7 +338,7 @@ impl SingleScheduler {
                 .map(|edge| (&edge.from, &edge.to, edge.minimum_latency.ticks))
                 .collect::<Vec<_>>();
             let material = serde_json::to_vec(&(
-                self.configuration.id(),
+                self.configuration.admission_digest(),
                 self.configuration.def.id(),
                 edges,
                 self.topology_epoch,

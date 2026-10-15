@@ -449,7 +449,9 @@ pub enum EngineError {
     /// A debug coordinate could not be resolved in the temporal graph.
     DebugTimeTravelCoordinateNotFound {
         /// Coordinate that had no graph checkpoint at or before it.
-        coordinate: DebugCoordinate,
+        ///
+        /// Boxed because a resolved coordinate carries a whole configuration.
+        coordinate: Box<DebugCoordinate>,
     },
     /// A debug time-travel operation named a node absent from the runtime.
     DebugTimeTravelUnknownNode {

@@ -331,10 +331,10 @@ impl TemporalGraph {
     ) -> Result<Configuration, EngineError> {
         self.debug_resolve_scoped_node_icount(current, &coordinate.node, coordinate.icount)
             .ok_or_else(|| EngineError::DebugTimeTravelCoordinateNotFound {
-                coordinate: DebugCoordinate::node_icount(
+                coordinate: Box::new(DebugCoordinate::node_icount(
                     coordinate.node.clone(),
                     coordinate.icount,
-                ),
+                )),
             })
     }
 
@@ -573,7 +573,10 @@ impl TemporalGraph {
         let target = self
             .debug_resolve_scoped_node_icount(&request.current, &request.node, request.icount)
             .ok_or_else(|| EngineError::DebugTimeTravelCoordinateNotFound {
-                coordinate: DebugCoordinate::node_icount(request.node.clone(), request.icount),
+                coordinate: Box::new(DebugCoordinate::node_icount(
+                    request.node.clone(),
+                    request.icount,
+                )),
             })?;
         let scoped = self.debug_scoped_node_material(
             &request.current,
@@ -630,7 +633,7 @@ impl TemporalGraph {
         };
         if !debug_configuration_is_ancestor_or_self(&target_configuration, &request.current) {
             return Err(EngineError::DebugTimeTravelCoordinateNotFound {
-                coordinate: DebugCoordinate::configuration(target_configuration),
+                coordinate: Box::new(DebugCoordinate::configuration(target_configuration)),
             });
         }
         let goto = self.debug_goto(attach, &goto_request)?;

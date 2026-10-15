@@ -339,6 +339,15 @@ impl Configuration {
     pub fn id(&self) -> ContentHash {
         self.content_hash()
     }
+
+    /// Binds the definition and exact schedule in constant time.
+    ///
+    /// Per-quantum admission contexts use this instead of [`Self::id`], whose
+    /// canonical hash rereads every recorded decision. It is an in-process
+    /// identity and never a persisted configuration id.
+    pub(crate) fn admission_digest(&self) -> ContentHash {
+        canonical::configuration_admission_digest(self)
+    }
 }
 
 /// Structurally validated campaign selection embedded in one schedule decision.
@@ -544,13 +553,16 @@ pub struct Schedule {
     // function of the decisions, maintained on append so draw-cap validation
     // never rescans the recorded history.
     app_random_decisions: u64,
+    // Running digest of `decisions` in order, also maintained on append, so
+    // per-quantum admission binds the exact schedule without rehashing it.
+    decision_chain: ContentHash,
     // Contiguous copy of `decisions` for slice readers. Clones share it until
     // one of them appends, which discards its own handle.
     contiguous: Arc<OnceLock<Vec<Decision>>>,
 }
 
-// Equality, hashing, and debug output cover the decisions alone; the count and
-// the contiguous copy are derived from them.
+// Equality, hashing, and debug output cover the decisions alone; the count,
+// the decision chain, and the contiguous copy are derived from them.
 impl PartialEq for Schedule {
     fn eq(&self, other: &Self) -> bool {
         self.decisions == other.decisions
@@ -623,6 +635,14 @@ impl Schedule {
     #[must_use]
     pub fn decision_history(&self) -> &crate::History<Decision> {
         &self.decisions
+    }
+
+    /// Returns the running digest of every decision in recorded order.
+    ///
+    /// The digest is an in-process identity maintained on append;
+    /// [`Schedule::content_hash`] remains the canonical schedule identity.
+    pub(crate) fn decision_chain(&self) -> ContentHash {
+        self.decision_chain
     }
 
     /// Returns the number of standardized app-random selections recorded.
@@ -702,6 +722,7 @@ impl Schedule {
         if crate::decision::is_app_random_decision_after(self.decisions.last(), &decision) {
             self.app_random_decisions = self.app_random_decisions.saturating_add(1);
         }
+        self.decision_chain = canonical::decision_chain_step(&self.decision_chain, &decision);
         self.decisions.push(decision);
 
         // The contiguous copy no longer matches. Reuse an unshared cell;
