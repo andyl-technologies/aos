@@ -1,11 +1,11 @@
-From 95ea8ea684f78810d7e960c95c270014a29886f7 Mon Sep 17 00:00:00 2001
+From 379ec8763c9b90da62f1b4f6d80ee6db251cdd50 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 13:44:11 -0700
-Subject: [PATCH] Integrate public QEMU lifecycle and fixture updates
+Date: Thu, 15 Oct 2026 14:02:45 -0700
+Subject: [PATCH] Integrate public QEMU lifecycle and timer fixture updates
 
-Update lifecycle ownership integration and public regression fixtures, including
-current callback declarations and isolated ICH9 migration producers. Preserve
-ordinary absence behavior and the existing test assertions.
+Update lifecycle ownership integration and public regression fixtures. Share
+bounded timer-producer supervision, preserve migration framing and cases, and
+bind the stopped-control fixture to the actual condition-wait dispatch entry.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -222940,6 +222940,291 @@ index 0000000000000000000000000000000000000000..64fdd30d01b4a44406608dc96d9d8f76
 +        sizeof(QemuCrucibleStartupSourceControl) +
 +        startup_source.standing.construction_storage.fixed_charge.bytes);
 +}
+diff --git a/tests/unit/crucible-timer-stream.h b/tests/unit/crucible-timer-stream.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f517993ed29c5a6611a6d10ad6a2a612c9d3207e
+--- /dev/null
++++ b/tests/unit/crucible-timer-stream.h
+@@ -0,0 +1,279 @@
++/*
++ * Bounded same-executable streams for timer migration fixtures.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef TESTS_CRUCIBLE_TIMER_STREAM_H
++#define TESTS_CRUCIBLE_TIMER_STREAM_H
++
++#include "qemu/osdep.h"
++#include <poll.h>
++#include <sys/wait.h>
++
++#define TIMER_STREAM_TIMEOUT_US (5 * G_USEC_PER_SEC)
++#define TIMER_STREAM_CLEANUP_US G_USEC_PER_SEC
++#define TIMER_STREAM_SUBPROCESS_TIMEOUT_US (10 * G_USEC_PER_SEC)
++
++/* Keep each fixture's existing bytes: only ICH9 prefixes a native length. */
++typedef enum TimerStreamFraming {
++    TIMER_STREAM_U32_LENGTH,
++    TIMER_STREAM_TO_EOF,
++} TimerStreamFraming;
++
++typedef struct TimerStreamProducer {
++    GPid pid;
++    int output;
++    int status;
++    bool reaped;
++    bool wait_failed;
++} TimerStreamProducer;
++
++static void timer_stream_failure(GError **error, const char *operation,
++                                 int code)
++{
++    if (!*error) {
++        g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(code),
++                    "%s: %s", operation, g_strerror(code));
++    }
++}
++
++static ssize_t timer_stream_read(int fd, void *buffer, size_t length,
++                                 int64_t deadline, GError **error)
++{
++    for (;;) {
++        int64_t remaining = deadline - g_get_monotonic_time();
++        ssize_t received;
++        struct pollfd descriptor = { .fd = fd, .events = POLLIN };
++        int ready;
++
++        if (remaining <= 0) {
++            timer_stream_failure(error, "producer IPC deadline", ETIMEDOUT);
++            return -1;
++        }
++        received = read(fd, buffer, length);
++        if (received >= 0) {
++            return received;
++        }
++        if (errno == EINTR) {
++            continue;
++        }
++        if (errno != EAGAIN && errno != EWOULDBLOCK) {
++            timer_stream_failure(error, "producer read", errno);
++            return -1;
++        }
++        remaining = deadline - g_get_monotonic_time();
++        if (remaining <= 0) {
++            continue;
++        }
++        ready = poll(&descriptor, 1, (remaining + 999) / 1000);
++        if (ready < 0 && errno != EINTR) {
++            timer_stream_failure(error, "producer poll", errno);
++            return -1;
++        }
++        if (ready > 0 && (descriptor.revents & POLLNVAL)) {
++            timer_stream_failure(error, "producer poll descriptor", EBADF);
++            return -1;
++        }
++    }
++}
++
++static bool timer_stream_read_exact(int fd, void *buffer, size_t length,
++                                    int64_t deadline, GError **error)
++{
++    for (size_t offset = 0; offset < length;) {
++        ssize_t received = timer_stream_read(fd, (uint8_t *)buffer + offset,
++                                              length - offset, deadline, error);
++
++        if (received <= 0) {
++            if (!received) {
++                timer_stream_failure(error, "incomplete producer frame", EPIPE);
++            }
++            return false;
++        }
++        offset += received;
++    }
++    return true;
++}
++
++static bool timer_stream_observe_exit(TimerStreamProducer *producer,
++                                      GError **error)
++{
++    pid_t result = waitpid(producer->pid, &producer->status, WNOHANG);
++
++    if (result == producer->pid) {
++        producer->reaped = true;
++    } else if (result < 0 && errno != EINTR) {
++        /* An uncertain child identity must never become a numeric kill. */
++        producer->wait_failed = true;
++        timer_stream_failure(error, "producer waitpid", errno);
++        return false;
++    }
++    return true;
++}
++
++static bool timer_stream_wait(TimerStreamProducer *producer, int64_t deadline,
++                              GError **error)
++{
++    while (!producer->reaped) {
++        int64_t remaining = deadline - g_get_monotonic_time();
++
++        if (remaining <= 0) {
++            timer_stream_failure(error, "producer reap deadline", ETIMEDOUT);
++            return false;
++        }
++        if (!timer_stream_observe_exit(producer, error)) {
++            return false;
++        }
++        remaining = deadline - g_get_monotonic_time();
++        if (!producer->reaped && remaining > 0) {
++            g_usleep(MIN(remaining, 1000));
++        }
++    }
++    return true;
++}
++
++static void timer_stream_cleanup(TimerStreamProducer *producer)
++{
++    GError *error = NULL;
++    const int signals[] = { SIGTERM, SIGKILL };
++
++    if (!timer_stream_observe_exit(producer, &error)) {
++        g_printerr("Producer cleanup: %s\n", error->message);
++        g_clear_error(&error);
++        return;
++    }
++    for (unsigned index = 0; !producer->reaped &&
++                            index < G_N_ELEMENTS(signals); index++) {
++        int64_t deadline = g_get_monotonic_time() + TIMER_STREAM_CLEANUP_US;
++
++        if (kill(producer->pid, signals[index]) < 0 && errno != ESRCH) {
++            timer_stream_failure(&error, "producer cleanup signal", errno);
++        }
++        timer_stream_wait(producer, deadline, &error);
++        if (error) {
++            g_printerr("Producer cleanup: %s\n", error->message);
++            g_clear_error(&error);
++        }
++        if (producer->wait_failed) {
++            break;
++        }
++    }
++}
++
++static GByteArray *timer_stream_capture(char *executable, char *helper_mode,
++                                        unsigned scenario,
++                                        TimerStreamFraming framing)
++{
++    TimerStreamProducer producer = { .output = -1 };
++    char scenario_argument[] = { '0' + scenario, '\0' };
++    char *arguments[] = {
++        executable, helper_mode, scenario_argument, NULL,
++    };
++    int64_t deadline = g_get_monotonic_time() + TIMER_STREAM_TIMEOUT_US;
++    uint32_t length = 0;
++    uint8_t trailing;
++    GPid spawned_pid = 0;
++    int spawned_output = -1;
++    int flags;
++    GByteArray *bytes = NULL;
++    GError *error = NULL;
++    ssize_t received;
++
++    g_assert_true(framing == TIMER_STREAM_U32_LENGTH ||
++                  framing == TIMER_STREAM_TO_EOF);
++    if (!g_spawn_async_with_pipes(NULL, arguments, NULL,
++            G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_CLOEXEC_PIPES,
++            NULL, NULL, &spawned_pid, NULL, &spawned_output, NULL, &error)) {
++        goto out;
++    }
++    producer.pid = spawned_pid;
++    producer.output = spawned_output;
++    flags = fcntl(producer.output, F_GETFL);
++    if (flags < 0 || fcntl(producer.output, F_SETFL, flags | O_NONBLOCK) < 0) {
++        timer_stream_failure(&error, "producer pipe nonblocking", errno);
++        goto out;
++    }
++    if (framing == TIMER_STREAM_U32_LENGTH) {
++        if (!timer_stream_read_exact(producer.output, &length, sizeof(length),
++                                      deadline, &error)) {
++            goto out;
++        }
++        if (!length || length >= 512) {
++            timer_stream_failure(&error, "producer frame length", EINVAL);
++            goto out;
++        }
++        bytes = g_byte_array_sized_new(length);
++        g_byte_array_set_size(bytes, length);
++        if (!timer_stream_read_exact(producer.output, bytes->data, length,
++                                      deadline, &error)) {
++            goto out;
++        }
++        received = timer_stream_read(producer.output, &trailing, 1,
++                                      deadline, &error);
++        if (received != 0) {
++            if (received > 0) {
++                timer_stream_failure(&error, "trailing producer bytes", EINVAL);
++            }
++            goto out;
++        }
++    } else {
++        uint8_t buffer[256];
++
++        bytes = g_byte_array_new();
++        for (;;) {
++            received = timer_stream_read(producer.output, buffer,
++                                          sizeof(buffer), deadline, &error);
++            if (received < 0) {
++                goto out;
++            }
++            if (!received) {
++                break;
++            }
++            if (bytes->len + received >= 512) {
++                timer_stream_failure(&error, "producer stream length", EINVAL);
++                goto out;
++            }
++            g_byte_array_append(bytes, buffer, received);
++        }
++        length = bytes->len;
++        if (!length) {
++            timer_stream_failure(&error, "empty producer stream", EINVAL);
++            goto out;
++        }
++    }
++    if (!timer_stream_wait(&producer, deadline, &error)) {
++        goto out;
++    }
++    if (!g_spawn_check_wait_status(producer.status, &error)) {
++        goto out;
++    }
++
++out:
++    if (producer.output >= 0) {
++        int output = producer.output;
++
++        producer.output = -1;
++        if (close(output) < 0) {
++            timer_stream_failure(&error, "producer pipe close", errno);
++        }
++    }
++    if (producer.pid && !producer.reaped && !producer.wait_failed) {
++        timer_stream_cleanup(&producer);
++    }
++    if (producer.reaped) {
++        g_spawn_close_pid(producer.pid);
++    }
++    if (error) {
++        g_clear_pointer(&bytes, g_byte_array_unref);
++        g_error("Exact producer failed: %s%s", error->message,
++                producer.pid && !producer.reaped ?
++                "; producer reap remains unproved" : "");
++    }
++    g_assert_true(producer.reaped);
++    g_assert_cmpuint(length, >, 0);
++    g_assert_cmpuint(length, <, 512);
++    g_assert_true(WIFEXITED(producer.status));
++    g_assert_cmpint(WEXITSTATUS(producer.status), ==, 0);
++    return bytes;
++}
++
++#endif /* TESTS_CRUCIBLE_TIMER_STREAM_H */
 diff --git a/tests/unit/extract-crucible-cached-writer.py b/tests/unit/extract-crucible-cached-writer.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387e7f9ee7f
@@ -230743,16 +231028,16 @@ index 0000000000000000000000000000000000000000..4cfd97da94807463be4ce5d202b64567
 +}
 diff --git a/tests/unit/test-crucible-acpi-pm-wide-clock.c b/tests/unit/test-crucible-acpi-pm-wide-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..9c8559eed40d52f4c899e62d7519f9af626b1b27
+index 0000000000000000000000000000000000000000..50f595239e1be81a66e8bf682ebabcf2b1b70696
 --- /dev/null
 +++ b/tests/unit/test-crucible-acpi-pm-wide-clock.c
-@@ -0,0 +1,765 @@
+@@ -0,0 +1,792 @@
 +/*
 + * Literal ACPI PM timer wide-clock regressions.
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
 +#include "qemu/osdep.h"
-+#include <sys/wait.h>
++#include "crucible-timer-stream.h"
 +#include "qapi/error.h"
 +#include "qemu/main-loop.h"
 +#include "qemu/module.h"
@@ -230766,6 +231051,8 @@ index 0000000000000000000000000000000000000000..9c8559eed40d52f4c899e62d7519f9af
 +#define opts_init(function) \
 +    static void (*const fixture_##function)(void) G_GNUC_UNUSED = function;
 +#include "../../hw/acpi/core.c"
++
++static char *fixture_executable;
 +
 +static __int128 observed_ps;
 +static unsigned nanosecond_reads;
@@ -231075,61 +231362,73 @@ index 0000000000000000000000000000000000000000..9c8559eed40d52f4c899e62d7519f9af
 +}
 +
 +
-+/*
-+ * A separate process produces the exact stream with the real pre-save/table.
-+ * The ordinary consumer never toggles an enabled clock mode.
-+ */
-+static GByteArray *capture_exact_stream(__int128 ticks, __int128 expiry,
-+                                       bool active)
++typedef enum ExactStreamScenario {
++    EXACT_STREAM_FRACTION,
++    EXACT_STREAM_NEGATIVE_EXPIRY,
++    EXACT_STREAM_INACTIVE,
++    EXACT_STREAM_WIDE_EXPIRY,
++    EXACT_STREAM_WIDE_TICKS,
++    EXACT_STREAM_ROUNDING_OVERFLOW,
++} ExactStreamScenario;
++
++static const struct {
++    __int128 ticks;
++    __int128 expiry;
++    bool active;
++} exact_stream_inputs[] = {
++    [EXACT_STREAM_FRACTION] = { 0x800000, 1001, true },
++    [EXACT_STREAM_NEGATIVE_EXPIRY] = { 0, -1, true },
++    [EXACT_STREAM_INACTIVE] = { 0x800000, 0, false },
++    [EXACT_STREAM_WIDE_EXPIRY] = { 0, (__int128)1 << 120, true },
++    [EXACT_STREAM_WIDE_TICKS] = { (__int128)INT64_MAX + 1, 1000, true },
++    [EXACT_STREAM_ROUNDING_OVERFLOW] = {
++        0, (__int128)INT64_MAX * 1000 + 1, true,
++    },
++};
++
++/* The actual pre-save/table runs in a fresh executable, before g_test_init. */
++static int produce_exact_stream(unsigned scenario)
 +{
-+    int descriptors[2];
-+    int status;
-+    pid_t child;
-+    GByteArray *bytes = g_byte_array_new();
-+    uint8_t buffer[256];
++    __int128 ticks = exact_stream_inputs[scenario].ticks;
++    __int128 expiry = exact_stream_inputs[scenario].expiry;
++    bool active = exact_stream_inputs[scenario].active;
++    ACPIPMTimer timer;
++    GByteArray *encoded;
++    size_t offset = 0;
 +    ssize_t count;
 +
-+    g_assert_cmpint(pipe(descriptors), ==, 0);
-+    child = fork();
-+    g_assert_cmpint(child, >=, 0);
-+    if (child == 0) {
-+        ACPIPMTimer timer;
-+        GByteArray *encoded;
-+        size_t offset = 0;
-+
-+        close(descriptors[0]);
-+        initialize_clock(true);
-+        timer = create_timer();
-+        timer.overflow_ticks = ticks;
-+        if (active) {
-+            timer_mod_ps_wide(timer.timer, expiry);
-+        }
-+        encoded = save_state(&timer);
-+        while (offset < encoded->len) {
-+            count = write(descriptors[1], encoded->data + offset,
-+                          encoded->len - offset);
-+            g_assert_cmpint(count, >, 0);
-+            offset += count;
-+        }
-+        close(descriptors[1]);
-+        _exit(0);
++    initialize_clock(true);
++    timer = create_timer();
++    timer.overflow_ticks = ticks;
++    if (active) {
++        timer_mod_ps_wide(timer.timer, expiry);
 +    }
-+    close(descriptors[1]);
-+    while ((count = read(descriptors[0], buffer, sizeof(buffer))) > 0) {
-+        g_byte_array_append(bytes, buffer, count);
++    encoded = save_state(&timer);
++    while (offset < encoded->len) {
++        count = write(STDOUT_FILENO, encoded->data + offset,
++                      encoded->len - offset);
++        g_assert_cmpint(count, >, 0);
++        offset += count;
 +    }
-+    g_assert_cmpint(count, ==, 0);
-+    close(descriptors[0]);
-+    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
-+    g_assert_true(WIFEXITED(status));
-+    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
-+    return bytes;
++    close(STDOUT_FILENO);
++    return 0;
 +}
 +
-+static void crossmode(__int128 ticks, __int128 expiry, bool active,
++static GByteArray *capture_exact_stream(unsigned scenario)
++{
++    char helper_mode[] = "--acpi-pm-exact-producer";
++
++    g_assert_cmpuint(scenario, <, G_N_ELEMENTS(exact_stream_inputs));
++    return timer_stream_capture(fixture_executable, helper_mode, scenario,
++                                TIMER_STREAM_TO_EOF);
++}
++
++static void crossmode(ExactStreamScenario scenario,
 +                      int expected_result, int64_t projected_ns)
 +{
-+    GByteArray *bytes = capture_exact_stream(ticks, expiry, active);
++    __int128 ticks = exact_stream_inputs[scenario].ticks;
++    bool active = exact_stream_inputs[scenario].active;
++    GByteArray *bytes = capture_exact_stream(scenario);
 +    ACPIPMTimer restored;
 +
 +    initialize_clock(false);
@@ -231160,32 +231459,32 @@ index 0000000000000000000000000000000000000000..9c8559eed40d52f4c899e62d7519f9af
 +
 +static void test_crossmode_fraction(void)
 +{
-+    crossmode(0x800000, 1001, true, 0, 2);
++    crossmode(EXACT_STREAM_FRACTION, 0, 2);
 +}
 +
 +static void test_crossmode_negative_expiry(void)
 +{
-+    crossmode(0, -1, true, 0, 0);
++    crossmode(EXACT_STREAM_NEGATIVE_EXPIRY, 0, 0);
 +}
 +
 +static void test_crossmode_inactive(void)
 +{
-+    crossmode(0x800000, 0, false, 0, 0);
++    crossmode(EXACT_STREAM_INACTIVE, 0, 0);
 +}
 +
 +static void test_crossmode_wide_expiry(void)
 +{
-+    crossmode(0, (__int128)1 << 120, true, -ERANGE, 0);
++    crossmode(EXACT_STREAM_WIDE_EXPIRY, -ERANGE, 0);
 +}
 +
 +static void test_crossmode_wide_ticks(void)
 +{
-+    crossmode((__int128)INT64_MAX + 1, 1000, true, -ERANGE, 0);
++    crossmode(EXACT_STREAM_WIDE_TICKS, -ERANGE, 0);
 +}
 +
 +static void test_crossmode_rounding_overflow(void)
 +{
-+    crossmode(0, (__int128)INT64_MAX * 1000 + 1, true, -ERANGE, 0);
++    crossmode(EXACT_STREAM_ROUNDING_OVERFLOW, -ERANGE, 0);
 +}
 +
 +static unsigned timer_callbacks;
@@ -231465,7 +231764,7 @@ index 0000000000000000000000000000000000000000..9c8559eed40d52f4c899e62d7519f9af
 +        }
 +        return;
 +    }
-+    g_test_trap_subprocess(NULL, 0, 0);
++    g_test_trap_subprocess(NULL, TIMER_STREAM_SUBPROCESS_TIMEOUT_US, 0);
 +    g_test_trap_assert_passed();
 +}
 +
@@ -231506,11 +231805,24 @@ index 0000000000000000000000000000000000000000..9c8559eed40d52f4c899e62d7519f9af
 +        { "/acpi-pm/truncated-section", test_truncated_section },
 +    };
 +
++    int result;
++
++    if (argc > 1 && strcmp(argv[1], "--acpi-pm-exact-producer") == 0) {
++        if (argc != 3 || argv[2][0] < '0' || argv[2][0] > '5' ||
++            argv[2][1] != '\0') {
++            return EXIT_FAILURE;
++        }
++        return produce_exact_stream(argv[2][0] - '0');
++    }
++    fixture_executable = realpath(argv[0], NULL);
++    g_assert_nonnull(fixture_executable);
 +    g_test_init(&argc, &argv, NULL);
 +    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
 +        g_test_add_data_func(cases[i].path, &cases[i], run_isolated_case);
 +    }
-+    return g_test_run();
++    result = g_test_run();
++    free(fixture_executable);
++    return result;
 +}
 diff --git a/tests/unit/test-crucible-ahci-fingerprint.c b/tests/unit/test-crucible-ahci-fingerprint.c
 new file mode 100644
@@ -249677,17 +249989,16 @@ index 0000000000000000000000000000000000000000..ca1c90abe3b22fa2412002e449f07c67
 +}
 diff --git a/tests/unit/test-crucible-ich9-aux-wide-clock.c b/tests/unit/test-crucible-ich9-aux-wide-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..664f9a7910c3411d7dea12951c1073ab619cf01a
+index 0000000000000000000000000000000000000000..3640177c25d6f5dd67a1fdc2b7ba770ece03071e
 --- /dev/null
 +++ b/tests/unit/test-crucible-ich9-aux-wide-clock.c
-@@ -0,0 +1,951 @@
+@@ -0,0 +1,729 @@
 +/*
 + * Literal ICH9 auxiliary timer runtime and deferred migration regressions.
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
 +#include "qemu/osdep.h"
-+#include <sys/wait.h>
-+#include <poll.h>
++#include "crucible-timer-stream.h"
 +#include "qapi/error.h"
 +#include "qemu/main-loop.h"
 +#include "qemu/module.h"
@@ -249706,10 +250017,6 @@ index 0000000000000000000000000000000000000000..664f9a7910c3411d7dea12951c1073ab
 +#include "../../hw/acpi/ich9_timer.c"
 +
 +static char *fixture_executable;
-+
-+#define PRODUCER_TIMEOUT_US (5 * G_USEC_PER_SEC)
-+#define PRODUCER_CLEANUP_US G_USEC_PER_SEC
-+#define SUBPROCESS_TIMEOUT_US (10 * G_USEC_PER_SEC)
 +
 +static __int128 observed_ps;
 +static unsigned smi_events;
@@ -249857,7 +250164,7 @@ index 0000000000000000000000000000000000000000..664f9a7910c3411d7dea12951c1073ab
 +static bool run_in_child(void)
 +{
 +    if (!g_test_subprocess()) {
-+        g_test_trap_subprocess(NULL, SUBPROCESS_TIMEOUT_US, 0);
++        g_test_trap_subprocess(NULL, TIMER_STREAM_SUBPROCESS_TIMEOUT_US, 0);
 +        g_test_trap_assert_passed();
 +        return false;
 +    }
@@ -250315,230 +250622,13 @@ index 0000000000000000000000000000000000000000..664f9a7910c3411d7dea12951c1073ab
 +    return 0;
 +}
 +
-+typedef struct FixtureProducer {
-+    GPid pid;
-+    int output;
-+    int status;
-+    bool reaped;
-+    bool wait_failed;
-+} FixtureProducer;
-+
-+static void producer_failure(GError **error, const char *operation, int code)
-+{
-+    if (!*error) {
-+        g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(code),
-+                    "%s: %s", operation, g_strerror(code));
-+    }
-+}
-+
-+static ssize_t producer_read(int fd, void *buffer, size_t length,
-+                             int64_t deadline, GError **error)
-+{
-+    for (;;) {
-+        int64_t remaining = deadline - g_get_monotonic_time();
-+        ssize_t received;
-+        struct pollfd descriptor = { .fd = fd, .events = POLLIN };
-+        int ready;
-+
-+        if (remaining <= 0) {
-+            producer_failure(error, "producer IPC deadline", ETIMEDOUT);
-+            return -1;
-+        }
-+        received = read(fd, buffer, length);
-+        if (received >= 0) {
-+            return received;
-+        }
-+        if (errno == EINTR) {
-+            continue;
-+        }
-+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-+            producer_failure(error, "producer read", errno);
-+            return -1;
-+        }
-+        remaining = deadline - g_get_monotonic_time();
-+        if (remaining <= 0) {
-+            continue;
-+        }
-+        ready = poll(&descriptor, 1, (remaining + 999) / 1000);
-+        if (ready < 0 && errno != EINTR) {
-+            producer_failure(error, "producer poll", errno);
-+            return -1;
-+        }
-+        if (ready > 0 && (descriptor.revents & POLLNVAL)) {
-+            producer_failure(error, "producer poll descriptor", EBADF);
-+            return -1;
-+        }
-+    }
-+}
-+
-+static bool producer_read_exact(int fd, void *buffer, size_t length,
-+                                int64_t deadline, GError **error)
-+{
-+    for (size_t offset = 0; offset < length;) {
-+        ssize_t received = producer_read(fd, (uint8_t *)buffer + offset,
-+                                          length - offset, deadline, error);
-+
-+        if (received <= 0) {
-+            if (!received) {
-+                producer_failure(error, "incomplete producer frame", EPIPE);
-+            }
-+            return false;
-+        }
-+        offset += received;
-+    }
-+    return true;
-+}
-+
-+static bool producer_observe_exit(FixtureProducer *producer, GError **error)
-+{
-+    pid_t result = waitpid(producer->pid, &producer->status, WNOHANG);
-+
-+    if (result == producer->pid) {
-+        producer->reaped = true;
-+    } else if (result < 0 && errno != EINTR) {
-+        /* An uncertain child identity must never become a numeric kill. */
-+        producer->wait_failed = true;
-+        producer_failure(error, "producer waitpid", errno);
-+        return false;
-+    }
-+    return true;
-+}
-+
-+static bool producer_wait(FixtureProducer *producer, int64_t deadline,
-+                          GError **error)
-+{
-+    while (!producer->reaped) {
-+        int64_t remaining = deadline - g_get_monotonic_time();
-+
-+        if (remaining <= 0) {
-+            producer_failure(error, "producer reap deadline", ETIMEDOUT);
-+            return false;
-+        }
-+        if (!producer_observe_exit(producer, error)) {
-+            return false;
-+        }
-+        remaining = deadline - g_get_monotonic_time();
-+        if (!producer->reaped && remaining > 0) {
-+            g_usleep(MIN(remaining, 1000));
-+        }
-+    }
-+    return true;
-+}
-+
-+static void producer_cleanup(FixtureProducer *producer)
-+{
-+    GError *error = NULL;
-+    const int signals[] = { SIGTERM, SIGKILL };
-+
-+    if (!producer_observe_exit(producer, &error)) {
-+        g_printerr("Producer cleanup: %s\n", error->message);
-+        g_clear_error(&error);
-+        return;
-+    }
-+    for (unsigned index = 0; !producer->reaped &&
-+                            index < G_N_ELEMENTS(signals); index++) {
-+        int64_t deadline = g_get_monotonic_time() + PRODUCER_CLEANUP_US;
-+
-+        if (kill(producer->pid, signals[index]) < 0 && errno != ESRCH) {
-+            producer_failure(&error, "producer cleanup signal", errno);
-+        }
-+        producer_wait(producer, deadline, &error);
-+        if (error) {
-+            g_printerr("Producer cleanup: %s\n", error->message);
-+            g_clear_error(&error);
-+        }
-+        if (producer->wait_failed) {
-+            break;
-+        }
-+    }
-+}
-+
 +static GByteArray *exact_producer_stream(unsigned scenario)
 +{
-+    FixtureProducer producer = { .output = -1 };
 +    char helper_mode[] = "--ich9-exact-producer";
-+    char scenario_argument[] = { '0' + scenario, '\0' };
-+    char *arguments[] = {
-+        fixture_executable, helper_mode, scenario_argument, NULL,
-+    };
-+    int64_t deadline = g_get_monotonic_time() + PRODUCER_TIMEOUT_US;
-+    uint32_t length = 0;
-+    uint8_t trailing;
-+    GPid spawned_pid = 0;
-+    int spawned_output = -1;
-+    int flags;
-+    GByteArray *bytes = NULL;
-+    GError *error = NULL;
-+    ssize_t received;
 +
 +    g_assert_cmpuint(scenario, <, 4);
-+    if (!g_spawn_async_with_pipes(NULL, arguments, NULL,
-+            G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_CLOEXEC_PIPES,
-+            NULL, NULL, &spawned_pid, NULL, &spawned_output, NULL, &error)) {
-+        goto out;
-+    }
-+    producer.pid = spawned_pid;
-+    producer.output = spawned_output;
-+    flags = fcntl(producer.output, F_GETFL);
-+    if (flags < 0 || fcntl(producer.output, F_SETFL, flags | O_NONBLOCK) < 0) {
-+        producer_failure(&error, "producer pipe nonblocking", errno);
-+        goto out;
-+    }
-+    if (!producer_read_exact(producer.output, &length, sizeof(length),
-+                              deadline, &error)) {
-+        goto out;
-+    }
-+    if (!length || length >= 512) {
-+        producer_failure(&error, "producer frame length", EINVAL);
-+        goto out;
-+    }
-+    bytes = g_byte_array_sized_new(length);
-+    g_byte_array_set_size(bytes, length);
-+    if (!producer_read_exact(producer.output, bytes->data, length,
-+                              deadline, &error)) {
-+        goto out;
-+    }
-+    received = producer_read(producer.output, &trailing, 1, deadline, &error);
-+    if (received != 0) {
-+        if (received > 0) {
-+            producer_failure(&error, "trailing producer bytes", EINVAL);
-+        }
-+        goto out;
-+    }
-+    if (!producer_wait(&producer, deadline, &error)) {
-+        goto out;
-+    }
-+    if (!g_spawn_check_wait_status(producer.status, &error)) {
-+        goto out;
-+    }
-+
-+out:
-+    if (producer.output >= 0) {
-+        int output = producer.output;
-+
-+        producer.output = -1;
-+        if (close(output) < 0) {
-+            producer_failure(&error, "producer pipe close", errno);
-+        }
-+    }
-+    if (producer.pid && !producer.reaped && !producer.wait_failed) {
-+        producer_cleanup(&producer);
-+    }
-+    if (producer.reaped) {
-+        g_spawn_close_pid(producer.pid);
-+    }
-+    if (error) {
-+        g_clear_pointer(&bytes, g_byte_array_unref);
-+        g_error("Exact producer failed: %s%s", error->message,
-+                producer.pid && !producer.reaped ?
-+                "; producer reap remains unproved" : "");
-+    }
-+    g_assert_true(producer.reaped);
-+    g_assert_cmpuint(length, >, 0);
-+    g_assert_cmpuint(length, <, 512);
-+    g_assert_true(WIFEXITED(producer.status));
-+    g_assert_cmpint(WEXITSTATUS(producer.status), ==, 0);
-+    return bytes;
++    return timer_stream_capture(fixture_executable, helper_mode, scenario,
++                                TIMER_STREAM_U32_LENGTH);
 +}
 +
 +static void test_crossmode_stream(gconstpointer opaque)
@@ -276771,10 +276861,10 @@ index 0000000000000000000000000000000000000000..2b3644a16e99286fd2e8cee7280baa7a
 +    main()
 diff --git a/tests/unit/test-crucible-stopped-control-rearm.py b/tests/unit/test-crucible-stopped-control-rearm.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..17ede6569b5dfc8ba7692b5aaae1ad74e3929632
+index 0000000000000000000000000000000000000000..85b877bdb19b2b68b9234baa9f645392bfd06237
 --- /dev/null
 +++ b/tests/unit/test-crucible-stopped-control-rearm.py
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,240 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise retained control intent when native pause reasserts CPU stop.
 +
@@ -276994,7 +277084,11 @@ index 0000000000000000000000000000000000000000..17ede6569b5dfc8ba7692b5aaae1ad74
 +            transfer, "        qemu_plugin_rearm_deferred_control_boundary();\n")
 +    support = NETWORK["TESTS"].split("int main(void)")[0]
 +    generated = arguments.output_dir / "stopped-control-rearm.c"
-+    generated.write_text(prelude + SUPPORT["EXTRA"] + EXTRA + bodies + support + CHECKS)
++    wait_dispatch = NETWORK["SUPPORT"]["EXTRACT"]["unique_line"](
++        (ROOT / "util/qsp.c").read_text(),
++        "QemuCondWaitFunc qemu_cond_wait_func = qemu_cond_wait_impl;")
++    generated.write_text(prelude + SUPPORT["EXTRA"] + EXTRA + wait_dispatch +
++                         bodies + support + CHECKS)
 +    binary = arguments.output_dir / "stopped-control-rearm"
 +    command = [os.environ.get("CC", "cc"),
 +               *shlex.split(os.environ.get("CFLAGS", "")),
