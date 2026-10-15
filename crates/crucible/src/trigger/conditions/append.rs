@@ -114,6 +114,7 @@ impl ConditionEventLogPrefix {
         self.event_log_offset = EventLogOffset::new(ContentHash::default(), 0, events);
         self.prefix_offsets.clear();
         self.last_black_box_observation = previous_black_box_observation;
+        self.console_folds.observe(observable_events.iter());
         self.observable_events.extend(observable_events);
         self.black_box_observation_kinds
             .extend(black_box_observation_kinds);

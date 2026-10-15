@@ -66,6 +66,10 @@ where
         self.observed.observable_events()
     }
 
+    fn console_match_reported(&self, node: &NodeId, pattern: &str) -> Option<bool> {
+        self.observed.console_match_reported(node, pattern)
+    }
+
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
         self.scheduler_quiescence
     }
@@ -592,12 +596,16 @@ where
             evaluator.observable_events(),
             |event| network_event_matches(event, link.as_ref(), predicate),
         ),
-        Condition::ConsoleMatch { node, regex } => console_stream_matches(
-            evaluator.evaluation_point().at(),
-            evaluator.observable_events(),
-            node,
-            regex,
-        ),
+        Condition::ConsoleMatch { node, regex } => evaluator
+            .console_match_reported(node, &regex.pattern)
+            .unwrap_or_else(|| {
+                console_stream_matches(
+                    evaluator.evaluation_point().at(),
+                    evaluator.observable_events(),
+                    node,
+                    regex,
+                )
+            }),
         Condition::CoveragePoint { node, point } => coverage_point_matches(evaluator, node, point),
         Condition::MemoryPredicate {
             node,
@@ -692,37 +700,34 @@ pub(super) fn frame_predicate_matches(predicate: &FramePredicate, payload: &[u8]
     }
 }
 
+/// Folds an undeclared console pattern over the visible console bytes.
+///
+/// Declared patterns are answered by the prefix's streaming matcher state;
+/// this fallback compiles the pattern and applies the same every-match-end
+/// semantics to the retained history.
 pub(super) fn console_stream_matches(
     at: VirtualTime,
     events: &crate::History<ObservableEvent>,
     expected_node: &NodeId,
     regex: &RegexProgram,
 ) -> bool {
-    let Ok(program) = regex::bytes::Regex::new(&regex.pattern) else {
+    let Ok(automaton) = crate::ConsoleAutomaton::compile(&regex.pattern) else {
         return false;
     };
-    let mut stream = Vec::new();
-    let mut current_start = None;
+    let mut state = automaton.start();
+    let mut matched_at_point = false;
     for event in events {
         let Some((node, bytes)) = event.console_bytes() else {
             continue;
         };
-        if node != expected_node {
+        if node != expected_node || event.at() > at {
             continue;
         }
-        if event.at() < at {
-            stream.extend_from_slice(bytes);
-        } else if event.at() == at {
-            current_start.get_or_insert(stream.len());
-            stream.extend_from_slice(bytes);
-        }
+        let advance = automaton.advance(state, bytes);
+        state = advance.state;
+        matched_at_point |= advance.matched && event.at() == at;
     }
-    let Some(current_start) = current_start else {
-        return false;
-    };
-    program
-        .find_iter(&stream)
-        .any(|matched| matched.end() > current_start)
+    matched_at_point
 }
 
 pub(super) fn coverage_point_matches<E>(
@@ -914,6 +919,7 @@ pub struct ConditionEvaluation<O> {
     timer_fires: BTreeMap<TimerId, VirtualTime>,
     observable_events: crate::History<ObservableEvent>,
     ordering_facts: crate::History<ObservedOrderingFact>,
+    console_folds: ConsoleMatchFolds,
     scheduler_quiescence: Option<SchedulerQuiescence>,
     white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
     once_latches: Vec<Condition>,
@@ -933,6 +939,7 @@ impl<O> ConditionEvaluation<O> {
             timer_fires: prefix.timer_fires,
             observable_events: prefix.observable_events,
             ordering_facts: prefix.ordering_facts,
+            console_folds: prefix.console_folds,
             scheduler_quiescence: None,
             white_box_policies: BTreeMap::new(),
             once_latches: Vec::new(),
@@ -957,6 +964,7 @@ impl<O> ConditionEvaluation<O> {
             timer_fires: prefix.timer_fires.clone(),
             observable_events: prefix.observable_events.clone(),
             ordering_facts: prefix.ordering_facts.clone(),
+            console_folds: prefix.console_folds.clone(),
             scheduler_quiescence: None,
             white_box_policies: BTreeMap::new(),
             once_latches: Vec::new(),
@@ -985,6 +993,7 @@ impl<O> ConditionEvaluation<O> {
             event_log_offset: self.event_log_offset,
             observable_events: &self.observable_events,
             ordering_facts: &self.ordering_facts,
+            console_folds: &self.console_folds,
         }
     }
 
@@ -1245,6 +1254,10 @@ where
 
     fn observable_events(&self) -> &crate::History<ObservableEvent> {
         &self.observable_events
+    }
+
+    fn console_match_reported(&self, node: &NodeId, pattern: &str) -> Option<bool> {
+        self.console_folds.reported(node, pattern, self.point.at())
     }
 
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {

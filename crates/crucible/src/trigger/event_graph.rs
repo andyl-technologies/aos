@@ -1707,7 +1707,7 @@ pub(super) fn validate_condition_regex(
     event: &Event,
     regex: &RegexProgram,
 ) -> Result<(), EventGraphError> {
-    regex::bytes::Regex::new(&regex.pattern)
+    crate::ConsoleAutomaton::compile(&regex.pattern)
         .map(|_| ())
         .map_err(|source| EventGraphError::InvalidRegex {
             event: event.id.clone(),

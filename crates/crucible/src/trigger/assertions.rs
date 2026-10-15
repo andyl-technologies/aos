@@ -766,11 +766,13 @@ impl OfflineAssertionChecker {
         }
         let event_log = recorded_log.entries();
         let terminal_prefix_len = event_log.len();
-        let terminal_prefix = condition_prefix_from_recorded_log(
+        let console_patterns = property_console_patterns(properties);
+        let mut terminal_prefix = condition_prefix_from_recorded_log(
             recorded_log,
             terminal_prefix_len,
             require_recorded_offsets,
         )?;
+        declare_console_patterns(&mut terminal_prefix, &console_patterns)?;
 
         // With no host or declared guest states, only new enabled markers can
         // change intermediate outcomes. Reapplying retained marker payloads is
@@ -786,6 +788,7 @@ impl OfflineAssertionChecker {
         let mut pending_enabled_marker = false;
         let mut latest_entry_ticks = 0;
         let mut prefixes = RecordedPrefixCursor::new(recorded_log);
+        declare_console_patterns(prefixes.prefix_mut(), &console_patterns)?;
 
         for index in 0..event_log.len() {
             let prefix_len = index + 1;
@@ -834,6 +837,21 @@ impl OfflineAssertionChecker {
 
         Ok(evaluator.finalize_prefix_at_end(&terminal_prefix, oracle, self.prefix_end))
     }
+}
+
+/// Declares every property console pattern on an offline prefix.
+fn declare_console_patterns(
+    prefix: &mut ConditionEventLogPrefix,
+    patterns: &std::collections::BTreeSet<(NodeId, String)>,
+) -> Result<(), OfflineAssertionCheckError> {
+    for (node, pattern) in patterns {
+        prefix
+            .declare_console_pattern(node, pattern)
+            .map_err(|error| OfflineAssertionCheckError::InvalidConsolePattern {
+                reason: error.to_string(),
+            })?;
+    }
+    Ok(())
 }
 
 /// Proves that intermediate prefixes are visible or deferred by the original atomic rule.
@@ -1096,6 +1114,11 @@ pub enum OfflineAssertionCheckError {
         /// Events appended by the segment.
         appended_events: u64,
     },
+    /// A property console pattern cannot become a streaming automaton.
+    InvalidConsolePattern {
+        /// Pattern compiler diagnostic.
+        reason: String,
+    },
 }
 
 impl fmt::Display for OfflineAssertionCheckError {
@@ -1135,6 +1158,9 @@ impl fmt::Display for OfflineAssertionCheckError {
                 formatter,
                 "offline assertion log event count overflow: events={events} appended_events={appended_events}"
             ),
+            Self::InvalidConsolePattern { reason } => {
+                write!(formatter, "offline assertion console pattern: {reason}")
+            }
         }
     }
 }
@@ -1148,7 +1174,8 @@ impl Error for OfflineAssertionCheckError {
             | Self::PrefixLengthOverflow { .. }
             | Self::EventLogSegmentLengthOverflow { .. }
             | Self::EventLogByteOffsetOverflow { .. }
-            | Self::EventLogEventCountOverflow { .. } => None,
+            | Self::EventLogEventCountOverflow { .. }
+            | Self::InvalidConsolePattern { .. } => None,
         }
     }
 }

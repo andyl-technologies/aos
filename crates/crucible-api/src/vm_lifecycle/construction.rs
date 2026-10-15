@@ -1147,6 +1147,14 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .lower_to_event_graph_for_world(source.world())
         .map_err(|error| loop_factory_error(format!("lower scenario trigger plan: {error}")))?
         .into_event_graph();
+    let console_patterns = crucible::scenario_console_patterns(source.properties(), &trigger_graph);
+    scheduler
+        .declare_console_patterns(
+            console_patterns
+                .iter()
+                .map(|(node, pattern)| (node, pattern.as_str())),
+        )
+        .map_err(|error| loop_factory_error(error.to_string()))?;
     let signal_plan = source.plan().fault_signals().clone();
     let fault_search_overrides =
         production_fault_search_overrides(config.signal_fault_replay.as_ref())?;

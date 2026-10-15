@@ -3,7 +3,12 @@
 use super::*;
 
 mod append;
+mod console_folds;
 mod host_oracle;
+
+pub(crate) use console_folds::ConsoleMatchFolds;
+pub(crate) use console_folds::property_console_patterns;
+pub use console_folds::scenario_console_patterns;
 
 pub(crate) use host_oracle::SearchScheduleNamedPredicateHostOracle;
 #[cfg(any(debug_assertions, feature = "test-support"))]
@@ -955,6 +960,15 @@ pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
         BTreeMap::new()
     }
 
+    /// Reports a declared console matcher's verdict at the evaluation point.
+    ///
+    /// Returns `None` when the pattern was not declared, in which case the
+    /// shared evaluator folds the visible console bytes itself.
+    fn console_match_reported(&self, node: &NodeId, pattern: &str) -> Option<bool> {
+        let _ = (node, pattern);
+        None
+    }
+
     /// Returns observable event-log entries visible at the evaluation point.
     fn observable_events(&self) -> &crate::History<ObservableEvent> {
         static NONE: std::sync::LazyLock<crate::History<ObservableEvent>> =
@@ -1135,6 +1149,7 @@ pub struct ConditionEventLogPrefix {
     pub(super) event_firings: BTreeMap<EventId, VirtualTime>,
     pub(super) timer_fires: BTreeMap<TimerId, VirtualTime>,
     pub(super) ordering_facts: crate::History<ObservedOrderingFact>,
+    pub(super) console_folds: ConsoleMatchFolds,
 }
 
 impl ConditionEventLogPrefix {
@@ -1153,6 +1168,7 @@ impl ConditionEventLogPrefix {
             event_firings: BTreeMap::new(),
             timer_fires: BTreeMap::new(),
             ordering_facts: crate::History::new(),
+            console_folds: ConsoleMatchFolds::default(),
         }
     }
 
@@ -1303,6 +1319,7 @@ impl ConditionEventLogPrefix {
                 let prefix_events = self.base_sequence.checked_add(prefix_len)?;
                 prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_events)?);
             }
+            prefix.console_folds = self.console_folds.refold(std::iter::empty());
             return Some(
                 prefix
                     .with_base_sequence(self.base_sequence)
@@ -1313,6 +1330,7 @@ impl ConditionEventLogPrefix {
         let prefix_events = self.base_sequence.checked_add(prefix_len)?;
         let mut prefix =
             Self::from_scheduler_event_log_entries_with_base(entries, self.base_sequence).ok()?;
+        prefix.console_folds = self.console_folds.refold(prefix.observable_events.iter());
         if !self.prefix_offsets.is_empty() {
             prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_events)?);
         }
@@ -1361,7 +1379,26 @@ impl ConditionEventLogPrefix {
             event_log_offset: self.event_log_offset,
             observable_events: &self.observable_events,
             ordering_facts: &self.ordering_facts,
+            console_folds: &self.console_folds,
         }
+    }
+
+    /// Declares one console pattern so `console_match` folds it as bytes arrive.
+    ///
+    /// Console bytes already in the prefix are folded immediately. Declaring
+    /// the same node and pattern again is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConsolePatternError`] when the pattern cannot become a
+    /// streaming automaton.
+    pub fn declare_console_pattern(
+        &mut self,
+        node: &NodeId,
+        pattern: &str,
+    ) -> Result<(), crate::ConsolePatternError> {
+        self.console_folds
+            .declare(node, pattern, self.observable_events.iter())
     }
 }
 
@@ -1377,6 +1414,7 @@ pub struct ObservedState<'log> {
     pub(super) event_log_offset: EventLogOffset,
     pub(super) observable_events: &'log crate::History<ObservableEvent>,
     pub(super) ordering_facts: &'log crate::History<ObservedOrderingFact>,
+    pub(super) console_folds: &'log ConsoleMatchFolds,
 }
 
 impl<'log> ObservedState<'log> {
@@ -1408,6 +1446,11 @@ impl<'log> ObservedState<'log> {
     #[must_use]
     pub fn ordering_facts(self) -> &'log crate::History<ObservedOrderingFact> {
         self.ordering_facts
+    }
+
+    /// Reports whether a declared console matcher saw a match end at this point.
+    pub(crate) fn console_match_reported(self, node: &NodeId, pattern: &str) -> Option<bool> {
+        self.console_folds.reported(node, pattern, self.at())
     }
 }
 

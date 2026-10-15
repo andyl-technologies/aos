@@ -160,14 +160,14 @@ complete summary of everything the pattern can still depend on, so evaluation
 needs no stored console history and no lookback window.
 
 **Semantics.** `console_match(node, pattern)` is true at an evaluation point
-exactly when, while consuming the console bytes the node appended at that
-point, the automaton determines that some match of `pattern` ends at a byte
-offset within the node's console stream that it could not decide earlier.
-Every match end counts, including overlapping matches, and a match may begin
-arbitrarily far back in the stream. The result depends only on the byte
-stream, not on how its bytes are divided among evaluation points. `^` and
-`\A` denote the start of the node's console stream; `(?m:^)` and `(?m:$)`
-denote line boundaries and are decided when the following byte arrives.
+exactly when some match of `pattern` ends at a byte the node appended at that
+point. Every match end counts, including overlapping matches, and a match may
+begin arbitrarily far back in the stream. Whether a match ends at a byte
+depends only on the stream up to that byte, so the result does not depend on
+how bytes are divided among evaluation points. `^` and `\A` denote the start
+of the node's console stream and `(?m:^)` the start of a line. A whole-line
+match is written with its terminator, for example `(?m:^)READY\r?\n`, and
+holds when the line's newline arrives.
 
 Leftmost-first semantics are not used: whether a leftmost-first match has
 ended can depend on bytes that have not arrived yet, so it cannot be decided
@@ -179,10 +179,11 @@ unanchored byte automaton.
 - **[CMEAS-18]** Scenario validation MUST compile each console pattern into a
   deterministic byte automaton and MUST reject a pattern whose automaton
   exceeds 1 MiB, whose determinization exceeds the fixed construction bound,
-  or that uses a construct a byte automaton cannot decide causally: a
-  non-multiline end anchor (`$`, `\z`) or a Unicode word boundary. The
-  scenario's console automata MUST NOT exceed 16 MiB in total. Evaluation MUST
-  NOT recompile a pattern or rescan earlier console bytes.
+  that matches the empty string or nothing, or that uses a construct decided
+  by bytes after the match ends: an end anchor (`$`, `(?m:$)`, `\z`), a
+  CRLF-aware line anchor, or a word boundary. The scenario's console automata
+  MUST NOT exceed 16 MiB in total. Evaluation MUST NOT recompile a pattern or
+  rescan earlier console bytes.
 - **[CMEAS-19]** The console matcher state MUST be one automaton state per
   declared `(node, pattern)`, checkpointed as the automaton's content hash and
   state index. Restore MUST rebuild the automaton from the pattern, MUST verify

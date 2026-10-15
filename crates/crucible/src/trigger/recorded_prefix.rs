@@ -33,6 +33,11 @@ impl<'log> RecordedPrefixCursor<'log> {
         }
     }
 
+    /// Borrows the cursor's prefix so callers can declare matcher state.
+    pub(super) fn prefix_mut(&mut self) -> &mut ConditionEventLogPrefix {
+        &mut self.prefix
+    }
+
     /// Returns the checked prefix holding the first `prefix_len` entries.
     ///
     /// Requests must strictly increase across successful calls.

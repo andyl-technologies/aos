@@ -2517,6 +2517,8 @@ dependencies = [
  "crucible-shmem",
  "crucible-sim",
  "regex",
+ "regex-automata",
+ "regex-syntax",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

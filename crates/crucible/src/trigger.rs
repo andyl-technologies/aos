@@ -41,6 +41,7 @@ pub type Condition = Predicate;
 
 mod assertions;
 mod conditions;
+mod console_automaton;
 #[cfg(test)]
 mod continuing_prefix_tests;
 mod deadlines;
@@ -60,6 +61,10 @@ mod recorded_prefix_tests;
 pub use assertions::*;
 pub(crate) use conditions::guest_assertion_marker_from_whitebox_body;
 pub use conditions::*;
+pub use console_automaton::{
+    ConsoleAdvance, ConsoleAutomaton, ConsoleAutomatonState, ConsolePatternError,
+    MAX_CONSOLE_AUTOMATON_BYTES,
+};
 pub use evaluation::*;
 pub use event_graph::*;
 use evidence::*;

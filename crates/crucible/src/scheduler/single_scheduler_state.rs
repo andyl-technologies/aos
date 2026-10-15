@@ -939,6 +939,30 @@ impl SingleScheduler {
         self.event_log.condition_prefix()
     }
 
+    /// Declares console patterns so `console_match` folds bytes as they arrive.
+    ///
+    /// Console bytes already retained are folded immediately, so a restored
+    /// scheduler may declare its patterns after restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when a pattern cannot
+    /// become a streaming automaton.
+    pub fn declare_console_patterns<'pattern>(
+        &mut self,
+        patterns: impl IntoIterator<Item = (&'pattern NodeId, &'pattern str)>,
+    ) -> Result<(), SchedulerError> {
+        for (node, pattern) in patterns {
+            self.event_log
+                .condition_prefix
+                .declare_console_pattern(node, pattern)
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("declare console pattern: {error}"),
+                })?;
+        }
+        Ok(())
+    }
+
     /// Returns the scheduler-owned trigger action state.
     #[must_use]
     pub fn trigger_actions(&self) -> &TriggerActionState {

@@ -1073,13 +1073,13 @@ fn happy_path_properties(world: &World) -> Result<Properties, EngineError> {
                 property: Property::Eventually {
                     trigger: Predicate::once(Predicate::console_match(
                         node("client"),
-                        RegexProgram::from_pattern("(^|\\n)CLIENT_STARTED(\\r?\\n|$)"),
+                        RegexProgram::from_pattern("(?m:^)CLIENT_STARTED\\r?\\n"),
                     )),
                     property: Predicate::all_of(vec![
                         Predicate::console_match(
                             node("client"),
                             RegexProgram::from_pattern(
-                                "(^|\\n)CLIENT_RESULT requests=100 successful=100 failed=0(\\r?\\n|$)",
+                                "(?m:^)CLIENT_RESULT requests=100 successful=100 failed=0\\r?\\n",
                             ),
                         ),
                         Predicate::node_state(node("client"), NodeLifecycle::Exited),

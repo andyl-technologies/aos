@@ -1,7 +1,7 @@
 schema = "crucible.scenario.v9"
 
 [scenario]
-id = "blake3:8d1aa4263532d8bfb1b51d80f854fd2a4bd98b40e5ea81efa2f763c1d016d944"
+id = "blake3:9d4ff74743f03180624e53245c7727491bffb59beffb7e55925555c256fe718b"
 seed = "0x2a00000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = 10
 selectable_declarations_per_node = 4096
@@ -166,7 +166,7 @@ kind = "quiescent"
 kind = "pass"
 
 [properties]
-id = "blake3:7982a620d7e9488ab7c32f426a00909b6db549ea169e5e2e802e14eb89cc2ab7"
+id = "blake3:fc7e2e3da353da9d810d420a969ba8619a0e1286db7ca37afc5e3fca2a112d2f"
 
 [[properties.assertion]]
 id = "all-requests-succeed"
@@ -182,7 +182,7 @@ kind = "once"
 [properties.assertion.property.trigger.predicate]
 kind = "console_match"
 node = "client"
-regex = '(^|\n)CLIENT_STARTED(\r?\n|$)'
+regex = '(?m:^)CLIENT_STARTED\r?\n'
 
 [properties.assertion.property.property]
 kind = "all_of"
@@ -190,7 +190,7 @@ kind = "all_of"
 [[properties.assertion.property.property.predicates]]
 kind = "console_match"
 node = "client"
-regex = '(^|\n)CLIENT_RESULT requests=100 successful=100 failed=0(\r?\n|$)'
+regex = '(?m:^)CLIENT_RESULT requests=100 successful=100 failed=0\r?\n'
 
 [[properties.assertion.property.property.predicates]]
 kind = "node_state"
