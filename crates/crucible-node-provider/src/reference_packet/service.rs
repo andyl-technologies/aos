@@ -318,3 +318,21 @@ pub use native_snapshot::{native_owned11_snapshot_contract, native_owned11_snaps
 pub(crate) use owned11::NativeRestoreServiceAllocationQuote;
 
 pub mod complete_restore;
+
+// The transport control uses the actual selected immutable policy constructor,
+// without widening its production visibility or mutating private selectors.
+#[cfg(test)]
+pub(crate) fn prepared_blob_proof_codec_for_test(
+    selection: crate::reference_packet::control::PacketControlSelection,
+    coordinator: crate::reference_service::InstalledContent,
+) -> Result<std::rc::Rc<Native5Policy>, crate::ProviderError> {
+    let policy = Native5Policy::from_original_launch_with_ack_emitter_metadata_extent(
+        selection,
+        coordinator,
+        PacketNative5CaptureProfile::OriginalArrays6,
+        PacketNative5ConfirmationSelection::AfterProtocolPoll5,
+        PacketNative5AckEmitterSelection::CanonicalSdkBlob5,
+        crate::connection::CanonicalAckCodecMetadataExtent::CanonicalAck512KiB,
+    )?;
+    Ok(std::rc::Rc::new(policy))
+}

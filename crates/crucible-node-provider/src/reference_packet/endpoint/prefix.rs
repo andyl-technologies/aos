@@ -75,6 +75,80 @@ pub(super) fn prepare<S: ProviderStream>(
     request: &Envelope,
     reply: &PacketControlReply,
 ) -> Result<(), ProviderError> {
+    prepare_inner(
+        transport,
+        next_sequence,
+        retained_credit,
+        PrefixInput {
+            authority,
+            request,
+            reply,
+            storage: None,
+        },
+    )
+}
+
+/// Uses the checked native producer's prospective storage data before building.
+///
+/// The caller conjoins the data with its real simultaneous allocation allowance
+/// first. This function reconciles actual initialized capacities; it grants no
+/// allowance and retains the old transport and raw-frame limits.
+pub(super) fn prepare_with_storage_data<S: ProviderStream>(
+    transport: &mut Option<Transport<S>>,
+    next_sequence: &mut u64,
+    retained_credit: &mut usize,
+    authority: &ConnectionAuthority,
+    request: &Envelope,
+    reply: &PacketControlReply,
+    storage: &OriginalPacketPrefixStorageData,
+) -> Result<(), ProviderError> {
+    prepare_inner(
+        transport,
+        next_sequence,
+        retained_credit,
+        PrefixInput {
+            authority,
+            request,
+            reply,
+            storage: Some(storage),
+        },
+    )
+}
+
+struct PrefixInput<'a> {
+    authority: &'a ConnectionAuthority,
+    request: &'a Envelope,
+    reply: &'a PacketControlReply,
+    storage: Option<&'a OriginalPacketPrefixStorageData>,
+}
+
+fn prepare_inner<S: ProviderStream>(
+    transport: &mut Option<Transport<S>>,
+    next_sequence: &mut u64,
+    retained_credit: &mut usize,
+    input: PrefixInput<'_>,
+) -> Result<(), ProviderError> {
+    let PrefixInput {
+        authority,
+        request,
+        reply,
+        storage,
+    } = input;
+    if let Some(storage) = storage {
+        let Some(Transport::Connected(connection)) = transport.as_ref() else {
+            return Err(ProviderError::Conflict(
+                "packet prefix original unavailable before storage recheck",
+            ));
+        };
+        connection.authenticate_requoted_original_packet_prefix_storage_data(
+            *next_sequence,
+            request,
+            &reply.body,
+            &reply.evidence,
+            storage,
+        )?;
+        storage.preflight_transport_credit_data(*retained_credit)?;
+    }
     let (frames, acknowledgements, next) = frames(*next_sequence, authority, request, reply)?;
     // Retain complete outgoing envelopes/canonical/correlation copies plus the
     // worst negotiated incoming acknowledgement extents for this whole prefix.
@@ -117,12 +191,20 @@ pub(super) fn prepare<S: ProviderStream>(
         acknowledgements,
     ));
     *retained_credit = charge;
-    let Some(Transport::Prepared(exchange, _)) = transport.as_mut() else {
+    let Some(Transport::Prepared(exchange, acknowledgements)) = transport.as_mut() else {
         return Err(ProviderError::Conflict(
             "packet original preparation disappeared",
         ));
     };
+    if let Some(storage) = storage {
+        storage.reconcile_acknowledgement_index_data(&acknowledgements.contents)?;
+        exchange.reconcile_original_packet_prefix_storage_data(storage)?;
+    }
     exchange.prepare_in_place()?;
+    if let Some(storage) = storage {
+        storage.reconcile_acknowledgement_index_data(&acknowledgements.contents)?;
+        exchange.reconcile_original_packet_prefix_storage_data(storage)?;
+    }
     *next_sequence = next;
     Ok(())
 }

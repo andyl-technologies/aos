@@ -850,3 +850,6 @@ impl OriginalRestoreProofRegistration {
         observer.observe(activated)
     }
 }
+
+#[path = "session/prepared_blob_proof.rs"]
+mod prepared_blob_proof;

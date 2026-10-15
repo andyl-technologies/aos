@@ -46,7 +46,7 @@ mod confirmation;
 mod native5_birth;
 pub use native5_birth::{Native5ConnectionBirth, Native5ConnectionBirthRefusal};
 mod exchange;
-pub(crate) use exchange::PreparedOriginalRestoreHeldProof;
+pub(crate) use exchange::{OriginalPacketPrefixStorageData, PreparedOriginalRestoreHeldProof};
 mod native5_codec;
 pub use native5_codec::CanonicalAckCodecMetadataExtent;
 pub(crate) use native5_codec::{Native5CodecOwner, ProtocolCodecView};

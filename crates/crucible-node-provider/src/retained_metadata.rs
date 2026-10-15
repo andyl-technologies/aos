@@ -795,3 +795,6 @@ pub use common_data::RetainedCommonProtocolData;
 
 mod capture_data;
 pub use capture_data::RetainedCaptureProtocolData;
+
+#[path = "retained_metadata/serialization_storage.rs"]
+pub(crate) mod serialization_storage;

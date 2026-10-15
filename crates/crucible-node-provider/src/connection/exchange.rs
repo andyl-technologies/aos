@@ -13,6 +13,13 @@ mod snapshot;
 mod restore_proof;
 pub(crate) use restore_proof::PreparedOriginalRestoreHeldProof;
 
+#[path = "exchange_proof_receive.rs"]
+mod proof_receive;
+
+#[path = "exchange_storage.rs"]
+mod storage;
+pub(crate) use storage::OriginalPacketPrefixStorageData;
+
 const MAXIMUM_EXCHANGE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Retains complete planned frames and actual acknowledgement progress.
@@ -561,6 +568,11 @@ fn publish_with_ack_scope<S: ProviderStream>(
         } else if original.message == MessageKind::Request {
             let received = if canonical_ack_scope {
                 connection.receive_original_canonical_blob_ack()?
+            } else if connection.role == EndpointRole::Provider
+                && connection.native5_codec.is_some()
+                && matches!(original.method, Method::BlobBegin | Method::BlobChunk | Method::BlobFinish)
+            {
+                connection.receive_original_prepared_blob_proof(record, index)?
             } else {
                 connection.receive()?
             };
