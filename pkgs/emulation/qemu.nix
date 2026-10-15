@@ -1691,7 +1691,7 @@ in
                 (
                   cd build
                   ./pyvenv/bin/meson test --no-rebuild --verbose \
-                    test-crucible-process-purpose
+                    test-crucible-process-purpose test-qmp-cmds
                 )
               ''}
 
