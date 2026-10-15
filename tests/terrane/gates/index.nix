@@ -197,12 +197,6 @@
     "ref_advance::active_completion_tests::native_active_completion_direct_history_refuses_missing_required_auxiliary"
   ];
 
-  # Registered growing-population witnesses must qualify before this blocker
-  # can be removed; an inventory entry alone does not establish DRV-29.
-  qualificationBlockers = [
-    "DRV-29: native growing-population batched edits and independently bounded canonical resynchronization"
-  ];
-
   groups = [
     {
       name = "core";
@@ -263,11 +257,6 @@ in {
     cd crates
     ${builtins.concatStringsSep "\n" (map runGroup groups)}
 
-    # Existing prerequisites must execute, but cannot certify missing witnesses.
-    ${lib.optionalString (qualificationBlockers != []) ''
-      printf '%s\n' ${builtins.concatStringsSep " " (map lib.escapeShellArg qualificationBlockers)} >&2
-      exit 1
-    ''}
     printf 'PASS: exact core, native std and checked native index contracts\n' > "$out/result"
   '';
 }

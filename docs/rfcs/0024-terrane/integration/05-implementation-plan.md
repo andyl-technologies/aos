@@ -130,25 +130,38 @@ lifetimes, permanent recovery, growing-index source acquisition, SDK completion
 and derived-record verification. Separate workers now isolate retirement-barrier
 directory cohorts, indexed overlay replay and index admission/publication.
 Workers retain disjoint file ownership and separate worktrees. Independent
-review remains separate. One coordinated compiler serves build and Nix requests.
+review remains separate. One qualification owner schedules isolated compiler
+and Nix requests.
 T2 and branch worklines remain deferred.
 
 The latest preparatory trunk checkpoint, `b0e33f9e16`, stages the reviewed
 Rust corrections from qualification candidate `98906289`. Their entire `crates/`
-Git subtree is identical (`64316085ab1e`); the only remaining whole-tree
-difference is this progress document. The qualification checkout and all six
-original/archive SDK executables remain unchanged. This is source staging,
-not a formal task merge or acceptance.
+Git subtree is identical (`64316085ab1e`). At that checkpoint the only
+whole-tree difference was this progress document; the later gate change is
+recorded below. The qualification checkout and all six original/archive SDK
+executables remain unchanged. This is source staging, not a formal task merge
+or acceptance.
 
-At this checkpoint the unfiltered SDK run selects all 1,147 tests across three
-executables and has 391 passes, with no failures or timeouts observed. Its
+The actual `terrane.integration.native-index-populations` Nix prerequisite
+passes with exit code zero on `98906289`. Independent review verifies its
+output, six individual case logs, unique inventory entries, derivation and
+source-bound native image. Ordinary/adversarial populations of 1,024, 2,048
+and 4,096 entries pass in 403.54/375.52, 721.74/722.19 and
+1,456.38/1,368.62 seconds respectively, all under the original 1,800-second
+bound. All 3,290 native-image compiler inputs match the frozen candidate;
+the six original/archive SDK executables remain unchanged. This removes the
+explicit DRV-29 prerequisite blocker. The owning index gate retains every
+selector and must execute them again on its final source-bound image.
+
+The unfiltered SDK run still selects all 1,147 tests across three executables;
+469 pass at this checkpoint, with no failures or timeouts observed. Its
 collector recovery stress case passes in 770.897 seconds under the original
-900-second bound. The ordinary and adversarial 1,024- and 2,048-entry Nix
-population cases pass under their original 1,800-second bounds; both
-4,096-entry cases remain pending. Both source-bound invocations continue.
-DRV-29's blocker, task checkboxes and T1's status remain unchanged. Actual
-owning gates, the complete proposed trunk floor, native profile quality and
-application test-target compilation remain required before acceptance.
+900-second bound. A fresh capacity check supports two isolated Nix jobs with
+eight build cores each alongside this immutable SDK run. The complete current
+gate aggregate, strict native profile quality and application test-target
+compilation use ordinary release derivations without shared Cargo targets.
+Their final-source results and the complete SDK result remain pending. No
+task checkbox, formal task merge or T1 status advances from the prerequisite.
 
 The earlier qualification uses frozen head `d1071dc9e1a2` (tree `04b7bc9ff9a1`).
 The exact formatter pair, strict SDK all-target Clippy, SDK all-target
