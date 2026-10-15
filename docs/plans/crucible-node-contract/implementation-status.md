@@ -5020,11 +5020,13 @@ have no dependency on the pending Core changes. Commit `15a7be2dec` applies the
 sole formatting hunk separately. Review identity: `e39e1b2b`.
 
 The ordinary production compiler build and installed compiler verification pass.
-The separate application-target gate compiles 167 test targets across all 48
-selected application packages, including 69 integration targets. This verifies
-the captured source, including its new untracked Rust modules; it does not run
-the application tests. Later source changes require renewed current-source
-qualification. Application handoff identity: `c675ad34`.
+The renewed application-target gate compiles 167 test targets across all 48
+selected application packages, including 69 integration targets. Every selected
+test target is freshly compiled. Verification joins the actual registered output,
+compiler messages and captured source, including new Rust modules. This gate
+compiles tests without executing them; daemon behavior is checked separately.
+Application handoff identity: `0635f271`. The earlier capture and its passing
+result, `c675ad34`, remain separate; later source changes require renewed checks.
 
 The fresh ordinary QEMU package and matching corresponding-source build pass.
 All 3,792 compile/link steps, 589 upstream TAP checks, 44 project model/cost
@@ -5046,15 +5048,25 @@ horizon from an empty event queue. No boot, capture, restoration or readiness
 success follows from the asset checks. Asset/data review identity: `937ddc1a`;
 failed boot handoff: `56797136`.
 
-Fresh Core and daemon executables compile, but their focused controls report
-54 passes/one failure and fourteen passes/three failures respectively. Static
-inspection identifies the same original-waker representation mismatch in both
-executables. A reviewed production correction awaits regression testing;
-the failed results remain failed. All three separately run canonical-ACK
-integration controls pass. Their original compilation succeeded, while its
-postcollector failed on an incorrect source-module count. Corrected dependency
-validation qualifies the same executable without recompilation or changing that
-outer failure. Independent adoption review identity: `077c63f3`.
+Earlier Core and daemon cohorts reported 54 passes/one failure and fourteen
+passes/three failures. Both failed cohorts exposed a concrete Waker identity
+mismatch: reconstructing a Waker through a different conversion could change
+its vtable identity. The correction retains and clones the same original Waker.
+New ordinary repository-profile executables pass 62 Core, eighteen daemon and three
+canonical-ACK integration controls, with zero failures or ignored cases. The
+original failed cohorts remain failed. These controls also exercise runtime-bound
+storage budgets and the collecting-restoration phase guards; they do not establish
+complete native capture or successful fresh restoration.
+
+Collecting restoration now tracks source-to-target binding with distinct
+Unbound, Binding, Bound and Failed phases. A failed or repeated bind cannot fall
+back to ordinary restoration. Runtime storage budgets observe actual retained
+owners, bind the original runtime identity and recheck
+it after callbacks; unknown erased owners refuse. The next integration stage
+must connect report allocation and complete fresh restoration to their installed
+controller and resource policy. Component tests do not grant those permissions.
+Actual-source and formatting review identity: `76cb14c7`; application review:
+`67d85abd`.
 
 ## Performance evidence
 
