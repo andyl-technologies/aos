@@ -7,7 +7,12 @@ use crate::repository::PublishedOverlayLayer;
 /// Reports test progress only under the existing index diagnostic opt-in.
 fn indexed_replay_stage(stage: &'static str) {
     if std::env::var_os("TERRANE_INDEX_REBUILD_TRACE").is_some() {
-        eprintln!("indexed-overlay-replay stage={stage}");
+        static STARTED: std::sync::OnceLock<crate::diagnostic_clock::Tick> =
+            std::sync::OnceLock::new();
+
+        let started = STARTED.get_or_init(crate::diagnostic_clock::tick);
+        let elapsed = crate::diagnostic_clock::elapsed(*started).as_secs_f64();
+        eprintln!("indexed-overlay-replay stage={stage} elapsed_seconds={elapsed:.3}");
     }
 }
 
@@ -136,11 +141,18 @@ async fn publish_overlay(
     (published, output, baseline)
 }
 
-/// Captures selections from a completed signed output history, including layers.
+/// Captures ordinary configuration from fresh addressed Commit data, including layers.
+///
+/// These rows retain the source Guard's actual selections without constructing
+/// authenticated history, Original evidence or operation permission. Publication,
+/// collection and reopened output verification remain independent real checks.
+///
+/// # Panics
+/// Panics on unavailable or invalid canonical data, a different chunk profile,
+/// or missing or contradictory source-selected interpretation inputs.
 async fn selections(repository: &RepositoryWithIndexes, output: Digest) -> Vec<ViewSelection> {
     let guard = repository.coordinator().guard();
-    indexed_replay_stage("selections.history-verification");
-    let history = guard.verified_history(output).await.assert_success();
+    indexed_replay_stage("selections.commit-data-capture");
     let mut pending = vec![output];
     let mut visited = BTreeSet::new();
     let mut selections = Vec::new();
@@ -148,7 +160,16 @@ async fn selections(repository: &RepositoryWithIndexes, output: Digest) -> Vec<V
         if !visited.insert(identity) {
             continue;
         }
-        let commit = history.commit(&identity).assert_success().commit();
+        let address = TERRANE_V1
+            .from_digest(IdentityKind::Commit, &identity)
+            .assert_success();
+        let bytes = guard.store().get(&address, None).await.assert_success();
+        TERRANE_V1.verify(&address, &bytes).assert_success();
+        let commit = terrane_core::refs::Commit::decode(&bytes).assert_success();
+        assert_eq!(
+            commit.profile_pair.chunk_profile,
+            guard.config().chunk_profile_name
+        );
         let (selection, inputs) = guard
             .selected_view_context_for_tests(identity, commit.tree)
             .assert_success();
@@ -236,9 +257,13 @@ async fn orphan(
 
 #[tokio::test]
 async fn signed_overlay_layer_ancestry_survives_collection_and_reopen() {
+    indexed_replay_stage("ancestry.fixture-setup");
     let fixture = Fixture::new_indexed().await;
+    indexed_replay_stage("ancestry.repository-setup");
     let repository = production_repository(&fixture).await;
+    indexed_replay_stage("ancestry.overlay-publication");
     let (layer, output, baseline) = publish_overlay(&fixture, &repository).await;
+    indexed_replay_stage("ancestry.orphan-publication");
     let (orphan, upper) = orphan(&fixture, &repository).await;
     let aged = upper
         .checked_add(windows().grace())
@@ -246,6 +271,7 @@ async fn signed_overlay_layer_ancestry_survives_collection_and_reopen() {
         .checked_add(1)
         .assert_success();
     fixture.clock.set(aged, 100);
+    indexed_replay_stage("ancestry.collection-start");
     let mut collection = Collection::start(
         repository.coordinator().guard(),
         &fixture.authority,
@@ -257,9 +283,11 @@ async fn signed_overlay_layer_ancestry_survives_collection_and_reopen() {
     .await
     .assert_success();
 
+    indexed_replay_stage("ancestry.mark-batch");
     collection.mark_batch(512).await.assert_success();
 
     assert!(collection.state().pending.is_empty());
+    indexed_replay_stage("ancestry.selected-state");
     let selected = fixture.selected_state(1).await;
     assert_eq!(collection.state(), &selected);
     let mut marked = BTreeSet::new();
@@ -290,9 +318,12 @@ async fn signed_overlay_layer_ancestry_survives_collection_and_reopen() {
     }
     let lease = collection.lease().clone();
     drop(collection);
+    indexed_replay_stage("ancestry.selection-capture");
     let captured = selections(&repository, output.commit).await;
     drop(repository);
+    indexed_replay_stage("ancestry.repository-reopen");
     let reopened = production_repository_with_selections(&fixture, captured).await;
+    indexed_replay_stage("ancestry.collection-resume");
     let mut resumed = Collection::resume(
         reopened.coordinator().guard(),
         &fixture.authority,
@@ -304,15 +335,18 @@ async fn signed_overlay_layer_ancestry_survives_collection_and_reopen() {
     .await
     .assert_success();
     assert_eq!(resumed.state(), &selected);
+    indexed_replay_stage("ancestry.finish-mark");
     resumed.finish_mark().await.assert_success();
     assert_eq!(resumed.state().phase, terrane_core::gc::Phase::Sweep);
     assert_eq!(resumed.state().checkpoints, selected.checkpoints);
 
+    indexed_replay_stage("ancestry.inventory-acquire");
     let inventory = {
         let holder = SingleHeld::acquire(reopened.coordinator().store())
             .await
             .assert_success();
         let held = holder.destination();
+        indexed_replay_stage("ancestry.inventory-observation");
         let observed = held.observe_publication_unrepaired().await.assert_success();
         let capabilities = terrane_core::bucket::BucketCapabilities::decode(
             observed.logical()["CAPABILITIES"]
@@ -344,6 +378,7 @@ async fn signed_overlay_layer_ancestry_survives_collection_and_reopen() {
     // retained. Eligible packs have no ordering guarantee relative to the orphan.
     let mut retired_packs = BTreeSet::new();
     let mut orphan_retirement = None;
+    indexed_replay_stage("ancestry.retire-packs");
     for _ in 0..inventory.len() {
         let candidate = resumed
             .retire_one(reopened.coordinator())
@@ -365,6 +400,7 @@ async fn signed_overlay_layer_ancestry_survives_collection_and_reopen() {
     }
     let retired = orphan_retirement.assert_success();
     assert_eq!(retired.pack, *orphan.as_bytes());
+    indexed_replay_stage("ancestry.delete-pack");
     fixture.clock.enable_timer();
     let done = resumed
         .delete_local_pack(
@@ -388,12 +424,14 @@ async fn signed_overlay_layer_ancestry_survives_collection_and_reopen() {
             .join(format!("trash/{}/{}", retired.cycle, orphan))
             .exists()
     );
+    indexed_replay_stage("ancestry.output-verification");
     reopened
         .coordinator()
         .guard()
         .verified_tree(output.commit)
         .await
         .assert_success();
+    indexed_replay_stage("ancestry.layer-refusal");
     assert!(
         reopened
             .coordinator()
@@ -403,15 +441,19 @@ async fn signed_overlay_layer_ancestry_survives_collection_and_reopen() {
             .is_err()
     );
     drop(resumed);
+    indexed_replay_stage("ancestry.retained-selection-capture");
     let retained = selections(&reopened, output.commit).await;
     drop(reopened);
+    indexed_replay_stage("ancestry.repository-reclaim");
     let reclaimed = production_repository_with_selections(&fixture, retained).await;
+    indexed_replay_stage("ancestry.reclaimed-output-verification");
     reclaimed
         .coordinator()
         .guard()
         .verified_tree(output.commit)
         .await
         .assert_success();
+    indexed_replay_stage("ancestry.reclaimed-layer-refusal");
     assert!(
         reclaimed
             .coordinator()
@@ -422,7 +464,9 @@ async fn signed_overlay_layer_ancestry_survives_collection_and_reopen() {
     );
     assert!(!fixture.config.root.join(orphan.pack_key()).exists());
     drop(reclaimed);
+    indexed_replay_stage("ancestry.cleanup");
     fixture.cleanup();
+    indexed_replay_stage("ancestry.complete");
 }
 
 #[tokio::test]
@@ -565,7 +609,7 @@ async fn nested_overlay_preserves_source_paths(
         },
     ];
     indexed_replay_stage("nested.output-proposal");
-    let request = proposal(fixture, &parent, None, &[]).await;
+    let request = proposal(fixture, &parent, None, &[b"nested surviving producer"]).await;
     indexed_replay_stage("nested.output-publication");
     let output = repository
         .overlay(&mut writer, &inputs, request)

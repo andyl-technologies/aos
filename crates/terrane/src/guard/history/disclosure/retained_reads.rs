@@ -28,6 +28,20 @@ pub(super) enum RetainedReadPurpose<'scope, 'history, 'held> {
         /// Retains one invocation's complete immutable DATA ledger.
         reads: &'scope dyn crate::bucket::held::CurrentNodeReads,
     },
+    /// Borrows one immutable signed layer under its actual existing holder.
+    Overlay {
+        /// Binds the exact layer and original observation without current rights.
+        purpose: &'scope crate::guard::overlay_history::OverlayPurpose<'history, 'held>,
+        /// Borrows the same invocation-local canonical DATA ledger.
+        reads: &'scope dyn crate::bucket::held::OverlayNodeReads,
+    },
+    /// Borrows one tokenless immutable invocation, independently from current refs.
+    Direct {
+        /// Binds the actual target, native selection and original observation.
+        purpose: &'scope crate::guard::direct_history::DirectPurpose<'history, 'held>,
+        /// Borrows every canonical DATA recipe consumed by this owning walk.
+        reads: &'scope dyn crate::bucket::held::DirectNodeReads,
+    },
 }
 
 /// Keeps deferred histories distinct from complete owning history evidence.
@@ -46,6 +60,12 @@ pub(super) enum HistoryCompletion<'scope, 'history, 'held> {
     /// Retains the held-purpose walk until its independent physical close.
     #[cfg(all(feature = "std", feature = "tokio", unix))]
     PendingHeld(crate::guard::held_history::PendingHeldHistory<'scope, 'history, 'held>),
+    /// Retains immutable layer completion until its own exact native close.
+    #[cfg(all(feature = "std", feature = "tokio", unix))]
+    PendingOverlay(crate::guard::overlay_history::PendingOverlayHistory<'scope, 'history, 'held>),
+    /// Retains immutable completion until its distinct native direct close succeeds.
+    #[cfg(all(feature = "std", feature = "tokio", unix))]
+    PendingDirect(crate::guard::direct_history::PendingDirectHistory<'scope, 'history, 'held>),
 }
 
 impl HistoryCompletion<'_, '_, '_> {
@@ -57,7 +77,11 @@ impl HistoryCompletion<'_, '_, '_> {
         match self {
             Self::Complete(completed, _) => Ok(completed),
             #[cfg(all(feature = "std", feature = "tokio", unix))]
-            Self::Pending(_) | Self::PendingCurrent(_) | Self::PendingHeld(_) => Err(invalid()),
+            Self::Pending(_)
+            | Self::PendingCurrent(_)
+            | Self::PendingHeld(_)
+            | Self::PendingDirect(_)
+            | Self::PendingOverlay(_) => Err(invalid()),
         }
     }
 }

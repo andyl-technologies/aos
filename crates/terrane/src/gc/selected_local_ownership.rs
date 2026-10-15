@@ -87,13 +87,21 @@ where
 {
     session.recheck()?;
     let collector = Collector::new(guard, authority);
+    #[cfg(test)]
+    ownership_stage("holder", requested);
     let holder = SingleHeld::acquire(guard.store()).await?;
     let held = holder.destination();
+    #[cfg(test)]
+    ownership_stage("initial-observation", requested);
     let observed = held.observe_publication_unrepaired().await?;
+    #[cfg(test)]
+    ownership_stage("initial-qualification", requested);
     let current = super::native_current_collection::qualify(
         guard, authority, session, &held, &observed, checkpoint, windows,
     )
     .await?;
+    #[cfg(test)]
+    ownership_stage("catalog", requested);
     let metadata = MetadataStore::new(&held, &observed, session);
     let catalog = metadata.collection_catalog().await?;
     let exclusions = catalog.exclusions()?;
@@ -122,6 +130,8 @@ where
     {
         return Err(denied().into());
     }
+    #[cfg(test)]
+    ownership_stage("triple-observation", requested);
     let triple = effects::observe(held.fs(), &current, &read, &trash, &tombstone).await?;
     if !windows.sweep_age(
         session.recheck()?,
@@ -151,6 +161,8 @@ where
         .ok_or(GcError::Exhausted)?;
     let mut lease_context = collector.held(&held, Some(&retained)).await?;
 
+    #[cfg(test)]
+    ownership_stage("deletion-wait", requested);
     loop {
         session.recheck()?;
         triple.recheck().map_err(native)?;
@@ -209,6 +221,8 @@ where
             })?;
         }
     }
+    #[cfg(test)]
+    ownership_stage("deletion-wait-complete", requested);
     session.renew_held(&mut lease_context).await?;
     triple.recheck().map_err(native)?;
     let fresh = held.observe_publication_unrepaired().await?;
@@ -217,6 +231,8 @@ where
     if logical != baseline {
         return Err(denied().into());
     }
+    #[cfg(test)]
+    ownership_stage("final-qualification", requested);
     let current = super::native_current_collection::qualify_retained(
         guard,
         authority,
@@ -227,6 +243,8 @@ where
         Some(&retained),
     )
     .await?;
+    #[cfg(test)]
+    ownership_stage("final-qualification-complete", requested);
     if !current.members_unmarked(triple.snapshot()) {
         return Err(denied().into());
     }
@@ -270,5 +288,19 @@ where
         triple,
         operation,
     };
+    #[cfg(test)]
+    ownership_stage("native-publication", requested);
     Ok(effects::publish(held.fs(), &checked).await?)
+}
+
+/// Reports phase boundaries without supplying collector time or authority.
+#[cfg(test)]
+fn ownership_stage(phase: &'static str, requested: &PackExclusion) {
+    if std::env::var_os("TERRANE_INDEX_REBUILD_TRACE").is_some() {
+        eprintln!(
+            "gc-local-ownership-stage phase={phase} pack={:?} process_at={:?}",
+            requested.pack_id,
+            crate::diagnostic_clock::tick(),
+        );
+    }
 }

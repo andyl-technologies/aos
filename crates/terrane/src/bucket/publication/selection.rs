@@ -100,6 +100,9 @@ pub(super) async fn resolve<
     bucket: &FileBucket<F, C, V>,
     control: &Control,
 ) -> Result<Selected, StoreFailure> {
+    #[cfg(all(test, feature = "std", feature = "tokio"))]
+    let mut diagnostic =
+        crate::diagnostic_clock::span(crate::diagnostic_clock::Group::PublicationSelection);
     let reads = ChainReads::ordinary(control, &bucket.inner.fs);
     let bytes = reads
         .read("backend-registration.cbor")
@@ -109,7 +112,10 @@ pub(super) async fn resolve<
     if registration.binding != control.binding || registration.activation != Activation::Active {
         return Err(corrupt());
     }
-    resolve_with_reads(bucket, control, registration.genesis, reads).await
+    let result = resolve_with_reads(bucket, control, registration.genesis, reads).await;
+    #[cfg(all(test, feature = "std", feature = "tokio"))]
+    diagnostic.finish_result(&result);
+    result
 }
 
 /// Resolves exact selected bytes while borrowing an actual retained exclusion.
@@ -192,6 +198,9 @@ where
     C: Clock + BucketBinding,
     V: ContentValidator + BucketBinding,
 {
+    #[cfg(all(test, feature = "std", feature = "tokio"))]
+    let mut diagnostic =
+        crate::diagnostic_clock::span(crate::diagnostic_clock::Group::PublicationSelection);
     let mut reads = ChainReads::held(control.held_reads(&bucket.inner.fs, held).await?);
     reads.memo = Some(memo);
     let bytes = reads
@@ -202,7 +211,10 @@ where
     if registration.binding != control.binding || registration.activation != Activation::Active {
         return Err(corrupt());
     }
-    resolve_with_reads(bucket, control, registration.genesis, reads).await
+    let result = resolve_with_reads(bucket, control, registration.genesis, reads).await;
+    #[cfg(all(test, feature = "std", feature = "tokio"))]
+    diagnostic.finish_result(&result);
+    result
 }
 
 async fn resolve_held_mode<
@@ -216,6 +228,9 @@ async fn resolve_held_mode<
     retention: PayloadRetention,
     memo: Option<&DecodeMemo>,
 ) -> Result<Selected, StoreFailure> {
+    #[cfg(all(test, feature = "std", feature = "tokio"))]
+    let mut diagnostic =
+        crate::diagnostic_clock::span(crate::diagnostic_clock::Group::PublicationSelection);
     let held_reads = control.held_reads(&bucket.inner.fs, held).await?;
     let mut reads = if matches!(retention, PayloadRetention::Observed) {
         ChainReads::held(held_reads)
@@ -231,7 +246,10 @@ async fn resolve_held_mode<
     if registration.binding != control.binding || registration.activation != Activation::Active {
         return Err(corrupt());
     }
-    resolve_with_reads(bucket, control, registration.genesis, reads).await
+    let result = resolve_with_reads(bucket, control, registration.genesis, reads).await;
+    #[cfg(all(test, feature = "std", feature = "tokio"))]
+    diagnostic.finish_result(&result);
+    result
 }
 
 /// Verifies an exact contiguous chain without treating activation phase as permission.
@@ -247,8 +265,14 @@ pub(super) async fn resolve_chain<
     control: &Control,
     genesis: Option<[u8; 32]>,
 ) -> Result<Selected, StoreFailure> {
+    #[cfg(all(test, feature = "std", feature = "tokio"))]
+    let mut diagnostic =
+        crate::diagnostic_clock::span(crate::diagnostic_clock::Group::PublicationSelection);
     let reads = ChainReads::ordinary(control, &bucket.inner.fs);
-    resolve_with_reads(bucket, control, genesis, reads).await
+    let result = resolve_with_reads(bucket, control, genesis, reads).await;
+    #[cfg(all(test, feature = "std", feature = "tokio"))]
+    diagnostic.finish_result(&result);
+    result
 }
 
 async fn resolve_with_reads<
@@ -330,10 +354,17 @@ async fn resolve_with_reads<
         };
         let (commit, slot_digest) = match reads.memo {
             Some(memo) => memo.commit(&bytes)?,
-            None => (
-                PublicationCommit::decode(&bytes).map_err(|_| corrupt())?,
-                digest(&bytes),
-            ),
+            None => {
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                let mut decode =
+                    crate::diagnostic_clock::span(crate::diagnostic_clock::Group::DecodeCommit);
+                let decoded = PublicationCommit::decode(&bytes).map_err(|_| corrupt());
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                decode.finish_result(&decoded);
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                drop(decode);
+                (decoded?, digest(&bytes))
+            }
         };
         if revision == 0 && genesis.is_some_and(|expected| expected != slot_digest) {
             return Err(corrupt());
@@ -348,7 +379,17 @@ async fn resolve_with_reads<
                 commit
                     .check_transaction(&key, &transaction_bytes)
                     .map_err(|_| corrupt())?;
-                PublicationTransaction::decode(&transaction_bytes).map_err(|_| corrupt())?
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                let mut decode = crate::diagnostic_clock::span(
+                    crate::diagnostic_clock::Group::DecodeTransaction,
+                );
+                let result =
+                    PublicationTransaction::decode(&transaction_bytes).map_err(|_| corrupt());
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                decode.finish_result(&result);
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                drop(decode);
+                result?
             }
         };
         let previous = selected.as_ref().map(|selected| PredecessorSlot {
@@ -390,7 +431,15 @@ async fn resolve_with_reads<
                 transaction
                     .check_snapshot(&snapshot_bytes)
                     .map_err(|_| corrupt())?;
-                PortableSnapshot::decode(&snapshot_bytes).map_err(|_| corrupt())?
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                let mut decode =
+                    crate::diagnostic_clock::span(crate::diagnostic_clock::Group::DecodeSnapshot);
+                let result = PortableSnapshot::decode(&snapshot_bytes).map_err(|_| corrupt());
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                decode.finish_result(&result);
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                drop(decode);
+                result?
             }
         };
         if let Some(pointer) = &snapshot.predecessor

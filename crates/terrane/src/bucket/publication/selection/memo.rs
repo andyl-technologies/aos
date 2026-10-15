@@ -2,6 +2,10 @@
 //!
 //! Entries contain no read receipts or backend permission. Each memo belongs to
 //! one held observation and bounds both its entry count and encoded input size.
+//!
+//! Test diagnostics count the existing lookup's hit or miss after successful lock
+//! acquisition. Decoder spans exclude binding checks, raw digest computation and
+//! result cloning; the inclusive whole-memo spans retain those costs.
 
 use super::{corrupt, digest};
 use crate::store::StoreFailure;
@@ -94,16 +98,44 @@ impl DecodeMemo {
         &self,
         bytes: &[u8],
     ) -> Result<(PublicationCommit, RawDigest), StoreFailure> {
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::MemoCommit);
         let inputs = [bytes];
-        let mut records = self.commits.lock().map_err(|_| corrupt())?;
+        let records = self.commits.lock().map_err(|_| corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if records.is_err() {
+            diagnostic.finish_result(&records);
+        }
+        let mut records = records?;
+
         if let Some(value) = records.get(&inputs) {
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            crate::diagnostic_clock::count(crate::diagnostic_clock::Group::MemoCommitHit, 1);
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            diagnostic.complete();
             return Ok(value);
         }
-        let value = (
-            PublicationCommit::decode(bytes).map_err(|_| corrupt())?,
-            digest(bytes),
-        );
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        crate::diagnostic_clock::count(crate::diagnostic_clock::Group::MemoCommitMiss, 1);
+
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut decode =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::DecodeCommit);
+        let decoded = PublicationCommit::decode(bytes).map_err(|_| corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        decode.finish_result(&decoded);
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        drop(decode);
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if decoded.is_err() {
+            diagnostic.finish_result(&decoded);
+        }
+        let value = (decoded?, digest(bytes));
+
         records.insert(&inputs, value.clone());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.complete();
         Ok(value)
     }
 
@@ -121,17 +153,52 @@ impl DecodeMemo {
         key: &str,
         bytes: &[u8],
     ) -> Result<PublicationTransaction, StoreFailure> {
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::MemoTransaction);
         // The exact slot spelling is an input to check_transaction, too.
         let inputs = [commit_bytes, key.as_bytes(), bytes];
-        let mut records = self.transactions.lock().map_err(|_| corrupt())?;
+        let records = self.transactions.lock().map_err(|_| corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if records.is_err() {
+            diagnostic.finish_result(&records);
+        }
+        let mut records = records?;
+
         if let Some(value) = records.get(&inputs) {
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            crate::diagnostic_clock::count(crate::diagnostic_clock::Group::MemoTransactionHit, 1);
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            diagnostic.complete();
             return Ok(value);
         }
-        commit
-            .check_transaction(key, bytes)
-            .map_err(|_| corrupt())?;
-        let value = PublicationTransaction::decode(bytes).map_err(|_| corrupt())?;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        crate::diagnostic_clock::count(crate::diagnostic_clock::Group::MemoTransactionMiss, 1);
+
+        let checked = commit.check_transaction(key, bytes).map_err(|_| corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if checked.is_err() {
+            diagnostic.finish_result(&checked);
+        }
+        checked?;
+
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut decode =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::DecodeTransaction);
+        let value = PublicationTransaction::decode(bytes).map_err(|_| corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        decode.finish_result(&value);
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if value.is_err() {
+            diagnostic.finish_result(&value);
+        }
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        drop(decode);
+        let value = value?;
+
         records.insert(&inputs, value.clone());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.complete();
         Ok(value)
     }
 
@@ -149,18 +216,60 @@ impl DecodeMemo {
         transaction_bytes: &[u8],
         bytes: &[u8],
     ) -> Result<PortableSnapshot, StoreFailure> {
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::MemoSnapshot);
         let inputs = [transaction_bytes, bytes];
-        let mut records = self.snapshots.lock().map_err(|_| corrupt())?;
+        let records = self.snapshots.lock().map_err(|_| corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if records.is_err() {
+            diagnostic.finish_result(&records);
+        }
+        let mut records = records?;
+
         if let Some(value) = records.get(&inputs) {
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            crate::diagnostic_clock::count(crate::diagnostic_clock::Group::MemoSnapshotHit, 1);
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            diagnostic.complete();
             return Ok(value);
         }
-        transaction
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        crate::diagnostic_clock::count(crate::diagnostic_clock::Group::MemoSnapshotMiss, 1);
+
+        let checked = transaction
             .snapshot
             .check_snapshot(bytes)
-            .map_err(|_| corrupt())?;
-        transaction.check_snapshot(bytes).map_err(|_| corrupt())?;
-        let value = PortableSnapshot::decode(bytes).map_err(|_| corrupt())?;
+            .map_err(|_| corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if checked.is_err() {
+            diagnostic.finish_result(&checked);
+        }
+        checked?;
+        let checked = transaction.check_snapshot(bytes).map_err(|_| corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if checked.is_err() {
+            diagnostic.finish_result(&checked);
+        }
+        checked?;
+
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut decode =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::DecodeSnapshot);
+        let value = PortableSnapshot::decode(bytes).map_err(|_| corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        decode.finish_result(&value);
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if value.is_err() {
+            diagnostic.finish_result(&value);
+        }
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        drop(decode);
+        let value = value?;
+
         records.insert(&inputs, value.clone());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.complete();
         Ok(value)
     }
 }

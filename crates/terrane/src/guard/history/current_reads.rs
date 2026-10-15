@@ -115,6 +115,26 @@ impl<'history> HistoryObservation<'history> {
         self.consumed = Some(consumed);
         Ok(self)
     }
+
+    /// Requires this exact native immutable scope without admitting other purposes.
+    ///
+    /// # Errors
+    /// Refuses foreign holders, resolvers or nonordinary interpretation purposes.
+    pub(crate) fn same_direct_scope(self, other: Self) -> Result<(), StoreFailure> {
+        self.same_current_scope(other)
+    }
+
+    /// Binds only an ordinary direct observation to its genuine native read scope.
+    ///
+    /// # Errors
+    /// Refuses held, candidate, maintenance, overlay or paired observations.
+    pub(crate) fn direct_held_from_ordinary(
+        self,
+        held: &'history HeldIdentity<'history>,
+        consumed: &'history ConsumedResolver,
+    ) -> Result<Self, StoreFailure> {
+        self.current_held_from_ordinary(held, consumed)
+    }
 }
 
 impl<S: Store, C: Clock> Guard<S, C> {

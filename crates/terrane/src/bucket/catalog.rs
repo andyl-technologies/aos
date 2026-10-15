@@ -1,4 +1,9 @@
 //! Selects and verifies authoritative index generations without directory listing.
+//!
+//! Test diagnostics combine CAPABILITIES and MANIFEST decoder calls in one fixed
+//! group. Artifact reads, presence/identity/size/hash checks and merged-shard
+//! decoding have separate inclusive spans. The final byte copy remains outside
+//! artifact verification; whole-catalog spans include the original clone work.
 
 use super::{BucketBinding, FileBucket, files};
 use crate::pack::{MergedShard, PackIndexSnapshot, RecordState};
@@ -114,13 +119,28 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// Rejects broken layout, profile, generation, or artifact bindings and
     /// propagates unavailable I/O. Listing never discovers a generation.
     pub(super) async fn catalog(&self) -> Result<Catalog, StoreFailure> {
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::SelectedGetCatalog);
         let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
         let capability_bytes = self
             .logical_optional(&key)
             .await?
             .ok_or_else(files::layout_corrupt)?;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut decode =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::CatalogDecode);
         let capabilities =
-            BucketCapabilities::decode(&capability_bytes).map_err(|_| files::layout_corrupt())?;
+            BucketCapabilities::decode(&capability_bytes).map_err(|_| files::layout_corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        decode.finish_result(&capabilities);
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if capabilities.is_err() {
+            diagnostic.finish_result(&capabilities);
+        }
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        drop(decode);
+        let capabilities = capabilities?;
         self.validate_layout(&capabilities)?;
         let manifest = if let Some(generation) = capabilities.generation {
             let key = registered(&format!("objects/index/{generation}/MANIFEST"))?;
@@ -128,12 +148,28 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 .logical_optional(&key)
                 .await?
                 .ok_or_else(files::layout_corrupt)?;
-            Some(GenerationManifest::decode(&bytes).map_err(|_| files::layout_corrupt())?)
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            let mut decode =
+                crate::diagnostic_clock::span(crate::diagnostic_clock::Group::CatalogDecode);
+            let manifest = GenerationManifest::decode(&bytes).map_err(|_| files::layout_corrupt());
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            decode.finish_result(&manifest);
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            if manifest.is_err() {
+                diagnostic.finish_result(&manifest);
+            }
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            drop(decode);
+            Some(manifest?)
         } else {
             None
         };
-        self.verify_catalog(capability_bytes, capabilities, manifest, self)
-            .await
+        let result = self
+            .verify_catalog(capability_bytes, capabilities, manifest, self)
+            .await;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.finish_result(&result);
+        result
     }
 
     /// Verifies direct artifacts named by one actual complete held selection.
@@ -161,6 +197,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         observed: &super::publication::SelectedObservation<'_>,
         reads: &R,
     ) -> Result<Catalog, StoreFailure> {
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::SelectedGetCatalog);
         if observed.identity().root() != self.root() {
             return Err(files::layout_corrupt());
         }
@@ -172,8 +211,20 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .and_then(Option::as_ref)
             .ok_or_else(files::layout_corrupt)?
             .clone();
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut decode =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::CatalogDecode);
         let capabilities =
-            BucketCapabilities::decode(&capability_bytes).map_err(|_| files::layout_corrupt())?;
+            BucketCapabilities::decode(&capability_bytes).map_err(|_| files::layout_corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        decode.finish_result(&capabilities);
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if capabilities.is_err() {
+            diagnostic.finish_result(&capabilities);
+        }
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        drop(decode);
+        let capabilities = capabilities?;
         self.validate_layout(&capabilities)?;
         let manifest = if let Some(generation) = capabilities.generation {
             let key = registered(&format!("objects/index/{generation}/MANIFEST"))?;
@@ -183,12 +234,28 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 .get(key.as_str())
                 .and_then(Option::as_deref)
                 .ok_or_else(files::layout_corrupt)?;
-            Some(GenerationManifest::decode(bytes).map_err(|_| files::layout_corrupt())?)
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            let mut decode =
+                crate::diagnostic_clock::span(crate::diagnostic_clock::Group::CatalogDecode);
+            let manifest = GenerationManifest::decode(bytes).map_err(|_| files::layout_corrupt());
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            decode.finish_result(&manifest);
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            if manifest.is_err() {
+                diagnostic.finish_result(&manifest);
+            }
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            drop(decode);
+            Some(manifest?)
         } else {
             None
         };
-        self.verify_catalog(capability_bytes, capabilities, manifest, reads)
-            .await
+        let result = self
+            .verify_catalog(capability_bytes, capabilities, manifest, reads)
+            .await;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.finish_result(&result);
+        result
     }
 
     async fn verify_catalog<R: CatalogReads + ?Sized>(
@@ -234,10 +301,17 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                     )
                     .await?;
                 }
-                shards.push(
-                    MergedShard::decode(&bytes, generation, shard)
-                        .map_err(|_| files::layout_corrupt())?,
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                let mut decode = crate::diagnostic_clock::span(
+                    crate::diagnostic_clock::Group::CatalogShardDecode,
                 );
+                let decoded = MergedShard::decode(&bytes, generation, shard)
+                    .map_err(|_| files::layout_corrupt());
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                decode.finish_result(&decoded);
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                drop(decode);
+                shards.push(decoded?);
             }
         }
         Ok(Catalog {
@@ -260,17 +334,47 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         reads: &R,
     ) -> Result<Vec<u8>, StoreFailure> {
         let key = registered(&format!("objects/index/{generation}/{shard}.{suffix}"))?;
-        let read = reads.read_artifact(&key).await?;
-        let bytes = read.bytes().ok_or_else(files::layout_corrupt)?;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut artifact =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::CatalogArtifactRead);
+        let read = reads.read_artifact(&key).await;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        artifact.finish_result(&read);
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        drop(artifact);
+        let read = read?;
+
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut verification =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::CatalogArtifactVerify);
+        let bytes = read.bytes().ok_or_else(files::layout_corrupt);
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if bytes.is_err() {
+            verification.finish_result(&bytes);
+        }
+        let bytes = bytes?;
         let identity = TERRANE_V1
             .from_digest(kind, &hash)
-            .map_err(|_| files::layout_corrupt())?;
-        if bytes.len() as u64 != size {
-            return Err(files::layout_corrupt());
+            .map_err(|_| files::layout_corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if identity.is_err() {
+            verification.finish_result(&identity);
         }
-        TERRANE_V1
+        let identity = identity?;
+        if bytes.len() as u64 != size {
+            let result = Err(files::layout_corrupt());
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            verification.finish_result(&result);
+            return result;
+        }
+        let verified = TERRANE_V1
             .verify(&identity, bytes)
-            .map_err(|_| files::layout_corrupt())?;
+            .map_err(|_| files::layout_corrupt());
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        verification.finish_result(&verified);
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        drop(verification);
+        verified?;
         Ok(bytes.to_vec())
     }
 

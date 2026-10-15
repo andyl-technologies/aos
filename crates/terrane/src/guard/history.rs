@@ -558,6 +558,26 @@ impl<S: Store, C: Clock> Guard<S, C> {
         #[cfg(all(test, feature = "std", feature = "tokio"))]
         let mut diagnostic =
             crate::diagnostic_clock::span(crate::diagnostic_clock::Group::DirectHistory);
+        #[cfg(all(feature = "std", feature = "tokio", unix))]
+        {
+            let direct = self
+                .direct_history_native(
+                    identity,
+                    super::direct_history::DirectMode::Tree,
+                    observation,
+                )
+                .await;
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            if direct.is_err() {
+                diagnostic.finish_result(&direct);
+            }
+            if let Some(completed) = direct? {
+                let verified = completed.tree.ok_or_else(invalid)?;
+                #[cfg(all(test, feature = "std", feature = "tokio"))]
+                diagnostic.complete();
+                return Ok((verified, completed.history));
+            }
+        }
         let verified = self.signed_tree(identity, observation).await;
         #[cfg(all(test, feature = "std", feature = "tokio"))]
         if verified.is_err() {
@@ -765,7 +785,26 @@ impl<S: Store, C: Clock> Guard<S, C> {
         identity: Digest,
         observation: HistoryObservation<'_>,
     ) -> Result<VerifiedHistory, StoreFailure> {
-        self.complete_history_observed(identity, observation).await
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::HistoryCompletion);
+        #[cfg(all(feature = "std", feature = "tokio", unix))]
+        if let Some(completed) = self
+            .direct_history_native(
+                identity,
+                super::direct_history::DirectMode::History,
+                observation,
+            )
+            .await?
+        {
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            diagnostic.complete();
+            return Ok(completed.history);
+        }
+        let result = self.complete_history_observed(identity, observation).await;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.finish_result(&result);
+        result
     }
 
     #[cfg(feature = "std")]
@@ -864,5 +903,41 @@ impl<S, C> Guard<S, C> {
             root,
             self.view_semantics(view, root, observation)?,
         )
+    }
+}
+
+#[cfg(all(feature = "std", feature = "tokio", unix))]
+impl<S: Store, C: Clock> Guard<S, C> {
+    /// Prepares the original target request through the genuine direct DATA ledger.
+    ///
+    /// # Errors
+    /// Preserves signature, full-history, Original and relationship failures.
+    pub(in crate::guard) async fn prepare_direct_history<'scope, 'history, 'held>(
+        &self,
+        target: Digest,
+        mode: super::direct_history::DirectMode,
+        observation: HistoryObservation<'history>,
+        purpose: &'scope super::direct_history::DirectPurpose<'history, 'held>,
+        reads: &'scope dyn crate::bucket::held::DirectNodeReads,
+    ) -> Result<
+        (
+            Option<VerifiedTree>,
+            super::direct_history::PendingDirectHistory<'scope, 'history, 'held>,
+        ),
+        StoreFailure,
+    > {
+        purpose.check(target, observation)?;
+        reads.check_holder(observation.identity().ok_or_else(invalid)?)?;
+        reads.check_direct(purpose.read_check())?;
+        let tree = match mode {
+            super::direct_history::DirectMode::History => None,
+            super::direct_history::DirectMode::Tree => {
+                Some(self.signed_tree(target, observation).await?)
+            }
+        };
+        let pending = self
+            .prepare_direct_history_with_reads(target, observation, purpose, reads)
+            .await?;
+        Ok((tree, pending))
     }
 }

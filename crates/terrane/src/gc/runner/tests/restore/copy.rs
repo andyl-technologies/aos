@@ -285,8 +285,10 @@ pub(super) async fn copied(fixture: &Fixture, id: PackId, burned: bool) -> Fixtu
         .begin("refs/heads/_/restore-bootstrap", &fixture_token(), "sdk")
         .await
         .unwrap();
+    let proposal = bootstrap_request();
+    let proposal_template = proposal.commit.clone();
     let head = repository
-        .commit_request(&mut writer, bootstrap_request())
+        .commit_request(&mut writer, proposal)
         .await
         .unwrap();
     let authority = repository
@@ -380,6 +382,7 @@ pub(super) async fn copied(fixture: &Fixture, id: PackId, burned: bool) -> Fixtu
         repository,
         authority,
         head,
+        proposal_template,
         clock,
         fs,
         authoring: None,

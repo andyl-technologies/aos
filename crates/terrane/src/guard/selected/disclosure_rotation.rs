@@ -77,6 +77,40 @@ where
         check: SharedCheck::new(move || checks.recheck()),
     };
     let before_inputs = before.finish()?;
+
+    // Both full Admin/history authorizations use the genuinely selected old
+    // Guard before any role effect. Installing the new protected role makes
+    // the old inventory incomplete and does not yet select the candidate Guard.
+    let refresh = ConsumedResolver::new(&old, &authority)?;
+    refresh.registration(&authority)?;
+    let refreshed = old
+        .authorize_observed(
+            reference,
+            token,
+            Verb::Admin,
+            &paths,
+            surface,
+            HistoryObservation::held(observed.identity()).tracked(&refresh),
+        )
+        .await?;
+    if refreshed.record() != expected_head.as_ref() || !refreshed.same_principal(&current) {
+        return Err(invalid());
+    }
+    refresh.operation(&refreshed)?;
+    if refresh.snapshot_bytes()? != previous_snapshot {
+        return Err(invalid());
+    }
+    let refreshed_inputs = refresh.finish()?;
+    let refresh_checks =
+        old.retain_request_checks(std::slice::from_ref(&refreshed), started, maximum)?;
+    let preceding = before_check;
+    let before_check = OwnedFinalCheck {
+        check: SharedCheck::new(move || {
+            preceding.recheck()?;
+            refresh_checks.recheck()
+        }),
+    };
+
     let mut selected_reads = capture_selected_reads(&held, &observed, &[]).await?;
     let mut controls = concrete
         .hold_original_registration_write(&authority, observed.identity())
@@ -88,7 +122,11 @@ where
             &GuardSnapshot::decode(&previous_snapshot).map_err(|_| invalid())?,
         )
         .await?;
-    for pin in &before_inputs.controls {
+    for pin in before_inputs
+        .controls
+        .iter()
+        .chain(&refreshed_inputs.controls)
+    {
         if pin.owner != crate::guard::consumed_registration(&authority) {
             return Err(invalid());
         }
@@ -117,24 +155,12 @@ where
     controls.revalidate().await?;
     drop(controls);
 
-    // Current ACL/history checks acquire configuration exclusion independently.
-    // The actual backend exclusion and old selected observation remain held.
+    // The candidate is proposed configuration, never a selected authorization
+    // scope. Its only permitted change is the checked additive role below; the
+    // namespace exclusion preserves the old head, ACL and immutable history.
     let pending = candidate.held_guard(holder.destination(), retained_clock(candidate.clock())?)?;
     let after = ConsumedResolver::new(&pending, &authority)?;
     after.registration(&authority)?;
-    let refreshed = pending
-        .authorize_observed(
-            reference,
-            token,
-            Verb::Admin,
-            &paths,
-            surface,
-            HistoryObservation::held(observed.identity()).tracked(&after),
-        )
-        .await?;
-    if refreshed.record() != expected_head.as_ref() || !refreshed.same_principal(&current) {
-        return Err(invalid());
-    }
     after.operation(&refreshed)?;
     let checks = pending.retain_request_checks(&[refreshed], started, maximum)?;
     let issue_clock = retained_clock(pending.clock())?;
@@ -157,7 +183,7 @@ where
     };
     let snapshot = after.snapshot_bytes()?;
     check_transition(&previous_snapshot, &snapshot, signer.role())?;
-    let inputs = after.finish()?;
+    let candidate_inputs = after.finish()?;
     let mut controls = candidate
         .hold_original_registration_write(&authority, observed.identity())
         .await?;
@@ -169,7 +195,14 @@ where
         )
         .await?;
     let mut retained_records = BTreeMap::new();
-    for pin in before_inputs.controls.iter().chain(&inputs.controls) {
+    // Keep both genuine completed-history input sets independent, including
+    // their Recorded view interpretations; union only their physical pin needs.
+    for pin in before_inputs
+        .controls
+        .iter()
+        .chain(&refreshed_inputs.controls)
+        .chain(&candidate_inputs.controls)
+    {
         if pin.owner != crate::guard::consumed_registration(&authority) {
             return Err(invalid());
         }

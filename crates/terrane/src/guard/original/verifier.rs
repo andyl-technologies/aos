@@ -163,6 +163,10 @@ pub(in crate::guard) struct OriginalVerifier {
     current: Arc<current::CurrentHistoryCheck>,
     #[cfg(all(feature = "tokio", unix))]
     held: Arc<held::HeldHistoryCheck>,
+    #[cfg(all(feature = "tokio", unix))]
+    direct: Arc<direct::DirectHistoryCheck>,
+    #[cfg(all(feature = "tokio", unix))]
+    overlay: Arc<overlay::OverlayHistoryCheck>,
     #[cfg(unix)]
     preparation: Arc<cold::PreparationCheck>,
     #[cfg(unix)]
@@ -437,6 +441,22 @@ impl<
         let current = current::capture(Arc::clone(&concrete), authority.clone());
         #[cfg(all(feature = "tokio", unix))]
         let held = held::capture(Arc::clone(&concrete), authority.clone());
+        #[cfg(all(feature = "tokio", unix))]
+        let direct = direct::capture(
+            Arc::clone(&concrete),
+            authority.clone(),
+            setup_clock
+                .retain_native_clock()
+                .map_err(crate::guard::retained_clock_failure)?,
+        );
+        #[cfg(all(feature = "tokio", unix))]
+        let overlay = overlay::capture(
+            Arc::clone(&concrete),
+            authority.clone(),
+            setup_clock
+                .retain_native_clock()
+                .map_err(crate::guard::retained_clock_failure)?,
+        );
         let cold_candidates = Arc::new(std::sync::RwLock::new(std::collections::BTreeMap::new()));
         let preparation = cold::factory(
             Arc::clone(&concrete),
@@ -528,6 +548,10 @@ impl<
                 current,
                 #[cfg(all(feature = "tokio", unix))]
                 held,
+                #[cfg(all(feature = "tokio", unix))]
+                direct,
+                #[cfg(all(feature = "tokio", unix))]
+                overlay,
                 preparation,
                 cold_candidates,
                 #[cfg(all(test, feature = "tokio", unix))]

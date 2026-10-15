@@ -47,25 +47,16 @@ async fn fork_admission_uses_one_complete_source_tree_check_and_keeps_path_check
 
     let admitted = guard.admit_fork(SOURCE, CHILD, 1, request).await.unwrap();
 
-    // Native current authorization reads through retained namespace readers.
-    // Addressed store GETs measure the separate exact immutable verifier only.
-    let historical_reads = guard
-        .store()
-        .content_reads(IdentityKind::Commit, head.commit);
-    assert!(historical_reads > 0);
-    assert!(
-        guard
-            .store()
-            .content_reads(IdentityKind::Commit, ancestor.commit)
-            > 0
-    );
+    // Current authorization and complete immutable history use the retained
+    // native bucket, bypassing this addressed Commit GET wrapper. Typed native
+    // counters observe attempts by kind, not which identities were consumed;
+    // the missing ancestor Original below independently checks ancestry closure.
     let physical_reads = native_reads.snapshot();
+    assert!(physical_reads.commit_gets >= 2);
+    assert!(physical_reads.node_gets > 0);
     assert_eq!(physical_reads.commit_puts, 0);
     assert_eq!(physical_reads.node_puts, 0);
-    assert!(physical_reads.commit_gets > guard.store().total_content_reads(IdentityKind::Commit));
-    assert!(
-        physical_reads.node_gets > guard.store().content_reads(IdentityKind::Node, source_tree)
-    );
+    assert_eq!(guard.store().total_content_reads(IdentityKind::Commit), 0);
     assert_eq!(guard.store().reference_reads(SOURCE), 2);
     assert_eq!(admitted.commit.commit().tree, source_tree);
     assert_eq!(admitted.commit.commit().parents, [head.commit]);
@@ -127,24 +118,19 @@ async fn existing_commit_admission_checks_the_exact_parent_once_after_current_au
     let native_reads = coordinator.store().observe_content_for_tests();
     native_reads.reset();
 
-    let admitted = guard
-        .admit(
-            SOURCE,
-            session.epoch(),
-            request_file(vec![head.commit], PLAINTEXT),
-        )
-        .await
-        .unwrap();
+    let request = request_file(vec![head.commit], PLAINTEXT);
+    assert_eq!(request.commit.tree, root);
+    let admitted = guard.admit(SOURCE, session.epoch(), request).await.unwrap();
 
-    let historical_reads = guard
-        .store()
-        .content_reads(IdentityKind::Commit, head.commit);
-    assert!(historical_reads > 0);
-    assert!(guard.store().content_reads(IdentityKind::Node, root) > 0);
+    // The native factory bypasses the addressed wrapper. These real counters
+    // establish work by kind, not an exact identity count or authorization order.
     let physical_reads = native_reads.snapshot();
-    assert!(physical_reads.commit_gets >= historical_reads);
+    assert!(physical_reads.commit_gets > 0);
+    assert!(physical_reads.node_gets > 0);
+    assert_eq!(guard.store().total_content_reads(IdentityKind::Commit), 0);
     assert_eq!(physical_reads.commit_puts, 0);
     assert_eq!(physical_reads.node_puts, 0);
+    assert_eq!(admitted.commit.commit().tree, root);
     assert_eq!(admitted.expected.as_ref(), Some(&head));
     assert_eq!(admitted.commit.commit().parents, [head.commit]);
     guard.store().assert_no_effects();
@@ -245,6 +231,8 @@ async fn existing_commit_admission_rechecks_protected_original_association_acros
     let archived = association.with_extension("removed");
     tokio::fs::rename(&association, &archived).await.unwrap();
     guard.store().reset();
+    let native_reads = coordinator.store().observe_content_for_tests();
+    native_reads.reset();
 
     let result = guard
         .admit(
@@ -274,12 +262,9 @@ async fn existing_commit_admission_rechecks_protected_original_association_acros
             .kind(),
         std::io::ErrorKind::NotFound
     );
-    assert!(
-        guard
-            .store()
-            .content_reads(IdentityKind::Commit, head.commit)
-            > 0
-    );
+    // Native preparation rechecks configured Original pins before starting the
+    // historical typed reader; missing evidence must refuse before Commit GETs.
+    assert_eq!(native_reads.snapshot().commit_gets, 0);
     guard.store().assert_no_effects();
     assert_eq!(
         coordinator.store().ref_get(SOURCE).await.unwrap(),

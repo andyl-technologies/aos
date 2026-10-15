@@ -278,6 +278,11 @@ pub(in super::super) fn execute(
     request: OwnershipRequest,
     mut worker: Worker,
 ) -> Result<(), NativeEffectFailure> {
+    #[cfg(all(test, feature = "std"))]
+    let mut cost = super::super::retirement_barrier::cost_trace::Trace::new(
+        "ownership-worker",
+        Some(request.boundary),
+    );
     worker
         .projection
         .root(&request.root, request.owner, false)?;
@@ -285,6 +290,8 @@ pub(in super::super) fn execute(
         .projection
         .root(&request.control, request.owner, true)?;
     worker.refresh(&[])?;
+    #[cfg(all(test, feature = "std"))]
+    cost.mark("first-refresh-complete");
     let mut state = request
         .triple
         .state
@@ -295,6 +302,8 @@ pub(in super::super) fn execute(
         return Err(unknown("ownership acknowledgment is out of order").into());
     }
     state.recheck()?;
+    #[cfg(all(test, feature = "std"))]
+    cost.mark("first-pair-check-complete");
     let original = worker
         .projection
         .exact(&request.target, request.expected.as_deref())?;
@@ -303,6 +312,11 @@ pub(in super::super) fn execute(
         return Err(unknown("ownership destination lacks protected conditional preimage").into());
     }
     let directories = directories_below(original, &request.control, request.owner, true)?;
+    #[cfg(all(test, feature = "std"))]
+    {
+        cost.inventory(0, worker.projection.preimages.len(), 0, directories.len());
+        cost.mark("directories-complete");
+    }
     let staging = worker.projection.exact(&request.temporary, None)?;
     if !matches!(staging.policy, FencePolicy::ProtectedRecord { owner: actual } if actual == request.owner)
         || staging.identity.is_some()
@@ -470,5 +484,7 @@ pub(in super::super) fn execute(
     operation.check()?;
     state.acknowledged = Some(request.boundary);
     let _ = request.result.send(());
+    #[cfg(all(test, feature = "std"))]
+    cost.complete();
     Ok(())
 }

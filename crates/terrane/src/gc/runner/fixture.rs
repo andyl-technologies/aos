@@ -81,6 +81,11 @@ pub(crate) struct Fixture {
     pub(crate) authority: OriginalAuthority,
     /// Exact selected first source record.
     pub(super) head: RefRecord,
+    /// Untrusted unsigned seed data used only to construct new proposals.
+    ///
+    /// This retains no verification, Original evidence or operation authority;
+    /// each proposal still undergoes the real admission and publication checks.
+    pub(super) proposal_template: Commit,
     /// Same injected clock state retained by all native effects.
     pub(crate) clock: TestClock,
     /// Actual native executor with bounded test queue observation.
@@ -284,8 +289,10 @@ impl Fixture {
             .begin("refs/heads/_/main", &token(), "sdk")
             .await
             .unwrap();
+        let proposal = request(Vec::new(), b"published source", None);
+        let proposal_template = proposal.commit.clone();
         let head = repository
-            .commit_request(&mut writer, request(Vec::new(), b"published source", None))
+            .commit_request(&mut writer, proposal)
             .await
             .unwrap();
         let authority = repository
@@ -302,6 +309,7 @@ impl Fixture {
             repository,
             authority,
             head,
+            proposal_template,
             clock,
             fs,
             authoring,

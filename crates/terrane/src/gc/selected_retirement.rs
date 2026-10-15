@@ -443,16 +443,28 @@ where
     C: Clock,
 {
     session.recheck()?;
+    #[cfg(test)]
+    retirement_stage("holder", None);
     let holder = SingleHeld::acquire(guard.store()).await?;
     let held = holder.destination();
+    #[cfg(test)]
+    retirement_stage("initial-observation", None);
     let observed = held.observe_publication_unrepaired().await?;
+    #[cfg(test)]
+    retirement_stage("current-qualification", None);
     let current = super::native_current_collection::qualify_retirement(
         guard, authority, session, &held, &observed, checkpoint, windows,
     )
     .await?;
+    #[cfg(test)]
+    retirement_stage("catalog", None);
     let metadata = MetadataStore::new(&held, &observed, session);
     let catalog = metadata.collection_catalog().await?;
+    #[cfg(test)]
+    retirement_stage("candidate-listing", None);
     let listed = listed_candidates(held.fs(), held.root()).await?;
+    #[cfg(test)]
+    retirement_stage("candidate-selection", None);
     for row in catalog.inventory()? {
         let pack = PackId::from_random_bytes(row.pack_id);
         if !listed.contains(&held.root().join(pack.pack_key()))
@@ -486,6 +498,8 @@ where
         if !windows.sweep_age(now, modified) {
             continue;
         }
+        #[cfg(test)]
+        retirement_stage("candidate-selected", Some(*pack.as_bytes()));
         let mut reads = metadata.reads()?;
         first_incarnation(
             &held,
@@ -501,6 +515,8 @@ where
             &mut reads,
         )
         .await?;
+        #[cfg(test)]
+        retirement_stage("catalog-changes", Some(*pack.as_bytes()));
         let changes = catalog_changes(
             &held, &mut reads, &current, &catalog, &pair, generation, now,
         )
@@ -519,6 +535,8 @@ where
         for change in &changes {
             logical.insert(change.key.clone(), change.new.clone());
         }
+        #[cfg(test)]
+        retirement_stage("successor-validation", Some(*pack.as_bytes()));
         held.validate_collection_successor(&observed, session, &next, &logical)
             .await?;
         let tombstone = Tombstone {
@@ -530,6 +548,8 @@ where
         };
         let fence_key = format!("gc/{}/fence/{}", tombstone.cycle, observed.state().revision);
         let fence_bytes = current.fence().encode().map_err(|_| corrupt())?;
+        #[cfg(test)]
+        retirement_stage("current-revalidation", Some(*pack.as_bytes()));
         current.revalidate().await?;
         let checked = CheckedRetirement {
             current,
@@ -541,11 +561,15 @@ where
             fence_key,
             fence_bytes,
         };
+        #[cfg(test)]
+        retirement_stage("native-publication", Some(*pack.as_bytes()));
         crate::store::native_publication_effects::collection_retirement::publish_checked(
             held.fs(),
             &checked,
         )
         .await?;
+        #[cfg(test)]
+        retirement_stage("after-observation", Some(*pack.as_bytes()));
         let after = held.observe_publication_unrepaired().await?;
         let mut expected = observed.logical().clone();
         for change in checked.changes() {
@@ -555,9 +579,24 @@ where
             return Err(corrupt().into());
         }
         session.recheck()?;
+        #[cfg(test)]
+        retirement_stage("complete", Some(*pack.as_bytes()));
         return Ok(Some(checked.tombstone().clone()));
     }
     current.revalidate().await?;
     session.recheck()?;
+    #[cfg(test)]
+    retirement_stage("no-candidate", None);
     Ok(None)
+}
+
+/// Reports phase boundaries without supplying collector time or authority.
+#[cfg(test)]
+fn retirement_stage(phase: &'static str, pack: Option<[u8; 16]>) {
+    if std::env::var_os("TERRANE_INDEX_REBUILD_TRACE").is_some() {
+        eprintln!(
+            "gc-retirement-stage phase={phase} pack={pack:?} process_at={:?}",
+            crate::diagnostic_clock::tick(),
+        );
+    }
 }

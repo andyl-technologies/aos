@@ -37,4 +37,27 @@ impl ReadConfiguration {
         current.check_configured_keys(&self.inputs.keys)?;
         Ok(self.inputs.read_configuration_adapter(store, clock))
     }
+
+    /// Binds direct immutable inputs to the independently configured native keys.
+    ///
+    /// # Errors
+    /// Refuses an issuer inventory different from the actual captured factory.
+    pub(super) fn bind_direct<T, D>(
+        self,
+        store: T,
+        clock: D,
+        keys: &[terrane_core::auth::IssuerKey],
+    ) -> Result<Guard<T, D>, StoreFailure> {
+        let same = self.inputs.keys.len() == keys.len()
+            && self.inputs.keys.iter().zip(keys).all(|(left, right)| {
+                left.issuer == right.issuer
+                    && left.key_id == right.key_id
+                    && left.public_key == right.public_key
+                    && left.retirement == right.retirement
+            });
+        if !same {
+            return Err(crate::guard::invalid());
+        }
+        Ok(self.inputs.read_configuration_adapter(store, clock))
+    }
 }

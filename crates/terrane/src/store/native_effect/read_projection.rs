@@ -16,6 +16,8 @@ pub(in crate::store) struct NativeReadProjection {
     preimages: Vec<ExactRead>,
     ordinary: Vec<Arc<RetainedPayloadRanges>>,
     current: Option<crate::guard::PendingCurrentReadCheck>,
+    direct: Option<crate::guard::direct_history::DirectReadCheck>,
+    overlay: Option<crate::guard::overlay_history::OverlayReadCheck>,
 }
 
 impl NativeReadProjection {
@@ -31,6 +33,8 @@ impl NativeReadProjection {
             preimages,
             ordinary: Vec::new(),
             current: None,
+            direct: None,
+            overlay: None,
         }
     }
 
@@ -51,6 +55,52 @@ impl NativeReadProjection {
             preimages,
             ordinary,
             current: Some(current),
+            direct: None,
+            overlay: None,
+        }
+    }
+
+    /// Retains ordinary original DATA recipes and a grantless direct inventory check.
+    ///
+    /// This constructor creates a read projection, never a publication effect
+    /// or an ACL decision. Protected inputs keep their separate strict recipes.
+    pub(in crate::store::native_effect) fn new_direct(
+        exclusions: Arc<[NativeExclusion]>,
+        names: Vec<NamedFence>,
+        preimages: Vec<ExactRead>,
+        ordinary: Vec<Arc<RetainedPayloadRanges>>,
+        direct: crate::guard::direct_history::DirectReadCheck,
+    ) -> Self {
+        Self {
+            exclusions,
+            names,
+            preimages,
+            ordinary,
+            current: None,
+            direct: Some(direct),
+            overlay: None,
+        }
+    }
+
+    /// Retains ordinary original DATA recipes and a grantless overlay inventory check.
+    ///
+    /// This constructor creates a read projection, never a publication effect
+    /// or an ACL decision. Protected inputs keep their separate strict recipes.
+    pub(in crate::store::native_effect) fn new_overlay(
+        exclusions: Arc<[NativeExclusion]>,
+        names: Vec<NamedFence>,
+        preimages: Vec<ExactRead>,
+        ordinary: Vec<Arc<RetainedPayloadRanges>>,
+        overlay: crate::guard::overlay_history::OverlayReadCheck,
+    ) -> Self {
+        Self {
+            exclusions,
+            names,
+            preimages,
+            ordinary,
+            current: None,
+            direct: None,
+            overlay: Some(overlay),
         }
     }
 
@@ -67,6 +117,12 @@ impl NativeReadProjection {
             #[cfg(all(test, feature = "std", feature = "tokio"))]
             let mut component =
                 crate::diagnostic_clock::span(crate::diagnostic_clock::Group::ReadCurrent);
+            if let Some(overlay) = &self.overlay {
+                overlay.recheck().map_err(io::Error::other)?;
+            }
+            if let Some(direct) = &self.direct {
+                direct.recheck().map_err(io::Error::other)?;
+            }
             if let Some(current) = &self.current {
                 current.recheck().map_err(io::Error::other)?;
             }
@@ -146,6 +202,12 @@ impl NativeReadProjection {
             #[cfg(all(test, feature = "std", feature = "tokio"))]
             let mut component =
                 crate::diagnostic_clock::span(crate::diagnostic_clock::Group::ReadCurrentAfter);
+            if let Some(overlay) = &self.overlay {
+                overlay.recheck().map_err(io::Error::other)?;
+            }
+            if let Some(direct) = &self.direct {
+                direct.recheck().map_err(io::Error::other)?;
+            }
             if let Some(current) = &self.current {
                 current.recheck().map_err(io::Error::other)?;
             }

@@ -15,6 +15,20 @@ use terrane_core::tree_format::TreeUse;
 use super::{Guard, HistoryObservation, TreeEvidence, VerifiedTree, invalid};
 use crate::store::{Clock, Store, StoreFailure};
 
+/// Reports opt-in layer verification boundaries without changing its clock.
+///
+/// # Panics
+/// Panics if enabled diagnostics cannot write to standard error.
+#[cfg(all(test, feature = "std"))]
+fn trace_layer_history(identity: Digest, phase: &'static str) {
+    if std::env::var_os("TERRANE_INDEX_REBUILD_TRACE").is_some() {
+        let process_at = crate::diagnostic_clock::tick();
+        eprintln!(
+            "overlay-history-subphase identity={identity:?} phase={phase} process_at={process_at:?}"
+        );
+    }
+}
+
 /// Retains the exact signed parent order paired with the recipe's root order.
 pub(super) struct OverlayHistoryPlan {
     /// Exact ordered signed input identities paired with their recipe roots.
@@ -64,6 +78,21 @@ impl OverlayHistoryPlan {
 }
 
 impl<S: Store, C: Clock> Guard<S, C> {
+    /// Authenticates a signed tree under the fixed overlay-layer decoding use.
+    ///
+    /// # Errors
+    /// Preserves canonical metadata, signature, interpretation, Original and
+    /// storage failures without completing history or granting current rights.
+    #[cfg(all(feature = "std", feature = "tokio", unix))]
+    pub(in crate::guard) async fn signed_overlay_layer_observed(
+        &self,
+        identity: Digest,
+        observation: HistoryObservation<'_>,
+    ) -> Result<VerifiedTree, StoreFailure> {
+        self.signed_tree_for(identity, observation, TreeUse::OverlayLayer)
+            .await
+    }
+
     /// Authenticates one explicitly requested immutable layer and every dependency.
     ///
     /// # Errors
@@ -74,13 +103,27 @@ impl<S: Store, C: Clock> Guard<S, C> {
         identity: Digest,
         observation: HistoryObservation<'_>,
     ) -> Result<(VerifiedTree, terrane_core::provenance::VerifiedHistory), StoreFailure> {
+        #[cfg(all(feature = "std", feature = "tokio", unix))]
+        if let Some(completed) = self.overlay_history_native(identity, observation).await? {
+            return Ok(completed);
+        }
+        #[cfg(all(test, feature = "std"))]
+        trace_layer_history(identity, "signed-layer-entry");
         let verified = self
             .signed_tree_for(identity, observation, TreeUse::OverlayLayer)
             .await?;
+        #[cfg(all(test, feature = "std"))]
+        trace_layer_history(identity, "signed-layer-return");
+
         let observation = observation.overlay_layer(identity, verified.evidence.root);
+        #[cfg(all(test, feature = "std"))]
+        trace_layer_history(identity, "full-history-entry");
         let history = self
             .verified_history_observed(identity, observation)
             .await?;
+        #[cfg(all(test, feature = "std"))]
+        trace_layer_history(identity, "full-history-return");
+
         Ok((verified, history))
     }
 

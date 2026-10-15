@@ -80,10 +80,23 @@ async fn requalification_refuses_actual_required_index_read_failure() -> TestRes
         .and_then(|source| source.downcast_ref::<StoreFailure>())
         .ok_or("missing original auxiliary store failure")?;
     assert_eq!(underlying.kind(), store_failure(&failure)?.kind());
-    let io = std::error::Error::source(underlying)
-        .and_then(|source| source.downcast_ref::<std::io::Error>())
-        .ok_or("missing actual auxiliary pack I/O diagnostic")?;
+    // Containing-pack reads share the original failure with other consumers.
+    // Follow those diagnostic wrappers to the actual injected filesystem error.
+    let mut diagnostic = std::error::Error::source(underlying);
+    let mut io = None;
+    while let Some(source) = diagnostic {
+        if let Some(error) = source.downcast_ref::<std::io::Error>() {
+            io = Some(error);
+            break;
+        }
+        diagnostic = source.source();
+    }
+    let io = io.ok_or("missing actual auxiliary pack I/O diagnostic")?;
     assert_eq!(io.kind(), std::io::ErrorKind::Other);
+    assert_eq!(
+        io.to_string(),
+        "actual required-index pack read unavailable"
+    );
 
     assert!(
         fixture.fs.blocked_requalification_reads() > 0,

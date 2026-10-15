@@ -54,6 +54,8 @@ pub(crate) use current_history_inputs::{
     CurrentHistoryPhysicalInputs, close_current_history_inputs,
 };
 #[cfg(all(feature = "tokio", unix))]
+pub(crate) use direct_history_inputs::DirectHistoryPhysicalInputs;
+#[cfg(all(feature = "tokio", unix))]
 pub(crate) use history_inputs::{CheckedHistoryInputs, close_history_inputs};
 #[path = "effects/commands.rs"]
 mod commands;
@@ -63,6 +65,8 @@ mod immutable_history_inputs;
 #[cfg(all(feature = "tokio", unix))]
 #[path = "effects/overlay_history_inputs.rs"]
 mod overlay_history_inputs;
+#[cfg(all(feature = "tokio", unix))]
+pub(crate) use overlay_history_inputs::OverlayHistoryPhysicalInputs;
 #[path = "effects/raw.rs"]
 mod raw;
 

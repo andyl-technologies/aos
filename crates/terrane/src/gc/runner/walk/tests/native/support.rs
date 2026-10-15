@@ -157,14 +157,9 @@ pub(super) async fn proposal(
     data: Option<&IndexData>,
     plaintexts: &[&[u8]],
 ) -> CommitRequest {
-    let mut commit = fixture
-        .guard()
-        .verified_tree(fixture.head.commit)
-        .await
-        .assert_success()
-        .commit
-        .commit()
-        .clone();
+    // Candidate construction needs only the original unsigned data. Actual
+    // parent, source, Original and current authority checks belong to admission.
+    let mut commit = fixture.proposal_template.clone();
     commit.tree = tree.root_identity();
     commit.parents = vec![fixture.head.commit];
     commit.signature = None;

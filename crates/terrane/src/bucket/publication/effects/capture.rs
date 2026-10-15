@@ -510,6 +510,63 @@ impl Frame {
         )
     }
 
+    /// Packages original ordinary DATA in a distinct direct immutable read projection.
+    ///
+    /// # Errors
+    /// Refuses collector pair inputs or incomplete protected physical recipes.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(super) fn direct_read_projection(
+        &self,
+        ordinary: Vec<Arc<crate::store::native_publication_effects::RetainedPayloadRanges>>,
+        direct: crate::guard::direct_history::DirectReadCheck,
+    ) -> Result<crate::store::native_effect::NativeReadProjection, StoreFailure> {
+        if !self.pairs.is_empty() {
+            return Err(unsupported());
+        }
+        let (names, preimages) = self.physical_inputs()?;
+        Ok(
+            crate::store::native_effect::NativeReadProjection::new_direct(
+                Arc::clone(&self.exclusions),
+                names,
+                preimages,
+                ordinary,
+                direct,
+            ),
+        )
+    }
+
+    /// Packages immutable DATA under its distinct opaque owning invocation.
+    ///
+    /// # Errors
+    /// Refuses paired effects or incomplete original physical recipes.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(super) fn immutable_read_projection(
+        &self,
+        ordinary: Vec<Arc<crate::store::native_publication_effects::RetainedPayloadRanges>>,
+        check: crate::bucket::held::ImmutableReadCheck,
+    ) -> Result<crate::store::native_effect::NativeReadProjection, StoreFailure> {
+        match check {
+            crate::bucket::held::ImmutableReadCheck::Direct(check) => {
+                self.direct_read_projection(ordinary, check)
+            }
+            crate::bucket::held::ImmutableReadCheck::Overlay(check) => {
+                if !self.pairs.is_empty() {
+                    return Err(unsupported());
+                }
+                let (names, preimages) = self.physical_inputs()?;
+                Ok(
+                    crate::store::native_effect::NativeReadProjection::new_overlay(
+                        Arc::clone(&self.exclusions),
+                        names,
+                        preimages,
+                        ordinary,
+                        check,
+                    ),
+                )
+            }
+        }
+    }
+
     /// Submits a privately fixed command with owned exclusions and current checks.
     ///
     /// # Errors

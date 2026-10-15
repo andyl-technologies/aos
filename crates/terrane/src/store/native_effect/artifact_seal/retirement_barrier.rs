@@ -4,7 +4,9 @@
 //! verifying the protected slot/transaction/fence, portable snapshot/pointer,
 //! actual native pair and complete refreshed Frame. It synchronizes the same
 //! checked metadata descriptors and only directories below the retained actual
-//! namespace/control roots. Pack bodies are never read by this mechanic.
+//! namespace/control roots. All file syncs precede a deepest-first sync of each
+//! scoped original directory; no namespace mutation occurs within this phase.
+//! Pack bodies are never read by this mechanic.
 
 use super::current_pair::{NativeCurrentPair, PairHold};
 use super::{
@@ -20,6 +22,11 @@ use std::{
 use terrane_core::bucket::{BucketCapabilities, GenerationManifest};
 use terrane_core::gc::publication::{PublicationCommit, PublicationProof, PublicationTransaction};
 
+/// Records bounded numeric diagnostics without retaining native observations.
+#[cfg(all(test, feature = "std"))]
+#[path = "retirement_barrier/cost_trace.rs"]
+pub(super) mod cost_trace;
+
 #[cfg(all(test, feature = "tokio", unix))]
 #[path = "retirement_barrier/sync_observation.rs"]
 mod sync_observation;
@@ -27,6 +34,9 @@ mod sync_observation;
 /// Reports actual original-descriptor capture and successful synchronization.
 #[cfg(all(test, feature = "tokio", unix))]
 pub(crate) use sync_observation::RetirementSyncEvent;
+
+#[cfg(all(test, feature = "tokio", unix))]
+use std::os::fd::AsRawFd;
 
 /// Fixes one actual pair and exact canonical selected exclusion artifacts.
 pub(in super::super) struct BarrierRequest {
@@ -48,6 +58,8 @@ pub(in super::super) struct BarrierRequest {
         terrane_core::gc::publication::SourceLineage,
     )>,
     loss_generation: u64,
+    #[cfg(all(test, feature = "std"))]
+    cost: std::sync::OnceLock<cost_trace::Trace>,
     #[cfg(all(test, feature = "tokio", unix))]
     completed_syncs: Option<mpsc::Sender<RetirementSyncEvent>>,
     result: mpsc::Sender<DurableBarrier>,
@@ -254,6 +266,8 @@ pub(in super::super) fn barrier_plan(
                 .zip(transaction.new.sources.iter().cloned())
                 .collect(),
             loss_generation: transaction.new.loss_generation,
+            #[cfg(all(test, feature = "std"))]
+            cost: std::sync::OnceLock::new(),
             #[cfg(all(test, feature = "tokio", unix))]
             completed_syncs: None,
             result: sender,
@@ -263,6 +277,11 @@ pub(in super::super) fn barrier_plan(
 }
 
 fn association(request: &BarrierRequest, worker: &Worker) -> Result<(), NativeEffectFailure> {
+    #[cfg(all(test, feature = "std"))]
+    let mut association_cost = request
+        .cost
+        .get()
+        .and_then(|trace| trace.span(cost_trace::Group::Association, 0));
     worker
         .projection
         .root(&request.root, request.owner, false)?;
@@ -302,6 +321,11 @@ fn association(request: &BarrierRequest, worker: &Worker) -> Result<(), NativeEf
             return Err(io::Error::other("barrier record policy differs").into());
         }
     }
+    #[cfg(all(test, feature = "std"))]
+    let mut lineage_cost = request
+        .cost
+        .get()
+        .and_then(|trace| trace.span(cost_trace::Group::ExpectedLineage, 0));
     for (prior, next) in &request.sources {
         let read_lineage =
             |row: &terrane_core::gc::publication::SourceLineage| -> Result<_, NativeEffectFailure> {
@@ -324,15 +348,39 @@ fn association(request: &BarrierRequest, worker: &Worker) -> Result<(), NativeEf
                     .as_deref()
                     .ok_or_else(|| io::Error::other("barrier carried lineage absent"))?;
                 if !matches!(read.policy, FencePolicy::ProtectedRecord { owner } if owner == request.owner)
-                    || *blake3::hash(bytes).as_bytes() != row.digest
+                    || {
+                        #[cfg(all(test, feature = "std"))]
+                        let mut hash_cost = request.cost.get().and_then(|trace| {
+                            trace.span(cost_trace::Group::LineageHash, bytes.len())
+                        });
+                        let digest = blake3::hash(bytes);
+                        #[cfg(all(test, feature = "std"))]
+                        if let Some(span) = &mut hash_cost {
+                            span.complete();
+                        }
+                        #[cfg(all(test, feature = "std"))]
+                        drop(hash_cost);
+                        *digest.as_bytes() != row.digest
+                    }
                 {
                     return Err(
                         io::Error::other("barrier carried lineage protection differs").into(),
                     );
                 }
-                let lineage =
-                    terrane_core::gc::publication::evidence::CheckedLineage::decode(bytes)
-                        .map_err(io::Error::other)?;
+                let lineage = {
+                    #[cfg(all(test, feature = "std"))]
+                    let mut decode_cost = request.cost.get().and_then(|trace| {
+                        trace.span(cost_trace::Group::LineageDecode, bytes.len())
+                    });
+                    let decoded =
+                        terrane_core::gc::publication::evidence::CheckedLineage::decode(bytes);
+                    #[cfg(all(test, feature = "std"))]
+                    if let Some(span) = &mut decode_cost {
+                        span.finish_result(&decoded);
+                    }
+                    decoded
+                }
+                .map_err(io::Error::other)?;
                 if lineage.source_name != row.name {
                     return Err(io::Error::other("barrier carried source name differs").into());
                 }
@@ -351,12 +399,23 @@ fn association(request: &BarrierRequest, worker: &Worker) -> Result<(), NativeEf
             return Err(io::Error::other("barrier carried lineage association differs").into());
         }
     }
+    #[cfg(all(test, feature = "std"))]
+    if let Some(span) = &mut lineage_cost {
+        span.complete();
+    }
+    #[cfg(all(test, feature = "std"))]
+    drop(lineage_cost);
     worker.projection.exact(
         &request.root.join("publication/PORTABLE"),
         Some(&request.pointer),
     )?;
     request.pair.recheck()?;
-    worker.refresh(&[])
+    let result = worker.refresh(&[]);
+    #[cfg(all(test, feature = "std"))]
+    if let Some(span) = &mut association_cost {
+        span.finish_result(&result);
+    }
+    result
 }
 
 /// Retains one original directory descriptor per scoped path in a barrier frame.
@@ -462,6 +521,25 @@ impl DirectoryCohort {
     }
 }
 
+/// Retains the original metadata descriptor through file and directory durability.
+struct BarrierRecord {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    stamp: MetadataStamp,
+    protected: bool,
+    file: std::fs::File,
+}
+
+impl BarrierRecord {
+    fn check(&mut self, owner: u32) -> io::Result<()> {
+        if self.protected {
+            checked_protected(&mut self.file, &self.path, self.stamp, &self.bytes, owner)
+        } else {
+            checked_body(&mut self.file, &self.path, self.stamp, &self.bytes, owner)
+        }
+    }
+}
+
 /// Completes descriptor synchronization and required directory durability before acknowledgment.
 ///
 /// # Errors
@@ -472,6 +550,18 @@ pub(super) fn execute(
     request: BarrierRequest,
     mut worker: Worker,
 ) -> Result<(), NativeEffectFailure> {
+    #[cfg(all(test, feature = "std"))]
+    {
+        let trace = request
+            .cost
+            .get_or_init(|| cost_trace::Trace::new("retirement-barrier", None));
+        trace.inventory(
+            request.sources.len(),
+            worker.projection.preimages.len(),
+            0,
+            0,
+        );
+    }
     association(&request, &worker)?;
     let mut records = Vec::new();
     let mut directory_cohort = DirectoryCohort::default();
@@ -526,37 +616,107 @@ pub(super) fn execute(
             request.owner,
             inside_control,
         )?;
-        let file = open_native(&read.path, false)?;
-        records.push((
-            read.path.clone(),
-            bytes.clone(),
-            stamp,
-            inside_control,
-            file,
-            directories,
-        ));
-    }
-    for (path, bytes, stamp, protected, file, directories) in &mut records {
-        let check = |file: &mut std::fs::File| -> io::Result<()> {
-            if *protected {
-                checked_protected(file, path, *stamp, bytes, request.owner)
-            } else {
-                checked_body(file, path, *stamp, bytes, request.owner)
+        #[cfg(all(test, feature = "tokio", unix))]
+        if let Some(sender) = &request.completed_syncs {
+            for directory in &directories {
+                let _ = sender.send(RetirementSyncEvent::DirectoryCaptured {
+                    path: directory.path.clone(),
+                    root: if inside_control {
+                        request.control.clone()
+                    } else {
+                        request.root.clone()
+                    },
+                    owner: request.owner,
+                    control: inside_control,
+                    descriptor: directory.file.as_raw_fd(),
+                    identity: directory.stamp.identity,
+                });
             }
-        };
-        association(&request, &worker)?;
-        check(file)?;
-        worker.file_sync(file, &[])?;
-        check(file)?;
-        association(&request, &worker)?;
-        for directory in directories.iter().rev() {
-            worker.directory_sync(directory, false, &[])?;
-            check(file)?;
-            association(&request, &worker)?;
         }
+        // The cohort retains every original after this row's fresh checks.
+        drop(directories);
+        let file = open_native(&read.path, false)?;
+        records.push(BarrierRecord {
+            path: read.path.clone(),
+            bytes: bytes.clone(),
+            stamp,
+            protected: inside_control,
+            file,
+        });
+    }
+    #[cfg(all(test, feature = "std"))]
+    if let Some(trace) = request.cost.get() {
+        trace.inventory(
+            request.sources.len(),
+            worker.projection.preimages.len(),
+            records.len(),
+            directory_cohort.originals.len(),
+        );
+    }
+    for record in &mut records {
+        association(&request, &worker)?;
+        record.check(request.owner)?;
+        #[cfg(all(test, feature = "tokio", unix))]
+        if let Some(sender) = &request.completed_syncs {
+            let _ = sender.send(RetirementSyncEvent::FileCaptured {
+                path: record.path.clone(),
+                descriptor: record.file.as_raw_fd(),
+                identity: record.stamp.identity,
+            });
+        }
+        worker.file_sync(&record.file, &[])?;
+        record.check(request.owner)?;
+        association(&request, &worker)?;
+        #[cfg(all(test, feature = "tokio", unix))]
+        if let Some(sender) = &request.completed_syncs {
+            let _ = sender.send(RetirementSyncEvent::FileSynced {
+                path: record.path.clone(),
+                descriptor: record.file.as_raw_fd(),
+                identity: record.stamp.identity,
+            });
+        }
+    }
+
+    // Only reads and syncs occur in this phase. One sync of each exact scoped
+    // original after all children therefore covers every unchanged entry; it
+    // does not reuse observations or omit checks around any remaining effect.
+    let mut directories = directory_cohort.originals.iter().collect::<Vec<_>>();
+    directories.sort_by(|(left, _), (right, _)| {
+        right
+            .path
+            .components()
+            .count()
+            .cmp(&left.path.components().count())
+            .then_with(|| left.cmp(right))
+    });
+    for (key, directory) in directories {
+        #[cfg(not(all(test, feature = "tokio", unix)))]
+        let _ = key;
+        association(&request, &worker)?;
+        worker.directory_sync(directory, false, &[])?;
+        association(&request, &worker)?;
+        #[cfg(all(test, feature = "tokio", unix))]
+        if let Some(sender) = &request.completed_syncs {
+            let _ = sender.send(RetirementSyncEvent::DirectorySynced {
+                path: key.path.clone(),
+                root: key.root.clone(),
+                owner: key.owner,
+                control: key.control,
+                descriptor: directory.file.as_raw_fd(),
+                identity: directory.stamp.identity,
+            });
+        }
+    }
+    for record in &mut records {
+        record.check(request.owner)?;
     }
     association(&request, &worker)?;
     let _ = request.result.send(DurableBarrier { _private: () });
+    #[cfg(all(test, feature = "std"))]
+    if let Some(trace) = request.cost.into_inner() {
+        let mut trace = trace;
+        trace.complete();
+    }
     Ok(())
 }
 

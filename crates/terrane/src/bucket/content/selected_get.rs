@@ -4,6 +4,10 @@
 //! direct artifact retains its original physical recipe, and fresh selection
 //! checks bracket the complete closing read. Nothing survives as permission for
 //! another request, and this byte-only reader performs no repair or promotion.
+//!
+//! Test diagnostics measure the complete standalone selected request here.
+//! Already-held callers use the catalog and closing groups without contributing
+//! a duplicate whole-request interval. Inclusive groups can overlap.
 
 use super::ranged_pack::RetainedMemberRanges;
 use super::*;
@@ -156,6 +160,9 @@ where
         range: Option<ByteRange>,
         mode: super::ranged_pack::MemberReadMode,
     ) -> Result<Vec<u8>, StoreFailure> {
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::SelectedGet);
         #[cfg(test)]
         let mut trace = crate::ref_advance::PhaseTrace::new(
             &self.inner.clock,
@@ -183,6 +190,8 @@ where
             self.ensure_layout().await?;
             #[cfg(test)]
             trace.mark("content-get-closing-layout-checked");
+            #[cfg(all(test, feature = "std", feature = "tokio"))]
+            diagnostic.complete();
             return Ok(bytes);
         }
 
@@ -191,11 +200,18 @@ where
         let observed = held.observe_publication_ordinary_retained().await?;
         let bytes = self
             .get_selected_observed_request(&observed, identity, range, mode)
-            .await?;
+            .await;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        if bytes.is_err() {
+            diagnostic.finish_result(&bytes);
+        }
+        let bytes = bytes?;
         #[cfg(test)]
         trace.mark("content-get-value-returned");
         #[cfg(test)]
         trace.mark("content-get-closing-layout-checked");
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.complete();
         Ok(bytes)
     }
 
@@ -234,7 +250,15 @@ where
         #[cfg(test)]
         self.inner.content_observation.before_get_close().await;
 
-        reads.close(observed, &catalog).await?;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut closing =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::SelectedGetClosing);
+        let closed = reads.close(observed, &catalog).await;
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        closing.finish_result(&closed);
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        drop(closing);
+        closed?;
         Ok(bytes)
     }
 }

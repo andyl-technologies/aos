@@ -10,6 +10,8 @@ use crate::store::{
     ByteRange, ContentStore, LocalFs, RefStore, StoreErrorKind, TokioClock, TokioLocalFs,
 };
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::atomic::AtomicBool;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -48,6 +50,10 @@ pub(super) struct FaultFs {
     ref_install_barrier: Arc<Mutex<Option<Arc<RefInstallBarrier>>>>,
     candidate_slot_pause: Arc<Mutex<Option<CandidateSlotPause>>>,
     #[cfg(unix)]
+    native_control_reads: Arc<AtomicBool>,
+    #[cfg(unix)]
+    native_data_pause: Arc<Mutex<Option<NativeDataPause>>>,
+    #[cfg(unix)]
     control_change: Arc<Mutex<Option<PathBuf>>>,
     #[cfg(unix)]
     registration_change_at_slot: Arc<Mutex<Option<PathBuf>>>,
@@ -79,7 +85,109 @@ struct RefInstallBarrier {
     release: tokio::sync::Notify,
 }
 
+/// Keeps genuine scalar native receipts enabled for one isolated read fixture.
+#[cfg(unix)]
+pub(super) struct NativeReadObservation(Arc<AtomicBool>);
+
+#[cfg(unix)]
+impl Drop for NativeReadObservation {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(unix)]
+struct NativeDataPause {
+    root: PathBuf,
+    entered: tokio::sync::oneshot::Sender<PathBuf>,
+    released: tokio::sync::oneshot::Receiver<()>,
+}
+
+/// Observes an actual completed native DATA read before its unchanged result returns.
+#[cfg(unix)]
+pub(super) struct NativeDataBarrier {
+    entered: tokio::sync::oneshot::Receiver<PathBuf>,
+    release: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+#[cfg(unix)]
+impl NativeDataBarrier {
+    /// Waits for the exact physical pack whose genuine native DATA read completed.
+    ///
+    /// # Errors
+    /// Returns an error if the actual reader ends before reaching the pause.
+    pub(super) async fn reached(&mut self) -> std::io::Result<PathBuf> {
+        (&mut self.entered)
+            .await
+            .map_err(|_| std::io::Error::other("native DATA reader ended before pause"))
+    }
+
+    /// Releases the same read without changing its native recipe or result.
+    ///
+    /// # Errors
+    /// Refuses a duplicate release or a read that has already been cancelled.
+    pub(super) fn release(&mut self) -> std::io::Result<()> {
+        self.release
+            .take()
+            .ok_or_else(|| std::io::Error::other("native DATA pause already released"))?
+            .send(())
+            .map_err(|_| std::io::Error::other("native DATA read cancelled"))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for NativeDataBarrier {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+    }
+}
+
 impl FaultFs {
+    /// Enables real native scalar capture without changing existing default fault paths.
+    ///
+    /// # Errors
+    /// Refuses a second observation scope on the same isolated filesystem.
+    #[cfg(unix)]
+    pub(super) fn observe_native_reads(&self) -> std::io::Result<NativeReadObservation> {
+        self.native_control_reads
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| std::io::Error::other("native read observation already active"))?;
+        Ok(NativeReadObservation(Arc::clone(
+            &self.native_control_reads,
+        )))
+    }
+
+    /// Pauses the next genuine pack DATA result inside the supplied native bucket.
+    ///
+    /// Capture, probe and closing requests never match. The request and returned
+    /// native record remain unchanged; this observer supplies no read authority.
+    ///
+    /// # Errors
+    /// Refuses poisoned synchronization or an already armed DATA pause.
+    #[cfg(unix)]
+    pub(super) fn pause_native_data(&self, root: PathBuf) -> std::io::Result<NativeDataBarrier> {
+        let mut pending = self
+            .native_data_pause
+            .lock()
+            .map_err(|_| std::io::Error::other("native DATA pause synchronization poisoned"))?;
+        if pending.is_some() {
+            return Err(std::io::Error::other("native DATA pause already armed"));
+        }
+        let (entered, arrival) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        *pending = Some(NativeDataPause {
+            root,
+            entered,
+            released,
+        });
+        Ok(NativeDataBarrier {
+            entered: arrival,
+            release: Some(release),
+        })
+    }
+
     /// Pauses one exact genuine candidate slot before its retained native checks.
     ///
     /// The selector confers no authority and never changes the submitted effect.
@@ -740,7 +848,39 @@ impl LocalFs for FaultFs {
     ) -> std::io::Result<Option<crate::store::NativePayloadRangeRecord>> {
         // Current history must retain its original descriptors and consumed
         // ranges before the fixture's later publication fault can be reached.
-        TokioLocalFs.read_payload_ranges(read).await
+        let data_path = read.read_data_range().map(|(path, _)| path.to_owned());
+        let record = TokioLocalFs.read_payload_ranges(read).await?;
+        let pause = if record.is_some() {
+            let mut pending = self
+                .native_data_pause
+                .lock()
+                .map_err(|_| std::io::Error::other("native DATA pause synchronization poisoned"))?;
+            if pending.as_ref().is_some_and(|pause| {
+                data_path.as_ref().is_some_and(|path| {
+                    path.starts_with(pause.root.join("objects/pack"))
+                        && path
+                            .extension()
+                            .is_some_and(|extension| extension == "pack")
+                })
+            }) {
+                pending.take()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(pause) = pause {
+            pause
+                .entered
+                .send(data_path.ok_or_else(|| std::io::Error::other("native DATA path absent"))?)
+                .map_err(|_| std::io::Error::other("native DATA observer dropped"))?;
+            pause
+                .released
+                .await
+                .map_err(|_| std::io::Error::other("native DATA release dropped"))?;
+        }
+        Ok(record)
     }
 
     #[cfg(unix)]
@@ -748,10 +888,10 @@ impl LocalFs for FaultFs {
         &self,
         read: crate::store::NativeOrdinaryRead,
     ) -> std::io::Result<Option<crate::store::NativeOrdinaryRecord>> {
-        // Keep ordinary leaves on their scalar fault-intercepted read path.
-        // Held-history closing observations use the genuine native worker and
-        // cannot acknowledge a submitted publication effect.
-        if read.path_for_test().is_some() {
+        // Default fixtures keep scalar leaf faults. An explicit observation
+        // scope forwards actual native control receipts; closing projections
+        // always use the genuine worker and cannot acknowledge publication.
+        if read.path_for_test().is_some() && !self.native_control_reads.load(Ordering::SeqCst) {
             return Ok(None);
         }
 

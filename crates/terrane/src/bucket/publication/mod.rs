@@ -391,6 +391,9 @@ impl<
     pub(crate) async fn observe_publication_retained(
         &self,
     ) -> Result<SelectedObservation<'_>, StoreFailure> {
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::SelectedGetObservation);
         let held = self.identity_proof();
         let control = control::Control::open(self.bucket(), false).await?;
         let selected = selection::resolve_held_retained(self.bucket(), &control, &held).await?;
@@ -412,6 +415,8 @@ impl<
             self.retained_namespace()?;
             crate::store::native_publication_effects::repair(self.fs(), &observed).await?;
         }
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.complete();
         Ok(observed)
     }
 
@@ -447,6 +452,9 @@ impl<
     pub(crate) async fn observe_for_read_ordinary_retained(
         &self,
     ) -> Result<SelectedObservation<'_>, StoreFailure> {
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::SelectedGetObservation);
         let held = self.identity_proof();
         let control = control::Control::open(self.bucket(), false).await?;
         let memo = std::sync::Arc::new(selection::DecodeMemo::new());
@@ -457,7 +465,7 @@ impl<
             let memo = std::sync::Arc::clone(&memo);
             Box::pin(async move { self.selected_held_reusing(&memo).await })
         });
-        Ok(SelectedObservation {
+        let observed = SelectedObservation {
             selected,
             operator_uid: self
                 .bucket()
@@ -465,7 +473,10 @@ impl<
                 .ok_or_else(unsupported)?,
             identity: self.identity_proof(),
             recheck,
-        })
+        };
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.complete();
+        Ok(observed)
     }
 
     /// Resolves one complete read observation without repairing materialized caches.
@@ -477,13 +488,16 @@ impl<
     /// Rejects malformed or unavailable selected evidence, changed physical
     /// bindings and missing trusted operator configuration.
     pub(crate) async fn observe_for_read(&self) -> Result<SelectedObservation<'_>, StoreFailure> {
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        let mut diagnostic =
+            crate::diagnostic_clock::span(crate::diagnostic_clock::Group::SelectedGetObservation);
         let selected = self.selected_held().await?;
         let memo = std::sync::Arc::new(selection::DecodeMemo::new());
         let recheck: SelectedRecheck<'_> = Box::new(move || {
             let memo = std::sync::Arc::clone(&memo);
             Box::pin(async move { self.selected_held_reusing(&memo).await })
         });
-        Ok(SelectedObservation {
+        let observed = SelectedObservation {
             selected,
             operator_uid: self
                 .bucket()
@@ -491,7 +505,10 @@ impl<
                 .ok_or_else(unsupported)?,
             identity: self.identity_proof(),
             recheck,
-        })
+        };
+        #[cfg(all(test, feature = "std", feature = "tokio"))]
+        diagnostic.complete();
+        Ok(observed)
     }
 
     async fn selected_held(&self) -> Result<Selected, StoreFailure> {

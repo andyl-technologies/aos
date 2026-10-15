@@ -8,8 +8,18 @@
 pub(crate) use super::content::BatchOutcome;
 #[cfg(all(feature = "tokio", unix))]
 pub(crate) use super::content::current_node_reads::CurrentNodeReads;
+/// Borrows the sealed native direct immutable DATA reader.
+#[cfg(all(feature = "tokio", unix))]
+pub(crate) use super::content::direct_node_reads::DirectNodeReads;
 #[cfg(all(feature = "tokio", unix))]
 pub(crate) use super::content::held_nodes::NodeReads;
+
+/// Retains distinct immutable invocation checks beneath shared DATA mechanics.
+#[cfg(all(feature = "tokio", unix))]
+pub(crate) use super::content::immutable_node_reads::ImmutableReadCheck;
+/// Borrows the sealed native overlay immutable DATA reader.
+#[cfg(all(feature = "tokio", unix))]
+pub(crate) use super::content::overlay_node_reads::OverlayNodeReads;
 
 use super::{BucketBinding, FileBucket, files};
 use crate::store::{

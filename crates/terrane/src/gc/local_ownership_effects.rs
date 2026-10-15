@@ -19,6 +19,39 @@ use crate::selected_bridge::{
 };
 use terrane_core::gc::{CreationJournal, DeleteOperation, DeletePhase, JournalState, Tombstone};
 
+/// Emits only the fixed first-ownership caller boundaries, with numeric data.
+#[cfg(all(test, feature = "std"))]
+struct OwnershipCost {
+    started: Option<crate::diagnostic_clock::Tick>,
+}
+
+#[cfg(all(test, feature = "std"))]
+impl OwnershipCost {
+    fn new() -> Self {
+        let enabled = std::env::var_os("TERRANE_REF_PHASE_TRACE").as_deref()
+            == Some(std::ffi::OsStr::new("stages"));
+        let trace = Self {
+            started: enabled.then(crate::diagnostic_clock::tick),
+        };
+        trace.mark("entry", None);
+        trace
+    }
+
+    fn mark(&self, phase: &'static str, boundary: Option<u8>) {
+        use std::io::Write;
+
+        let Some(started) = self.started else {
+            return;
+        };
+        let at = crate::diagnostic_clock::tick();
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "native-cost role=ownership-caller boundary={boundary:?} phase={phase} process_at={at:?} elapsed={:?}",
+            at.saturating_sub(started),
+        );
+    }
+}
+
 fn failure(error: super::NativeEffectFailure) -> StoreFailure {
     match error {
         super::NativeEffectFailure::Rejected(error) => error,
@@ -123,9 +156,15 @@ pub(crate) async fn publish<F: LocalFs + BucketBinding>(
     fs: &F,
     checked: &CheckedLocalOwnership<'_, '_>,
 ) -> Result<DeleteOperation, StoreFailure> {
+    #[cfg(all(test, feature = "std"))]
+    let cost = OwnershipCost::new();
     checked.triple().recheck().map_err(failure)?;
     let current = checked.current();
+    #[cfg(all(test, feature = "std"))]
+    cost.mark("capture-start", None);
     let (mut frame, control) = capture(fs, current).await?;
+    #[cfg(all(test, feature = "std"))]
+    cost.mark("capture-complete", None);
     let policy = FencePolicy::ProtectedRecord { owner: frame.owner };
     let operation = checked.operation();
     let key = operation.authorization.operation_key();
@@ -154,7 +193,11 @@ pub(crate) async fn publish<F: LocalFs + BucketBinding>(
             return Err(corrupt());
         }
     }
+    #[cfg(all(test, feature = "std"))]
+    cost.mark("preflight-complete", None);
     for boundary in 0..=4 {
+        #[cfg(all(test, feature = "std"))]
+        cost.mark("boundary-start", Some(boundary));
         current.revalidate().await?;
         checked.triple().recheck().map_err(failure)?;
         let nonce: [u8; 16] = fs
@@ -183,15 +226,21 @@ pub(crate) async fn publish<F: LocalFs + BucketBinding>(
                 )
                 .await?;
         }
+        #[cfg(all(test, feature = "std"))]
+        cost.mark("directories-complete", Some(boundary));
         if frame.actual_read(fs, &target, policy).await?.as_deref() != expected
             || frame.actual_read(fs, &temporary, policy).await?.is_some()
         {
             return Err(corrupt());
         }
+        #[cfg(all(test, feature = "std"))]
+        cost.mark("dispatch", Some(boundary));
         frame
             .execute(fs, Plan::AcknowledgeLocalOwnership(Box::new(request)))
             .await?;
         receiver.take().map_err(failure)?;
+        #[cfg(all(test, feature = "std"))]
+        cost.mark("acknowledged", Some(boundary));
         // Rebind only the native worker's exact acknowledged protected replacement.
         frame
             .reads
@@ -211,6 +260,8 @@ pub(crate) async fn publish<F: LocalFs + BucketBinding>(
     }
     context.final_check().recheck()?;
     checked.triple().recheck().map_err(failure)?;
+    #[cfg(all(test, feature = "std"))]
+    cost.mark("final-checks-complete", None);
     operation
         .advance(DeletePhase::Invalidated, operation.current_lease.clone())
         .map_err(|_| corrupt())

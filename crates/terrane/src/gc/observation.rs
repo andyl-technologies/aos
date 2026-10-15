@@ -8,7 +8,7 @@ use crate::bucket::BucketBinding;
 use crate::bucket::held::{HeldBucket, HeldWatch};
 use crate::bucket::publication::receipts::RecordRead;
 use crate::pack::{
-    MergedShard, PackClass, PackIndexSnapshot, PackReader, RawBodyDecoder, RecordState,
+    MergedShard, PackClass, PackId, PackIndexSnapshot, PackReader, RawBodyDecoder, RecordState,
 };
 use crate::store::{
     ByteRange, Capabilities, CapabilityReport, Clock, ContentStore, ContentUpload,
@@ -17,9 +17,9 @@ use crate::store::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
-use terrane_core::bucket::{BucketCapabilities, BucketKey, GenerationManifest};
+use terrane_core::bucket::{BucketCapabilities, BucketKey, GenerationManifest, PackInventoryEntry};
 use terrane_core::derivation::Memo;
 use terrane_core::derived::AttrRecord;
 use terrane_core::gc::publication::CommittedSelection;
@@ -148,8 +148,17 @@ pub(crate) struct MetadataStore<'operation, 'held, F, B, V> {
     identities: Mutex<Vec<Identity>>,
     selected: BTreeMap<String, Option<Vec<u8>>>,
     bodies: Mutex<BTreeMap<(u8, terrane_core::identity::Digest), Vec<u8>>>,
+    packs: Mutex<BTreeMap<PackId, Arc<CachedMetadataPack>>>,
+    parsed_catalog: Mutex<Option<Arc<crate::bucket::catalog::Catalog>>>,
     session: &'operation crate::gc::runner::session::Session,
     restore: Mutex<Option<RestoreCandidate>>,
+}
+
+/// Retains verified physical container bytes without admitting any member body.
+struct CachedMetadataPack {
+    inventory: PackInventoryEntry,
+    index: RecordRead,
+    pack: RecordRead,
 }
 
 #[derive(Clone)]
@@ -172,6 +181,8 @@ impl<'operation, 'held, F, B, V> MetadataStore<'operation, 'held, F, B, V> {
             identities: Mutex::new(Vec::new()),
             selected: observed.logical().clone(),
             bodies: Mutex::new(BTreeMap::new()),
+            packs: Mutex::new(BTreeMap::new()),
+            parsed_catalog: Mutex::new(None),
             session,
             restore: Mutex::new(None),
         }
@@ -292,7 +303,31 @@ where
         })
     }
 
-    async fn catalog(&self) -> Result<crate::bucket::catalog::Catalog, StoreFailure> {
+    /// Shares parsed data only within this adapter's fixed held selection.
+    ///
+    /// Actual misses retain all of their physical preimages before choosing a
+    /// cache winner. No history, current decision or protected control is cached.
+    async fn catalog(&self) -> Result<Arc<crate::bucket::catalog::Catalog>, StoreFailure> {
+        self.session.recheck()?;
+        let cached = self.parsed_catalog.lock().map_err(|_| corrupt())?.clone();
+        if let Some(catalog) = cached {
+            self.session.recheck()?;
+            return Ok(catalog);
+        }
+
+        let catalog = Arc::new(self.load_catalog().await?);
+        self.session.recheck()?;
+        self.parsed_catalog
+            .lock()
+            .map_err(|_| corrupt())?
+            .get_or_insert_with(|| Arc::clone(&catalog));
+        Ok(catalog)
+    }
+
+    /// Decodes a complete catalog while recording each actual artifact read.
+    ///
+    /// Partial failure preserves earlier read preimages and publishes no cache.
+    async fn load_catalog(&self) -> Result<crate::bucket::catalog::Catalog, StoreFailure> {
         let capability_bytes = self
             .selected
             .get("CAPABILITIES")
@@ -588,6 +623,75 @@ where
             candidate_entry
                 .ok_or_else(|| StoreFailure::new(StoreErrorKind::Absent(identity.clone())))?
         };
+        let inventory = catalog
+            .inventory
+            .as_ref()
+            .and_then(|entries| entries.iter().find(|entry| entry.pack_id == *id.as_bytes()))
+            .ok_or_else(corrupt)?;
+        let cached = self.packs.lock().map_err(|_| corrupt())?.get(&id).cloned();
+        let mut acquired = None;
+        let container = match cached {
+            Some(container) => container,
+            None => {
+                let container = Arc::new(self.read_metadata_pack(&catalog, id).await?);
+                acquired = Some(Arc::clone(&container));
+                container
+            }
+        };
+        if &container.inventory != inventory {
+            return Err(corrupt());
+        }
+        let reader =
+            PackReader::open(container.pack.bytes().ok_or_else(corrupt)?).map_err(|_| corrupt())?;
+        // Membership, kind, canonical body and identity remain requested-member
+        // checks, even when another identity already verified the same container.
+        if !reader.entries().contains(&location) {
+            return Err(corrupt());
+        }
+        let body = reader
+            .read(location.kind(), &hash, &RawBodyDecoder)
+            .map_err(|_| corrupt())?;
+        self.session.recheck()?;
+        if let Some(container) = acquired {
+            // Every actual successful miss retains its own preimages, including
+            // concurrent misses. Sharing bytes never drops conflicting reads.
+            self.reads
+                .lock()
+                .map_err(|_| corrupt())?
+                .extend([container.index.clone(), container.pack.clone()]);
+            self.packs
+                .lock()
+                .map_err(|_| corrupt())?
+                .entry(id)
+                .or_insert(container);
+        }
+        if retain_identity {
+            self.identities
+                .lock()
+                .map_err(|_| corrupt())?
+                .push(identity.clone());
+        }
+        self.bodies
+            .lock()
+            .map_err(|_| corrupt())?
+            .insert(cache_key, body.clone());
+        Ok(body)
+    }
+
+    /// Acquires one actual metadata container after independent member placement.
+    ///
+    /// No body or semantic role is admitted here. Only a successful requested
+    /// read inserts these preimages into this adapter's operation-local cache.
+    ///
+    /// # Errors
+    /// Preserves actual storage failures and rejects mismatched container bytes,
+    /// identities, geometry, metadata class and detached-index relationships.
+    async fn read_metadata_pack(
+        &self,
+        catalog: &crate::bucket::catalog::Catalog,
+        id: PackId,
+    ) -> Result<CachedMetadataPack, StoreFailure> {
+        let bucket = self.held.bucket();
         let index = bucket
             .read_optional_observed(&BucketKey::parse(&id.index_key()).map_err(|_| corrupt())?)
             .await?;
@@ -631,26 +735,11 @@ where
         reader
             .check_index_object(index_bytes)
             .map_err(|_| corrupt())?;
-        if !reader.entries().contains(&location) {
-            return Err(corrupt());
-        }
-        let body = reader
-            .read(location.kind(), &hash, &RawBodyDecoder)
-            .map_err(|_| corrupt())?;
-        self.session.recheck()?;
-        let mut reads = self.reads.lock().map_err(|_| corrupt())?;
-        reads.extend([index, pack]);
-        if retain_identity {
-            self.identities
-                .lock()
-                .map_err(|_| corrupt())?
-                .push(identity.clone());
-        }
-        self.bodies
-            .lock()
-            .map_err(|_| corrupt())?
-            .insert(cache_key, body.clone());
-        Ok(body)
+        Ok(CachedMetadataPack {
+            inventory: entry.clone(),
+            index,
+            pack,
+        })
     }
 }
 

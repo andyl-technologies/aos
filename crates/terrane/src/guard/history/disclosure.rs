@@ -214,7 +214,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
             HistoryCompletion::Pending(pending) => Ok(pending),
             HistoryCompletion::Complete(_, _)
             | HistoryCompletion::PendingCurrent(_)
-            | HistoryCompletion::PendingHeld(_) => Err(invalid()),
+            | HistoryCompletion::PendingHeld(_)
+            | HistoryCompletion::PendingDirect(_)
+            | HistoryCompletion::PendingOverlay(_) => Err(invalid()),
         }
     }
 
@@ -251,7 +253,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
             HistoryCompletion::PendingCurrent(pending) => Ok(pending),
             HistoryCompletion::Complete(_, _)
             | HistoryCompletion::Pending(_)
-            | HistoryCompletion::PendingHeld(_) => Err(invalid()),
+            | HistoryCompletion::PendingHeld(_)
+            | HistoryCompletion::PendingDirect(_)
+            | HistoryCompletion::PendingOverlay(_) => Err(invalid()),
         }
     }
 
@@ -286,7 +290,79 @@ impl<S: Store, C: Clock> Guard<S, C> {
             HistoryCompletion::PendingHeld(pending) => Ok(pending),
             HistoryCompletion::Complete(_, _)
             | HistoryCompletion::Pending(_)
-            | HistoryCompletion::PendingCurrent(_) => Err(invalid()),
+            | HistoryCompletion::PendingCurrent(_)
+            | HistoryCompletion::PendingDirect(_)
+            | HistoryCompletion::PendingOverlay(_) => Err(invalid()),
+        }
+    }
+
+    /// Prepares the complete owning history for a distinct immutable native read.
+    ///
+    /// # Errors
+    /// Preserves all history checks and refuses unrelated purpose or reader inputs.
+    #[cfg(all(feature = "std", feature = "tokio", unix))]
+    pub(super) async fn prepare_direct_history_with_reads<'scope, 'history, 'held>(
+        &self,
+        identity: Digest,
+        observation: HistoryObservation<'history>,
+        purpose: &'scope crate::guard::direct_history::DirectPurpose<'history, 'held>,
+        reads: &'scope dyn crate::bucket::held::DirectNodeReads,
+    ) -> Result<
+        crate::guard::direct_history::PendingDirectHistory<'scope, 'history, 'held>,
+        StoreFailure,
+    > {
+        purpose.check(identity, observation)?;
+        reads.check_holder(observation.identity().ok_or_else(invalid)?)?;
+        reads.check_direct(purpose.read_check())?;
+        match self
+            .complete_history::<false>(
+                identity,
+                observation,
+                Some(RetainedReadPurpose::Direct { purpose, reads }),
+            )
+            .await?
+        {
+            HistoryCompletion::PendingDirect(pending) => Ok(pending),
+            HistoryCompletion::Complete(_, _)
+            | HistoryCompletion::Pending(_)
+            | HistoryCompletion::PendingCurrent(_)
+            | HistoryCompletion::PendingHeld(_)
+            | HistoryCompletion::PendingOverlay(_) => Err(invalid()),
+        }
+    }
+
+    /// Prepares the complete owning history for a distinct immutable native read.
+    ///
+    /// # Errors
+    /// Preserves all history checks and refuses unrelated purpose or reader inputs.
+    #[cfg(all(feature = "std", feature = "tokio", unix))]
+    pub(in crate::guard) async fn prepare_overlay_history_with_reads<'scope, 'history, 'held>(
+        &self,
+        identity: Digest,
+        observation: HistoryObservation<'history>,
+        purpose: &'scope crate::guard::overlay_history::OverlayPurpose<'history, 'held>,
+        reads: &'scope dyn crate::bucket::held::OverlayNodeReads,
+    ) -> Result<
+        crate::guard::overlay_history::PendingOverlayHistory<'scope, 'history, 'held>,
+        StoreFailure,
+    > {
+        purpose.check(identity, observation)?;
+        reads.check_holder(observation.identity().ok_or_else(invalid)?)?;
+        reads.check_overlay(purpose.read_check())?;
+        match self
+            .complete_history::<false>(
+                identity,
+                observation,
+                Some(RetainedReadPurpose::Overlay { purpose, reads }),
+            )
+            .await?
+        {
+            HistoryCompletion::PendingOverlay(pending) => Ok(pending),
+            HistoryCompletion::Complete(_, _)
+            | HistoryCompletion::Pending(_)
+            | HistoryCompletion::PendingCurrent(_)
+            | HistoryCompletion::PendingHeld(_)
+            | HistoryCompletion::PendingDirect(_) => Err(invalid()),
         }
     }
 
@@ -645,6 +721,22 @@ impl<S: Store, C: Clock> Guard<S, C> {
                         )
                         .await?;
                     }
+                    RetainedReadPurpose::Direct { reads, .. } => {
+                        super::completion::active::check_relationships(
+                            reads,
+                            plan,
+                            self.config().min_chunk_size,
+                        )
+                        .await?;
+                    }
+                    RetainedReadPurpose::Overlay { reads, .. } => {
+                        super::completion::active::check_relationships(
+                            reads,
+                            plan,
+                            self.config().min_chunk_size,
+                        )
+                        .await?;
+                    }
                     RetainedReadPurpose::Current { reads, .. }
                     | RetainedReadPurpose::Held { reads, .. } => {
                         super::completion::active::check_relationships(
@@ -710,6 +802,34 @@ impl<S: Store, C: Clock> Guard<S, C> {
                     trace.mark("current-history-pending-returned");
                     return Ok(HistoryCompletion::PendingCurrent(
                         crate::guard::current_history::PendingCurrentHistory {
+                            history: Box::new(history),
+                            requested: identity,
+                            observation,
+                            purpose,
+                            reads,
+                            pending_uses,
+                        },
+                    ));
+                }
+                RetainedReadPurpose::Direct { purpose, reads } => {
+                    purpose.check(identity, observation)?;
+                    self.record_historical_view_inputs(&history, observation, &pending_uses)?;
+                    return Ok(HistoryCompletion::PendingDirect(
+                        crate::guard::direct_history::PendingDirectHistory {
+                            history: Box::new(history),
+                            requested: identity,
+                            observation,
+                            purpose,
+                            reads,
+                            pending_uses,
+                        },
+                    ));
+                }
+                RetainedReadPurpose::Overlay { purpose, reads } => {
+                    purpose.check(identity, observation)?;
+                    self.record_historical_view_inputs(&history, observation, &pending_uses)?;
+                    return Ok(HistoryCompletion::PendingOverlay(
+                        crate::guard::overlay_history::PendingOverlayHistory {
                             history: Box::new(history),
                             requested: identity,
                             observation,

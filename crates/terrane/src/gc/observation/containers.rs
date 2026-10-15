@@ -8,12 +8,13 @@ use crate::bucket::BucketBinding;
 use crate::bucket::publication::receipts::GcPackRead;
 use crate::pack::{MergedShard, PackId, PackIndexSnapshot};
 use crate::store::{Clock, ContentValidator, LocalFs, StoreFailure};
+use std::sync::Arc;
 use terrane_core::bucket::{BucketCapabilities, BucketKey, PackExclusion, PackInventoryEntry};
 use terrane_core::identity::{IdentityKind, TERRANE_V1};
 
 /// Retains complete selected catalog data while preserving its exact logical binding.
 pub(crate) struct CollectionCatalog {
-    catalog: crate::bucket::catalog::Catalog,
+    catalog: Arc<crate::bucket::catalog::Catalog>,
     manifest: Vec<u8>,
 }
 

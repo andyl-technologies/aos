@@ -15,6 +15,169 @@ type Result<T = ()> = core::result::Result<T, Box<dyn core::error::Error>>;
 const REFERENCE: &str = "refs/heads/_/main";
 
 #[tokio::test]
+async fn native_active_completion_direct_history_refuses_missing_required_auxiliary() -> Result {
+    use crate::guard::StagedUpload;
+    use crate::store::{ContentUpload, LocalFs, MetaUpload, TokioLocalFs};
+
+    let repository = fixture(true).await?;
+    let mut proposal = indexed(Vec::new(), false)?;
+    let primary = proposal.primary;
+    let owner = proposal.owner;
+    // Genuine immutable offers isolate auxiliary storage before authoring. The
+    // signed owner still binds the same complete independently built index.
+    for (address, bytes) in &proposal.index_nodes {
+        let identity = repository
+            .coordinator()
+            .store()
+            .put(ContentUpload::Meta(MetaUpload::new(
+                IdentityKind::Node,
+                bytes,
+            )?))
+            .await?;
+        assert_eq!(identity.terrane_v1_digest()?, *address);
+    }
+    let auxiliary = proposal
+        .index_nodes
+        .keys()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut uploads = Vec::new();
+    for upload in proposal.request.uploads {
+        let omit = match &upload {
+            StagedUpload::Meta {
+                kind: IdentityKind::Node,
+                bytes,
+            } => auxiliary.contains(
+                &TERRANE_V1
+                    .calculate(IdentityKind::Node, bytes)?
+                    .terrane_v1_digest()?,
+            ),
+            _ => false,
+        };
+        if !omit {
+            uploads.push(upload);
+        }
+    }
+    proposal.request.uploads = uploads;
+    let mut session = repository.begin(REFERENCE, &token(), "sdk").await?;
+    let first = repository
+        .commit_request(&mut session, proposal.request)
+        .await?;
+    let second = repository
+        .commit_request(&mut session, indexed(vec![first.commit], false)?.request)
+        .await?;
+    assert_ne!(first.commit, second.commit);
+
+    let store = repository.coordinator().store();
+    let mut primary_pack = None;
+    for directory in TokioLocalFs
+        .read_dir(&store.root().join("objects/pack"))
+        .await?
+    {
+        for path in TokioLocalFs.read_dir(&directory).await? {
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "pack")
+            {
+                let bytes = TokioLocalFs.read_nofollow(&path).await?;
+                let reader = crate::pack::PackReader::open(&bytes)?;
+                if reader
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.hash() == &primary)
+                {
+                    assert!(
+                        reader
+                            .entries()
+                            .iter()
+                            .all(|entry| auxiliary.contains(entry.hash()))
+                    );
+                    assert!(primary_pack.replace(path).is_none());
+                }
+            }
+        }
+    }
+    let primary_pack = primary_pack.ok_or("genuine auxiliary-only primary pack absent")?;
+    let before = {
+        let holder = SingleHeld::acquire(store).await?;
+        let destination = holder.destination();
+        let observed = destination.observe_publication().await?;
+        let lineage = destination.selected_lineage(&observed, REFERENCE).await?;
+        observed.revalidate().await?;
+        lineage
+    };
+    let guard = repository.coordinator().guard();
+    for tree_and_history in [false, true] {
+        let baseline =
+            direct_auxiliary_witness(&repository, first.commit, second.commit, tree_and_history)
+                .await?;
+        assert_eq!(baseline.commit().tree, owner);
+
+        let saved = primary_pack.with_extension("required-auxiliary-saved");
+        TokioLocalFs.rename(&primary_pack, &saved).await?;
+        let refused =
+            direct_auxiliary_witness(&repository, first.commit, second.commit, tree_and_history)
+                .await;
+        // Canonical signed namespace remains readable while the actual required
+        // auxiliary recipe is absent; this is not shared-pack corruption.
+        let canonical = crate::guard::TreeEvidence::load_commit(
+            store,
+            first.commit,
+            guard.config().min_chunk_size,
+        )
+        .await;
+        TokioLocalFs.rename(&saved, &primary_pack).await?;
+        let canonical = canonical?;
+        assert_eq!(canonical.root, owner);
+        assert_eq!(canonical.commit.as_ref(), Some(baseline.commit()));
+        assert!(
+            refused.is_err(),
+            "missing required auxiliary completed direct history"
+        );
+        let restored =
+            direct_auxiliary_witness(&repository, first.commit, second.commit, tree_and_history)
+                .await?;
+        assert_eq!(restored, baseline);
+        assert_eq!(store.ref_get(REFERENCE).await?, Some(second.clone()));
+    }
+    let holder = SingleHeld::acquire(store).await?;
+    let destination = holder.destination();
+    let observed = destination.observe_publication().await?;
+    assert_eq!(
+        destination.selected_lineage(&observed, REFERENCE).await?,
+        before
+    );
+    observed.revalidate().await?;
+    Ok(())
+}
+
+// Both tokenless APIs complete owning history. Tree intentionally exposes only
+// its actual tree/commit witness, so no hidden completed-ledger count is claimed.
+async fn direct_auxiliary_witness(
+    repository: &Native,
+    target: Digest,
+    current: Digest,
+    tree_and_history: bool,
+) -> Result<terrane_core::provenance::VerifiedCommit> {
+    let guard = repository.coordinator().guard();
+    let observation = crate::guard::HistoryObservation::default();
+    if tree_and_history {
+        let tree = guard.verified_tree_observed(target, observation).await?;
+        assert_eq!(tree.commit.identity(), target);
+        assert_eq!(tree.evidence.root, tree.commit.commit().tree);
+        Ok(tree.commit)
+    } else {
+        let history = guard.verified_history_observed(target, observation).await?;
+        assert_eq!(history.commits().count(), 1);
+        assert!(history.commit(&current).is_none());
+        Ok(history
+            .commit(&target)
+            .ok_or("historical target absent")?
+            .clone())
+    }
+}
+
+#[tokio::test]
 async fn native_active_completion_verifies_indexed_owner_before_selected_ack() -> Result {
     let repository = fixture(true).await?;
     let proposal = indexed(Vec::new(), false)?;

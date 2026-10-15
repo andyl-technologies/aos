@@ -252,6 +252,8 @@ where
         windows,
         carry_sources,
     } = settings;
+    #[cfg(test)]
+    qualification_stage("selected-checks", carry_sources);
     let (expected_roots, expected_state) = checkpoint;
     let now = session.recheck()?;
     let lease = observed
@@ -298,6 +300,8 @@ where
     {
         return Err(denied().into());
     }
+    #[cfg(test)]
+    qualification_stage("checkpoint-reads", carry_sources);
     let mut mark_reads = Vec::new();
     let mut cycle_marks = BTreeSet::new();
     for pointer in &selected_state.checkpoints {
@@ -327,6 +331,8 @@ where
         });
     }
 
+    #[cfg(test)]
+    qualification_stage("guard-configuration", carry_sources);
     let consumed = ConsumedResolver::new(guard, authority)?;
     consumed.registration(authority)?;
     let snapshot_bytes = consumed.snapshot_bytes()?;
@@ -353,6 +359,8 @@ where
     if let Some(retained) = retained_controls {
         replay.retain_original_controls(retained)?;
     }
+    #[cfg(test)]
+    qualification_stage("cycle-histories", carry_sources);
     let cycle_histories = super::native_collection_roots::cycle(
         &replay,
         &consumed,
@@ -365,6 +373,8 @@ where
     let (root_read, state_read) = cycle_histories.cycle_reads()?;
     let (root_read, state_read) = (root_read.clone(), state_read.clone());
     let (cycle_root_bytes, cycle_state_bytes) = cycle_histories.cycle_bytes()?;
+    #[cfg(test)]
+    qualification_stage("cycle-replay", carry_sources);
     crate::selected_bridge::native_collection_checkpoints::replay::verify(
         &replay,
         &consumed,
@@ -375,6 +385,8 @@ where
         &cycle_marks,
     )
     .await?;
+    #[cfg(test)]
+    qualification_stage("current-catalog", carry_sources);
     let history = crate::guard::collection_authority::historical_guard(
         guard,
         held,
@@ -389,6 +401,8 @@ where
     catalog.inventory()?;
     catalog.exclusions()?;
     catalog.burns()?;
+    #[cfg(test)]
+    qualification_stage("current-inventory", carry_sources);
     let mut inputs = Vec::new();
     let refs = collection_observation::inventory(held, observed, &mut inputs).await?;
     let capabilities =
@@ -396,6 +410,8 @@ where
     let rows = fence_refs(observed, &capabilities, &refs)?;
     // Retain the full selected log-chain observations separately from fence
     // head rows, including every absent branch's last selected predecessor.
+    #[cfg(test)]
+    qualification_stage("current-histories", carry_sources);
     let current_histories = super::native_collection_roots::current(
         &history,
         &consumed,
@@ -409,6 +425,8 @@ where
     let current_roots = current_histories.snapshot().clone();
     let mut current_state = roots::initial(&current_roots);
     let mut current_marks = BTreeSet::new();
+    #[cfg(test)]
+    qualification_stage("current-mark", carry_sources);
     while !current_state.pending.is_empty() {
         session.recheck()?;
         walk::expand(
@@ -425,6 +443,8 @@ where
     // Retention evaluation uses actual current Session time. It can narrow
     // roots while the immutable ref/policy set stays held; exact equality to
     // the cycle snapshot or an earlier conservative cutoff is unnecessary.
+    #[cfg(test)]
+    qualification_stage("late-roots", carry_sources);
     let late_refs = collection_observation::inventory(held, observed, &mut inputs).await?;
     let late_roots = roots::snapshot(
         &history,
@@ -450,6 +470,8 @@ where
     let mut eligibility_marks = cycle_marks.clone();
     eligibility_marks.extend(current_marks.iter().copied());
 
+    #[cfg(test)]
+    qualification_stage("sources", carry_sources);
     let sources = if carry_sources {
         Some(
             super::native_collection_sources::qualify(
@@ -477,6 +499,8 @@ where
         // configured owner. Destination UID never substitutes for that factory.
         return Err(unsupported().into());
     }
+    #[cfg(test)]
+    qualification_stage("controls", carry_sources);
     let mut controls = None;
     let retained = match retained_controls {
         Some(retained) => {
@@ -523,6 +547,8 @@ where
         controls: used.controls.clone(),
     };
     fence.encode().map_err(|_| denied())?;
+    #[cfg(test)]
+    qualification_stage("closing-revalidation", carry_sources);
     observed.revalidate().await?;
     if let Some(controls) = &mut controls {
         controls.revalidate().await?;
@@ -531,6 +557,8 @@ where
         super::native_collection::revalidate_controls(held.fs(), &retained, &used.controls).await?;
     }
     session.recheck()?;
+    #[cfg(test)]
+    qualification_stage("complete", carry_sources);
     Ok(CheckedCurrentCollection {
         observed,
         session,
@@ -762,6 +790,17 @@ where
             controls: vec![retained],
         },
     })
+}
+
+/// Reports qualification phases without supplying collector time or authority.
+#[cfg(test)]
+fn qualification_stage(phase: &'static str, carry_sources: bool) {
+    if std::env::var_os("TERRANE_INDEX_REBUILD_TRACE").is_some() {
+        eprintln!(
+            "gc-current-stage phase={phase} carry_sources={carry_sources} process_at={:?}",
+            crate::diagnostic_clock::tick(),
+        );
+    }
 }
 
 #[cfg(test)]

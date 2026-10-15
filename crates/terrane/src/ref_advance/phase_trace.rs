@@ -2,6 +2,12 @@
 //!
 //! Observations add no storage operation, exclusion or publication authority.
 //! Their local scope origins never change the original request deadline.
+//!
+//! `TERRANE_REF_PHASE_TRACE=stages` omits native traces and scopes starting at
+//! `ordinary-record-start`, `payload-namespace-start` or
+//! `content-get-exclusion-submitted`. Retained phases append a separate process
+//! clock observation; injected clock fields and deadline inputs remain unchanged.
+//! Other present values retain verbose tracing, and absence disables tracing.
 
 use crate::store::Clock;
 use std::time::Duration;
@@ -14,6 +20,7 @@ pub(crate) struct PhaseTrace<'a, C: Clock> {
     started: Duration,
     last: Duration,
     enabled: bool,
+    stages_only: bool,
 }
 
 impl<'a, C: Clock> PhaseTrace<'a, C> {
@@ -28,7 +35,16 @@ impl<'a, C: Clock> PhaseTrace<'a, C> {
         started: Option<Duration>,
         phase: &str,
     ) -> Self {
-        let enabled = std::env::var_os("TERRANE_REF_PHASE_TRACE").is_some();
+        let setting = std::env::var_os("TERRANE_REF_PHASE_TRACE");
+        let stages_only = setting.as_deref() == Some(std::ffi::OsStr::new("stages"));
+        let enabled = setting.is_some()
+            && !(stages_only
+                && matches!(
+                    phase,
+                    "ordinary-record-start"
+                        | "payload-namespace-start"
+                        | "content-get-exclusion-submitted"
+                ));
         let now = if enabled {
             clock.monotonic()
         } else {
@@ -41,6 +57,7 @@ impl<'a, C: Clock> PhaseTrace<'a, C> {
             started: started.unwrap_or(now),
             last: now,
             enabled,
+            stages_only,
         };
         trace.mark(phase);
         trace
@@ -55,15 +72,28 @@ impl<'a, C: Clock> PhaseTrace<'a, C> {
             return;
         }
         let now = self.clock.monotonic();
-        eprintln!(
-            "ref-phase ref={} candidate={:?} start={:?} at={:?} elapsed={:?} delta={:?} phase={phase}",
-            self.reference,
-            self.candidate,
-            self.started,
-            now,
-            now.checked_sub(self.started),
-            now.checked_sub(self.last),
-        );
+        if self.stages_only {
+            eprintln!(
+                "ref-phase ref={} candidate={:?} start={:?} at={:?} elapsed={:?} delta={:?} phase={phase} process_at={:?}",
+                self.reference,
+                self.candidate,
+                self.started,
+                now,
+                now.checked_sub(self.started),
+                now.checked_sub(self.last),
+                crate::diagnostic_clock::tick(),
+            );
+        } else {
+            eprintln!(
+                "ref-phase ref={} candidate={:?} start={:?} at={:?} elapsed={:?} delta={:?} phase={phase}",
+                self.reference,
+                self.candidate,
+                self.started,
+                now,
+                now.checked_sub(self.started),
+                now.checked_sub(self.last),
+            );
+        }
         self.last = now;
     }
 }
@@ -93,7 +123,9 @@ impl NativeTrace {
     /// Panics if enabled diagnostics cannot write to standard error.
     pub(crate) fn new(path: &std::path::Path, role: &'static str) -> Self {
         static NEXT_SCOPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let enabled = std::env::var_os("TERRANE_REF_PHASE_TRACE").is_some();
+        let setting = std::env::var_os("TERRANE_REF_PHASE_TRACE");
+        let enabled =
+            setting.is_some() && setting.as_deref() != Some(std::ffi::OsStr::new("stages"));
         #[cfg(feature = "tokio")]
         let owner_task = format!("{:?}", tokio::task::try_id());
         #[cfg(not(feature = "tokio"))]
