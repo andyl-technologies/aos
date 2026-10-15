@@ -88,13 +88,25 @@ impl InstalledCompleteScene {
     ///
     /// # Errors
     /// Refuses a repeated/retired scene or any installed report, native, SDK or
-    /// initial-lifecycle gate. All partial owners remain in this same capsule.
+    /// initial-lifecycle gate. A newly started failure retires the same originals;
+    /// a refused repeat leaves their existing lifecycle unchanged. All partial
+    /// owners remain in this same capsule.
     pub fn prepare(&mut self) -> Result<(), QualificationError> {
         self.authenticate_creator()?;
         if self.attempted || self.retired {
             return Err(refused());
         }
         self.attempted = true;
+        let result = self.prepare_started();
+        if result.is_err() {
+            // Only this call spent the entry. Refused duplicates must not retire
+            // originals retained by an earlier attempt.
+            let _ = self.retire();
+        }
+        result
+    }
+
+    fn prepare_started(&mut self) -> Result<(), QualificationError> {
         // Use the same driver phases, with an explicit ownership boundary
         // after its into-slot stage and before its first startup action.
         PacketCompleteReportStartupHolder::stage_original_scene_into(

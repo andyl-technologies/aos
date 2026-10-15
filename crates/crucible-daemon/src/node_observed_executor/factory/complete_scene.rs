@@ -32,11 +32,7 @@ impl InstalledNodeCatalog {
             .complete_scene
             .as_mut()
             .ok_or_else(|| refused("complete scene is not installed"))?;
-        let result = original.prepare().map_err(native);
-        if result.is_err() {
-            let _ = original.retire();
-        }
-        result
+        original.prepare().map_err(native)
     }
 
     pub(crate) fn complete_scene_world_count(&self) -> usize {
@@ -56,5 +52,35 @@ impl InstalledNodeCatalog {
             original.poll_reclamation().map_err(native)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_prepare_refusal_preserves_spent_capsule_and_world_credit() {
+        InstalledCompleteScene::with_spent_prepare_entry_for_test(|original| {
+            let executable = std::env::current_exe().unwrap();
+            let expected = measure_executable(&executable).unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let mut catalog = InstalledNodeCatalog::new(
+                executable,
+                expected,
+                directory.path().to_path_buf(),
+                Duration::from_secs(1),
+                1,
+            )
+            .unwrap();
+            catalog.complete_scene = Some(original);
+
+            assert!(catalog.prepare_complete_scene().is_err());
+            assert_eq!(catalog.complete_scene_world_count(), 1);
+            assert!(!catalog.complete_scene.as_ref().unwrap().is_reclaimed());
+
+            catalog.poll_complete_scene_reclamation(true).unwrap();
+            assert_eq!(catalog.complete_scene_world_count(), 0);
+        });
     }
 }

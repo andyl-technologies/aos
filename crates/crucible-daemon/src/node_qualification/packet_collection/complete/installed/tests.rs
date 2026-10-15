@@ -61,7 +61,7 @@ fn changed_package_bytes_and_accepted_fields_refuse_before_namespace_creation() 
 }
 
 #[test]
-fn changed_actual_source_and_duplicate_content_refuse_before_namespace_creation() {
+fn changed_declared_source_and_duplicate_content_refuse_installation() {
     let (_source, mut value) = super::super::tests::installed_scene_declaration();
     let directory = tempfile::tempdir().unwrap();
     value["measurements"][0]["sources"][0]["content"]["hash"]["digest"] =
@@ -91,4 +91,65 @@ fn unsupported_profile_refuses_before_private_socket_acquisition() {
     let target = directory.path().join("unsupported");
     assert!(InstalledCompleteScene::install(manifest, target.clone()).is_err());
     assert!(!target.exists());
+}
+
+impl InstalledCompleteScene {
+    /// Visits a real installed capsule restricted to its spent-entry guard.
+    pub(crate) fn with_spent_prepare_entry_for_test(visit: impl FnOnce(Self)) {
+        let (_source, value) = super::super::tests::installed_scene_declaration();
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = pinned(directory.path(), &value);
+        let mut installed = Self::install(manifest, directory.path().join("scene")).unwrap();
+        // Restrict the actual pre-Child capsule to exercise its repeated-entry
+        // refusal. This does not model a successful native preparation.
+        installed.attempted = true;
+        visit(installed);
+    }
+}
+
+#[test]
+fn started_prepare_failure_retires_without_retry_or_losing_original_holder() {
+    let (_source, value) = super::super::tests::installed_scene_declaration();
+    let directory = tempfile::tempdir().unwrap();
+    let manifest = pinned(directory.path(), &value);
+    let mut installed =
+        InstalledCompleteScene::install(manifest, directory.path().join("scene")).unwrap();
+    let original = Rc::clone(&installed.original);
+    // The real stage retains these owners, then refuses this invalid geometry
+    // before supervisor reservation or any Child construction.
+    installed.incoming.as_mut().unwrap().runtime_limits.maximum_nodes = 0;
+
+    assert!(installed.prepare().is_err());
+    assert!(installed.attempted);
+    assert!(installed.retired);
+    assert!(installed.incoming.is_none());
+    assert!(Rc::ptr_eq(&original, &installed.original));
+    assert!(!installed.is_reclaimed());
+
+    assert!(installed.prepare().is_err());
+    assert!(installed.retired);
+    assert!(installed.incoming.is_none());
+    assert!(Rc::ptr_eq(&original, &installed.original));
+    installed.retire().unwrap();
+}
+
+#[test]
+fn changed_source_file_refuses_the_unchanged_pinned_manifest() {
+    let (_source, value) = super::super::tests::installed_scene_declaration();
+    let directory = tempfile::tempdir().unwrap();
+    let manifest = pinned(directory.path(), &value);
+    let manifest_bytes = std::fs::read(&manifest.path).unwrap();
+    let source = &value["measurements"][0]["sources"][0];
+    let path = PathBuf::from(source["path"].as_str().unwrap());
+    let expected: ContentRef = serde_json::from_value(source["content"].clone()).unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    expected.verify(&bytes).unwrap();
+    // Only a disposable source fixture is changed, never the measured test ELF.
+    bytes[0] ^= 1;
+    std::fs::write(&path, &bytes).unwrap();
+    assert!(expected.verify(&bytes).is_err());
+
+    assert!(InstalledCompleteScene::install(manifest.clone(), directory.path().join("drift")).is_err());
+    assert_eq!(std::fs::read(&manifest.path).unwrap(), manifest_bytes);
+    // Namespace absence is not used as an oracle for acquisition ordering.
 }
