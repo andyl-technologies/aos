@@ -172,14 +172,17 @@ session key and recovery owner. Closed Controller composition methods return
 only their original sealed completions; they expose no caller-selected endpoint,
 scalar signer, mutable HELLO, initialization selector, or verification context.
 Opaque historical views are DATA only and never accepted as currentness evidence.
-In the current live inventory
-recipe, terminal revalidation drops its journal-and-peer loan before deriving
-the canonical challenge packet and signing. That freshness gap remains an
-implementation obligation, not a freshness claim established by this
-refactor. A later semantic change must retain the genuine loan through signing and
-keep historical predecessor, request, session, checkpoint, catalog, and cold
-terminal joins inside their protected owner; detached outcomes or digests
-cannot substitute for that custody.
+The eight Host/Storage/Mount/Network inventory-pair completions and the fixed
+Host effect completion retain the exact protected terminal journal-and-peer loan
+through challenge-message derivation, signing, typed construction and final currentness
+checks. Supplied inventory must equal that loan's authenticated outcome. A failed
+signing or construction result retains precedence over its failed postcheck.
+These checks protect the Controller's terminal custody during attestation; they
+do not hold the independent broker writer through a later Controller commit.
+Storage effect/atomic and historical attestations retain their separate
+currentness obligations. Historical predecessor, request, session, checkpoint,
+catalog and cold-terminal joins remain inside the protected owner; detached
+outcomes or digests cannot substitute for that custody.
 
 Protected compiler Candidate V3 is the sole retained body grammar. The earlier
 plan-less V2 path and its optional preimage/readback state are removed; old bytes
