@@ -272,14 +272,15 @@ impl CurrentFiles {
             // Only an earlier completed full hash in THIS pass can cover an
             // alias. Exact revision facts and the entire ContentRef, including
             // media type, must match. A lease-only check never sets this bit.
-            let measured_alias = self.originals[..index]
-                .iter()
-                .enumerate()
-                .any(|(earlier_index, earlier)| {
-                    complete_measurements & (1_u16 << earlier_index) != 0
-                        && earlier.facts == original.facts
-                        && earlier.content == original.content
-                });
+            let measured_alias =
+                self.originals[..index]
+                    .iter()
+                    .enumerate()
+                    .any(|(earlier_index, earlier)| {
+                        complete_measurements & (1_u16 << earlier_index) != 0
+                            && earlier.facts == original.facts
+                            && earlier.content == original.content
+                    });
             let complete_read = original.file.lease().is_none() && !measured_alias;
             let measured = if let Some(lease) = original.file.lease() {
                 lease.verify_current().map_err(|_| refused())?;

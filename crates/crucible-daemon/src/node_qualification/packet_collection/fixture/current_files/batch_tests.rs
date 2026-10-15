@@ -40,7 +40,10 @@ fn equal_bytes_in_distinct_inodes_require_separate_complete_measurements() {
     let bytes = b"same complete bytes";
     std::fs::write(&first, bytes).unwrap();
     std::fs::write(&second, bytes).unwrap();
-    assert_ne!(std::fs::metadata(&first).unwrap().ino(), std::fs::metadata(&second).unwrap().ino());
+    assert_ne!(
+        std::fs::metadata(&first).unwrap().ino(),
+        std::fs::metadata(&second).unwrap().ino()
+    );
     let reference = canonical::content_ref(bytes, "text/plain").unwrap();
     let mut selected = [(first.as_path(), &reference); 10];
     selected[9] = (second.as_path(), &reference);
