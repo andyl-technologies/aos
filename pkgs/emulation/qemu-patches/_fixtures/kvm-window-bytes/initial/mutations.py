@@ -49,6 +49,8 @@ for name, scope, before, after in changes:
         'accel/kvm/crucible-window.c', 'accel/kvm/kvm-all.c',
         'include/system/crucible-kvm-clock.h', 'include/system/crucible-kvm-window.h',
         'include/system/kvm_int.h', 'include/exec/memattrs.h',
+        'include/system/crucible-kvm-continuation.h',
+        'include/system/crucible-kvm-initialization.h',
     ):
         target = candidate / relative
         target.parent.mkdir(parents=True, exist_ok=True)

@@ -61,6 +61,8 @@ struct CPUState {
     QemuMutex work_mutex;
     QSIMPLEQ_HEAD(, qemu_work_item) work_list;
     QemuCpuPausedService crucible_paused_service;
+    /* Exact native queue selector; this legacy model never starts finite RR. */
+    bool crucible_sim_rr_defer_external_work;
     QemuCond *halt_cond;
     bool crucible_node_ingress_armed, crucible_node_work_tracking;
     uint64_t crucible_node_next_work_id;
@@ -190,6 +192,7 @@ static int device(CPUState *cpu, uint64_t operation_id, uint64_t sequence)
 static void reset(void)
 {
     memset(&native_cpu, 0, sizeof(native_cpu));
+    assert(!native_cpu.crucible_sim_rr_defer_external_work);
     assert(pthread_mutex_init(&native_cpu.work_mutex, NULL) == 0);
     QSIMPLEQ_INIT(&native_cpu.work_list);
     device_callbacks = ordinary_callbacks = kicks = 0;

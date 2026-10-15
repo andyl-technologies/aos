@@ -34,6 +34,9 @@ paths = [
     'accel/kvm/crucible-clock.c', 'accel/kvm/crucible-window.c',
     'include/system/crucible-kvm-clock.h', 'include/system/crucible-kvm-window.h',
     'include/system/kvm_int.h', 'include/exec/memattrs.h',
+    'include/system/crucible-kvm-continuation.h',
+    'include/system/crucible-kvm-initialization.h',
+    'accel/kvm/crucible-construction.c',
     'build/qapi/qapi-types-run-state.h',
 ]
 for name, relative, before, after in changes:

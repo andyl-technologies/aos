@@ -3,6 +3,9 @@
 The callback and handler are actual source from the companion response model.
 The host syscall and device transaction are deliberately counted substitutions;
 this is source/component evidence, never native KVM or device qualification.
+The completed ordinary scan and selection flags are explicit model state; no
+launch scan, FD issuer, Q35 VM or continuation issuer is authenticated here.
+Unsupported selected FD/VM paths abort instead of granting an operation.
 """
 
 from pathlib import Path
@@ -16,6 +19,13 @@ import model
 PLUMBING = r'''
 #include <pthread.h>
 #include <stdarg.h>
+#include <signal.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static int selected_guard_effect_fd = -1;
 
 static pthread_mutex_t handler_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t handler_condition = PTHREAD_COND_INITIALIZER;
@@ -39,6 +49,9 @@ static void lifetime_handler_pause(void)
 static void trace_kvm_vm_ioctl(unsigned long type, const void *argument)
 {
     assert(type == KVM_ENABLE_CAP && argument);
+    if (selected_guard_effect_fd >= 0) {
+        assert(write(selected_guard_effect_fd, "T", 1) == 1);
+    }
     clock_trace_effects++;
 }
 
@@ -62,6 +75,9 @@ static int counted_clock_ioctl(int fd, unsigned long type, const void *argument)
     assert(capability->cap == KVM_CAP_CRUCIBLE_CLOCK_V1 ||
            capability->cap == KVM_CAP_CRUCIBLE_CLOCK_V3);
     clock = (struct kvm_crucible_clock *)(uintptr_t)capability->args[0];
+    if (selected_guard_effect_fd >= 0) {
+        assert(write(selected_guard_effect_fd, "C", 1) == 1);
+    }
     clock_native_effects++;
     clock->coverage = capability->cap == KVM_CAP_CRUCIBLE_CLOCK_V3 ? 159 : 7;
     clock->current_ns = 17;
@@ -74,6 +90,61 @@ static int counted_clock_ioctl(int fd, unsigned long type, const void *argument)
 
 
 TESTS = r'''
+
+static void original_ioctl_guard_scope(void)
+{
+    assert(!q35_launch.scanned && !q35_launch.selected && !q35_vm.selected);
+    assert(!q35_launch_original_process && !q35_workers_original_process);
+    /* Model an already completed ordinary option scan with no Q35 selection. */
+    q35_launch.scanned = true;
+    for (unsigned branch = 0; branch < 6; branch++) {
+        int descriptors[2], status;
+        char marker;
+        assert(pipe(descriptors) == 0);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (!child) {
+            close(descriptors[0]);
+            selected_guard_effect_fd = descriptors[1];
+            struct kvm_crucible_clock clock = { .version = 3, .operation = KVM_CRUCIBLE_CLOCK_QUERY };
+            struct kvm_enable_cap cap = { .cap = KVM_CAP_CRUCIBLE_CLOCK_V3, .args[0] = (uintptr_t)&clock };
+            if (branch == 0) {
+                q35_launch.scanned = false;
+            } else if (branch == 1) {
+                q35_launch_original_process = getpid() + 1;
+            } else if (branch == 2) {
+                q35_workers_original_process = getpid() + 1;
+            } else if (branch == 3 || branch == 4) {
+                q35_launch.selected = true;
+                kvm_fd_original.state = branch == 4 ? &native : NULL;
+            } else {
+                q35_vm.selected = true;
+                cap.cap = 0;
+            }
+            lifetime_vm_ioctl(&native, KVM_ENABLE_CAP, &cap);
+            _exit(94);
+        }
+        close(descriptors[1]);
+        assert(waitpid(child, &status, 0) == child);
+        if (branch < 3) {
+            assert(WIFEXITED(status) && WEXITSTATUS(status) == 125);
+        } else {
+            assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+        }
+        assert(read(descriptors[0], &marker, 1) == 0);
+        close(descriptors[0]);
+    }
+    struct kvm_crucible_clock_continuation request = { .version = 1, .operation = KVM_CRUCIBLE_CONTINUATION_PAUSE };
+    struct kvm_enable_cap cap = { .cap = KVM_CAP_CRUCIBLE_CLOCK_CONTINUATION_V1, .args[0] = (uintptr_t)&request };
+    native.crucible_continuation_experiment = true;
+    assert(!native.crucible_continuation_clock_command);
+    unsigned before_trace = clock_trace_effects, before_effects = clock_native_effects;
+    assert(lifetime_vm_ioctl(&native, KVM_ENABLE_CAP, &cap) == -EBUSY);
+    assert(clock_trace_effects == before_trace && clock_native_effects == before_effects);
+    request.operation = KVM_CRUCIBLE_CONTINUATION_QUERY;
+    assert(kvm_crucible_continuation_allow_clock_ioctl(&native, KVM_ENABLE_CAP, &cap));
+    native.crucible_continuation_experiment = false;
+}
 static void *held_callback(void *unused)
 {
     execute_callback();
@@ -142,6 +213,8 @@ int main(void)
 {
     pthread_t thread;
 
+    original_ioctl_guard_scope();
+
     /* A successful original callback owns the domain through collection,
      * not just through physical return from its synchronous device handler. */
     begin_held(&thread, false);
@@ -198,6 +271,90 @@ int main(void)
 '''
 
 
+
+def exact_native_function(body, name, result):
+    """Select one complete genuine guard through its existing source helper."""
+    pattern = r"^(?:static )?" + re.escape(result) + " " + name + r"\("
+    if len(re.findall(pattern, body, re.M)) != 1:
+        raise ValueError("ambiguous actual ioctl guard: " + name)
+    return model.function(body, name, result)
+
+
+def ioctl_guard_dependencies(source):
+    """Retain unselected launch/worker/continuation guards without native grants."""
+    launch = (source / "system/crucible-kvm-q35-launch-owner.inc.c").read_text()
+    workers = (source / "accel/kvm/crucible-q35-workers.c").read_text()
+    descriptors = (source / "accel/kvm/crucible-fd-original.inc.c").read_text()
+    vm = (source / "accel/kvm/crucible-q35-vm-configuration.c").read_text()
+    continuation = (source / "accel/kvm/crucible-continuation.c").read_text()
+    continuation_header = (source / "include/system/crucible-kvm-continuation.h").read_text()
+
+    def storage(body, begin, end):
+        if body.count(begin) != 1 or body.count(end) != 1:
+            raise ValueError("actual ioctl guard storage changed: " + end)
+        return body[body.index(begin):body.index(end) + len(end)]
+
+    def scalar(body, declaration):
+        if body.count(declaration) != 1:
+            raise ValueError("actual ioctl guard scalar changed")
+        return declaration
+
+    typedefs = (source / "include/qemu/typedefs.h").read_text()
+    launch_header = (source / "include/system/crucible-kvm-q35-launch.h").read_text()
+    forwards = []
+    for original, declaration in (
+        (typedefs, "typedef struct ObjectClass ObjectClass;"),
+        (launch_header, "typedef struct KvmCrucibleQ35LaunchClockOwner KvmCrucibleQ35LaunchClockOwner;"),
+    ):
+        forwards.append(scalar(original, declaration))
+    state = storage(launch, "static struct {", "} q35_launch;")
+    fd_state = storage(descriptors, "typedef struct KvmCrucibleFdOriginal {", "} KvmCrucibleFdOriginal;")
+    fd_state += "\n" + scalar(descriptors, "static KvmCrucibleFdOriginal kvm_fd_original;")
+    # Only this scalar is consumed by the genuine selector. The native VM
+    # journal is deliberately not modeled or allocated in this legacy fixture.
+    vm_branch = vm[:vm.index("\n#else\n")]
+    vm_storage = storage(vm_branch, "static struct {", "} q35_vm;")
+    scalar(vm_storage, "    bool selected;")
+    declarations = r"""
+#define G_NORETURN __attribute__((noreturn))
+static struct { bool selected; } q35_vm;
+/* These selected native FD/VM paths have no implementation in this model.
+ * Aborting can neither claim a current lease nor issue a native capability. */
+static G_NORETURN void kvm_fd_original_fault(void)
+{ abort(); }
+static void kvm_fd_original_require_current(unsigned slot, int descriptor)
+{ (void)slot; (void)descriptor; abort(); }
+static int kvm_crucible_q35_vm_enable_cap(KVMState *state, const struct kvm_enable_cap *cap)
+{ (void)state; (void)cap; abort(); }
+"""
+    # Keep the unsupported declarations tied to actual private/public types.
+    for signature in ("static G_NORETURN void kvm_fd_original_fault(void)",
+                      "static void kvm_fd_original_require_current(unsigned slot, int descriptor)"):
+        scalar(descriptors, signature)
+    vm_header = (source / "include/system/crucible-kvm-q35-vm-configuration.h").read_text()
+    if not re.search(r"int kvm_crucible_q35_vm_enable_cap\(KVMState \*state,\s*const struct kvm_enable_cap \*cap\);", vm_header):
+        raise ValueError("actual selected VM capability signature changed")
+    abi_start = "#ifndef KVM_CAP_CRUCIBLE_CLOCK_CONTINUATION_V1"
+    if continuation_header.count(abi_start) != 1:
+        raise ValueError("actual continuation ABI boundary changed")
+    abi = continuation_header[continuation_header.index(abi_start):]
+    abi = abi[:abi.index("#endif") + len("#endif")]
+    functions = [
+        exact_native_function(launch, "q35_launch_process_guard", "void"),
+        exact_native_function(launch, "kvm_crucible_q35_launch_process_guard_original", "void"),
+        exact_native_function(launch, "q35_launch_refuse", "G_NORETURN void"),
+        exact_native_function(launch, "kvm_crucible_q35_launch_selected_original", "bool"),
+        exact_native_function(workers, "kvm_crucible_q35_workers_process_guard", "void"),
+        exact_native_function(vm_branch, "kvm_crucible_q35_vm_selected", "bool"),
+        exact_native_function(continuation, "kvm_crucible_continuation_allow_clock_ioctl", "bool"),
+    ]
+    header = source / "include/qemu/crucible-fd-custody.h"
+    return ("#include \"" + str(header) + "\"\n" + "\n".join(forwards) + "\n" + state + "\n" + fd_state + "\n" +
+            scalar(launch, "static pid_t q35_launch_original_process;") + "\n" +
+            scalar(workers, "static pid_t q35_workers_original_process;") + "\n" +
+            declarations + "\n" + abi + "\n" + "\n\n".join(functions))
+
+
 def main():
     if len(sys.argv) != 5:
         raise SystemExit("usage: lifetime_model.py SOURCE AOS_CC OUTPUT GENERATED_RESPONSE")
@@ -205,7 +362,7 @@ def main():
         Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4]),
     )
     output.mkdir(parents=True, exist_ok=True)
-    body = generated.read_text()
+    body = "#define _GNU_SOURCE\n" + generated.read_text()
     body = body.replace("int main(void)", "int response_original_model_tests(void)")
     body = body.replace("typedef struct KVMState {", "typedef struct KVMState { int vmfd;")
     body = body.replace("static bool model_bql = true, model_more_io;",
@@ -243,7 +400,7 @@ def main():
         model.function(clock, "kvm_crucible_userspace_before_run", "bool"),
     ])
     target = output / "lifetime.c"
-    target.write_text(body + "\n" + constants + PLUMBING + functions + TESTS)
+    target.write_text(body + "\n" + constants + PLUMBING + ioctl_guard_dependencies(source) + "\n" + functions + TESTS)
     executable = output / "lifetime"
     subprocess.run([
         compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",

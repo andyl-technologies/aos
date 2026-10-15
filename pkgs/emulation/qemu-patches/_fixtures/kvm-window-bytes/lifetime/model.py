@@ -17,21 +17,30 @@ output.mkdir(parents=True, exist_ok=True)
 
 
 def function(body, name):
-    pattern = r'^(?:static )?(?:G_NORETURN )?(?:int|void) ' + name + r'\('
-    selected = re.search(pattern, body, re.M)
-    assert selected is not None, name
+    pattern = r'^(?:static )?(?:G_NORETURN )?(?:int|void|bool) ' + name + r'\('
+    matches = list(re.finditer(pattern, body, re.M))
+    assert len(matches) == 1, name
+    selected = matches[0]
     end = body.index('\n}\n', selected.start()) + 3
     return body[selected.start():end] + '\n\n'
 
 
 common = (source / 'cpu-common.c').read_text()
 native = (source / 'accel/kvm/kvm-all.c').read_text()
+initialization = (source / 'accel/kvm/crucible-initialization.c').read_text()
+header = (source / 'include/system/crucible-kvm-initialization.h').read_text()
+start = "typedef struct CrucibleKvmInitializationVcpu {"
+end = "} CrucibleKvmInitializationVcpu;"
+if header.count(start) != 1 or header.count(end) != 1:
+    raise ValueError("actual initialization row declaration changed")
+initialization_row = header[header.index(start):header.index(end) + len(end)]
 prefix = r'''
 /* Actual source fail-stop; native architecture/FD effects are model markers. */
 #include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -55,7 +64,14 @@ typedef struct CPUState {
     QemuMutex work_mutex;
     QemuCpuPausedService crucible_paused_service;
 } CPUState;
-typedef struct KVMState { void *coalesced_mmio_ring; } KVMState;
+@INITIALIZATION_ROW@
+typedef struct KVMState {
+    void *coalesced_mmio_ring;
+    bool crucible_continuation_experiment;
+    uint32_t crucible_userspace_capacity;
+    QemuMutex crucible_userspace_lock;
+    CrucibleKvmInitializationVcpu *crucible_initialization_rows;
+} KVMState;
 static KVMState state;
 static KVMState *kvm_state = &state;
 static uint64_t native_window_generation;
@@ -94,11 +110,45 @@ static int vcpu_unmap_regions(KVMState *owner, CPUState *cpu)
 }
 static void kvm_park_vcpu(CPUState *cpu) { (void)cpu; effect('P'); }
 '''
+# The genuine allow_destroy guard preserves its unselected branch. Native
+# QOM/BQL enrollment is unsupported here and can never be answered positively.
+prefix = prefix.replace('@INITIALIZATION_ROW@', initialization_row)
+prefix += r"""
+struct Object;
+#define OBJECT(value) ((struct Object *)(value))
+static uint64_t qom_crucible_property_roots_instance_incarnation(struct Object *original)
+{ (void)original; abort(); }
+static bool bql_locked(void)
+{ abort(); }
+"""
 functions = ''.join(function(common, name) for name in (
     'paused_service_conflict_locked', 'native_window_work_guard_locked',
     'qemu_cpu_paused_service_reclaim_guard'))
+functions += function(initialization, 'kvm_crucible_initialization_allow_destroy')
 functions += function(native, 'do_kvm_destroy_vcpu')
 tests = r'''
+
+static void selected_initialization_is_not_modeled(CPUState *cpu)
+{
+    int descriptors[2], status;
+    char marker;
+    assert(pipe(descriptors) == 0);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (!child) {
+        close(descriptors[0]);
+        event_fd = descriptors[1];
+        state.crucible_continuation_experiment = true;
+        do_kvm_destroy_vcpu(cpu);
+        _exit(94);
+    }
+    close(descriptors[1]);
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    assert(read(descriptors[0], &marker, 1) == 0);
+    close(descriptors[0]);
+    assert(!state.crucible_continuation_experiment);
+}
 static void refused_before_any_native_release(CPUState *cpu, unsigned kind)
 {
     int descriptors[2], status;
@@ -131,6 +181,7 @@ int main(void)
     CPUState cpu = { .cpu_index = 0, .work_mutex = PTHREAD_MUTEX_INITIALIZER };
     unsigned char *mapping = calloc(2, PAGE_SIZE);
     assert(mapping);
+    selected_initialization_is_not_modeled(&cpu);
     cpu.kvm_run = mapping;
     state.coalesced_mmio_ring = mapping + PAGE_SIZE;
     for (unsigned kind = 0; kind != 3; ++kind) {

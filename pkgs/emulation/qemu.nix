@@ -3427,10 +3427,13 @@ in
                   ("global virtual timer owner registration", timer,
                    r"void qemu_timer_register_crucible_global_virtual_timer_owner"
                    r"\(\s*QemuCrucibleGlobalVirtualTimerOwner \*owner\)\s*"
-                   r"\{\s*assert\(owner\);\s*"
+                   r"\{\s*whole_q35_timer_registration_guard\(\);\s*"
+                   r"assert\(owner\);\s*"
                    r"assert\(!crucible_global_virtual_timer_owner\);\s*"
                    r"qatomic_store_release\("
                    r"&crucible_global_virtual_timer_owner, owner\);\s*\}", 1),
+                  ("global virtual timer owner registration definition", timer,
+                   r"(?:^|\n)void qemu_timer_register_crucible_global_virtual_timer_owner\(", 1),
                   ("sim precise unresolved deadline budget", icount,
                    r"if \(limit <= 0\) \{\s*"
                    r"if \(current_accel_is_sim\(\) &&\s*"
@@ -3490,10 +3493,13 @@ in
                    r"\*crucible_determinism_timer_sample;.*?"
                    r"void qemu_timer_register_crucible_determinism_sampler\(\s*"
                    r"QemuCrucibleDeterminismTimerSample \*sample\)\s*\{\s*"
+                   r"whole_q35_timer_registration_guard\(\);\s*"
                    r"assert\(sample\);\s*"
                    r"assert\(!crucible_determinism_timer_sample\);\s*"
                    r"qatomic_store_release\("
                    r"&crucible_determinism_timer_sample, sample\);\s*\}", 1),
+                  ("determinism timer sampler registration definition", timer,
+                   r"(?:^|\n)void qemu_timer_register_crucible_determinism_sampler\(", 1),
                   ("determinism timer stable classification", timer,
                    r"if \(timer_list == main_loop_tlg\.tl\[type\]\) \{\s*"
                    r"return \"global\";\s*\}\s*return \"aio\";", 1),

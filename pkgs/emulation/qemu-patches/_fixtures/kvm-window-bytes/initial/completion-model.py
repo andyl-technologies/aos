@@ -27,6 +27,16 @@ subprocess.run([sys.executable, str(source / 'scripts/qapi-gen.py'), '-o', str(g
 
 clock = (source / 'accel/kvm/crucible-clock.c').read_text()
 header = (source / 'include/system/crucible-kvm-clock.h').read_text()
+# These fields remain opaque in the legacy model, but their tags must
+# come from the actual source rather than a version-dependent guessed ABI.
+for header_name, names in (
+    ("crucible-kvm-continuation.h", ("CrucibleKvmContinuationCommand",)),
+    ("crucible-kvm-initialization.h", ("CrucibleKvmInitializationVcpu", "CrucibleKvmInitializationAttempt")),
+):
+    original = (source / "include/system" / header_name).read_text()
+    for name in names:
+        if original.count("typedef struct " + name + " {") != 1:
+            raise ValueError("original opaque KVM type tag changed: " + name)
 state = (source / 'include/system/kvm_int.h').read_text()
 window = (source / 'include/system/crucible-kvm-window.h').read_text()
 qapi = (generated / 'qapi-types-run-state.h').read_text()
@@ -109,6 +119,10 @@ typedef uint32_t u32;
 @KERNEL@
 @OPERATION@
 @INFO@
+/* Disabled source-private pointer targets retain their genuine native tags. */
+typedef struct CrucibleKvmContinuationCommand CrucibleKvmContinuationCommand;
+typedef struct CrucibleKvmInitializationVcpu CrucibleKvmInitializationVcpu;
+typedef struct CrucibleKvmInitializationAttempt CrucibleKvmInitializationAttempt;
 typedef struct CrucibleKvmResponseService CrucibleKvmResponseService;
 typedef struct CrucibleKvmResponseBytesJournal CrucibleKvmResponseBytesJournal;
 typedef int QemuMutex;

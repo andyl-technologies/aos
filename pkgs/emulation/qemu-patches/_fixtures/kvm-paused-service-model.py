@@ -57,6 +57,8 @@ typedef int (*QemuCpuPausedServiceFunc)(CPUState *, uint64_t, uint64_t);
 struct CPUState {
     int cpu_index;
     bool created, stopped, unplug, stop, halted, thread_kicked, exit_request;
+    /* No finite RR thread is born by this legacy paused-service model. */
+    bool crucible_sim_rr_defer_external_work;
     QemuMutex work_mutex;
     QSIMPLEQ_HEAD(, qemu_work_item) work_list;
     QemuCpuPausedService crucible_paused_service;
@@ -188,6 +190,7 @@ static int device(CPUState *cpu, uint64_t operation_id, uint64_t sequence)
 static void reset(void)
 {
     memset(&native_cpu, 0, sizeof(native_cpu));
+    assert(!native_cpu.crucible_sim_rr_defer_external_work);
     assert(pthread_mutex_init(&native_cpu.work_mutex, NULL) == 0);
     QSIMPLEQ_INIT(&native_cpu.work_list);
     device_callbacks = ordinary_callbacks = kicks = 0;

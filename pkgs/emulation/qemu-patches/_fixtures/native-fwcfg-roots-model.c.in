@@ -6,6 +6,7 @@
 #include "qemu/cutils.h"
 #include "hw/nvram/fw_cfg.h"
 #include "system/address-spaces.h"
+#include "system/crucible-whole-early.h"
 #include <sys/wait.h>
 
 AddressSpace address_space_memory;
@@ -41,7 +42,49 @@ void error_report(const char *format, ...)
     va_end(arguments);
 }
 
+/* The valid legacy model never begins whole-device custody. Any unexpected
+ * selected path aborts instead of fabricating source or constructor authority. */
+bool crucible_whole_setup_source_current(void)
+{
+    abort();
+}
+
+bool crucible_whole_setup_constructor_current(void)
+{
+    abort();
+}
+
 @NATIVE_FWCFG@
+
+static void original_whole_guard_refusals(void)
+{
+    int status;
+    pid_t child;
+
+    assert(!whole_fwcfg.begun);
+    child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        whole_fwcfg.begun = true;
+        whole_fwcfg.process = 0;
+        fwcfg_whole_mutation_guard(NULL);
+        _exit(94);
+    }
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 125);
+
+    child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        whole_fwcfg.begun = true;
+        whole_fwcfg.process = getpid();
+        fwcfg_whole_mutation_guard(NULL);
+        _exit(94);
+    }
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    assert(!whole_fwcfg.begun);
+}
 
 /* The extracted native lifetime guard must refuse the original sealed owner
  * before a replacement could run. An unrelated owner remains available. */
@@ -90,6 +133,7 @@ int main(int argc, char **argv)
     original.entries[0][FW_CFG_FILE_FIRST].data = bytes;
     original.entries[0][FW_CFG_FILE_FIRST].len = sizeof(bytes);
 
+    original_whole_guard_refusals();
     fw_cfg_crucible_firmware_mutation_guard(&original);
     assert(fw_cfg_crucible_root_firmware_seal(&original) == 0);
     original_firmware_lifetime(&original);

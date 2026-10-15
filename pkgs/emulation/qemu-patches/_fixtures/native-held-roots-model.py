@@ -61,13 +61,23 @@ def compile_and_run(source, compiler, output, case, body, mutant):
 
 def endpoint_body(source):
     text = (source / "util/crucible-endpoint-roots.c").read_text()
-    start = text.index("#define ENDPOINT_HELD")
-    return text[start:]
+    # This model exercises only the original early-history path. The later
+    # whole-device journal has separate locks, ownership and source admission;
+    # including it here would imply a dependency closure this model does not test.
+    start_marker = "#define ENDPOINT_HELD"
+    end_marker = "/* This fixed constructor peak is charged as native history"
+    if text.count(start_marker) != 1 or text.count(end_marker) != 1:
+        raise SystemExit("native early endpoint slice is missing or ambiguous")
+    start = text.index(start_marker)
+    end = text.index(end_marker)
+    if end <= start:
+        raise SystemExit("native early endpoint slice is out of order")
+    return text[start:end]
 
 
 def endpoint_mutants(body):
     edits = [
-        ("immediate-exit", "    _exit(125);", "    exit(125);"),
+        ("immediate-exit", "\n    _exit(125);\n", "\n    exit(125);\n"),
         ("persistent-hold", "observed & ENDPOINT_HELD", "false"),
         ("foreign-process", "getpid() != endpoint_original_process ||",
          "false ||"),
@@ -90,7 +100,11 @@ def irq_body(source):
     # provider. Keep the default provider absent in the legacy template and
     # extract both actual helpers without modeling away the sealed branch.
     header = '#include "qemu/crucible-prefix-writer.h"\n'
-    return (header + text[start:end] +
+    # Keep the genuine class comparison in the sealed-delivery helper. Its
+    # small QOM accessor is a source dependency, not a permissive model adapter.
+    objects = (source / "qom/object.c").read_text()
+    object_class = exact_function(objects, "ObjectClass *object_get_class(")
+    return (header + object_class + text[start:end] +
             exact_function(text, "static QemuIrqNodeRoot *node_irq_root_find(") +
             exact_function(text, "static bool node_irq_prefix_delivery(") +
             exact_function(text, "void qemu_set_irq("))

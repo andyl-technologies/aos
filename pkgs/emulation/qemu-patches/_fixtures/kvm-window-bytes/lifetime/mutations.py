@@ -25,6 +25,10 @@ for name, body in changes:
     (candidate / 'accel/kvm').mkdir(parents=True, exist_ok=True)
     (candidate / 'accel/kvm/kvm-all.c').write_text(body)
     shutil.copyfile(source / 'cpu-common.c', candidate / 'cpu-common.c')
+    (candidate / 'include/system').mkdir(parents=True)
+    for relative in ('accel/kvm/crucible-initialization.c',
+                     'include/system/crucible-kvm-initialization.h'):
+        shutil.copyfile(source / relative, candidate / relative)
     proof = output / name / 'proof'
     result = subprocess.run([
         sys.executable, str(Path(__file__).with_name('model.py')),

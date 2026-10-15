@@ -82,6 +82,8 @@ def main():
         for relative in (
             "include/system/crucible-kvm-clock.h",
             "include/system/kvm_int.h",
+            "include/system/crucible-kvm-continuation.h",
+            "include/system/crucible-kvm-initialization.h",
             "include/system/crucible-kvm-window.h",
             "linux-headers/linux/kvm.h",
             "accel/kvm/kvm-all.c",

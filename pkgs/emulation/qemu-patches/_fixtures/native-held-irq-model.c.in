@@ -4,6 +4,7 @@
 #include "qemu/atomic.h"
 #include "qemu/error-report.h"
 #include "hw/core/irq.h"
+#include "qom/object.h"
 #include <sys/syscall.h>
 #include <sys/wait.h>
 

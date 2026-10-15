@@ -33,6 +33,10 @@ PLUMBING = r'''
 #include <stdlib.h>
 #include <stdarg.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #define qatomic_load_acquire(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
 #define qatomic_store_release(p, v) __atomic_store_n((p), (v), __ATOMIC_RELEASE)
 #define g_try_new0(type, count) ((type *)calloc((count), sizeof(type)))
@@ -72,11 +76,16 @@ static bool lose_ack_copy, model_kernel_available = true, model_acknowledged;
 
 @CPU@
 @TYPES@
+/* These actual private allocations stay disabled and opaque in this model. */
+typedef struct CrucibleKvmContinuationCommand CrucibleKvmContinuationCommand;
+typedef struct CrucibleKvmInitializationVcpu CrucibleKvmInitializationVcpu;
+typedef struct CrucibleKvmInitializationAttempt CrucibleKvmInitializationAttempt;
 typedef struct CrucibleKvmResponseBytesJournal CrucibleKvmResponseBytesJournal;
 typedef struct KVMState {
 @FIELDS@
     struct kvm *native_vm;
 } KVMState;
+@CONSTRUCTION_DEPENDENCIES@
 /* The original window fixture keeps canonical-byte mode disabled. */
 static uint32_t kvm_crucible_response_bytes_exit_reason(KVMState *state, CPUState *cpu)
 {
@@ -162,6 +171,37 @@ static int kvm_vm_ioctl(KVMState *state, unsigned long type, void *argument)
 '''
 
 CASES = r'''
+
+static void original_constructor_guard_scope(void)
+{
+    KVMState state = {0};
+    assert(!construction.pinned && !construction.failed);
+    assert(kvm_crucible_construction_guest_entry_allowed());
+    assert(kvm_crucible_construction_check_window_begin(&state, 0, 1) == 0);
+    assert(kvm_crucible_construction_check_window_close(&state, 1) == 0);
+    for (unsigned branch = 0; branch < 3; branch++) {
+        int status;
+        pid_t child = fork();
+        assert(child >= 0);
+        if (!child) {
+            construction.pinned = true;
+            assert(!kvm_crucible_construction_guest_entry_allowed());
+            if (branch == 0) {
+                kvm_crucible_construction_check_window_begin(&state, 0, 1);
+            } else if (branch == 1) {
+                kvm_crucible_construction_check_window_close(&state, 1);
+            } else {
+                kvm_crucible_initialization_cut(&state);
+            }
+            _exit(94);
+        }
+        assert(waitpid(child, &status, 0) == child);
+        assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    }
+    construction.failed = true;
+    assert(!kvm_crucible_construction_guest_entry_allowed());
+    construction.failed = false;
+}
 static void initialize(KVMState *state, CPUState *cpu, struct kvm_vcpu *kernel,
                        struct kvm *vm)
 {
@@ -242,6 +282,7 @@ static void actual_return(KVMState *state, CPUState *cpu, int result, bool hidde
 
 int main(void)
 {
+    original_constructor_guard_scope();
     assert(original_kernel_tests() == 0);
     KVMState state;
     CPUState cpu;
@@ -335,12 +376,53 @@ int main(void)
 }
 '''
 
+
+def construction_dependencies(source):
+    """Retain actual unpinned guards; selected native custody stays unsupported."""
+    original = (source / "accel/kvm/crucible-construction.c").read_text()
+    start, end = "static struct {", "} construction;"
+    if original.count(start) != 1 or original.count(end) != 1:
+        raise ValueError("original constructor storage changed")
+    storage = original[original.index(start):original.index(end) + len(end)]
+    constant = re.findall(r"^#define KVM_CONSTRUCTION_BYTES [^\n]+$", original, re.M)
+    if len(constant) != 1:
+        raise ValueError("original constructor record extent changed")
+    signatures = (
+        "kvm_crucible_construction_guest_entry_allowed",
+        "kvm_crucible_construction_check_window_begin",
+        "kvm_crucible_construction_check_window_close",
+    )
+    # Neither helper can issue a native identity. Any unexpected selected path
+    # terminates before reading a constructor record or claiming a stopped cut.
+    unsupported = r"""
+static int kvm_crucible_construction_validate_accelerator(void)
+{ abort(); }
+static uint64_t ldq_le_p(const void *pointer)
+{ (void)pointer; abort(); }
+static bool kvm_crucible_initialization_cut(KVMState *state)
+{ (void)state; abort(); }
+"""
+    header = (source / "include/system/crucible-kvm-initialization.h").read_text()
+    if header.count("bool kvm_crucible_initialization_cut(struct KVMState *state);") != 1:
+        raise ValueError("original initialization-cut signature changed")
+    return constant[0] + "\n" + storage + "\n" + unsupported + "\n" + "\n".join(
+        function(original, name) for name in signatures)
+
+
 def main():
     source, kernel, compiler, output = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4])
     output.mkdir(parents=True,exist_ok=True)
     script = Path(__file__).parent / 'kernel-return-proof.py'
     subprocess.run([sys.executable,str(script),str(kernel),compiler,str(output/'kernel')],check=True)
     generated = (output/'kernel/return-proof.c').read_text().replace('int main(void)','int original_kernel_tests(void)')
+    for header_name, names in (
+        ("crucible-kvm-continuation.h", ("CrucibleKvmContinuationCommand",)),
+        ("crucible-kvm-initialization.h", ("CrucibleKvmInitializationVcpu", "CrucibleKvmInitializationAttempt")),
+    ):
+        original = (source / "include/system" / header_name).read_text()
+        for name in names:
+            if original.count("typedef struct " + name + " {") != 1:
+                raise ValueError("original opaque KVM type tag changed: " + name)
     header=(source/'include/system/crucible-kvm-clock.h').read_text()
     window=(source/'include/system/crucible-kvm-window.h').read_text()
     qapi=(source/'build/qapi/qapi-types-run-state.h').read_text()
@@ -361,6 +443,7 @@ def main():
     struct CPUState *next;
 } CPUState;'''
     plumbing=PLUMBING.replace('@CPU@',cpu).replace('@TYPES@',types).replace('@FIELDS@',fields)
+    plumbing=plumbing.replace('@CONSTRUCTION_DEPENDENCIES@', construction_dependencies(source))
     constants='\n'.join(re.findall(r'^#define (?:KVM_CAP_CRUCIBLE_CLOCK_|KVM_CRUCIBLE_CLOCK_|QEMU_CRUCIBLE_CLOCK_|QEMU_CRUCIBLE_WINDOW_)[A-Z0-9_]+ [^\n]+$',header+'\n'+window,re.M))
     # Actual native fallback clock definition is part of the bound source ABI.
     clock=record(header,'kvm_crucible_clock')
@@ -369,6 +452,10 @@ def main():
     functions='\n'.join(function(legacy,name) for name in signatures)
     functions=functions.replace('static CrucibleKvmUserspaceExit *userspace_entry_locked','static CrucibleKvmUserspaceExit *userspace_entry_locked')
     fresh=(source/'accel/kvm/crucible-window.c').read_text()
+    boundary = "CrucibleKvmContinuedWindowInfo *qmp_x_crucible_kvm_continued_window("
+    if fresh.count(boundary) != 1:
+        raise ValueError("separate continued-window QMP boundary changed")
+    fresh = fresh[:fresh.index(boundary)]
     fresh=re.sub(r'^#include.*$','',fresh,flags=re.M)
     kvmio=re.search(r'^#define KVMIO [^\n]+$',(kernel/'include/uapi/linux/kvm.h').read_text(),re.M).group(0)
     declared=record(window,'kvm_crucible_run_return').replace('struct kvm_crucible_run_return','struct qemu_run_return_abi')

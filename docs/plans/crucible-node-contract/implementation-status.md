@@ -4989,6 +4989,26 @@ libraries still require current-source qualification. The next dependency build
 will warm the exact required production compiler before reevaluating current
 application targets. Neither the timeout nor the dry-run supplies a gate pass.
 
+## QEMU fixture dependencies and guarded registrations
+
+The source-model fixtures now retain their required fw_cfg, IRQ, endpoint and
+KVM response/window dependencies. Unsupported selected collaborators abort;
+ordinary modeled source-scan completion grants no native authority. The original
+response-lifetime assertions and five mutation oracles remain intact.
+
+The ordinary package attempt completes compilation, the 589 upstream tests and
+the source model/mutation checks, then fails a later registration predicate.
+Read-only inspection of all 272 predicates identifies two stale matchers: the
+real global timer owner and determinism sampler functions now start with the
+required registration guard. Their corrected predicates require that guard
+before the existing assertions and release store, and require one definition
+each. All 274 corrected predicates, the original ordering checks and eighteen
+adverse data controls pass. Native QEMU source is unchanged.
+
+The failed package attempt remains failed. A fresh full package and matching
+corresponding-source build, installed readback and the relevant gates remain
+required; component checks supply no native readiness or preservation claim.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

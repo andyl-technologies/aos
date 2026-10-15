@@ -33,14 +33,35 @@ def implementation(source, case):
         return exact_function(text,
                               "int qemu_plugin_register_crucible_node_root_policy(\n")
 
-    text = (source / "hw/nvram/fw_cfg.c").read_text()
+    declaration_unit = source / "hw/nvram/fw_cfg.c"
+    text = declaration_unit.read_text()
     first = "struct FWCfgEntry {"
     last = "int fw_cfg_crucible_root_firmware_inventory("
-    if text.count(first) != 1:
-        raise SystemExit("native FW_CFG entry definition is ambiguous")
+    include = '#include "crucible-whole-fwcfg.inc.c"\n'
+    assertion = "G_STATIC_ASSERT(sizeof(FWCfgCrucibleRootInventory) == 104);"
+    if text.count(first) != 1 or text.count(include) != 1 or text.count(assertion) != 1:
+        raise SystemExit("native FW_CFG declaration/include boundary is ambiguous")
+    entry_end = text.find("\n};\n", text.index(first))
+    if entry_end < 0:
+        raise SystemExit("native FW_CFG entry closing declaration is missing")
+
+    # Preserve the real quoted include's source-relative declaration/guard
+    # closure. Unrelated whole-device API implementations are outside this
+    # legacy root-inventory model; no guard is replaced with a permissive stub.
+    included = (declaration_unit.parent / "crucible-whole-fwcfg.inc.c").read_text()
+    declarations = "#define WHOLE_FWCFG_MAX_ALLOCATIONS "
+    first_function = "static G_NORETURN void fwcfg_whole_fault("
+    if included.count(declarations) != 1 or included.count(first_function) != 1:
+        raise SystemExit("native whole FW_CFG declaration boundary is ambiguous")
+    closure = included[included.index(declarations):included.index(first_function)]
+    for signature in (first_function, "static bool fwcfg_whole_active(",
+                      "static void fwcfg_whole_mutation_guard("):
+        closure += exact_function(included, signature) + "\n"
+
     final_function = exact_function(text, last)
     end = text.index(last) + len(final_function)
-    return text[text.index(first):end]
+    return (text[text.index(first):entry_end + 4] + "\n" + closure +
+            text[text.index(assertion):end])
 
 
 def configured_flags(source):

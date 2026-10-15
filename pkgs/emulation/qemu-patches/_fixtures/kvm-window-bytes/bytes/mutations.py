@@ -86,6 +86,8 @@ def main():
                              'include/system/crucible-kvm-clock.h',
                              'include/system/crucible-kvm-window.h',
                              'include/system/crucible-kvm-response-bytes.h',
+                             'include/system/crucible-kvm-continuation.h',
+                             'include/system/crucible-kvm-initialization.h',
                              'include/system/kvm_int.h', 'scripts/qapi-gen.py'):
                 copied = candidate / relative
                 copied.parent.mkdir(parents=True, exist_ok=True)

@@ -36,6 +36,10 @@ PREFIX = r"""// SPDX-License-Identifier: GPL-2.0-only
 @EXIT_NUMBERS@
 @ENTRY_DEFINITION@
 
+/* Disabled source-private pointer targets retain their genuine native tags. */
+typedef struct CrucibleKvmContinuationCommand CrucibleKvmContinuationCommand;
+typedef struct CrucibleKvmInitializationVcpu CrucibleKvmInitializationVcpu;
+typedef struct CrucibleKvmInitializationAttempt CrucibleKvmInitializationAttempt;
 typedef struct CrucibleKvmResponseService CrucibleKvmResponseService;
 typedef struct CrucibleKvmResponseBytesJournal CrucibleKvmResponseBytesJournal;
 typedef int QemuMutex;
@@ -310,6 +314,16 @@ def main():
         raise SystemExit("usage: kvm-userspace-exit-model.py QEMU_SOURCE AOS_CC OUTPUT_DIR")
     source, compiler, output = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
     output.mkdir(parents=True, exist_ok=True)
+    # These fields remain opaque in the legacy model, but their tags must
+    # come from the actual source rather than a version-dependent guessed ABI.
+    for header_name, names in (
+        ("crucible-kvm-continuation.h", ("CrucibleKvmContinuationCommand",)),
+        ("crucible-kvm-initialization.h", ("CrucibleKvmInitializationVcpu", "CrucibleKvmInitializationAttempt")),
+    ):
+        original = (source / "include/system" / header_name).read_text()
+        for name in names:
+            if original.count("typedef struct " + name + " {") != 1:
+                raise ValueError("original opaque KVM type tag changed: " + name)
     body = (source / "accel/kvm/crucible-clock.c").read_text()
     header = (source / "include/system/crucible-kvm-clock.h").read_text()
     state = (source / "include/system/kvm_int.h").read_text()

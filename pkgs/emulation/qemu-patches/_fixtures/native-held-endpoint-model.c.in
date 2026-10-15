@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Early endpoint history only; whole-device journal admission is not modeled. */
 /* Actual source admission gates; no endpoint peer or node qualification. */
 #include "qemu/osdep.h"
 #include "qemu/atomic.h"
