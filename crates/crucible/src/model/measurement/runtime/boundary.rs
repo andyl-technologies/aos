@@ -337,7 +337,10 @@ impl<'definition> WindowProgress<'definition> {
         }
     }
 
-    pub(super) fn finish(mut self, terminal: &MeasurementTerminalState) -> MeasurementWindowOutcome {
+    pub(super) fn finish(
+        mut self,
+        terminal: &MeasurementTerminalState,
+    ) -> MeasurementWindowOutcome {
         if let Some(decided) = self.decided {
             return decided;
         }

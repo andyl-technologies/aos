@@ -173,8 +173,7 @@ impl<'definitions> MeasurementReplay<'definitions> {
                     .samples
                     .remove(&(definition.id.clone(), metric.id.clone()))
                     .unwrap_or_default();
-                let outcome =
-                    metric_outcome(metric, &window, offered, &self.sample_entries)?;
+                let outcome = metric_outcome(metric, &window, offered, &self.sample_entries)?;
                 metrics.insert(metric.id.clone(), outcome);
             }
             outcomes.insert(
@@ -185,7 +184,10 @@ impl<'definitions> MeasurementReplay<'definitions> {
         MeasurementEvaluation::new(self.definitions.content_hash(), outcomes)
     }
 
-    fn admit_entry(&mut self, entry: &SchedulerEventLogEntry) -> Result<(), MeasurementEvaluationError> {
+    fn admit_entry(
+        &mut self,
+        entry: &SchedulerEventLogEntry,
+    ) -> Result<(), MeasurementEvaluationError> {
         if !entry.has_valid_content_hash() {
             return Err(MeasurementEvaluationError::InvalidEventHash {
                 sequence: entry.sequence(),

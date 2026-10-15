@@ -409,16 +409,10 @@ impl MeasurementWindowOutcome {
         };
 
         let after_begin = at > begin.at
-            || (at == begin.at
-                && begin
-                    .sequence
-                    .is_none_or(|boundary| sequence >= boundary));
+            || (at == begin.at && begin.sequence.is_none_or(|boundary| sequence >= boundary));
         let before_end = end.is_none_or(|end| {
             at < end.at
-                || (at == end.at
-                    && end
-                        .sequence
-                        .is_none_or(|boundary| sequence <= boundary))
+                || (at == end.at && end.sequence.is_none_or(|boundary| sequence <= boundary))
         });
         after_begin && before_end
     }

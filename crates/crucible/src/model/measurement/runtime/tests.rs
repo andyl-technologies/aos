@@ -781,8 +781,7 @@ fn malformed_model_source_events_fail_closed() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn model_source_projection_amplification_stops_at_the_sample_bound()
--> Result<(), Box<dyn Error>> {
+fn model_source_projection_amplification_stops_at_the_sample_bound() -> Result<(), Box<dyn Error>> {
     let fixture = crate::happy_path_scenario()?;
     let server = node("server");
     let definitions = (0..4)
