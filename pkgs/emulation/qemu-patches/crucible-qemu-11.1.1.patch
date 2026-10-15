@@ -1,12 +1,12 @@
-From 0ea1fdbff97c769e7d8b8d7a0c151450b9592edd Mon Sep 17 00:00:00 2001
+From e2a4009d79113b1d805586cdbe117204b3d14c74 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 14:27:08 -0700
-Subject: [PATCH] Integrate public QEMU lifecycle and fixture declaration
- updates
+Date: Thu, 15 Oct 2026 15:15:01 -0700
+Subject: [PATCH] Integrate current QEMU lifecycle and fixture corrections
 
-Update lifecycle ownership integration and public regression fixtures. Migrate
-AIO custody and stop diagnostics to current declarations while preserving
-ordinary absence, lock-release checks and the existing negative controls.
+Retain public lifecycle ownership integration and current unit declarations.
+Correct inventory diagnostic boundaries and the bounded worker comparison,
+and scope deterministic futex scheduling to QEMU's real helpers while
+preserving regression assertions, negative controls and ordinary absence.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -91871,7 +91871,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..fbfb71f5daae5843427d7ebb449398a0ef120f81 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..eac2943ee0da6cfcf026c2d0d1451d064689f3ad 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,47 @@
@@ -92639,7 +92639,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..fbfb71f5daae5843427d7ebb449398a0
 +        (status.parked_worker_mask & ~status.worker_mask) != 0 ||
 +        (status.pending_worker_mask & ~status.parked_worker_mask) != 0 ||
 +        ctpop64(status.parked_worker_mask) +
-+            status.worker_operations_in_flight > ctpop64(status.worker_mask) ||
++            status.worker_operations_in_flight > (uint64_t)ctpop64(status.worker_mask) ||
 +        (((status.flags &
 +           QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_FLAG_HELD) != 0) !=
 +         (status.rings_held == status.ring_count)) ||
@@ -182445,7 +182445,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e5822471780821d36922424bfa6263ee8b9c9afc
+index 0000000000000000000000000000000000000000..24b9779e101f2aa557971e04f821b3751423c134
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,83 @@
@@ -182473,7 +182473,7 @@ index 0000000000000000000000000000000000000000..e5822471780821d36922424bfa6263ee
 +    'include/plugins/qemu-plugin.h':
 +        'e90a655812ce9e96eaec89a7bcb45594984e405cb3b5bf7acb59887932b8aa7e',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f34e3efe66f6f6f7177bac6962e60abd36c581a75cd2a19af524eba64a9bab3f',
++        'f834ff0f99b2342957c77f81f012aaf800f0cb154cded7be61b59b0ebe1b9db6',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -223586,7 +223586,7 @@ index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..175183172ffcdf0d8d6a1736ea5d971bb997ff49
+index 0000000000000000000000000000000000000000..c0bfe5833de666ed56c098c93953b3b035063786
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -223604,7 +223604,7 @@ index 0000000000000000000000000000000000000000..175183172ffcdf0d8d6a1736ea5d971b
 +    'include/system/crucible-ram-quiescence.h':
 +        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f34e3efe66f6f6f7177bac6962e60abd36c581a75cd2a19af524eba64a9bab3f',
++        'f834ff0f99b2342957c77f81f012aaf800f0cb154cded7be61b59b0ebe1b9db6',
 +}
 +
 +FUNCTIONS = (
@@ -223692,7 +223692,7 @@ index 0000000000000000000000000000000000000000..175183172ffcdf0d8d6a1736ea5d971b
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..fd66379f45604c30cdafd35026253c8ba0ae60f4
+index 0000000000000000000000000000000000000000..f2eb0469a0d097b919935f95ef9f7d4a2873edc9
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -223723,7 +223723,7 @@ index 0000000000000000000000000000000000000000..fd66379f45604c30cdafd35026253c8b
 +    'include/system/crucible-ram-quiescence.h':
 +        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f34e3efe66f6f6f7177bac6962e60abd36c581a75cd2a19af524eba64a9bab3f',
++        'f834ff0f99b2342957c77f81f012aaf800f0cb154cded7be61b59b0ebe1b9db6',
 +}
 +
 +FUNCTIONS = (
@@ -223939,7 +223939,7 @@ index 0000000000000000000000000000000000000000..fd66379f45604c30cdafd35026253c8b
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4b4284301c6550815ddd81937149f15deef20e47
+index 0000000000000000000000000000000000000000..99b64a3d57f152ac6fb72cff40ae0a97f7ecd9d7
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -223963,7 +223963,7 @@ index 0000000000000000000000000000000000000000..4b4284301c6550815ddd81937149f15d
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f34e3efe66f6f6f7177bac6962e60abd36c581a75cd2a19af524eba64a9bab3f',
++        'f834ff0f99b2342957c77f81f012aaf800f0cb154cded7be61b59b0ebe1b9db6',
 +}
 +
 +FUNCTIONS = (
@@ -224057,7 +224057,7 @@ index 0000000000000000000000000000000000000000..4b4284301c6550815ddd81937149f15d
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..0ab78516dcc36c4fd0db406cae24efbc3b9ca231
+index 0000000000000000000000000000000000000000..724ad5cbc644df2fd349699d0138633c9b5fa112
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -224098,9 +224098,9 @@ index 0000000000000000000000000000000000000000..0ab78516dcc36c4fd0db406cae24efbc
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f34e3efe66f6f6f7177bac6962e60abd36c581a75cd2a19af524eba64a9bab3f',
++        'f834ff0f99b2342957c77f81f012aaf800f0cb154cded7be61b59b0ebe1b9db6',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'a8d2186b1cf35cedc08c8cf0abf24072bc55a978531307cda5884ccf9ae2b7d0',
++        '5af81a3320af1d3195f428d47d1b9e69fe54c85f48e726be570e9b84ea5f93d3',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -224236,7 +224236,7 @@ index 0000000000000000000000000000000000000000..0ab78516dcc36c4fd0db406cae24efbc
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d1010907ed316e54b293f283a4256414be87a29e
+index 0000000000000000000000000000000000000000..0136890f76fb3676ed627cec914b5e497f3133fb
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,812 @@
@@ -224268,7 +224268,7 @@ index 0000000000000000000000000000000000000000..d1010907ed316e54b293f283a4256414
 +    'include/qemu/crucible-metadata-partition.h':
 +        '62dd96cf5bb1594dd3e42360459b409573cecd5d196f355f72edffa2250ee95a',
 +    'plugins/api-system.c':
-+        'd38d2ad868e7c391adbe395958d84e600b1810abbda92e54df84e817d5e2c93d',
++        'e11ca8dbafc56856bc47b5c672660b0a92656a785fbd845e5e9d6cffdda47cbd',
 +    'plugins/crucible-fault-lifecycle.c':
 +        '8119526bf428c17645bbf9137e62aab3abe3b05aeed527f72a24a526e92d2af8',
 +    'plugins/core.c':
@@ -257325,10 +257325,10 @@ index 0000000000000000000000000000000000000000..826f34e7c26bdac48f2dab1190635991
 +}
 diff --git a/tests/unit/test-crucible-mutex-owner-cache.py b/tests/unit/test-crucible-mutex-owner-cache.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ef89a69433d94cf0ddd7e309bc2edb6ff1154e83
+index 0000000000000000000000000000000000000000..e5d8e0a48837ade8f6ad2789fe9642ce194a47a0
 --- /dev/null
 +++ b/tests/unit/test-crucible-mutex-owner-cache.py
-@@ -0,0 +1,598 @@
+@@ -0,0 +1,583 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production mutex ownership with real Linux fork and pthread IDs.
 +
@@ -257347,10 +257347,18 @@ index 0000000000000000000000000000000000000000..ef89a69433d94cf0ddd7e309bc2edb6f
 +
 +
 +ROOT = Path(__file__).resolve().parents[2]
-+definition = runpy.run_path(str(Path(__file__).with_name(
-+    "test-crucible-net-output-stop.py")))["definition"]
++EXTRACT = runpy.run_path(str(Path(__file__).with_name(
++    "extract-crucible-startup-source-controls.py")))
++
++
++def definition(source, signature):
++    for _, _, _, body in EXTRACT["function_definitions"](source):
++        if body.startswith(signature):
++            return body.rstrip()
++    raise ValueError(f"function definition missing: {signature}")
 +
 +PRELUDE = r"""
++#include "qemu/osdep.h"
 +#include <assert.h>
 +#include <errno.h>
 +#include <inttypes.h>
@@ -257365,26 +257373,8 @@ index 0000000000000000000000000000000000000000..ef89a69433d94cf0ddd7e309bc2edb6f
 +#include <sys/wait.h>
 +#include <unistd.h>
 +#include <glib.h>
-+#include "qemu/typedefs.h"
-+#define qemu_build_assert(condition) _Static_assert(condition, #condition)
 +#include "qemu/atomic.h"
-+#define CONFIG_POSIX 1
-+typedef struct QemuCond QemuCond;
-+#include "qemu/thread-posix.h"
-+
-+#define QEMU_HOT_FORK_THREAD_NAME_MAX 256
-+#define QEMU_HOT_FORK_MUTEX_INVENTORY_MAX 65536
-+#define QEMU_HOT_FORK_RESTART_THREAD_MAX 4
-+#define QEMU_HOT_FORK_CARRIED_MUTEX_MAX 8
-+
-+void qemu_mutex_init(QemuMutex *mutex);
-+void qemu_mutex_destroy(QemuMutex *mutex);
-+void qemu_mutex_lock_impl(QemuMutex *, const char *, const int);
-+int qemu_mutex_trylock_impl(QemuMutex *, const char *, const int);
-+void qemu_mutex_unlock_impl(QemuMutex *, const char *, const int);
-+void qemu_rec_mutex_init(QemuRecMutex *mutex);
-+int qemu_get_thread_id(void);
-+int64_t qemu_thread_current_id(void);
++#include "qemu/thread.h"
 +
 +static __thread unsigned int tid_reads;
 +static __thread int failed_tid;
@@ -257844,21 +257834,15 @@ index 0000000000000000000000000000000000000000..ef89a69433d94cf0ddd7e309bc2edb6f
 +    arguments = parser.parse_args()
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
 +    source = (ROOT / "util/qemu-thread-posix.c").read_text()
-+    header = (ROOT / "include/qemu/thread.h").read_text()
-+    thread_types = header[header.index("typedef enum QemuThreadHotForkDisposition {"):
-+                          header.index("void qemu_thread_hot_fork_inventory(")]
-+    thread_types += "\nint qemu_thread_hot_fork_reconstruct_child_registry(QemuThreadHotForkRegistryTransaction *);\n"
-+    thread_types += "int qemu_thread_hot_fork_release_parent_registry_transaction(QemuThreadHotForkRegistryTransaction *);\n"
 +    mutex_globals = source[source.index("static pthread_mutex_t crucible_hot_fork_mutex_registry_guard"):
 +                           source.index("/*\n * This is not defined on Linux")]
 +    mutex_globals += "\nstatic __thread bool crucible_hot_fork_mutex_registry_held;\n"
-+    thread_globals = source[source.index("typedef struct QemuHotForkThreadRecord {"):
-+                            source.index("static QemuHotForkThreadRecord *qemu_hot_fork_thread_register(")]
++    thread_globals = source[source.index("struct QemuThreadRamActorBinding {"):
++                            source.index("static pthread_mutex_t ram_writer_lock")]
 +    thread_globals += "\nstatic char qemu_hot_fork_registry_blocker[256];\n"
 +    carriers = source[source.index("typedef struct CrucibleHotForkMutexCarrier {"):
 +                      source.index("static bool crucible_hot_fork_carrier_is_restart_thread(")]
 +    signatures = [
-+        "static void error_exit(",
 +        "static void crucible_hot_fork_mutex_registry_lock(",
 +        "static void crucible_hot_fork_mutex_registry_unlock(",
 +        "static void crucible_hot_fork_mutex_latch_inconsistent(",
@@ -257907,8 +257891,9 @@ index 0000000000000000000000000000000000000000..ef89a69433d94cf0ddd7e309bc2edb6f
 +        bodies = bodies.replace(refresh, "")
 +    rcu_child = definition((ROOT / "util/rcu.c").read_text(),
 +                           "static void rcu_init_child(void)")
++    error_exit = definition(source, "static void error_exit(")
 +    generated = arguments.output_dir / "mutex-owner-cache.c"
-+    generated.write_text(PRELUDE + thread_types + mutex_globals + thread_globals +
++    generated.write_text(PRELUDE + error_exit + "\n" + mutex_globals + thread_globals +
 +                         carriers + bodies + CHECKS + rcu_child + MAIN)
 +    binary = arguments.output_dir / "mutex-owner-cache"
 +    command = [os.environ.get("CC", "cc"),
@@ -261557,10 +261542,10 @@ index 0000000000000000000000000000000000000000..5de510d543012b6ea7ad7f47bb046431
 +}
 diff --git a/tests/unit/test-crucible-placement-registration.py b/tests/unit/test-crucible-placement-registration.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..64ab9abaa50db84c11fd6d4237da790eafdcb5d2
+index 0000000000000000000000000000000000000000..06bfb859ce1cc9dc44e9a07371d185bbda316e86
 --- /dev/null
 +++ b/tests/unit/test-crucible-placement-registration.py
-@@ -0,0 +1,861 @@
+@@ -0,0 +1,867 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Checks placement and write registration in the native post-grant window.
 +
@@ -261637,6 +261622,12 @@ index 0000000000000000000000000000000000000000..64ab9abaa50db84c11fd6d4237da790e
 +    pid_t owner_process;
 +    int first_negative_status;
 +    QemuCrucibleMetadataPartition metadata_partition;
++    /* The full allowance helper declares these owners; none is issued here. */
++    struct QemuCruciblePreexecPurposeOwner *preexec_purpose_owner;
++    struct QemuCrucibleProcessContractOwner *process_contract_owner;
++    struct QemuCrucibleIncarnationPurposeOwner *incarnation_purpose_owner;
++    QemuCrucibleProcessPurposeRecord process_purpose_record;
++    bool process_purpose_complete;
 +    struct {
 +        uint64_t original_total_bytes;
 +    } original;
@@ -262296,15 +262287,10 @@ index 0000000000000000000000000000000000000000..64ab9abaa50db84c11fd6d4237da790e
 +                        help="write literal fixture and bindings without compiling")
 +    args = parser.parse_args()
 +    source = (args.source_root / "plugins/crucible-paged-ram.c").read_text()
-+    plugin = (args.source_root / "include/plugins/qemu-plugin.h").read_text()
 +    native = (args.source_root / "include/qemu/crucible-paged-ram.h").read_text()
 +    startup = (args.source_root / "plugins/crucible-startup-source.c").read_text()
 +    startup_header = (args.source_root / "plugins/crucible-startup-source.h").read_text()
 +    native_plugin_header = (args.source_root / "include/qemu/plugin.h").read_text()
-+    admission_type = definition(plugin, "struct qemu_plugin_crucible_ram_admission_v1 {") + ";"
-+    coordinate_start = plugin.index("struct qemu_plugin_crucible_ram_write_coordinate_v1 {")
-+    coordinate_end = plugin.index("QEMU_PLUGIN_API", coordinate_start)
-+    admission_type += "\n\n" + plugin[coordinate_start:coordinate_end]
 +    prototypes = [
 +        declaration(startup_header,
 +                    "bool qemu_crucible_startup_source_total_matches("),
@@ -262313,12 +262299,11 @@ index 0000000000000000000000000000000000000000..64ab9abaa50db84c11fd6d4237da790e
 +        declaration(startup_header,
 +                    "int qemu_crucible_startup_source_metadata_partition_status("),
 +        declaration(startup_header,
++                    "int qemu_crucible_startup_source_inventory_allowance_limit_v2("),
++        declaration(startup_header,
 +                    "int qemu_crucible_startup_source_inventory_allowance_reserve("),
 +        declaration(native_plugin_header,
 +                    "bool qemu_plugin_crucible_startup_source_retained("),
-+        declaration(plugin, "int qemu_plugin_crucible_register_ram_write_preparation_v1("),
-+        declaration(plugin, "int qemu_plugin_crucible_register_ram_placement_v1("),
-+        declaration(plugin, "int qemu_plugin_crucible_ram_admission_grant_v1("),
 +        declaration(native, "int qemu_crucible_ram_placement_before_resume("),
 +        declaration(native, "int qemu_crucible_ram_diagnostic_failure("),
 +        declaration(native, "int qemu_crucible_ram_diagnostic_fail("),
@@ -262344,7 +262329,7 @@ index 0000000000000000000000000000000000000000..64ab9abaa50db84c11fd6d4237da790e
 +        bodies.insert(0, definition(source, "static bool ram_callback_installation_window("))
 +    prelude = PRELUDE.replace(
 +        "static GPtrArray sealed_regions",
-+        admission_type + "\n\n" + research_types + "\n\nstatic GPtrArray sealed_regions",
++        research_types + "\n\nstatic GPtrArray sealed_regions",
 +    )
 +
 +    args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -262352,8 +262337,9 @@ index 0000000000000000000000000000000000000000..64ab9abaa50db84c11fd6d4237da790e
 +    binary = args.output_dir / "placement-registration"
 +    total_helper = definition(
 +        startup, "bool qemu_crucible_startup_source_total_matches(")
-+    # Bind only this literal body to the modeled storage, not a replacement
-+    # helper or a simulated accepting Source implementation.
++    allowance_limit = definition(
++        startup, "int qemu_crucible_startup_source_inventory_allowance_limit_v2(")
++    # Literal accounting bodies read modeled storage, without an issued Source.
 +    fixture.write_text("\n\n".join([
 +        prelude, *prototypes,
 +        "#define startup_source fixture_startup_total",
@@ -262365,6 +262351,7 @@ index 0000000000000000000000000000000000000000..64ab9abaa50db84c11fd6d4237da790e
 +                   "int qemu_crucible_startup_source_metadata_partition_status("),
 +        "#define qemu_crucible_startup_source_native_metadata_check fixture_partition_current",
 +        "#define startup_failure fixture_partition_failure",
++        allowance_limit,
 +        definition(startup,
 +                   "int qemu_crucible_startup_source_inventory_allowance_reserve("),
 +        "#undef startup_failure",
@@ -262383,6 +262370,8 @@ index 0000000000000000000000000000000000000000..64ab9abaa50db84c11fd6d4237da790e
 +                "include/qemu/crucible-paged-ram.h",
 +                "include/qemu/plugin.h",
 +                "include/qemu/crucible-metadata-partition.h",
++                "include/qemu/crucible-process-purpose.h",
++                "include/qemu/crucible-device-workspace.h",
 +            )
 +        },
 +        "literal_total_helper_sha256": hashlib.sha256(
@@ -262405,6 +262394,8 @@ index 0000000000000000000000000000000000000000..64ab9abaa50db84c11fd6d4237da790e
 +        "literal_inventory_reserve_sha256": hashlib.sha256(definition(
 +            startup, "int qemu_crucible_startup_source_inventory_allowance_reserve("
 +        ).encode()).hexdigest(),
++        "literal_inventory_limit_sha256": hashlib.sha256(
++            allowance_limit.encode()).hexdigest(),
 +        "modeled_current_original_pre_post_seam": True,
 +        "source_acquisition_or_issuer": False,
 +    }
@@ -266706,10 +266697,10 @@ index 0000000000000000000000000000000000000000..ef4f6a3710b9620ed30ea671441d310e
 +    main()
 diff --git a/tests/unit/test-crucible-ram-worker-inventory.py b/tests/unit/test-crucible-ram-worker-inventory.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2661f1fdb4009cfd9b4858c24905c76a35037048
+index 0000000000000000000000000000000000000000..38173d95a5cc1b8eb970335ba060f669b9f4b748
 --- /dev/null
 +++ b/tests/unit/test-crucible-ram-worker-inventory.py
-@@ -0,0 +1,494 @@
+@@ -0,0 +1,577 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercises strict RAM membership with actual pthreads and /proc census.
 +
@@ -266724,13 +266715,21 @@ index 0000000000000000000000000000000000000000..2661f1fdb4009cfd9b4858c24905c76a
 +import os
 +from pathlib import Path
 +import re
++import runpy
 +import shlex
 +import subprocess
 +
 +ROOT = Path(__file__).resolve().parents[2]
++EXTRACT = runpy.run_path(str(Path(__file__).with_name(
++    "extract-crucible-startup-source-controls.py")))
 +
 +
 +def definition(source, signature):
++    if not signature.endswith("{"):
++        for _, _, _, body in EXTRACT["function_definitions"](source):
++            if body.startswith(signature):
++                return body.rstrip()
++        raise ValueError(f"function definition missing: {signature}")
 +    start = source.index(signature)
 +    opening = source.index("{", start)
 +    depth = 0
@@ -266739,6 +266738,57 @@ index 0000000000000000000000000000000000000000..2661f1fdb4009cfd9b4858c24905c76a
 +        if depth == 0:
 +            return source[start:index + 1]
 +    raise AssertionError(signature)
++
++
++def selected(source, name):
++    for current, _, _, body in EXTRACT["function_definitions"](source):
++        if current == name:
++            return body
++    raise ValueError(f"function definition missing: {name}")
++
++
++def ordinary_source_dependencies():
++    startup = (ROOT / "plugins/crucible-startup-source.c").read_text()
++    publication = (ROOT / "plugins/crucible-callback-publication.inc.h").read_text()
++    native = (ROOT / "plugins/crucible-native-invocation.c").read_text()
++    actor = (ROOT / "plugins/crucible-ram-control.inc.h").read_text()
++    thread = (ROOT / "util/qemu-thread-posix.c").read_text()
++    receiving = (ROOT / "plugins/crucible-checkpoint-receiving.h").read_text()
++    header = (ROOT / "plugins/crucible-startup-source.h").read_text()
++    declarations = EXTRACT["body_cut"](
++        startup, "static QemuCrucibleStartupSourceControl startup_source = {",
++        "static int startup_failure(")
++    bodies = []
++    # These continuations require selected ownership, absent in this fixture.
++    for text, signature in (
++        (receiving, "int qemu_crucible_checkpoint_request_actor_current_v1("),
++        (header, "int qemu_crucible_ram_control_actor_contract_current("),
++    ):
++        parameters = ("request", "actor") if "request_actor" in signature else ("actor",)
++        consume = "".join(f"    (void){name};\n" for name in parameters)
++        bodies.append(declaration(text, signature)[:-1] +
++                      "\n{\n" + consume + "    g_assert_not_reached();\n}\n")
++    bodies += [selected(thread, name) for name in
++               ("qemu_thread_get_self", "qemu_thread_is_self")]
++    bodies.append(selected(publication,
++                           "qemu_crucible_startup_source_native_selection_v1"))
++    bodies += [selected(native, name) for name in (
++        "native_selection", "registry_process_current", "registry_identity_locked",
++        "registry_current_locked", "top_locked", "registration_locked",
++        "frame_member_locked", "frame_reclaim_locked",
++        "qemu_plugin_crucible_native_enter_v1",
++        "qemu_plugin_crucible_native_mask_v1",
++        "qemu_plugin_crucible_native_exit_v1",
++    )]
++    bodies += [selected(actor, name) for name in (
++        "ram_control_pause_begin",
++        "qemu_plugin_crucible_ram_actor_pause_begin_inventory",
++        "qemu_plugin_crucible_ram_actor_pause_current",
++        "qemu_plugin_crucible_ram_actor_pause_binding",
++        "qemu_plugin_crucible_ram_actor_pause_identity",
++        "ram_control_pause_end", "qemu_plugin_crucible_ram_actor_pause_end",
++    )]
++    return declarations + "\n\n".join(bodies)
 +
 +
 +def declaration(header, signature):
@@ -266756,6 +266806,11 @@ index 0000000000000000000000000000000000000000..2661f1fdb4009cfd9b4858c24905c76a
 +#ifndef _GNU_SOURCE
 +#define _GNU_SOURCE
 +#endif
++/* Upstream headers use ordinary QEMU warning policy; copied bodies stay strict. */
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wunused-parameter"
++#pragma GCC diagnostic ignored "-Wsign-compare"
++#include "qemu/osdep.h"
 +#include <assert.h>
 +#include <dirent.h>
 +#include <errno.h>
@@ -266773,16 +266828,38 @@ index 0000000000000000000000000000000000000000..2661f1fdb4009cfd9b4858c24905c76a
 +#include <sys/stat.h>
 +#include <sys/syscall.h>
 +#include <unistd.h>
-+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
-+#define ctpop64(v) __builtin_popcountll(v)
-+#define qemu_mutex_lock pthread_mutex_lock
-+#define qemu_mutex_unlock pthread_mutex_unlock
-+static bool bql_locked(void) { return true; }
++#include "qemu/host-utils.h"
++#include "qemu/main-loop.h"
++#include "qemu/crucible-hot-fork-plugin.h"
++#include "system/crucible-ram-quiescence.h"
++#include "qapi/error.h"
++#include "qapi/error-internal.h"
++#include "@SOURCE_HEADER@"
++#include "@RECEIVING_HEADER@"
++#pragma GCC diagnostic pop
++
++bool bql_locked(void) { return true; }
++bool qemu_in_coroutine(void) { return false; }
++
++void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, int line)
++{
++    (void)file;
++    (void)line;
++    assert(pthread_mutex_lock(&mutex->lock) == 0);
++}
++
++void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, int line)
++{
++    (void)file;
++    (void)line;
++    assert(pthread_mutex_unlock(&mutex->lock) == 0);
++}
++
++QemuMutexLockFunc qemu_mutex_lock_func = qemu_mutex_lock_impl;
 +/* Pool retirement has its own actual-QEMU component fixture. */
-+typedef struct Error { int unused; } Error;
 +static bool pool_retirement_allowed = true;
 +static unsigned pool_retirement_calls;
-+static bool qemu_aio_hot_fork_prepare_thread_pools(Error **error)
++bool qemu_aio_hot_fork_prepare_thread_pools(Error **error)
 +{
 +    assert(*error == NULL);
 +    pool_retirement_calls++;
@@ -266792,7 +266869,7 @@ index 0000000000000000000000000000000000000000..2661f1fdb4009cfd9b4858c24905c76a
 +    }
 +    return pool_retirement_allowed;
 +}
-+static void error_free(Error *error) { free(error); }
++void error_free(Error *error) { free(error); }
 +"""
 +
 +ENDPOINTS = r"""
@@ -266806,8 +266883,12 @@ index 0000000000000000000000000000000000000000..2661f1fdb4009cfd9b4858c24905c76a
 +                       worker_membership_generation) == 96, "epoch offset");
 +_Static_assert(offsetof(struct qemu_plugin_crucible_hot_fork_barrier_status,
 +                       worker_thread_ids) == 104, "actor IDs offset");
-+static pthread_mutex_t qemu_plugin_crucible_resource_lock = PTHREAD_MUTEX_INITIALIZER;
-+static pthread_mutex_t qemu_plugin_crucible_barrier_operation_lock = PTHREAD_MUTEX_INITIALIZER;
++static QemuMutex qemu_plugin_crucible_resource_lock = {
++    .lock = PTHREAD_MUTEX_INITIALIZER, .initialized = true,
++};
++static QemuMutex qemu_plugin_crucible_barrier_operation_lock = {
++    .lock = PTHREAD_MUTEX_INITIALIZER, .initialized = true,
++};
 +static QemuPluginCrucibleHotForkInventory qemu_plugin_crucible_resource_inventory;
 +static QemuPluginCrucibleHotForkBarrierInventory qemu_plugin_crucible_barrier_inventory;
 +static struct qemu_plugin_crucible_hot_fork_barrier_status actor_status;
@@ -266835,7 +266916,7 @@ index 0000000000000000000000000000000000000000..2661f1fdb4009cfd9b4858c24905c76a
 +}
 +static qemu_plugin_crucible_hot_fork_barrier_cb_t qemu_plugin_crucible_barrier_cb = actor_barrier;
 +static void *qemu_plugin_crucible_barrier_userdata;
-+static void qemu_plugin_crucible_hot_fork_inventory(QemuPluginCrucibleHotForkInventory *inventory)
++void qemu_plugin_crucible_hot_fork_inventory(QemuPluginCrucibleHotForkInventory *inventory)
 +{
 +    *inventory = qemu_plugin_crucible_resource_inventory;
 +}
@@ -266847,8 +266928,8 @@ index 0000000000000000000000000000000000000000..2661f1fdb4009cfd9b4858c24905c76a
 +static uint64_t qemu_hot_fork_thread_generation = 1;
 +static QemuHotForkThreadRecord coordinator;
 +static GList coordinator_node;
-+static QemuHotForkThreadRecord *qemu_hot_fork_current_thread;
-+static int64_t qemu_get_thread_id(void) { return syscall(SYS_gettid); }
++static __thread QemuHotForkThreadRecord *qemu_hot_fork_current_thread;
++int qemu_get_thread_id(void) { return syscall(SYS_gettid); }
 +static void qemu_hot_fork_register_coordinator(void)
 +{
 +    /* Registration is a fixture provider; the production pause policy below
@@ -267142,43 +267223,26 @@ index 0000000000000000000000000000000000000000..2661f1fdb4009cfd9b4858c24905c76a
 +    args = parser.parse_args()
 +    source = (ROOT / "system/crucible-ram-quiescence.c").read_text()
 +    api = (ROOT / "plugins/api-system.c").read_text()
-+    plugin = (ROOT / "include/plugins/qemu-plugin.h").read_text()
-+    inventory = (ROOT / "include/qemu/crucible-hot-fork-plugin.h").read_text()
-+    thread = (ROOT / "include/qemu/thread.h").read_text()
 +    native_threads = (ROOT / "util/qemu-thread-posix.c").read_text()
-+    owner = (ROOT / "include/system/crucible-ram-quiescence.h").read_text()
-+    prototypes = [
-+        declaration(inventory, "int qemu_plugin_crucible_hot_fork_barrier("),
-+        declaration(owner, "int qemu_crucible_ram_owner_inventory("),
-+        declaration(thread, "int qemu_thread_ram_pause_begin("),
-+        declaration(thread, "int qemu_thread_ram_pause_validate("),
-+        declaration(thread, "int qemu_thread_ram_pause_end("),
-+    ]
 +    constants = "\n".join(re.findall(
-+        r"^#define (?:QEMU_PLUGIN_CRUCIBLE_(?:HOT_FORK_BARRIER|WORKER)[A-Z_]*|QEMU_HOT_FORK_THREAD_NAME_MAX|QEMU_RAM_PAUSE_MAX_THREADS|RAM_SERVICE_WORKERS_MAX|RAM_OWNER_DESCRIPTORS_MAX) .+$",
-+        "\n".join([plugin, thread, source]).replace("\\\n", ""), re.MULTILINE,
++        r"^#define (?:RAM_SERVICE_WORKERS_MAX|RAM_OWNER_DESCRIPTORS_MAX) .+$",
++        source, re.MULTILINE,
 +    ))
 +    types = [aggregate(text, signature) for text, signature in [
-+        (plugin, "struct qemu_plugin_crucible_resource_manifest {"),
-+        (plugin, "struct qemu_plugin_crucible_hot_fork_barrier_status {"),
-+        (inventory, "typedef struct QemuPluginCrucibleHotForkInventory {"),
-+        (inventory, "typedef struct QemuPluginCrucibleHotForkBarrierInventory {"),
-+        (thread, "typedef enum QemuThreadHotForkDisposition {"),
-+        (thread, "typedef struct QemuThreadRamPauseRefusal {"),
-+        (thread, "typedef struct QemuThreadRamPauseTransaction {"),
++        (native_threads, "struct QemuThreadRamActorBinding {"),
 +        (native_threads, "typedef struct QemuHotForkThreadRecord {"),
 +        (source, "typedef struct RamServiceWorker {"),
 +        (source, "typedef struct RamOwnerDescriptor {"),
 +        (source, "typedef struct RamOwnerClosure {"),
 +    ]]
-+    callback_start = plugin.index("typedef int (*qemu_plugin_crucible_hot_fork_barrier_cb_t)")
-+    types.append(plugin[callback_start:plugin.index(";", callback_start) + 1])
 +    globals_start = source.index("static pthread_mutex_t service_lock")
 +    globals_end = source.index("static uint64_t owner_token_counter", globals_start)
 +    globals_body = source[globals_start:globals_end]
 +    bodies = [definition(source, signature) for signature in [
 +        "static bool ram_plugin_quiescent(", "static int ram_owner_plugin_membership(",
-+        "static bool ram_owner_thread_known(", "static int ram_owner_check_kernel_threads(",
++        "static bool ram_owner_thread_known(",
++        "static int ram_owner_physical_tasks(",
++        "static int ram_owner_check_kernel_threads(",
 +        "static int ram_owner_descriptors(",
 +        "static void ram_owner_report_inventory_refusal(",
 +        "int qemu_crucible_ram_owner_inventory(",
@@ -267187,10 +267251,20 @@ index 0000000000000000000000000000000000000000..2661f1fdb4009cfd9b4858c24905c76a
 +    fixture = args.output_dir / "ram-worker-inventory.c"
 +    binary = args.output_dir / "ram-worker-inventory"
 +    fixture.write_text("\n\n".join([
-+        PRELUDE, constants, *types, *prototypes, globals_body, ENDPOINTS,
++        PRELUDE.replace("@SOURCE_HEADER@", str(ROOT / "plugins/crucible-startup-source.h")).replace(
++            "@RECEIVING_HEADER@", str(ROOT / "plugins/crucible-checkpoint-receiving.h")),
++        constants, *types, globals_body, ENDPOINTS,
++        EXTRACT["body_cut"](native_threads,
++                            "static pthread_cond_t ram_membership_resume",
++                            "/* Introspection"),
++        ordinary_source_dependencies(),
 +        definition(api, "int qemu_plugin_crucible_hot_fork_barrier("),
 +        *[definition(native_threads, signature) for signature in [
-+            "int qemu_thread_ram_pause_begin(", "int qemu_thread_ram_pause_validate(",
++            "int qemu_thread_ram_pause_begin_actor(",
++            "int qemu_thread_ram_pause_begin(",
++            "static int ram_membership_current_locked(",
++            "int qemu_thread_ram_pause_validate(",
++            "bool qemu_thread_ram_actor_matches(",
 +            "int qemu_thread_ram_pause_end(",
 +        ]], *bodies, TESTS,
 +    ]))
@@ -268206,10 +268280,10 @@ index 0000000000000000000000000000000000000000..47c5b0de1b13d148c6b19af3e0bacdf5
 +    main()
 diff --git a/tests/unit/test-crucible-rr-sim-barriers.py b/tests/unit/test-crucible-rr-sim-barriers.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b2f09fe34
+index 0000000000000000000000000000000000000000..b7a820235123823295a3ff2ba6d60dd9c4fc8e82
 --- /dev/null
 +++ b/tests/unit/test-crucible-rr-sim-barriers.py
-@@ -0,0 +1,633 @@
+@@ -0,0 +1,638 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production RR FIFO barriers and ordinary CPU event processing.
 +
@@ -268295,6 +268369,7 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +"""
 +
 +PRELUDE = r"""
++#include "qemu/osdep.h"
 +#include <assert.h>
 +#include <stdbool.h>
 +#include <stdint.h>
@@ -268302,9 +268377,9 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +#include <stdlib.h>
 +#include <string.h>
 +#include <glib.h>
-+#define qemu_build_assert(condition) _Static_assert(condition, #condition)
 +#include "qemu/atomic.h"
 +#include "qemu/queue.h"
++#include "qom/object.h"
 +
 +#define ICOUNT_PRECISE 1
 +#define QEMU_CLOCK_VIRTUAL 1
@@ -268313,30 +268388,25 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +#define RR_TCG_EXEC_IDLE 0
 +#define CPU_FOREACH(cpu) for ((cpu) = first_cpu; (cpu); (cpu) = (cpu)->next)
 +
-+typedef GMutex QemuMutex;
++typedef GMutex FixtureMutex;
 +typedef struct { int kind; } QemuCond;
 +typedef struct CPUState CPUState;
 +typedef union { unsigned long host_ulong; } run_on_cpu_data;
 +typedef void (*run_on_cpu_func)(CPUState *, run_on_cpu_data);
-+struct qemu_work_item {
-+    QSIMPLEQ_ENTRY(qemu_work_item) node;
-+    run_on_cpu_func func;
-+    run_on_cpu_data data;
-+    bool free, exclusive, done;
-+};
++@WORK_ITEM@
 +
 +struct CPUState {
 +    CPUState *next;
 +    int cpu_index, exception_index;
 +    bool stop, stopped, unplug, halted, thread_kicked, exit_request;
-+    QemuMutex work_mutex;
++    FixtureMutex work_mutex;
 +    QemuCond *halt_cond;
 +    QSIMPLEQ_HEAD(, qemu_work_item) work_list;
 +};
 +
-+typedef struct { bool is_sim; } AccelState;
-+typedef struct { AccelState *accelerator; } MachineState;
-+typedef struct { void (*kick_vcpu_thread)(CPUState *); } AccelOpsClass;
++struct AccelState { bool is_sim; };
++struct MachineState { AccelState *accelerator; };
++struct AccelOpsClass { void (*kick_vcpu_thread)(CPUState *); };
 +typedef enum {
 +    QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_COMPLETE,
 +    QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_RESCAN
@@ -268379,6 +268449,12 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +static void rr_crucible_sim_drain_vcpu_work(void);
 +static void work_callback(CPUState *cpu, run_on_cpu_data data);
 +
++void object_unref(void *object)
++{
++    (void)object;
++    g_assert_not_reached();
++}
++
 +static void record(char event)
 +{
 +    assert(event_count + 1 < sizeof(events));
@@ -268386,7 +268462,7 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +    events[event_count] = '\0';
 +}
 +
-+static void qemu_mutex_lock(QemuMutex *mutex)
++static void qemu_mutex_lock(FixtureMutex *mutex)
 +{
 +    for (unsigned index = 0; index < 2; index++) {
 +        if (mutex == &cpus[index].work_mutex) {
@@ -268396,7 +268472,7 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +    g_mutex_lock(mutex);
 +}
 +
-+static void qemu_mutex_unlock(QemuMutex *mutex)
++static void qemu_mutex_unlock(FixtureMutex *mutex)
 +{
 +    g_mutex_unlock(mutex);
 +}
@@ -268818,8 +268894,11 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +    if arguments.negative_control:
 +        assert changes > 0, "negative must mutate an extracted production body"
 +    generated = output / "rr-sim-barriers.c"
++    work_item = definition((ROOT / "cpu-common.c").read_text(),
++                           "struct qemu_work_item {") + ";"
 +    generated.write_text("\n\n".join([
-+        "/* SPDX-License-Identifier: GPL-2.0-or-later */", PRELUDE,
++        "/* SPDX-License-Identifier: GPL-2.0-or-later */",
++        PRELUDE.replace("@WORK_ITEM@", work_item),
 +        *bodies, BASELINE, old_wait, CHECKS,
 +    ]))
 +    binary = output / "rr-sim-barriers"
@@ -270914,10 +270993,10 @@ index 0000000000000000000000000000000000000000..2959d327c93b23a69e0ce12dbe31dd19
 +}
 diff --git a/tests/unit/test-crucible-settle-prepark.py b/tests/unit/test-crucible-settle-prepark.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1fafc98dea
+index 0000000000000000000000000000000000000000..ddf3d47405be41ef8d087d6d643f937d23761d95
 --- /dev/null
 +++ b/tests/unit/test-crucible-settle-prepark.py
-@@ -0,0 +1,490 @@
+@@ -0,0 +1,567 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production RR prepark, completion, settlement and futex event bodies.
 +
@@ -270937,20 +271016,86 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +
 +
 +ROOT = Path(__file__).resolve().parents[2]
-+definition = runpy.run_path(str(Path(__file__).with_name(
-+    "test-crucible-net-output-stop.py")))["definition"]
++EXTRACT = runpy.run_path(str(Path(__file__).with_name(
++    "extract-crucible-startup-source-controls.py")))
++
++
++def definition(source, signature):
++    for _, _, _, body in EXTRACT["function_definitions"](source):
++        if body.startswith(signature):
++            return body.rstrip()
++    raise ValueError(f"function definition missing: {signature}")
++
++
++def selected(source, name):
++    for current, _, _, body in EXTRACT["function_definitions"](source):
++        if current == name:
++            return body
++    raise ValueError(f"function definition missing: {name}")
++
++
++def ordinary_native_dependencies(root, api):
++    native = (root / "plugins/crucible-native-invocation.c").read_text()
++    source = (root / "plugins/crucible-startup-source.c").read_text()
++    publication = (root / "plugins/crucible-callback-publication.inc.h").read_text()
++    thread = (root / "util/qemu-thread-posix.c").read_text()
++    declarations = EXTRACT["body_cut"](
++        api, "static struct {\n    QemuCrucibleNativeRegistration *control;",
++        "static qemu_plugin_time_advance_cb_t")
++    declarations += EXTRACT["body_cut"](
++        source, "static QemuCrucibleStartupSourceControl startup_source = {",
++        "static int startup_failure(")
++    declarations += "\nstruct qemu_plugin_state plugin;\n"
++    names = (
++        "qemu_plugin_crucible_native_group_member_count_v1",
++        "native_selection", "registry_process_current",
++        "registry_identity_locked", "registry_current_locked", "group_index",
++        "group_source_object_identity", "group_identity_locked", "top_locked",
++        "frame_member_locked", "registration_locked", "frame_reclaim_locked",
++        "qemu_plugin_crucible_native_enter_v1",
++        "qemu_plugin_crucible_native_mask_v1",
++        "qemu_plugin_crucible_native_exit_v1",
++        "qemu_plugin_crucible_native_group_use_begin_v1",
++        "qemu_plugin_crucible_native_group_use_end_v1",
++    )
++    bodies = [selected(publication,
++                       "qemu_crucible_startup_source_native_selection_v1")]
++    bodies += [selected(thread, name) for name in
++               ("qemu_thread_get_self", "qemu_thread_is_self")]
++    # Canonical unselected state never enters these registry locks.
++    for name in ("qemu_mutex_lock_impl", "qemu_mutex_unlock_impl",
++                 "qemu_rec_mutex_lock_impl", "qemu_rec_mutex_unlock_impl"):
++        signature = selected(thread, name).split("{", 1)[0]
++        bodies.append(signature + "{\n    g_assert_not_reached();\n}\n")
++    qsp = (root / "util/qsp.c").read_text()
++    for declaration in (
++        "QemuMutexLockFunc qemu_mutex_lock_func = qemu_mutex_lock_impl;",
++        "QemuRecMutexLockFunc qemu_rec_mutex_lock_func = qemu_rec_mutex_lock_impl;",
++    ):
++        assert declaration in qsp
++        bodies.append(declaration)
++    bodies += [selected(native, name) for name in names]
++    bodies += [selected(api,
++                        "qemu_plugin_crucible_native_time_advance_descriptor_observe_v1")]
++    return declarations + "\n\n".join(bodies)
 +
 +PRELUDE = r"""
++#include "qemu/osdep.h"
 +#include <assert.h>
 +#include <stdbool.h>
 +#include <stdint.h>
 +#include <stdio.h>
 +#include <string.h>
 +#include <glib.h>
-+#include "qemu/typedefs.h"
-+#define qemu_build_assert(condition) _Static_assert(condition, #condition)
++static long fixture_futex_syscall(long number, ...);
++#define syscall fixture_futex_syscall
++#include "qemu/thread.h"
++#undef syscall
++#include "hw/core/cpu.h"
++#include "qemu/main-loop.h"
++#include "system/crucible-plugin-wake.h"
++#include "@SOURCE_HEADER@"
 +#include "accel/tcg/tcg-accel-ops-rr.h"
-+#define HAVE_FUTEX 1
 +#define EV_SET 0
 +#define EV_FREE 1
 +#define EV_BUSY -1
@@ -270959,13 +271104,9 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +#define QEMU_PLUGIN_TIME_ADVANCE_TIMERS_WAITING 1
 +#define QEMU_PLUGIN_TIME_ADVANCE_TIMERS_COMPLETING 2
 +#define QEMU_PLUGIN_TIME_ADVANCE_TIMERS_SETTLE_READY 3
-+#define QEMU_PLUGIN_WAKE_EVENT_DRAINED 1
-+
-+/* EVENT_TYPE is copied from the existing public thread header. */
-+EVENT_TYPE
-+struct CPUState { int unused; };
-+static CPUState cpu, *first_cpu = &cpu;
-+typedef void (*qemu_plugin_time_advance_cb_t)(int, int64_t, void *);
++static CPUState cpu;
++CPUTailQ cpus_queue = QTAILQ_HEAD_INITIALIZER(cpus_queue);
++__thread CPUState *current_cpu;
 +static qemu_plugin_time_advance_cb_t qemu_plugin_time_advance_cb;
 +static void *qemu_plugin_time_advance_userdata;
 +static int qemu_plugin_time_advance_pending;
@@ -270977,12 +271118,12 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +static uint64_t qemu_plugin_rr_control_ack_generation;
 +static uint64_t qemu_plugin_rr_control_complete_generation;
 +static uintptr_t qemu_plugin_control_boundary_scheduled;
-+static int qemu_plugin_wake_notifiers;
++static NotifierList qemu_plugin_wake_notifiers =
++    NOTIFIER_LIST_INITIALIZER(qemu_plugin_wake_notifiers);
 +static unsigned int rr_tcg_exec_state;
 +static uint64_t rr_wake_publish_generation, rr_wake_consumed_generation;
 +static QemuEvent rr_dispatch_ceiling_event;
 +static bool rr_dispatch_ceiling_event_initialized = true;
-+#define CPU_FOREACH(item) for ((item) = first_cpu; (item); (item) = NULL)
 +static bool rr_replay_mutex_owned, locked;
 +static bool control_pending, lifecycle_pending, work_pending;
 +static unsigned int waits, futex_waits, blocked, wakeups;
@@ -270998,14 +271139,7 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +static enum PublicationPoint publication;
 +static bool published;
 +
-+bool qemu_plugin_time_advance_is_pending(void);
-+bool qemu_plugin_time_advance_settle_is_pending(void);
-+void qemu_plugin_time_advance_settle_at_rr_idle(void);
 +static void qemu_plugin_time_advance_complete_bh(void *opaque);
-+void qemu_event_init(QemuEvent *ev, bool init);
-+void qemu_event_set(QemuEvent *ev);
-+void qemu_event_reset(QemuEvent *ev);
-+void qemu_event_wait(QemuEvent *ev);
 +static void production_event_reset(QemuEvent *ev);
 +static void production_event_wait(QemuEvent *ev);
 +
@@ -271017,7 +271151,7 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +    }
 +}
 +
-+static bool bql_locked(void) { return locked; }
++bool bql_locked(void) { return locked; }
 +static bool rr_crucible_sim_mode(void) { return true; }
 +static uint64_t icount_crucible_rr_switch_quantum(void) { return 17; }
 +static void tcg_kick_vcpu_thread(CPUState *target)
@@ -271025,7 +271159,7 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +    (void)target;
 +    g_assert_not_reached();
 +}
-+static bool qemu_cpu_is_self(CPUState *target) { return target == first_cpu; }
++bool qemu_cpu_is_self(CPUState *target) { return target == first_cpu; }
 +
 +static void rr_replay_mutex_unlock(void)
 +{
@@ -271042,30 +271176,50 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +    lock_changes++;
 +}
 +
-+static void bql_unlock(void) { g_assert_true(locked); locked = false; }
-+static void bql_lock(void) { g_assert_false(locked); locked = true; }
-+
-+static void qemu_futex_wake_all(QemuEvent *ev)
++void bql_unlock(void) { g_assert_true(locked); locked = false; }
++void bql_lock_impl(const char *file, int line)
 +{
-+    g_assert_cmpuint(ev->value, ==, EV_SET);
-+    wakeups++;
++    (void)file;
++    (void)line;
++    g_assert_false(locked);
++    locked = true;
 +}
 +
-+static void qemu_futex_wait(QemuEvent *ev, unsigned expected)
++/* Real inline futex helpers reach this deterministic scheduling endpoint. */
++static long fixture_futex_syscall(long number, ...)
 +{
++    va_list arguments;
++    QemuEvent *ev;
++    int operation, expected;
++
++    g_assert_cmpint(number, ==, __NR_futex);
++    va_start(arguments, number);
++    ev = va_arg(arguments, void *);
++    operation = va_arg(arguments, int);
++    expected = va_arg(arguments, int);
++    va_end(arguments);
++    g_assert_true(ev == &rr_dispatch_ceiling_event);
++    if (operation == FUTEX_WAKE) {
++        g_assert_cmpint(expected, ==, INT_MAX);
++        g_assert_cmpuint(ev->value, ==, EV_SET);
++        wakeups++;
++        return 0;
++    }
++    g_assert_cmpint(operation, ==, FUTEX_WAIT);
 +    g_assert_false(locked);
 +    g_assert_false(rr_replay_mutex_owned);
-+    g_assert_cmpuint(expected, ==, (unsigned)EV_BUSY);
++    g_assert_cmpuint((unsigned)expected, ==, (unsigned)EV_BUSY);
 +    futex_waits++;
 +    inject(AT_FUTEX);
 +    if (qatomic_read(&ev->value) == EV_SET) {
-+        return;
++        return 0;
 +    }
 +    /* An unchanged BUSY event with no scheduled producer is a lost wake. */
 +    if (!intentional_wait) {
 +        blocked++;
 +    }
 +    qemu_event_set(ev);
++    return 0;
 +}
 +
 +void qemu_event_reset(QemuEvent *ev)
@@ -271081,7 +271235,7 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +    production_event_wait(ev);
 +}
 +
-+static void qemu_cpu_kick(CPUState *target)
++void qemu_cpu_kick(CPUState *target)
 +{
 +    g_assert_true(target == first_cpu);
 +    g_assert_cmpuint(callbacks, ==, 1);
@@ -271090,16 +271244,16 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +    rr_kick_vcpu_thread(target);
 +}
 +
-+static bool qemu_plugin_crucible_rr_control_boundary_pending(void)
++bool qemu_plugin_crucible_rr_control_boundary_pending(void)
 +{
 +    inject(AFTER_CONSUMPTION);
 +    return control_pending;
 +}
 +
-+static bool qemu_force_shutdown_requested(void) { return lifecycle_pending; }
-+static bool runstate_is_running(void) { return true; }
++bool qemu_force_shutdown_requested(void) { return lifecycle_pending; }
++bool runstate_is_running(void) { return true; }
 +static bool rr_crucible_sim_stop_or_unplug_pending(void) { return false; }
-+static bool qemu_plugin_crucible_vmstop_pending(void) { return false; }
++bool qemu_plugin_crucible_vmstop_pending(void) { return false; }
 +
 +static bool rr_crucible_sim_vcpu_work_pending(void)
 +{
@@ -271119,8 +271273,8 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +    rr_crucible_sim_drain_vcpu_work();
 +}
 +
-+static void qemu_plugin_crucible_exact_boundary_enter(void) { exact_depth++; }
-+static void qemu_plugin_crucible_exact_boundary_leave(void) { exact_depth--; }
++void qemu_plugin_crucible_exact_boundary_enter(void) { exact_depth++; }
++void qemu_plugin_crucible_exact_boundary_leave(void) { exact_depth--; }
 +
 +void rr_crucible_sim_trace_idle_stage(const char *phase, int64_t target)
 +{
@@ -271141,7 +271295,7 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +    callbacks++;
 +}
 +
-+static void notifier_list_notify(int *list, void *event)
++void notifier_list_notify(NotifierList *list, void *event)
 +{
 +    g_assert_true(list == &qemu_plugin_wake_notifiers);
 +    g_assert_cmpint((intptr_t)event, ==, QEMU_PLUGIN_WAKE_EVENT_DRAINED);
@@ -271184,13 +271338,13 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +    g_assert_false(qemu_plugin_time_advance_is_pending());
 +}
 +static void qemu_plugin_control_drain_notify(void) { }
-+static void qemu_plugin_crucible_rr_control_boundary_acknowledge(void)
++void qemu_plugin_crucible_rr_control_boundary_acknowledge(void)
 +{
 +    inject(CONTROL_ACK);
 +}
-+static void qemu_plugin_crucible_rr_control_boundary_defer(void) { }
-+static void qemu_plugin_crucible_rr_control_boundary_cancel(void) { }
-+static void qemu_cond_wait_bql(void *condition)
++void qemu_plugin_crucible_rr_control_boundary_defer(void) { }
++void qemu_plugin_crucible_rr_control_boundary_cancel(void) { }
++void qemu_cond_wait_bql(QemuCond *condition)
 +{
 +    (void)condition;
 +    g_assert_not_reached();
@@ -271209,6 +271363,8 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +CHECKS = r"""
 +static void reset(enum PublicationPoint point, bool replay, bool control)
 +{
++    QTAILQ_INIT(&cpus_queue);
++    QTAILQ_INSERT_TAIL(&cpus_queue, &cpu, node);
 +    qemu_plugin_time_advance_cb = completion;
 +    qemu_plugin_time_advance_pending = QEMU_PLUGIN_TIME_ADVANCE_ARMED;
 +    qemu_plugin_time_advance_timer_state = QEMU_PLUGIN_TIME_ADVANCE_TIMERS_WAITING;
@@ -271346,12 +271502,10 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +    rr = (arguments.source_root / "accel/tcg/tcg-accel-ops-rr.c").read_text()
 +    api = (arguments.source_root / "plugins/api-system.c").read_text()
 +    event = (arguments.source_root / "util/event.c").read_text()
-+    thread = (arguments.source_root / "include/qemu/thread.h").read_text()
-+    event_type = thread[thread.index("typedef struct QemuEvent {"):
-+                        thread.index("} QemuEvent;") + len("} QemuEvent;")]
-+    prelude = PRELUDE.replace("EVENT_TYPE", event_type)
-+    prelude = prelude.replace("struct CPUState { int unused; };",
-+                              "struct CPUState { void *halt_cond; int exit_request; };")
++    prelude = PRELUDE.replace(
++        "@SOURCE_HEADER@",
++        str(arguments.source_root / "plugins/crucible-startup-source.h"))
++    dependencies = ordinary_native_dependencies(arguments.source_root, api)
 +    event_bodies = "\n\n".join(definition(event, signature) for signature in [
 +        "void qemu_event_init(", "void qemu_event_set(",
 +        "void qemu_event_reset(", "void qemu_event_wait("])
@@ -271388,12 +271542,14 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +    if arguments.negative_control:
 +        rr_bodies = rr_bodies.replace(guard, "")
 +    loop = rr[rr.index("static G_NORETURN void rr_cpu_thread_loop("):]
-+    block = definition(loop, "if (rr_crucible_sim_mode() &&\n            qemu_plugin_time_advance_settle_is_pending())")
++    block = EXTRACT["body_cut"](
++        loop, "if (rr_crucible_sim_mode() &&\n            qemu_plugin_time_advance_settle_is_pending())",
++        "\n\n        if (rr_crucible_sim_mode() &&")
 +    # The extracted block's continue repeats the same outer-loop scan; the
 +    # wrapper exits when the production predicate becomes false.
 +    outer = "static void outer_idle_iteration(void)\n{\n    while (true) {\n" + block + "\n        break;\n    }\n}"
 +    generated = arguments.output_dir / "settle-prepark.c"
-+    generated.write_text("\n\n".join([prelude, event_bodies, settle, api_bodies,
++    generated.write_text("\n\n".join([prelude, dependencies, event_bodies, settle, api_bodies,
 +                                          rr_bodies, outer, CHECKS]))
 +    binary = arguments.output_dir / "settle-prepark"
 +    command = [os.environ.get("CC", "cc"),
@@ -276462,10 +276618,10 @@ index 0000000000000000000000000000000000000000..785d21eb6602f04809e364a42347dc27
 +}
 diff --git a/tests/unit/test-crucible-stop-context.py b/tests/unit/test-crucible-stop-context.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..b4f79c21d2d18f295574d64a0488d6e1b5a0e005
+index 0000000000000000000000000000000000000000..6e04017762b6144d758422da84b78c7a516b3b71
 --- /dev/null
 +++ b/tests/unit/test-crucible-stop-context.py
-@@ -0,0 +1,478 @@
+@@ -0,0 +1,479 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise original stop, rearm and registered reader diagnostic call sites.
 +
@@ -276582,6 +276738,7 @@ index 0000000000000000000000000000000000000000..b4f79c21d2d18f295574d64a0488d6e1
 +#include "hw/core/cpu.h"
 +#include "qemu/aio.h"
 +#include "qemu/main-loop.h"
++#include "monitor/monitor.h"
 +#include "system/cpus.h"
 +#include "system/runstate.h"
 +#include "system/crucible-plugin-wake.h"

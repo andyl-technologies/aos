@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "6b230af322761676a56b9613dd2c8360f2af6a31dd06359cc40881f212c3e373";
-  subject = "Integrate public QEMU lifecycle and fixture declaration updates";
-  body = "Update lifecycle ownership integration and public regression fixtures. Migrate\nAIO custody and stop diagnostics to current declarations while preserving\nordinary absence, lock-release checks and the existing negative controls.";
-  commit = "0ea1fdbff97c769e7d8b8d7a0c151450b9592edd";
-  tree = "02e1ac7c8abb86d8fc0101fc0b9d52054c22237c";
+  sha256 = "7e1b6cd0066c970b7140b0d2e294b1795f5514c7b522714719eb14c4482d2966";
+  subject = "Integrate current QEMU lifecycle and fixture corrections";
+  body = "Retain public lifecycle ownership integration and current unit declarations.\nCorrect inventory diagnostic boundaries and the bounded worker comparison,\nand scope deterministic futex scheduling to QEMU's real helpers while\npreserving regression assertions, negative controls and ordinary absence.";
+  commit = "e2a4009d79113b1d805586cdbe117204b3d14c74";
+  tree = "0aca173fa609d680e080ec032ccf452e143b2ab8";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/aio-stop-current";
+  branchRef = "dplecki/inventory-settle-current";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "b98975c9eeb72afaab33526d258108a424eb407d3941aeb4cdbf75d1ae4b51c8";
+  bundleSha256 = "82249dcbd35f3f1c84b9443179bbdadb068f3c246aad44622344050c9e38ce9e";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-15T14:27:08-07:00";
+  deterministicPatchDate = "2026-10-15T15:15:01-07:00";
 
   additionalCapabilities = [
     {
