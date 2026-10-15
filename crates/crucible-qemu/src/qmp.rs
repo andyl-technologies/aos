@@ -1622,12 +1622,6 @@ impl QmpOperationDeadline<'_> {
             checkpoint_original: None,
             #[cfg(target_os = "linux")]
             checkpoint_loan: None,
-            #[cfg(any(
-                test,
-                feature = "test-support",
-                feature = "kernel-swap-measurement",
-                feature = "private-measurement-domain"
-            ))]
             borrowed: None,
             #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
             paired: None,
