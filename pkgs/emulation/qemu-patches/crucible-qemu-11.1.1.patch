@@ -1,19 +1,17 @@
-From a91968fc45c6ae6215324dd3003e596d99ea1b7d Mon Sep 17 00:00:00 2001
+From ef52a03c6d9bd03ffece0bc27e0b432aeb7a43f9 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 14 Oct 2026 17:45:25 -0700
-Subject: [PATCH] plugins: retain protected command receiving custody across
- transitions
+Date: Wed, 14 Oct 2026 18:07:47 -0700
+Subject: [PATCH] plugins: accept authenticated configured setup node counts
 
-Bind the command member and bounded three-argument reader to the genuine
-Source-created child, Bridge, slot and paid Runtime. Save born outputs and
-reader progress before signed and independent post failures. Hold whole
-member creation/transfer and receive creation transitions until their final
-saved disposition so reentrant returns cannot release their parents.
+Accept positive node counts through the supported protocol capacity in the
+initial reply and acquired mapping. Corroborate slot creation and current
+against the exact same authenticated reply count and acquired VMA header,
+while preserving canonical parent identity and selected-index bounds.
 
-Keep received request debt distinct from local reader release. Physical
-current and observation issue no action Original or terminal permission.
-Preserve the eleven registration owners and all 139 registered scenarios;
-bind both new GPL fragments into the actual extractor and Meson cohort.
+Preserve version 8 and ABI 32 framing, descriptor and mapping custody,
+initiating and independent post failures, the complete receiver and eleven
+registration owners, and all 139 existing scenarios. Bind the actual unit
+and preinit generators to these final whole-file validators.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -160631,10 +160629,10 @@ index 0000000000000000000000000000000000000000..20c2f767347147954a75f466db2076a5
 +#endif
 diff --git a/plugins/crucible-setup-handshake.inc.h b/plugins/crucible-setup-handshake.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..18190df94fa498850c655e6b2070c685fc321903
+index 0000000000000000000000000000000000000000..2fa9afa189292251510529995d5639bf43afdad3
 --- /dev/null
 +++ b/plugins/crucible-setup-handshake.inc.h
-@@ -0,0 +1,832 @@
+@@ -0,0 +1,838 @@
 +/*
 + * Source-owned initial control exchange and retained selected-slot loan.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -161087,7 +161085,8 @@ index 0000000000000000000000000000000000000000..18190df94fa498850c655e6b2070c685
 +        if (ldl_be_p(owner->reply) != 17 || owner->reply[4] != 0xf1 ||
 +            ldl_be_p(owner->reply + 5) != 8 ||
 +            ldl_be_p(owner->reply + 9) != CRUCIBLE_SHMEM_ABI_VERSION ||
-+            ldl_be_p(owner->reply + 17) != CRUCIBLE_SHMEM_MAX_NODES ||
++            !ldl_be_p(owner->reply + 17) ||
++            ldl_be_p(owner->reply + 17) > CRUCIBLE_SHMEM_MAX_NODES ||
 +            ldl_be_p(owner->reply + 13) >= ldl_be_p(owner->reply + 17)) {
 +            status = -EPROTO;
 +        } else {
@@ -161312,9 +161311,10 @@ index 0000000000000000000000000000000000000000..18190df94fa498850c655e6b2070c685
 +    }
 +    index = ldl_be_p(handshake->reply + 13);
 +    count = ldl_be_p(handshake->reply + 17);
-+    /* Bounds corroborate the selected complete reply; they do not select VM
-+     * membership. Its issuer is this same authentic endpoint transaction. */
-+    if (count != CRUCIBLE_SHMEM_MAX_NODES || index >= count ||
++    /* The configured count may be smaller than the protocol capacity. It
++     * must match this acquired VMA and the complete authenticated reply;
++     * these bounds do not select or issue VM membership. */
++    if (!count || count > CRUCIBLE_SHMEM_MAX_NODES || index >= count ||
 +        le32_to_cpu(qatomic_load_acquire(
 +            &((struct crucible_shmem_region_header *)mapping->address)->node_count)) != count) {
 +        return -EPROTO;
@@ -161371,7 +161371,11 @@ index 0000000000000000000000000000000000000000..18190df94fa498850c655e6b2070c685
 +        (!slot->handshake->reply_validated || !slot->handshake->read_completed ||
 +         slot->index != ldl_be_p(slot->handshake->reply + 13) ||
 +         slot->node_count != ldl_be_p(slot->handshake->reply + 17) ||
-+         slot->node_count != CRUCIBLE_SHMEM_MAX_NODES || slot->index >= slot->node_count)) {
++         !slot->node_count || slot->node_count > CRUCIBLE_SHMEM_MAX_NODES ||
++         slot->index >= slot->node_count ||
++         le32_to_cpu(qatomic_load_acquire(
++             &((struct crucible_shmem_region_header *)slot->mapping->address)->node_count)) !=
++             slot->node_count)) {
 +        status = -ESTALE;
 +    }
 +    return status;
@@ -161469,10 +161473,10 @@ index 0000000000000000000000000000000000000000..18190df94fa498850c655e6b2070c685
 +}
 diff --git a/plugins/crucible-setup-mapping.inc.h b/plugins/crucible-setup-mapping.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..3195ca7d0ebada780fca7468ae6662f50fd9d93f
+index 0000000000000000000000000000000000000000..301e0a0eff640017cb78ff9cd3a7ad3ad84180ac
 --- /dev/null
 +++ b/plugins/crucible-setup-mapping.inc.h
-@@ -0,0 +1,472 @@
+@@ -0,0 +1,474 @@
 +/*
 + * Authenticated mutable setup-role mapping and sole physical return.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -161526,6 +161530,7 @@ index 0000000000000000000000000000000000000000..3195ca7d0ebada780fca7468ae6662f5
 +static int setup_mapping_header_current(QemuCrucibleSetupMappingOwner *owner)
 +{
 +    struct crucible_shmem_region_header *header = owner->address;
++    uint32_t nodes;
 +    uint32_t rings;
 +    uint32_t capacity;
 +    uint32_t arena;
@@ -161537,9 +161542,10 @@ index 0000000000000000000000000000000000000000..3195ca7d0ebada780fca7468ae6662f5
 +        owner->request_bytes > UINTPTR_MAX - (uintptr_t)owner->address) {
 +        return -ESTALE;
 +    }
++    nodes = le32_to_cpu(qatomic_load_acquire(&header->node_count));
 +    if (le64_to_cpu(qatomic_load_acquire(&header->magic)) != CRUCIBLE_SHMEM_REGION_MAGIC ||
 +        le32_to_cpu(qatomic_load_acquire(&header->abi_version)) != CRUCIBLE_SHMEM_ABI_VERSION ||
-+        le32_to_cpu(qatomic_load_acquire(&header->node_count)) != CRUCIBLE_SHMEM_MAX_NODES ||
++        !nodes || nodes > CRUCIBLE_SHMEM_MAX_NODES ||
 +        le32_to_cpu(qatomic_load_acquire(&header->ticks_per_ns)) != CRUCIBLE_SHMEM_TICKS_PER_NS ||
 +        !setup_mapping_bytes_zero(header->control_padding, sizeof(header->control_padding)) ||
 +        !setup_mapping_bytes_zero(header->reserved, sizeof(header->reserved))) {
@@ -181843,7 +181849,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..495eec044d6796f84feda001d51abf728ec9c797
+index 0000000000000000000000000000000000000000..70e75a571125434e2911ab3507b094da1cb93a4e
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,79 @@
@@ -181867,7 +181873,7 @@ index 0000000000000000000000000000000000000000..495eec044d6796f84feda001d51abf72
 +    'include/plugins/qemu-plugin.h':
 +        '0d9a7ac15df5856a327c19b1fd37d3794476c8597cafa430cd208807385f6a27',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'b5ba012bfa398cf6e201358b5084a29a2753833dbf5e556daf39cb9db40e10f1',
++        '1dae25d09df2a5965dde3fd73b6a3bc7160976ab3f7d2e731a420291a2f89d14',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -221634,7 +221640,7 @@ index 0000000000000000000000000000000000000000..855cea98f5a5321a6c2b2040a96b8e54
 +    main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..726fded94b77e94e2876b1ceba54e25589235c26
+index 0000000000000000000000000000000000000000..a83abe3551bfce3c911413ea819e66ba4893ddb1
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,813 @@
@@ -221650,9 +221656,9 @@ index 0000000000000000000000000000000000000000..726fded94b77e94e2876b1ceba54e255
 +    'plugins/crucible-control-invocation.inc.h':
 +        '4f59239c0d71e335dbc76a737cf9b5bf24d8c9ee21804bcc508bb3db60d1de81',
 +    'plugins/crucible-setup-handshake.inc.h':
-+        'e63117f5ca94f23bd68ed18d7094556fb0de5d7ce1e086d04ec2d0f226fbb840',
++        '33f7aa4a6037caf045c1370edbd1773fdb1554f7cee7e7a629dbecfebcb0e3c3',
 +    'plugins/crucible-setup-mapping.inc.h':
-+        '0d789dac7d8a0914b940ad157cbe06789df07e617b3f20f5fe43a7c4a209250d',
++        '873455344e7aace6607c1426cc573ad68ea7701770756b6fd51eba0670fc10b4',
 +    'tests/unit/test-crucible-startup-source.c':
 +        'cd875252a11c7d31ee960a8cef7a72c6de4fe54e3072f36546415a7b6d2e7b90',
 +    'tests/unit/crucible-startup-source-fixture.inc.h':

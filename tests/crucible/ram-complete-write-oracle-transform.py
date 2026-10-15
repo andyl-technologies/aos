@@ -10,7 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 
-NATIVE_COMMIT = "a91968fc45c6ae6215324dd3003e596d99ea1b7d"
+NATIVE_COMMIT = "ef52a03c6d9bd03ffece0bc27e0b432aeb7a43f9"
 PHYSICAL_SHA256 = "4f2f7a9d720e141ad8b3f3a1cb9e155ffa6f2c4d1cbb7365bc0f0b3b748fbbd1"
 PAGED_SHA256 = "a2cbeb4e6a557524cfa2876767742eaf0201e15a51309ac9f4281e676361e470"
 FIRST = 700_000

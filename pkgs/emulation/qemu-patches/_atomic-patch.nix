@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "e99e610f8e1ce7a91a6ad6d2f6be4455236e06c019b87f8da93030a70be25795";
-  subject = "plugins: retain protected command receiving custody across transitions";
-  body = "Bind the command member and bounded three-argument reader to the genuine\nSource-created child, Bridge, slot and paid Runtime. Save born outputs and\nreader progress before signed and independent post failures. Hold whole\nmember creation/transfer and receive creation transitions until their final\nsaved disposition so reentrant returns cannot release their parents.\n\nKeep received request debt distinct from local reader release. Physical\ncurrent and observation issue no action Original or terminal permission.\nPreserve the eleven registration owners and all 139 registered scenarios;\nbind both new GPL fragments into the actual extractor and Meson cohort.";
-  commit = "a91968fc45c6ae6215324dd3003e596d99ea1b7d";
-  tree = "b77d03c63f67e7c797979e5e31a4a0c280272572";
+  sha256 = "9f8eba359dd2f984bc3b91f1ae2e25cc09f0b4f60be34879b7ea696c7799dcc2";
+  subject = "plugins: accept authenticated configured setup node counts";
+  body = "Accept positive node counts through the supported protocol capacity in the\ninitial reply and acquired mapping. Corroborate slot creation and current\nagainst the exact same authenticated reply count and acquired VMA header,\nwhile preserving canonical parent identity and selected-index bounds.\n\nPreserve version 8 and ABI 32 framing, descriptor and mapping custody,\ninitiating and independent post failures, the complete receiver and eleven\nregistration owners, and all 139 existing scenarios. Bind the actual unit\nand preinit generators to these final whole-file validators.";
+  commit = "ef52a03c6d9bd03ffece0bc27e0b432aeb7a43f9";
+  tree = "4dff309060d322601dc4eb6c4746cde6fc627bf0";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-command-receive-cumulative";
+  branchRef = "dplecki/native-setup-count-cumulative";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "ecb2da3ac8b1b9de1efe2f70c3d92e741d3ec98ba0348b4489af2e9d1098fb9a";
+  bundleSha256 = "9761875d91fc176a11e9405d6129991daf92f2128df5b9c352a5a31a2613eca8";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-14T17:45:25-07:00";
+  deterministicPatchDate = "2026-10-14T18:07:47-07:00";
 
   additionalCapabilities = [
     {
