@@ -98,5 +98,35 @@
         "afterSha256": "7ac7b226317c94b5922ab4cd317bac4a0b2b04fd370fb9b0fb0416d37c53e9e7"
       }
     ]
+  },
+  {
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "name": "connectrpc",
+    "version": "0.9.1",
+    "archiveSha256": "457cfa540c62e1b0b05db676cc9a9129162ad94d3a3eec6f2d19706c53acae7d",
+    "patch": "pkgs/tools/aos/cargo-patches/connectrpc-0.9.1-json-carriers.patch",
+    "patchSha256": "75b53e9a4c02fabaecc0b76018db4cd123d09cfe92d25a05427cedf6508addda",
+    "files": [
+      {
+        "path": "src/codec.rs",
+        "beforeSha256": "403a4a401b4e02046c1413bc43c3ce0e3f0633b8df1a62b737996510e2126ecd",
+        "afterSha256": "35630489d45dae31a98ebe05f6a88142a325fb56783279e720d680b14fe84a39"
+      },
+      {
+        "path": "src/handler.rs",
+        "beforeSha256": "862d496467188ac0b5882cc9d7742d5bb86b7d60d3c32452b918eb7df505f64c",
+        "afterSha256": "4bc83a0d8341e0561ab2526ab39341a291819d52f427322075a7b3d79c216927"
+      },
+      {
+        "path": "src/payload.rs",
+        "beforeSha256": "a67da950632626a7b62e2824da7a5c70a91fa26884bc0242e784ca765e074b96",
+        "afterSha256": "6b88c4e59041f96a4719599f9889015326131aad9a87bd56258cbf0507dccbec"
+      },
+      {
+        "path": "src/service.rs",
+        "beforeSha256": "e3fa4613ad00255d8af247942239e868e410e01666883855fafc52de8da4351d",
+        "afterSha256": "62b011b5dcf2f0141bc3b2300d93f0b889ce25826a79a1e3c4a19fb67c05d7af"
+      }
+    ]
   }
 ]

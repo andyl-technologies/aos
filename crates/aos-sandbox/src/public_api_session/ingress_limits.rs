@@ -21,8 +21,9 @@ pub const MAXIMUM_DIAGNOSTIC_RPC_REQUESTS: usize = 1;
 /// Bounds both on-wire request bodies and decompressed RPC messages.
 pub const MAXIMUM_RPC_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 
-/// Bounds binary decoder element footprints, separately from payload contents.
+/// Configures typed collection admission, separately from payload contents.
 ///
-/// This is the explicit Buffa carrier budget. JSON decoding requires its own
-/// schema-derived carrier provision; it does not inherit the binary budget.
+/// Binary decoding charges Buffa element footprints. JSON decoding charges a
+/// conservative typed growth/floor/link budget under the same configured limit.
+/// Encoded contents, parser scratch and normalized buffers need separate provision.
 pub const MAXIMUM_RPC_ELEMENT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
