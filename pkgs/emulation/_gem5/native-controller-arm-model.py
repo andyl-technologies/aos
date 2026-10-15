@@ -82,6 +82,8 @@ class ArmLinuxModel(models.TerminalMechanismModel):
         root = Root(full_system=True, system=system)
         dtb = str(self.resource_root / "output" / "fixture.dtb")
         system.generateDtb(dtb)
+        if not 0 < Path(dtb).stat().st_size <= 2 * 1024 * 1024:
+            raise ValueError("ARM generated DTB exceeds its reserved loader region")
         system.workload.dtb_filename = dtb
         m5.instantiate()
         self.terminal = system.terminal
