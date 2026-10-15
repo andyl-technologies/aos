@@ -48,6 +48,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 pub mod app_random_branch_plan;
 pub mod app_random_transport;
+pub mod boundary_action;
 mod choice;
 mod codec_fuzz;
 mod control_lifecycle;

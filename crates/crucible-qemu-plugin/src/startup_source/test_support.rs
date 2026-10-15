@@ -136,7 +136,7 @@ pub(super) extern "C" fn reserve_control(
     requests: *const super::control_purpose::Request,
     output: *mut *mut super::control_purpose::ControlPurpose,
 ) -> i32 {
-    assert!(!requests.is_null() && !output.is_null());
+    assert!(!requests.is_null() && !output.is_null() && !claim.is_null() && !child_claim.is_null());
     // SAFETY: the shared reservation adapter lends its actual fixed seven rows
     // and writable holder output throughout this synchronous private model call.
     let requests = unsafe { std::slice::from_raw_parts(requests, 7) };
@@ -165,19 +165,37 @@ pub(super) extern "C" fn check_control(
 pub(super) extern "C" fn reserve_runtime(
     _: u64,
     requests: *const super::runtime_purpose::Request,
+    count: usize,
     output: *mut *mut super::runtime_purpose::RuntimePurpose,
+    claim: *mut *mut super::runtime_purpose::CommandClaim,
+    child_claim: *mut *mut super::runtime_purpose::CallbackChildClaim,
 ) -> i32 {
-    assert!(!requests.is_null() && !output.is_null());
-    // SAFETY: the same adapter supplies the actual Box, quiescence Arc and worker
-    // registry Arc geometry; no copied fixed extent replaces those layouts.
-    let requests = unsafe { std::slice::from_raw_parts(requests, 3) };
+    assert!(!requests.is_null() && !output.is_null() && !claim.is_null());
+    assert!(count > 0 && count <= crate::runtime::prebirth::MAX_RUNTIME_ALLOCATIONS);
+    // SAFETY: the same adapter supplies the full initialized configured span.
+    // These layout facts and the model token confer no native resource credit.
+    let requests = unsafe { std::slice::from_raw_parts(requests, count) };
     for request in requests {
         assert!(request.extent_bytes > 0);
         assert!(request.alignment_bytes.is_power_of_two());
         assert_eq!(request.birth_count, 1);
     }
-    // SAFETY: output is live; the token models only same-holder identity checks.
-    unsafe { output.write(std::ptr::from_ref(&RUNTIME_MODEL_TOKEN).cast_mut().cast()) };
+    assert_eq!(
+        requests.iter().filter(|request| request.role == 1).count(),
+        1
+    );
+    assert_eq!(
+        requests.iter().filter(|request| request.role == 2).count(),
+        1
+    );
+    assert!(requests.iter().all(|request| request.reserved == 0));
+    // SAFETY: outputs are live; these explicit model tokens never construct
+    // Native containing authority or a production physical command allocation.
+    unsafe {
+        output.write(std::ptr::from_ref(&RUNTIME_MODEL_TOKEN).cast_mut().cast());
+        claim.write(std::ptr::from_ref(&RUNTIME_MODEL_TOKEN).cast_mut().cast());
+        child_claim.write(std::ptr::from_ref(&CONTROL_MODEL_TOKEN).cast_mut().cast());
+    }
     0
 }
 

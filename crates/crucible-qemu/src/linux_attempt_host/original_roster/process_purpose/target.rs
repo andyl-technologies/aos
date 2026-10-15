@@ -111,17 +111,27 @@ impl NativeAccountAttempt {
             .ok_or(InstalledProcessPurposeError::Identity)?;
         let local =
             purpose.process_bytes / u64::from(super::super::MAX_ORIGINAL_NATIVE_NODE_GENERATIONS);
-        guest_ram_bytes
-            .checked_add(controls.requested_bytes())
-            .and_then(|bytes| bytes.checked_add(crucible_protocol::DEVICE_DIGEST_WORKSPACE_BYTES))
-            .and_then(|bytes| bytes.checked_mul(2))
-            .filter(|bytes| *bytes <= purpose.process_bytes && *bytes / 2 <= local)
+        let minimum = source.setup_mapping.minimum_resident_bytes(
+            guest_ram_bytes,
+            controls.requested_bytes(),
+            controls
+                .native_preinit_requested_bytes()
+                .map_err(|_| InstalledProcessPurposeError::Identity)?,
+            crucible_protocol::DEVICE_DIGEST_WORKSPACE_BYTES,
+        )?;
+        let combined = minimum
+            .checked_mul(2)
             .ok_or(InstalledProcessPurposeError::Capacity)?;
+        if minimum > local || combined > purpose.process_bytes {
+            return Err(InstalledProcessPurposeError::Capacity);
+        }
         let generation = registration.target.owner_generation;
-        let subdivision_index =
-            purpose
-                .journal
-                .issue(generation, guest_ram_bytes, startup_and_transport_extent()?)?;
+        let subdivision_index = purpose.journal.issue(
+            generation,
+            guest_ram_bytes,
+            startup_and_transport_extent()?,
+            source.setup_mapping,
+        )?;
         if subdivision_index != 1 {
             purpose.sound = false;
             return Err(InstalledProcessPurposeError::Identity);

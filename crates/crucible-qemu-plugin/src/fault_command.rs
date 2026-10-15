@@ -33,7 +33,7 @@ use crucible_shmem::{
     FaultSystemCapabilityManifestV1, FaultTargetManifestKind, FaultTargetManifestQueryV1,
     FaultTerminalEvidenceV1, FaultTransportError, HARD_FAULT_PAYLOAD_BYTES,
     MappedFaultCommandTransportMut, MappedFaultEventTransportMut, MappedFaultResultTransportMut,
-    MappedSetupRegion, MappedSetupRegionAccessError, NodeFaultOperationV1, NodeFaultPayloadV1,
+    MappedSetupRegionAccessError, MappedSetupView, NodeFaultOperationV1, NodeFaultPayloadV1,
     NodeFaultTargetKindV1, RingHeader, can_enqueue_fault_event, can_enqueue_fault_result,
     dequeue_fault_command, encode_fault_capability_manifest, enqueue_fault_event,
     enqueue_fault_result, fault_capability_manifest_digest, fault_object_id_hash_v1,
@@ -376,6 +376,21 @@ use test_support::{TEST_EVENT_PENDING, test_event_peek, test_event_poll, test_re
 /// Failure of the lossless fault command bridge.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FaultCommandBridgeError {
+    /// The physical owner refused access without donating semantic authority.
+    #[error("native command storage refused ({status})")]
+    PhysicalStorage {
+        /// Exact native status; it supplies no generic retry policy.
+        status: i32,
+    },
+    /// Native proved preeffect contention with an already-held physical use.
+    #[error("native command storage physical use is pending")]
+    PhysicalStoragePending,
+    /// The actual installing or containing Source refused the storage birth.
+    #[error("command storage Source refused: {source}")]
+    StorageSource {
+        /// Retained authentic installing or lifetime-accounting refusal.
+        source: crate::StartupSourceError,
+    },
     /// A command pump ran before the first realized vCPU admitted manifests.
     #[error("QEMU fault bridge is not initialized by a realized vCPU")]
     NotInitialized,

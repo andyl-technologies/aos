@@ -7,6 +7,7 @@
   mkSystem,
   attrPath,
   serviceModule,
+  fixtureInputs,
   campaign,
   attemptFile,
   clientAuthorityFile,
@@ -20,6 +21,7 @@
 }: let
   system = mkSystem {
     modules = [../../systems/server.nix serviceModule];
+    specialArgs.normalServiceFixtureInputs = fixtureInputs;
     systemName = "normal-managed-ram-kernel";
   };
   normalServiceConfig = system.config;
@@ -47,6 +49,10 @@ in
       innerPreparation = preparation;
       innerInvocation = _: "${pkgs.bash}/bin/bash ${clientScript}";
       extraRootfsDeps = inputDependencies ++ [clientScript pkgs.jq pkgs.sed];
+      innerEvidence = {buildGraph}: ''
+        echo normal_service_build_graph=${buildGraph}
+        echo normal_service_main_elf=${pkgs.crucible.passthru.controller}/bin/crucible
+      '';
       outerEvidence = _: ''
         for observation in \
           normal_service_main_client_authenticated=true \

@@ -4,23 +4,30 @@
 //! functions never issue a production containing purpose or pay actual births.
 // SPDX-License-Identifier: GPL-2.0-only
 
+// crucible-lint: allow panic-shortcut -- test fixtures panic to localize reservation custody and installing-admission failures.
+#![allow(clippy::unwrap_used)]
+
 use std::cell::RefCell;
 use std::os::fd::AsRawFd;
+use std::sync::atomic::Ordering;
 
 use super::*;
 use crate::startup_source::NativeStartupApi;
 
 #[derive(Default)]
 struct NativeCuts {
+    source_status: i32,
+    source_checks: usize,
     reserve_status: i32,
+    publish_on_failure: bool,
     check_status: i32,
     calls: Vec<&'static str>,
-    requests: Option<[Request; 3]>,
+    requests: Option<Vec<Request>>,
 }
 
 thread_local! {
     static CUTS: RefCell<NativeCuts> = const { RefCell::new(NativeCuts {
-        reserve_status: 0, check_status: 0, calls: Vec::new(), requests: None,
+        source_status: 0, source_checks: 0, reserve_status: 0, publish_on_failure: false, check_status: 0, calls: Vec::new(), requests: None,
     }) };
 }
 
@@ -28,7 +35,10 @@ extern "C" fn acquire(_: u64, _: i32) -> i32 {
     0
 }
 extern "C" fn source_check(_: u64) -> i32 {
-    0
+    CUTS.with_borrow_mut(|cuts| {
+        cuts.source_checks += 1;
+        cuts.source_status
+    })
 }
 extern "C" fn slice(_: u64, _: *mut u64) -> i32 {
     -libc::ENOSYS
@@ -37,16 +47,25 @@ extern "C" fn complete(_: u64, _: i32) -> i32 {
     -libc::ENOSYS
 }
 
-extern "C" fn reserve(_: u64, requests: *const Request, output: *mut *mut RuntimePurpose) -> i32 {
+extern "C" fn reserve(
+    _: u64,
+    requests: *const Request,
+    count: usize,
+    output: *mut *mut RuntimePurpose,
+    claim: *mut *mut CommandClaim,
+    child_claim: *mut *mut CallbackChildClaim,
+) -> i32 {
     CUTS.with_borrow_mut(|cuts| {
         cuts.calls.push("reserve");
-        // SAFETY: the wrapper lends three initialized fixed rows for this call.
-        cuts.requests = Some(unsafe { [*requests, *requests.add(1), *requests.add(2)] });
-        if cuts.reserve_status == 0 {
+        // SAFETY: the wrapper lends the complete initialized immutable span.
+        cuts.requests = Some(unsafe { std::slice::from_raw_parts(requests, count) }.to_vec());
+        if cuts.reserve_status == 0 || cuts.publish_on_failure {
             // SAFETY: this test-only non-null identity is never dereferenced or
             // passed to real native code; the wrapper owns its live output slot.
             unsafe {
                 output.write(std::ptr::without_provenance_mut(1));
+                claim.write(std::ptr::without_provenance_mut(2));
+                child_claim.write(std::ptr::without_provenance_mut(3));
             }
         }
         cuts.reserve_status
@@ -82,34 +101,31 @@ fn fixture(action: impl FnOnce(&mut InstallerStartupSource)) {
     assert_eq!(unsafe { libc::close(descriptor) }, 0);
 }
 
-fn layouts() -> [Layout; 3] {
-    [
-        Layout::from_size_align(192, 16).unwrap(),
-        Layout::from_size_align(32, 8).unwrap(),
-        Layout::from_size_align(80, 16).unwrap(),
-    ]
+fn layouts() -> crate::runtime::prebirth::RuntimeAllocationRequests {
+    crate::runtime::prebirth::RuntimeAllocationRequests::configured(1, false).unwrap()
 }
 
 #[test]
-fn all_three_requests_are_checked_before_the_caller_can_allocate() {
+fn complete_configured_span_is_checked_before_the_caller_can_allocate() {
     fixture(|owner| {
         owner
-            .reserve_runtime_allocations_using(layouts(), reserve, check)
+            .reserve_runtime_allocations_using(layouts().layouts(), reserve, check)
             .unwrap();
         assert!(owner.runtime_reservation.attempted);
         assert_ne!(owner.runtime_reservation.purpose_address, 0);
+        assert_ne!(owner.runtime_reservation.command_claim_address, 0);
+        assert_ne!(owner.runtime_reservation.callback_child_claim_address, 0);
         CUTS.with_borrow(|cuts| {
             assert_eq!(cuts.calls, ["reserve", "check"]);
-            let requests = cuts.requests.unwrap();
-            assert_eq!(requests[0].extent_bytes, 192);
-            assert_eq!(requests[0].alignment_bytes, 16);
-            assert_eq!(requests[1].extent_bytes, 32);
-            assert_eq!(requests[1].alignment_bytes, 8);
-            assert_eq!(requests[0].birth_count, 1);
-            assert_eq!(requests[1].birth_count, 1);
-            assert_eq!(requests[2].extent_bytes, 80);
-            assert_eq!(requests[2].alignment_bytes, 16);
-            assert_eq!(requests[2].birth_count, 1);
+            let requests = cuts.requests.as_ref().unwrap();
+            let configured = layouts();
+            assert_eq!(requests.len(), configured.layouts().len());
+            assert_eq!(requests.len(), 11);
+            for (request, layout) in requests.iter().zip(configured.layouts()) {
+                assert_eq!(request.extent_bytes, layout.size() as u64);
+                assert_eq!(request.alignment_bytes, layout.align() as u64);
+                assert_eq!(request.birth_count, 1);
+            }
         });
     });
 }
@@ -119,17 +135,19 @@ fn failed_reserve_retains_attempt_and_original_first_cause_without_a_holder() {
     fixture(|owner| {
         CUTS.with_borrow_mut(|cuts| cuts.reserve_status = -libc::ECANCELED);
         assert_eq!(
-            owner.reserve_runtime_allocations_using(layouts(), reserve, check),
+            owner.reserve_runtime_allocations_using(layouts().layouts(), reserve, check),
             Err(StartupSourceError::NativeStatus {
                 status: -libc::ECANCELED
             })
         );
         assert!(owner.runtime_reservation.attempted);
         assert_eq!(owner.runtime_reservation.purpose_address, 0);
+        assert_eq!(owner.runtime_reservation.command_claim_address, 0);
+        assert_eq!(owner.runtime_reservation.callback_child_claim_address, 0);
 
         CUTS.with_borrow_mut(|cuts| cuts.reserve_status = 0);
         assert_eq!(
-            owner.reserve_runtime_allocations_using(layouts(), reserve, check),
+            owner.reserve_runtime_allocations_using(layouts().layouts(), reserve, check),
             Err(StartupSourceError::NativeStatus {
                 status: -libc::ECANCELED
             })
@@ -143,17 +161,19 @@ fn failed_prebirth_check_retains_genuine_holder_and_forbids_another_debit() {
     fixture(|owner| {
         CUTS.with_borrow_mut(|cuts| cuts.check_status = -libc::ETIME);
         assert_eq!(
-            owner.reserve_runtime_allocations_using(layouts(), reserve, check),
+            owner.reserve_runtime_allocations_using(layouts().layouts(), reserve, check),
             Err(StartupSourceError::NativeStatus {
                 status: -libc::ETIME
             })
         );
         assert!(owner.runtime_reservation.attempted);
         assert_ne!(owner.runtime_reservation.purpose_address, 0);
+        assert_ne!(owner.runtime_reservation.command_claim_address, 0);
+        assert_ne!(owner.runtime_reservation.callback_child_claim_address, 0);
 
         CUTS.with_borrow_mut(|cuts| cuts.check_status = 0);
         assert_eq!(
-            owner.reserve_runtime_allocations_using(layouts(), reserve, check),
+            owner.reserve_runtime_allocations_using(layouts().layouts(), reserve, check),
             Err(StartupSourceError::NativeStatus {
                 status: -libc::ETIME
             })
@@ -303,15 +323,181 @@ fn missing_same_runtime_holder_refuses_before_any_native_terminal_call() {
 fn missing_fixed_control_custody_refuses_before_runtime_reservation() {
     fixture(|owner| {
         assert!(matches!(
-            owner.reserve_runtime_allocations(layouts()),
+            owner.reserve_runtime_allocations(&layouts()),
             Err(StartupSourceError::Ownership { .. })
         ));
 
         assert!(!owner.runtime_reservation.attempted);
         assert_eq!(owner.runtime_reservation.purpose_address, 0);
+        assert_eq!(owner.runtime_reservation.command_claim_address, 0);
+        assert_eq!(owner.runtime_reservation.callback_child_claim_address, 0);
         CUTS.with_borrow(|cuts| {
             assert!(cuts.calls.is_empty());
             assert!(cuts.requests.is_none());
+        });
+    });
+}
+
+#[test]
+fn born_negative_reserve_retains_output_before_refusal_and_never_retries() {
+    fixture(|owner| {
+        CUTS.with_borrow_mut(|cuts| {
+            cuts.reserve_status = -libc::ENOMEM;
+            cuts.publish_on_failure = true;
+        });
+
+        assert_eq!(
+            owner.reserve_runtime_allocations_using(layouts().layouts(), reserve, check),
+            Err(StartupSourceError::NativeStatus {
+                status: -libc::ENOMEM
+            }),
+        );
+
+        assert!(owner.runtime_reservation.attempted);
+        assert_ne!(owner.runtime_reservation.purpose_address, 0);
+        assert_ne!(owner.runtime_reservation.command_claim_address, 0);
+        assert_ne!(owner.runtime_reservation.callback_child_claim_address, 0);
+        assert_eq!(owner.first_status.load(Ordering::Acquire), -libc::ENOMEM);
+        CUTS.with_borrow(|cuts| assert_eq!(cuts.calls, ["reserve"]));
+        CUTS.with_borrow_mut(|cuts| cuts.reserve_status = 0);
+        assert!(
+            owner
+                .reserve_runtime_allocations_using(layouts().layouts(), reserve, check)
+                .is_err()
+        );
+        CUTS.with_borrow(|cuts| assert_eq!(cuts.calls, ["reserve"]));
+    });
+}
+
+#[test]
+fn absent_and_unrepresentable_spans_refuse_before_native_effects() {
+    fixture(|owner| {
+        assert!(
+            owner
+                .reserve_runtime_allocations_using(&[], reserve, check)
+                .is_err()
+        );
+        assert!(
+            owner
+                .reserve_runtime_allocations_using(&[Layout::new::<()>()], reserve, check)
+                .is_err()
+        );
+        let too_many =
+            [Layout::new::<u64>(); crate::runtime::prebirth::MAX_RUNTIME_ALLOCATIONS + 1];
+        assert!(
+            owner
+                .reserve_runtime_allocations_using(&too_many, reserve, check)
+                .is_err()
+        );
+        let huge = Layout::from_size_align(isize::MAX as usize, 1).unwrap();
+        assert!(
+            owner
+                .reserve_runtime_allocations_using(&[huge; 3], reserve, check)
+                .is_err()
+        );
+
+        assert!(!owner.runtime_reservation.attempted);
+        assert_eq!(owner.runtime_reservation.purpose_address, 0);
+        assert_eq!(owner.runtime_reservation.command_claim_address, 0);
+        assert_eq!(owner.runtime_reservation.callback_child_claim_address, 0);
+        CUTS.with_borrow(|cuts| assert!(cuts.calls.is_empty()));
+    });
+}
+
+#[test]
+fn optional_control_is_an_actual_row_not_an_empty_serialized_placeholder() {
+    fixture(|owner| {
+        let configured =
+            crate::runtime::prebirth::RuntimeAllocationRequests::configured(2, true).unwrap();
+        owner
+            .reserve_runtime_allocations_using(configured.layouts(), reserve, check)
+            .unwrap();
+
+        CUTS.with_borrow(|cuts| {
+            let requests = cuts.requests.as_ref().unwrap();
+            assert_eq!(requests.len(), 12);
+            assert_eq!(
+                requests.iter().filter(|request| request.role == 1).count(),
+                1
+            );
+            assert_eq!(
+                requests[crate::runtime::prebirth::COMMAND_BRIDGE_ALLOCATION].role,
+                1
+            );
+            assert_eq!(
+                requests.iter().filter(|request| request.role == 2).count(),
+                1
+            );
+            assert_eq!(
+                requests[crate::runtime::prebirth::CALLBACK_CHILD_ALLOCATION].role,
+                2
+            );
+            assert!(requests.iter().all(|request| request.reserved == 0));
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request.extent_bytes > 0 && request.birth_count == 1)
+            );
+            assert_eq!(
+                requests[6].extent_bytes,
+                configured.layouts()[6].size() as u64
+            );
+            assert_eq!(
+                requests[11].extent_bytes,
+                configured.layouts()[11].size() as u64
+            );
+        });
+    });
+}
+
+#[test]
+fn storage_custody_does_not_admit_a_birth_after_installing_expiry() {
+    fixture(|owner| {
+        owner
+            .reserve_runtime_allocations_using(layouts().layouts(), reserve, check)
+            .unwrap();
+        let retained = owner.runtime_reservation.purpose_address;
+        CUTS.with_borrow_mut(|cuts| {
+            cuts.source_checks = 0;
+            cuts.source_status = -libc::ETIME;
+        });
+
+        // Pure V3 custody remains valid; it never observes or renews a clock.
+        assert_eq!(owner.check_runtime_allocations(), Ok(()));
+        CUTS.with_borrow(|cuts| assert_eq!(cuts.source_checks, 0));
+        assert_eq!(
+            owner.check_runtime_installation(),
+            Err(StartupSourceError::NativeStatus {
+                status: -libc::ETIME
+            }),
+        );
+
+        assert_eq!(owner.runtime_reservation.purpose_address, retained);
+        CUTS.with_borrow(|cuts| {
+            assert_eq!(cuts.source_checks, 1);
+            assert_eq!(cuts.calls, ["reserve", "check", "check"]);
+        });
+    });
+}
+
+#[test]
+fn missing_fixed_control_never_becomes_a_runtime_birth_allowance() {
+    fixture(|owner| {
+        owner
+            .reserve_runtime_allocations_using(layouts().layouts(), reserve, check)
+            .unwrap();
+        let retained = owner.runtime_reservation.purpose_address;
+        CUTS.with_borrow_mut(|cuts| cuts.source_checks = 0);
+
+        assert!(matches!(
+            owner.check_runtime_installation(),
+            Err(StartupSourceError::Ownership { .. }),
+        ));
+
+        assert_eq!(owner.runtime_reservation.purpose_address, retained);
+        CUTS.with_borrow(|cuts| {
+            assert_eq!(cuts.source_checks, 1);
+            assert_eq!(cuts.calls, ["reserve", "check"]);
         });
     });
 }

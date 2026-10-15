@@ -1,43 +1,105 @@
-//! Direct field construction in the existing final vCPU callback allocation.
+//! Ordered callback-child construction independently of raw allocator ownership.
 //!
 //! The private guard retains an initialized prefix until every field is valid.
 //! It never exposes a partial state or assumes the layout of Mutex or Option.
+//! Owned Box construction and externally retained uninitialized spans use the
+//! same actual initializer. Source birth/claim/registration APIs remain separate;
+//! this module cannot authenticate arbitrary supplied memory as Native custody.
 // SPDX-License-Identifier: GPL-2.0-only
 
 use super::*;
 use std::mem::{ManuallyDrop, MaybeUninit};
 
-struct LiveVcpuTimeInitialization {
-    allocation: Box<MaybeUninit<LiveVcpuTimeCallbackState>>,
+/// Keeps allocator ownership distinct from initialization of a supplied span.
+/// Native constructor entry supplies a genuine unique span; this trait grants
+/// no Source ownership, capacity, callback membership or allocation credit.
+///
+/// # Safety
+/// The pointer denotes one unique, aligned, live uninitialized child span. Its
+/// owner remains valid through conversion or prefix rollback, and conversion
+/// preserves its original allocator and backing lifetime.
+pub(in crate::runtime) unsafe trait CallbackAllocation {
+    /// Preserves the original owned or lifetime-bound complete representation.
+    type Initialized;
+
+    /// Borrows the unique valid span for ordered field writes.
+    fn pointer(&mut self) -> *mut LiveVcpuTimeCallbackState;
+
+    /// Converts this exact storage only after all fields have been initialized.
+    ///
+    /// # Safety
+    /// All fields contain valid unique values and no unfinished prefix guard or
+    /// other owner may destroy them. The underlying allocation owner remains live.
+    unsafe fn initialized(self) -> Self::Initialized;
+
+    /// Records actual completed prefix cleanup without freeing external backing.
+    fn prefix_rollback_completed(&mut self) {}
+}
+
+// SAFETY: this sole Box owns a stable exact uninitialized child allocation;
+// conversion and unfinished cleanup retain the same allocator ownership.
+#[cfg(test)]
+unsafe impl CallbackAllocation for Box<MaybeUninit<LiveVcpuTimeCallbackState>> {
+    type Initialized = Box<LiveVcpuTimeCallbackState>;
+
+    fn pointer(&mut self) -> *mut LiveVcpuTimeCallbackState {
+        self.as_mut_ptr()
+    }
+
+    unsafe fn initialized(self) -> Self::Initialized {
+        // SAFETY: caller proves the complete initialized body in this sole Box.
+        unsafe { self.assume_init() }
+    }
+}
+
+// SAFETY: this unique reference lends an exact live child span. Conversion
+// keeps its backing lifetime; dropping the reference never frees that backing.
+unsafe impl<'a> CallbackAllocation for &'a mut MaybeUninit<LiveVcpuTimeCallbackState> {
+    type Initialized = &'a mut LiveVcpuTimeCallbackState;
+
+    fn pointer(&mut self) -> *mut LiveVcpuTimeCallbackState {
+        self.as_mut_ptr()
+    }
+
+    unsafe fn initialized(self) -> Self::Initialized {
+        // SAFETY: caller proves all fields initialized in the unique live span.
+        // The lifetime remains tied to its real backing owner, not a new Box.
+        unsafe { self.assume_init_mut() }
+    }
+}
+
+struct LiveVcpuTimeInitialization<S: CallbackAllocation> {
+    allocation: S,
     initialized: usize,
 }
 
-impl LiveVcpuTimeInitialization {
-    fn new() -> Self {
+impl<S: CallbackAllocation> LiveVcpuTimeInitialization<S> {
+    fn new(allocation: S) -> Self {
         Self {
-            allocation: Box::new_uninit(),
+            allocation,
             initialized: 0,
         }
     }
 
-    fn finish(self) -> Box<LiveVcpuTimeCallbackState> {
+    fn finish(self) -> S::Initialized {
         // Missing-field controls refuse here before any typed state can form.
         assert_eq!(self.initialized, 40, "incomplete live vCPU initialization");
         let guard = ManuallyDrop::new(self);
-        // SAFETY: the unique guard owns this allocation; all 40 fields were
-        // written in order and recorded before finish. ManuallyDrop prevents
-        // partial cleanup, and the moved Box becomes the sole complete owner.
-        unsafe { std::ptr::read(&guard.allocation).assume_init() }
+        // SAFETY: all 40 fields were written and recorded. Move only the original
+        // storage representation; it converts within its own allocator/lifetime.
+        // ManuallyDrop prevents prefix cleanup after complete conversion.
+        unsafe { std::ptr::read(&guard.allocation).initialized() }
     }
 }
 
-impl Drop for LiveVcpuTimeInitialization {
+impl<S: CallbackAllocation> Drop for LiveVcpuTimeInitialization<S> {
     fn drop(&mut self) {
-        let state = self.allocation.as_mut_ptr();
+        let state = self.allocation.pointer();
         // SAFETY: initialized denotes the exact contiguous prefix written by
-        // new_boxed. No hook runs between a field write and its marker update.
+        // initialize_with_allocation. No hook runs between a field write and its marker update.
         // Only that prefix is dropped, in reverse unfinished-expression order;
-        // MaybeUninit then frees the allocation without dropping fields again.
+        // Storage Drop follows its original owner: a Box frees only its own
+        // raw backing; a borrowed span does not free its external allocation.
         unsafe {
             if self.initialized > 39 {
                 std::ptr::drop_in_place(std::ptr::addr_of_mut!((*state).fault_commands));
@@ -174,6 +236,7 @@ impl Drop for LiveVcpuTimeInitialization {
                 std::ptr::drop_in_place(std::ptr::addr_of_mut!((*state).quiescence));
             }
         }
+        self.allocation.prefix_rollback_completed();
     }
 }
 
@@ -233,6 +296,7 @@ impl LiveVcpuTimeCallbackState {
     /// # Errors
     ///
     /// Returns the original clock, capability, or halt-tracker validation error.
+    #[cfg(test)]
     pub(in crate::runtime) fn new_boxed(
         icount_raw: QemuIcountRawFn,
         force_vcpu_exit: QemuForceVcpuExitFn,
@@ -244,7 +308,7 @@ impl LiveVcpuTimeCallbackState {
         exact_deadline: ExactDeadlineReader,
         queued_idle_advance: QueuedIdleAdvance,
         virtual_timer_witness: crate::QemuVirtualTimerWitness,
-        fault_commands: Box<dyn LiveFaultCommandControl>,
+        fault_commands: impl Into<FaultCommandControl>,
         header: &RegionHeader,
         slot: &NodeSlot,
         quiescence: Arc<LiveCallbackQuiescence>,
@@ -276,6 +340,7 @@ impl LiveVcpuTimeCallbackState {
         clippy::too_many_arguments,
         reason = "the constructor binds one fixed QEMU clock, mapping header, and node slot"
     )]
+    #[cfg(test)]
     pub(in crate::runtime) fn new_boxed_with_hook(
         icount_raw: QemuIcountRawFn,
         force_vcpu_exit: QemuForceVcpuExitFn,
@@ -287,13 +352,70 @@ impl LiveVcpuTimeCallbackState {
         exact_deadline: ExactDeadlineReader,
         queued_idle_advance: QueuedIdleAdvance,
         virtual_timer_witness: crate::QemuVirtualTimerWitness,
-        fault_commands: Box<dyn LiveFaultCommandControl>,
+        fault_commands: impl Into<FaultCommandControl>,
         header: &RegionHeader,
         slot: &NodeSlot,
         quiescence: Arc<LiveCallbackQuiescence>,
         teardown_router: Arc<LiveRuntimeTeardownRouter>,
         #[cfg(test)] initialization_hook: &mut dyn FnMut(usize),
     ) -> Result<Box<Self>, LiveVcpuTimeCallbackError> {
+        Self::initialize_with_allocation(
+            icount_raw,
+            force_vcpu_exit,
+            idle_wake_wait,
+            request_vmstop,
+            preemption_injector,
+            vcpu_count,
+            initial_raw_icount,
+            exact_deadline,
+            queued_idle_advance,
+            virtual_timer_witness,
+            fault_commands,
+            header,
+            slot,
+            quiescence,
+            teardown_router,
+            || Ok(Box::<Self>::new_uninit()),
+            #[cfg(test)]
+            initialization_hook,
+        )
+    }
+
+    /// Initializes the actual callback child in exactly one supplied allocation.
+    ///
+    /// The provider runs at the original allocation cut after scalar validation
+    /// and existing auxiliary preparation, immediately before the first field
+    /// write. A future Source creator must supply authentic paid storage and its
+    /// placement journal there; arbitrary supplied memory is no ownership grant.
+    /// Borrowed storage returns only a lifetime-bound complete child, never a Box.
+    ///
+    /// # Errors
+    /// Preserves original validation or provider refusal and rolls back only the
+    /// real initialized prefix. A partial child is never returned as a complete T.
+    // crucible-lint: allow rust-allow -- one constructor preserves exact common callback-field initialization for owned and externally retained storage.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one ordered constructor binds the existing callback, mapping and storage inputs"
+    )]
+    pub(in crate::runtime) fn initialize_with_allocation<S: CallbackAllocation>(
+        icount_raw: QemuIcountRawFn,
+        force_vcpu_exit: QemuForceVcpuExitFn,
+        idle_wake_wait: QemuIdleWakeWait,
+        request_vmstop: crate::QemuRequestVmstopFn,
+        preemption_injector: PluginPreemptionInjector,
+        vcpu_count: u32,
+        initial_raw_icount: u64,
+        exact_deadline: ExactDeadlineReader,
+        queued_idle_advance: QueuedIdleAdvance,
+        virtual_timer_witness: crate::QemuVirtualTimerWitness,
+        fault_commands: impl Into<FaultCommandControl>,
+        header: &RegionHeader,
+        slot: &NodeSlot,
+        quiescence: Arc<LiveCallbackQuiescence>,
+        teardown_router: Arc<LiveRuntimeTeardownRouter>,
+        allocation: impl FnOnce() -> Result<S, LiveVcpuTimeCallbackError>,
+        #[cfg(test)] initialization_hook: &mut dyn FnMut(usize),
+    ) -> Result<S::Initialized, LiveVcpuTimeCallbackError> {
         let snapshot = slot.snapshot();
         AdvanceStopCondition::decode(snapshot.advance_stop_condition).map_err(|source| {
             LiveVcpuTimeCallbackError::IdleHotLoop {
@@ -336,8 +458,8 @@ impl LiveVcpuTimeCallbackState {
         let stop_caller_witness =
             checkpoint_stop_witness::StopCallerWitness::new(control_callback_witness.is_enabled());
 
-        let mut initialization = LiveVcpuTimeInitialization::new();
-        let state = initialization.allocation.as_mut_ptr();
+        let mut initialization = LiveVcpuTimeInitialization::new(allocation()?);
+        let state = initialization.allocation.pointer();
         macro_rules! initialize {
             ($field:ident, $value:expr) => {{
                 // SAFETY: state addresses the uniquely owned correctly aligned
@@ -404,7 +526,7 @@ impl LiveVcpuTimeCallbackState {
         initialize!(network, None);
         initialize!(devices, None);
         initialize!(fingerprint, None);
-        initialize!(fault_commands, Mutex::new(fault_commands));
+        initialize!(fault_commands, Mutex::new(fault_commands.into()));
         Ok(initialization.finish())
     }
 }

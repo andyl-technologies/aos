@@ -125,7 +125,7 @@
     '';
   };
 in
-  assert atomicPatch.commit == "aa2d3d44b90bb166f69117800eb156b0312bfa2f";
+  assert atomicPatch.commit == "76475b08ddff4aec4b6e2fae4007766d4a14188b";
   assert !pkgs.stdenv.isCross && pkgs.stdenv.hostPlatform.isLinux;
     precursor.overrideAttrs (original: {
       buildDeps = original.buildDeps ++ [pkgs.coreutils pkgs.diffutils pkgs.grep completeSource];

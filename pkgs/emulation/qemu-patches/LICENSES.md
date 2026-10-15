@@ -10,6 +10,12 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `include/qemu/crucible-native-invocation.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-callback-child.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-callback-groups.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-callback-owner.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-callback-publication.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-native-invocation.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-device-workspace.h` | GPL-2.0-or-later | Explicit SPDX identifier; fixed workspace and original startup wire declarations |
 | `plugins/crucible-device-workspace.c` | GPL-2.0-or-later | Explicit SPDX identifier; bounded wire and sealed descriptor decoding |
 | `plugins/crucible-startup-source.c` | GPL-2.0-or-later | Explicit SPDX identifier; original installer deadline, cancellation, and retained custody |
@@ -183,6 +189,61 @@ The atomic integration patch creates these QEMU source files:
 | `tests/tcg/plugins/crucible-resident-ram-observer.c` | GPL-2.0-or-later | Explicit SPDX identifier; resident logical-RAM startup fixture without paging qualification |
 | `tests/unit/test-crucible-memory-service-ticket.py` | GPL-2.0-or-later | Explicit SPDX identifier; actual CPU continuation state-machine and matched predecessor controls |
 | `tests/unit/test-crucible-legacy-ram-load.py` | GPL-2.0-or-later | Explicit SPDX identifier; actual full-load refusal and device-only state parser controls |
+
+| `include/qemu/crucible-descriptor-table.h` | MIT | Explicit SPDX identifier |
+| `include/qemu/crucible-metadata-partition.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-preexec-setup.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-process-purpose.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-qmp-allocation.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-shared-region-layout.h` | MIT | Explicit SPDX identifier |
+| `include/qemu/crucible-socket-ingress.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qobject/qobject-source.h` | LGPL-2.1-or-later | Explicit SPDX identifier |
+| `include/system/crucible-cpu-tlb-metadata.h` | LGPL-2.1-or-later | Explicit SPDX identifier |
+| `include/system/crucible-observation-realization.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/system/crucible-observation-writer.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-checkpoint-finalizer.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-checkpoint-receiving.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-checkpoint-receiving.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-command-consumer.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-control-invocation.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-control-stop.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-control-stop.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-process-purpose.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-qmp-allocation.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-qmp-object.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-qmp-scope.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-qmp-string.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-qmp-visitor.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-ram-control.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-ram-record.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-setup-handshake.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-setup-mapping.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-socket-ingress.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `qobject/qobject-source.c` | LGPL-2.1-or-later | Explicit SPDX identifier |
+| `scripts/extract-crucible-preexec-purpose.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `scripts/gen-crucible-shared-region-layout.py` | MIT | Explicit SPDX identifier |
+| `stubs/crucible-qmp-allocation.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `stubs/crucible-socket-ingress.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-observation-realization.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-observation-writer.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-artifact.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-contract.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-family.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-ram.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-setup.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/crucible-startup-source-fixture.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/extract-crucible-checkpoint-placement.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/extract-crucible-checkpoint-receiving.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/extract-crucible-monitor-fd-loans.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/extract-crucible-preexec-setup.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-checkpoint-placement.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-checkpoint-receiving.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-cpu-service-debt.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-metadata-partition.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-monitor-fd-loans.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-preexec-setup.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-process-purpose.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `util/crucible-descriptor-table.c` | MIT | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated

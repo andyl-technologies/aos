@@ -554,6 +554,10 @@ impl QemuLiveNodeStepGateConfig {
         matches!(self.fingerprint, QemuLaunchPluginSwitch::On)
     }
 
+    pub(crate) fn original_setup_region_config(&self) -> RegionConfig {
+        RegionConfig::new(1, self.queue_capacity)
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) const fn original_process_generation(&self) -> u64 {
         self.process_generation
@@ -1543,7 +1547,7 @@ fn prepare_paused_live_node<'a>(
             .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
     }
 
-    let region_config = RegionConfig::new(1, config.queue_capacity);
+    let region_config = config.original_setup_region_config();
     let layout = crucible_shmem::validate_layout_target()
         .and_then(|()| RegionLayout::for_config(region_config))
         .map_err(|source| QemuLiveNodeStepGateError::RegionLayout { source })?;
@@ -1702,6 +1706,20 @@ fn prepare_paused_live_node<'a>(
         )
         .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })
     );
+    #[cfg(target_os = "linux")]
+    let runtime = match launch_try!(
+        child
+            .standing_source_supervision()
+            .map_err(QemuLiveNodeStepGateError::PluginStartup)
+    ) {
+        Some(source) => launch_try!(runtime.with_source_supervision(source).map_err(|error| {
+            QemuLiveNodeStepGateError::prime(
+                "bind action Source",
+                QemuNodeChannelError::new("bind action Source", error.to_string()),
+            )
+        })),
+        None => runtime,
+    };
     let runtime = runtime
         .with_host_operation_supervisor(operation_supervisor.clone())
         .with_launch_cleanup(launch_cleanup.clone());

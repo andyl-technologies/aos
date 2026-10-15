@@ -235,6 +235,12 @@ pub(super) struct LiveFingerprintDigestWorker {
 unsafe impl Sync for LiveFingerprintDigestWorker {}
 
 impl LiveFingerprintDigestWorker {
+    /// Describes the separately allocated worker control, excluding its creator.
+    pub(in crate::runtime) fn configured_control_layout()
+    -> Result<std::alloc::Layout, crate::StartupSourceError> {
+        super::super::prebirth::shared_layout::<FingerprintWorkerControl>()
+    }
+
     pub(super) fn spawn(
         slot: StableFingerprintSlotHandle,
         quiescence: Arc<LiveWorkerQuiescence>,

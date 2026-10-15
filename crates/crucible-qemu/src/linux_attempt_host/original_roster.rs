@@ -30,7 +30,7 @@ use process_purpose::{cleanup_control_extent, fresh_launch_control_extent};
 pub(crate) use device_digest::OriginalDeviceDigestWorkspacePurpose;
 pub(crate) use process_purpose::{
     InstalledIncarnationRetirement, InstalledProcessPurposeError, InstalledProcessPurposeLoan,
-    InstalledSourceAdmission, InstalledSourceSubject,
+    InstalledSourceAdmission, InstalledSourceSubject, SetupMappingRequest,
 };
 
 const MAX_NATIVE_WORKERS: usize = 4;

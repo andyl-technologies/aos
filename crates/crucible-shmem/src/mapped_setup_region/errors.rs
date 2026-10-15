@@ -177,6 +177,9 @@ pub enum SetupRegionMapError {
         /// Raw OS errno value.
         errno: i32,
     },
+    /// The local mapping address and length overflow pointer arithmetic.
+    #[error("setup mapping address and length overflow local address space")]
+    MappingSpanOverflow,
     /// The OS returned a null mapping address.
     #[error("setup region mmap returned a null address")]
     NullMapping,

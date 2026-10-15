@@ -406,6 +406,19 @@ impl QemuNodeChild {
     }
 
     #[cfg(target_os = "linux")]
+    pub(crate) fn standing_source_supervision(
+        &self,
+    ) -> Result<
+        Option<crate::spawn::source_supervision::OriginalSourceSupervision>,
+        crate::spawn::PluginStartupError,
+    > {
+        self.original_plugin_startup
+            .as_ref()
+            .map(|startup| startup.standing().cloned())
+            .transpose()
+    }
+
+    #[cfg(target_os = "linux")]
     pub(crate) fn complete_original_plugin_startup(
         &self,
     ) -> Result<(), crucible_linux_resource::host_supervision::HostSupervisionError> {
@@ -1152,6 +1165,13 @@ impl QemuNode {
         header: FaultCommandHeaderV1,
         payload: &[u8],
     ) -> Result<(), QemuNodeChannelError> {
+        // This is identity-only old custody settlement. It precedes every
+        // command publication, including batched and retrying callers.
+        self.host_io_runtime
+            .settle_pending_control_action()
+            .map_err(|source| {
+                QemuNodeChannelError::new("settle previous control action", source.to_string())
+            })?;
         self.channels
             .shmem_hot_path
             .enqueue_fault_command(header, payload)?;

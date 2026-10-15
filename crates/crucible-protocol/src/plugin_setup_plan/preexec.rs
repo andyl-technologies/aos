@@ -1,8 +1,8 @@
 //! Decodes plan data from the single selected pre-exec carrier edition.
 //!
 //! ```text
-//! CRUCSUP7 | BE schema7/header40/total/A/S/W/Startup128/Purpose1624
-//! body: AppRandom | Selectable | optional CRUCWSP2[128] | Startup | CRUCPUR7
+//! CRUCSUP8 | BE schema8/header40/total/A/S/W/Startup128/Purpose2520
+//! body: AppRandom | Selectable | optional CRUCWSP2[128] | Startup | CRUCPUR8
 //! Purpose tail (big-endian integers):
 //! 568..592: child socket device, inode, and SO_COOKIE (u64 each)
 //! 592..624: session[32]
@@ -35,8 +35,8 @@ pub(super) fn decode_parts(
         });
     }
     if bytes.len() < HEADER
-        || bytes[..8] != *b"CRUCSUP7"
-        || read_u32(bytes, 8)? != 7
+        || bytes[..8] != *b"CRUCSUP8"
+        || read_u32(bytes, 8)? != 8
         || read_u32(bytes, 12)? != HEADER as u32
     {
         return Err(invalid("outer"));
@@ -104,8 +104,8 @@ pub(super) fn validate_binding(
     {
         return Err(invalid("lengths"));
     }
-    if purpose[..8] != *b"CRUCPUR7"
-        || read_u32(purpose, 8)? != 7
+    if purpose[..8] != *b"CRUCPUR8"
+        || read_u32(purpose, 8)? != 8
         || read_u32(purpose, 12)? as usize != PURPOSE
         || purpose[16..24] != startup.fields().original_total_metadata_bytes.to_be_bytes()
         || purpose[96..104] != startup.fields().process_generation.to_be_bytes()
@@ -179,8 +179,8 @@ fn validate_standing_source(purpose: &[u8]) -> Result<(), PluginSetupPlanError> 
     let invalid = || PluginSetupPlanError::InvalidPreexecSection {
         section: "standing Source",
     };
-    let tail = purpose.get(1000..1624).ok_or_else(invalid)?;
-    if read_u64(tail, 8)? == 0 || read_u64(tail, 16)? != 608 {
+    let tail = purpose.get(1000..2520).ok_or_else(invalid)?;
+    if read_u64(tail, 8)? == 0 || read_u64(tail, 16)? != 1504 {
         return Err(invalid());
     }
     let source = crate::source_supervision::decode_source_supervision_payload(&tail[24..])

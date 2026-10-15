@@ -33,6 +33,8 @@ fn fixture(class: HostOperationClass) -> SupervisionState {
                 required: 9,
                 state: HostOperationState::Running,
                 startup_cancellation: None,
+                guard_live: true,
+                action_subscribers: None,
             },
         )]),
     }

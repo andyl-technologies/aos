@@ -32,7 +32,9 @@ fn irreversible_reservation_failure_blocks_second_install_attempt() {
 
 #[test]
 fn runtime_request_retains_the_worker_registry_allocation() {
-    let requests = OwnedCallbackRuntimeState::allocation_requests().unwrap();
+    let configured = prebirth::RuntimeAllocationRequests::configured(1, false)
+        .unwrap_or_else(|error| panic!("configured runtime requests should be valid: {error}"));
+    let requests = configured.layouts();
 
     // A worker registry is a genuinely shared body with a mutex and condition
     // variable. Its request must not reuse the small callback gate or merely

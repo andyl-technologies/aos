@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl MappedSetupRegion {
+impl MappedSetupView {
     /// Borrows one VM's host-side guest-introspection role view.
     ///
     /// # Errors

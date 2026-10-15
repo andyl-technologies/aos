@@ -145,7 +145,7 @@
         # Observe the actual installed Main, never a renamed test executable.
         main_pid="$(${pkgs.systemd}/bin/systemctl show --property=MainPID --value crucible-campaign.service)"
         test "$main_pid" -gt 1
-        test "$(${pkgs.coreutils}/bin/readlink "/proc/$main_pid/exe")" = ${pkgs.crucible}/bin/crucible
+        test "$(${pkgs.coreutils}/bin/readlink "/proc/$main_pid/exe")" = ${pkgs.crucible.passthru.controller}/bin/crucible
         service_group="$(${pkgs.systemd}/bin/systemctl show --property=ControlGroup --value crucible-campaign.service)"
         test -n "$service_group"
         service_root="/sys/fs/cgroup$service_group"

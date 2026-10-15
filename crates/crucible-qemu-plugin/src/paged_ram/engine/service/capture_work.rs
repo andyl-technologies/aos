@@ -14,6 +14,7 @@ mod pause;
 use pause::FaultPause;
 
 use super::*;
+use crate::paged_ram::kernel::{FaultReceipt, Registration};
 use crucible_ram::{MetadataBudget, MetadataReservation};
 
 /// Keeps one sequential request and its actual authentication scratch together.
@@ -25,11 +26,32 @@ pub(super) struct ClaimedFault {
 /// Owns the physical buffer even when no operation could be admitted.
 pub(super) struct FaultWork {
     claimed: Option<ClaimedFault>,
+    receipt: FaultReceipt,
     scratch: [u8; PAGE_BYTES],
     failed: bool,
 }
 
 impl FaultWork {
+    /// Retains every consumed kernel byte before decoding or operation admission.
+    ///
+    /// # Errors
+    /// Refuses unresolved custody or retains a malformed/failed kernel read.
+    pub(super) fn read_fault(
+        &mut self,
+        registration: &Registration,
+    ) -> Result<Option<FaultEvent>, RamError> {
+        if self.unresolved() {
+            return Err(RamError::Invariant("fault request remains unsettled"));
+        }
+        match registration.read_fault(&mut self.receipt) {
+            Ok(event) => Ok(event),
+            Err(error) => {
+                self.fail();
+                Err(RamError::from(error))
+            }
+        }
+    }
+
     /// Publishes the consumed kernel event before any fallible admission.
     ///
     /// # Errors
@@ -101,6 +123,7 @@ impl FaultWork {
             return Err(error);
         }
         self.claimed.take();
+        self.receipt.clear_after_settlement();
         self.scratch.fill(0);
         Ok(())
     }
@@ -114,7 +137,7 @@ impl FaultWork {
     }
 
     fn unresolved(&self) -> bool {
-        self.claimed.is_some() || self.failed
+        self.claimed.is_some() || self.receipt.retained() || self.failed
     }
 }
 
@@ -143,6 +166,7 @@ impl FaultWorkOwner {
             pause: FaultPause::default(),
             work: Mutex::new(FaultWork {
                 claimed: None,
+                receipt: FaultReceipt::default(),
                 scratch: [0; PAGE_BYTES],
                 failed: false,
             }),

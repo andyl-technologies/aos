@@ -12,7 +12,7 @@ use crucible_shmem::{
 const PREDECESSOR_SHMEM_ABI: u32 = 30;
 
 fn current_header() -> (RegionLayout, RegionHeaderSnapshot) {
-    assert_eq!(ABI_VERSION, 31);
+    assert_eq!(ABI_VERSION, 32);
     let layout = RegionLayout::for_config(RegionConfig::new(1, DEFAULT_QUEUE_CAPACITY))
         .expect("admit current shared-memory fixture geometry");
     let header = RegionHeader::new(layout);

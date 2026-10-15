@@ -75,7 +75,8 @@ pub struct QemuLiveHostIoRuntime {
     ram_control_registration: Option<crate::ram_control::RamControlRegistration>,
     host_operation_supervisor:
         Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
-    region: MappedSetupRegion,
+    region: Option<MappedSetupRegion>,
+    source_supervision: Option<crate::spawn::source_supervision::OriginalSourceSupervision>,
     wake: Arc<File>,
     vm_slot: u32,
     poll_interval: Duration,
@@ -107,6 +108,7 @@ pub struct QemuLiveHostIoRuntime {
     launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
+mod action;
 mod servicing;
 use servicing::{BlockIoServicing, NinepIoServicing};
 
@@ -166,7 +168,11 @@ impl QemuLiveHostIoRuntime {
         descriptor: BorrowedFd<'_>,
     ) -> Result<bool, rustix::io::Errno> {
         let metadata = rustix::fs::fstat(descriptor)?;
-        let source = self.region.backing_identity();
+        let source = self
+            .region
+            .as_ref()
+            .ok_or(rustix::io::Errno::INVAL)?
+            .backing_identity();
         Ok(metadata.st_dev == source.device() && metadata.st_ino == source.inode())
     }
 
@@ -216,6 +222,26 @@ impl QemuLiveHostIoRuntime {
     ) -> Self {
         self.host_operation_supervisor = Some(supervisor);
         self
+    }
+
+    pub(crate) fn with_source_supervision(
+        mut self,
+        source: crate::spawn::source_supervision::OriginalSourceSupervision,
+    ) -> Result<Self, QemuAsyncDriverRuntimeError> {
+        source
+            .bind_action_mapping(
+                self.region.as_ref().ok_or_else(region_missing)?,
+                self.vm_slot,
+                Arc::clone(&self.wake),
+            )
+            .map_err(|error| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "bind action Source mapping",
+                    error,
+                )
+            })?;
+        self.source_supervision = Some(source);
+        Ok(self)
     }
 
     fn wait_for_poll_interval(&mut self, remaining: Duration) {
@@ -297,7 +323,8 @@ impl QemuLiveHostIoRuntime {
             .map(File::from)
             .map_err(|source| QemuLiveHostIoRuntimeError::CloneWakeFd { source })?;
         Ok(Self {
-            region,
+            region: Some(region),
+            source_supervision: None,
             wake: Arc::new(wake),
             vm_slot,
             poll_interval,
@@ -417,6 +444,8 @@ impl QemuLiveHostIoRuntime {
         }
         let initial = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .snapshot();
@@ -500,6 +529,8 @@ impl QemuLiveHostIoRuntime {
             self.service_console_output()?;
             let snapshot = self
                 .region
+                .as_ref()
+                .ok_or_else(region_missing)?
                 .node_slot(self.vm_slot)
                 .map_err(map_slot_error)?
                 .snapshot();
@@ -635,6 +666,13 @@ impl QemuLiveHostIoRuntime {
 
 impl Drop for QemuLiveHostIoRuntime {
     fn drop(&mut self) {
+        if let Some(source) = &self.source_supervision {
+            if source.action_is_pending() {
+                if let Some(region) = self.region.take() {
+                    source.retain_uncertain_mapping(region);
+                }
+            }
+        }
         let Some(cleanup) = &self.launch_cleanup else {
             return;
         };
@@ -859,6 +897,16 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         console: Option<crate::QemuHotForkChildConsoleObservation>,
     ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
         self.validate_private_hot_fork_ring(shmem_fd)?;
+        if self
+            .source_supervision
+            .as_ref()
+            .is_some_and(|source| source.action_is_pending())
+        {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "clone hot-fork host-I/O continuation",
+                "the actual action loan still retains native physical borrowers",
+            ));
+        }
         if self.console.is_some() != console.is_some() {
             return Err(QemuAsyncDriverRuntimeError::new(
                 "clone hot-fork host-I/O continuation",
@@ -875,6 +923,8 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         }
         if self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .fingerprint_sample(self.vm_slot)
             .map_err(map_slot_error)?
             .pending_capture_request_v1()
@@ -1019,6 +1069,8 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
     fn checkpoint_device_io_is_quiescent(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
         Ok(self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .snapshot()
@@ -1043,6 +1095,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.settle_previous_action()?;
         let deadline = OperationPollBudget::begin(
             self.host_operation_supervisor.as_ref(),
             HostOperationClass::FingerprintUpdate,
@@ -1052,6 +1105,8 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
 
         let request = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .fingerprint_sample(self.vm_slot)
             .map_err(map_slot_error)?
             .request_capture_v1();
@@ -1063,12 +1118,15 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         original: &crucible_linux_resource::host_supervision::HostOperationGuard,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let operation = "publish current execution fingerprint";
+        self.settle_previous_action()?;
         let deadline = OperationPollBudget::borrow_original(original, operation)?;
         let remaining = deadline.remaining(operation)?.ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(operation, "original operation has expired")
         })?;
         let request = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .fingerprint_sample(self.vm_slot)
             .map_err(map_slot_error)?
             .request_fresh_capture_v1()
@@ -1083,12 +1141,15 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         family: &crucible_linux_resource::host_supervision::HostOperationGuard,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let operation = "publish current execution fingerprint";
+        self.settle_previous_action()?;
         let deadline = OperationPollBudget::borrow_quiescence_pair(actor, family, operation)?;
         let remaining = deadline.remaining(operation)?.ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(operation, "paired original operation has expired")
         })?;
         let request = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .fingerprint_sample(self.vm_slot)
             .map_err(map_slot_error)?
             .request_fresh_capture_v1()
@@ -1142,7 +1203,11 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         // futex or QEMU's doorbell here can re-enter the vCPU-idle callback
         // while the VM remains stopped. That callback waits with the BQL held,
         // which would prevent the intervening VMState QMP job from running.
-        self.region.header().clear_pause();
+        self.region
+            .as_ref()
+            .ok_or_else(region_missing)?
+            .header()
+            .clear_pause();
         Ok(())
     }
 
@@ -1613,6 +1678,10 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         self.repoll_advance_completion_with_original(timeout, Some(original))
     }
 
+    fn settle_pending_control_action(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.settle_previous_action()
+    }
+
     fn await_fault_result(
         &mut self,
         timeout: Duration,
@@ -1658,3 +1727,10 @@ mod fault_result;
 #[cfg(test)]
 #[path = "host_io_runtime_tests.rs"]
 pub(crate) mod tests;
+
+fn region_missing() -> QemuAsyncDriverRuntimeError {
+    QemuAsyncDriverRuntimeError::new(
+        "use host runtime mapping",
+        "mapping retained by uncertain action custody",
+    )
+}

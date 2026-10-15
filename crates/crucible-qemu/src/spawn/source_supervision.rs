@@ -21,9 +21,11 @@ use rustix::fs::{MemfdFlags, OFlags, SealFlags};
 
 use crate::linux_attempt_host::{InstalledSourceAdmission, InstalledSourceSubject};
 
-pub(crate) const SOURCE_PUBLICATION_BYTES: usize = 608;
-pub(crate) const SOURCE_PAYLOAD_BYTES: usize = 600;
-pub(crate) const SOURCE_CORROBORATION_BYTES: usize = 624;
+mod action;
+
+pub(crate) const SOURCE_PUBLICATION_BYTES: usize = 1504;
+pub(crate) const SOURCE_PAYLOAD_BYTES: usize = 1496;
+pub(crate) const SOURCE_CORROBORATION_BYTES: usize = 1520;
 const WORDS: usize = SOURCE_PUBLICATION_BYTES / 8;
 const HEADER_BYTES: usize = 232;
 const BACKING_PAGE_BYTES: u64 = 4096;
@@ -42,6 +44,10 @@ struct SourcePublisher {
     subject: InstalledSourceSubject,
     artifact: [u8; 32],
     mapping: AtomicPublication,
+    action_loans: [Mutex<Option<crucible_linux_resource::host_supervision::HostActionLoan>>; 4],
+    retained_mapping: Mutex<Option<crucible_shmem::MappedSetupRegion>>,
+    action_mapping: Mutex<Option<(crucible_shmem::SetupRegionBackingIdentity, u32)>>,
+    action_wake: Mutex<Option<Arc<std::fs::File>>>,
     _admission: InstalledSourceAdmission,
 }
 
@@ -53,6 +59,9 @@ struct PublicationState {
     roster_revision: u64,
     initial: Option<[u8; SOURCE_PAYLOAD_BYTES]>,
     cancellation_identity: [u64; 3],
+    latest: Option<SourceSupervisionSnapshot>,
+    action: Option<action::PendingAction>,
+    last_action_return: Option<crucible_protocol::boundary_action::ActionReturn>,
 }
 
 #[derive(Debug)]
@@ -69,6 +78,12 @@ unsafe impl Sync for AtomicPublication {}
 
 impl OriginalSourceSupervision {
     pub(crate) fn host_allocation_extent() -> Option<u64> {
+        Self::publication_allocation_extent()?.checked_add(
+            4 * crucible_linux_resource::host_supervision::HostActionLoan::metadata_bytes(),
+        )
+    }
+
+    fn publication_allocation_extent() -> Option<u64> {
         let (layout, _) = std::alloc::Layout::new::<(AtomicU64, AtomicU64)>()
             .extend(std::alloc::Layout::new::<SourcePublisher>())
             .ok()?;
@@ -77,7 +92,12 @@ impl OriginalSourceSupervision {
             .checked_add(std::mem::size_of::<SourcePublisher>() as u64)?
             .checked_add(std::mem::size_of::<SourceSupervisionError>() as u64)?
             .checked_add(BACKING_PAGE_BYTES)?
-            .checked_add((SOURCE_CORROBORATION_BYTES + SOURCE_PAYLOAD_BYTES + 368 + 4097) as u64)?
+            .checked_add(
+                (SOURCE_CORROBORATION_BYTES + 3 * SOURCE_PAYLOAD_BYTES + 368 + 4097) as u64,
+            )?
+            .checked_add(
+                crucible_linux_resource::host_supervision::HostActionLoan::cohort_scratch_bytes(),
+            )?
             .checked_add(std::mem::size_of::<SourceHostControlLease>() as u64)
     }
 
@@ -92,7 +112,8 @@ impl OriginalSourceSupervision {
         admission
             .check()
             .map_err(SourceSupervisionError::Admission)?;
-        let extent = Self::host_allocation_extent().ok_or(SourceSupervisionError::Geometry)?;
+        let extent =
+            Self::publication_allocation_extent().ok_or(SourceSupervisionError::Geometry)?;
         // The constructor enters only after this disjoint real peak is held.
         let control = admission
             .host_purpose()
@@ -198,9 +219,16 @@ fn construct_source_publication(
             roster_revision: 0,
             initial: None,
             cancellation_identity: [stat.st_dev, stat.st_ino, event_id],
+            latest: None,
+            action: None,
+            last_action_return: None,
         }),
         subject: admission.subject(),
         artifact: admission.artifact_digest(),
+        action_loans: std::array::from_fn(|_| Mutex::new(None)),
+        retained_mapping: Mutex::new(None),
+        action_mapping: Mutex::new(None),
+        action_wake: Mutex::new(None),
         _admission: admission.clone(),
     });
     let owner = OriginalSourceSupervision { publisher };
@@ -237,6 +265,14 @@ impl SourcePublisher {
             .state
             .lock()
             .map_err(|_| HostSupervisionError::Unavailable)?;
+        self.publish_locked(&mut state, snapshot)
+    }
+
+    fn publish_locked(
+        &self,
+        state: &mut PublicationState,
+        snapshot: SourceSupervisionSnapshot,
+    ) -> Result<(), HostSupervisionError> {
         if snapshot.outer.cap_id != self.subject.containing_cap
             || state
                 .origin
@@ -261,8 +297,8 @@ impl SourcePublisher {
             })
             .transpose()?;
         let mut payload = [0; SOURCE_PAYLOAD_BYTES];
-        payload[..8].copy_from_slice(b"CRUCSRV1");
-        payload[8..12].copy_from_slice(&1_u32.to_be_bytes());
+        payload[..8].copy_from_slice(b"CRUCSRV2");
+        payload[8..12].copy_from_slice(&2_u32.to_be_bytes());
         payload[12..16].copy_from_slice(&(SOURCE_PAYLOAD_BYTES as u32).to_be_bytes());
         payload[16..48].copy_from_slice(&snapshot.outer.cap_id);
         payload[64] = u8::from(allowance.is_some());
@@ -294,6 +330,15 @@ impl SourcePublisher {
             .filter(|end| *end <= payload.len())
             .ok_or(HostSupervisionError::InvalidBudget)?;
         payload[HEADER_BYTES..end].copy_from_slice(&roster);
+        if let Some(action) = state.action.as_ref() {
+            if !action.clearing && action.observation.borrowed_mask != 0 {
+                let bytes = action
+                    .observation
+                    .encode()
+                    .map_err(|_| HostSupervisionError::InvalidBudget)?;
+                payload[600..].copy_from_slice(&bytes);
+            }
+        }
         crucible_protocol::source_supervision::decode_source_supervision_payload(&payload)
             .map_err(|_| HostSupervisionError::InvalidBudget)?;
         let sequence = state
@@ -306,16 +351,38 @@ impl SourcePublisher {
         state.origin = Some(snapshot.outer.original_monotonic_ns);
         state.outer_revision = snapshot.outer.revision;
         state.roster_revision = snapshot.roster_revision;
+        state.latest = Some(snapshot);
         if state.initial.is_none() {
             state.initial = Some(payload);
         }
-        if snapshot.outer.state != HostOperationState::Running {
-            match rustix::io::write(&self.cancellation, &1_u64.to_ne_bytes()) {
-                Ok(8) | Err(rustix::io::Errno::AGAIN) => {}
-                _ => return Err(HostSupervisionError::Unavailable),
+        let action_notified = (|| {
+            if state.action.is_some() {
+                let wake = self
+                    .action_wake
+                    .lock()
+                    .map_err(|_| HostSupervisionError::Unavailable)?;
+                let wake = wake.as_ref().ok_or(HostSupervisionError::Unavailable)?;
+                // This is the same admitted Node eventfd, not the terminal
+                // cancellation event. It reports changed facts only; the
+                // actual token and retained Source/parent still gate effects.
+                match rustix::io::write(wake.as_ref(), &1_u64.to_ne_bytes()) {
+                    Ok(8) | Err(rustix::io::Errno::AGAIN) => {}
+                    _ => return Err(HostSupervisionError::Unavailable),
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })();
+        let cancellation_notified = if snapshot.outer.state != HostOperationState::Running {
+            match rustix::io::write(&self.cancellation, &1_u64.to_ne_bytes()) {
+                Ok(8) | Err(rustix::io::Errno::AGAIN) => Ok(()),
+                _ => Err(HostSupervisionError::Unavailable),
+            }
+        } else {
+            Ok(())
+        };
+        // A failed action notification cannot suppress real terminal Source
+        // cancellation. Preserve the first result after attempting both cuts.
+        action_notified.and(cancellation_notified)
     }
 }
 
@@ -324,7 +391,7 @@ impl AtomicPublication {
         writer: &OwnedFd,
         control: SourceHostControlLease,
     ) -> Result<Self, SourceSupervisionError> {
-        // SAFETY: this newly created fixed memfd owns the requested 608-byte
+        // SAFETY: this newly created fixed memfd owns the requested 1504-byte
         // extent. mmap returns page alignment suitable for AtomicU64; shared
         // accesses use only atomic words, never ordinary mutable payload bytes.
         let pointer = unsafe {

@@ -394,7 +394,7 @@
       }
       {
         label = "node slot size Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_SIZE == 256);";
+        needle = "const _: () = assert!(NODE_SLOT_SIZE == 512);";
       }
       {
         label = "node slot alignment Rust static assertion";
@@ -516,11 +516,11 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=30";
+        needle = "abi_version=32";
       }
       {
         label = "total serialized length";
-        needle = "total_len=19424";
+        needle = "total_len=19680";
       }
       {
         label = "region magic";
@@ -528,37 +528,37 @@
       }
       {
         label = "payload marker";
-        needle = "672=50494e47";
+        needle = "928=50494e47";
       }
       {
         label = "coverage entry exact-icount marker";
-        needle = "5280=8503";
+        needle = "5536=8503";
       }
       {
         label = "coverage entry block marker";
-        needle = "5308=04";
+        needle = "5564=04";
       }
       {
         label = "white-box marker exact-icount marker";
-        needle = "5344=9103";
+        needle = "5600=9103";
       }
       {
         label = "white-box marker payload marker";
-        needle = "5360=4d41524b";
+        needle = "5616=4d41524b";
       }
       {
         label = "guest-introspection sequence marker";
-        needle = "10016=13";
+        needle = "10272=13";
       }
       {
         label = "guest-introspection complete CRGI record marker";
-        needle = "10032=4352474901";
+        needle = "10288=4352474901";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/interface/crucible-shmem-abi.toml" interfaceManifest [
       {
         label = "machine-readable ABI version";
-        needle = "abi_version = 30";
+        needle = "abi_version = 32";
       }
       {
         label = "selectable reply direction";

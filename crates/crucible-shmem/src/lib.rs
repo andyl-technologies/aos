@@ -180,7 +180,7 @@ pub use mapped_setup_region::{
     MappedGuestIntrospectionProducerRingMut, MappedHostAcceleratorRingsMut,
     MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut, MappedPluginAcceleratorRingsMut,
     MappedPluginGuestIntrospectionRingsMut, MappedRingIoBarrierSnapshot,
-    MappedSelectableReplyRingMut, MappedSetupRegion, MappedSetupRegionAccessError,
+    MappedSelectableReplyRingMut, MappedSetupRegion, MappedSetupRegionAccessError, MappedSetupView,
     MappedWhiteboxMarkerRingMut, SetupRegionBackingIdentity, SetupRegionMapError,
     mmap_setup_region,
 };
@@ -206,7 +206,7 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// publication. Version 30 binds selectable marker and reply coordinates to
 /// picosecond ticks; raw retirement remains in the versioned pending payload.
 /// The generated C view and golden vectors pin every offset.
-pub const ABI_VERSION: u32 = 31;
+pub const ABI_VERSION: u32 = 32;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of simulation ticks in one QEMU virtual nanosecond.
 pub const TICKS_PER_NS: u64 = 1_000;

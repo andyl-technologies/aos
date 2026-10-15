@@ -670,6 +670,19 @@ pub trait QemuHostIoRuntime: Send {
         ))
     }
 
+    /// Settles retained control-action custody before publishing new commands.
+    ///
+    /// Live Source runtimes inspect their exact mapped physical-return journal
+    /// without entering an operation. A scripted runtime that never lends a
+    /// Source action has no physical control-action custody to settle.
+    ///
+    /// # Errors
+    /// Refuses pending or uncertain physical return, signed prior semantic
+    /// failure, or a terminal containing Source. An ACK alone cannot settle it.
+    fn settle_pending_control_action(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
     /// Wakes QEMU and waits for one lossless fault-command result.
     ///
     /// Implementations must use `timeout` only as a host-liveness bound. The

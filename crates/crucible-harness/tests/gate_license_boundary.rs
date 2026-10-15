@@ -406,7 +406,7 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
     )));
     assert!(header.contains("#define CRUCIBLE_SHMEM_REGION_HEADER_ABI_VERSION_OFFSET 8u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_REGION_HEADER_SIZE 256u"));
-    assert!(header.contains("#define CRUCIBLE_SHMEM_NODE_SLOT_SIZE 256u"));
+    assert!(header.contains("#define CRUCIBLE_SHMEM_NODE_SLOT_SIZE 512u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_RING_HEADER_SIZE 128u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE 4640u"));
 

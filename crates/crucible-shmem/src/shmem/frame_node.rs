@@ -25,6 +25,8 @@ pub use preemption_mailbox::{
     SchedulerPreemptionKind,
 };
 
+#[path = "frame_node/action_return.rs"]
+mod action_return;
 #[path = "frame_node/layout.rs"]
 mod layout;
 #[path = "frame_node/runtime.rs"]

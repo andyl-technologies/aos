@@ -1935,7 +1935,7 @@ impl SimulationBackend for QemuNodeSet {
         // This adapter implements the selected installed protocol, not the
         // unimplemented native Source admission contract.
         const _: () = assert!(crucible_protocol::CONTROL_PROTOCOL_VERSION == 5);
-        const _: () = assert!(crucible_shmem::ABI_VERSION == 31);
+        const _: () = assert!(crucible_shmem::ABI_VERSION == 32);
         crucible::BackendDispatchContract::CeilingControl
     }
 

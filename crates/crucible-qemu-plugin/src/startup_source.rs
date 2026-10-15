@@ -20,7 +20,8 @@ mod descriptor;
 mod native_setup;
 pub(crate) use descriptor::SetupDescriptor;
 pub(crate) use native_setup::{NativeSetupBorrow, selected as native_setup_selected};
-mod runtime_purpose;
+pub(crate) mod runtime_purpose;
+mod setup_mapping;
 
 #[cfg(test)]
 type Acquire = extern "C" fn(u64, i32) -> i32;
@@ -64,6 +65,7 @@ struct NativeStartupApi {
 pub(crate) struct InstallerStartupSource {
     control_reservation: control_purpose::ControlReservation,
     runtime_reservation: runtime_purpose::RuntimeReservation,
+    setup_mapping: std::sync::Mutex<setup_mapping::SetupMapping>,
     plan: Option<SetupDescriptor>,
     native_setup: Option<NativeSetupBorrow>,
     plugin_id: u64,
@@ -87,6 +89,7 @@ impl InstallerStartupSource {
         Self {
             control_reservation: control_purpose::ControlReservation::default(),
             runtime_reservation: runtime_purpose::RuntimeReservation::default(),
+            setup_mapping: Default::default(),
             plan: Some(plan.into()),
             native_setup: None,
             plugin_id,
@@ -109,6 +112,11 @@ impl InstallerStartupSource {
         assert!(self.model_api.is_none());
         self.model_api = Some(model.api);
         self.model_setup = model.setup;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_setup_model(&self) -> bool {
+        self.model_setup.is_some()
     }
 
     #[cfg(test)]

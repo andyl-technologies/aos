@@ -32,8 +32,8 @@ fn selected() -> Vec<u8> {
     .unwrap()
     .encode();
     let mut purpose = [0; PURPOSE];
-    purpose[..8].copy_from_slice(b"CRUCPUR7");
-    purpose[8..12].copy_from_slice(&7_u32.to_be_bytes());
+    purpose[..8].copy_from_slice(b"CRUCPUR8");
+    purpose[8..12].copy_from_slice(&8_u32.to_be_bytes());
     purpose[12..16].copy_from_slice(&(PURPOSE as u32).to_be_bytes());
     purpose[16..24].copy_from_slice(&4096_u64.to_be_bytes());
     purpose[96..104].copy_from_slice(&3_u64.to_be_bytes());
@@ -66,13 +66,13 @@ fn selected() -> Vec<u8> {
     }
     purpose[744..1000].copy_from_slice(&family::FROZEN_FAMILY);
     // Fixed syntax-only standing observation; no kernel owner is issued.
-    for (offset, value) in [(1000, 1_u64), (1008, 29), (1016, 608)] {
+    for (offset, value) in [(1000, 1_u64), (1008, 29), (1016, 1504)] {
         purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
     }
-    let mut standing = [0_u8; 600];
-    standing[..8].copy_from_slice(b"CRUCSRV1");
-    standing[8..12].copy_from_slice(&1_u32.to_be_bytes());
-    standing[12..16].copy_from_slice(&600_u32.to_be_bytes());
+    let mut standing = [0_u8; 1496];
+    standing[..8].copy_from_slice(b"CRUCSRV2");
+    standing[8..12].copy_from_slice(&2_u32.to_be_bytes());
+    standing[12..16].copy_from_slice(&1496_u32.to_be_bytes());
     standing[16..48].copy_from_slice(&purpose[184..216]);
     standing[88..120].copy_from_slice(&purpose[184..216]);
     standing[120..152].copy_from_slice(&purpose[816..848]);
@@ -92,10 +92,10 @@ fn selected() -> Vec<u8> {
         standing[offset + 9] = 1;
         standing[offset + 10..offset + 18].copy_from_slice(&500_000_u64.to_be_bytes());
     }
-    purpose[1024..1624].copy_from_slice(&standing);
+    purpose[1024..2520].copy_from_slice(&standing);
 
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"CRUCSUP7");
+    bytes.extend_from_slice(b"CRUCSUP8");
     for field in [
         7,
         HEADER as u32,

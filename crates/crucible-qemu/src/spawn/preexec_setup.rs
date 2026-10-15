@@ -6,8 +6,8 @@
 //! launch cleanup owner until actual child and transport retirement.
 //!
 //! ```text
-//! sealed plan: CRUCSUP7, schema 7, header 40, unchanged aggregate byte cap
-//! nested purpose: CRUCPUR7, schema 7, 1624 bytes
+//! sealed plan: CRUCSUP8, schema 8, header 40, unchanged aggregate byte cap
+//! nested purpose: CRUCPUR8, schema 8, 2520 bytes
 //! frame: BEu32(57), tag 0x15, 56-byte selected Setup payload
 //! SCM roles: shared memory, wake event, sealed plan, standing publication, standing cancellation, optional workspace
 //! ```
@@ -203,6 +203,14 @@ impl PreparedPreexecSetup {
                         .map_err(|_| PreexecSetupCause::WorkspaceUnavailable)
                 })
                 .transpose()?;
+            let backing = rustix::fs::fstat(shmem).map_err(PreexecSetupCause::Kernel)?;
+            if backing.st_size < 0
+                || u64::try_from(backing.st_size).ok() != Some(region_len)
+                || rustix::fs::FileType::from_raw_mode(backing.st_mode)
+                    != rustix::fs::FileType::RegularFile
+            {
+                return Err(PreexecSetupCause::Geometry);
+            }
             let allocation = crucible_shmem::RegionAllocation::new(region_config)
                 .map_err(PreexecSetupCause::RegionLayout)?;
             if allocation.layout().region_size != region_len {
@@ -233,6 +241,7 @@ impl PreparedPreexecSetup {
                     startup.admission().map_err(PreexecSetupCause::Startup)?,
                     startup.standing().map_err(PreexecSetupCause::Startup)?,
                     startup_record.fields().process_generation,
+                    region_len,
                     ram_endpoint,
                     |record| *record,
                 )

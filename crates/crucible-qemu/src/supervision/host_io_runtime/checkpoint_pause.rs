@@ -33,6 +33,8 @@ impl QemuLiveHostIoRuntime {
             self.service_console_output()?;
             let snapshot = self
                 .region
+                .as_ref()
+                .ok_or_else(region_missing)?
                 .node_slot(self.vm_slot)
                 .map_err(map_slot_error)?
                 .snapshot();
@@ -84,6 +86,8 @@ impl QemuLiveHostIoRuntime {
         check_borrowed_quiescence(deadline)?;
         let mut initial_snapshot = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .snapshot();
@@ -103,6 +107,8 @@ impl QemuLiveHostIoRuntime {
             }
             initial_snapshot = self
                 .region
+                .as_ref()
+                .ok_or_else(region_missing)?
                 .node_slot(self.vm_slot)
                 .map_err(map_slot_error)?
                 .snapshot();
@@ -118,11 +124,19 @@ impl QemuLiveHostIoRuntime {
         }
         let slot = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?;
         let initial_publish_gen = initial_snapshot.publish_gen;
         check_borrowed_quiescence(deadline)?;
-        if let Err(source) = self.region.header().request_pause([slot]) {
+        if let Err(source) = self
+            .region
+            .as_ref()
+            .ok_or_else(region_missing)?
+            .header()
+            .request_pause([slot])
+        {
             return self.fail_checkpoint_pause(QemuAsyncDriverRuntimeError::new(
                 "request checkpoint pause",
                 source.to_string(),
@@ -204,7 +218,13 @@ impl QemuLiveHostIoRuntime {
                 Err(source) => return self.fail_checkpoint_pause(source),
             }
 
-            let snapshot = match self.region.node_slot(self.vm_slot).map_err(map_slot_error) {
+            let snapshot = match self
+                .region
+                .as_ref()
+                .ok_or_else(region_missing)?
+                .node_slot(self.vm_slot)
+                .map_err(map_slot_error)
+            {
                 Ok(slot) => slot.snapshot(),
                 Err(source) => return self.fail_checkpoint_pause(source),
             };
@@ -246,7 +266,12 @@ impl QemuLiveHostIoRuntime {
             // read. Decide only from a post-service acquire snapshot; using the
             // stale pre-service state allowed checkpoint assembly to observe a
             // transient reached slot immediately after this method returned.
-            let settled_snapshot = match self.region.node_slot(self.vm_slot).map_err(map_slot_error)
+            let settled_snapshot = match self
+                .region
+                .as_ref()
+                .ok_or_else(region_missing)?
+                .node_slot(self.vm_slot)
+                .map_err(map_slot_error)
             {
                 Ok(slot) => slot.snapshot(),
                 Err(source) => return self.fail_checkpoint_pause(source),
@@ -258,7 +283,11 @@ impl QemuLiveHostIoRuntime {
                 settled_snapshot.idle_wake_icount,
                 settled_snapshot.device_io_active,
                 settled_snapshot.control_boundary_ack,
-                self.region.header().pause_requested(),
+                self.region
+                    .as_ref()
+                    .ok_or_else(region_missing)?
+                    .header()
+                    .pause_requested(),
             ));
             if settled_snapshot.publish_gen != initial_publish_gen
                 && !device_progress

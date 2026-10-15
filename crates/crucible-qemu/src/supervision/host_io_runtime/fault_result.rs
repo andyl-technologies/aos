@@ -1,7 +1,7 @@
 //! Bounded polling for the dedicated QEMU fault-result transport.
 
 use super::control::PendingControlBoundary;
-use super::{QemuLiveHostIoRuntime, control_boundary_request_is_acknowledged};
+use super::{QemuLiveHostIoRuntime, control_boundary_request_is_acknowledged, region_missing};
 use crate::QemuAsyncDriverRuntimeError;
 use crucible_shmem::{
     BufferedFaultResultPoll, DequeuedFaultResult, FaultTransportError, dequeue_fault_event,
@@ -28,6 +28,8 @@ impl QemuLiveHostIoRuntime {
     ) -> Result<(u64, u64), QemuAsyncDriverRuntimeError> {
         let transport = self
             .region
+            .as_mut()
+            .ok_or_else(region_missing)?
             .fault_event_transport_mut(self.vm_slot)
             .map_err(|source| {
                 QemuAsyncDriverRuntimeError::new("map fault-event transport", source.to_string())
@@ -59,6 +61,8 @@ impl QemuLiveHostIoRuntime {
             let (pending, read_index, write_index, arena_read, arena_write) = {
                 let transport = self
                     .region
+                    .as_mut()
+                    .ok_or_else(region_missing)?
                     .fault_event_transport_mut(self.vm_slot)
                     .map_err(|source| {
                         QemuAsyncDriverRuntimeError::new(
@@ -118,6 +122,8 @@ impl QemuLiveHostIoRuntime {
             })?;
             let transport = self
                 .region
+                .as_mut()
+                .ok_or_else(region_missing)?
                 .fault_event_transport_mut(self.vm_slot)
                 .map_err(|source| {
                     QemuAsyncDriverRuntimeError::new(
@@ -157,8 +163,12 @@ impl QemuLiveHostIoRuntime {
         timeout: Duration,
         deadline: &super::OperationPollBudget<'_>,
         maximum_event_records: usize,
+        loan: Option<crucible_protocol::boundary_action::ActionBinding>,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let last_ack = loop {
+            if loan.is_some() {
+                self.refresh_control_action()?;
+            }
             self.drain_fault_events_for_operation(
                 maximum_event_records,
                 deadline,
@@ -168,10 +178,14 @@ impl QemuLiveHostIoRuntime {
             self.service_console_output()?;
             let snapshot = self
                 .region
+                .as_ref()
+                .ok_or_else(region_missing)?
                 .node_slot(self.vm_slot)
                 .map_err(super::map_slot_error)?
                 .snapshot();
-            if control_boundary_request_is_acknowledged(request, &snapshot) {
+            if control_boundary_request_is_acknowledged(request, &snapshot)
+                && (loan.is_none() || self.finish_control_action()?)
+            {
                 deadline.complete("await fault result publication fence")?;
                 return Ok(());
             }
@@ -200,14 +214,36 @@ impl QemuLiveHostIoRuntime {
         mut payload_buffer: Vec<u8>,
         maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
+        self.settle_previous_action()?;
         let deadline = super::OperationPollBudget::begin(
             self.host_operation_supervisor.as_ref(),
             crucible_linux_resource::host_supervision::HostOperationClass::Preparation,
             timeout,
             "await fault result",
         )?;
+        let loan = self.lend_control_action(&deadline, None)?;
+        if deadline.remaining("publish fault action")?.is_none() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "publish fault action",
+                "producing operation expired before wake",
+            ));
+        }
+        let request = self.signal_wake(None)?;
+        super::action::validate_control_action_request(request, loan)?;
+        let mut repeat_wake = false;
         loop {
-            let request = self.signal_wake(None)?;
+            if loan.is_some() {
+                self.refresh_control_action()?;
+            }
+            // Reuse the immutable request. Republishing after its ACK would
+            // mint another token while the same action still owns the frontier.
+            if deadline.remaining("continue fault action")?.is_none() {
+                break;
+            }
+            if repeat_wake {
+                self.write_wake_doorbell()?;
+            }
+            repeat_wake = true;
             self.drain_fault_events_for_operation(
                 maximum_event_records,
                 &deadline,
@@ -216,6 +252,8 @@ impl QemuLiveHostIoRuntime {
             )?;
             let transport = self
                 .region
+                .as_mut()
+                .ok_or_else(region_missing)?
                 .fault_result_transport_mut(self.vm_slot)
                 .map_err(|source| {
                     QemuAsyncDriverRuntimeError::new(
@@ -242,6 +280,7 @@ impl QemuLiveHostIoRuntime {
                         timeout,
                         &deadline,
                         maximum_event_records,
+                        loan,
                     )?;
                     return Ok(result);
                 }
@@ -264,6 +303,7 @@ impl QemuLiveHostIoRuntime {
         maximum_payload_bytes: usize,
         maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
+        self.settle_previous_action()?;
         let deadline = super::OperationPollBudget::begin(
             self.host_operation_supervisor.as_ref(),
             crucible_linux_resource::host_supervision::HostOperationClass::Preparation,
@@ -271,8 +311,29 @@ impl QemuLiveHostIoRuntime {
             "await fault preparation result",
         )?;
         let mut payload_buffer = Vec::new();
+        let loan = self.lend_control_action(&deadline, None)?;
+        if deadline.remaining("publish fault action")?.is_none() {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "publish fault action",
+                "producing operation expired before wake",
+            ));
+        }
+        let request = self.signal_wake(None)?;
+        super::action::validate_control_action_request(request, loan)?;
+        let mut repeat_wake = false;
         loop {
-            let request = self.signal_wake(None)?;
+            if loan.is_some() {
+                self.refresh_control_action()?;
+            }
+            // Reuse the immutable request. Republishing after its ACK would
+            // mint another token while the same action still owns the frontier.
+            if deadline.remaining("continue fault action")?.is_none() {
+                break;
+            }
+            if repeat_wake {
+                self.write_wake_doorbell()?;
+            }
+            repeat_wake = true;
             self.drain_fault_events_for_operation(
                 maximum_event_records,
                 &deadline,
@@ -281,6 +342,8 @@ impl QemuLiveHostIoRuntime {
             )?;
             let transport = self
                 .region
+                .as_mut()
+                .ok_or_else(region_missing)?
                 .fault_result_transport_mut(self.vm_slot)
                 .map_err(|source| {
                     QemuAsyncDriverRuntimeError::new(
@@ -327,6 +390,7 @@ impl QemuLiveHostIoRuntime {
                         timeout,
                         &deadline,
                         maximum_event_records,
+                        loan,
                     )?;
                     return Ok(result);
                 }

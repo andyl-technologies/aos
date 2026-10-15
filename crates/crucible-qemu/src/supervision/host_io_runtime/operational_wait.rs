@@ -17,6 +17,21 @@ pub(crate) enum OperationPollBudget<'a> {
 }
 
 impl<'a> OperationPollBudget<'a> {
+    /// Borrows the actual producing guard set, preserving every class and clock.
+    pub(crate) fn action_producers(
+        &self,
+    ) -> Result<Option<[Option<&HostOperationGuard>; 2]>, QemuAsyncDriverRuntimeError> {
+        match self {
+            Self::Borrowed(guard) | Self::BorrowedCheckpoint(guard) => {
+                Ok(Some([Some(guard), None]))
+            }
+            Self::Supervised(guard) => Ok(Some([Some(guard), None])),
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            Self::BorrowedPair(actor, family) => Ok(Some([Some(actor), Some(family)])),
+            Self::Fixture(_) => Ok(None),
+        }
+    }
+
     /// Borrows the retained checkpoint original and its cancellation subscriber.
     pub(crate) fn borrow_checkpoint_original(
         original: &'a HostOperationGuard,

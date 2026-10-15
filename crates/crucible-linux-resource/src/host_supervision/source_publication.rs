@@ -81,6 +81,7 @@ impl HostOperationSupervisor {
 }
 
 pub(super) fn publish_owner(shared: &Arc<Shared>) -> Result<(), HostSupervisionError> {
+    super::action_loan::publish_owner(shared)?;
     let publisher = shared
         .source_publisher
         .lock()

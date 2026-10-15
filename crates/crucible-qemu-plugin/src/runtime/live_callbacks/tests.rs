@@ -8,7 +8,7 @@ use std::ffi::CString;
 use std::fs::File;
 use std::io::Write as _;
 use std::os::fd::{FromRawFd as _, IntoRawFd as _};
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicPtr, AtomicU8};
 
 use crucible_shmem::{
     KIND_VM, RegionConfig, RegionHeader, RegionLayout, STATUS_IDLE, STATUS_RUNNING,
@@ -792,7 +792,7 @@ fn every_live_callback_entry_rejects_work_after_quiescence() {
             .unwrap_or_else(|error| panic!("live callback state should build: {error}")),
     );
     let state_pointer = std::ptr::from_ref(state.as_ref()).cast_mut();
-    LIVE_VCPU_TIME_STATE.store(state_pointer, Ordering::Release);
+    LIVE_VCPU_CALLBACKS_CLAIMED.store(true, Ordering::Release);
     state.quiescence.close();
     let userdata = state_pointer.cast::<c_void>();
     let before = slot.snapshot();
@@ -837,7 +837,7 @@ fn every_live_callback_entry_rejects_work_after_quiescence() {
 
     let after = slot.snapshot();
     assert_eq!(after, before);
-    LIVE_VCPU_TIME_STATE.store(std::ptr::null_mut(), Ordering::Release);
+    LIVE_VCPU_CALLBACKS_CLAIMED.store(false, Ordering::Release);
 }
 
 #[test]

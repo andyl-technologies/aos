@@ -4,7 +4,7 @@
   omitNotification ? false,
 }: let
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
-  expectedCommit = "aa2d3d44b90bb166f69117800eb156b0312bfa2f";
+  expectedCommit = "76475b08ddff4aec4b6e2fae4007766d4a14188b";
   repository = import ./_qemu-atomic-patch-repository.nix {inherit pkgs;};
   transform = ./ram-complete-write-oracle-transform.py;
   controls = ./ram-complete-write-oracle-transform-tests.py;

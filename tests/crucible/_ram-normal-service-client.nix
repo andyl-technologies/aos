@@ -160,13 +160,44 @@ in
        and .accepted_policy == $accepted[0].accepted_policy' "$evidence/replayed.json" > /dev/null
     node_query status > "$evidence/after.json"
     ${pkgs.jq}/bin/jq -e --slurpfile accepted "$evidence/accepted.json" \
-      '.policy_revision == $accepted[0].policy_revision and .measurements_available
-       and .activity != null' "$evidence/after.json" > /dev/null
+      '.policy_revision == $accepted[0].policy_revision
+       and (.measurements_available | type == "boolean")
+       and (if .measurements_available then
+         [.private_resident_bytes, .shared_resident_bytes_observed,
+           .preserved_backing_bytes, .private_dirty_bytes,
+           .writeback_pending_bytes]
+         | all(.[]; type == "number" and . >= 0)
+       else
+         .private_resident_bytes == null
+         and .shared_resident_bytes_observed == null
+         and .preserved_backing_bytes == null
+         and .private_dirty_bytes == null
+         and .writeback_pending_bytes == null
+       end)
+       and .activity != null
+       and (.resident_observation_at_cut == null
+         or (.resident_observation_at_cut.current == false
+           and .resident_observation_at_cut.completed_ns >= .resident_observation_at_cut.started_ns
+           and .resident_observation_at_cut.covered_bytes > 0))' \
+      "$evidence/after.json" > /dev/null
 
-    # These markers certify normal caller/operational controls only. Placement
-    # counters do not establish full guest-state or cold-fault equivalence.
+    # Unknown classifications stay null; a future qualified producer must
+    # report all five numeric classifications when it declares availability.
+    # A bounded observation at a prior cut and activity are separate evidence.
+    # Complete physical measurements remain a required, unqualified gate; this
+    # component also does not establish guest-state or cold-fault equivalence.
     echo normal_service_main_client_authenticated=true
     echo normal_service_stale_target_refused=true
     echo normal_service_policy_retry_same_request=true
+    # Export only this actual authenticated status projection. A separate
+    # registered gate rejects unavailable/null classifications from the same VM.
+    measurements="$(${pkgs.jq}/bin/jq -c '{
+      target, observation_sequence, policy_revision, reservation_revision,
+      measurements_available, private_resident_bytes,
+      shared_resident_bytes_observed, preserved_backing_bytes,
+      private_dirty_bytes, writeback_pending_bytes
+    }' "$evidence/after.json")"
+    printf 'normal_service_physical_measurements=%s\n' "$measurements"
+    echo normal_service_complete_measurement_gate=REQUIRED_UNQUALIFIED
     echo NORMAL_SERVICE_RAM_CONTROL_PASS
   ''

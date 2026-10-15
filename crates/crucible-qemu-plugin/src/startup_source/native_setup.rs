@@ -101,6 +101,7 @@ impl InstallerStartupSource {
         Self {
             control_reservation: Default::default(),
             runtime_reservation: Default::default(),
+            setup_mapping: Default::default(),
             plan: None,
             native_setup: None,
             plugin_id,

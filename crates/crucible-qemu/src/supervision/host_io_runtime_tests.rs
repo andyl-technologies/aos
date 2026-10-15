@@ -928,7 +928,12 @@ fn hot_fork_rejects_pending_on_demand_fingerprint_request() -> Result<(), Box<dy
         region_len,
         0,
     )?;
-    let request = source.region.fingerprint_sample(0)?.request_capture_v1();
+    let request = source
+        .region
+        .as_ref()
+        .ok_or_else(region_missing)?
+        .fingerprint_sample(0)?
+        .request_capture_v1();
 
     let error = match source.clone_hot_fork_host_io_continuation(
         ContentHash::from_bytes(b"pending-fingerprint-request"),

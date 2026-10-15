@@ -193,14 +193,12 @@ pub(super) extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
                     };
                     let workers = state.workers.hold();
                     if !state.mapping_excluded_from_child.load(Ordering::Acquire) {
-                        if let Err(error) =
-                            state.setup.mapped_region().exclude_from_hot_fork_child()
-                        {
+                        if let Err(error) = state.setup.exclude_setup_mapping_from_child() {
                             state.workers.release();
                             let _released_rings =
                                 state.setup.mapped_region().release_hot_fork_ring_io();
                             state.quiescence.release_hot_fork();
-                            return Err(hot_fork_mapping_disposition_status(error));
+                            return Err(error);
                         }
                         state
                             .mapping_excluded_from_child
@@ -245,12 +243,8 @@ pub(super) extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
                             .map_err(|_| -libc::EPROTO)?;
                     }
                     if state.mapping_excluded_from_child.load(Ordering::Acquire) {
-                        if let Err(error) = state
-                            .setup
-                            .mapped_region()
-                            .restore_hot_fork_parent_inheritance()
-                        {
-                            return Err(hot_fork_mapping_disposition_status(error));
+                        if let Err(error) = state.setup.restore_setup_mapping_parent() {
+                            return Err(error);
                         }
                         state
                             .mapping_excluded_from_child
@@ -656,17 +650,5 @@ fn hot_fork_child_runtime_status(error: HotForkChildRuntimeError) -> std::os::ra
         HotForkChildRuntimeError::TemplateNotQuiescent
         | HotForkChildRuntimeError::ProcessGeneration
         | HotForkChildRuntimeError::RingBarrier => -libc::EPROTO,
-    }
-}
-
-pub(super) fn hot_fork_mapping_disposition_status(
-    error: crucible_shmem::HotForkMappingDispositionError,
-) -> std::os::raw::c_int {
-    match error {
-        crucible_shmem::HotForkMappingDispositionError::Unsupported => -libc::ENOTSUP,
-        crucible_shmem::HotForkMappingDispositionError::Madvise { source, .. } => source
-            .raw_os_error()
-            .filter(|errno| *errno > 0)
-            .map_or(-libc::EIO, |errno| -errno),
     }
 }

@@ -44,7 +44,7 @@ impl FaultCommandBridge {
     pub(crate) fn new(
         apis: QemuFaultCommandApis,
         target_node_hash: [u8; 32],
-        region: &mut MappedSetupRegion,
+        region: &mut MappedSetupView,
         vm_slot: u32,
     ) -> Result<Self, FaultCommandBridgeError> {
         if target_node_hash == [0; 32] {

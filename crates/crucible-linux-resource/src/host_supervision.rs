@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 
 use self::deadline::{OperationDecision, decide_operation, operation_status_from_decision};
 
+mod action_loan;
+pub use action_loan::{HostActionLoan, HostActionPublisher, HostActionReturnReceipt};
+
 mod bootstrap;
 mod deadline;
 mod quiescence;
@@ -336,6 +339,9 @@ pub enum HostSupervisionError {
     /// Maximum simultaneous operations was reached.
     #[error("host operation capacity exhausted")]
     CapacityExhausted,
+    /// Physical borrowers still retain the original operation.
+    #[error("host operation has outstanding physical borrowers")]
+    BorrowedOperation,
     /// A revision or identity would wrap.
     #[error("host supervision identity exhausted")]
     IdentityExhausted,
@@ -358,6 +364,8 @@ struct Operation {
     required: u64,
     state: HostOperationState,
     startup_cancellation: Option<startup::SetupCancellation>,
+    guard_live: bool,
+    action_subscribers: Option<Box<action_loan::OperationSubscriber>>,
 }
 
 #[derive(Debug)]
@@ -398,6 +406,7 @@ struct OuterAuthority {
     authenticated_service_span: Option<Duration>,
     state: HostOperationState,
     next_owner: u64,
+    action_subscribers: Option<Box<action_loan::OuterSubscriber>>,
     rosters: BTreeMap<u64, (HostOperationBudgets, Option<Weak<Shared>>)>,
 }
 
@@ -491,6 +500,7 @@ impl HostOperationSupervisor {
                     authenticated_service_span,
                     state: HostOperationState::Running,
                     next_owner: 0,
+                    action_subscribers: None,
                     rosters: BTreeMap::from([(0, (budgets, None))]),
                 })),
             }),
@@ -893,6 +903,8 @@ impl HostOperationSupervisor {
                 required: required_work_units,
                 state: HostOperationState::Running,
                 startup_cancellation: None,
+                guard_live: true,
+                action_subscribers: None,
             },
         );
         Ok(HostOperationGuard {
@@ -944,9 +956,12 @@ impl HostOperationSupervisor {
             .get_mut(&self.shared.budget_owner)
             .ok_or(HostSupervisionError::Unavailable)?
             .0 = budgets;
+        let published = action_loan::publish_outer(&self.shared, &outer)
+            .and(action_loan::publish_all(&self.shared, &state));
         drop(outer);
         drop(state);
-        self.notify_owners()?;
+        let notified = self.notify_owners();
+        published.and(notified)?;
         Ok(revision)
     }
 
@@ -1015,9 +1030,12 @@ impl HostOperationSupervisor {
         outer.allowance = state.cap_allowance;
         outer.revision = state.cap_revision;
         outer.state = state.cap_state;
+        let published = action_loan::publish_outer(&self.shared, &outer)
+            .and(action_loan::publish_all(&self.shared, &state));
         drop(outer);
         drop(state);
-        self.notify_owners()?;
+        let notified = self.notify_owners();
+        published.and(notified)?;
         Ok(revision)
     }
 
@@ -1234,10 +1252,12 @@ impl HostOperationSupervisor {
             };
         }
         state.cap_state = outer.state;
+        let published = action_loan::publish_outer(&self.shared, &outer)
+            .and(action_loan::publish_all(&self.shared, &state));
         drop(outer);
         drop(state);
-        self.notify_owners()?;
-        Ok(())
+        let notified = self.notify_owners();
+        published.and(notified)
     }
 
     /// Completes the outer owner, giving elapsed time precedence over completion.
@@ -1259,10 +1279,12 @@ impl HostOperationSupervisor {
         }
         state.cap_state = HostOperationState::Completed;
         outer.state = state.cap_state;
+        let published = action_loan::publish_outer(&self.shared, &outer)
+            .and(action_loan::publish_all(&self.shared, &state));
         drop(outer);
         drop(state);
-        self.notify_owners()?;
-        Ok(())
+        let notified = self.notify_owners();
+        published.and(notified)
     }
 
     fn operation_status(&self, id: u64) -> Result<HostOperationStatus, HostSupervisionError> {
@@ -1283,6 +1305,8 @@ impl HostOperationSupervisor {
         state.cap_state = outer.state;
         let status = evaluate_operation(state, id, self.elapsed())?;
         outer.state = state.cap_state;
+        action_loan::publish_outer(&self.shared, &outer)?;
+        action_loan::publish_operation(&self.shared, state, id)?;
         Ok(status)
     }
 
@@ -1299,6 +1323,8 @@ impl HostOperationSupervisor {
         state.cap_state = outer.state;
         let decision = evaluate_operation_decision(state, id, self.elapsed())?;
         outer.state = state.cap_state;
+        action_loan::publish_outer(&self.shared, &outer)?;
+        action_loan::publish_operation(&self.shared, state, id)?;
         Ok(decision)
     }
 }
@@ -1600,7 +1626,7 @@ impl HostOperationGuard {
             operation.completed = completed_work_units;
             operation.last_progress = elapsed;
         }
-        Ok(())
+        action_loan::publish_operation(&self.supervisor.shared, &state, self.id)
     }
 
     /// Completes required work after reevaluating all live deadlines.
@@ -1622,6 +1648,9 @@ impl HostOperationGuard {
         if let Some(cancellation) = &operation.startup_cancellation {
             cancellation.check()?;
         }
+        if operation.action_subscribers.is_some() {
+            return Err(HostSupervisionError::BorrowedOperation);
+        }
         operation.completed = operation.required;
         operation.state = HostOperationState::Completed;
         // The descriptor closes before its loan; no completed operation keeps
@@ -1638,9 +1667,45 @@ impl HostOperationGuard {
 
 impl Drop for HostOperationGuard {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.supervisor.lock() {
-            state.operations.remove(&self.id);
-        }
+        let retired = if let Ok(mut state) = self.supervisor.lock() {
+            if let Some(operation) = state.operations.get_mut(&self.id) {
+                operation.guard_live = false;
+                if operation.action_subscribers.is_some() {
+                    if let Ok(outer) = self.supervisor.lock_outer() {
+                        state.cap_revision = outer.revision;
+                        state.cap_allowance = outer.allowance;
+                        state.cap_state = outer.state;
+                        let disposition = state.operations.get(&self.id).map(|operation| {
+                            decide_operation(&state, operation, self.supervisor.elapsed()).state
+                        });
+                        if let Some(operation) = state.operations.get_mut(&self.id) {
+                            operation.state = match disposition {
+                                Some(HostOperationState::Running) | None => {
+                                    HostOperationState::Canceled
+                                }
+                                Some(state) => state,
+                            };
+                        }
+                        let _ = action_loan::publish_outer(&self.supervisor.shared, &outer);
+                        let _ = action_loan::publish_operation(
+                            &self.supervisor.shared,
+                            &state,
+                            self.id,
+                        );
+                    } else {
+                        action_loan::invalidate_operation(&state, self.id);
+                    }
+                    None
+                } else {
+                    state.operations.remove(&self.id)
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        drop(retired);
     }
 }
 

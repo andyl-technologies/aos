@@ -186,6 +186,8 @@ fn twelve_record_split_peak_matches_actual_leaf_and_root_requests() {
                     required: 1,
                     state: HostOperationState::Running,
                     startup_cancellation: None,
+                    guard_live: true,
+                    action_subscribers: None,
                 },
             );
         }

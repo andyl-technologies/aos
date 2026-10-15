@@ -2,10 +2,10 @@
 //!
 //! ```text
 //! .qemu.crucible.standing-constructor[96]
-//! CRUCSTC1 | BE32(schema1,length96)
-//! BE32(Setup5,Purpose7,outer7,control8,tag21,frame61,roles5,roles6)
-//! BE32(publication3,cancellation4,workspace5,Purpose1624,live608,payload600)
-//! BE32(roster11,reserved0) | BE64(requested_owner_bytes,mapping608)
+//! CRUCSTC2 | BE32(schema2,length96)
+//! BE32(Setup5,Purpose8,outer8,control8,tag21,frame61,roles5,roles6)
+//! BE32(publication3,cancellation4,workspace5,Purpose2520,live1504,payload1496)
+//! BE32(roster11,reserved0) | BE64(requested_owner_bytes,mapping1504)
 //! ```
 //!
 //! The optional userfaultfd section is decoded by [`userfaultfd`]. Both requests
@@ -315,11 +315,11 @@ fn read_at(
 fn decode_declaration(
     bytes: &[u8; DECLARATION_BYTES],
 ) -> Result<StandingConstructorDeclaration, NativeConstructorReadError> {
-    if bytes[..8] != *b"CRUCSTC1" {
+    if bytes[..8] != *b"CRUCSTC2" {
         return Err(NativeConstructorReadError::Invalid("declaration magic"));
     }
     for (index, expected) in [
-        1, 96, 5, 7, 7, 8, 21, 61, 5, 6, 3, 4, 5, 1624, 608, 600, 11, 0,
+        2, 96, 5, 8, 8, 8, 21, 61, 5, 6, 3, 4, 5, 2520, 1504, 1496, 11, 0,
     ]
     .into_iter()
     .enumerate()
@@ -347,7 +347,7 @@ fn decode_declaration(
             .map_err(|_| NativeConstructorReadError::Invalid("mapping request"))?,
     );
     if owner_bytes == 0
-        || mapping_bytes != 608
+        || mapping_bytes != 1504
         || usize::try_from(owner_bytes).is_err()
         || owner_bytes.checked_add(mapping_bytes).is_none()
     {
@@ -387,9 +387,9 @@ mod tests {
 
     fn declaration() -> [u8; 96] {
         let mut bytes = [0; 96];
-        bytes[..8].copy_from_slice(b"CRUCSTC1");
+        bytes[..8].copy_from_slice(b"CRUCSTC2");
         for (index, value) in [
-            1_u32, 96, 5, 7, 7, 8, 21, 61, 5, 6, 3, 4, 5, 1624, 608, 600, 11, 0,
+            2_u32, 96, 5, 8, 8, 8, 21, 61, 5, 6, 3, 4, 5, 2520, 1504, 1496, 11, 0,
         ]
         .into_iter()
         .enumerate()
@@ -398,7 +398,7 @@ mod tests {
         }
         // A numerical artifact fixture is not an actual native owner-size proof.
         bytes[80..88].copy_from_slice(&4096_u64.to_be_bytes());
-        bytes[88..96].copy_from_slice(&608_u64.to_be_bytes());
+        bytes[88..96].copy_from_slice(&1504_u64.to_be_bytes());
         bytes
     }
 
@@ -450,7 +450,7 @@ mod tests {
             read_declaration(&source, &original)
                 .unwrap()
                 .requested_bytes(),
-            (4096, 608)
+            (4096, 1504)
         );
 
         let mut overflow = elf(1);
@@ -469,7 +469,7 @@ mod tests {
             decode_declaration(&declaration())
                 .unwrap()
                 .requested_bytes(),
-            (4096, 608)
+            (4096, 1504)
         );
     }
 
@@ -569,7 +569,7 @@ mod tests {
 
         let expected: [u8; 32] = Sha256::digest(&current).into();
         assert_eq!(artifact.qemu_sha256, expected);
-        assert_eq!(artifact.requested_bytes(), Some(4096 + 608));
+        assert_eq!(artifact.requested_bytes(), Some(4096 + 1504));
         assert_eq!(
             artifact
                 .userfaultfd()
@@ -600,7 +600,7 @@ mod tests {
             source.write_all(&bytes).unwrap();
             let artifact = authenticate_final_elf(&source, &original).unwrap();
 
-            assert_eq!(artifact.requested_bytes(), Some(4096 + 608));
+            assert_eq!(artifact.requested_bytes(), Some(4096 + 1504));
             assert!(artifact.userfaultfd().is_err());
         }
         source.set_len(0).unwrap();

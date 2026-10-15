@@ -124,6 +124,11 @@ in rec {
       inherit pkgs lib mkSystem;
       attrPath = "checks.crucible.ram.normalService";
     };
+    normalServiceFullMeasurements = import ./_ram-normal-full-measurements.nix {
+      inherit pkgs;
+      operationalFlight = ram.normalService;
+      attrPath = "checks.crucible.ram.normalServiceFullMeasurements";
+    };
     livePaging = import ./ram-live-paging.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.ram.livePaging";
@@ -3047,6 +3052,9 @@ in rec {
       qemuTestRunner = pkgs.qemu;
     };
     qemuConfiguredTestInventory = import ./phase7-qemu-configured-test-inventory.nix {
+      inherit pkgs;
+    };
+    qemuStartupSourceUnit = import ./phase7-qemu-startup-source-unit.nix {
       inherit pkgs;
     };
     adversarialExampleVerify = import ./phase7-adversarial-example-verify.nix {

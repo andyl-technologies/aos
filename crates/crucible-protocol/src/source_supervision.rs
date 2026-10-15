@@ -1,17 +1,17 @@
 //! Defines the standing Source's public live-supervision byte protocol.
 //!
 //! ```text
-//! live[608]: BE-u64 atomic sequence | payload[600]
-//! sealed[624]: file device(u64) | inode(u64) | extent=608(u64) | initial payload
+//! live[1504]: BE-u64 atomic sequence | payload[1496]
+//! sealed[1520]: file device(u64) | inode(u64) | extent=1504(u64) | initial payload
 //! payload header[232]:
-//!   0 magic CRUCSRV1; 8 schema1(u32); 12 length600(u32)
+//!   0 magic CRUCSRV2; 8 schema2(u32); 12 length1496(u32)
 //!  16 supervisor cap[32]; 48 immutable monotonic origin(u64)
 //!  56 outer revision(u64); 64 allowance tag; 65 sticky state; 66 zero[6]
 //!  72 account generation(u64); 80 Source generation(u64)
 //!  88 containing cap[32]; 120 Source reservation[32]; 152 roster revision(u64)
 //! 160 cancellation device(u64); 168 inode(u64); 176 event-ID+1(u64)
 //! 184 original-start allowance ns(u64); 192 roster bytes(u32); 196 zero[4]
-//! 200 artifact SHA-256[32]; 232 single schema11 nanosecond roster; zero padding
+//! 200 artifact SHA-256[32]; 232 single schema11 nanosecond roster; zero padding to600; action[896]
 //! ```
 //!
 //! Every live word, including payload, uses atomic u64 accesses. The host
@@ -27,11 +27,11 @@
 use crate::ram_control::{RAM_CONTROL_BUDGET_COUNT, RamControlBudget, decode_ram_control_budgets};
 
 /// Fixed live file extent, including its atomic sequence word.
-pub const SOURCE_SUPERVISION_BYTES: usize = 608;
+pub const SOURCE_SUPERVISION_BYTES: usize = 1504;
 /// Fixed atomic payload extent with canonical zero padding.
-pub const SOURCE_SUPERVISION_PAYLOAD_BYTES: usize = 600;
+pub const SOURCE_SUPERVISION_PAYLOAD_BYTES: usize = 1496;
 /// Fixed sealed file corroboration and initial-observation extent.
-pub const SOURCE_SUPERVISION_CORROBORATION_BYTES: usize = 624;
+pub const SOURCE_SUPERVISION_CORROBORATION_BYTES: usize = 1520;
 
 /// Pure observations decoded from a standing Source publication.
 ///
@@ -62,6 +62,8 @@ pub struct SourceSupervisionObservation {
     pub artifact: [u8; 32],
     /// One canonical exact-nanosecond class roster.
     pub budgets: [RamControlBudget; RAM_CONTROL_BUDGET_COUNT],
+    /// Actual action observations, with dirty/partial cohorts explicitly marked.
+    pub action: Option<crate::boundary_action::ActionObservation>,
 }
 
 /// Rejects malformed standing observations before native ownership checks.
@@ -79,9 +81,9 @@ pub fn decode_source_supervision_payload(
 ) -> Result<SourceSupervisionObservation, SourceSupervisionDecodeError> {
     let invalid = SourceSupervisionDecodeError;
     if bytes.len() != SOURCE_SUPERVISION_PAYLOAD_BYTES
-        || bytes[..8] != *b"CRUCSRV1"
-        || u32_at(bytes, 8) != Some(1)
-        || u32_at(bytes, 12) != Some(600)
+        || bytes[..8] != *b"CRUCSRV2"
+        || u32_at(bytes, 8) != Some(2)
+        || u32_at(bytes, 12) != Some(1496)
         || bytes[64] > 1
         || bytes[65] > 3
         || bytes[66..72] != [0; 6]
@@ -113,7 +115,7 @@ pub fn decode_source_supervision_payload(
         .filter(|end| *end <= bytes.len())
         .ok_or(invalid)?;
     let budgets = decode_ram_control_budgets(&bytes[232..end]).map_err(|_| invalid)?;
-    if bytes[end..].iter().any(|byte| *byte != 0) {
+    if end > 600 || bytes[end..600].iter().any(|byte| *byte != 0) {
         return Err(invalid);
     }
     let mut cap = [0; 32];
@@ -122,6 +124,22 @@ pub fn decode_source_supervision_payload(
     reservation.copy_from_slice(&bytes[120..152]);
     let mut artifact = [0; 32];
     artifact.copy_from_slice(&bytes[200..232]);
+    let action = if bytes[600..].iter().all(|byte| *byte == 0) {
+        None
+    } else {
+        Some(
+            crate::boundary_action::ActionObservation::decode(&bytes[600..])
+                .map_err(|_| invalid)?,
+        )
+    };
+    if action.is_some_and(|action| {
+        action.binding.cap != cap
+            || action.binding.reservation != reservation
+            || action.binding.account_generation != account_generation
+            || action.binding.process_generation != process_generation
+    }) {
+        return Err(invalid);
+    }
     Ok(SourceSupervisionObservation {
         cap,
         reservation,
@@ -134,6 +152,7 @@ pub fn decode_source_supervision_payload(
         state: bytes[65],
         roster_revision: u64_at(bytes, 152).ok_or(invalid)?,
         budgets,
+        action,
         cancellation: [
             u64_at(bytes, 160).ok_or(invalid)?,
             u64_at(bytes, 168).ok_or(invalid)?,

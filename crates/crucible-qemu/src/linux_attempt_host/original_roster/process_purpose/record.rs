@@ -1,7 +1,7 @@
 //! Encodes one issued incarnation subdivision for its once-owned native carrier.
 //!
 //! ```text
-//! CRUCPUR7 | BE schema 7 | BE length 1624
+//! CRUCPUR8 | BE schema 8 | BE length 2520
 //! 16..144: original/family/outside/lineage/effective-limit u64 fields
 //! 144..184: final plugin SHA-256, ELF machine, seven allocation roles
 //! 184..248: containing Preparation cap, operation, start, end, poll
@@ -12,10 +12,10 @@
 //! 552..568: child UID/GID assigned by this same configured contract
 //! 568..744: actual paid RAM endpoint identity, session and complete target
 //! 744..1000: fixed reservations retained by the same actual Main issuer
-//! 1000..1624: retained standing publication file and initial observation
+//! 1000..2520: retained standing publication file and initial observation
 //!
 //! The private prebirth allocation prefix occupies 568 bytes. Only sealing
-//! after actual socketpair birth can emit the complete 1624-byte carrier.
+//! after actual socketpair birth can emit the complete 2520-byte carrier.
 //! ```
 //!
 //! Only a checked borrow from the retained slot can invoke the encoder. The
@@ -94,9 +94,9 @@ impl IssuedInstalledProcessMaterial<'_> {
         }
 
         let mut bytes = [0; ISSUED_PROCESS_ALLOCATION_PREFIX_BYTES];
-        bytes[..8].copy_from_slice(b"CRUCPUR7");
-        bytes[8..12].copy_from_slice(&7_u32.to_be_bytes());
-        bytes[12..16].copy_from_slice(&1624_u32.to_be_bytes());
+        bytes[..8].copy_from_slice(b"CRUCPUR8");
+        bytes[8..12].copy_from_slice(&8_u32.to_be_bytes());
+        bytes[12..16].copy_from_slice(&2520_u32.to_be_bytes());
         for (offset, value) in [
             (16, self.original_total_metadata_bytes),
             (24, self.effective_process_bytes),
@@ -132,7 +132,7 @@ impl IssuedInstalledProcessMaterial<'_> {
         }
         bytes[144..176].copy_from_slice(self.controls.plugin_sha256());
         bytes[176..180].copy_from_slice(&u32::from(self.controls.machine()).to_be_bytes());
-        bytes[180..184].copy_from_slice(&7_u32.to_be_bytes());
+        bytes[180..184].copy_from_slice(&8_u32.to_be_bytes());
         // Serialize the actual containing original without changing its class
         // or substituting the later, separately entered Setup operation.
         bytes[184..248].copy_from_slice(&self.containing_original_basis[16..80]);

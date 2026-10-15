@@ -22,6 +22,9 @@ use super::{
 mod family;
 use family::InstalledProcessFamily;
 
+mod setup_mapping;
+pub(crate) use setup_mapping::SetupMappingRequest;
+
 mod incarnation;
 use incarnation::IncarnationJournal;
 
@@ -152,13 +155,17 @@ impl InstalledProcessState {
             .as_ref()
             .ok_or(InstalledProcessPurposeError::Identity)?;
         let local = self.envelope.maximum_resident_bytes();
-        source
-            .guest_ram_bytes
-            .checked_add(controls.requested_bytes())
-            .and_then(|bytes| bytes.checked_add(controls.native_preinit_requested_bytes().ok()?))
-            .and_then(|bytes| bytes.checked_add(crucible_protocol::DEVICE_DIGEST_WORKSPACE_BYTES))
-            .filter(|bytes| *bytes <= local)
-            .ok_or(InstalledProcessPurposeError::Capacity)?;
+        let minimum = source.setup_mapping.minimum_resident_bytes(
+            source.guest_ram_bytes,
+            controls.requested_bytes(),
+            controls
+                .native_preinit_requested_bytes()
+                .map_err(|_| InstalledProcessPurposeError::Identity)?,
+            crucible_protocol::DEVICE_DIGEST_WORKSPACE_BYTES,
+        )?;
+        if minimum > local {
+            return Err(InstalledProcessPurposeError::Capacity);
+        }
         family_extent_from_local_cap(local, self.process_bytes)?;
         Ok((
             self.envelope.maximum_vcpus(),
@@ -482,6 +489,7 @@ impl NativeAccountAttempt {
         plugin: &Path,
         controls: InstallerControlIdentity,
         guest_ram_bytes: u64,
+        setup_mapping: SetupMappingRequest,
         process_generation: u64,
     ) -> Result<InstalledProcessPurposeLoan, InstalledProcessPurposeError> {
         let roster = self
@@ -539,12 +547,17 @@ impl NativeAccountAttempt {
             .ok_or(InstalledProcessPurposeError::Capacity)?;
         let native_incarnation_bytes =
             purpose.process_bytes / u64::from(super::MAX_ORIGINAL_NATIVE_NODE_GENERATIONS);
-        guest_ram_bytes
-            .checked_add(controls.requested_bytes())
-            .and_then(|bytes| bytes.checked_add(controls.native_preinit_requested_bytes().ok()?))
-            .and_then(|bytes| bytes.checked_add(crucible_protocol::DEVICE_DIGEST_WORKSPACE_BYTES))
-            .filter(|bytes| guest_ram_bytes != 0 && *bytes <= native_incarnation_bytes)
-            .ok_or(InstalledProcessPurposeError::Capacity)?;
+        let minimum = setup_mapping.minimum_resident_bytes(
+            guest_ram_bytes,
+            controls.requested_bytes(),
+            controls
+                .native_preinit_requested_bytes()
+                .map_err(|_| InstalledProcessPurposeError::Identity)?,
+            crucible_protocol::DEVICE_DIGEST_WORKSPACE_BYTES,
+        )?;
+        if guest_ram_bytes == 0 || minimum > native_incarnation_bytes {
+            return Err(InstalledProcessPurposeError::Capacity);
+        }
         live_guest_ram_bytes
             .checked_add(
                 controls
@@ -564,6 +577,8 @@ impl NativeAccountAttempt {
                         .checked_mul(u64::from(next_loans))?,
                 )
             })
+            .and_then(|bytes| bytes.checked_add(purpose.journal.live_setup_mapping_bytes().ok()?))
+            .and_then(|bytes| bytes.checked_add(setup_mapping.backing_bytes()))
             .filter(|bytes| guest_ram_bytes != 0 && *bytes <= purpose.process_bytes)
             .ok_or(InstalledProcessPurposeError::Capacity)?;
         let startup = startup_and_transport_extent()?;
@@ -577,7 +592,7 @@ impl NativeAccountAttempt {
         let subdivision_index =
             purpose
                 .journal
-                .issue(process_generation, guest_ram_bytes, startup)?;
+                .issue(process_generation, guest_ram_bytes, startup, setup_mapping)?;
         let loan = InstalledProcessPurposeLoan {
             roster: Weak::clone(&self.roster),
             index: self.index,
@@ -716,6 +731,43 @@ impl InstalledProcessPurposeLoan {
                 .ok_or(InstalledProcessPurposeError::Identity)?,
             controls,
         }))
+    }
+
+    /// Corroborates actual setup-role geometry under this retained incarnation.
+    ///
+    /// # Errors
+    /// Refuses missing, retired or foreign custody, changed role extent or page
+    /// geometry. Caller must also retain its genuine operation/admission check.
+    fn verify_setup_mapping_extent(
+        &self,
+        region_bytes: u64,
+    ) -> Result<(), InstalledProcessPurposeError> {
+        let roster = self
+            .roster
+            .upgrade()
+            .ok_or(InstalledProcessPurposeError::Identity)?;
+        let state = roster
+            .lock()
+            .map_err(|_| InstalledProcessPurposeError::Identity)?;
+        let allocation = state
+            .slots
+            .get(self.index)
+            .filter(|slot| slot.active == Some(self.generation))
+            .and_then(|slot| slot.installed_process.as_ref())
+            .and_then(|purpose| {
+                purpose
+                    .journal
+                    .incarnations
+                    .get(usize::from(self.subdivision_index))
+            })
+            .and_then(Option::as_ref)
+            .filter(|allocation| {
+                allocation.process_generation == self.process_generation
+                    && !allocation.borrower_closed
+                    && !allocation.physical_retired
+            })
+            .ok_or(InstalledProcessPurposeError::Identity)?;
+        allocation.setup_mapping.verify_extent(region_bytes)
     }
 
     /// Checks the actual family, selected artifact and still-live original.
@@ -860,6 +912,7 @@ impl OriginalNativeNodeBinding {
         admission: &InstalledSourceAdmission,
         standing: &crate::spawn::source_supervision::OriginalSourceSupervision,
         process_generation: u64,
+        setup_region_bytes: u64,
         ram_endpoint: Option<&crate::spawn::ram_endpoint_binding::IssuedRamControlEndpoint<'_>>,
         borrow: impl FnOnce(&[u8; record::ISSUED_PROCESS_RECORD_BYTES]) -> T,
     ) -> Result<T, crate::spawn::source_supervision::SourceEmissionError> {
@@ -878,6 +931,10 @@ impl OriginalNativeNodeBinding {
                 process_generation,
             )?;
         }
+        self.installed_process
+            .as_ref()
+            .ok_or(InstalledProcessPurposeError::Identity)?
+            .verify_setup_mapping_extent(setup_region_bytes)?;
         let record = self
             .issued_process_record
             .as_ref()
@@ -1015,17 +1072,18 @@ mod lifecycle_tests {
     #[test]
     fn retained_source_reuses_two_concurrent_shares_for_three_successors()
     -> Result<(), InstalledProcessPurposeError> {
+        let mapping = SetupMappingRequest::for_config(crucible_shmem::RegionConfig::new(1, 64))?;
         let mut journal = IncarnationJournal::new(18);
-        let source = journal.issue(1, 8, 9)?;
+        let source = journal.issue(1, 8, 9, mapping)?;
         assert_eq!(source, 0);
 
         for generation in 2..=4 {
-            let successor = journal.issue(generation, 8, 9)?;
+            let successor = journal.issue(generation, 8, 9, mapping)?;
             assert_eq!(successor, 1);
             assert_eq!(journal.loans, 2);
             assert_eq!(journal.live_guest_ram_bytes, 16);
             assert_eq!(journal.pending_startup_bytes, 0);
-            assert!(journal.issue(generation + 1, 8, 9).is_err());
+            assert!(journal.issue(generation + 1, 8, 9, mapping).is_err());
 
             journal.incarnations[successor]
                 .as_mut()
@@ -1042,10 +1100,11 @@ mod lifecycle_tests {
             journal.close_incarnation(successor)?;
             assert_eq!(journal.loans, 1);
             assert_eq!(journal.live_guest_ram_bytes, 8);
+            assert_eq!(journal.live_setup_mapping_bytes()?, mapping.backing_bytes());
             assert_eq!(journal.pending_startup_bytes, 9);
             assert_eq!(journal.assigned_startup_bytes, 9);
             assert_eq!(journal.incarnations[source].unwrap().process_generation, 1);
-            assert!(journal.issue(generation, 8, 9).is_err());
+            assert!(journal.issue(generation, 8, 9, mapping).is_err());
         }
         Ok(())
     }
@@ -1054,8 +1113,10 @@ mod lifecycle_tests {
     fn neither_facade_drop_nor_physical_retirement_alone_releases_a_share()
     -> Result<(), InstalledProcessPurposeError> {
         for (borrower_closed, physical_retired) in [(false, false), (true, false), (false, true)] {
+            let mapping =
+                SetupMappingRequest::for_config(crucible_shmem::RegionConfig::new(1, 64))?;
             let mut journal = IncarnationJournal::new(18);
-            let index = journal.issue(7, 8, 9)?;
+            let index = journal.issue(7, 8, 9, mapping)?;
             let allocation = journal.incarnations[index].as_mut().unwrap();
             allocation.borrower_closed = borrower_closed;
             allocation.physical_retired = physical_retired;
@@ -1063,6 +1124,7 @@ mod lifecycle_tests {
             journal.close_incarnation(index)?;
             assert_eq!(journal.loans, 1);
             assert_eq!(journal.live_guest_ram_bytes, 8);
+            assert_eq!(journal.live_setup_mapping_bytes()?, mapping.backing_bytes());
             assert_eq!(journal.pending_startup_bytes, 9);
             assert_eq!(journal.assigned_startup_bytes, 9);
             assert!(journal.incarnations[index].is_some());
@@ -1073,8 +1135,9 @@ mod lifecycle_tests {
     #[test]
     fn failed_retirement_accounting_keeps_the_entire_assigned_share()
     -> Result<(), InstalledProcessPurposeError> {
+        let mapping = SetupMappingRequest::for_config(crucible_shmem::RegionConfig::new(1, 64))?;
         let mut journal = IncarnationJournal::new(18);
-        let index = journal.issue(7, 8, 9)?;
+        let index = journal.issue(7, 8, 9, mapping)?;
         let allocation = journal.incarnations[index].as_mut().unwrap();
         allocation.borrower_closed = true;
         allocation.physical_retired = true;
@@ -1083,6 +1146,7 @@ mod lifecycle_tests {
         assert!(journal.close_incarnation(index).is_err());
         assert_eq!(journal.loans, 1);
         assert_eq!(journal.live_guest_ram_bytes, 8);
+        assert_eq!(journal.live_setup_mapping_bytes()?, mapping.backing_bytes());
         assert_eq!(journal.assigned_startup_bytes, 9);
         assert!(journal.incarnations[index].is_some());
         Ok(())

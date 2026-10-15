@@ -262,3 +262,99 @@ fn concurrent_pause_waits_for_the_claimed_operation_boundary() {
     drop(owner);
     assert_eq!(budget.used_bytes(), 0);
 }
+
+fn read_message(
+    work: &mut FaultWork,
+    count: usize,
+    kind: u8,
+    flags: u64,
+) -> io::Result<Option<FaultEvent>> {
+    work.receipt.read_with(|message| {
+        message[0] = kind;
+        message[8..16].copy_from_slice(&flags.to_ne_bytes());
+        message[16..24].copy_from_slice(&0x9000_u64.to_ne_bytes());
+        message[24..28].copy_from_slice(&17_u32.to_ne_bytes());
+        Ok(count)
+    })
+}
+
+#[test]
+fn consumed_malformed_bytes_block_replacement_and_retain_prepaid_body() {
+    for (count, kind, flags) in [(7, 0x12, 0), (32, 0x13, 0), (32, 0x12, 4)] {
+        let (budget, owner, operations) = fixture();
+        let extent = budget.used_bytes();
+        owner.request_pause(23).unwrap();
+        {
+            let mut work = owner.try_lock().unwrap();
+            assert!(read_message(&mut work, count, kind, flags).is_err());
+            assert!(work.receipt.retained());
+            assert!(work.unresolved());
+            assert!(
+                work.receipt
+                    .read_with(|_| panic!("consumed bytes must not be overwritten"))
+                    .is_err()
+            );
+            assert!(owner.acknowledge_pause_at_boundary(&work).is_err());
+            assert!(work.settled().is_err());
+        }
+
+        assert_eq!(operations.counts.admitted.load(Ordering::SeqCst), 0);
+        drop(owner);
+        assert_eq!(budget.used_bytes(), extent);
+    }
+}
+
+#[test]
+fn valid_kernel_receipt_follows_same_operation_completion_disposition() {
+    for refuse_completion in [false, true] {
+        let (budget, owner, mut operations) = fixture();
+        operations.refuse_completion = refuse_completion;
+        let extent = budget.used_bytes();
+        {
+            let mut work = owner.try_lock().unwrap();
+            let event = read_message(&mut work, 32, 0x12, 0).unwrap().unwrap();
+            work.claim(event, &operations).unwrap();
+            work.request().unwrap().2[9] = 41;
+
+            assert_eq!(work.settled().is_err(), refuse_completion);
+            assert_eq!(work.receipt.retained(), refuse_completion);
+            assert_eq!(work.unresolved(), refuse_completion);
+            assert_eq!(work.scratch[9], if refuse_completion { 41 } else { 0 });
+        }
+
+        drop(owner);
+        assert_eq!(
+            budget.used_bytes(),
+            if refuse_completion { extent } else { 0 }
+        );
+        assert_eq!(
+            operations.counts.completed.load(Ordering::SeqCst),
+            usize::from(!refuse_completion)
+        );
+        assert_eq!(
+            operations.counts.dropped.load(Ordering::SeqCst),
+            usize::from(!refuse_completion)
+        );
+    }
+}
+
+#[test]
+fn interrupted_or_empty_kernel_read_never_admits_an_operation() {
+    let (_, owner, operations) = fixture();
+    let mut work = owner.try_lock().unwrap();
+    for errno in [libc::EAGAIN, libc::EINTR] {
+        assert!(
+            work.receipt
+                .read_with(|_| Err(io::Error::from_raw_os_error(errno)))
+                .unwrap()
+                .is_none()
+        );
+        assert!(!work.receipt.retained());
+        assert!(!work.unresolved());
+    }
+
+    assert!(work.receipt.read_with(|_| Ok(0)).is_err());
+    assert!(!work.receipt.retained());
+    assert!(work.claimed.is_none());
+    assert_eq!(operations.counts.admitted.load(Ordering::SeqCst), 0);
+}

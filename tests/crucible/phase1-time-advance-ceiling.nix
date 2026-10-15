@@ -63,7 +63,7 @@
         needle = "pub const NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET";
       }
       {
-        label = "128-byte node slot size";
+        label = "512-byte node slot size";
         needle = "pub const NODE_SLOT_SIZE";
       }
       {

@@ -29,8 +29,8 @@ use crucible_protocol::{
 use crucible_protocol::{ReceivedSetup, recv_setup_with_descriptors};
 #[cfg(unix)]
 use crucible_shmem::{
-    MappedSetupRegion, RegionLayout, RegionSetupValidationError, SetupRegionMapError,
-    ValidatedSetupRegion, mmap_setup_region,
+    MappedSetupView, RegionLayout, RegionSetupValidationError, SetupRegionMapError,
+    ValidatedSetupRegion,
 };
 
 #[cfg(unix)]
@@ -41,6 +41,8 @@ use crate::{
 
 #[cfg(unix)]
 mod boot_barrier;
+#[cfg(unix)]
+mod mapping;
 #[cfg(unix)]
 pub use boot_barrier::PluginSetupBootBarrierError;
 #[cfg(unix)]
@@ -192,7 +194,7 @@ impl RegisteredWakeFd {
 /// keep it for the plugin process lifetime before any callback touches shmem.
 #[cfg(unix)]
 pub struct PluginSetupCompletion {
-    mapped_region: MappedSetupRegion,
+    mapped_region: mapping::SetupMappingView,
     validated_region: ValidatedSetupRegion,
     validated_layout: RegionLayout,
     shared_memory_device: u64,
@@ -219,29 +221,72 @@ impl PluginSetupCompletion {
         self.startup_source = Some(source);
     }
 
-    /// Admits the three configured callback runtime allocations before their birth.
+    /// Admits the complete configured callback allocation roster before its birth.
     ///
     /// # Errors
     /// Refuses missing original custody or the actual native containing-purpose
     /// reservation. The same Source retains any failed debit until retirement.
     pub(crate) fn reserve_runtime_allocations(
         &mut self,
-        layouts: [std::alloc::Layout; 3],
+        requests: &crate::runtime::prebirth::RuntimeAllocationRequests,
     ) -> Result<(), crate::StartupSourceError> {
         self.startup_source
             .as_mut()
             .ok_or(crate::StartupSourceError::Ownership {
                 reason: "initial installer Source is absent",
             })?
-            .reserve_runtime_allocations(layouts)
+            .reserve_runtime_allocations(requests)
     }
 
-    /// Rechecks the admitted runtime allocations under the same installing original.
+    /// Borrows the authentic before-birth command storage claim.
     ///
     /// # Errors
-    /// Preserves missing Source or the native purpose/original refusal.
+    /// Refuses missing installing Source, claim or containing Runtime custody.
+    pub(crate) fn command_storage_material(
+        &self,
+    ) -> Result<
+        (
+            u64,
+            *mut crate::startup_source::runtime_purpose::RuntimePurpose,
+            *mut crate::startup_source::runtime_purpose::CommandClaim,
+        ),
+        crate::StartupSourceError,
+    > {
+        self.original_startup()?.command_storage_material()
+    }
+
+    /// Borrows the genuine distinct before-birth callback-child claim.
+    ///
+    /// # Errors
+    /// Refuses missing installing Source, child claim or containing custody.
+    pub(crate) fn callback_child_material(
+        &self,
+    ) -> Result<
+        (
+            u64,
+            *mut crate::startup_source::runtime_purpose::RuntimePurpose,
+            *mut crate::startup_source::runtime_purpose::CallbackChildClaim,
+        ),
+        crate::StartupSourceError,
+    > {
+        self.original_startup()?.callback_child_material()
+    }
+
+    /// Rechecks retained runtime allocation custody without temporal admission.
+    ///
+    /// # Errors
+    /// Preserves missing Source or the native retained-accounting refusal.
     pub(crate) fn check_runtime_allocations(&self) -> Result<(), crate::StartupSourceError> {
         self.original_startup()?.check_runtime_allocations()
+    }
+
+    /// Checks installing admission and preissued runtime storage before effects.
+    ///
+    /// # Errors
+    /// Preserves the genuine installing Source refusal or retained-accounting
+    /// mismatch. The lifetime accounting check does not supply operation time.
+    pub(crate) fn check_runtime_installation(&self) -> Result<(), crate::StartupSourceError> {
+        self.original_startup()?.check_runtime_installation()
     }
 
     /// Runs one actor registration/birth exchange under the same installing Source.
@@ -393,13 +438,72 @@ impl PluginSetupCompletion {
 
     /// Returns the mapped shared-memory region.
     #[must_use]
-    pub const fn mapped_region(&self) -> &MappedSetupRegion {
-        &self.mapped_region
+    pub fn mapped_region(&self) -> &MappedSetupView {
+        self.mapped_region.view()
     }
 
-    /// Returns mutable access to the owned mapping for disjoint typed views.
-    pub(crate) fn mapped_region_mut(&mut self) -> &mut MappedSetupRegion {
-        &mut self.mapped_region
+    /// Returns mutable wire access for disjoint typed views.
+    pub(crate) fn mapped_region_mut(&mut self) -> &mut MappedSetupView {
+        self.mapped_region.view_mut()
+    }
+
+    /// Borrows disjoint wire access and the same authentic installer for postcuts.
+    ///
+    /// # Errors
+    /// Refuses missing installing Source. This split creates no owner, clock or
+    /// permission; the lender's original checks remain independent of the view.
+    #[cfg(not(test))]
+    pub(crate) fn mapped_region_with_installer(
+        &mut self,
+    ) -> Result<
+        (
+            &mut MappedSetupView,
+            &crate::startup_source::InstallerStartupSource,
+        ),
+        crate::StartupSourceError,
+    > {
+        let source = self
+            .startup_source
+            .as_ref()
+            .ok_or(crate::StartupSourceError::Ownership {
+                reason: "initial installer Source is absent",
+            })?;
+        Ok((self.mapped_region.view_mut(), source))
+    }
+
+    // Source's authentic creator already fixes permanent DONTFORK. Parent
+    // barrier release corroborates that same owner without undoing disposition.
+    pub(crate) fn exclude_setup_mapping_from_child(&self) -> Result<(), i32> {
+        self.mapped_region
+            .exclude_from_child(self.startup_source.as_ref())
+    }
+
+    pub(crate) fn restore_setup_mapping_parent(&self) -> Result<(), i32> {
+        self.mapped_region
+            .restore_parent(self.startup_source.as_ref())
+    }
+
+    /// Moves genuine creation custody after completion enrollment on pinned Runtime.
+    ///
+    /// # Safety
+    /// Runtime and its canonical destination must remain pinned through Native return.
+    ///
+    /// # Errors
+    /// Preserves the authentic installing or transfer refusal and every born field.
+    pub(crate) unsafe fn transfer_setup_mapping(&self) -> Result<(), crate::StartupSourceError> {
+        // SAFETY: the only production caller retains the pinned Runtime before
+        // completion enrollment and cannot move it after this canonical transfer.
+        unsafe { self.original_startup()?.transfer_setup_mapping() }
+    }
+
+    // Called only by the exclusive retained Runtime destructor after the actual
+    // callback/worker last-use guards have cleared. Native checks its own debts.
+    pub(crate) unsafe fn return_setup_mapping(&self) -> bool {
+        match self.startup_source.as_ref() {
+            // SAFETY: the caller's final-use contract is forwarded unchanged.
+            Some(source) => unsafe { source.return_setup_mapping() },
+            None => self.mapped_region.is_owned_fixture(),
+        }
     }
 
     /// Returns the validated setup region header token.
@@ -680,25 +784,25 @@ pub(crate) fn prepare_setup_completion_borrowing_plan<W: Write>(
             .map_err(|source| PluginSetupError::StartupSource { source })?;
     }
 
-    // The mmap lifetime is carried by `MappedSetupRegion`; no raw pointer to
-    // shmem escapes setup without that owner and the validated-region token.
-    let mapped_region = match mmap_setup_region(shmem_fd.as_fd(), region_len) {
+    // Production consumes the genuine Source-created VMA. The wire view owns
+    // no mapping and the original Source remains retained across every refusal.
+    let mapped_region = match mapping::prepare(original, shmem_fd.as_fd(), region_len) {
         Ok(mapped_region) => mapped_region,
         Err(source) => {
             send_setup_failure_ack(writer, PluginSetupFailureStage::MapRegion)?;
-            return Err(PluginSetupError::MapRegion { source });
+            return Err(source);
         }
     };
 
-    let header_snapshot = PluginShmemOrdering::setup_header_snapshot(&mapped_region);
-    let validated_region = match PluginShmemOrdering::validate_setup_header(&mapped_region) {
+    let header_snapshot = PluginShmemOrdering::setup_header_snapshot(mapped_region.view());
+    let validated_region = match PluginShmemOrdering::validate_setup_header(mapped_region.view()) {
         Ok(validated_region) => validated_region,
         Err(source) => {
             send_setup_failure_ack(writer, PluginSetupFailureStage::ValidateRegion)?;
             return Err(PluginSetupError::ValidateRegion { source });
         }
     };
-    let validated_layout = match mapped_region.layout() {
+    let validated_layout = match mapped_region.view().layout() {
         Ok(layout) => layout,
         Err(source) => {
             send_setup_failure_ack(writer, PluginSetupFailureStage::ValidateRegion)?;
@@ -1128,8 +1232,8 @@ pub(crate) fn test_plugin_setup_plan_fd() -> OwnedFd {
     )
     .unwrap();
     let mut purpose = [0; crucible_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES];
-    purpose[..8].copy_from_slice(b"CRUCPUR7");
-    purpose[8..12].copy_from_slice(&7_u32.to_be_bytes());
+    purpose[..8].copy_from_slice(b"CRUCPUR8");
+    purpose[8..12].copy_from_slice(&8_u32.to_be_bytes());
     purpose[12..16].copy_from_slice(
         &(crucible_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES as u32).to_be_bytes(),
     );
@@ -1188,13 +1292,13 @@ pub(crate) fn test_plugin_setup_plan_fd() -> OwnedFd {
     }
     purpose[744..1000].copy_from_slice(&family);
     // Fixed syntax-only standing observation; no kernel owner is issued.
-    for (offset, value) in [(1000, 1_u64), (1008, 29), (1016, 608)] {
+    for (offset, value) in [(1000, 1_u64), (1008, 29), (1016, 1504)] {
         purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
     }
-    let mut standing = [0_u8; 600];
-    standing[..8].copy_from_slice(b"CRUCSRV1");
-    standing[8..12].copy_from_slice(&1_u32.to_be_bytes());
-    standing[12..16].copy_from_slice(&600_u32.to_be_bytes());
+    let mut standing = [0_u8; 1496];
+    standing[..8].copy_from_slice(b"CRUCSRV2");
+    standing[8..12].copy_from_slice(&2_u32.to_be_bytes());
+    standing[12..16].copy_from_slice(&1496_u32.to_be_bytes());
     standing[16..48].copy_from_slice(&purpose[184..216]);
     standing[88..120].copy_from_slice(&purpose[184..216]);
     standing[120..152].copy_from_slice(&purpose[816..848]);
@@ -1214,7 +1318,7 @@ pub(crate) fn test_plugin_setup_plan_fd() -> OwnedFd {
         standing[offset + 9] = 1;
         standing[offset + 10..offset + 18].copy_from_slice(&500_000_u64.to_be_bytes());
     }
-    purpose[1024..1624].copy_from_slice(&standing);
+    purpose[1024..2520].copy_from_slice(&standing);
 
     let bytes = PluginSetupPlan::new(AppRandomBranchPlan::default(), selectable)
         .with_startup_operation(startup)

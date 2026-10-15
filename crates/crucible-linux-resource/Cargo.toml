@@ -13,6 +13,7 @@ test-support = ["dep:crucible-ram"]
 workspace = true
 
 [dependencies]
+crucible-protocol = { path = "../crucible-protocol" }
 blake3 = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

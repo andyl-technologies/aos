@@ -168,11 +168,7 @@ impl<'runtime> ParentParkDrainOwner<'runtime> {
                 .mapping_excluded_from_child
                 .load(std::sync::atomic::Ordering::Acquire)
             {
-                state
-                    .setup
-                    .mapped_region()
-                    .restore_hot_fork_parent_inheritance()
-                    .map_err(super::hot_fork_mapping_disposition_status)?;
+                state.setup.restore_setup_mapping_parent()?;
                 state
                     .mapping_excluded_from_child
                     .store(false, std::sync::atomic::Ordering::Release);

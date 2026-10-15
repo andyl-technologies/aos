@@ -263,7 +263,7 @@ impl FaultService {
                 if self.capture_work.acknowledge_pause_at_boundary(&work)? {
                     break;
                 }
-                let Some(fault) = self.registration.read_fault().map_err(RamError::from)? else {
+                let Some(fault) = work.read_fault(&self.registration)? else {
                     break;
                 };
                 work.claim(fault, self.operations.as_ref())?;

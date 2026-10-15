@@ -12,6 +12,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::PAGE_BYTES;
 
+mod receipt;
+pub(crate) use receipt::FaultReceipt;
+
 const API: u64 = 0xaa;
 const FEATURE_WP: u64 = 1;
 const FEATURE_THREAD_ID: u64 = 1 << 8;
@@ -289,57 +292,21 @@ impl Registration {
     /// # Errors
     /// Returns malformed/unknown events or descriptor errors. Unexpected events
     /// fail the operational service rather than reinterpret missing RAM bytes.
-    pub(crate) fn read_fault(&self) -> io::Result<Option<FaultEvent>> {
-        let mut message = [0_u8; 32];
-        // SAFETY: message is a writable buffer of the Linux uffd_msg ABI size.
-        let count = unsafe {
-            libc::read(
-                self.checked_descriptor()?,
-                message.as_mut_ptr().cast(),
-                message.len(),
-            )
-        };
-        if count < 0 {
-            let error = io::Error::last_os_error();
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-            ) {
-                return Ok(None);
+    pub(crate) fn read_fault(&self, receipt: &mut FaultReceipt) -> io::Result<Option<FaultEvent>> {
+        receipt.read_with(|message| {
+            // SAFETY: the retained receipt lends a writable Linux uffd_msg buffer.
+            let count = unsafe {
+                libc::read(
+                    self.checked_descriptor()?,
+                    message.as_mut_ptr().cast(),
+                    message.len(),
+                )
+            };
+            if count < 0 {
+                return Err(io::Error::last_os_error());
             }
-            return Err(error);
-        }
-        if count != message.len() as isize || message[0] != 0x12 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unexpected userfaultfd event",
-            ));
-        }
-        let flags = u64::from_ne_bytes(
-            message[8..16]
-                .try_into()
-                .map_err(|_| io::Error::other("invalid fixed-size fault flags"))?,
-        );
-        if flags & !3 != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "unsupported fault flags",
-            ));
-        }
-        Ok(Some(FaultEvent {
-            address: u64::from_ne_bytes(
-                message[16..24]
-                    .try_into()
-                    .map_err(|_| io::Error::other("invalid fixed-size fault address"))?,
-            ),
-            thread_id: u32::from_ne_bytes(
-                message[24..28]
-                    .try_into()
-                    .map_err(|_| io::Error::other("invalid fixed-size fault thread"))?,
-            ),
-            write: flags & 1 != 0,
-            write_protected: flags & 2 != 0,
-        }))
+            usize::try_from(count).map_err(|_| io::Error::other("fault read count overflow"))
+        })
     }
 
     /// Installs verified bytes without waking the guest accessor.

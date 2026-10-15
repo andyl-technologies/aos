@@ -18,6 +18,24 @@ pub enum LiveVcpuTimeCallbackError {
         /// Typed bridge failure.
         source: crate::FaultCommandBridgeError,
     },
+    /// The actual Source-owned callback-child allocation or disposition refused.
+    #[error("callback-child physical custody failed: {source}")]
+    CallbackChildStorage {
+        /// Original typed Native admission or physical-lifetime failure.
+        source: crate::StartupSourceError,
+    },
+    /// Source refused the actual completed-child registration owner.
+    #[error("callback registration owner failed: {source}")]
+    CallbackRegistrationOwner {
+        /// Authentic owner construction, nominal custody or physical-return error.
+        source: crate::StartupSourceError,
+    },
+    /// Complete physical group custody, receipt or return refused.
+    #[error("callback registration group failed: {source}")]
+    CallbackRegistrationGroup {
+        /// Actual Source SDK or physical group failure.
+        source: crate::StartupSourceError,
+    },
     /// Required live fault-command callback state was not installed.
     #[error("live QEMU fault command callback state is unavailable")]
     FaultCommandStateUnavailable,
@@ -114,6 +132,13 @@ pub enum LiveVcpuTimeCallbackError {
         /// Native capability or registration failure.
         #[source]
         message: crate::ram_error::RamError,
+    },
+    /// The actual control child could not enroll or verify its physical custody.
+    #[error("control component registration failed: {source}")]
+    ControlComponent {
+        /// Original Native or containing Runtime failure.
+        #[source]
+        source: crate::ram_error::RamError,
     },
     /// Capturing a boundary fingerprint sample failed.
     #[error("{boundary} fingerprint sampling failed: {message}")]
@@ -283,7 +308,7 @@ pub enum LiveVcpuTimeCallbackError {
         /// Authoritative QEMU observation.
         observed_icount: u64,
     },
-    /// Another live callback state pointer is already globally visible.
+    /// The local once-only callback registration guard was already claimed.
     #[error("live production callback state is already published")]
     CallbackStateAlreadyPublished,
     /// The callback observed a shutdown action without a matching acquire proof.

@@ -2,11 +2,11 @@
 
 use super::*;
 
-fn payload() -> [u8; 600] {
-    let mut bytes = [0; 600];
-    bytes[..8].copy_from_slice(b"CRUCSRV1");
-    bytes[8..12].copy_from_slice(&1_u32.to_be_bytes());
-    bytes[12..16].copy_from_slice(&600_u32.to_be_bytes());
+fn payload() -> [u8; 1496] {
+    let mut bytes = [0; 1496];
+    bytes[..8].copy_from_slice(b"CRUCSRV2");
+    bytes[8..12].copy_from_slice(&2_u32.to_be_bytes());
+    bytes[12..16].copy_from_slice(&1496_u32.to_be_bytes());
     bytes[16..48].fill(7);
     bytes[88..120].fill(7);
     bytes[120..152].fill(11);

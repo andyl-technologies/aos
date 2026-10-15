@@ -1635,8 +1635,8 @@ pub(crate) fn prepare_test_preexec_setup(
         original_total_metadata_bytes: 4096,
     })?;
     let mut purpose = [0_u8; crucible_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES];
-    purpose[..8].copy_from_slice(b"CRUCPUR7");
-    purpose[8..12].copy_from_slice(&7_u32.to_be_bytes());
+    purpose[..8].copy_from_slice(b"CRUCPUR8");
+    purpose[8..12].copy_from_slice(&8_u32.to_be_bytes());
     purpose[12..16].copy_from_slice(
         &(crucible_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES as u32).to_be_bytes(),
     );
@@ -1694,13 +1694,13 @@ pub(crate) fn prepare_test_preexec_setup(
     }
     purpose[744..1000].copy_from_slice(&family);
     // Fixed syntax-only standing observation; no kernel owner is issued.
-    for (offset, value) in [(1000, 1_u64), (1008, 29), (1016, 608)] {
+    for (offset, value) in [(1000, 1_u64), (1008, 29), (1016, 1504)] {
         purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
     }
-    let mut standing = [0_u8; 600];
-    standing[..8].copy_from_slice(b"CRUCSRV1");
-    standing[8..12].copy_from_slice(&1_u32.to_be_bytes());
-    standing[12..16].copy_from_slice(&600_u32.to_be_bytes());
+    let mut standing = [0_u8; 1496];
+    standing[..8].copy_from_slice(b"CRUCSRV2");
+    standing[8..12].copy_from_slice(&2_u32.to_be_bytes());
+    standing[12..16].copy_from_slice(&1496_u32.to_be_bytes());
     standing[16..48].copy_from_slice(&purpose[184..216]);
     standing[88..120].copy_from_slice(&purpose[184..216]);
     standing[120..152].copy_from_slice(&purpose[816..848]);
@@ -1720,7 +1720,7 @@ pub(crate) fn prepare_test_preexec_setup(
         standing[offset + 9] = 1;
         standing[offset + 10..offset + 18].copy_from_slice(&500_000_u64.to_be_bytes());
     }
-    purpose[1024..1624].copy_from_slice(&standing);
+    purpose[1024..2520].copy_from_slice(&standing);
 
     let selectable = crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::new(
         crucible_protocol::selectable_catalog_plan::SelectablePlanLimits::new(1, 1, 1)?,

@@ -26,10 +26,17 @@ impl QemuLiveHostIoRuntime {
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let fingerprint_acknowledgement = fingerprint_request.wrapping_add(1);
         check_paired_capture(deadline)?;
+        let loan = self.lend_control_action(deadline, Some(fingerprint_request))?;
         let request = self.signal_fingerprint_capture(deadline, fingerprint_request)?;
+        super::action::validate_control_action_request(request, loan)?;
         let mut last_observed = None;
         let mut attempt = 0_u64;
         loop {
+            // The collector publishes an actual terminal cancellation row even
+            // when the caller's next original check will refuse continuation.
+            if loan.is_some() {
+                self.refresh_control_action()?;
+            }
             if deadline
                 .remaining("publish current execution fingerprint")?
                 .is_none()
@@ -48,11 +55,15 @@ impl QemuLiveHostIoRuntime {
             check_paired_capture(deadline)?;
             let snapshot = self
                 .region
+                .as_ref()
+                .ok_or_else(region_missing)?
                 .node_slot(self.vm_slot)
                 .map_err(map_slot_error)?
                 .snapshot();
             let fingerprint_ack = self
                 .region
+                .as_ref()
+                .ok_or_else(region_missing)?
                 .fingerprint_sample(self.vm_slot)
                 .map_err(map_slot_error)?
                 .capture_request_generation();
@@ -67,10 +78,14 @@ impl QemuLiveHostIoRuntime {
                     // The digest worker publishes the sample before its release
                     // acknowledgement. This acquire load therefore makes the
                     // exact sample visible through the independent mapping.
-                    deadline.complete("publish current execution fingerprint")?;
-                    return Ok(());
+                    if loan.is_none() || self.finish_control_action()? {
+                        deadline.complete("publish current execution fingerprint")?;
+                        return Ok(());
+                    }
                 }
-                if fingerprint_ack != fingerprint_request {
+                if fingerprint_ack != fingerprint_request
+                    && fingerprint_ack != fingerprint_acknowledgement
+                {
                     return Err(QemuAsyncDriverRuntimeError::new(
                         "publish current execution fingerprint",
                         format!(

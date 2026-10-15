@@ -41,11 +41,26 @@ impl PlacementFixture {
         raw_icount: u64,
         hook: &mut dyn FnMut(usize),
     ) -> Result<Box<LiveVcpuTimeCallbackState>, LiveVcpuTimeCallbackError> {
+        self.construct_with_allocation(
+            vcpu_count,
+            raw_icount,
+            || Ok(Box::<LiveVcpuTimeCallbackState>::new_uninit()),
+            hook,
+        )
+    }
+
+    fn construct_with_allocation<S: super::super::initialization::CallbackAllocation>(
+        &mut self,
+        vcpu_count: u32,
+        raw_icount: u64,
+        allocation: impl FnOnce() -> Result<S, LiveVcpuTimeCallbackError>,
+        hook: &mut dyn FnMut(usize),
+    ) -> Result<S::Initialized, LiveVcpuTimeCallbackError> {
         let commands = self
             .commands
             .take()
             .unwrap_or_else(|| panic!("fixture constructor runs only once"));
-        LiveVcpuTimeCallbackState::new_boxed_with_hook(
+        LiveVcpuTimeCallbackState::initialize_with_allocation(
             test_icount_raw,
             test_force_vcpu_exit,
             QemuIdleWakeWait::test_stub(test_wait_idle_wake),
@@ -63,6 +78,7 @@ impl PlacementFixture {
             &self.slot,
             Arc::clone(&self.quiescence),
             Arc::clone(&self.teardown),
+            allocation,
             hook,
         )
     }
@@ -166,5 +182,139 @@ fn final_placement_pointer_survives_attachment_pin_and_worker_cleanup() {
     // the retained quiescence owner can lose its last external reference.
     assert_eq!(Arc::strong_count(&worker_quiescence), 1);
     assert_eq!(fingerprint_slot.snapshot(), None);
+    fixture.assert_custody_closed();
+}
+
+#[test]
+fn borrowed_child_uses_the_existing_backing_and_requires_separate_typed_drop() {
+    let mut fixture = PlacementFixture::new();
+    let mut backing = Box::<LiveVcpuTimeCallbackState>::new_uninit();
+    let address = backing.as_mut_ptr();
+    let mut initialized = 0;
+    let span = backing.as_mut();
+    let child = fixture
+        .construct_with_allocation(1, 0, || Ok(span), &mut |count| initialized = count)
+        .unwrap_or_else(|error| panic!("borrowed fixture span should construct: {error}"));
+
+    assert_eq!(initialized, 40);
+    assert_eq!(std::ptr::from_ref(child), address.cast_const());
+    assert_eq!(Arc::strong_count(&fixture.quiescence), 2);
+    // SAFETY: all fields are initialized and no callback escaped this fixture.
+    // This drops T only; the original Box<MaybeUninit<T>> still owns raw backing.
+    unsafe {
+        std::ptr::drop_in_place(child);
+    }
+    assert_eq!(backing.as_mut_ptr(), address);
+    fixture.assert_custody_closed();
+}
+
+#[test]
+fn borrowed_child_unwind_rolls_back_each_prefix_without_freeing_external_storage() {
+    for boundary in 1..=40 {
+        let mut fixture = PlacementFixture::new();
+        let mut backing = Box::<LiveVcpuTimeCallbackState>::new_uninit();
+        let address = backing.as_mut_ptr();
+        let mut reached = 0;
+        let span = backing.as_mut();
+        let unwind = catch_unwind(AssertUnwindSafe(|| {
+            fixture.construct_with_allocation(1, 0, || Ok(span), &mut |initialized| {
+                reached = initialized;
+                if initialized == boundary {
+                    panic!("borrowed prefix control");
+                }
+            })
+        }));
+
+        assert!(unwind.is_err(), "boundary {boundary} must unwind");
+        drop(unwind);
+        assert_eq!(reached, boundary);
+        assert_eq!(backing.as_mut_ptr(), address);
+        fixture.assert_custody_closed();
+    }
+}
+
+/// Observes the actual final prefix drop without owning or freeing its backing.
+struct ObservedSpan<'a> {
+    span: &'a mut std::mem::MaybeUninit<LiveVcpuTimeCallbackState>,
+    returned: &'a std::cell::Cell<usize>,
+    quiescence: &'a std::sync::Weak<LiveCallbackQuiescence>,
+    teardown: &'a std::sync::Weak<LiveRuntimeTeardownRouter>,
+}
+
+// SAFETY: the component fixture uniquely retains this exact initialized span;
+// conversion keeps its borrow, and the observer never frees the external Box.
+unsafe impl<'a> super::super::initialization::CallbackAllocation for ObservedSpan<'a> {
+    type Initialized = &'a mut LiveVcpuTimeCallbackState;
+
+    fn pointer(&mut self) -> *mut LiveVcpuTimeCallbackState {
+        self.span.as_mut_ptr()
+    }
+
+    unsafe fn initialized(self) -> Self::Initialized {
+        // SAFETY: the common guard has recorded all forty complete fields.
+        unsafe { self.span.assume_init_mut() }
+    }
+
+    fn prefix_rollback_completed(&mut self) {
+        // Both first fields are actual strong owners. The last reverse drop is
+        // quiescence: observing its release distinguishes an early false ACK.
+        assert_eq!(self.quiescence.strong_count(), 1);
+        assert_eq!(self.teardown.strong_count(), 1);
+        self.returned.set(self.returned.get() + 1);
+    }
+}
+
+#[test]
+fn prefix_return_marker_follows_the_last_actual_field_drop() {
+    for boundary in [17, 40] {
+        let mut fixture = PlacementFixture::new();
+        let mut backing = Box::<LiveVcpuTimeCallbackState>::new_uninit();
+        let returned = std::cell::Cell::new(0);
+        let quiescence = Arc::downgrade(&fixture.quiescence);
+        let teardown = Arc::downgrade(&fixture.teardown);
+        let span = ObservedSpan {
+            span: backing.as_mut(),
+            returned: &returned,
+            quiescence: &quiescence,
+            teardown: &teardown,
+        };
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            fixture.construct_with_allocation(1, 0, || Ok(span), &mut |initialized| {
+                if initialized == boundary {
+                    panic!("actual prefix return control");
+                }
+            })
+        }));
+
+        assert!(result.is_err());
+        drop(result);
+        assert_eq!(returned.get(), 1);
+        fixture.assert_custody_closed();
+    }
+}
+
+#[test]
+fn complete_child_does_not_acknowledge_partial_prefix_return() {
+    let mut fixture = PlacementFixture::new();
+    let mut backing = Box::<LiveVcpuTimeCallbackState>::new_uninit();
+    let returned = std::cell::Cell::new(0);
+    let quiescence = Arc::downgrade(&fixture.quiescence);
+    let teardown = Arc::downgrade(&fixture.teardown);
+    let span = ObservedSpan {
+        span: backing.as_mut(),
+        returned: &returned,
+        quiescence: &quiescence,
+        teardown: &teardown,
+    };
+    let mut initialized = 0;
+    let child = fixture
+        .construct_with_allocation(1, 0, || Ok(span), &mut |count| initialized = count)
+        .unwrap_or_else(|error| panic!("complete component child should build: {error}"));
+
+    assert_eq!(initialized, 40);
+    assert_eq!(returned.get(), 0);
+    // SAFETY: the complete body has no escaped callbacks; this drops T only.
+    unsafe { std::ptr::drop_in_place(child) };
+    assert_eq!(returned.get(), 0);
     fixture.assert_custody_closed();
 }

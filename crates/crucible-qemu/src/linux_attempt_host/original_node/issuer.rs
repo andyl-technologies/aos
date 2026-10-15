@@ -175,6 +175,10 @@ impl InstalledNodeLaunchIssuer {
                 .ok_or(FreshLaunchCause::Purpose(
                     super::InstalledProcessPurposeError::Capacity,
                 ))?;
+            let setup_mapping = super::super::original_roster::SetupMappingRequest::for_config(
+                config.original_setup_region_config(),
+            )
+            .map_err(FreshLaunchCause::Purpose)?;
             let purpose = attempt
                 .prepare_installed_process_purpose(
                     original,
@@ -183,6 +187,7 @@ impl InstalledNodeLaunchIssuer {
                     config.original_plugin_path(),
                     controls,
                     guest_bytes,
+                    setup_mapping,
                     config.original_process_generation(),
                 )
                 .map_err(FreshLaunchCause::Purpose)?;

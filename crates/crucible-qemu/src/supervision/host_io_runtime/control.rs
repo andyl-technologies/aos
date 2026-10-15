@@ -63,10 +63,14 @@ impl QemuLiveHostIoRuntime {
     ) -> Result<PendingControlBoundary, QemuAsyncDriverRuntimeError> {
         let fault_command_frontier = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .fault_command_write_index(self.vm_slot)
             .map_err(map_slot_error)?;
         let generation = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .request_control_boundary(fault_command_frontier, fingerprint_capture_request)
@@ -94,10 +98,14 @@ impl QemuLiveHostIoRuntime {
         deadline.remaining("publish paired fingerprint control")?;
         let fault_command_frontier = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .fault_command_write_index(self.vm_slot)
             .map_err(map_slot_error)?;
         let generation = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .request_control_boundary(fault_command_frontier, Some(fingerprint_capture_request))
@@ -133,9 +141,15 @@ impl QemuLiveHostIoRuntime {
     pub(super) fn abort_checkpoint_pause_with_wake(
         &mut self,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        self.region.header().clear_pause();
+        self.region
+            .as_ref()
+            .ok_or_else(region_missing)?
+            .header()
+            .clear_pause();
         let futex_result = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)
             .and_then(|slot| {
@@ -197,6 +211,8 @@ impl QemuLiveHostIoRuntime {
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let snapshot = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .snapshot();
@@ -237,6 +253,8 @@ impl QemuLiveHostIoRuntime {
                     QemuAsyncDriverRuntimeError::new("clamp completed quantum", source.to_string())
                 })?;
         self.region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
@@ -301,6 +319,8 @@ impl QemuLiveHostIoRuntime {
             self.service_console_output()?;
             let observed = self
                 .region
+                .as_ref()
+                .ok_or_else(region_missing)?
                 .node_slot(self.vm_slot)
                 .map_err(map_slot_error)?
                 .snapshot();
@@ -375,7 +395,12 @@ impl QemuLiveHostIoRuntime {
             deadline.wait(self.poll_interval, "acknowledge completed-quantum clamp")?;
         }
 
-        let fault_command_indices = match self.region.fault_command_transport_mut(self.vm_slot) {
+        let fault_command_indices = match self
+            .region
+            .as_mut()
+            .ok_or_else(region_missing)?
+            .fault_command_transport_mut(self.vm_slot)
+        {
             Ok(transport) => {
                 format!(
                     "{}/{}",

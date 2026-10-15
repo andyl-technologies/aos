@@ -3,13 +3,14 @@
 //! The containing authenticated purpose performs admission before calling this
 //! journal. Numerical accounting here cannot construct a process or loan.
 
-use super::InstalledProcessPurposeError;
+use super::{InstalledProcessPurposeError, SetupMappingRequest};
 
 #[derive(Clone, Copy)]
 pub(super) struct IncarnationAllocation {
     pub(super) process_generation: u64,
     pub(super) guest_ram_bytes: u64,
     pub(super) startup_bytes: u64,
+    pub(super) setup_mapping: SetupMappingRequest,
     pub(super) borrower_closed: bool,
     pub(super) physical_retired: bool,
 }
@@ -50,6 +51,7 @@ impl IncarnationJournal {
         process_generation: u64,
         guest_ram_bytes: u64,
         startup_bytes: u64,
+        setup_mapping: SetupMappingRequest,
     ) -> Result<usize, InstalledProcessPurposeError> {
         if process_generation <= self.last_process_generation {
             return Err(InstalledProcessPurposeError::Identity);
@@ -81,6 +83,7 @@ impl IncarnationJournal {
             process_generation,
             guest_ram_bytes,
             startup_bytes,
+            setup_mapping,
             borrower_closed: false,
             physical_retired: false,
         });
@@ -90,6 +93,17 @@ impl IncarnationJournal {
         self.assigned_startup_bytes = assigned;
         self.last_process_generation = process_generation;
         Ok(index)
+    }
+
+    pub(super) fn live_setup_mapping_bytes(&self) -> Result<u64, InstalledProcessPurposeError> {
+        self.incarnations
+            .iter()
+            .flatten()
+            .try_fold(0_u64, |total, allocation| {
+                total
+                    .checked_add(allocation.setup_mapping.backing_bytes())
+                    .ok_or(InstalledProcessPurposeError::Capacity)
+            })
     }
 
     pub(super) fn close_incarnation(

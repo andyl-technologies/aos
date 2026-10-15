@@ -101,6 +101,8 @@ impl HostSupervisionBootstrap {
                 required: 1,
                 state: HostOperationState::Running,
                 startup_cancellation: None,
+                guard_live: true,
+                action_subscribers: None,
             },
         })
     }
@@ -157,6 +159,8 @@ impl HostSupervisionBootstrap {
                 required: 1,
                 state: HostOperationState::Running,
                 startup_cancellation: None,
+                guard_live: true,
+                action_subscribers: None,
             },
         };
         bootstrap.wait_slice()?;
@@ -255,6 +259,7 @@ impl HostSupervisionBootstrap {
                     authenticated_service_span: None,
                     state: self.state.cap_state,
                     next_owner: 0,
+                    action_subscribers: None,
                     rosters: BTreeMap::from([(0, (self.state.budgets, None))]),
                 })),
                 state: Mutex::new(self.state),
