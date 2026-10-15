@@ -83,8 +83,8 @@
         needle = "pub struct LintedHostAssertionOracle";
       }
       {
-        label = "host assertion predicate shared reference";
-        needle = "fn leaf_is_true(&self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool";
+        label = "host assertion predicate answers from accumulator state";
+        needle = "fn leaf_is_true(&self, leaf: NamedLeaf<'_>, state: &Self::State) -> bool;";
       }
       {
         label = "sealed host assertion oracle module";
@@ -96,7 +96,7 @@
       }
       {
         label = "closure predicate blanket impl";
-        needle = "F: for<'log, 'leaf> Fn(ObservedState<'log>, ConditionLeaf<'leaf>) -> bool";
+        needle = "F: for<'leaf, 'batch> Fn(NamedLeaf<'leaf>, &ObservedBatch<'batch>) -> bool";
       }
       {
         label = "host harness lint error";
@@ -122,7 +122,7 @@
       }
       {
         label = "host harness lint acceptance test";
-        needle = "host_assertion_harness_lint_accepts_observed_state_only_predicates";
+        needle = "host_assertion_harness_lint_accepts_pure_accumulator_predicates";
       }
       {
         label = "stable merge order assertion";

@@ -5,10 +5,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    AssertionDef, AssertionId, AssertionRunVerdict, BlackBoxHostOracle, CodePoint, ConditionLeaf,
-    Decision, DeliveryOrderDecision, EventKey, FramePredicate, HostAssertionEvaluator,
-    HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionPredicate, Icount,
-    LintedHostAssertionOracle, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, ObservedState,
+    AssertionDef, AssertionId, AssertionRunVerdict, BlackBoxHostOracle, CodePoint, Decision,
+    DeliveryOrderDecision, EventKey, FramePredicate, HostAssertionEvaluator, HostAssertionOutcome,
+    HostAssertionOutcomeKind, HostAssertionPredicate, Icount, LintedHostAssertionOracle, NamedLeaf,
+    NamedPredicateError, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, ObservedBatch,
     Predicate, Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint,
     RegexProgram, SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload, SchedulerNodeId,
     SchedulingNodeKind, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
@@ -479,21 +479,37 @@ fn host_named_predicates_receive_read_only_observed_state() {
         })),
     );
     let mut evaluator = HostAssertionEvaluator::new(&properties);
-    let mut oracle =
-        linted_host_oracle(
-            |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-                ConditionLeaf::Named { name, nodes } => {
-                    name == "saw-ordering" && nodes.is_empty() && !state.ordering_facts().is_empty()
-                }
-                ConditionLeaf::GuestMarker { .. } => false,
-            },
-        );
+    let mut oracle = linted_host_oracle(SawOrdering);
 
     let outcomes = evaluator.observe_prefix(&prefix, &mut oracle);
 
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].assertion.name, "named-ordering");
     assert_eq!(outcomes[0].kind, HostAssertionOutcomeKind::Satisfied);
+}
+
+/// Latches once any cross-node ordering fact has been folded.
+struct SawOrdering;
+
+impl HostAssertionPredicate for SawOrdering {
+    type State = bool;
+
+    fn initial(&self, _leaf: NamedLeaf<'_>) -> bool {
+        false
+    }
+
+    fn step(
+        &self,
+        _leaf: NamedLeaf<'_>,
+        saw: &bool,
+        batch: &ObservedBatch<'_>,
+    ) -> Result<bool, NamedPredicateError> {
+        Ok(*saw || !batch.ordering_facts().is_empty())
+    }
+
+    fn leaf_is_true(&self, leaf: NamedLeaf<'_>, saw: &bool) -> bool {
+        leaf.name() == "saw-ordering" && leaf.nodes().is_empty() && *saw
+    }
 }
 
 #[test]

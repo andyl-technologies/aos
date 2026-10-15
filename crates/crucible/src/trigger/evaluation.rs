@@ -36,13 +36,13 @@ impl HostConditionLeafKey {
 }
 
 impl<O> condition_evaluator_sealed::Sealed for HostConditionEvaluation<'_, '_, O> where
-    O: HostAssertionOracle + ?Sized
+    O: NamedLeafResolver + ?Sized
 {
 }
 
 impl<O> ConditionEvaluator for HostConditionEvaluation<'_, '_, O>
 where
-    O: HostAssertionOracle + ?Sized,
+    O: NamedLeafResolver + ?Sized,
 {
     fn evaluation_point(&self) -> EventEvaluationPoint {
         self.observed.point()
@@ -57,7 +57,14 @@ where
         if let Some(value) = self.leaf_cache.get(&key).copied() {
             return value;
         }
-        let value = HostAssertionOracle::leaf_is_true(self.oracle, self.observed, leaf);
+        let value = match leaf {
+            ConditionLeaf::Named { name, nodes } => {
+                self.oracle.named_leaf_is_true(NamedLeaf::new(name, nodes))
+            }
+            // Guest-marker conditions are matched against observed markers
+            // and never ask an oracle.
+            ConditionLeaf::GuestMarker { .. } => false,
+        };
         self.leaf_cache.insert(key, value);
         value
     }
@@ -134,7 +141,7 @@ pub(super) fn host_condition_is_true<O>(
     scheduler_quiescence: Option<&SchedulerQuiescence>,
 ) -> bool
 where
-    O: HostAssertionOracle + ?Sized,
+    O: NamedLeafResolver + ?Sized,
 {
     let mut leaf_cache = HostConditionEvaluationCache::new();
     host_condition_is_true_with_cache(
@@ -164,7 +171,7 @@ pub(super) fn host_condition_is_true_with_cache<O>(
     scheduler_quiescence: Option<&SchedulerQuiescence>,
 ) -> bool
 where
-    O: HostAssertionOracle + ?Sized,
+    O: NamedLeafResolver + ?Sized,
 {
     let mut evaluator = HostConditionEvaluation {
         observed: prefix.observed_state(),
@@ -222,7 +229,7 @@ pub(super) fn host_condition_distance_to_satisfaction<O>(
     scheduler_quiescence: Option<&SchedulerQuiescence>,
 ) -> u128
 where
-    O: HostAssertionOracle + ?Sized,
+    O: NamedLeafResolver + ?Sized,
 {
     let mut local_once_latches = once_latches.to_vec();
     let mut evaluator = HostConditionEvaluation {

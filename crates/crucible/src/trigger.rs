@@ -50,6 +50,9 @@ mod event_graph;
 mod evidence;
 mod guest_assertion_declarations;
 mod guest_assertion_observation;
+mod named_predicates;
+#[cfg(test)]
+mod named_predicates_tests;
 #[cfg(test)]
 mod native_console_tests;
 mod observability;
@@ -70,6 +73,14 @@ pub use event_graph::*;
 use evidence::*;
 use guest_assertion_declarations::*;
 use guest_assertion_observation::*;
+pub use named_predicates::{
+    MAX_NAMED_PREDICATE_STATE_BYTES, NamedLeaf, NamedPredicateError, NamedPredicateFailure,
+    ObservedBatch,
+};
+use named_predicates::{
+    NamedLeafResolver, NamedLeafStates, NamedPredicateFold, NamedPredicateFoldWire,
+    property_predicates,
+};
 pub use observability::*;
 pub use streaming_check::{AssertionLogCheck, RecordedLogShape};
 

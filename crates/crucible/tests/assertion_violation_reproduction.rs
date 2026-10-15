@@ -8,12 +8,12 @@ use std::collections::BTreeMap;
 
 use crucible::{
     AssertionDef, AssertionId, AssertionQuantifierKind, AssertionViolationArtifactReplay,
-    AssertionViolationReplayError, ConditionLeaf, Decision, EventDiagnosticPayload, EventLevel,
-    EventSource, HostAssertionPredicate, Icount, LintedHostAssertionOracle, MarkerId, NodeId,
-    NodeTemplate, ObservableEvent, ObservedState, Plan, Predicate, Properties, Property,
-    ReadyPoint, RecordedAssertionLog, ReproductionArtifact, RngDecision, RngStreamId,
-    ScenarioDefForm, Schedule, SchedulerEventLogPayload, Seed, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode, check_assertion_violation_reproduction,
+    AssertionViolationReplayError, Decision, EventDiagnosticPayload, EventLevel, EventSource,
+    HostAssertionPredicate, Icount, LintedHostAssertionOracle, MarkerId, NamedLeaf,
+    NamedPredicateError, NodeId, NodeTemplate, ObservableEvent, ObservedBatch, Plan, Predicate,
+    Properties, Property, ReadyPoint, RecordedAssertionLog, ReproductionArtifact, RngDecision,
+    RngStreamId, ScenarioDefForm, Schedule, SchedulerEventLogPayload, Seed, VirtualTime,
+    VmArchitecture, WhiteBoxPolicy, World, WorldNode, check_assertion_violation_reproduction,
     check_assertion_violation_reproduction_with_oracles,
 };
 
@@ -382,26 +382,8 @@ fn violation_reproduction_with_oracles_preserves_recorded_offsets() {
     let artifact = reproduction_artifact(&world, &properties, 0xa15e_0015);
     let recorded = recorded_log(marker_id("forbidden"));
     let replayed = artifact_replay(&artifact, recorded.clone());
-    let mut expected_oracle = linted_host_oracle(
-        |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-            ConditionLeaf::Named { name, nodes } => {
-                name == "prefix-before-violation-offset"
-                    && nodes.is_empty()
-                    && state.event_log_offset().events < 3
-            }
-            ConditionLeaf::GuestMarker { .. } => false,
-        },
-    );
-    let mut reproduced_oracle = linted_host_oracle(
-        |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-            ConditionLeaf::Named { name, nodes } => {
-                name == "prefix-before-violation-offset"
-                    && nodes.is_empty()
-                    && state.event_log_offset().events < 3
-            }
-            ConditionLeaf::GuestMarker { .. } => false,
-        },
-    );
+    let mut expected_oracle = linted_host_oracle(FewerEntriesThan(3));
+    let mut reproduced_oracle = linted_host_oracle(FewerEntriesThan(3));
 
     let report = check_assertion_violation_reproduction_with_oracles(
         &artifact,
@@ -416,4 +398,30 @@ fn violation_reproduction_with_oracles_preserves_recorded_offsets() {
     let violation = &report.reproduced.violations()[0];
     assert_eq!(violation.assertion, assertion_id("host-offset-violation"));
     assert_eq!(violation.reproduction_artifact, artifact.id());
+}
+
+/// Holds while fewer than the given number of entries have been folded.
+struct FewerEntriesThan(u64);
+
+impl HostAssertionPredicate for FewerEntriesThan {
+    type State = u64;
+
+    fn initial(&self, _leaf: NamedLeaf<'_>) -> u64 {
+        0
+    }
+
+    fn step(
+        &self,
+        _leaf: NamedLeaf<'_>,
+        folded: &u64,
+        _batch: &ObservedBatch<'_>,
+    ) -> Result<u64, NamedPredicateError> {
+        Ok(folded + 1)
+    }
+
+    fn leaf_is_true(&self, leaf: NamedLeaf<'_>, folded: &u64) -> bool {
+        leaf.name() == "prefix-before-violation-offset"
+            && leaf.nodes().is_empty()
+            && *folded < self.0
+    }
 }

@@ -277,7 +277,8 @@ impl AssertionLogCheck {
     /// Returns [`OfflineAssertionCheckError::RecordedLogShapeMismatch`] when
     /// the entries differ from the declared shape, then, in this order, the
     /// terminal prefix's validation or offset error, an invalid console
-    /// pattern, or the first intermediate-prefix error.
+    /// pattern, the first intermediate-prefix error, or a named predicate
+    /// that failed closed.
     pub fn finish<O>(
         mut self,
         oracle: &mut O,
@@ -311,12 +312,16 @@ impl AssertionLogCheck {
         if let Some(offset) = terminal_offset {
             evaluation.prefix.set_event_log_offset(offset);
         }
-        Ok(self.evaluator.finalize_prefix_with_trace(
+        let report = self.evaluator.finalize_prefix_with_trace(
             &evaluation.prefix,
             oracle,
             self.prefix_end,
             self.trace.finish(),
-        ))
+        );
+        match self.evaluator.named_predicate_failure() {
+            Some(failure) => Err(OfflineAssertionCheckError::NamedPredicate(failure.clone())),
+            None => Ok(report),
+        }
     }
 
     /// Appends and observes the intermediate prefix ending in `entry`.

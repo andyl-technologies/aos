@@ -1216,6 +1216,11 @@ impl ProductionVmLifecycleLoop {
                 self.inner.loop_impl().condition_event_log_prefix(),
                 &mut self.assertion_oracle,
             );
+            if let Some(failure) = self.assertion_evaluator.named_predicate_failure() {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("assertion evaluation failed closed: {failure}"),
+                });
+            }
             let assertion_events = assertion_outcomes
                 .iter()
                 .filter_map(assertion_state_event_from_outcome)

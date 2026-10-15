@@ -129,28 +129,40 @@ alone. The evaluator owns, checkpoints, and replays the state.
 
 ```rust,illustrative
 pub trait HostAssertionPredicate {
-    /// Canonical accumulator state; encoded into the evaluator checkpoint.
-    type State: CanonicalState;
+    /// Accumulator state; its canonical CBOR goes into the evaluator checkpoint.
+    type State: Serialize + DeserializeOwned;
 
-    fn initial(&self, leaf: &NamedLeaf) -> Self::State;
+    fn initial(&self, leaf: NamedLeaf<'_>) -> Self::State;
 
-    /// Folds the entries observed at one evaluation point.
-    fn step(&self, leaf: &NamedLeaf, state: &Self::State, batch: &ObservedBatch)
+    /// Folds the observations of one scheduler entry.
+    fn step(&self, leaf: NamedLeaf<'_>, state: &Self::State, batch: &ObservedBatch<'_>)
         -> Result<Self::State, NamedPredicateError>;
 
-    fn leaf_is_true(&self, leaf: &NamedLeaf, state: &Self::State) -> bool;
+    fn leaf_is_true(&self, leaf: NamedLeaf<'_>, state: &Self::State) -> bool;
 }
 ```
 
-`ObservedBatch` exposes only the observable events, ordering facts, and
-scheduler entries appended at the current evaluation point.
+`ObservedBatch` exposes one scheduler entry's evaluation point and the
+observable events and ordering facts that entry recorded. Raw entries, RNG
+draws, and host state stay outside it, as they stay outside `ObservedState`.
+
+The evaluator folds exactly one batch per scheduler entry, whichever prefixes
+it observes. A live run that observes once per quantum and an offline check
+that observes every prefix therefore fold the same batches. An `eventually`
+deadline has no entry: its leaves are answered from the folded state stepped
+once more with an empty batch at the deadline point, and that step is
+discarded. A memoryless predicate, whose leaf depends only on the latest
+batch, is the special case whose state is its last answer.
 
 - **[CMEAS-17]** A named host predicate MUST be a pure function of its
   declared leaf, its previous accumulator state, and the current observed
   batch. Its canonical state MUST NOT exceed 64 KiB per leaf; a larger state
   MUST fail evaluation closed. The evaluator MUST include every accumulator
   state in its checkpoint, and live and offline folds MUST produce identical
-  states and verdicts. Predicates MUST NOT receive the complete history.
+  states and verdicts. Predicates MUST NOT receive the complete history. The
+  evaluator MUST fold every declared leaf once per scheduler entry, in log
+  order, independent of where evaluation observes the log; a prefix that does
+  not continue the folded entries MUST fail evaluation closed.
 
 ## 15.6 Console expression matcher
 
