@@ -242,7 +242,10 @@ impl HostSchedulingSource {
     ) -> Result<PreparedHostSchedulingNode, OperationFailure> {
         archive.inner.authenticate_birth().map_err(failure)?;
         plan.reauthenticate().map_err(failure)?;
-        if !archive.inner.collecting_plan().map_err(failure)?
+        if !archive
+            .inner
+            .collecting_plan()
+            .map_err(failure)?
             .is_some_and(|original| original.same_original(plan))
         {
             return Err(failure("complete host belongs to another collecting plan"));

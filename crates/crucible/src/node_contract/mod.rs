@@ -42,8 +42,8 @@ pub use quarantine::*;
 pub(crate) use retirement_data::RetirementActivation;
 pub use retirement_release::GracefulRetirementQualification;
 pub use role_descriptions::*;
-pub use runtime::*;
 pub(crate) use runtime::OriginalRuntimeStorageIdentity;
+pub use runtime::*;
 #[cfg(test)]
 pub(crate) use runtime::{test_capture_ticket_fixture, test_known_initial_storage_fixture};
 pub use terminal::*;

@@ -304,7 +304,9 @@ pub(crate) struct WeakInstalledConformancePlan(Weak<Plan>);
 
 impl WeakInstalledConformancePlan {
     pub(crate) fn upgrade(&self) -> Result<InstalledConformancePlan, EvidenceError> {
-        self.0.upgrade().map(InstalledConformancePlan)
+        self.0
+            .upgrade()
+            .map(InstalledConformancePlan)
             .ok_or_else(|| failure("original collecting plan owner is unavailable"))
     }
 
@@ -314,7 +316,6 @@ impl WeakInstalledConformancePlan {
         crate::node_contract::NodeRuntime::capture_shared_allocation_storage::<Plan>()
     }
 }
-
 
 impl InstalledConformancePlan {
     pub(crate) fn downgrade(&self) -> WeakInstalledConformancePlan {

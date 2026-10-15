@@ -223,9 +223,9 @@ impl CollectingCompleteRestorationSource {
         graph: &ConformanceGraph,
     ) -> Result<&crate::node_state::CompleteOriginalRestorationSource, RuntimeError> {
         self.original.inner.authenticate_birth()?;
-        graph.reauthenticate().map_err(|error| {
-            RuntimeError::SchedulerRefused(error.message)
-        })?;
+        graph
+            .reauthenticate()
+            .map_err(|error| RuntimeError::SchedulerRefused(error.message))?;
         if !self
             .original
             .inner
@@ -254,15 +254,17 @@ impl CollectingCompleteRestorationSource {
         target: &ActivationRecord,
     ) -> Result<super::super::PreparedHostSchedulingNode, RuntimeError> {
         let archive = self.original_source_data(graph)?;
-        graph.authenticate_exact_input_scope(source).map_err(|error| {
-            RuntimeError::SchedulerRefused(error.message)
-        })?;
-        source.prepare_complete_collecting_restoration_node(
-            &graph.graph,
-            target,
-            archive,
-            graph.plan(),
-        ).map_err(|error| RuntimeError::SchedulerRefused(error.reason))
+        graph
+            .authenticate_exact_input_scope(source)
+            .map_err(|error| RuntimeError::SchedulerRefused(error.message))?;
+        source
+            .prepare_complete_collecting_restoration_node(
+                &graph.graph,
+                target,
+                archive,
+                graph.plan(),
+            )
+            .map_err(|error| RuntimeError::SchedulerRefused(error.reason))
     }
 
     /// Issues the single source-owned Host2 archive ticket without cloning bodies.

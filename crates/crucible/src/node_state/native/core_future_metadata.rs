@@ -1398,12 +1398,10 @@ mod tests {
     }
 
     #[test]
-    fn named_budget_retains_exact_bound_and_refuses_reinterpretation()
-    -> Result<(), RuntimeError> {
+    fn named_budget_retains_exact_bound_and_refuses_reinterpretation() -> Result<(), RuntimeError> {
         // These are genuine admitted Core owners with a closed, initial-only
         // model data observer. No native codec or Capture outcome is qualified.
-        let (runtime, control) =
-            crate::node_contract::test_known_initial_storage_fixture();
+        let (runtime, control) = crate::node_contract::test_known_initial_storage_fixture();
         let peak = allocation_peak();
         let runtime_bytes = runtime.original_retained_requested_storage_data(64 * 1024 * 1024)?;
         let scratch = NodeRuntime::original_retained_requested_storage_scratch_bytes();
