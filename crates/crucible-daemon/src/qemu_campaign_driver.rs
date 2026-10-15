@@ -100,9 +100,6 @@ use selection_projection::{
 };
 use stop_boundary::{policy_timeout_at, reached_requested_stop, requested_attempt_stop_frontier};
 
-/// Maximum property-by-event evaluations admitted by one fresh-attempt seal.
-pub const MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS: usize = 1_000_000;
-
 /// Failure while driving or projecting one fresh modeled campaign attempt.
 #[derive(Debug, Error)]
 pub enum QemuFreshModeledDriverError {
@@ -2350,24 +2347,8 @@ struct QemuBoundaryProjection {
 fn check_pending_assertions(
     pending: &QemuFreshPendingObservation,
 ) -> Result<crucible::HostAssertionReport, QemuFreshModeledDriverError> {
-    let assertion_count = pending
-        .input
-        .scenario()
-        .properties()
-        .assertions()
-        .len()
-        .max(1);
-    let assertion_visits = pending.event_log.len().checked_mul(assertion_count).ok_or(
-        QemuFreshModeledDriverError::LimitExceeded {
-            limit: "fresh-campaign-assertion-event-visits",
-        },
-    )?;
-    if assertion_visits > MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS {
-        return Err(QemuFreshModeledDriverError::LimitExceeded {
-            limit: "fresh-campaign-assertion-event-visits",
-        });
-    }
-
+    // Grading cost is proportional to the log, which the attempt's storage
+    // bound already limits; there is no separate per-event visit budget.
     let mut checker = OfflineAssertionChecker::new()
         .with_world_white_box_policies(pending.input.scenario().world());
     if let Some(quiescence) = pending.terminal_quiescence.clone() {

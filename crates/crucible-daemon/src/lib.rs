@@ -570,9 +570,8 @@ pub(crate) use qemu_baked_genesis::{
 };
 pub(crate) use qemu_campaign_driver::QemuSavepointReplayProbe;
 pub use qemu_campaign_driver::{
-    DEFAULT_MAXIMUM_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS,
-    QemuAttemptStartReplayProof, QemuFreshModeledDriver, QemuFreshModeledDriverError,
-    QemuModeledAttemptLifecycle, QemuSavepointReplayProof,
+    DEFAULT_MAXIMUM_EVENT_LOG_BYTES, QemuAttemptStartReplayProof, QemuFreshModeledDriver,
+    QemuFreshModeledDriverError, QemuModeledAttemptLifecycle, QemuSavepointReplayProof,
 };
 pub use qemu_campaign_lifecycle::{
     InteractiveQemuSessionError, QemuAttemptContinuation, QemuAttemptProductionVmLifecycleError,
