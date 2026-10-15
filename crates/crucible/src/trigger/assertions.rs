@@ -1197,6 +1197,7 @@ pub struct HostAssertionEvaluator {
     mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     terminal_quiescence: Option<SchedulerQuiescence>,
     last_position: Option<HostAssertionPrefixPosition>,
+    guest_marker_cursor: Option<ObservableEventCursor>,
 }
 
 // Deadline crossing needs only the prior point; checkpoint binding needs its
@@ -1373,6 +1374,7 @@ impl HostAssertionEvaluatorCheckpoint {
             .wire
             .last_prefix
             .map(|_| HostAssertionPrefixPosition::from_prefix(current_prefix));
+        staged.guest_marker_cursor = None;
         *evaluator = staged;
         Ok(())
     }
@@ -1442,6 +1444,7 @@ impl HostAssertionEvaluator {
             mem_places: BTreeMap::new(),
             terminal_quiescence: None,
             last_position: None,
+            guest_marker_cursor: None,
         }
     }
 
@@ -1530,11 +1533,17 @@ impl HostAssertionEvaluator {
                 outcomes.push(outcome);
             }
         }
+        let resume = ObservableEventCursor::resume_index(
+            self.guest_marker_cursor.as_ref(),
+            prefix.observable_events(),
+        );
         outcomes.extend(observe_guest_marker_assertions(
             &mut self.guest_marker_states,
             prefix,
+            resume,
             &self.white_box_policies,
         ));
+        self.guest_marker_cursor = Some(ObservableEventCursor::at_end(prefix.observable_events()));
         self.last_position = Some(HostAssertionPrefixPosition::from_prefix(prefix));
         sort_host_assertion_outcomes(&mut outcomes);
         outcomes

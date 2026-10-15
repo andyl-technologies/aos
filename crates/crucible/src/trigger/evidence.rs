@@ -412,12 +412,8 @@ pub(super) fn condition_observed_evidence(
             condition_observed_evidence(prefix, predicate, actual, white_box_policies)
         }
         Condition::NetworkMatch { link, predicate } if actual => prefix
-            .observable_events()
-            .iter()
-            .find(|event| {
-                event.at() == prefix.point().at()
-                    && network_event_matches(event.payload(), link.as_ref(), predicate)
-            })
+            .observable_events_at_point()
+            .find(|event| network_event_matches(event.payload(), link.as_ref(), predicate))
             .map(|event| {
                 observable_event_evidence(
                     event,
@@ -428,13 +424,11 @@ pub(super) fn condition_observed_evidence(
                 )
             }),
         Condition::ConsoleMatch { node, regex } if actual => prefix
-            .observable_events()
-            .iter()
+            .observable_events_at_point()
             .find(|event| {
-                event.at() == prefix.point().at()
-                    && event
-                        .console_bytes()
-                        .is_some_and(|(observed, _)| observed == node)
+                event
+                    .console_bytes()
+                    .is_some_and(|(observed, _)| observed == node)
             })
             .map(|event| {
                 observable_event_evidence(
@@ -453,12 +447,8 @@ pub(super) fn condition_observed_evidence(
                 CodePoint::Symbol { .. } => None,
             }?;
             prefix
-                .observable_events()
-                .iter()
-                .find(|event| {
-                    event.at() == prefix.point().at()
-                        && coverage_event_matches(event.payload(), node, resolved)
-                })
+                .observable_events_at_point()
+                .find(|event| coverage_event_matches(event.payload(), node, resolved))
                 .map(|event| {
                     observable_event_evidence(
                         event,
@@ -478,12 +468,8 @@ pub(super) fn condition_observed_evidence(
         } if actual => {
             let resolved = resolved_mem_place_for_evidence(place)?;
             prefix
-                .observable_events()
-                .iter()
-                .find(|event| {
-                    event.at() == prefix.point().at()
-                        && memory_event_matches(event.payload(), node, &resolved, *cmp, *value)
-                })
+                .observable_events_at_point()
+                .find(|event| memory_event_matches(event.payload(), node, &resolved, *cmp, *value))
                 .map(|event| {
                     observable_event_evidence(
                         event,
@@ -498,11 +484,8 @@ pub(super) fn condition_observed_evidence(
                 })
         }
         Condition::IoPattern { node, kind } if actual => prefix
-            .observable_events()
-            .iter()
-            .find(|event| {
-                event.at() == prefix.point().at() && io_event_matches(event.payload(), node, *kind)
-            })
+            .observable_events_at_point()
+            .find(|event| io_event_matches(event.payload(), node, *kind))
             .map(|event| {
                 observable_event_evidence(
                     event,
@@ -514,12 +497,8 @@ pub(super) fn condition_observed_evidence(
                 )
             }),
         Condition::NodeState { node, state } if actual => prefix
-            .observable_events()
-            .iter()
-            .find(|event| {
-                event.at() == prefix.point().at()
-                    && node_state_event_matches(event.payload(), node, *state)
-            })
+            .observable_events_at_point()
+            .find(|event| node_state_event_matches(event.payload(), node, *state))
             .map(|event| {
                 observable_event_evidence(
                     event,
@@ -531,12 +510,8 @@ pub(super) fn condition_observed_evidence(
                 )
             }),
         Condition::AssertionState { name, state } if actual => prefix
-            .observable_events()
-            .iter()
-            .find(|event| {
-                event.at() == prefix.point().at()
-                    && assertion_state_event_matches(event.payload(), name, *state)
-            })
+            .observable_events_at_point()
+            .find(|event| assertion_state_event_matches(event.payload(), name, *state))
             .map(|event| {
                 observable_event_evidence(
                     event,
@@ -548,15 +523,9 @@ pub(super) fn condition_observed_evidence(
                 )
             }),
         Condition::GuestMarker { marker } if actual => prefix
-            .observable_events()
-            .iter()
+            .observable_events_at_point()
             .find(|event| {
-                event.at() == prefix.point().at()
-                    && guest_marker_event_matches_policies(
-                        event.payload(),
-                        marker,
-                        white_box_policies,
-                    )
+                guest_marker_event_matches_policies(event.payload(), marker, white_box_policies)
             })
             .map(|event| {
                 observable_event_evidence(
@@ -1842,14 +1811,19 @@ pub(super) fn condition_prefix_from_recorded_log(
     Ok(prefix.with_event_log_offset(offset))
 }
 
+/// Applies guest assertion markers from observable event `start` onward.
+///
+/// Earlier events were applied by a previous observation; a marker that did
+/// not end its assertion then cannot end it when applied again.
 pub(super) fn observe_guest_marker_assertions(
     states: &mut Vec<GuestMarkerAssertionState>,
     prefix: &ConditionEventLogPrefix,
+    start: usize,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
 ) -> Vec<HostAssertionOutcome> {
     let mut outcomes = Vec::new();
     let at = prefix.point().at();
-    for event in prefix.observable_events() {
+    for event in prefix.observable_events().iter_from(start) {
         let ObservableEventPayload::GuestAssertionMarker {
             retired_icount,
             node,

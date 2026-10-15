@@ -66,6 +66,14 @@ where
         self.observed.observable_events()
     }
 
+    fn observable_events_at_point(&self) -> Box<dyn Iterator<Item = &ObservableEvent> + '_> {
+        self.observed.observable_events_at_point()
+    }
+
+    fn coverage_seen_before(&self, node: &NodeId, address: u64) -> bool {
+        self.observed.coverage_seen_before(node, address)
+    }
+
     fn console_match_reported(&self, node: &NodeId, pattern: &str) -> Option<bool> {
         self.observed.console_match_reported(node, pattern)
     }
@@ -300,9 +308,7 @@ where
         return ASSERTION_PROXIMITY_UNOBSERVED_NUMERIC;
     };
     evaluator
-        .observable_events()
-        .iter()
-        .filter(|event| event.at() == evaluator.evaluation_point().at())
+        .observable_events_at_point()
         .filter_map(|event| {
             let ObservableEventPayload::MemorySample {
                 sample_icount: _,
@@ -591,11 +597,11 @@ where
         Condition::Timer { name } => evaluator
             .timer_fire_time(name)
             .is_some_and(|fire_at| fire_at == evaluator.evaluation_point().at()),
-        Condition::NetworkMatch { link, predicate } => observable_event_matches(
-            evaluator.evaluation_point().at(),
-            evaluator.observable_events(),
-            |event| network_event_matches(event, link.as_ref(), predicate),
-        ),
+        Condition::NetworkMatch { link, predicate } => {
+            observable_event_matches(evaluator, |event| {
+                network_event_matches(event, link.as_ref(), predicate)
+            })
+        }
         Condition::ConsoleMatch { node, regex } => evaluator
             .console_match_reported(node, &regex.pattern)
             .unwrap_or_else(|| {
@@ -613,21 +619,15 @@ where
             cmp,
             value,
         } => memory_predicate_matches(evaluator, node, place, *cmp, *value),
-        Condition::IoPattern { node, kind } => observable_event_matches(
-            evaluator.evaluation_point().at(),
-            evaluator.observable_events(),
-            |event| io_event_matches(event, node, *kind),
-        ),
-        Condition::NodeState { node, state } => observable_event_matches(
-            evaluator.evaluation_point().at(),
-            evaluator.observable_events(),
-            |event| node_state_event_matches(event, node, *state),
-        ),
-        Condition::AssertionState { name, state } => observable_event_matches(
-            evaluator.evaluation_point().at(),
-            evaluator.observable_events(),
-            |event| assertion_state_event_matches(event, name, *state),
-        ),
+        Condition::IoPattern { node, kind } => {
+            observable_event_matches(evaluator, |event| io_event_matches(event, node, *kind))
+        }
+        Condition::NodeState { node, state } => observable_event_matches(evaluator, |event| {
+            node_state_event_matches(event, node, *state)
+        }),
+        Condition::AssertionState { name, state } => observable_event_matches(evaluator, |event| {
+            assertion_state_event_matches(event, name, *state)
+        }),
         Condition::Quiescent => evaluator
             .scheduler_quiescence()
             .is_some_and(SchedulerQuiescence::is_quiescent),
@@ -664,14 +664,16 @@ where
     }
 }
 
-pub(super) fn observable_event_matches(
-    at: VirtualTime,
-    events: &crate::History<ObservableEvent>,
+pub(super) fn observable_event_matches<E>(
+    evaluator: &E,
     matches_payload: impl Fn(&ObservableEventPayload) -> bool,
-) -> bool {
-    events
-        .iter()
-        .any(|event| event.at() == at && matches_payload(event.payload()))
+) -> bool
+where
+    E: ConditionEvaluator + ?Sized,
+{
+    evaluator
+        .observable_events_at_point()
+        .any(|event| matches_payload(event.payload()))
 }
 
 pub(super) fn network_event_matches(
@@ -741,15 +743,10 @@ where
     let Some(resolved) = evaluator.resolve_code_point(expected_node, point) else {
         return false;
     };
-    let at = evaluator.evaluation_point().at();
-    let events = evaluator.observable_events();
-    let matches_current = events.iter().any(|event| {
-        event.at() == at && coverage_event_matches(event.payload(), expected_node, resolved)
-    });
-    let seen_before = events.iter().any(|event| {
-        event.at() < at && coverage_event_matches(event.payload(), expected_node, resolved)
-    });
-    matches_current && !seen_before
+    let matches_current = evaluator
+        .observable_events_at_point()
+        .any(|event| coverage_event_matches(event.payload(), expected_node, resolved));
+    matches_current && !evaluator.coverage_seen_before(expected_node, resolved.address())
 }
 
 pub(super) fn coverage_event_matches(
@@ -789,11 +786,9 @@ where
     let Some(resolved) = evaluator.resolve_mem_place(expected_node, place) else {
         return false;
     };
-    observable_event_matches(
-        evaluator.evaluation_point().at(),
-        evaluator.observable_events(),
-        |event| memory_event_matches(event, expected_node, &resolved, cmp, expected_value),
-    )
+    observable_event_matches(evaluator, |event| {
+        memory_event_matches(event, expected_node, &resolved, cmp, expected_value)
+    })
 }
 
 pub(super) fn memory_event_matches(
@@ -865,11 +860,9 @@ pub(super) fn guest_marker_matches<E>(evaluator: &E, expected_marker: &MarkerId)
 where
     E: ConditionEvaluator + ?Sized,
 {
-    observable_event_matches(
-        evaluator.evaluation_point().at(),
-        evaluator.observable_events(),
-        |event| guest_marker_event_matches(evaluator, event, expected_marker),
-    )
+    observable_event_matches(evaluator, |event| {
+        guest_marker_event_matches(evaluator, event, expected_marker)
+    })
 }
 
 pub(super) fn guest_marker_event_matches<E>(
@@ -918,6 +911,7 @@ pub struct ConditionEvaluation<O> {
     event_firings: BTreeMap<EventId, VirtualTime>,
     timer_fires: BTreeMap<TimerId, VirtualTime>,
     observable_events: crate::History<ObservableEvent>,
+    point_events: PointObservationIndex,
     ordering_facts: crate::History<ObservedOrderingFact>,
     console_folds: ConsoleMatchFolds,
     scheduler_quiescence: Option<SchedulerQuiescence>,
@@ -938,6 +932,7 @@ impl<O> ConditionEvaluation<O> {
             event_firings: prefix.event_firings,
             timer_fires: prefix.timer_fires,
             observable_events: prefix.observable_events,
+            point_events: prefix.point_events,
             ordering_facts: prefix.ordering_facts,
             console_folds: prefix.console_folds,
             scheduler_quiescence: None,
@@ -963,6 +958,7 @@ impl<O> ConditionEvaluation<O> {
             event_firings: prefix.event_firings.clone(),
             timer_fires: prefix.timer_fires.clone(),
             observable_events: prefix.observable_events.clone(),
+            point_events: prefix.point_events.clone(),
             ordering_facts: prefix.ordering_facts.clone(),
             console_folds: prefix.console_folds.clone(),
             scheduler_quiescence: None,
@@ -992,6 +988,7 @@ impl<O> ConditionEvaluation<O> {
             point: self.point,
             event_log_offset: self.event_log_offset,
             observable_events: &self.observable_events,
+            point_events: &self.point_events,
             ordering_facts: &self.ordering_facts,
             console_folds: &self.console_folds,
         }
@@ -1254,6 +1251,20 @@ where
 
     fn observable_events(&self) -> &crate::History<ObservableEvent> {
         &self.observable_events
+    }
+
+    fn observable_events_at_point(&self) -> Box<dyn Iterator<Item = &ObservableEvent> + '_> {
+        observable_events_at(&self.point_events, &self.observable_events, self.point.at())
+    }
+
+    fn coverage_seen_before(&self, node: &NodeId, address: u64) -> bool {
+        coverage_seen_before(
+            &self.point_events,
+            &self.observable_events,
+            node,
+            address,
+            self.point.at(),
+        )
     }
 
     fn console_match_reported(&self, node: &NodeId, pattern: &str) -> Option<bool> {

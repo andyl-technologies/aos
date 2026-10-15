@@ -115,6 +115,7 @@ impl ConditionEventLogPrefix {
         self.prefix_offsets.clear();
         self.last_black_box_observation = previous_black_box_observation;
         self.console_folds.observe(observable_events.iter());
+        self.point_events.observe(point.at(), &observable_events);
         self.observable_events.extend(observable_events);
         self.black_box_observation_kinds
             .extend(black_box_observation_kinds);

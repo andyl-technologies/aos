@@ -1078,6 +1078,14 @@ where
         self.inner.observable_events()
     }
 
+    fn observable_events_at_point(&self) -> Box<dyn Iterator<Item = &ObservableEvent> + '_> {
+        self.inner.observable_events_at_point()
+    }
+
+    fn coverage_seen_before(&self, node: &NodeId, address: u64) -> bool {
+        self.inner.coverage_seen_before(node, address)
+    }
+
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
         self.inner.scheduler_quiescence()
     }

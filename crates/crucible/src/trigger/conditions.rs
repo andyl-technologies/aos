@@ -5,6 +5,7 @@ use super::*;
 mod append;
 mod console_folds;
 mod host_oracle;
+mod point_index;
 
 pub(crate) use console_folds::ConsoleMatchFolds;
 pub(crate) use console_folds::property_console_patterns;
@@ -14,6 +15,7 @@ pub(crate) use host_oracle::SearchScheduleNamedPredicateHostOracle;
 #[cfg(any(debug_assertions, feature = "test-support"))]
 pub(crate) use host_oracle::unchecked_host_assertion_oracle_for_test;
 pub use host_oracle::*;
+pub(crate) use point_index::{PointObservationIndex, coverage_seen_before, observable_events_at};
 
 /// One observable event visible to condition evaluation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -969,6 +971,33 @@ pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
         None
     }
 
+    /// Returns the observable events at the evaluation point's virtual time.
+    ///
+    /// Evaluators backed by a condition prefix answer from its point index,
+    /// so the cost does not grow with the attempt's history.
+    fn observable_events_at_point(&self) -> Box<dyn Iterator<Item = &ObservableEvent> + '_> {
+        let at = self.evaluation_point().at();
+        Box::new(
+            self.observable_events()
+                .iter()
+                .filter(move |event| event.at() == at),
+        )
+    }
+
+    /// Reports whether a block covering `address` on `node` ran before the
+    /// evaluation point's virtual time.
+    fn coverage_seen_before(&self, node: &NodeId, address: u64) -> bool {
+        let at = self.evaluation_point().at();
+        self.observable_events().iter().any(|event| {
+            event.at() < at
+                && coverage_event_matches(
+                    event.payload(),
+                    node,
+                    ResolvedCodePoint::guest_address(address),
+                )
+        })
+    }
+
     /// Returns observable event-log entries visible at the evaluation point.
     fn observable_events(&self) -> &crate::History<ObservableEvent> {
         static NONE: std::sync::LazyLock<crate::History<ObservableEvent>> =
@@ -1145,6 +1174,7 @@ pub struct ConditionEventLogPrefix {
     pub(super) scheduler_entries: crate::History<SchedulerEventLogEntry>,
     last_black_box_observation: Option<(u64, VirtualTime)>,
     pub(super) observable_events: crate::History<ObservableEvent>,
+    pub(super) point_events: PointObservationIndex,
     pub(super) black_box_observation_kinds: BTreeSet<BlackBoxObservationKind>,
     pub(super) event_firings: BTreeMap<EventId, VirtualTime>,
     pub(super) timer_fires: BTreeMap<TimerId, VirtualTime>,
@@ -1164,6 +1194,7 @@ impl ConditionEventLogPrefix {
             scheduler_entries: crate::History::new(),
             last_black_box_observation: None,
             observable_events: crate::History::new(),
+            point_events: PointObservationIndex::default(),
             black_box_observation_kinds: BTreeSet::new(),
             event_firings: BTreeMap::new(),
             timer_fires: BTreeMap::new(),
@@ -1359,6 +1390,13 @@ impl ConditionEventLogPrefix {
         &self.observable_events
     }
 
+    /// Returns the observable events at [`Self::point`]'s virtual time.
+    pub(crate) fn observable_events_at_point(
+        &self,
+    ) -> Box<dyn Iterator<Item = &ObservableEvent> + '_> {
+        observable_events_at(&self.point_events, &self.observable_events, self.point.at())
+    }
+
     /// Returns the required black-box observation categories present in this prefix.
     #[must_use]
     pub fn black_box_observation_kinds(&self) -> &BTreeSet<BlackBoxObservationKind> {
@@ -1378,6 +1416,7 @@ impl ConditionEventLogPrefix {
             point: self.point,
             event_log_offset: self.event_log_offset,
             observable_events: &self.observable_events,
+            point_events: &self.point_events,
             ordering_facts: &self.ordering_facts,
             console_folds: &self.console_folds,
         }
@@ -1413,6 +1452,7 @@ pub struct ObservedState<'log> {
     pub(super) point: EventEvaluationPoint,
     pub(super) event_log_offset: EventLogOffset,
     pub(super) observable_events: &'log crate::History<ObservableEvent>,
+    pub(super) point_events: &'log PointObservationIndex,
     pub(super) ordering_facts: &'log crate::History<ObservedOrderingFact>,
     pub(super) console_folds: &'log ConsoleMatchFolds,
 }
@@ -1446,6 +1486,24 @@ impl<'log> ObservedState<'log> {
     #[must_use]
     pub fn ordering_facts(self) -> &'log crate::History<ObservedOrderingFact> {
         self.ordering_facts
+    }
+
+    /// Returns the observable events at this view's virtual time.
+    pub(crate) fn observable_events_at_point(
+        self,
+    ) -> Box<dyn Iterator<Item = &'log ObservableEvent> + 'log> {
+        observable_events_at(self.point_events, self.observable_events, self.at())
+    }
+
+    /// Reports whether a block covering `address` on `node` ran before this point.
+    pub(crate) fn coverage_seen_before(self, node: &NodeId, address: u64) -> bool {
+        coverage_seen_before(
+            self.point_events,
+            self.observable_events,
+            node,
+            address,
+            self.at(),
+        )
     }
 
     /// Reports whether a declared console matcher saw a match end at this point.
