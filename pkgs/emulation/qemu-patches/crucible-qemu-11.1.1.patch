@@ -1,8 +1,7 @@
-From 230fd5b6740d793b21d4708c5e7ff4ca1ed228ea Mon Sep 17 00:00:00 2001
+From ab97de831c930939a20d88fca873c5b6db68833e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 02:17:44 -0700
-Subject: [PATCH] plugins: retain startup custody and physical workspace
- ownership
+Date: Thu, 15 Oct 2026 04:44:51 -0700
+Subject: [PATCH] plugins: retain startup custody and nested writer intervals
 
 Capture the complete startup Source, Native callback lifecycle, nominal
 registration groups and receiving custody with their owning SDK surfaces.
@@ -11,14 +10,19 @@ count validation, and genuine declaration ownership across the configured
 Source and preexec producers. These physical holders do not issue operating
 digest, whole-Park, standing or action authority.
 
-Keep the workspace transfer on the existing public Runtime v3 nominal alias.
-Define the absent-workspace unit provider after the generated canonical
-Source storage, retaining its genuine earlier prototype and output identity
-checks. Preserve all 141 scenarios and rebind the owning extractor inputs.
+Keep workspace transfer on the existing public Runtime v3 nominal alias.
+Define the absent-workspace unit provider after canonical Source storage,
+retaining its genuine prototype, output identity checks and 141 scenarios.
+
+Reuse genuine enrolled CPU and IO writer intervals for nested cached stores.
+Promote outstanding nested writes before returning their enclosing admission,
+and preserve read-only close, foreign drain, alias and copied-custody guards.
+Register 25 literal-body scenarios and ten targeted omission controls using
+the configured compiler and explicit physical operand adapters.
 
 The source remains inactive; complete operating and terminal joins are
-separate. Include the actual generator inputs and corresponding-source
-notices without claiming runtime or complete payment qualification.
+separate. Include actual generator inputs and corresponding-source notices
+without claiming runtime performance or complete payment qualification.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -221344,6 +221348,68 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
  
      return g_test_run();
  }
+diff --git a/tests/unit/crucible-cached-writer-memory.inc.h b/tests/unit/crucible-cached-writer-memory.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..d43a4866744161c69e0979a83e30e54a636fb4e2
+--- /dev/null
++++ b/tests/unit/crucible-cached-writer-memory.inc.h
+@@ -0,0 +1,56 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Physical operand adapters only; literal cached accessors follow this file.
++ * The historical row below is solely the V23 layout comparator. The exercised
++ * current row and its getter are extracted from the real owning source.
++ */
++typedef struct OldQemuHotForkThreadRecord {
++    int64_t thread_id;
++    char name[QEMU_HOT_FORK_THREAD_NAME_MAX + 1];
++    bool joinable;
++    bool name_valid;
++    bool tracked;
++    QemuThreadHotForkDisposition disposition;
++    QemuThreadRamActorBinding ram_actor;
++    /* Whole record geometry includes these fields. A constructor must retain
++     * its own prebirth fee; the fixed writer floor never pays registry rows. */
++    void *ram_writer_cpu;
++    unsigned ram_writer_cpu_depth;
++    uint64_t ram_writer_cpu_execution_generation;
++    unsigned ram_writer_io_depth;
++} OldQemuHotForkThreadRecord;
++typedef uint64_t hwaddr;
++typedef unsigned MemTxAttrs;
++typedef unsigned MemTxResult;
++typedef struct MemoryRegionCache { uint8_t *ptr; hwaddr len; } MemoryRegionCache;
++#define MEMTX_OK 0
++#define MEMTXATTRS_UNSPECIFIED 0
++#define likely(x) (x)
++#define unlikely(x) (x)
++#define glue1(a,b) a##b
++#define glue(a,b) glue1(a,b)
++static bool qemu_crucible_fault_memory_dma_rules_active(bool write)
++{ (void)write; return false; }
++static MemTxResult address_space_write_cached_fault(const MemoryRegionCache *c,
++    hwaddr a, MemTxAttrs attrs, const void *b, hwaddr n)
++{ (void)c; (void)a; (void)attrs; (void)b; (void)n; abort(); }
++static MemTxResult address_space_write_cached_slow(const MemoryRegionCache *c,
++    hwaddr a, const void *b, hwaddr n)
++{ (void)c; (void)a; (void)b; (void)n; abort(); }
++static void address_space_stb_cached_slow(const MemoryRegionCache *c,
++    hwaddr a, uint8_t v, MemTxAttrs attrs, MemTxResult *r)
++{ (void)c; (void)a; (void)v; (void)attrs; (void)r; abort(); }
++static void stb_p(void *p, uint8_t value) { *(uint8_t *)p = value; }
++#define PRIMITIVE(size, type, bytes) \
++static void st##size##_le_p(void *p, type value) \
++{ for (unsigned i = 0; i < bytes; i++) { ((uint8_t *)p)[i] = value >> (i * 8); } } \
++static void st##size##_be_p(void *p, type value) \
++{ for (unsigned i = 0; i < bytes; i++) { ((uint8_t *)p)[bytes - i - 1] = value >> (i * 8); } } \
++static void address_space_st##size##_le_cached_slow(const MemoryRegionCache *c, \
++    hwaddr a, type v, MemTxAttrs attrs, MemTxResult *r) \
++{ (void)c; (void)a; (void)v; (void)attrs; (void)r; abort(); } \
++static void address_space_st##size##_be_cached_slow(const MemoryRegionCache *c, \
++    hwaddr a, type v, MemTxAttrs attrs, MemTxResult *r) \
++{ (void)c; (void)a; (void)v; (void)attrs; (void)r; abort(); }
++PRIMITIVE(w, uint16_t, 2)
++PRIMITIVE(l, uint32_t, 4)
++PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-startup-source-fixture.inc.h b/tests/unit/crucible-startup-source-fixture.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..64fdd30d01b4a44406608dc96d9d8f76fd688d95
@@ -222063,6 +222129,289 @@ index 0000000000000000000000000000000000000000..64fdd30d01b4a44406608dc96d9d8f76
 +        sizeof(QemuCrucibleStartupSourceControl) +
 +        startup_source.standing.construction_storage.fixed_charge.bytes);
 +}
+diff --git a/tests/unit/extract-crucible-cached-writer.py b/tests/unit/extract-crucible-cached-writer.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ebb98451d8b3f7c67077e5ca2fd26558e1cdc9e
+--- /dev/null
++++ b/tests/unit/extract-crucible-cached-writer.py
+@@ -0,0 +1,277 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Extract real Linux writer/cache bodies and ten behavioral omissions.
++
++The CPU and memory surroundings are explicit adapters. These tests do not
++qualify full fork continuation, Source permission, or runtime performance.
++No Git object, external fixture, compiler path, or generated header is needed.
++"""
++
++import argparse
++from functools import lru_cache
++import hashlib
++import json
++from pathlib import Path
++import re
++
++SOURCE_HASHES = {
++    'util/qemu-thread-posix.c': 'ac52a830c15de950ed855ce27a216e2226872e958760a38a0f5504390cd634bf',
++    'util/oslib-posix.c': '04c5696686ee58dbd402f0ed31845de3dec234c38b7aa97ec98506356adc9789',
++    'include/qemu/thread.h': 'a3254ccf7b60eb60a6d36b1113bb97036fcf43e2d4c9582c655939c409078ca8',
++    'include/qemu/thread-posix.h': '22edf9398513dc3889c9fdb2f558ebd0321cfcc7ee33e6ad574941c220c22b6c',
++    'include/system/memory_cached.h': '33db362075a85b1326d38c9d772f131e4bdd7cada5e68a47b99515a1ac33e61b',
++    'include/system/memory_ldst_cached.h.inc': '0330f0a65ef81d51ba040b8512cd00bb06cb117a81a954b202132a2a6da48d2d',
++    'tests/unit/test-crucible-cached-writer.c': 'dd728ef9b5959696a38ee31d11ba465f864c4ed7fef22a31ab467754509ffd18',
++    'tests/unit/crucible-cached-writer-memory.inc.h': '86d2cb20759344c25d82840657e747265c171aa8c86807020383496f2bdbed70'
++}
++
++
++@lru_cache(maxsize=8)
++def functions(text):
++    # Preserve positions while ignoring braces in comments and strings.
++    clean = re.sub(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
++                   lambda match: " " * len(match.group()), text, flags=re.S)
++    depth = 0
++    start = 0
++    name = None
++    found = {}
++    for index, char in enumerate(clean):
++        if char == "{" and depth == 0:
++            prefix = clean[:index].rstrip()
++            if prefix.endswith(")"):
++                balance = 1
++                position = len(prefix) - 2
++                while balance:
++                    if prefix[position] == ")":
++                        balance += 1
++                    elif prefix[position] == "(":
++                        balance -= 1
++                    position -= 1
++                match = re.search(r"([A-Za-z_]\w*)\s*$", prefix[:position + 1])
++                name = match.group(1) if match else None
++            else:
++                name = None
++            start = index
++        if char == "{":
++            depth += 1
++        elif char == "}":
++            depth -= 1
++            if depth == 0 and name:
++                found[name] = text[start:index + 1]
++    return found
++
++
++def whole(text, name):
++    body = functions(text)[name]
++    start = text.index(body)
++    declaration = text[text.rfind('\n\n', 0, start) + 2:start]
++    # Standalone extracted providers retain genuine prior declarations under
++    # the project's missing-prototypes checks. Static linkage stays literal.
++    prototype = '' if 'static ' in declaration else declaration.rstrip() + ';\n\n'
++    return prototype + declaration + body
++
++
++def typedef(text, name):
++    return re.search(r'typedef (?:struct|enum) ' + name + r' \{.*?\n\} ' + name + ';', text, re.S).group()
++
++
++def assemble(root):
++    def input_file(path):
++        return root / path
++
++    source = input_file('util/qemu-thread-posix.c').read_text()
++    header = input_file('include/qemu/thread.h').read_text()
++    prefix = '''#ifndef _GNU_SOURCE
++    #define _GNU_SOURCE
++    #endif
++    #include <assert.h>
++    #include <errno.h>
++    #include <glib.h>
++    #include <limits.h>
++    #include <pthread.h>
++    #include <signal.h>
++    #include <stdbool.h>
++    #include <stdint.h>
++    #include <stdatomic.h>
++    #include <stdio.h>
++    #include <stdlib.h>
++    #include <string.h>
++    #include <sys/syscall.h>
++    #include <sys/wait.h>
++    #include <unistd.h>
++    #define qatomic_load_acquire(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
++    #define qatomic_store_release(p,v) __atomic_store_n((p),(v), __ATOMIC_RELEASE)
++    #define QEMU_HOT_FORK_THREAD_NAME_MAX 256
++    #define QEMU_HOT_FORK_THREAD_INVENTORY_MAX 65536
++    #define QEMU_RAM_PAUSE_MAX_THREADS 4096
++    #define QEMU_THREAD_JOINABLE 0
++    #define QEMU_THREAD_DETACHED 1
++    typedef struct QemuThread QemuThread;
++    typedef struct QemuThreadRamActorBinding QemuThreadRamActorBinding;
++    '''
++    prefix += re.search(r'struct QemuThread \{.*?\n\};', input_file('include/qemu/thread-posix.h').read_text(), re.S).group() + '\n'
++    for name in ['QemuThreadHotForkDisposition', 'QemuThreadRamPauseRefusal', 'QemuThreadRamPauseTransaction', 'QemuThreadRamWriterScope', 'QemuThreadRamWriterTransaction', 'QemuThreadRamCpuExecutionWitness', 'QemuThreadRamCpuConstruction']:
++        prefix += typedef(header, name) + '\n'
++    prefix += re.search(r'struct QemuThreadRamActorBinding \{.*?\n\};', source, re.S).group() + '\n'
++    prefix += typedef(source, 'QemuHotForkThreadRecord') + '\n'
++    globals_text = source[source.index('static pthread_mutex_t qemu_hot_fork_thread_lock'):source.index('/* Introspection may reenter the registry.')]
++    # These two unrelated registry operations are not part of this finite fixture.
++    globals_text = globals_text.replace('static size_t qemu_hot_fork_thread_starts_in_flight;\n', '').replace('static int64_t qemu_hot_fork_coordinator_thread_id;\n', '')
++    prefix += globals_text
++    prefix += '''
++    static _Thread_local unsigned writer_locks;
++    static _Thread_local unsigned native_id_calls;
++    static int counted_lock(pthread_mutex_t *mutex)
++    { if (mutex == &ram_writer_lock) { writer_locks++; } return pthread_mutex_lock(mutex); }
++    static int counted_trylock(pthread_mutex_t *mutex)
++    { if (mutex == &ram_writer_lock) { writer_locks++; } return pthread_mutex_trylock(mutex); }
++    #define pthread_mutex_lock counted_lock
++    #define pthread_mutex_trylock counted_trylock
++    static _Atomic unsigned writer_waits;
++    static int counted_wait(pthread_cond_t *condition, pthread_mutex_t *mutex)
++    {
++        if (mutex == &ram_writer_lock) { atomic_fetch_add(&writer_waits, 1); }
++        return pthread_cond_wait(condition, mutex);
++    }
++    #define pthread_cond_wait counted_wait
++    static bool refuse_atfork;
++    static int observed_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void))
++    { return refuse_atfork ? ENOMEM : pthread_atfork(prepare, parent, child); }
++    #define pthread_atfork observed_atfork
++    '''
++    prefix += whole(input_file('util/oslib-posix.c').read_text(), 'qemu_get_thread_id').replace('return syscall(SYS_gettid);', 'native_id_calls++; return syscall(SYS_gettid);') + '\n'
++    # The sole instrumentation edit counts the actual Linux native ID syscall.
++    prefix += re.search(r'^int64_t qemu_thread_current_id\(void\);$', header, re.M).group() + '\n'
++    prefix += source[source.index('/* Linux mutex-owner TIDs'):source.index('/*\n * This is not defined on Linux')]
++    prefix += '\n' + whole(source, 'error_exit')
++    prefix += '\n' + whole(source, 'qemu_thread_get_self') + '\n' + whole(source, 'qemu_thread_is_self')
++    names = [
++        'ram_membership_wait_locked',
++        'ram_writer_record_inherited',
++        'ram_writer_record_current',
++        'ram_writer_record_admit_locked',
++        'ram_writer_promote_nested_locked',
++        'qemu_thread_ram_writer_enter',
++        'qemu_thread_ram_writer_leave',
++        'ram_writer_scope_current_locked',
++        'qemu_thread_ram_writer_scope_enter',
++        'qemu_thread_ram_writer_scope_try_enter',
++        'qemu_thread_ram_writer_scope_leave',
++        'qemu_thread_ram_writer_alias_lend',
++        'qemu_thread_ram_writer_alias_return',
++        'ram_writer_identity_locked',
++        'ram_writer_closed_locked',
++        'qemu_thread_ram_writer_close',
++        'qemu_thread_ram_writer_current',
++        'qemu_thread_ram_writer_end',
++        'ram_cpu_construction_identity_locked',
++        'qemu_thread_ram_cpu_construction_begin',
++        'qemu_thread_ram_cpu_construction_current',
++        'qemu_thread_ram_cpu_construction_end',
++        'qemu_thread_ram_cpu_construction_upgrade_writer',
++        'qemu_hot_fork_thread_register',
++        'qemu_hot_fork_thread_unregister',
++        'qemu_thread_hot_fork_record_storage_bytes',
++        'ram_cpu_execution_identity_locked',
++        'qemu_thread_ram_cpu_execution_borrow',
++        'qemu_thread_ram_cpu_execution_current',
++        'qemu_thread_ram_cpu_execution_ended',
++        'qemu_thread_ram_cpu_execution_return',
++    ]
++    bodies = '\n\n'.join(whole(source, name) for name in names)
++    cached = input_file('include/system/memory_cached.h').read_text()
++    inc = input_file('include/system/memory_ldst_cached.h.inc').read_text()
++    consumer = (root / 'tests/unit/crucible-cached-writer-memory.inc.h').read_text()
++    consumer += '\n' + whole(cached, 'address_space_stb_cached') + '\n' + whole(cached, 'address_space_write_cached')
++    stores = inc[inc.index('#define ADDRESS_SPACE_ST_CACHED(size)'):]
++    consumer += '\n#define ENDIANNESS _le\n' + stores + '\n#define ENDIANNESS _be\n' + stores
++    # This fixture uses an actual admitted registry row; no scalar depth injection.
++    tail = (root / 'tests/unit/test-crucible-cached-writer.c').read_text()
++    for literal in ['crucible_mutex_owner_cache_refresh(child_thread_id);', 'coordinator->thread_id = child_thread_id;']:
++        assert literal in functions(source)['qemu_thread_hot_fork_reconstruct_child_registry'] and literal in tail
++
++
++    return prefix + '\n' + bodies + '\n' + consumer + '\n' + tail, names
++
++
++mutations = {
++    'readonly admission': (
++        '!record->ram_writer_closed &&',
++        'true &&',
++    ),
++    'close marker': (
++        '((QemuHotForkThreadRecord *)owner->record)->ram_writer_closed = true;',
++        '((QemuHotForkThreadRecord *)owner->record)->ram_writer_closed = false;',
++    ),
++    'upgrade marker': (
++        '((QemuHotForkThreadRecord *)writers->record)->ram_writer_closed = true;',
++        '((QemuHotForkThreadRecord *)writers->record)->ram_writer_closed = false;',
++    ),
++    'CPU promotion': (
++        '        ram_writer_promote_nested_locked(record);\n        record->ram_writer_cpu = NULL;',
++        '        record->ram_writer_cpu = NULL;',
++    ),
++    'scope promotion': (
++        '    ram_writer_promote_nested_locked(record);\n    ram_writer_io--;',
++        '    ram_writer_io--;',
++    ),
++    'fork identity': (
++        'record->ram_writer_admission_thread_id != thread_id);',
++        'record->ram_writer_admission_thread_id == 0);',
++    ),
++    'nested leave debit': (
++        'record->ram_writer_nested_io_depth--;',
++        '(void)record->ram_writer_nested_io_depth;',
++    ),
++    'typed copied-debt prelock guards': (
++        '    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {\n        return -ESTALE;\n    }',
++        '    (void)qemu_hot_fork_current_thread;',
++    ),
++    'copied readonly custody': (
++        'record->ram_writer_closed) &&',
++        'false) &&',
++    ),
++    'return marker': (
++        '((QemuHotForkThreadRecord *)owner->record)->ram_writer_closed = false;',
++        '((QemuHotForkThreadRecord *)owner->record)->ram_writer_closed = true;',
++    ),
++}
++affected = {
++    'readonly admission': 'self-cpu',
++    'close marker': 'self-cpu',
++    'upgrade marker': 'upgrade',
++    'CPU promotion': 'cpu-promotion',
++    'scope promotion': 'scope-promotion',
++    'fork identity': 'copied-rebind',
++    'nested leave debit': 'io-nested',
++    'return marker': 'return-marker',
++    'typed copied-debt prelock guards': 'copied-status',
++    'copied readonly custody': 'copied-readonly',
++}
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('root', type=Path)
++    parser.add_argument('outputs', nargs=12, type=Path)
++    args = parser.parse_args()
++    for name, expected in SOURCE_HASHES.items():
++        if hashlib.sha256((args.root / name).read_bytes()).hexdigest() != expected:
++            raise ValueError(f'source changed: {name}')
++    text, names = assemble(args.root)
++    args.outputs[0].write_text(text)
++    omitted = []
++    for index, (name, (before, after)) in enumerate(mutations.items()):
++        expected = 11 if name == 'typed copied-debt prelock guards' else 1
++        if text.count(before) != expected:
++            raise ValueError(f'omission anchor changed: {name}')
++        args.outputs[index + 1].write_text(text.replace(before, after))
++        omitted.append({'name': name, 'case': affected[name]})
++    receipt = {'inputs': SOURCE_HASHES, 'functions': names, 'omissions': omitted,
++               'outputs': {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
++                           for p in args.outputs[:-1]},
++               'scope': __doc__}
++    args.outputs[-1].write_text(json.dumps(receipt, indent=2) + '\n')
++
++
++if __name__ == '__main__':
++    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..16430e633f97d6920bd61614f2e15c15fcf3963d
@@ -223378,7 +223727,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..ae904f689e9c99ea5999c3a1208256a06db2d070 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..0fc8691ec28348bb41ae2969f792d1994f6da29d 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -223439,7 +223788,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..ae904f689e9c99ea5999c3a1208256a0
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +244,1014 @@ foreach test_name, extra: tests
+@@ -207,3 +244,1081 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -224454,6 +224803,73 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..ae904f689e9c99ea5999c3a1208256a0
 +    suite: ['unit'],
 +  )
 +endif
++
++# Literal Linux writer/cache bodies; physical operands are explicit adapters.
++# Build omissions with the same configured compiler as the normal executable.
++if have_system and host_os == 'linux'
++  cached_writer_outputs = ['crucible-cached-writer.c']
++  foreach index : range(10)
++    cached_writer_outputs += ['crucible-cached-writer-omission-@0@.c'.format(index)]
++  endforeach
++  cached_writer_outputs += ['crucible-cached-writer-extraction.json']
++  cached_writer_sources = custom_target(
++    'crucible-cached-writer-sources',
++    output: cached_writer_outputs,
++    command: [python, files('extract-crucible-cached-writer.py'),
++              meson.project_source_root(), '@OUTPUT@'],
++    depend_files: files('../../util/qemu-thread-posix.c',
++                        '../../util/oslib-posix.c',
++                        '../../include/qemu/thread.h',
++                        '../../include/qemu/thread-posix.h',
++                        '../../include/system/memory_cached.h',
++                        '../../include/system/memory_ldst_cached.h.inc',
++                        'test-crucible-cached-writer.c',
++                        'crucible-cached-writer-memory.inc.h'),
++  )
++  cached_writer_test = executable(
++    'test-crucible-cached-writer',
++    cached_writer_sources[0],
++    dependencies: [glib, threads],
++  )
++  cached_writer_runner = files('run-crucible-cached-writer.py')
++  foreach scenario : ['cpu-cached', 'enrolled-ordinary', 'io-nested',
++                      'scope-nested', 'scope-promotion', 'cpu-promotion',
++                      'foreign-close', 'foreign-admission', 'return-marker',
++                      'plain-return-first', 'alias', 'copied-fork',
++                      'copied-leave', 'copied-rebind', 'copied-status',
++                      'copied-readonly', 'execution-return',
++                      'fresh-child-interval', 'atfork-failure',
++                      'cache-suspended', 'no-record', 'layout',
++                      'self-cpu', 'self-io', 'upgrade']
++    outcome = scenario in ['self-cpu', 'self-io', 'upgrade'] ? 'deadlock' : 'success'
++    test('test-crucible-cached-writer-' + scenario, python,
++         args: [cached_writer_runner, cached_writer_test, scenario, outcome],
++         timeout: 15, suite: ['unit', 'crucible-cached-writer'])
++  endforeach
++  cached_writer_omissions = [
++    ['self-cpu', 'omitted-deadlock', ''],
++    ['self-cpu', 'omitted-deadlock', ''],
++    ['upgrade', 'omitted-deadlock', ''],
++    ['cpu-promotion', 'assertion', '!ram_writer_cpus && ram_writer_io == 1'],
++    ['scope-promotion', 'assertion', 'ram_writer_io == 1 && !qemu_hot_fork_current_thread->ram_writer_nested_io_depth'],
++    ['copied-rebind', 'assertion', 'WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT'],
++    ['io-nested', 'assertion', '!qemu_hot_fork_current_thread->ram_writer_nested_io_depth'],
++    ['copied-status', 'assertion', 'WIFEXITED(status) && !WEXITSTATUS(status)'],
++    ['copied-readonly', 'assertion', 'WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT'],
++    ['return-marker', 'assertion', 'writer_locks == before'],
++  ]
++  foreach index : range(10)
++    omission = cached_writer_omissions[index]
++    mutant = executable(
++      'test-crucible-cached-writer-omission-@0@'.format(index),
++      cached_writer_sources[index + 1],
++      dependencies: [glib, threads],
++    )
++    test('test-crucible-cached-writer-omission-@0@'.format(index), python,
++         args: [cached_writer_runner, mutant, omission[0], omission[1], omission[2]],
++         timeout: 15, suite: ['unit', 'crucible-cached-writer'])
++  endforeach
++endif
 diff --git a/tests/unit/ptimer-test-stubs.c b/tests/unit/ptimer-test-stubs.c
 index da46dda32d2e69f12a4ce531a91806ee07b027d0..a3b3030ce1393b2411ead4a7a31e2d558fdf8b7c 100644
 --- a/tests/unit/ptimer-test-stubs.c
@@ -224776,6 +225192,57 @@ index 09ac56da9ebf8c1f75b14c62fd37eef102693e77..7b482ca2fab9e776e69a9c4e460f88a4
  
  struct QEMUTimerList {
      QEMUTimer active_timers;
+diff --git a/tests/unit/run-crucible-cached-writer.py b/tests/unit/run-crucible-cached-writer.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..77d40b9250125b01426cceb462f84eada9b56317
+--- /dev/null
++++ b/tests/unit/run-crucible-cached-writer.py
+@@ -0,0 +1,45 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check exact bounded child outcomes, including deliberate abort controls."""
++
++import argparse
++import json
++import resource
++import signal
++import subprocess
++import sys
++
++
++def limits():
++    resource.setrlimit(resource.RLIMIT_AS, (6 * 1024**3, 6 * 1024**3))
++    resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
++    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('binary')
++    parser.add_argument('case')
++    parser.add_argument('outcome', choices=('success', 'deadlock', 'omitted-deadlock', 'assertion'))
++    parser.add_argument('assertion', nargs='?')
++    args = parser.parse_args()
++    if args.outcome == 'assertion' and not args.assertion:
++        parser.error('assertion outcome needs the exact invariant')
++    result = subprocess.run([args.binary, args.case], capture_output=True,
++                            text=True, preexec_fn=limits, timeout=10)
++    print(json.dumps({'case': args.case, 'expected': args.outcome,
++                      'returncode': result.returncode,
++                      'stdout': result.stdout, 'stderr': result.stderr}, indent=2))
++    if args.outcome == 'success':
++        valid = result.returncode == 0
++    elif args.outcome == 'omitted-deadlock':
++        valid = result.returncode == 0 and not result.stdout and not result.stderr
++    else:
++        message = ('qemu: qemu_thread_ram_writer_enter: Resource deadlock avoided'
++                   if args.outcome == 'deadlock'
++                   else 'Assertion `' + args.assertion + "' failed.")
++        valid = result.returncode == -signal.SIGABRT and message in result.stderr
++    return 0 if valid else 1
++
++
++if __name__ == '__main__':
++    sys.exit(main())
 diff --git a/tests/unit/test-aio.c b/tests/unit/test-aio.c
 index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..6e635d5f9e406c81fe9ddd2cb57fe589cd259483 100644
 --- a/tests/unit/test-aio.c
@@ -232805,6 +233272,426 @@ index 0000000000000000000000000000000000000000..f36e51da6056a7fa343f3c951b2472df
 +    g_test_add_func("/arm/pmu-deadline", test_pmu_deadline);
 +    g_test_add_func("/arm/ordinary", test_ordinary);
 +    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-cached-writer.c b/tests/unit/test-crucible-cached-writer.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..2f3d5024f23d2a00d35ae44fb111e2a1e5bde5a3
+--- /dev/null
++++ b/tests/unit/test-crucible-cached-writer.c
+@@ -0,0 +1,414 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++static uint8_t memory[64];
++static MemoryRegionCache cache = { .ptr = memory, .len = sizeof(memory) };
++static int cpu_operand;
++
++static void enroll(void)
++{
++    assert(!qemu_hot_fork_current_thread);
++    qemu_hot_fork_current_thread = qemu_hot_fork_thread_register(
++        "writer-control", QEMU_THREAD_JOINABLE, QEMU_THREAD_HOT_FORK_UNCLASSIFIED);
++}
++
++static void retire(void)
++{
++    assert(!ram_writer_owner && !ram_writer_cpus && !ram_writer_io);
++    assert(!qemu_hot_fork_current_thread->ram_writer_io_depth);
++    assert(!qemu_hot_fork_current_thread->ram_writer_nested_io_depth);
++    qemu_hot_fork_thread_unregister(qemu_hot_fork_current_thread);
++}
++
++static void cached_writes(void)
++{
++    const uint8_t copy[] = { 11, 12, 13 };
++
++    address_space_stb_cached(&cache, 0, 9, 0, NULL);
++    address_space_stw_le_cached(&cache, 2, 0x1234, 0, NULL);
++    address_space_stw_be_cached(&cache, 4, 0x1234, 0, NULL);
++    address_space_stl_le_cached(&cache, 8, 0x12345678, 0, NULL);
++    address_space_stl_be_cached(&cache, 12, 0x12345678, 0, NULL);
++    address_space_stq_le_cached(&cache, 16, UINT64_C(0x123456789abcdef0), 0, NULL);
++    address_space_stq_be_cached(&cache, 24, UINT64_C(0x123456789abcdef0), 0, NULL);
++    assert(address_space_write_cached(&cache, 32, copy, sizeof(copy)) == MEMTX_OK);
++    assert(memory[0] == 9 && memory[2] == 0x34 && memory[4] == 0x12);
++    assert(memory[8] == 0x78 && memory[12] == 0x12);
++    assert(memory[16] == 0xf0 && memory[24] == 0x12);
++    assert(!memcmp(memory + 32, copy, sizeof(copy)));
++}
++
++static pthread_barrier_t phases;
++static void barrier(void)
++{
++    int status = pthread_barrier_wait(&phases);
++    assert(!status || status == PTHREAD_BARRIER_SERIAL_THREAD);
++}
++
++static void *foreign_closer(void *unused)
++{
++    QemuThreadRamWriterTransaction close = {0};
++    (void)unused;
++
++    enroll();
++    assert(qemu_thread_ram_writer_close(&close, NULL) == -EBUSY);
++    barrier();
++    barrier();
++    assert(qemu_thread_ram_writer_current(&close) == -EBUSY);
++    barrier();
++    barrier();
++    assert(!qemu_thread_ram_writer_current(&close));
++    assert(!qemu_thread_ram_writer_end(&close));
++    retire();
++    return NULL;
++}
++
++static void foreign_promotion(void)
++{
++    pthread_t closer;
++
++    qemu_thread_ram_writer_enter(&cpu_operand);
++    assert(!pthread_barrier_init(&phases, NULL, 2));
++    assert(!pthread_create(&closer, NULL, foreign_closer, NULL));
++    barrier();
++    /* This real earlier CPU admission remains usable while a foreign close
++     * is Requested. Its outstanding nested IO survives the CPU's return. */
++    cached_writes();
++    qemu_thread_ram_writer_enter(NULL);
++    qemu_thread_ram_writer_leave(&cpu_operand);
++    assert(!ram_writer_cpus && ram_writer_io == 1);
++    barrier();
++    barrier();
++    qemu_thread_ram_writer_leave(NULL);
++    barrier();
++    assert(!pthread_join(closer, NULL));
++    assert(!pthread_barrier_destroy(&phases));
++}
++
++static _Atomic bool foreign_wrote;
++
++static void *new_writer(void *unused)
++{
++    (void)unused;
++    enroll();
++    cached_writes();
++    atomic_store(&foreign_wrote, true);
++    retire();
++    return NULL;
++}
++
++static void foreign_admission(void)
++{
++    pthread_t writer;
++    QemuThreadRamWriterTransaction close = {0};
++
++    assert(!qemu_thread_ram_writer_close(&close, NULL));
++    assert(!pthread_create(&writer, NULL, new_writer, NULL));
++    while (!atomic_load(&writer_waits)) {
++        sched_yield();
++    }
++    assert(!atomic_load(&foreign_wrote));
++    assert(!qemu_thread_ram_writer_current(&close));
++    assert(!qemu_thread_ram_writer_end(&close));
++    assert(!pthread_join(writer, NULL));
++    assert(atomic_load(&foreign_wrote));
++}
++
++static void copied_fork(bool leave, bool rebind)
++{
++    int status;
++    pid_t child;
++
++    qemu_thread_ram_writer_enter(&cpu_operand);
++    if (leave) {
++        qemu_thread_ram_writer_enter(NULL);
++    }
++    assert(qemu_thread_current_id() == qemu_hot_fork_current_thread->thread_id);
++    assert(!pthread_mutex_lock(&ram_writer_lock));
++    child = fork();
++    assert(child >= 0);
++    if (!child) {
++        alarm(2);
++        if (rebind) {
++            /* Literal child registry/cache rebinding cuts; the outstanding
++             * admitted writer identity must not follow the mutable row. */
++            int64_t child_thread_id = qemu_get_thread_id();
++            QemuHotForkThreadRecord *coordinator = qemu_hot_fork_current_thread;
++            crucible_mutex_owner_cache_refresh(child_thread_id);
++            coordinator->thread_id = child_thread_id;
++        }
++        if (leave) {
++            qemu_thread_ram_writer_leave(NULL);
++        } else {
++            address_space_stb_cached(&cache, 0, 9, 0, NULL);
++        }
++        _exit(0);
++    }
++    assert(waitpid(child, &status, 0) == child);
++    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
++    assert(!pthread_mutex_unlock(&ram_writer_lock));
++    if (leave) {
++        qemu_thread_ram_writer_leave(NULL);
++    }
++    qemu_thread_ram_writer_leave(&cpu_operand);
++}
++
++static void copied_status(void)
++{
++    QemuThreadRamWriterScope scope = {0};
++    QemuThreadRamWriterTransaction close = {0};
++    pid_t child;
++    int status;
++
++    qemu_thread_ram_writer_enter(&cpu_operand);
++    assert(!qemu_thread_ram_writer_scope_enter(&scope));
++    assert(qemu_thread_ram_writer_close(&close, &cpu_operand) == -EBUSY);
++    assert(!pthread_mutex_lock(&ram_writer_lock));
++    child = fork();
++    assert(child >= 0);
++    if (!child) {
++        QemuThreadRamWriterScope next = {0};
++        QemuThreadRamWriterTransaction copied_close = {0};
++        QemuThreadRamCpuConstruction construction = {0};
++        alarm(2);
++        assert(qemu_thread_ram_writer_scope_enter(&next) == -ESTALE);
++        assert(qemu_thread_ram_writer_scope_try_enter(&next) == -ESTALE);
++        assert(qemu_thread_ram_writer_scope_leave(&scope) == -ESTALE);
++        assert(qemu_thread_ram_writer_alias_lend(&scope) == -ESTALE);
++        assert(qemu_thread_ram_writer_close(&copied_close, NULL) == -ESTALE);
++        assert(qemu_thread_ram_writer_current(&close) == -ESTALE);
++        assert(qemu_thread_ram_writer_end(&close) == -ESTALE);
++        assert(qemu_thread_ram_cpu_construction_begin(&construction) == -ESTALE);
++        assert(qemu_thread_ram_cpu_construction_current(&construction) == -ESTALE);
++        assert(qemu_thread_ram_cpu_construction_end(&construction) == -ESTALE);
++        assert(qemu_thread_ram_cpu_construction_upgrade_writer(&construction, &copied_close) == -ESTALE);
++        _exit(0);
++    }
++    assert(waitpid(child, &status, 0) == child);
++    assert(WIFEXITED(status) && !WEXITSTATUS(status));
++    assert(!pthread_mutex_unlock(&ram_writer_lock));
++    assert(!qemu_thread_ram_writer_scope_leave(&scope));
++    assert(!qemu_thread_ram_writer_current(&close));
++    assert(!qemu_thread_ram_writer_end(&close));
++    qemu_thread_ram_writer_leave(&cpu_operand);
++}
++
++static void copied_readonly(void)
++{
++    QemuThreadRamWriterTransaction close = {0};
++    int status;
++    pid_t child;
++
++    assert(!qemu_thread_ram_writer_close(&close, NULL));
++    assert(!pthread_mutex_lock(&ram_writer_lock));
++    child = fork();
++    assert(child >= 0);
++    if (!child) {
++        int64_t child_thread_id = qemu_get_thread_id();
++        QemuHotForkThreadRecord *coordinator = qemu_hot_fork_current_thread;
++        alarm(2);
++        crucible_mutex_owner_cache_refresh(child_thread_id);
++        coordinator->thread_id = child_thread_id;
++        cached_writes();
++        _exit(0);
++    }
++    assert(waitpid(child, &status, 0) == child);
++    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
++    assert(!pthread_mutex_unlock(&ram_writer_lock));
++    assert(!qemu_thread_ram_writer_end(&close));
++}
++
++static void fresh_child_interval(void)
++{
++    pid_t child = fork();
++    int status;
++
++    assert(child >= 0);
++    if (!child) {
++        int64_t child_thread_id = qemu_get_thread_id();
++        QemuHotForkThreadRecord *coordinator = qemu_hot_fork_current_thread;
++        /* Literal rebind slice only: this fixture does not authenticate the
++         * complete QEMU carried-mutex/runtime reconstruction transaction. */
++        crucible_mutex_owner_cache_refresh(child_thread_id);
++        coordinator->thread_id = child_thread_id;
++        qemu_thread_ram_writer_enter(&cpu_operand);
++        cached_writes();
++        qemu_thread_ram_writer_leave(&cpu_operand);
++        assert(!ram_writer_cpus && !ram_writer_io);
++        _exit(0);
++    }
++    assert(waitpid(child, &status, 0) == child);
++    assert(WIFEXITED(status) && !WEXITSTATUS(status));
++}
++
++int main(int argc, char **argv)
++{
++    const char *mode;
++    QemuThreadRamWriterTransaction close = {0};
++    QemuThreadRamWriterScope scope = {0};
++    unsigned before;
++
++    assert(argc == 2);
++    mode = argv[1];
++    alarm(6);
++    if (!strcmp(mode, "no-record")) {
++        assert(!qemu_hot_fork_current_thread);
++        before = writer_locks;
++        cached_writes();
++        assert(writer_locks == before + 16);
++        printf("unregistered Main/IO: 8 accesses, 16 writer locks + 16 unlocks; no ID accessor\n");
++        return 0;
++    }
++    enroll();
++    if (!strcmp(mode, "enrolled-ordinary")) {
++        (void)qemu_thread_current_id();
++        unsigned ids = native_id_calls;
++        before = writer_locks;
++        cached_writes();
++        assert(writer_locks == before + 16 && native_id_calls == ids);
++        printf("enrolled Main/IO without interval: 8 accesses, 16 writer locks + 16 unlocks; 16 cached ID accessor calls on enter/return\n");
++    } else if (!strcmp(mode, "cpu-cached")) {
++        qemu_thread_ram_writer_enter(&cpu_operand);
++        (void)qemu_thread_current_id();
++        unsigned ids = native_id_calls;
++        before = writer_locks;
++        cached_writes();
++        assert(writer_locks == before && native_id_calls == ids);
++        assert(ram_writer_cpus == 1 && !ram_writer_io);
++        assert(!qemu_hot_fork_current_thread->ram_writer_io_depth);
++        qemu_thread_ram_writer_leave(&cpu_operand);
++        printf("nested CPU: 8 accesses, zero writer locks/ID syscalls after cache warmup; 16 ID accessor calls\n");
++    } else if (!strcmp(mode, "io-nested") || !strcmp(mode, "plain-return-first")) {
++        qemu_thread_ram_writer_enter(NULL);
++        before = writer_locks;
++        qemu_thread_ram_writer_enter(NULL);
++        cached_writes();
++        assert(writer_locks == before && ram_writer_io == 1);
++        assert(qemu_hot_fork_current_thread->ram_writer_io_depth == 2);
++        qemu_thread_ram_writer_leave(NULL);
++        assert(ram_writer_io == 1 && qemu_hot_fork_current_thread->ram_writer_io_depth == 1);
++        assert(!qemu_hot_fork_current_thread->ram_writer_nested_io_depth);
++        qemu_thread_ram_writer_leave(NULL);
++    } else if (!strcmp(mode, "scope-nested") || !strcmp(mode, "scope-promotion")) {
++        assert(!qemu_thread_ram_writer_scope_enter(&scope));
++        before = writer_locks;
++        cached_writes();
++        assert(writer_locks == before && ram_writer_io == 1);
++        if (!strcmp(mode, "scope-promotion")) {
++            qemu_thread_ram_writer_enter(NULL);
++            assert(!qemu_thread_ram_writer_scope_leave(&scope));
++            assert(ram_writer_io == 1 && !qemu_hot_fork_current_thread->ram_writer_nested_io_depth);
++            assert(qemu_thread_ram_writer_close(&close, NULL) == -EBUSY);
++            qemu_thread_ram_writer_leave(NULL);
++            assert(!qemu_thread_ram_writer_current(&close));
++            assert(!qemu_thread_ram_writer_end(&close));
++        } else {
++            assert(!qemu_thread_ram_writer_scope_leave(&scope));
++        }
++    } else if (!strcmp(mode, "cpu-promotion")) {
++        qemu_thread_ram_writer_enter(&cpu_operand);
++        qemu_thread_ram_writer_enter(NULL);
++        qemu_thread_ram_writer_leave(&cpu_operand);
++        assert(!ram_writer_cpus && ram_writer_io == 1);
++        assert(!qemu_hot_fork_current_thread->ram_writer_nested_io_depth);
++        assert(qemu_thread_ram_writer_close(&close, NULL) == -EBUSY);
++        qemu_thread_ram_writer_leave(NULL);
++        assert(!qemu_thread_ram_writer_current(&close));
++        assert(!qemu_thread_ram_writer_end(&close));
++    } else if (!strcmp(mode, "foreign-close")) {
++        foreign_promotion();
++    } else if (!strcmp(mode, "foreign-admission")) {
++        foreign_admission();
++    } else if (!strcmp(mode, "return-marker")) {
++        qemu_thread_ram_writer_enter(&cpu_operand);
++        assert(!qemu_thread_ram_writer_close(&close, &cpu_operand));
++        assert(!qemu_thread_ram_writer_end(&close));
++        before = writer_locks;
++        cached_writes();
++        assert(writer_locks == before);
++        qemu_thread_ram_writer_leave(&cpu_operand);
++    } else if (!strcmp(mode, "alias")) {
++        assert(!qemu_thread_ram_writer_scope_try_enter(&scope));
++        assert(!qemu_thread_ram_writer_alias_lend(&scope));
++        assert(qemu_thread_ram_writer_close(&close, NULL) == -EBUSY);
++        assert(!qemu_thread_ram_writer_scope_leave(&scope));
++        assert(qemu_thread_ram_writer_current(&close) == -EBUSY);
++        qemu_thread_ram_writer_alias_return();
++        assert(!qemu_thread_ram_writer_current(&close));
++        assert(!qemu_thread_ram_writer_end(&close));
++    } else if (!strcmp(mode, "copied-fork") || !strcmp(mode, "copied-leave") || !strcmp(mode, "copied-rebind")) {
++        copied_fork(!strcmp(mode, "copied-leave"), !strcmp(mode, "copied-rebind"));
++    } else if (!strcmp(mode, "copied-status")) {
++        copied_status();
++    } else if (!strcmp(mode, "copied-readonly")) {
++        copied_readonly();
++    } else if (!strcmp(mode, "execution-return")) {
++        QemuThreadRamCpuExecutionWitness witness = {0};
++        qemu_thread_ram_writer_enter(&cpu_operand);
++        assert(!qemu_thread_ram_cpu_execution_borrow(&witness, &cpu_operand));
++        assert(!qemu_thread_ram_cpu_execution_current(&witness));
++        assert(qemu_thread_ram_cpu_execution_ended(&witness) == -EBUSY);
++        qemu_thread_ram_writer_enter(NULL);
++        qemu_thread_ram_writer_leave(&cpu_operand);
++        assert(!qemu_thread_ram_cpu_execution_ended(&witness));
++        assert(!qemu_thread_ram_cpu_execution_return(&witness));
++        qemu_thread_ram_writer_leave(NULL);
++    } else if (!strcmp(mode, "fresh-child-interval")) {
++        fresh_child_interval();
++    } else if (!strcmp(mode, "atfork-failure")) {
++        refuse_atfork = true;
++        qemu_thread_ram_writer_enter(NULL);
++        before = native_id_calls;
++        cached_writes();
++        assert(!crucible_mutex_owner_cache_enabled);
++        assert(native_id_calls == before + 16);
++        qemu_thread_ram_writer_leave(NULL);
++        copied_fork(false, false);
++        printf("failed atfork registration: uncached native ID checks retained\n");
++    } else if (!strcmp(mode, "cache-suspended")) {
++        (void)qemu_thread_current_id();
++        crucible_mutex_owner_cache_prepare();
++        assert(!crucible_mutex_owner_cached_thread_id);
++        before = native_id_calls;
++        assert(qemu_thread_current_id() == qemu_hot_fork_current_thread->thread_id);
++        assert(qemu_thread_current_id() == qemu_hot_fork_current_thread->thread_id);
++        assert(native_id_calls == before + 2 && !crucible_mutex_owner_cached_thread_id);
++        crucible_mutex_owner_cache_resume();
++    } else if (!strcmp(mode, "self-cpu")) {
++        qemu_thread_ram_writer_enter(&cpu_operand);
++        assert(!qemu_thread_ram_writer_close(&close, &cpu_operand));
++        assert(!qemu_thread_ram_writer_current(&close));
++        cached_writes();
++        return 0;
++    } else if (!strcmp(mode, "self-io")) {
++        qemu_thread_ram_writer_enter(NULL);
++        qemu_thread_ram_writer_enter(NULL);
++        assert(qemu_thread_ram_writer_close(&close, NULL) == -EBUSY);
++        qemu_thread_ram_writer_leave(NULL);
++        assert(qemu_thread_ram_writer_current(&close) == -EBUSY);
++        cached_writes();
++        return 0;
++    } else if (!strcmp(mode, "upgrade")) {
++        QemuThreadRamCpuConstruction construction = {0};
++        assert(!qemu_thread_ram_cpu_construction_begin(&construction));
++        assert(!qemu_thread_ram_cpu_construction_current(&construction));
++        qemu_thread_ram_writer_enter(NULL);
++        assert(qemu_thread_ram_cpu_construction_upgrade_writer(&construction, &close) == -EBUSY);
++        assert(!construction.active && close.active);
++        cached_writes();
++        return 0;
++    } else if (!strcmp(mode, "layout")) {
++        printf("old record=%zu align=%zu; new record=%zu align=%zu; old/new row+GList=%zu/%zu\n",
++               sizeof(OldQemuHotForkThreadRecord), _Alignof(OldQemuHotForkThreadRecord),
++               sizeof(QemuHotForkThreadRecord), _Alignof(QemuHotForkThreadRecord),
++               sizeof(OldQemuHotForkThreadRecord) + sizeof(GList),
++               qemu_thread_hot_fork_record_storage_bytes());
++    } else {
++        abort();
++    }
++    /* Exercise the genuine identity-only construction return too. */
++    QemuThreadRamCpuConstruction returned = {0};
++    assert(!qemu_thread_ram_cpu_construction_begin(&returned));
++    assert(!qemu_thread_ram_cpu_construction_end(&returned));
++    retire();
++    puts(mode);
++    return 0;
 +}
 diff --git a/tests/unit/test-crucible-checkpoint-placement.c b/tests/unit/test-crucible-checkpoint-placement.c
 new file mode 100644
@@ -284086,7 +284973,7 @@ index 4773755fd582e82436159cba2e114e047aae7478..74516a1c97422b317868dfb54686c357
          }
          break;
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171c3931fa3 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..045f20692ad24fc078ab204f6d8dafdec761a7fc 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -22,6 +22,138 @@
@@ -284904,7 +285791,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
      if (err && err != ETIMEDOUT) {
          error_exit(err, __func__);
      }
-@@ -379,49 +1087,1761 @@ typedef struct {
+@@ -379,65 +1087,1931 @@ typedef struct {
      void *(*start_routine)(void *);
      void *arg;
      char *name;
@@ -284930,8 +285817,11 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +     * its own prebirth fee; the fixed writer floor never pays registry rows. */
 +    void *ram_writer_cpu;
 +    unsigned ram_writer_cpu_depth;
++    unsigned ram_writer_nested_io_depth;
 +    uint64_t ram_writer_cpu_execution_generation;
 +    unsigned ram_writer_io_depth;
++    bool ram_writer_closed;
++    int64_t ram_writer_admission_thread_id;
 +} QemuHotForkThreadRecord;
 +
 +static pthread_mutex_t qemu_hot_fork_thread_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -285000,14 +285890,90 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 -#ifndef __clang__
 -#pragma GCC diagnostic ignored "-Wstringop-overflow"
 -#endif
-+}
- 
+-
 -    pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
 -    r = start_routine(arg);
 -    pthread_cleanup_pop(1);
++}
+ 
+-#pragma GCC diagnostic pop
++/* Only an actual admitted interval lends its existing global drain debt. The
++ * fork-invalidated ID corroborates that this is still the admitting thread;
++ * inherited depth must never bypass a copied, possibly locked writer mutex. */
++static bool ram_writer_record_inherited(QemuHotForkThreadRecord *record)
++{
++    int64_t thread_id;
+ 
+-    return r;
++    if (!record) {
++        return false;
++    }
++    thread_id = qemu_thread_current_id();
++    return record->thread_id != thread_id ||
++        ((record->ram_writer_cpu_depth || record->ram_writer_io_depth ||
++          record->ram_writer_closed) &&
++         record->ram_writer_admission_thread_id != thread_id);
+ }
+ 
+-void qemu_thread_create(QemuThread *thread, const char *name,
+-                       void *(*start_routine)(void*),
+-                       void *arg, int mode)
++static void ram_writer_record_current(QemuHotForkThreadRecord *record)
+ {
+-    sigset_t set, oldset;
+-    int err;
+-    pthread_attr_t attr;
+-    QemuThreadArgs *qemu_thread_args;
+-
+-    err = pthread_attr_init(&attr);
+-    if (err) {
+-        error_exit(err, __func__);
++    if (ram_writer_record_inherited(record)) {
++        error_exit(ESTALE, __func__);
+     }
++}
+ 
+-    if (mode == QEMU_THREAD_DETACHED) {
+-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
++/* Registry reconstruction may rebind thread_id after fork. Never rebind an
++ * outstanding writer interval with it: only a fresh zero-debt admission may
++ * capture the current registry identity for subsequent nested use. */
++static void ram_writer_record_admit_locked(QemuHotForkThreadRecord *record)
++{
++    if (record && !record->ram_writer_cpu_depth &&
++        !record->ram_writer_io_depth) {
++        record->ram_writer_admission_thread_id = record->thread_id;
+     }
++}
+ 
+-    /* Leave signal handling to the iothread.  */
++/* An enclosing CPU or explicit scope may return before its nested writes.
++ * Transfer their debt before dropping that parent, under the same close lock. */
++static void ram_writer_promote_nested_locked(QemuHotForkThreadRecord *record)
++{
++    if (record && record->ram_writer_nested_io_depth) {
++        if (ram_writer_io > UINT64_MAX - record->ram_writer_nested_io_depth) {
++            error_exit(EOVERFLOW, __func__);
++        }
++        ram_writer_io += record->ram_writer_nested_io_depth;
++        record->ram_writer_nested_io_depth = 0;
++    }
++}
++
 +void qemu_thread_ram_writer_enter(void *cpu)
 +{
 +    QemuHotForkThreadRecord *record = qemu_hot_fork_current_thread;
++
++    if (record) {
++        ram_writer_record_current(record);
++        if (!cpu && !record->ram_writer_closed &&
++            (record->ram_writer_cpu_depth || record->ram_writer_io_depth)) {
++            assert(record->ram_writer_io_depth != UINT_MAX);
++            record->ram_writer_io_depth++;
++            record->ram_writer_nested_io_depth++;
++            return;
++        }
++    }
 +
 +    pthread_mutex_lock(&ram_writer_lock);
 +    while (ram_writer_owner || (cpu && ram_cpu_construction_owner)) {
@@ -285021,6 +285987,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +        }
 +        pthread_cond_wait(&ram_writer_resume, &ram_writer_lock);
 +    }
++    ram_writer_record_admit_locked(record);
 +    if (cpu) {
 +        assert(record && !record->ram_writer_cpu_depth);
 +        assert(ram_writer_cpus != UINT64_MAX);
@@ -285042,11 +286009,20 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +    }
 +    pthread_mutex_unlock(&ram_writer_lock);
 +}
- 
--#pragma GCC diagnostic pop
++
 +void qemu_thread_ram_writer_leave(void *cpu)
 +{
 +    QemuHotForkThreadRecord *record = qemu_hot_fork_current_thread;
++
++    if (record) {
++        ram_writer_record_current(record);
++    }
++    if (!cpu && record && record->ram_writer_nested_io_depth) {
++        assert(record->ram_writer_io_depth);
++        record->ram_writer_nested_io_depth--;
++        record->ram_writer_io_depth--;
++        return;
++    }
 +
 +    pthread_mutex_lock(&ram_writer_lock);
 +    if (cpu) {
@@ -285064,6 +286040,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +            ram_cpu_execution_witness->ended = true;
 +            ram_cpu_execution_witness->record = NULL;
 +        }
++        ram_writer_promote_nested_locked(record);
 +        record->ram_writer_cpu = NULL;
 +        record->ram_writer_cpu_depth = 0;
 +        ram_writer_cpus--;
@@ -285077,8 +286054,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +    }
 +    pthread_mutex_unlock(&ram_writer_lock);
 +}
- 
--    return r;
++
 +static bool ram_writer_scope_current_locked(QemuThreadRamWriterScope *scope)
 +{
 +    QemuThreadRamWriterScope *member;
@@ -285095,11 +286071,8 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +        }
 +    }
 +    return false;
- }
- 
--void qemu_thread_create(QemuThread *thread, const char *name,
--                       void *(*start_routine)(void*),
--                       void *arg, int mode)
++}
++
 +int qemu_thread_ram_writer_scope_enter(QemuThreadRamWriterScope *scope)
 +{
 +    QemuHotForkThreadRecord *record = qemu_hot_fork_current_thread;
@@ -285108,6 +286081,10 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +    if (!scope || scope->active) {
 +        return -EINVAL;
 +    }
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++
 +    status = pthread_mutex_lock(&ram_writer_lock);
 +    if (status) {
 +        return -status;
@@ -285130,6 +286107,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +        status = -EOVERFLOW;
 +        goto out;
 +    }
++    ram_writer_record_admit_locked(record);
 +    *scope = (QemuThreadRamWriterScope) {
 +        .next = ram_writer_scopes,
 +        .record = record,
@@ -285157,6 +286135,10 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +    if (!scope || scope->active) {
 +        return -EINVAL;
 +    }
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++
 +    status = pthread_mutex_trylock(&ram_writer_lock);
 +    if (status) {
 +        return status == EBUSY ? -EAGAIN : -status;
@@ -285172,6 +286154,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +        status = -EOVERFLOW;
 +        goto out;
 +    }
++    ram_writer_record_admit_locked(record);
 +    *scope = (QemuThreadRamWriterScope) {
 +        .next = ram_writer_scopes,
 +        .record = record,
@@ -285197,6 +286180,13 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +    QemuHotForkThreadRecord *record;
 +    int status = 0;
 +
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (scope && scope->process_id != getpid()) {
++        return -ESTALE;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    if (!ram_writer_scope_current_locked(scope)) {
 +        status = -ESTALE;
@@ -285207,6 +286197,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +    }
 +    *link = scope->next;
 +    assert(ram_writer_io && (!record || record->ram_writer_io_depth));
++    ram_writer_promote_nested_locked(record);
 +    ram_writer_io--;
 +    if (record) {
 +        record->ram_writer_io_depth--;
@@ -285221,6 +286212,13 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +int qemu_thread_ram_writer_alias_lend(QemuThreadRamWriterScope *scope)
 +{
 +    int status;
++
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (scope && scope->process_id != getpid()) {
++        return -ESTALE;
++    }
 +
 +    pthread_mutex_lock(&ram_writer_lock);
 +    if (!ram_writer_scope_current_locked(scope)) {
@@ -285254,13 +286252,13 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +        return -ESTALE;
 +    }
 +    creator = owner->thread;
-+    /* Main has no own-CPU exemption and may acquire before registry enrollment.
-+     * CPU borrowers still require their exact real execution membership row. */
++    /* Main may acquire before enrollment. A saved row must still be this
++     * thread's real row before its read-only marker can be returned. */
 +    return owner->active && owner->generation == ram_writer_generation &&
 +        owner->process_id == getpid() &&
 +        owner->owner_thread_id == qemu_get_thread_id() &&
 +        qemu_thread_is_self(&creator) &&
-+        (!owner->cpu || owner->record == qemu_hot_fork_current_thread) ?
++        (!owner->record || owner->record == qemu_hot_fork_current_thread) ?
 +        0 : -ESTALE;
 +}
 +
@@ -285291,6 +286289,10 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +        (parked_cpu && !qemu_hot_fork_current_thread)) {
 +        return -EINVAL;
 +    }
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    if (ram_writer_owner || ram_cpu_construction_owner ||
 +        ram_writer_generation == UINT64_MAX) {
@@ -285298,7 +286300,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +            -EBUSY : -EOVERFLOW;
 +    } else {
 +        *owner = (QemuThreadRamWriterTransaction) {
-+            .record = parked_cpu ? qemu_hot_fork_current_thread : NULL,
++            .record = qemu_hot_fork_current_thread,
 +            .cpu = parked_cpu,
 +            .generation = ++ram_writer_generation,
 +            .process_id = getpid(),
@@ -285306,6 +286308,10 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +            .active = true,
 +        };
 +        qemu_thread_get_self(&owner->thread);
++        ram_writer_record_admit_locked(owner->record);
++        if (owner->record) {
++            ((QemuHotForkThreadRecord *)owner->record)->ram_writer_closed = true;
++        }
 +        ram_writer_owner = owner;
 +        status = ram_writer_closed_locked(owner);
 +    }
@@ -285316,6 +286322,13 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +int qemu_thread_ram_writer_current(const QemuThreadRamWriterTransaction *owner)
 +{
 +    int status;
++
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (owner && owner->process_id != getpid()) {
++        return -ESTALE;
++    }
 +
 +    pthread_mutex_lock(&ram_writer_lock);
 +    status = ram_writer_identity_locked(owner);
@@ -285330,11 +286343,21 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +{
 +    int status;
 +
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (owner && owner->process_id != getpid()) {
++        return -ESTALE;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    status = ram_writer_identity_locked(owner);
 +    if (!status) {
 +        /* No semantic check or participant collection can strand physical
 +         * return. Foreign in-flight writers still own their original scopes. */
++        if (owner->record) {
++            ((QemuHotForkThreadRecord *)owner->record)->ram_writer_closed = false;
++        }
 +        ram_writer_owner = NULL;
 +        owner->active = false;
 +        pthread_cond_broadcast(&ram_writer_resume);
@@ -285368,6 +286391,10 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +    if (!owner || owner->active) {
 +        return -EINVAL;
 +    }
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    if (ram_writer_owner || ram_cpu_construction_owner ||
 +        ram_cpu_construction_generation == UINT64_MAX) {
@@ -285397,6 +286424,13 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +{
 +    int status;
 +
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (owner && owner->process_id != getpid()) {
++        return -ESTALE;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    status = ram_cpu_construction_identity_locked(owner);
 +    if (!status && ram_writer_cpus) {
@@ -285409,6 +286443,13 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +int qemu_thread_ram_cpu_construction_end(QemuThreadRamCpuConstruction *owner)
 +{
 +    int status;
++
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (owner && owner->process_id != getpid()) {
++        return -ESTALE;
++    }
 +
 +    pthread_mutex_lock(&ram_writer_lock);
 +    status = ram_cpu_construction_identity_locked(owner);
@@ -285429,6 +286470,13 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +    if (!writers || writers->active) {
 +        return -EINVAL;
 +    }
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (cpus && cpus->process_id != getpid()) {
++        return -ESTALE;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    status = ram_cpu_construction_identity_locked(cpus);
 +    if (!status && ram_writer_owner) {
@@ -285443,6 +286491,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +    }
 +    if (!status) {
 +        *writers = (QemuThreadRamWriterTransaction) {
++            .record = qemu_hot_fork_current_thread,
 +            .thread = cpus->thread,
 +            .generation = ++ram_writer_generation,
 +            .process_id = cpus->process_id,
@@ -285451,6 +286500,10 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +        };
 +        /* Both pointers are changed under the same admission mutex. There is
 +         * no wake or interval in which a new CPU or RAM writer may enter. */
++        ram_writer_record_admit_locked(writers->record);
++        if (writers->record) {
++            ((QemuHotForkThreadRecord *)writers->record)->ram_writer_closed = true;
++        }
 +        ram_writer_owner = writers;
 +        ram_cpu_construction_owner = NULL;
 +        cpus->active = false;
@@ -286696,10 +287749,26 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..932094b4851dd89663f5b0cf63a94171
 +void qemu_thread_create(QemuThread *thread, const char *name,
 +                       void *(*start_routine)(void*),
 +                       void *arg, int mode)
- {
-     sigset_t set, oldset;
-     int err;
-@@ -450,18 +2870,135 @@ void qemu_thread_create(QemuThread *thread, const char *name,
++{
++    sigset_t set, oldset;
++    int err;
++    pthread_attr_t attr;
++    QemuThreadArgs *qemu_thread_args;
++
++    err = pthread_attr_init(&attr);
++    if (err) {
++        error_exit(err, __func__);
++    }
++
++    if (mode == QEMU_THREAD_DETACHED) {
++        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
++    }
++
++    /* Leave signal handling to the iothread.  */
+     sigfillset(&set);
+     /* Blocking the signals can result in undefined behaviour. */
+     sigdelset(&set, SIGSEGV);
+@@ -450,18 +3024,135 @@ void qemu_thread_create(QemuThread *thread, const char *name,
      qemu_thread_args->name = g_strdup(name);
      qemu_thread_args->start_routine = start_routine;
      qemu_thread_args->arg = arg;

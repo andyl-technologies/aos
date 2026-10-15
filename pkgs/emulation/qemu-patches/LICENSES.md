@@ -10,6 +10,10 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `tests/unit/crucible-cached-writer-memory.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/extract-crucible-cached-writer.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/run-crucible-cached-writer.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-cached-writer.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-native-invocation.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-callback-child.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-callback-groups.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |

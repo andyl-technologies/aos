@@ -4,7 +4,7 @@
   revision = "d3f2bdbb0ba4851e70c4c9ae9f19a6c88f268d6a";
   tree = "6fa9c59e6c52760b62ec2d1ba66ffc5392992646";
   patch = ./_fixtures/native-costs-baseline-reconstruction.patch;
-  patchSha256 = "334b5483de892e651bd1631830dd7552ea0df3f0c2653aa375ee8e99cd598634";
+  patchSha256 = "6e87f3b39cdc933c9b09a64d6af139b2a51574ccacdcabd9271f00eabf255b6f";
   clockReference = {
     revision = "d3f2bdbb0ba4851e70c4c9ae9f19a6c88f268d6a";
     tree = "6fa9c59e6c52760b62ec2d1ba66ffc5392992646";

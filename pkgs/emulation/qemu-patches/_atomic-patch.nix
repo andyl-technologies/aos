@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "ce6fc3af0da264f7f927dedd7b9d87b0707c35d5aeed341578c3b2f8cdec1815";
-  subject = "plugins: retain startup custody and physical workspace ownership";
-  body = "Capture the complete startup Source, Native callback lifecycle, nominal\nregistration groups and receiving custody with their owning SDK surfaces.\nPreserve physical workspace backing and mapping ownership, setup exchange\ncount validation, and genuine declaration ownership across the configured\nSource and preexec producers. These physical holders do not issue operating\ndigest, whole-Park, standing or action authority.\n\nKeep the workspace transfer on the existing public Runtime v3 nominal alias.\nDefine the absent-workspace unit provider after the generated canonical\nSource storage, retaining its genuine earlier prototype and output identity\nchecks. Preserve all 141 scenarios and rebind the owning extractor inputs.\n\nThe source remains inactive; complete operating and terminal joins are\nseparate. Include the actual generator inputs and corresponding-source\nnotices without claiming runtime or complete payment qualification.";
-  commit = "230fd5b6740d793b21d4708c5e7ff4ca1ed228ea";
-  tree = "f349af153c42be10816227eef190388eb6313f67";
+  sha256 = "c632f74a99e481cd9bb2547e5b6111e64a23b38f5b29fe9bb0f10c268fe4bbde";
+  subject = "plugins: retain startup custody and nested writer intervals";
+  body = "Capture the complete startup Source, Native callback lifecycle, nominal\nregistration groups and receiving custody with their owning SDK surfaces.\nPreserve physical workspace backing and mapping ownership, setup exchange\ncount validation, and genuine declaration ownership across the configured\nSource and preexec producers. These physical holders do not issue operating\ndigest, whole-Park, standing or action authority.\n\nKeep workspace transfer on the existing public Runtime v3 nominal alias.\nDefine the absent-workspace unit provider after canonical Source storage,\nretaining its genuine prototype, output identity checks and 141 scenarios.\n\nReuse genuine enrolled CPU and IO writer intervals for nested cached stores.\nPromote outstanding nested writes before returning their enclosing admission,\nand preserve read-only close, foreign drain, alias and copied-custody guards.\nRegister 25 literal-body scenarios and ten targeted omission controls using\nthe configured compiler and explicit physical operand adapters.\n\nThe source remains inactive; complete operating and terminal joins are\nseparate. Include actual generator inputs and corresponding-source notices\nwithout claiming runtime performance or complete payment qualification.";
+  commit = "ab97de831c930939a20d88fca873c5b6db68833e";
+  tree = "652e811df2d31fa8f8542de3979f502f202317ac";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-workspace-fixture-cumulative";
+  branchRef = "dplecki/native-cached-writer-cumulative";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "7bab2934af4e4d33a133ec44bcfa0f3a781a4a4b683ce18fe733544f4e62c4f0";
+  bundleSha256 = "13cdcb48b43cae87be2190ef01a0308d9d63a49a3f9adcfc4aef4f544bfd24f0";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-15T02:17:44-07:00";
+  deterministicPatchDate = "2026-10-15T04:44:51-07:00";
 
   additionalCapabilities = [
     {

@@ -445,7 +445,7 @@ index 4eb0540ef5f26a902381bd985e7e0e4410800034..8c78247aa6a1c0d10fe52311c552eadb
          }
      }
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 2b75231..932094b 100644
+index 2b75231..045f206 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -30,6 +30,7 @@ typedef struct CrucibleHotForkMutexEntry {
@@ -514,7 +514,7 @@ index 2b75231..932094b 100644
  typedef struct QemuHotForkThreadRecord {
      int64_t thread_id;
      char name[QEMU_HOT_FORK_THREAD_NAME_MAX + 1];
-@@ -1096,6 +1103,13 @@ typedef struct QemuHotForkThreadRecord {
+@@ -1096,6 +1103,16 @@ typedef struct QemuHotForkThreadRecord {
      bool name_valid;
      bool tracked;
      QemuThreadHotForkDisposition disposition;
@@ -523,12 +523,15 @@ index 2b75231..932094b 100644
 +     * its own prebirth fee; the fixed writer floor never pays registry rows. */
 +    void *ram_writer_cpu;
 +    unsigned ram_writer_cpu_depth;
++    unsigned ram_writer_nested_io_depth;
 +    uint64_t ram_writer_cpu_execution_generation;
 +    unsigned ram_writer_io_depth;
++    bool ram_writer_closed;
++    int64_t ram_writer_admission_thread_id;
  } QemuHotForkThreadRecord;
  
  static pthread_mutex_t qemu_hot_fork_thread_lock = PTHREAD_MUTEX_INITIALIZER;
-@@ -1107,6 +1121,586 @@ static uint64_t qemu_hot_fork_thread_generation;
+@@ -1107,6 +1124,737 @@ static uint64_t qemu_hot_fork_thread_generation;
  static int64_t qemu_hot_fork_coordinator_thread_id;
  static __thread QemuHotForkThreadRecord *qemu_hot_fork_current_thread;
  
@@ -567,9 +570,68 @@ index 2b75231..932094b 100644
 +    }
 +}
 +
++/* Only an actual admitted interval lends its existing global drain debt. The
++ * fork-invalidated ID corroborates that this is still the admitting thread;
++ * inherited depth must never bypass a copied, possibly locked writer mutex. */
++static bool ram_writer_record_inherited(QemuHotForkThreadRecord *record)
++{
++    int64_t thread_id;
++
++    if (!record) {
++        return false;
++    }
++    thread_id = qemu_thread_current_id();
++    return record->thread_id != thread_id ||
++        ((record->ram_writer_cpu_depth || record->ram_writer_io_depth ||
++          record->ram_writer_closed) &&
++         record->ram_writer_admission_thread_id != thread_id);
++}
++
++static void ram_writer_record_current(QemuHotForkThreadRecord *record)
++{
++    if (ram_writer_record_inherited(record)) {
++        error_exit(ESTALE, __func__);
++    }
++}
++
++/* Registry reconstruction may rebind thread_id after fork. Never rebind an
++ * outstanding writer interval with it: only a fresh zero-debt admission may
++ * capture the current registry identity for subsequent nested use. */
++static void ram_writer_record_admit_locked(QemuHotForkThreadRecord *record)
++{
++    if (record && !record->ram_writer_cpu_depth &&
++        !record->ram_writer_io_depth) {
++        record->ram_writer_admission_thread_id = record->thread_id;
++    }
++}
++
++/* An enclosing CPU or explicit scope may return before its nested writes.
++ * Transfer their debt before dropping that parent, under the same close lock. */
++static void ram_writer_promote_nested_locked(QemuHotForkThreadRecord *record)
++{
++    if (record && record->ram_writer_nested_io_depth) {
++        if (ram_writer_io > UINT64_MAX - record->ram_writer_nested_io_depth) {
++            error_exit(EOVERFLOW, __func__);
++        }
++        ram_writer_io += record->ram_writer_nested_io_depth;
++        record->ram_writer_nested_io_depth = 0;
++    }
++}
++
 +void qemu_thread_ram_writer_enter(void *cpu)
 +{
 +    QemuHotForkThreadRecord *record = qemu_hot_fork_current_thread;
++
++    if (record) {
++        ram_writer_record_current(record);
++        if (!cpu && !record->ram_writer_closed &&
++            (record->ram_writer_cpu_depth || record->ram_writer_io_depth)) {
++            assert(record->ram_writer_io_depth != UINT_MAX);
++            record->ram_writer_io_depth++;
++            record->ram_writer_nested_io_depth++;
++            return;
++        }
++    }
 +
 +    pthread_mutex_lock(&ram_writer_lock);
 +    while (ram_writer_owner || (cpu && ram_cpu_construction_owner)) {
@@ -583,6 +645,7 @@ index 2b75231..932094b 100644
 +        }
 +        pthread_cond_wait(&ram_writer_resume, &ram_writer_lock);
 +    }
++    ram_writer_record_admit_locked(record);
 +    if (cpu) {
 +        assert(record && !record->ram_writer_cpu_depth);
 +        assert(ram_writer_cpus != UINT64_MAX);
@@ -609,6 +672,16 @@ index 2b75231..932094b 100644
 +{
 +    QemuHotForkThreadRecord *record = qemu_hot_fork_current_thread;
 +
++    if (record) {
++        ram_writer_record_current(record);
++    }
++    if (!cpu && record && record->ram_writer_nested_io_depth) {
++        assert(record->ram_writer_io_depth);
++        record->ram_writer_nested_io_depth--;
++        record->ram_writer_io_depth--;
++        return;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    if (cpu) {
 +        assert(record && record->ram_writer_cpu == cpu &&
@@ -625,6 +698,7 @@ index 2b75231..932094b 100644
 +            ram_cpu_execution_witness->ended = true;
 +            ram_cpu_execution_witness->record = NULL;
 +        }
++        ram_writer_promote_nested_locked(record);
 +        record->ram_writer_cpu = NULL;
 +        record->ram_writer_cpu_depth = 0;
 +        ram_writer_cpus--;
@@ -665,6 +739,10 @@ index 2b75231..932094b 100644
 +    if (!scope || scope->active) {
 +        return -EINVAL;
 +    }
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++
 +    status = pthread_mutex_lock(&ram_writer_lock);
 +    if (status) {
 +        return -status;
@@ -687,6 +765,7 @@ index 2b75231..932094b 100644
 +        status = -EOVERFLOW;
 +        goto out;
 +    }
++    ram_writer_record_admit_locked(record);
 +    *scope = (QemuThreadRamWriterScope) {
 +        .next = ram_writer_scopes,
 +        .record = record,
@@ -714,6 +793,10 @@ index 2b75231..932094b 100644
 +    if (!scope || scope->active) {
 +        return -EINVAL;
 +    }
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++
 +    status = pthread_mutex_trylock(&ram_writer_lock);
 +    if (status) {
 +        return status == EBUSY ? -EAGAIN : -status;
@@ -729,6 +812,7 @@ index 2b75231..932094b 100644
 +        status = -EOVERFLOW;
 +        goto out;
 +    }
++    ram_writer_record_admit_locked(record);
 +    *scope = (QemuThreadRamWriterScope) {
 +        .next = ram_writer_scopes,
 +        .record = record,
@@ -754,6 +838,13 @@ index 2b75231..932094b 100644
 +    QemuHotForkThreadRecord *record;
 +    int status = 0;
 +
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (scope && scope->process_id != getpid()) {
++        return -ESTALE;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    if (!ram_writer_scope_current_locked(scope)) {
 +        status = -ESTALE;
@@ -764,6 +855,7 @@ index 2b75231..932094b 100644
 +    }
 +    *link = scope->next;
 +    assert(ram_writer_io && (!record || record->ram_writer_io_depth));
++    ram_writer_promote_nested_locked(record);
 +    ram_writer_io--;
 +    if (record) {
 +        record->ram_writer_io_depth--;
@@ -778,6 +870,13 @@ index 2b75231..932094b 100644
 +int qemu_thread_ram_writer_alias_lend(QemuThreadRamWriterScope *scope)
 +{
 +    int status;
++
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (scope && scope->process_id != getpid()) {
++        return -ESTALE;
++    }
 +
 +    pthread_mutex_lock(&ram_writer_lock);
 +    if (!ram_writer_scope_current_locked(scope)) {
@@ -811,13 +910,13 @@ index 2b75231..932094b 100644
 +        return -ESTALE;
 +    }
 +    creator = owner->thread;
-+    /* Main has no own-CPU exemption and may acquire before registry enrollment.
-+     * CPU borrowers still require their exact real execution membership row. */
++    /* Main may acquire before enrollment. A saved row must still be this
++     * thread's real row before its read-only marker can be returned. */
 +    return owner->active && owner->generation == ram_writer_generation &&
 +        owner->process_id == getpid() &&
 +        owner->owner_thread_id == qemu_get_thread_id() &&
 +        qemu_thread_is_self(&creator) &&
-+        (!owner->cpu || owner->record == qemu_hot_fork_current_thread) ?
++        (!owner->record || owner->record == qemu_hot_fork_current_thread) ?
 +        0 : -ESTALE;
 +}
 +
@@ -848,6 +947,10 @@ index 2b75231..932094b 100644
 +        (parked_cpu && !qemu_hot_fork_current_thread)) {
 +        return -EINVAL;
 +    }
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    if (ram_writer_owner || ram_cpu_construction_owner ||
 +        ram_writer_generation == UINT64_MAX) {
@@ -855,7 +958,7 @@ index 2b75231..932094b 100644
 +            -EBUSY : -EOVERFLOW;
 +    } else {
 +        *owner = (QemuThreadRamWriterTransaction) {
-+            .record = parked_cpu ? qemu_hot_fork_current_thread : NULL,
++            .record = qemu_hot_fork_current_thread,
 +            .cpu = parked_cpu,
 +            .generation = ++ram_writer_generation,
 +            .process_id = getpid(),
@@ -863,6 +966,10 @@ index 2b75231..932094b 100644
 +            .active = true,
 +        };
 +        qemu_thread_get_self(&owner->thread);
++        ram_writer_record_admit_locked(owner->record);
++        if (owner->record) {
++            ((QemuHotForkThreadRecord *)owner->record)->ram_writer_closed = true;
++        }
 +        ram_writer_owner = owner;
 +        status = ram_writer_closed_locked(owner);
 +    }
@@ -873,6 +980,13 @@ index 2b75231..932094b 100644
 +int qemu_thread_ram_writer_current(const QemuThreadRamWriterTransaction *owner)
 +{
 +    int status;
++
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (owner && owner->process_id != getpid()) {
++        return -ESTALE;
++    }
 +
 +    pthread_mutex_lock(&ram_writer_lock);
 +    status = ram_writer_identity_locked(owner);
@@ -887,11 +1001,21 @@ index 2b75231..932094b 100644
 +{
 +    int status;
 +
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (owner && owner->process_id != getpid()) {
++        return -ESTALE;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    status = ram_writer_identity_locked(owner);
 +    if (!status) {
 +        /* No semantic check or participant collection can strand physical
 +         * return. Foreign in-flight writers still own their original scopes. */
++        if (owner->record) {
++            ((QemuHotForkThreadRecord *)owner->record)->ram_writer_closed = false;
++        }
 +        ram_writer_owner = NULL;
 +        owner->active = false;
 +        pthread_cond_broadcast(&ram_writer_resume);
@@ -925,6 +1049,10 @@ index 2b75231..932094b 100644
 +    if (!owner || owner->active) {
 +        return -EINVAL;
 +    }
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    if (ram_writer_owner || ram_cpu_construction_owner ||
 +        ram_cpu_construction_generation == UINT64_MAX) {
@@ -954,6 +1082,13 @@ index 2b75231..932094b 100644
 +{
 +    int status;
 +
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (owner && owner->process_id != getpid()) {
++        return -ESTALE;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    status = ram_cpu_construction_identity_locked(owner);
 +    if (!status && ram_writer_cpus) {
@@ -966,6 +1101,13 @@ index 2b75231..932094b 100644
 +int qemu_thread_ram_cpu_construction_end(QemuThreadRamCpuConstruction *owner)
 +{
 +    int status;
++
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (owner && owner->process_id != getpid()) {
++        return -ESTALE;
++    }
 +
 +    pthread_mutex_lock(&ram_writer_lock);
 +    status = ram_cpu_construction_identity_locked(owner);
@@ -986,6 +1128,13 @@ index 2b75231..932094b 100644
 +    if (!writers || writers->active) {
 +        return -EINVAL;
 +    }
++    if (ram_writer_record_inherited(qemu_hot_fork_current_thread)) {
++        return -ESTALE;
++    }
++    if (cpus && cpus->process_id != getpid()) {
++        return -ESTALE;
++    }
++
 +    pthread_mutex_lock(&ram_writer_lock);
 +    status = ram_cpu_construction_identity_locked(cpus);
 +    if (!status && ram_writer_owner) {
@@ -1000,6 +1149,7 @@ index 2b75231..932094b 100644
 +    }
 +    if (!status) {
 +        *writers = (QemuThreadRamWriterTransaction) {
++            .record = qemu_hot_fork_current_thread,
 +            .thread = cpus->thread,
 +            .generation = ++ram_writer_generation,
 +            .process_id = cpus->process_id,
@@ -1008,6 +1158,10 @@ index 2b75231..932094b 100644
 +        };
 +        /* Both pointers are changed under the same admission mutex. There is
 +         * no wake or interval in which a new CPU or RAM writer may enter. */
++        ram_writer_record_admit_locked(writers->record);
++        if (writers->record) {
++            ((QemuHotForkThreadRecord *)writers->record)->ram_writer_closed = true;
++        }
 +        ram_writer_owner = writers;
 +        ram_cpu_construction_owner = NULL;
 +        cpus->active = false;
@@ -1115,7 +1269,7 @@ index 2b75231..932094b 100644
  static QemuHotForkThreadRecord *qemu_hot_fork_thread_register(
      const char *name, int mode, QemuThreadHotForkDisposition disposition)
  {
-@@ -1127,6 +1721,7 @@ static QemuHotForkThreadRecord *qemu_hot_fork_thread_register(
+@@ -1127,6 +1875,7 @@ static QemuHotForkThreadRecord *qemu_hot_fork_thread_register(
      if (err) {
          error_exit(err, __func__);
      }
@@ -1123,7 +1277,7 @@ index 2b75231..932094b 100644
      if (qemu_hot_fork_thread_count == QEMU_HOT_FORK_THREAD_INVENTORY_MAX) {
          qemu_hot_fork_thread_overflow++;
      } else {
-@@ -1149,6 +1744,7 @@ static void qemu_hot_fork_thread_start_begin(void)
+@@ -1149,6 +1898,7 @@ static void qemu_hot_fork_thread_start_begin(void)
      if (err) {
          error_exit(err, __func__);
      }
@@ -1131,7 +1285,7 @@ index 2b75231..932094b 100644
      if (qemu_hot_fork_thread_starts_in_flight == SIZE_MAX ||
          qemu_hot_fork_thread_generation == UINT64_MAX) {
          error_exit(EOVERFLOW, __func__);
-@@ -1168,6 +1764,7 @@ static void qemu_hot_fork_thread_start_end(void)
+@@ -1168,6 +1918,7 @@ static void qemu_hot_fork_thread_start_end(void)
      if (err) {
          error_exit(err, __func__);
      }
@@ -1139,7 +1293,7 @@ index 2b75231..932094b 100644
      assert(qemu_hot_fork_thread_starts_in_flight > 0);
      if (qemu_hot_fork_thread_generation == UINT64_MAX) {
          error_exit(EOVERFLOW, __func__);
-@@ -1188,10 +1785,12 @@ void qemu_thread_hot_fork_set_current_disposition(
+@@ -1188,10 +1939,12 @@ void qemu_thread_hot_fork_set_current_disposition(
  
      assert(record);
      assert(disposition != QEMU_THREAD_HOT_FORK_COORDINATOR);
@@ -1152,7 +1306,7 @@ index 2b75231..932094b 100644
      if (record->disposition != disposition) {
          record->disposition = disposition;
          qemu_hot_fork_thread_generation++;
-@@ -1215,6 +1814,7 @@ int qemu_thread_hot_fork_bind_monitor_restart(int64_t thread_id)
+@@ -1215,6 +1968,7 @@ int qemu_thread_hot_fork_bind_monitor_restart(int64_t thread_id)
      if (err) {
          error_exit(err, __func__);
      }
@@ -1160,7 +1314,7 @@ index 2b75231..932094b 100644
      for (node = qemu_hot_fork_threads; node; node = node->next) {
          QemuHotForkThreadRecord *record = node->data;
  
-@@ -1251,6 +1851,7 @@ static void qemu_hot_fork_thread_unregister(void *opaque)
+@@ -1251,6 +2005,7 @@ static void qemu_hot_fork_thread_unregister(void *opaque)
      if (err) {
          error_exit(err, __func__);
      }
@@ -1168,7 +1322,7 @@ index 2b75231..932094b 100644
      if (record->tracked) {
          qemu_hot_fork_threads = g_list_remove(qemu_hot_fork_threads, record);
          assert(qemu_hot_fork_thread_count > 0);
-@@ -1315,6 +1916,7 @@ static QemuHotForkThreadRecord *qemu_hot_fork_register_coordinator(void)
+@@ -1315,6 +2070,7 @@ static QemuHotForkThreadRecord *qemu_hot_fork_register_coordinator(void)
          }
          return NULL;
      }
@@ -1176,7 +1330,7 @@ index 2b75231..932094b 100644
      for (node = qemu_hot_fork_threads; node; node = node->next) {
          QemuHotForkThreadRecord *record = node->data;
  
-@@ -1647,7 +2249,68 @@ static void crucible_hot_fork_mutex_adopt_in_child(
+@@ -1647,7 +2403,68 @@ static void crucible_hot_fork_mutex_adopt_in_child(
      qatomic_set(&entry->condition_waiter_thread_id, 0);
  }
  
@@ -1246,7 +1400,7 @@ index 2b75231..932094b 100644
  {
      GList *node;
      bool owner_found = false;
-@@ -1665,7 +2328,7 @@ int qemu_thread_ram_pause_begin(QemuThreadRamPauseTransaction *transaction)
+@@ -1665,7 +2482,7 @@ int qemu_thread_ram_pause_begin(QemuThreadRamPauseTransaction *transaction)
      if (status) {
          return -status;
      }
@@ -1255,7 +1409,7 @@ index 2b75231..932094b 100644
          qemu_hot_fork_thread_starts_in_flight ||
          qemu_hot_fork_thread_count > QEMU_RAM_PAUSE_MAX_THREADS) {
          status = -EBUSY;
-@@ -1682,6 +2345,15 @@ int qemu_thread_ram_pause_begin(QemuThreadRamPauseTransaction *transaction)
+@@ -1682,6 +2499,15 @@ int qemu_thread_ram_pause_begin(QemuThreadRamPauseTransaction *transaction)
          case QEMU_THREAD_HOT_FORK_RCU_RESTART:
          case QEMU_THREAD_HOT_FORK_VCPU_RESTART:
              break;
@@ -1271,7 +1425,7 @@ index 2b75231..932094b 100644
          default: {
              static const char hex[] = "0123456789abcdef";
              size_t length = 0;
-@@ -1717,8 +2389,12 @@ int qemu_thread_ram_pause_begin(QemuThreadRamPauseTransaction *transaction)
+@@ -1717,8 +2543,12 @@ int qemu_thread_ram_pause_begin(QemuThreadRamPauseTransaction *transaction)
      transaction->generation = qemu_hot_fork_thread_generation;
      transaction->process_id = getpid();
      transaction->owner_thread_id = qemu_get_thread_id();
@@ -1285,7 +1439,7 @@ index 2b75231..932094b 100644
      return 0;
  
  fail:
-@@ -1728,30 +2404,70 @@ fail:
+@@ -1728,30 +2558,70 @@ fail:
      return status;
  }
  
@@ -1372,7 +1526,7 @@ index 2b75231..932094b 100644
  }
  
  int qemu_thread_hot_fork_begin_registry_transaction(
-@@ -1787,6 +2503,12 @@ int qemu_thread_hot_fork_begin_registry_transaction(
+@@ -1787,6 +2657,12 @@ int qemu_thread_hot_fork_begin_registry_transaction(
      if (err) {
          error_exit(err, __func__);
      }
@@ -1385,7 +1539,7 @@ index 2b75231..932094b 100644
      for (node = qemu_hot_fork_threads; node; node = node->next) {
          QemuHotForkThreadRecord *record = node->data;
  
-@@ -2164,6 +2886,119 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+@@ -2164,6 +3040,119 @@ void qemu_thread_create(QemuThread *thread, const char *name,
      pthread_attr_destroy(&attr);
  }
  
