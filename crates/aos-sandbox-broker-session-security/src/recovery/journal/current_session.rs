@@ -930,7 +930,10 @@ impl ProtectedBrokerOutcomeCurrentV1<'_> {
         message: &[u8; 32],
     ) -> Result<[u8; 64], BrokerSessionSecurityError> {
         self.revalidate_lifecycle_attestation()?;
-        let signed = self.authority.endpoint.sign_lifecycle_bootstrap_attestation(message);
+        let signed = self
+            .authority
+            .endpoint
+            .sign_lifecycle_bootstrap_attestation(message);
         let post = self.revalidate_lifecycle_attestation();
         let signature = signed?;
         post?;

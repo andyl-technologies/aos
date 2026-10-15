@@ -167,10 +167,24 @@ fn current_domain_inventory_pair(
     match endpoint {
         LifecycleBootBootstrapEndpointV1::Mount => inventory
             .session
-            .complete_controller_mount_inventory_successor(challenge, boot, &initial, &current, boot_before, currentness),
+            .complete_controller_mount_inventory_successor(
+                challenge,
+                boot,
+                &initial,
+                &current,
+                boot_before,
+                currentness,
+            ),
         LifecycleBootBootstrapEndpointV1::Network => inventory
             .session
-            .complete_controller_network_inventory_successor(challenge, boot, &initial, &current, boot_before, currentness),
+            .complete_controller_network_inventory_successor(
+                challenge,
+                boot,
+                &initial,
+                &current,
+                boot_before,
+                currentness,
+            ),
         _ => Err(LifecyclePhase6ErrorV1::InvalidInput),
     }
 }
@@ -192,10 +206,22 @@ fn bootstrap_domain_inventory_pair(
     match endpoint {
         LifecycleBootBootstrapEndpointV1::Mount => inventory
             .session
-            .complete_controller_mount_inventory_bootstrap(challenge, &initial, &current, boot_before, currentness),
+            .complete_controller_mount_inventory_bootstrap(
+                challenge,
+                &initial,
+                &current,
+                boot_before,
+                currentness,
+            ),
         LifecycleBootBootstrapEndpointV1::Network => inventory
             .session
-            .complete_controller_network_inventory_bootstrap(challenge, &initial, &current, boot_before, currentness),
+            .complete_controller_network_inventory_bootstrap(
+                challenge,
+                &initial,
+                &current,
+                boot_before,
+                currentness,
+            ),
         _ => Err(LifecyclePhase6ErrorV1::InvalidInput),
     }
 }
@@ -1550,7 +1576,11 @@ impl DormantHostRuntimeInventoryOwnerV1 {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
         self.0.session.complete_controller_host_inventory_successor(
-            challenge, boot, &initial, &current, boot_after,
+            challenge,
+            boot,
+            &initial,
+            &current,
+            boot_after,
             currentness,
         )
     }
@@ -1575,7 +1605,10 @@ impl DormantHostRuntimeInventoryOwnerV1 {
         let (initial, _) = self.0.query_complete(LifecycleInventoryMethodV1::Host)?;
         let (current, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Host)?;
         self.0.session.complete_controller_host_inventory_bootstrap(
-            challenge, &initial, &current, boot_before,
+            challenge,
+            &initial,
+            &current,
+            boot_before,
             currentness,
         )
     }
@@ -2627,10 +2660,15 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     ) -> Result<LifecycleAuthenticatedStorageInventorySuccessorV1, LifecyclePhase6ErrorV1> {
         let (initial, _) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
         let (current, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
-        self.0.session.complete_controller_storage_inventory_successor(
-            challenge, boot, &initial, &current,
-            currentness,
-        )
+        self.0
+            .session
+            .complete_controller_storage_inventory_successor(
+                challenge,
+                boot,
+                &initial,
+                &current,
+                currentness,
+            )
     }
 
     /// Issues and challenge-authenticates the Storage pair for first-root publication.
@@ -2645,10 +2683,14 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     ) -> Result<LifecycleAuthenticatedStorageInventoryBootstrapV1, LifecyclePhase6ErrorV1> {
         let (initial, _) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
         let (current, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Storage)?;
-        self.0.session.complete_controller_storage_inventory_bootstrap(
-            challenge, &initial, &current,
-            currentness,
-        )
+        self.0
+            .session
+            .complete_controller_storage_inventory_bootstrap(
+                challenge,
+                &initial,
+                &current,
+                currentness,
+            )
     }
 
     /// Issues one immediate complete Storage readback after an Apply exchange.

@@ -150,9 +150,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let signature = held
             .sign_lifecycle_bootstrap_attestation(&message)
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let completed = LifecycleAuthenticatedRuntimeInventorySuccessorV1::from_fixed_endpoint_attestation(
-            challenge, boot, initial, current, boot_after, signature,
-        );
+        let completed =
+            LifecycleAuthenticatedRuntimeInventorySuccessorV1::from_fixed_endpoint_attestation(
+                challenge, boot, initial, current, boot_after, signature,
+            );
         finish_current_attestation(&mut held, completed)
     }
 
@@ -212,9 +213,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let signature = held
             .sign_lifecycle_bootstrap_attestation(&message)
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let completed = LifecycleAuthenticatedStorageInventorySuccessorV1::from_fixed_endpoint_attestation(
-            challenge, boot, initial, current, signature,
-        );
+        let completed =
+            LifecycleAuthenticatedStorageInventorySuccessorV1::from_fixed_endpoint_attestation(
+                challenge, boot, initial, current, signature,
+            );
         finish_current_attestation(&mut held, completed)
     }
 
@@ -238,9 +240,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let signature = held
             .sign_lifecycle_bootstrap_attestation(&message)
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let completed = LifecycleAuthenticatedStorageInventoryBootstrapV1::from_fixed_endpoint_attestation(
-            challenge, initial, current, signature,
-        );
+        let completed =
+            LifecycleAuthenticatedStorageInventoryBootstrapV1::from_fixed_endpoint_attestation(
+                challenge, initial, current, signature,
+            );
         finish_current_attestation(&mut held, completed)
     }
 
@@ -513,7 +516,8 @@ fn retain_current_inventory<'session>(
         .revalidate_broker_outcome(currentness)
         .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
     require_current_inventory(&held, inventory)?;
-    held.revalidate_lifecycle_attestation().map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+    held.revalidate_lifecycle_attestation()
+        .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
     Ok(held)
 }
 
@@ -523,7 +527,9 @@ fn finish_current_attestation<T>(
     held: &mut ProtectedBrokerOutcomeCurrentV1<'_>,
     completed: Result<T, LifecyclePhase6ErrorV1>,
 ) -> Result<T, LifecyclePhase6ErrorV1> {
-    let post = held.revalidate_lifecycle_attestation().map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority);
+    let post = held
+        .revalidate_lifecycle_attestation()
+        .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority);
     let completed = completed?;
     post?;
     Ok(completed)
