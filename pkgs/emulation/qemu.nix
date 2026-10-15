@@ -1879,6 +1879,8 @@ in
                   if marker not in result_text.splitlines():
                       raise RuntimeError(f"missing native component result: {marker}")
                   (Path(os.environ["out"]) / "share/aos/crucible" / f"{result_name}.result").write_text(result_text)
+
+              failed_fixtures = []
               for name in (
                   "net-output-stop", "lifecycle-projection", "control-deferred",
                   "control-observer", "control-delivery",
@@ -1901,12 +1903,18 @@ in
                   "legacy-ram-load",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
-                      subprocess.run([
+                      completed = subprocess.run([
                           sys.executable,
                           str(source_root / f"tests/unit/test-crucible-{name}.py"),
                           "--output-dir", str(source_root / f"{name}-proof"),
                       ], cwd=entry["directory"], env=environment,
-                         stdout=result, check=True)
+                         stdout=result, check=False)
+                  print(f"native fixture {name}: exit {completed.returncode}", flush=True)
+                  if completed.returncode:
+                      failed_fixtures.append(f"{name} (exit {completed.returncode})")
+
+              if failed_fixtures:
+                  raise RuntimeError("native fixture failures: " + ", ".join(failed_fixtures))
               PYTHON
               cat net-output-stop.result lifecycle-projection.result \
                 control-deferred.result control-observer.result control-delivery.result \
