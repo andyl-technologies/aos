@@ -206,6 +206,10 @@ extern "C" fn destroy(
         // SAFETY: Source excluded all real child/Bridge uses and marked once
         // destruction before this entered callback. It owns sole backing free.
         unsafe {
+            let state = &*address.cast::<LiveVcpuTimeCallbackState>();
+            if let Err(status) = state.capture_material_disposition() {
+                return status;
+            }
             drop_and_acknowledge(address.cast::<LiveVcpuTimeCallbackState>(), || {
                 (api.destroyed)(id, child)
             })

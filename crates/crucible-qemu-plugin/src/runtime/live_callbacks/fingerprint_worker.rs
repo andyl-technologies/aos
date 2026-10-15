@@ -205,7 +205,14 @@ impl FingerprintWorkerControl {
 
     // There is exactly one queued capture, independent of the in-flight digest.
     // Both predicates and mutations share this mutex, preventing lost wakeups.
-    fn enqueue(&self, work: LiveFingerprintDigestWork) -> Result<(), ()> {
+    fn enqueue(
+        &self,
+        captured: &mut Option<CapturedFingerprintSample>,
+        capture_request: u32,
+    ) -> Result<(), ()> {
+        if captured.is_none() {
+            return Err(());
+        }
         let mut state = self.lock();
         while state.pending.is_some() && !state.closed && state.failure.is_none() {
             #[cfg(test)]
@@ -220,7 +227,10 @@ impl FingerprintWorkerControl {
         if state.failure.is_some() || state.closed {
             return Err(());
         }
-        state.pending = Some(work);
+        let Some(captured) = captured.take() else {
+            return Err(());
+        };
+        state.pending = Some(LiveFingerprintDigestWork::new(captured, capture_request));
         drop(state);
         self.available.notify_one();
         Ok(())
@@ -476,22 +486,37 @@ impl LiveFingerprintDigestWorker {
 
     pub(super) fn submit(
         &self,
-        captured: CapturedFingerprintSample,
+        captured: &mut Option<CapturedFingerprintSample>,
         capture_request: u32,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         let control = self
             .control
             .as_ref()
             .ok_or(LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
-        control
-            .enqueue(LiveFingerprintDigestWork::new(captured, capture_request))
-            .map_err(|()| {
-                if control.lock().failure.is_some() {
-                    Self::failed(control)
-                } else {
-                    LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable
-                }
-            })
+        control.enqueue(captured, capture_request).map_err(|()| {
+            if control.lock().failure.is_some() {
+                Self::failed(control)
+            } else {
+                LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable
+            }
+        })
+    }
+
+    /// Rejects a copied child before borrowing any inherited worker/capture mutex.
+    pub(super) fn creator_process_is_current(&self) -> bool {
+        self.owner_process == std::process::id()
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_fixture_creator_process(&mut self, process: u32) {
+        self.owner_process = process;
+    }
+
+    #[cfg(test)]
+    pub(super) fn close_fixture_admission(&self) {
+        if let Some(control) = &self.control {
+            control.close();
+        }
     }
 
     /// Transfers the same mapping without waiting on a worker-owned mutex.

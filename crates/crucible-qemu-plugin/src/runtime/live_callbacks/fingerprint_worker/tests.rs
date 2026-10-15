@@ -31,8 +31,8 @@ impl StartupQuery {
     }
 }
 
-fn work(request: u32) -> LiveFingerprintDigestWork {
-    LiveFingerprintDigestWork::new(CapturedFingerprintSample::test_empty(), request)
+fn enqueue(control: &FingerprintWorkerControl, request: u32) -> Result<(), ()> {
+    control.enqueue(&mut Some(CapturedFingerprintSample::test_empty()), request)
 }
 
 fn take_received(control: &FingerprintWorkerControl) -> LiveFingerprintDigestWork {
@@ -66,9 +66,9 @@ fn worker(control: Arc<FingerprintWorkerControl>) -> LiveFingerprintDigestWorker
 fn capacity_one_blocks_then_wakes_producer_without_replacing_first_capture() {
     let deadline = TransportDeadline::new(Duration::from_secs(5)).unwrap();
     let control = control();
-    assert!(control.enqueue(work(11)).is_ok());
+    assert!(enqueue(&control, 11).is_ok());
     let second = Arc::clone(&control);
-    let producer = thread::spawn(move || second.enqueue(work(22)));
+    let producer = thread::spawn(move || enqueue(&second, 22));
     wait_blocked(&control, &deadline);
 
     assert!(!producer.is_finished());
@@ -82,10 +82,10 @@ fn capacity_one_blocks_then_wakes_producer_without_replacing_first_capture() {
 #[test]
 fn close_drains_pending_capture_and_refuses_new_producer() {
     let control = control();
-    assert!(control.enqueue(work(7)).is_ok());
+    assert!(enqueue(&control, 7).is_ok());
     control.close();
 
-    assert!(control.enqueue(work(8)).is_err());
+    assert!(enqueue(&control, 8).is_err());
     assert_eq!(take_received(&control).capture_request, 7);
     assert!(control.receive().is_none());
 }
@@ -94,9 +94,9 @@ fn close_drains_pending_capture_and_refuses_new_producer() {
 fn close_wakes_blocked_producer_without_stealing_pending_capture() {
     let deadline = TransportDeadline::new(Duration::from_secs(5)).unwrap();
     let control = control();
-    assert!(control.enqueue(work(7)).is_ok());
+    assert!(enqueue(&control, 7).is_ok());
     let waiting = Arc::clone(&control);
-    let producer = thread::spawn(move || waiting.enqueue(work(8)));
+    let producer = thread::spawn(move || enqueue(&waiting, 8));
     wait_blocked(&control, &deadline);
     control.close();
 
@@ -109,9 +109,9 @@ fn close_wakes_blocked_producer_without_stealing_pending_capture() {
 fn first_failure_wakes_producer_and_remains_exact_after_later_refusal() {
     let deadline = TransportDeadline::new(Duration::from_secs(5)).unwrap();
     let control = control();
-    assert!(control.enqueue(work(3)).is_ok());
+    assert!(enqueue(&control, 3).is_ok());
     let waiting = Arc::clone(&control);
-    let producer = thread::spawn(move || waiting.enqueue(work(4)));
+    let producer = thread::spawn(move || enqueue(&waiting, 4));
     wait_blocked(&control, &deadline);
     control.refuse(FingerprintWorkerCause::CaptureChanged { request: 91 });
     control.refuse(FingerprintWorkerCause::Panic);
@@ -271,7 +271,7 @@ fn queued_capture_is_independent_of_exclusive_workspace_digest_borrow() {
     let control = control();
     let workspace = control.workspace();
     let queued = Arc::clone(&control);
-    let producer = thread::spawn(move || queued.enqueue(work(19)));
+    let producer = thread::spawn(move || enqueue(&queued, 19));
 
     // The queue producer completes while the exclusive workspace mutex remains
     // held. A single shared digest/queue mutex would fail this finite control.
@@ -291,7 +291,7 @@ fn fork_hold_refuses_pending_job_then_restores_same_owner_before_release() {
     let descriptor = workspace.descriptor_number().unwrap();
     let control = Arc::new(FingerprintWorkerControl::new(Some(workspace)));
     let mut worker = worker(Arc::clone(&control));
-    assert!(control.enqueue(work(2)).is_ok());
+    assert!(enqueue(&control, 2).is_ok());
     // SAFETY: this fixture has no worker/callback actors; the pending check is
     // the concrete additional guard, rather than a forged parked-work receipt.
     assert!(unsafe { worker.hold_workspace_for_fork() }.is_err());
@@ -520,7 +520,7 @@ fn completed_publication_and_exact_ack_release_inflight_material() {
     let mut workspace = DeviceDigestWorkspace::test_owner();
     workspace.map().unwrap();
     let control = Arc::new(FingerprintWorkerControl::new(Some(workspace)));
-    assert!(control.enqueue(work(request)).is_ok());
+    assert!(enqueue(&control, request).is_ok());
     control.close();
 
     LiveFingerprintDigestWorker::run(
@@ -545,7 +545,7 @@ fn changed_ack_keeps_published_material_and_blocks_retirement_and_fork() {
     let mut workspace = DeviceDigestWorkspace::test_owner();
     workspace.map().unwrap();
     let control = Arc::new(FingerprintWorkerControl::new(Some(workspace)));
-    assert!(control.enqueue(work(request.wrapping_add(2))).is_ok());
+    assert!(enqueue(&control, request.wrapping_add(2)).is_ok());
     control.close();
 
     LiveFingerprintDigestWorker::run(
@@ -576,7 +576,7 @@ fn publication_refusal_does_not_ack_or_replay_and_keeps_the_received_body() {
     let slot = FingerprintSampleSlot::new();
     let request = slot.request_capture_v1();
     let control = control();
-    assert!(control.enqueue(work(request)).is_ok());
+    assert!(enqueue(&control, request).is_ok());
     let mut in_flight = control.receive().unwrap();
     let material = in_flight.as_mut().unwrap();
     let invalid = crucible_shmem::FingerprintSample {
@@ -609,10 +609,10 @@ fn read_failure_keeps_inflight_material_without_publication_or_ack() {
     let control = Arc::new(FingerprintWorkerControl::new(Some(workspace)));
     assert!(
         control
-            .enqueue(LiveFingerprintDigestWork::new(
-                CapturedFingerprintSample::test_unreadable(),
+            .enqueue(
+                &mut Some(CapturedFingerprintSample::test_unreadable()),
                 request
-            ))
+            )
             .is_ok()
     );
     control.close();
@@ -644,7 +644,7 @@ fn read_failure_keeps_inflight_material_without_publication_or_ack() {
 #[test]
 fn unwind_releases_only_the_borrow_and_keeps_the_received_capture() {
     let control = control();
-    assert!(control.enqueue(work(5)).is_ok());
+    assert!(enqueue(&control, 5).is_ok());
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _received = control.receive().unwrap();
@@ -663,7 +663,7 @@ fn accepted_queued_or_inflight_capture_blocks_all_transfers_and_retirement() {
         let control = Arc::new(FingerprintWorkerControl::new(Some(
             DeviceDigestWorkspace::test_owner(),
         )));
-        assert!(control.enqueue(work(91)).is_ok());
+        assert!(enqueue(&control, 91).is_ok());
         if received {
             drop(control.receive().unwrap());
         }
@@ -711,7 +711,7 @@ fn already_held_workspace_cannot_bless_a_retry_with_retained_capture() {
         .as_ref()
         .unwrap()
         .descriptor_number();
-    assert!(worker.control.as_ref().unwrap().enqueue(work(64)).is_ok());
+    assert!(enqueue(worker.control.as_ref().unwrap(), 64).is_ok());
 
     // SAFETY: the same actors remain excluded; the concrete queue debt must
     // refuse an already-held retry without returning or replacing its owner.
@@ -753,7 +753,7 @@ fn fork_transfers_refuse_the_borrow_held_at_the_real_pending_park_cut() {
     )));
     let mut worker = worker(Arc::clone(&control));
     let quiescence = LiveWorkerQuiescence::new(crate::runtime::worker_quiescence::WORKER_ALL);
-    assert!(control.enqueue(work(72)).is_ok());
+    assert!(enqueue(&control, 72).is_ok());
     let idle = quiescence.idle(WORKER_FINGERPRINT);
     let received = control.receive().unwrap();
     let held = quiescence.hold();
@@ -780,4 +780,17 @@ fn fork_transfers_refuse_the_borrow_held_at_the_real_pending_park_cut() {
     drop(control.in_flight().take());
     drop(control);
     worker.retire().unwrap();
+}
+
+#[test]
+fn closed_queue_leaves_the_actual_sample_owner_with_its_caller() {
+    let control = control();
+    let mut sample = Some(CapturedFingerprintSample::test_empty());
+    control.close();
+
+    assert!(control.enqueue(&mut sample, 33).is_err());
+
+    assert!(sample.is_some());
+    assert!(control.lock().pending.is_none());
+    assert!(control.in_flight().is_none());
 }

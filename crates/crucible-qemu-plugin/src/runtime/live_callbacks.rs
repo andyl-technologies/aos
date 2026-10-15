@@ -845,6 +845,30 @@ struct LiveFingerprintCallbackState {
     sampling: PluginFingerprintSampling,
     slot: StableFingerprintSlotHandle,
     worker: LiveFingerprintDigestWorker,
+    // Failed outputs cannot close when a local or inherited child drops. Actual
+    // Native typed destruction separately refuses this field's retained debt.
+    capture_attempt: std::mem::ManuallyDrop<Mutex<crate::fingerprint_sampler::CaptureAttempt>>,
+}
+
+impl LiveFingerprintCallbackState {
+    fn capture_transfer_guard(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, crate::fingerprint_sampler::CaptureAttempt>, i32> {
+        let attempt = self.capture_guard()?;
+        if attempt.has_material_debt() {
+            return Err(-libc::EBUSY);
+        }
+        Ok(attempt)
+    }
+
+    fn capture_guard(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, crate::fingerprint_sampler::CaptureAttempt>, i32> {
+        if !self.worker.creator_process_is_current() {
+            return Err(-libc::EPERM);
+        }
+        self.capture_attempt.try_lock().map_err(|_| -libc::EBUSY)
+    }
 }
 
 /// Stable raw view of one directed ring retained by the mapping owner.
@@ -1662,6 +1686,9 @@ impl LiveVcpuTimeCallbackState {
             sampling,
             slot,
             worker,
+            capture_attempt: std::mem::ManuallyDrop::new(Mutex::new(
+                crate::fingerprint_sampler::CaptureAttempt::new(),
+            )),
         });
         Ok(())
     }
@@ -1690,6 +1717,7 @@ impl LiveVcpuTimeCallbackState {
     /// wrong process, absent owner, pending work, failure or inconsistent custody.
     pub(super) unsafe fn hold_fingerprint_workspace_for_parent_park(&self) -> Result<(), i32> {
         if let Some(fingerprint) = &self.fingerprint {
+            let _capture = fingerprint.capture_transfer_guard()?;
             // SAFETY: the caller owns complete callback/ring/worker exclusion.
             unsafe { fingerprint.worker.hold_workspace_for_parent_park() }?;
         }
@@ -1710,6 +1738,7 @@ impl LiveVcpuTimeCallbackState {
     /// wrong process, absent owner, pending work, failure or inconsistent custody.
     pub(super) unsafe fn restore_fingerprint_workspace_for_parent_park(&self) -> Result<(), i32> {
         if let Some(fingerprint) = &self.fingerprint {
+            let _capture = fingerprint.capture_transfer_guard()?;
             // SAFETY: the caller retains complete exclusion until final release.
             unsafe { fingerprint.worker.restore_workspace_for_parent_park() }?;
         }
@@ -1725,6 +1754,11 @@ impl LiveVcpuTimeCallbackState {
         &self,
     ) -> Result<(), crate::DeviceDigestWorkspaceError> {
         if let Some(fingerprint) = self.fingerprint.as_ref() {
+            let _capture = fingerprint.capture_transfer_guard().map_err(|_| {
+                crate::DeviceDigestWorkspaceError::Ownership {
+                    reason: "callback retains or is using a capture attempt",
+                }
+            })?;
             // SAFETY: the caller retains callback and worker exclusion.
             unsafe { fingerprint.worker.hold_workspace_for_fork() }?;
         }
@@ -1740,8 +1774,26 @@ impl LiveVcpuTimeCallbackState {
         &self,
     ) -> Result<(), crate::DeviceDigestWorkspaceError> {
         if let Some(fingerprint) = self.fingerprint.as_ref() {
+            let _capture = fingerprint.capture_transfer_guard().map_err(|_| {
+                crate::DeviceDigestWorkspaceError::Ownership {
+                    reason: "callback retains or is using a capture attempt",
+                }
+            })?;
             // SAFETY: the caller retains callback and worker exclusion.
             unsafe { fingerprint.worker.restore_workspace_after_fork() }?;
+        }
+        Ok(())
+    }
+
+    /// Refuses local captured-material debt before an actual typed destruction.
+    ///
+    /// This is a negative-only condition; Source still owns every use/return gate.
+    ///
+    /// # Errors
+    /// Refuses a busy/poisoned capture journal or retained native/material output.
+    pub(in crate::runtime) fn capture_material_disposition(&self) -> Result<(), i32> {
+        if let Some(fingerprint) = &self.fingerprint {
+            drop(fingerprint.capture_transfer_guard()?);
         }
         Ok(())
     }
@@ -1793,14 +1845,25 @@ impl LiveVcpuTimeCallbackState {
                 message: String::from("device projection requested before device I/O quiesced"),
             });
         }
-        let captured = fingerprint
+        let mut attempt = fingerprint
+            .capture_guard()
+            .map_err(|_| LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
+        fingerprint
             .sampling
-            .capture(icount, self.vcpu_count)
+            .capture(&mut attempt, icount, self.vcpu_count)
             .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample {
                 boundary,
                 message: source.to_string(),
             })?;
-        fingerprint.worker.submit(captured, capture_request)
+        fingerprint
+            .worker
+            .submit(attempt.pending(), capture_request)?;
+        attempt
+            .transferred()
+            .map_err(|source| LiveVcpuTimeCallbackError::FingerprintSample {
+                boundary,
+                message: source.to_string(),
+            })
     }
 
     fn idle_advance_is_pending(&self) -> bool {

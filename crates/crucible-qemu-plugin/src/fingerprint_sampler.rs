@@ -15,7 +15,7 @@
 
 use std::fs::File;
 use std::io::Read;
-use std::os::fd::{AsRawFd as _, FromRawFd, RawFd};
+use std::os::fd::AsRawFd as _;
 use std::os::raw::{c_int, c_void};
 
 use crucible_shmem::{
@@ -24,6 +24,9 @@ use crucible_shmem::{
 };
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
+
+mod capture_attempt;
+pub(crate) use capture_attempt::CaptureAttempt;
 
 const QEMU_PLUGIN_CRUCIBLE_CAPTURE_FINGERPRINT_V2_SYMBOL_C: &[u8] =
     b"qemu_plugin_crucible_capture_fingerprint_v2\0";
@@ -247,57 +250,6 @@ impl PluginFingerprintSampling {
             capture,
         })
     }
-
-    /// Captures one exact-coordinate sample for asynchronous component digestion.
-    ///
-    /// Register and RR-cursor introspection, the static schema digest, and the
-    /// incremental logical RAM root and immutable device projection happen at
-    /// the boundary. Callers transfer the returned value and request identity to
-    /// the digest worker for device hashing. The worker publishes and acknowledges
-    /// the sample after its digest completes, independently of callback return.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FingerprintSamplerError`] when introspection or capture fails,
-    /// QEMU returns an invalid RAM identity or sealed device descriptor, the
-    /// register set exceeds the fixed slot capacity, or the sample metadata fails
-    /// shared-memory validation.
-    pub(crate) fn capture(
-        &self,
-        current_icount: u64,
-        vcpu_count: u32,
-    ) -> Result<CapturedFingerprintSample, FingerprintSamplerError> {
-        let inputs = self
-            .introspector
-            .read_nvcpu_fingerprint_inputs(vcpu_count)
-            .map_err(FingerprintSamplerError::Introspection)?;
-        let mut captured = QemuFingerprintCaptureV2::default();
-        let status = (self.capture)(&mut captured);
-        if status != 0 {
-            close_returned_fd(captured.device_fd);
-            return Err(FingerprintSamplerError::Capture { status });
-        }
-        if let Err(error) = validate_capture_evidence(&captured) {
-            close_returned_fd(captured.device_fd);
-            return Err(error);
-        }
-        let device = capture_file(
-            captured.device_fd,
-            captured.device_material_length,
-            "device state",
-        )?;
-        let mut sample = sample_metadata(current_icount, &inputs, captured.device_schema_digest)?;
-        sample.ram_bytes = captured.ram_bytes;
-        sample.ram_digest = captured.ram_digest;
-        sample.device_state_bytes = captured.device_bytes;
-        sample.device_state_sections = captured.device_schema_sections;
-        let captured = CapturedFingerprintSample { sample, device };
-        captured
-            .sample
-            .validate()
-            .map_err(FingerprintSamplerError::Slot)?;
-        Ok(captured)
-    }
 }
 
 fn validate_capture_evidence(
@@ -319,23 +271,12 @@ fn validate_capture_evidence(
     Ok(())
 }
 
-fn close_returned_fd(fd: RawFd) {
-    if fd >= 0 {
-        // SAFETY: a nonnegative returned descriptor transfers one owned handle.
-        drop(unsafe { File::from_raw_fd(fd) });
-    }
-}
-
-fn capture_file(
-    fd: RawFd,
-    material_length: u64,
+fn validate_capture_file(
+    material: &CapturedFingerprintMaterial,
     component: &'static str,
-) -> Result<CapturedFingerprintMaterial, FingerprintSamplerError> {
-    if fd < 0 {
-        return Err(FingerprintSamplerError::InvalidCaptureDescriptor { component });
-    }
-    // SAFETY: QEMU transfers ownership of each successful capture descriptor.
-    let file = unsafe { File::from_raw_fd(fd) };
+) -> Result<(), FingerprintSamplerError> {
+    let file = &material.file;
+    let material_length = material.material_length;
     let metadata = file
         .metadata()
         .map_err(|_| FingerprintSamplerError::InvalidCaptureDescriptor { component })?;
@@ -357,11 +298,7 @@ fn capture_file(
     {
         return Err(FingerprintSamplerError::InvalidCaptureDescriptor { component });
     }
-    Ok(CapturedFingerprintMaterial {
-        file,
-        material_length,
-        progress: MaterialDigestProgress::default(),
-    })
+    Ok(())
 }
 
 fn sample_metadata(
@@ -463,6 +400,9 @@ pub(crate) enum FingerprintSamplerError {
         /// Declared component bytes not yet consumed.
         remaining_bytes: u64,
     },
+    /// A previous attempt still owns unaccepted or uncertain capture outputs.
+    #[error("a previous fingerprint capture remains untransferred")]
+    CaptureRetained,
     /// The assembled sample failed shared-memory slot validation.
     #[error("assembled fingerprint sample is invalid: {0}")]
     Slot(FingerprintSampleError),

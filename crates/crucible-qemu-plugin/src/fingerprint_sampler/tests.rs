@@ -5,7 +5,7 @@ use super::*;
 use crate::{PluginRoundRobinCursor, PluginVcpuRegisterDigest};
 use std::ffi::CString;
 use std::io::Write as _;
-use std::os::fd::IntoRawFd as _;
+use std::os::fd::{FromRawFd as _, RawFd};
 use std::os::unix::fs::MetadataExt as _;
 
 fn test_workspace() -> Box<[u8; 65_536]> {
@@ -143,7 +143,7 @@ fn aggregate_capture_rejects_zero_component_evidence() {
 }
 
 #[test]
-fn aggregate_capture_rejects_a_descriptor_without_close_on_exec() {
+fn aggregate_validation_refuses_without_consuming_the_owned_descriptor() {
     let file = sealed_material(0xA0);
     let metadata = file
         .metadata()
@@ -151,9 +151,13 @@ fn aggregate_capture_rejects_a_descriptor_without_close_on_exec() {
     let fd = file.as_raw_fd();
     // SAFETY: `file` owns `fd`, and `fcntl` does not retain it.
     assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
-    let fd = file.into_raw_fd();
+    let material = CapturedFingerprintMaterial {
+        file,
+        material_length: 1,
+        progress: MaterialDigestProgress::default(),
+    };
 
-    let Err(error) = capture_file(fd, 1, "device state") else {
+    let Err(error) = validate_capture_file(&material, "device state") else {
         panic!("a descriptor without close-on-exec must be rejected");
     };
     assert!(matches!(
@@ -162,6 +166,8 @@ fn aggregate_capture_rejects_a_descriptor_without_close_on_exec() {
             component: "device state"
         }
     ));
+    assert_eq!(material.file.metadata().unwrap().ino(), metadata.ino());
+    drop(material);
     assert_returned_descriptor_closed(fd, metadata.dev(), metadata.ino());
 }
 
