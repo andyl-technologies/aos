@@ -570,7 +570,10 @@ fn publish_with_ack_scope<S: ProviderStream>(
                 connection.receive_original_canonical_blob_ack()?
             } else if connection.role == EndpointRole::Provider
                 && connection.native5_codec.is_some()
-                && matches!(original.method, Method::BlobBegin | Method::BlobChunk | Method::BlobFinish)
+                && matches!(
+                    original.method,
+                    Method::BlobBegin | Method::BlobChunk | Method::BlobFinish
+                )
             {
                 connection.receive_original_prepared_blob_proof(record, index)?
             } else {
