@@ -3,8 +3,9 @@
 //! Public completions accept existing sealed challenges and authenticated
 //! outcomes, never a caller-selected endpoint or signing scalar. Controller
 //! retains query, boot-before, currentness, and operation decisions at their
-//! original frontiers. The original released-currentness signing interval
-//! remains unchanged; these recipes establish no additional freshness proof.
+//! original frontiers. Inventory-pair and Host-effect completions retain the
+//! exact protected terminal loan through signing and typed construction. Other
+//! recipes retain their existing currentness requirements.
 
 use aos_sandbox::EffectFailure;
 use aos_sandbox::lifecycle::{
@@ -25,7 +26,10 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
 
-use crate::{DormantAuthenticatedBrokerSessionV1, ProtectedBrokerOutcomeCurrentnessOwnerV1};
+use crate::{
+    DormantAuthenticatedBrokerSessionV1, ProtectedBrokerOutcomeCurrentV1,
+    ProtectedBrokerOutcomeCurrentnessOwnerV1,
+};
 
 impl DormantAuthenticatedBrokerSessionV1 {
     /// Completes the fixed Mount successor attestation from the original inventory pair.
@@ -39,6 +43,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         initial: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
         boot_before: [u8; 16],
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<LifecycleAuthenticatedBrokerDomainInventorySuccessorV1, LifecyclePhase6ErrorV1>
     {
         self.complete_domain_inventory_successor(
@@ -48,6 +53,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             initial,
             current,
             boot_before,
+            currentness,
         )
     }
 
@@ -61,6 +67,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         initial: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
         boot_before: [u8; 16],
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1, LifecyclePhase6ErrorV1>
     {
         self.complete_domain_inventory_bootstrap(
@@ -69,6 +76,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             initial,
             current,
             boot_before,
+            currentness,
         )
     }
 
@@ -83,6 +91,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         initial: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
         boot_before: [u8; 16],
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<LifecycleAuthenticatedBrokerDomainInventorySuccessorV1, LifecyclePhase6ErrorV1>
     {
         self.complete_domain_inventory_successor(
@@ -92,6 +101,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             initial,
             current,
             boot_before,
+            currentness,
         )
     }
 
@@ -105,6 +115,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         initial: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
         boot_before: [u8; 16],
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1, LifecyclePhase6ErrorV1>
     {
         self.complete_domain_inventory_bootstrap(
@@ -113,6 +124,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             initial,
             current,
             boot_before,
+            currentness,
         )
     }
 
@@ -127,18 +139,21 @@ impl DormantAuthenticatedBrokerSessionV1 {
         initial: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
         boot_after: [u8; 16],
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<LifecycleAuthenticatedRuntimeInventorySuccessorV1, LifecyclePhase6ErrorV1> {
+        let mut held = retain_current_inventory(self, current, currentness)?;
         let message = challenge.endpoint_signing_message(
             LifecycleBootBootstrapEndpointV1::Host,
             initial,
             current,
         )?;
-        let signature = self
+        let signature = held
             .sign_lifecycle_bootstrap_attestation(&message)
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-        LifecycleAuthenticatedRuntimeInventorySuccessorV1::from_fixed_endpoint_attestation(
+        let completed = LifecycleAuthenticatedRuntimeInventorySuccessorV1::from_fixed_endpoint_attestation(
             challenge, boot, initial, current, boot_after, signature,
-        )
+        );
+        finish_current_attestation(&mut held, completed)
     }
 
     /// Completes the fixed Host bootstrap with its original post-sign boot comparison.
@@ -151,24 +166,29 @@ impl DormantAuthenticatedBrokerSessionV1 {
         initial: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
         boot_before: [u8; 16],
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<LifecycleAuthenticatedRuntimeInventoryBootstrapV1, LifecyclePhase6ErrorV1> {
+        let mut held = retain_current_inventory(self, current, currentness)?;
         let message = challenge.endpoint_signing_message(
             LifecycleBootBootstrapEndpointV1::Host,
             initial,
             current,
         )?;
-        let signature = self
+        let signature = held
             .sign_lifecycle_bootstrap_attestation(&message)
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let boot_after = KernelBootId::current()
-            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
-            .into_bytes();
-        if boot_before != boot_after {
-            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
-        }
-        LifecycleAuthenticatedRuntimeInventoryBootstrapV1::from_fixed_endpoint_attestation(
-            challenge, initial, current, signature,
-        )
+        let completed = (|| {
+            let boot_after = KernelBootId::current()
+                .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+                .into_bytes();
+            if boot_before != boot_after {
+                return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+            }
+            LifecycleAuthenticatedRuntimeInventoryBootstrapV1::from_fixed_endpoint_attestation(
+                challenge, initial, current, signature,
+            )
+        })();
+        finish_current_attestation(&mut held, completed)
     }
 
     /// Completes the fixed Storage successor from the original complete inventory pair.
@@ -181,18 +201,21 @@ impl DormantAuthenticatedBrokerSessionV1 {
         boot: &CurrentLifecycleBootInventoryV1<'_>,
         initial: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<LifecycleAuthenticatedStorageInventorySuccessorV1, LifecyclePhase6ErrorV1> {
+        let mut held = retain_current_inventory(self, current, currentness)?;
         let message = challenge.endpoint_signing_message(
             LifecycleBootBootstrapEndpointV1::Storage,
             initial,
             current,
         )?;
-        let signature = self
+        let signature = held
             .sign_lifecycle_bootstrap_attestation(&message)
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-        LifecycleAuthenticatedStorageInventorySuccessorV1::from_fixed_endpoint_attestation(
+        let completed = LifecycleAuthenticatedStorageInventorySuccessorV1::from_fixed_endpoint_attestation(
             challenge, boot, initial, current, signature,
-        )
+        );
+        finish_current_attestation(&mut held, completed)
     }
 
     /// Completes the fixed Storage bootstrap from the original complete inventory pair.
@@ -204,18 +227,21 @@ impl DormantAuthenticatedBrokerSessionV1 {
         challenge: &LifecycleBootInventoryBootstrapChallengeV1,
         initial: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<LifecycleAuthenticatedStorageInventoryBootstrapV1, LifecyclePhase6ErrorV1> {
+        let mut held = retain_current_inventory(self, current, currentness)?;
         let message = challenge.endpoint_signing_message(
             LifecycleBootBootstrapEndpointV1::Storage,
             initial,
             current,
         )?;
-        let signature = self
+        let signature = held
             .sign_lifecycle_bootstrap_attestation(&message)
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-        LifecycleAuthenticatedStorageInventoryBootstrapV1::from_fixed_endpoint_attestation(
+        let completed = LifecycleAuthenticatedStorageInventoryBootstrapV1::from_fixed_endpoint_attestation(
             challenge, initial, current, signature,
-        )
+        );
+        finish_current_attestation(&mut held, completed)
     }
 
     /// Completes the fixed Storage readback for the original authenticated effect.
@@ -394,13 +420,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         inventory: AuthenticatedBrokerMethodOutcomeV1,
         currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<LifecycleEffectObservationV1, LifecyclePhase6ErrorV1> {
-        let mut current = self
-            .revalidate_broker_outcome(currentness)
-            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-        current
-            .revalidate()
-            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-        drop(current);
+        let mut held = retain_current_inventory(self, &inventory, currentness)?;
 
         let message = challenge.broker_effect_signing_message(
             LifecycleBootBootstrapEndpointV1::Host,
@@ -408,17 +428,18 @@ impl DormantAuthenticatedBrokerSessionV1 {
             &outcome,
             &inventory,
         )?;
-        let signature = self
+        let signature = held
             .sign_lifecycle_bootstrap_attestation(&message)
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
 
-        effect.observe_fixed_broker_effect(
+        let completed = effect.observe_fixed_broker_effect(
             &challenge,
             LifecycleBootBootstrapEndpointV1::Host,
             &outcome,
             &inventory,
             signature,
-        )
+        );
+        finish_current_attestation(&mut held, completed)
     }
 
     fn complete_domain_inventory_successor(
@@ -429,21 +450,26 @@ impl DormantAuthenticatedBrokerSessionV1 {
         initial: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
         boot_before: [u8; 16],
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<LifecycleAuthenticatedBrokerDomainInventorySuccessorV1, LifecyclePhase6ErrorV1>
     {
+        let mut held = retain_current_inventory(self, current, currentness)?;
         let message = challenge.endpoint_signing_message(endpoint, initial, current)?;
-        let signature = self
+        let signature = held
             .sign_lifecycle_bootstrap_attestation(&message)
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let boot_after = KernelBootId::current()
-            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
-            .into_bytes();
-        if boot_before != boot_after {
-            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
-        }
-        LifecycleAuthenticatedBrokerDomainInventorySuccessorV1::from_fixed_endpoint_attestation(
-            challenge, boot, endpoint, initial, current, signature,
-        )
+        let completed = (|| {
+            let boot_after = KernelBootId::current()
+                .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+                .into_bytes();
+            if boot_before != boot_after {
+                return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+            }
+            LifecycleAuthenticatedBrokerDomainInventorySuccessorV1::from_fixed_endpoint_attestation(
+                challenge, boot, endpoint, initial, current, signature,
+            )
+        })();
+        finish_current_attestation(&mut held, completed)
     }
 
     fn complete_domain_inventory_bootstrap(
@@ -453,20 +479,65 @@ impl DormantAuthenticatedBrokerSessionV1 {
         initial: &AuthenticatedBrokerMethodOutcomeV1,
         current: &AuthenticatedBrokerMethodOutcomeV1,
         boot_before: [u8; 16],
+        currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1, LifecyclePhase6ErrorV1>
     {
+        let mut held = retain_current_inventory(self, current, currentness)?;
         let message = challenge.endpoint_signing_message(endpoint, initial, current)?;
-        let signature = self
+        let signature = held
             .sign_lifecycle_bootstrap_attestation(&message)
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let boot_after = KernelBootId::current()
-            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
-            .into_bytes();
-        if boot_before != boot_after {
-            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
-        }
-        LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1::from_fixed_endpoint_attestation(
-            challenge, endpoint, initial, current, signature,
-        )
+        let completed = (|| {
+            let boot_after = KernelBootId::current()
+                .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+                .into_bytes();
+            if boot_before != boot_after {
+                return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+            }
+            LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1::from_fixed_endpoint_attestation(
+                challenge, endpoint, initial, current, signature,
+            )
+        })();
+        finish_current_attestation(&mut held, completed)
     }
 }
+
+// The authenticated inventory must be the exact terminal whose original
+// writer and socket peer remain borrowed, rather than detached signed DATA.
+fn retain_current_inventory<'session>(
+    session: &'session mut DormantAuthenticatedBrokerSessionV1,
+    inventory: &AuthenticatedBrokerMethodOutcomeV1,
+    currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+) -> Result<ProtectedBrokerOutcomeCurrentV1<'session>, LifecyclePhase6ErrorV1> {
+    let mut held = session
+        .revalidate_broker_outcome(currentness)
+        .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+    require_current_inventory(&held, inventory)?;
+    held.revalidate_lifecycle_attestation().map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+    Ok(held)
+}
+
+// A failed typed construction still owes its final native check. Preserve its
+// original error if both fail; a successful value escapes only after the post.
+fn finish_current_attestation<T>(
+    held: &mut ProtectedBrokerOutcomeCurrentV1<'_>,
+    completed: Result<T, LifecyclePhase6ErrorV1>,
+) -> Result<T, LifecyclePhase6ErrorV1> {
+    let post = held.revalidate_lifecycle_attestation().map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority);
+    let completed = completed?;
+    post?;
+    Ok(completed)
+}
+
+fn require_current_inventory(
+    held: &ProtectedBrokerOutcomeCurrentV1<'_>,
+    inventory: &AuthenticatedBrokerMethodOutcomeV1,
+) -> Result<(), LifecyclePhase6ErrorV1> {
+    if held.authenticated_outcome() != inventory {
+        return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

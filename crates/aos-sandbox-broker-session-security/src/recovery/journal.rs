@@ -9,6 +9,10 @@
 //! every read.
 
 mod current_session;
+#[cfg(test)]
+mod lifecycle_test_fixture;
+#[cfg(test)]
+pub(crate) use lifecycle_test_fixture::LifecycleTerminalFixture;
 mod host_terminal_archive;
 mod owner;
 mod operator_repair_history;

@@ -906,3 +906,34 @@ impl ProtectedBrokerSessionJournalV1 {
         Ok(readback)
     }
 }
+
+impl ProtectedBrokerOutcomeCurrentV1<'_> {
+    /// Rechecks exact terminal custody and the lifecycle transport's final floor.
+    ///
+    /// # Errors
+    /// Rejects a changed protected terminal, endpoint, live peer, or floor.
+    pub(crate) fn revalidate_lifecycle_attestation(
+        &mut self,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.revalidate()?;
+        self.authority.endpoint.revalidate()?;
+        self.authority.require_floor_current()
+    }
+
+    /// Signs a lifecycle attestation while retaining the exact terminal writer.
+    ///
+    /// # Errors
+    /// Rejects a stale protected terminal or peer before or after the existing
+    /// endpoint signer. A signing failure keeps precedence over a failed post.
+    pub(crate) fn sign_lifecycle_bootstrap_attestation(
+        &mut self,
+        message: &[u8; 32],
+    ) -> Result<[u8; 64], BrokerSessionSecurityError> {
+        self.revalidate_lifecycle_attestation()?;
+        let signed = self.authority.endpoint.sign_lifecycle_bootstrap_attestation(message);
+        let post = self.revalidate_lifecycle_attestation();
+        let signature = signed?;
+        post?;
+        Ok(signature)
+    }
+}

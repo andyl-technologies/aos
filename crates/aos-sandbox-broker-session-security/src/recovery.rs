@@ -39,6 +39,8 @@ use sha2::{Digest as _, Sha256};
 use crate::BrokerSessionSecurityError;
 
 mod journal;
+#[cfg(test)]
+pub(crate) use journal::LifecycleTerminalFixture;
 pub(crate) use journal::BrokerSidecarCustodyV1;
 // These closed Broker inputs and comparisons serve the one shared physical owner.
 pub(crate) use journal::{
