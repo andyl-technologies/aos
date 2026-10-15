@@ -3060,6 +3060,9 @@ in rec {
     qemuCachedWriterUnit = import ./phase7-qemu-cached-writer-unit.nix {
       inherit pkgs;
     };
+    qemuCommonUnit = import ./phase7-qemu-common-unit.nix {
+      inherit pkgs;
+    };
     adversarialExampleVerify = import ./phase7-adversarial-example-verify.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.adversarialExampleVerify";
