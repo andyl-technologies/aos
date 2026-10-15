@@ -59,10 +59,13 @@ verification checks the actual compiler messages, captured source, artifact
 roles and registered output. This gate compiles tests without executing them;
 Crucible daemon runtime checks are separate.
 
-A new gate is running against the original-owner preparation, Clock and BLAKE3
-checkpoint below. It captures all 48 application roots and their sixty local
-dependencies through the ordinary production source filter. Its result is
-pending; the earlier 167-target result does not qualify these newer sources.
+The refreshed gate also passes for the original-owner preparation, Clock and
+BLAKE3 checkpoint below. It compiles 167 fresh test targets across all 48
+application roots, including 69 integration targets. Installed verification
+checks the actual compiler messages, registered output, all selected source
+pins and the complete production source filter over sixty local dependencies.
+This gate compiles tests without executing them; daemon and native qualification
+remain separate.
 
 ### QEMU package
 
@@ -117,8 +120,8 @@ Normal five-crate, all-feature/all-target checking passes.
 Fresh normal executables pass 312 selected controls: 104 Core, 154 provider and
 54 daemon cases, with no failures or ignored tests. The Core and provider sets
 retain all 71 and 120 earlier regression bodies respectively, alongside the new
-storage, Prepare and Clock controls. Independent review verifies the Core and
-daemon source, executable, dependency and original wait records. These are
+storage, Prepare and Clock controls. Independent review verifies each crate's
+source, executable, dependency and original wait records. These are
 component checks; complete native Capture and restoration remain outstanding.
 
 The full archive-admission case now passes in 87.83 seconds under its original
