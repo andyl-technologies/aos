@@ -16,6 +16,7 @@ use super::super::{
     coordinator::PacketNative5CoordinatorInstallation,
 };
 mod birth;
+mod capture_allocation;
 mod complete_restore;
 mod protocol_metadata;
 mod record;

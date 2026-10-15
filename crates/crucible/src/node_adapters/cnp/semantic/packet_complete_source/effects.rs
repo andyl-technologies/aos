@@ -60,6 +60,36 @@ impl PacketCompleteEffectReceiverGroup {
         Ok(())
     }
 
+    /// Counts this actual receiver Rc allocation without a descriptor operation.
+    ///
+    /// The closed group owns only creator IDs and three inline UnixDatagram
+    /// descriptors. Their kernel queues/resources remain separate; this observes
+    /// requested Rust storage and grants no receiver, frontier or Capture right.
+    ///
+    /// # Errors
+    /// Refuses another creator, checked layout overflow or the supplied maximum.
+    pub fn original_retained_requested_storage_data(
+        self: &Rc<Self>,
+        maximum: usize,
+    ) -> Result<usize, OperationFailure> {
+        self.ensure_origin()?;
+        let Self {
+            process: _,
+            thread: _,
+            receivers: _,
+        } = self.as_ref();
+        let header = crate::node_contract::NodeRuntime::capture_protocol_shared_header_storage(
+            1,
+            std::mem::align_of::<Self>(),
+            maximum,
+        )
+        .map_err(|_| refused("original receiver group shared layout refused"))?;
+        std::mem::size_of::<Self>()
+            .checked_add(header)
+            .filter(|total| *total <= maximum)
+            .ok_or_else(|| refused("original receiver group storage exhausted"))
+    }
+
     /// Authenticates an actual original bound address against its selected launch path.
     ///
     /// # Errors
@@ -228,7 +258,26 @@ impl super::PacketCompleteSemanticSource {
         member: usize,
         path: &Path,
     ) -> Result<(), OperationFailure> {
+        self.authenticate_original_effect_receiver_binding_data(group, member, path)?;
+        group.authenticate_original_path(member, path)?;
+        self.ensure_origin()
+    }
+
+    /// Authenticates original receiver allocation/member/path without kernel IO.
+    ///
+    /// This reads only retained identity data and grants no queue/frontier right.
+    /// The existing kernel-path validator remains independent and unchanged.
+    ///
+    /// # Errors
+    /// Refuses another creator, missing binding or another actual group/member/path.
+    pub fn authenticate_original_effect_receiver_binding_data(
+        &self,
+        group: &Rc<PacketCompleteEffectReceiverGroup>,
+        member: usize,
+        path: &Path,
+    ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
+        group.ensure_origin()?;
         let original = self
             .effect_receiver
             .as_ref()
@@ -239,8 +288,32 @@ impl super::PacketCompleteSemanticSource {
                 "source effect receiver has another original association",
             ));
         }
-        original.group.authenticate_original_path(member, path)?;
         self.ensure_origin()
+    }
+
+    /// Counts an actually retained optional receiver group view before native birth.
+    ///
+    /// An absent binding has no group allocation. Repeated actual aliases may be
+    /// conservatively charged per view; equal paths/labels never refund storage.
+    ///
+    /// # Errors
+    /// Refuses another creator, group origin, checked overflow or the bound.
+    pub fn original_effect_receiver_retained_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, OperationFailure> {
+        self.ensure_origin()?;
+        let bytes = self
+            .effect_receiver
+            .as_ref()
+            .map(|original| {
+                original
+                    .group
+                    .original_retained_requested_storage_data(maximum)
+            })
+            .transpose()?;
+        self.ensure_origin()?;
+        Ok(bytes)
     }
 
     /// Peeks the original shared queues between current source/capsule guards.
@@ -343,6 +416,49 @@ mod tests {
         assert_eq!(reader.receive(1, &mut bytes).unwrap(), Some(65_537));
         assert_eq!(bytes, original);
         group.authenticate_empty().unwrap();
+    }
+
+    #[test]
+    fn complete_effect_storage_observation_preserves_original_queues_and_exact_bound() {
+        let (senders, receivers) = receivers();
+        let (mut group, reader) =
+            PacketCompleteEffectReceiverGroup::from_original_receivers(receivers);
+        senders[0].send(&[]).unwrap();
+        let maximum = 1024 * 1024;
+
+        let extent = group
+            .original_retained_requested_storage_data(maximum)
+            .unwrap();
+        assert!(extent >= std::mem::size_of::<PacketCompleteEffectReceiverGroup>());
+        assert_eq!(
+            group
+                .original_retained_requested_storage_data(extent)
+                .unwrap(),
+            extent
+        );
+        assert!(
+            group
+                .original_retained_requested_storage_data(extent - 1)
+                .is_err()
+        );
+        let mut byte = [0; 1];
+        assert_eq!(reader.receive(0, &mut byte).unwrap(), Some(0));
+
+        drop(reader);
+        let original_process = group.process;
+        Rc::get_mut(&mut group).unwrap().process = 0;
+        assert!(
+            group
+                .original_retained_requested_storage_data(maximum)
+                .is_err()
+        );
+        Rc::get_mut(&mut group).unwrap().process = original_process;
+        assert_eq!(
+            group
+                .original_retained_requested_storage_data(maximum)
+                .unwrap(),
+            extent
+        );
     }
 
     #[test]

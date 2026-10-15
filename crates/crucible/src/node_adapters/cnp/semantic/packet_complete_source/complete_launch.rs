@@ -64,15 +64,31 @@ impl PacketCompleteSemanticSource {
                 .try_borrow()
                 .map_err(|_| refused("complete-byte launch preconstruction already borrowed"))?
                 .is_some()
-            || self
-                .ack_peer_association
-                .try_borrow()
-                .map_err(|_| refused("complete-byte launch association already borrowed"))?
-                .is_some()
         {
             return Err(refused(
                 "complete-byte launch follows original native association",
             ));
+        }
+        {
+            let association = self
+                .ack_peer_association
+                .try_borrow()
+                .map_err(|_| refused("complete-byte launch association already borrowed"))?;
+            if let Some(association) = association.as_ref() {
+                // Genuine private birth owns these empty banks before Hello.
+                // Present associated/failed data cannot reopen launch custody.
+                association.authenticate_reserved_prebirth_data()?;
+                let birth = self
+                    .ack_peer_birth
+                    .try_borrow()
+                    .map_err(|_| refused("complete-byte launch private birth already borrowed"))?;
+                birth
+                    .as_ref()
+                    .ok_or_else(|| {
+                        refused("complete-byte launch reserved banks lack original birth")
+                    })?
+                    .authenticate_reserved_launch_data(self)?;
+            }
         }
         if self.complete_bytes_launch_reserved.replace(true) {
             return Err(refused(

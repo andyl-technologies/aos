@@ -574,3 +574,15 @@ pub(super) fn original_canonical_ack_controller_scope() -> (
 ) {
     native5_codec_tests::original_canonical_ack_controller_scope()
 }
+
+#[cfg(test)]
+pub(super) fn original_canonical_ack_controller_scope_with_identity_suffix(
+    suffix: Option<&str>,
+) -> (
+    crate::handshake::Handshake,
+    crate::handshake::ConnectionAuthority,
+    PacketControlSelection,
+    crate::reference_service::InstalledContent,
+) {
+    native5_codec_tests::original_canonical_ack_controller_scope_with_identity_suffix(suffix)
+}

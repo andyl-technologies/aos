@@ -119,6 +119,17 @@ impl PacketCompleteGraphOwner {
         Ok(Rc::clone(&self.policy))
     }
 
+    pub(in crate::node_qualification::packet_collection::complete) fn authenticate_original_report_policy_data(
+        &self,
+        policy: &Rc<InstalledPacketCompleteGraphPolicy>,
+    ) -> Result<(), QualificationError> {
+        self.policy.authenticate_retained_origin_data()?;
+        if !self.policy.revision.get() || !Rc::ptr_eq(&self.policy, policy) {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
     /// Revokes every retained view of this same original full-world policy.
     pub fn revoke(&mut self) {
         self.policy.revision.set(false);

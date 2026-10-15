@@ -114,7 +114,7 @@ fn attempt_execution_basis_digest_with_retention_policy(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutorCompatibilityProfile {
     crucible_version: String,
-    qemu_build: String,
+    backend_build_identity: String,
     protocol_versions: BTreeMap<String, u32>,
     scenario_schema: u32,
     exact_closure_schema: u32,
@@ -129,15 +129,18 @@ impl ExecutorCompatibilityProfile {
     /// empty/oversized, or any required version is zero.
     pub fn new(
         crucible_version: impl Into<String>,
-        qemu_build: impl Into<String>,
+        backend_build_identity: impl Into<String>,
         protocol_versions: BTreeMap<String, u32>,
         scenario_schema: u32,
         exact_closure_schema: u32,
     ) -> Result<Self, CampaignCodecError> {
         let crucible_version = crucible_version.into();
-        let qemu_build = qemu_build.into();
+        let backend_build_identity = backend_build_identity.into();
         validate_identifier(&crucible_version, "executor Crucible version is invalid")?;
-        validate_identifier(&qemu_build, "executor QEMU build identity is invalid")?;
+        validate_identifier(
+            &backend_build_identity,
+            "executor backend build identity is invalid",
+        )?;
         if protocol_versions.is_empty() || protocol_versions.len() > 256 {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "executor protocol-version set is empty or oversized",
@@ -158,7 +161,7 @@ impl ExecutorCompatibilityProfile {
         }
         Ok(Self {
             crucible_version,
-            qemu_build,
+            backend_build_identity,
             protocol_versions,
             scenario_schema,
             exact_closure_schema,
@@ -170,7 +173,7 @@ impl ExecutorCompatibilityProfile {
     pub fn from_lineage(lineage: &CampaignLineage) -> Self {
         Self {
             crucible_version: lineage.crucible_version().to_owned(),
-            qemu_build: lineage.qemu_build().to_owned(),
+            backend_build_identity: lineage.backend_build_identity().to_owned(),
             protocol_versions: lineage.protocol_versions().clone(),
             scenario_schema: lineage.scenario_schema(),
             exact_closure_schema: lineage.exact_closure_schema(),
@@ -183,10 +186,21 @@ impl ExecutorCompatibilityProfile {
         &self.crucible_version
     }
 
-    /// Returns the exact QEMU build identity.
+    /// Returns the exact backend build compatibility identity.
+    ///
+    /// Concrete adapters validate their own artifact identities separately.
+    #[must_use]
+    pub fn backend_build_identity(&self) -> &str {
+        &self.backend_build_identity
+    }
+
+    /// Returns the backend build identity through the legacy QEMU-named accessor.
+    ///
+    /// This compatibility alias returns the same value as
+    /// [`Self::backend_build_identity`]. It does not select a QEMU backend.
     #[must_use]
     pub fn qemu_build(&self) -> &str {
-        &self.qemu_build
+        self.backend_build_identity()
     }
 
     /// Returns the exact component protocol-version map.
@@ -211,7 +225,7 @@ impl ExecutorCompatibilityProfile {
     #[must_use]
     pub fn admits(&self, lineage: &CampaignLineage) -> bool {
         self.crucible_version == lineage.crucible_version()
-            && self.qemu_build == lineage.qemu_build()
+            && self.backend_build_identity == lineage.backend_build_identity()
             && self.protocol_versions == *lineage.protocol_versions()
             && self.scenario_schema == lineage.scenario_schema()
             && self.exact_closure_schema == lineage.exact_closure_schema()
@@ -221,7 +235,7 @@ impl ExecutorCompatibilityProfile {
 impl Canonical for ExecutorCompatibilityProfile {
     fn encode(&self, encoder: &mut Encoder) {
         self.crucible_version.encode(encoder);
-        self.qemu_build.encode(encoder);
+        self.backend_build_identity.encode(encoder);
         self.protocol_versions.encode(encoder);
         self.scenario_schema.encode(encoder);
         self.exact_closure_schema.encode(encoder);

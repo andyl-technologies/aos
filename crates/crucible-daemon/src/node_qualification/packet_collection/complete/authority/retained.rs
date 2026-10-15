@@ -70,8 +70,25 @@ impl InstalledPacketCompleteCollectionAuthority {
         &self,
         counter: &mut Counter,
     ) -> Result<(), QualificationError> {
+        self.charge_retained_storage_for_startup(counter, false)
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete) fn charge_report_startup_retained_storage(
+        &self,
+        counter: &mut Counter,
+    ) -> Result<(), QualificationError> {
+        // The concrete registered capsule counts its exact restored Host and
+        // verified archive together. Source3 is separately observed by Core.
+        self.charge_retained_storage_for_startup(counter, true)
+    }
+
+    fn charge_retained_storage_for_startup(
+        &self,
+        counter: &mut Counter,
+        restored_host_counted_by_capsule: bool,
+    ) -> Result<(), QualificationError> {
         self.roster.charge_retained_storage(counter)?;
-        if counter.rc(&self.host)? {
+        if !restored_host_counted_by_capsule && counter.rc(&self.host)? {
             let host = self
                 .host
                 .retained_original_metadata_bytes_excluding_runtime(counter.remaining())
@@ -97,6 +114,15 @@ impl InstalledPacketCompleteCollectionAuthority {
         counter.charge(&self.refused_bytes)?;
         counter.charge(&self.roots)?;
         counter.charge(&self.private_launches)?;
+        for launch in &self.original_launches {
+            let facts =
+                crucible_node_provider::retained_metadata::observe_retained_native_launch(launch)
+                    .map_err(|_| refused())?;
+            counter.metadata(&facts)?;
+        }
+        if let Some(holder) = self.report_startup_holder.get() {
+            counter.weak(holder)?;
+        }
         counter.charge(&self.directories)?;
         let slots = self
             .original_ack_hello

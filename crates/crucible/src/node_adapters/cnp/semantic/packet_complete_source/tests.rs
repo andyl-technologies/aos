@@ -107,7 +107,7 @@ pub(super) fn installation(
     }
 }
 
-fn reactive(
+pub(super) fn reactive(
     installed: &PacketNative5CoordinatorInstallation,
     member: usize,
 ) -> PacketConnectedDefinition {

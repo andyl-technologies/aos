@@ -129,6 +129,11 @@ impl PacketControl {
         administrative_cut: Position,
         maximum_bytes: usize,
     ) -> Result<PacketOriginalControlSnapshot, ProviderError> {
+        if self.complete_capture_allocation_selection.is_some() {
+            return Err(ProviderError::Correlation(
+                "native selected Control6 publisher unavailable",
+            ));
+        }
         administrative_cut.validate()?;
         if maximum_bytes == 0 || maximum_bytes > MAXIMUM_BYTES {
             return Err(ProviderError::ResourceExhausted(

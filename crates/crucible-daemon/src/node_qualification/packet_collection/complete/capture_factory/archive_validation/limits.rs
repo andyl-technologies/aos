@@ -236,6 +236,26 @@ mod tests {
         assert!(
             super::super::storage_sum([header, first.capacity(), second_bytes], short).is_err()
         );
+
+        // The full read slot is a simultaneous term, not merely the
+        // increase over the former buffer or an uncharged compiler frame.
+        let scratch = PacketFixtureMeasurements::streaming_scratch_bytes();
+        let with_stream = demand
+            .checked_add(scratch)
+            .ok_or_else(|| refused("test demand overflow"))?;
+        actual.state.maximum_native_memory_bytes = with_stream as u64;
+        let maximum = requested_archive_maximum(effective_archive_limits(installed, actual))?;
+        assert_eq!(
+            super::super::storage_sum([header, first.capacity(), second_bytes, scratch], maximum)?,
+            with_stream
+        );
+        actual.state.maximum_native_memory_bytes -= 1;
+        let short = requested_archive_maximum(effective_archive_limits(installed, actual))?;
+        assert!(
+            super::super::storage_sum([header, first.capacity(), second_bytes, scratch], short)
+                .is_err()
+        );
+
         actual.state.maximum_native_memory_bytes = 0;
         assert!(requested_archive_maximum(effective_archive_limits(installed, actual)).is_err());
         Ok(())

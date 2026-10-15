@@ -853,3 +853,42 @@ impl OriginalCompleteRestoreAttempt {
         Ok(())
     }
 }
+
+impl OriginalCompleteRestoreAttempt {
+    pub(super) fn authenticate_reserved_prebirth_data(&self) -> Result<(), OperationFailure> {
+        let Self {
+            ticket,
+            mapping,
+            journal,
+            request,
+            context,
+            normalized,
+            banks,
+            assigned_digest,
+            prepared,
+            ready,
+            signing_started,
+            sealed,
+            publishing_started,
+            frame_maximum,
+        } = self;
+        if ticket.is_some()
+            || mapping.is_some()
+            || journal.is_some()
+            || request.is_some()
+            || context.is_some()
+            || normalized.iter().any(Option::is_some)
+            || assigned_digest.is_some()
+            || *prepared
+            || *ready
+            || *signing_started
+            || *sealed
+            || *publishing_started
+            || *frame_maximum == 0
+            || banks.iter().any(|bank| !bank.is_empty())
+        {
+            return Err(refused("reserved prebirth restore banks are already used"));
+        }
+        Ok(())
+    }
+}

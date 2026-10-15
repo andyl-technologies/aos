@@ -18,10 +18,49 @@ use limits::{
     authenticate_host_record_extents, effective_archive_limits, requested_archive_maximum,
 };
 
+enum ArchiveSourceStoragePurpose<'a> {
+    Live,
+    Code {
+        factory: &'a super::archive_code::PacketCompleteArchiveCodeFactory,
+        graph: &'a Rc<crucible::node_admission::CompleteArchiveCodeGraph>,
+    },
+}
+
 impl PacketCompleteCaptureFactory {
     pub(super) fn authenticate_original_complete_archive(
         &self,
         scope: CompleteOriginalArchiveValidation<'_>,
+    ) -> Result<(), StateError> {
+        self.authenticate_original_complete_archive_for_purpose(
+            scope,
+            ArchiveSourceStoragePurpose::Live,
+        )
+    }
+
+    pub(super) fn authenticate_original_complete_archive_code(
+        &self,
+        scope: CompleteOriginalArchiveValidation<'_>,
+        factory: &super::archive_code::PacketCompleteArchiveCodeFactory,
+        graph: &Rc<crucible::node_admission::CompleteArchiveCodeGraph>,
+    ) -> Result<(), StateError> {
+        self.current()?;
+        if scope.original_write_runtime_data()?.is_some() {
+            return Err(refused(
+                "archive code observer cannot authenticate a live writer",
+            ));
+        }
+        factory.authenticate_cold_code_graph(self, graph, scope.graph)?;
+        self.authenticate_original_complete_archive_for_purpose(
+            scope,
+            ArchiveSourceStoragePurpose::Code { factory, graph },
+        )?;
+        self.current()
+    }
+
+    fn authenticate_original_complete_archive_for_purpose(
+        &self,
+        scope: CompleteOriginalArchiveValidation<'_>,
+        purpose: ArchiveSourceStoragePurpose<'_>,
     ) -> Result<(), StateError> {
         self.authenticate_storage_origin()?;
         let limits = effective_archive_limits(self.limits, scope.archive_limits_data()?);
@@ -64,7 +103,19 @@ impl PacketCompleteCaptureFactory {
             .map(PacketCompleteCaptureRecords::retained_bytes)
             .transpose()?
             .unwrap_or(0);
-        let mut retained = storage_sum([daemon, cache], maximum)?;
+        let code = match &purpose {
+            ArchiveSourceStoragePurpose::Live => 0,
+            ArchiveSourceStoragePurpose::Code { factory, graph } => {
+                if live_runtime.is_some() {
+                    return Err(refused(
+                        "archive code data cannot substitute for live source owners",
+                    ));
+                }
+                factory.authenticate_cold_code_graph(self, graph, scope.graph)?;
+                factory.cold_additional_requested_storage_data(graph, maximum)?
+            }
+        };
+        let mut retained = storage_sum([daemon, cache, code], maximum)?;
         if let Some(runtime) = live_runtime {
             // This fixed identity roster coexists with the actual daemon owners
             // throughout the callback. It is known requested scratch, not a
@@ -88,10 +139,15 @@ impl PacketCompleteCaptureFactory {
             retained = storage_sum(
                 [
                     retained,
-                    source
-                        .original_complete_retained_storage_data(maximum)
-                        .and_then(|report| report.complete_requested_bytes())
-                        .map_err(operation_failure)?,
+                    match &purpose {
+                        ArchiveSourceStoragePurpose::Live => source
+                            .original_complete_retained_storage_data(maximum)
+                            .and_then(|report| report.complete_requested_bytes()),
+                        ArchiveSourceStoragePurpose::Code { .. } => {
+                            source.original_complete_code_retained_storage_data(maximum)
+                        }
+                    }
+                    .map_err(operation_failure)?,
                 ],
                 maximum,
             )?;
@@ -105,6 +161,9 @@ impl PacketCompleteCaptureFactory {
                 size_of::<[Option<PacketCompleteArchivedSemantics>; 3]>(),
                 size_of::<[usize; 3]>(),
                 size_of::<super::super::retained::Counter>(),
+                // Both live and code-only validation can remeasure originals
+                // while these local observers and retained owners coexist.
+                PacketFixtureMeasurements::streaming_scratch_bytes(),
             ],
             maximum,
         )?;
@@ -273,6 +332,14 @@ impl PacketCompleteCaptureFactory {
         // Purpose/currentness is not inferred from decoded graphs or a byte sum.
         // Reauthenticate the same actual writer/load origin after every parser.
         scope.original_write_runtime_data()?;
+        if let ArchiveSourceStoragePurpose::Code { factory, graph } = purpose {
+            factory.authenticate_cold_code_graph(self, graph, scope.graph)?;
+            for source in &self.authority.roster().sources {
+                source
+                    .original_complete_code_retained_storage_data(maximum)
+                    .map_err(operation_failure)?;
+            }
+        }
         self.authenticate_archive_graph_data(scope.graph)
     }
 }

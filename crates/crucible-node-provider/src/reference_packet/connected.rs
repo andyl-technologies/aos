@@ -273,7 +273,27 @@ pub struct PacketConnectedProgram {
     failed: bool,
 }
 
+/// Names the distinct native transition populations used by closed projections.
+///
+/// Named fields keep the event and batch capacities distinct when their actual
+/// compiled limits differ; these values are bounds, never observed usage.
+pub(crate) struct OriginalStoppedInventoryLimits {
+    pub(crate) events: usize,
+    pub(crate) batches: usize,
+    pub(crate) payload_bytes: usize,
+}
+
 impl PacketConnectedProgram {
+    /// Returns the actual finite inventory populations used by the startup projection.
+    pub(crate) const fn original_stopped_inventory_row_limits_data()
+    -> OriginalStoppedInventoryLimits {
+        OriginalStoppedInventoryLimits {
+            events: MAXIMUM_EVENTS,
+            batches: MAXIMUM_BATCHES,
+            payload_bytes: MAXIMUM_BYTES,
+        }
+    }
+
     pub(super) fn committed_input(
         &self,
     ) -> Result<(&PacketCommitRecord, &ContentRef), ProviderError> {

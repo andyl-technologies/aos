@@ -9,7 +9,9 @@
 
 mod capabilities;
 mod conformance;
-pub(crate) use conformance::WeakInstalledConformancePlan;
+pub(crate) use conformance::{
+    OriginalReportStartupMember, StartupRows, WeakInstalledConformancePlan,
+};
 mod error;
 mod evidence;
 mod extensions;
@@ -37,8 +39,11 @@ pub use capabilities::{
 };
 
 pub use conformance::{
+    CompleteArchiveCodeGraph, CompleteOriginalReportStartupAdmission,
     ConformanceAdmissionAuthority, ConformanceGraph, ConformancePlanEvidence,
-    InstalledConformancePlan, admit_conformance_graph,
+    InstalledConformancePlan, OriginalReportStartupMemberScope, OriginalReportStartupPolicy,
+    OriginalReportStartupScope, OriginalReportStartupStorage, admit_complete_archive_code_graph,
+    admit_conformance_graph,
 };
 
 pub use error::{AdmissionCode, AdmissionError, AdmissionStage, AdmissionSubject, EffectCertainty};

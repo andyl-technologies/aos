@@ -248,3 +248,20 @@ fn modeled_foreign_creator_refuses_before_spending_tickets_or_starting_target() 
     assert!(!source.inner.host_issued.get());
     assert_eq!(source.inner.native_issued.get(), [false; 4]);
 }
+
+#[test]
+fn ordinary_signed_source_never_passes_collecting_prebirth_owner_phase() {
+    let (_directory, source) = fixture();
+    let before = source.inner.capture_owned_storage().unwrap();
+    assert!(matches!(
+        source
+            .inner
+            .authenticate_collecting_prebirth_storage_phase(),
+        Err(RuntimeError::ForeignAuthority)
+    ));
+    assert!(!source.inner.host_issued.get());
+    assert_eq!(source.inner.native_issued.get(), [false; 4]);
+    assert!(!source.inner.target_started.get());
+    assert!(source.inner.target.borrow().is_none());
+    assert_eq!(source.inner.capture_owned_storage().unwrap(), before);
+}

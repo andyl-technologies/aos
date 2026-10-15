@@ -1,0 +1,466 @@
+//! Owns the actual installed scenario policy for pre-Child report publication.
+//!
+//! The authority keeps only a Weak link to this concrete capsule. Core's
+//! nonconstructible scope authenticates the same plan, Source3 and typed launch
+//! array before any observation. No callback follows a raw pointer or accepts
+//! a caller-computed byte total, and no report admits its own construction.
+
+use super::super::retained::Counter;
+use super::super::{PacketCompleteGraphOwner, capture_factory::PacketCompleteRestorationPrebirth};
+use super::*;
+use crucible::node_adapters::cnp::{
+    PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader,
+};
+use crucible::node_admission::{
+    OriginalReportStartupMemberScope, OriginalReportStartupPolicy, OriginalReportStartupScope,
+    OriginalReportStartupStorage,
+};
+use crucible_node_contract::ResourceLimits;
+
+/// Retains the original scene or actual fresh-restoration preparation capsule.
+///
+/// The non-clone graph owner preserves the installed policy's real revision.
+/// The explicit ResourceLimits is an installed scenario declaration; only Core
+/// can turn the complete owning observation into a report startup admission.
+/// Native birth, code currentness, activation, Capture and restoration rights
+/// keep their independent guards. A refusal retains every owner in this holder.
+#[must_use = "retain the same original holders through launch and cleanup"]
+pub struct PacketCompleteReportStartupHolder {
+    graph_owner: PacketCompleteGraphOwner,
+    authority: Rc<InstalledPacketCompleteCollectionAuthority>,
+    plan: Rc<InstalledConformancePlan>,
+    resources: ResourceLimits,
+    purpose: StartupHolderPurpose,
+    receiver_group: Rc<PacketCompleteEffectReceiverGroup>,
+    receiver_reader: PacketCompleteEffectReceiverReader,
+    process: u32,
+    thread: std::thread::ThreadId,
+    attempted: Cell<bool>,
+    in_flight: Cell<bool>,
+    completed: Cell<bool>,
+}
+
+enum StartupHolderPurpose {
+    OriginalScene,
+    FreshRestoration(Rc<RefCell<PacketCompleteRestorationPrebirth>>),
+}
+
+impl PacketCompleteReportStartupHolder {
+    /// Installs the concrete original scene's report policy before any Child.
+    ///
+    /// The actual Sources must already retain ready, unstarted private births
+    /// before reservation. This owns no decoded archive or synthetic native row.
+    ///
+    /// # Errors
+    /// Refuses foreign actual graph/plan/authority, absent finite resource policy,
+    /// unsupported Host phase or a previously registered original holder.
+    pub fn install_original_scene(
+        graph_owner: PacketCompleteGraphOwner,
+        authority: Rc<InstalledPacketCompleteCollectionAuthority>,
+        plan: Rc<InstalledConformancePlan>,
+        resources: ResourceLimits,
+        receiver_group: Rc<PacketCompleteEffectReceiverGroup>,
+        receiver_reader: PacketCompleteEffectReceiverReader,
+    ) -> Result<Rc<RefCell<Self>>, QualificationError> {
+        authority
+            .host
+            .authenticate_original_report_startup_data()
+            .map_err(|_| refused())?;
+        Self::install(
+            graph_owner,
+            authority,
+            plan,
+            resources,
+            StartupHolderPurpose::OriginalScene,
+            receiver_group,
+            receiver_reader,
+        )
+    }
+
+    /// Installs the same actual fresh source/Host ticket holders before Child.
+    ///
+    /// The capsule retains the real signed source and once-issued native3
+    /// tickets; the Host must be the same archive-ticketed allocation selected
+    /// by this fresh authority. No old source process is required to be alive.
+    ///
+    /// # Errors
+    /// Refuses a foreign, bound, busy or incomplete original capsule, changed
+    /// fresh selection, exhausted policy or repeated holder registration.
+    pub fn install_fresh_restoration(
+        graph_owner: PacketCompleteGraphOwner,
+        authority: Rc<InstalledPacketCompleteCollectionAuthority>,
+        plan: Rc<InstalledConformancePlan>,
+        resources: ResourceLimits,
+        capsule: Rc<RefCell<PacketCompleteRestorationPrebirth>>,
+        receiver_group: Rc<PacketCompleteEffectReceiverGroup>,
+        receiver_reader: PacketCompleteEffectReceiverReader,
+    ) -> Result<Rc<RefCell<Self>>, QualificationError> {
+        capsule
+            .try_borrow()
+            .map_err(|_| refused())?
+            .authenticate_report_startup_target_data(&authority, &plan)
+            .map_err(|_| refused())?;
+        let holder = Self::install(
+            graph_owner,
+            authority,
+            plan,
+            resources,
+            StartupHolderPurpose::FreshRestoration(Rc::clone(&capsule)),
+            receiver_group,
+            receiver_reader,
+        )?;
+        capsule
+            .try_borrow_mut()
+            .map_err(|_| refused())?
+            .bind_report_startup_holder(&holder)
+            .map_err(|_| refused())?;
+        Ok(holder)
+    }
+
+    fn install(
+        graph_owner: PacketCompleteGraphOwner,
+        authority: Rc<InstalledPacketCompleteCollectionAuthority>,
+        plan: Rc<InstalledConformancePlan>,
+        resources: ResourceLimits,
+        purpose: StartupHolderPurpose,
+        receiver_group: Rc<PacketCompleteEffectReceiverGroup>,
+        receiver_reader: PacketCompleteEffectReceiverReader,
+    ) -> Result<Rc<RefCell<Self>>, QualificationError> {
+        authority.current()?;
+        plan.authenticate_authority(authority.as_ref())
+            .map_err(evidence_qualification)?;
+        graph_owner.authenticate_original_report_policy_data(&authority.graph_policy)?;
+        authenticate_resources(&resources)?;
+        receiver_reader
+            .authenticate_original_group(&receiver_group)
+            .map_err(|_| refused())?;
+        for (member, source) in authority.roster.sources.iter().enumerate() {
+            source
+                .authenticate_original_effect_receiver_binding(
+                    &receiver_group,
+                    member,
+                    &authority.original_launches[member].effects,
+                )
+                .map_err(|_| refused())?;
+        }
+        if authority.report_startup_holder.get().is_some() {
+            return Err(refused());
+        }
+        let original = Rc::new(RefCell::new(Self {
+            graph_owner,
+            authority: Rc::clone(&authority),
+            plan,
+            resources,
+            purpose,
+            receiver_group,
+            receiver_reader,
+            process: std::process::id(),
+            thread: std::thread::current().id(),
+            attempted: Cell::new(false),
+            in_flight: Cell::new(false),
+            completed: Cell::new(false),
+        }));
+        authority
+            .report_startup_holder
+            .set(Rc::downgrade(&original))
+            .map_err(|_| refused())?;
+        Ok(original)
+    }
+
+    /// Reserves and finalizes all three report members under the same real holder.
+    ///
+    /// Core precharges this installed policy's declared observation scratch,
+    /// observes the same owners and Sources, quotes real compiled publication
+    /// phases, then issues once-spent members. The holder remains immutably
+    /// borrowed while callbacks run; there is no mutable-controller escape.
+    /// Failure keeps partial Source birth banks and all original holders.
+    ///
+    /// # Errors
+    /// Refuses foreign or repeated preparation, an unknown owning term, absent
+    /// report producer, changed phase/policy or any requested-storage excess.
+    pub fn finalize_original_report_startup(
+        original: &Rc<RefCell<Self>>,
+    ) -> Result<usize, QualificationError> {
+        let held = original.try_borrow().map_err(|_| refused())?;
+        held.authenticate_origin()?;
+        if held.attempted.replace(true) || held.in_flight.replace(true) {
+            return Err(refused());
+        }
+        let _loan = StartupLoan(&held.in_flight);
+        let mut admission = held
+            .plan
+            .reserve_original_report_startup(
+                &held.authority.roster.sources,
+                &held.authority.original_launches,
+            )
+            .map_err(evidence_qualification)?;
+        let peak = admission.requested_peak_data();
+        for member in 0..3 {
+            admission
+                .finalize_original_source(member)
+                .map_err(evidence_qualification)?;
+        }
+        held.completed.set(true);
+        Ok(peak)
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete) fn authenticates_target_data(
+        &self,
+        authority: &InstalledPacketCompleteCollectionAuthority,
+        plan: &InstalledConformancePlan,
+    ) -> Result<(), QualificationError> {
+        self.authenticate_origin()?;
+        if !std::ptr::eq(self.authority.as_ref(), authority)
+            || !self.plan.is_original_plan_data(plan)
+            || !self.completed.get()
+        {
+            return Err(refused());
+        }
+        self.graph_owner
+            .authenticate_original_report_policy_data(&authority.graph_policy)
+    }
+
+    fn authenticate_origin(&self) -> Result<(), QualificationError> {
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
+    fn authenticate_scope_data(
+        &self,
+        authority: &InstalledPacketCompleteCollectionAuthority,
+        scope: &OriginalReportStartupScope<'_>,
+    ) -> Result<(), QualificationError> {
+        self.authenticate_origin()?;
+        if !self.in_flight.get()
+            || self.completed.get()
+            || !std::ptr::eq(self.authority.as_ref(), authority)
+            || !scope.is_original_authority(authority)
+            || !scope.is_original_plan(&self.plan)
+            || !std::ptr::eq(scope.sources(), &authority.roster.sources)
+            || !std::ptr::eq(scope.launches(), &authority.original_launches)
+        {
+            return Err(refused());
+        }
+        self.graph_owner
+            .authenticate_original_report_policy_data(&authority.graph_policy)?;
+        self.receiver_reader
+            .authenticate_original_group(&self.receiver_group)
+            .map_err(|_| refused())?;
+        for (member, source) in authority.roster.sources.iter().enumerate() {
+            source
+                .authenticate_original_effect_receiver_binding_data(
+                    &self.receiver_group,
+                    member,
+                    &authority.original_launches[member].effects,
+                )
+                .map_err(|_| refused())?;
+        }
+        match &self.purpose {
+            StartupHolderPurpose::OriginalScene => authority
+                .host
+                .authenticate_original_report_startup_data()
+                .map_err(|_| refused()),
+            StartupHolderPurpose::FreshRestoration(capsule) => capsule
+                .try_borrow()
+                .map_err(|_| refused())?
+                .authenticate_report_startup_target_data(authority, &self.plan)
+                .map_err(|_| refused()),
+        }
+    }
+
+    fn policy_data(&self) -> Result<OriginalReportStartupPolicy, QualificationError> {
+        let maximum = usize::try_from(self.resources.memory_bytes.get()).map_err(|_| refused())?;
+        // These are actual compiled observers. Source and publication producer
+        // scratch is independently precharged by Core, never replaced here.
+        let counters = std::mem::size_of::<Counter>()
+            .checked_mul(4)
+            .ok_or_else(refused)?;
+        let scratch = counters.checked_add(
+            crucible::node_admission::CompleteArchiveCodeGraph::retained_requested_storage_scratch_bytes())
+            .and_then(|bytes| bytes.checked_add(crucible_node_provider::retained_metadata::original_metadata_observer_layout_bytes()))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crucible_node_provider::retained_metadata::RetainedProtocolMetadataFacts>()))
+            .ok_or_else(refused)?;
+        Ok(OriginalReportStartupPolicy {
+            maximum_requested_bytes: maximum,
+            declared_observer_scratch_bytes: scratch,
+        })
+    }
+
+    fn storage_data(
+        original: &Rc<RefCell<Self>>,
+        held: &Self,
+        maximum: usize,
+    ) -> Result<OriginalReportStartupStorage, QualificationError> {
+        let mut counter = Counter::new(maximum);
+        counter.rc(original)?;
+        counter.add(
+            held.receiver_group
+                .original_retained_requested_storage_data(counter.remaining())
+                .map_err(|_| refused())?,
+        )?;
+        if counter.rc(&held.authority)? {
+            match &held.purpose {
+                StartupHolderPurpose::OriginalScene => {
+                    held.authority.charge_retained_storage(&mut counter)?
+                }
+                StartupHolderPurpose::FreshRestoration(_) => held
+                    .authority
+                    .charge_report_startup_retained_storage(&mut counter)?,
+            }
+        }
+        if counter.rc(&held.plan)? {
+            counter.add(
+                held.plan
+                    .retained_allocation_bytes_excluding_authority()
+                    .map_err(evidence_qualification)?,
+            )?;
+        }
+        if let StartupHolderPurpose::FreshRestoration(capsule) = &held.purpose {
+            counter.add(
+                capsule
+                    .try_borrow()
+                    .map_err(|_| refused())?
+                    .retained_report_startup_storage_data(capsule, counter.remaining())
+                    .map_err(|_| refused())?,
+            )?;
+        }
+        // This selected success path walks borrowed capacities without a new
+        // temporary heap bank. All compiled counters/metadata views are already
+        // admitted by policy_data; source/finalization phases are Core terms.
+        Ok(OriginalReportStartupStorage {
+            retained_holder_bytes: counter.bytes(),
+            maximum_simultaneous_transient_bytes: 0,
+        })
+    }
+}
+
+struct StartupLoan<'a>(&'a Cell<bool>);
+
+impl Drop for StartupLoan<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
+impl InstalledPacketCompleteCollectionAuthority {
+    pub(super) fn original_report_startup_policy_data(
+        &self,
+        scope: &OriginalReportStartupScope<'_>,
+    ) -> Result<OriginalReportStartupPolicy, EvidenceError> {
+        // Raw original checks precede any inherited Weak/RefCell owner loan.
+        self.graph_policy
+            .authenticate_retained_origin_data()
+            .map_err(evidence_error)?;
+        let original = self
+            .report_startup_holder
+            .get()
+            .and_then(std::rc::Weak::upgrade)
+            .ok_or_else(|| evidence_error(refused()))?;
+        let held = original
+            .try_borrow()
+            .map_err(|_| evidence_error(refused()))?;
+        held.authenticate_scope_data(self, scope)
+            .map_err(evidence_error)?;
+        held.policy_data().map_err(evidence_error)
+    }
+
+    pub(super) fn authenticate_original_report_startup_member_data(
+        &self,
+        scope: &OriginalReportStartupMemberScope<'_>,
+    ) -> Result<(), EvidenceError> {
+        self.graph_policy
+            .authenticate_retained_origin_data()
+            .map_err(evidence_error)?;
+        let original = self
+            .report_startup_holder
+            .get()
+            .and_then(std::rc::Weak::upgrade)
+            .ok_or_else(|| evidence_error(refused()))?;
+        let held = original
+            .try_borrow()
+            .map_err(|_| evidence_error(refused()))?;
+        held.authenticate_origin().map_err(evidence_error)?;
+        if !std::ptr::eq(held.authority.as_ref(), self)
+            || !scope.is_original_authority(self)
+            || !scope.is_original_plan(&held.plan)
+            || (!held.in_flight.get() && !held.completed.get())
+            || !self
+                .roster
+                .sources
+                .iter()
+                .any(|source| std::ptr::eq(source.as_ref(), scope.source()))
+        {
+            return Err(evidence_error(refused()));
+        }
+        // Member authentication may occur under the Source birth's immutable
+        // RefCell loan. Follow only the registered holder's original identities
+        // and revision here; never reborrow birth or invoke current()/hash/IO.
+        // Actual private launch and boot retain their separate full byte fences.
+        held.graph_owner
+            .authenticate_original_report_policy_data(&self.graph_policy)
+            .map_err(evidence_error)
+    }
+
+    pub(super) fn original_report_startup_storage_data(
+        &self,
+        scope: &OriginalReportStartupScope<'_>,
+        policy: &OriginalReportStartupPolicy,
+    ) -> Result<OriginalReportStartupStorage, EvidenceError> {
+        self.graph_policy
+            .authenticate_retained_origin_data()
+            .map_err(evidence_error)?;
+        let original = self
+            .report_startup_holder
+            .get()
+            .and_then(std::rc::Weak::upgrade)
+            .ok_or_else(|| evidence_error(refused()))?;
+        let held = original
+            .try_borrow()
+            .map_err(|_| evidence_error(refused()))?;
+        held.authenticate_scope_data(self, scope)
+            .map_err(evidence_error)?;
+        if &held.policy_data().map_err(evidence_error)? != policy {
+            return Err(evidence_error(refused()));
+        }
+        let result = PacketCompleteReportStartupHolder::storage_data(
+            &original,
+            &held,
+            policy.maximum_requested_bytes,
+        )
+        .map_err(evidence_error)?;
+        held.authenticate_scope_data(self, scope)
+            .map_err(evidence_error)?;
+        Ok(result)
+    }
+}
+
+fn authenticate_resources(resources: &ResourceLimits) -> Result<(), QualificationError> {
+    if !resources.extensions.is_empty()
+        || resources.processes.get() < 3
+        || [
+            resources.cpu_budget_ns,
+            resources.memory_bytes,
+            resources.writable_bytes,
+            resources.descriptors,
+            resources.pending_events,
+            resources.content_bytes,
+            resources.maximum_operations,
+        ]
+        .iter()
+        .any(|value| value.get() == 0)
+        || usize::try_from(resources.memory_bytes.get()).is_err()
+    {
+        return Err(refused());
+    }
+    Ok(())
+}
+
+fn evidence_qualification(error: EvidenceError) -> QualificationError {
+    QualificationError::Evidence(error.message)
+}
+
+#[cfg(test)]
+#[path = "report_startup_tests.rs"]
+mod tests;

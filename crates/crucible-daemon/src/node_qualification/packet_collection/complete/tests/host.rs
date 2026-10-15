@@ -42,6 +42,24 @@ impl Host {
         let definition = canonical::content_ref(&definition_bytes, "application/json").unwrap();
         content.insert(definition.clone(), definition_bytes);
         let preparation = host_scheduling_complete_owner_preparation_schema().unwrap();
+        let continuation =
+            crucible::node_contract::host_scheduling_complete_continuation_schema().unwrap();
+        // This versioned fixture body must match the actual advertised codec.
+        // A future codec change must update these bytes rather than drop its pin.
+        let continuation_bytes = canonical::canonical_json(&serde_json::json!({
+            "schema":"source-owned.host-scheduling-continuation/2",
+            "fields":["schema_version","source","runtime","scheduling","objects"],
+            "runtime":"closed original-lineage Runtime7; complete native ancestry and typed original bodies",
+            "administration":"separate runtime-original-capture-journal/1 in index3; unchanged Runtime7 and Coordinator7"
+        }))
+        .unwrap();
+        let continuation_reference =
+            canonical::content_ref(&continuation_bytes, "application/json").unwrap();
+        assert_eq!(
+            continuation_reference, continuation.definition,
+            "versioned Host2 continuation fixture differs from its actual schema"
+        );
+        content.insert(continuation_reference, continuation_bytes);
         let domains = HostSchedulingDomains {
             coordinator: id("zz-packet-coordinator-state"),
             connections: (0..2)
@@ -120,11 +138,7 @@ impl Host {
                         extensions: Extensions::new(),
                     }],
                     model_definitions: vec![definition.clone()],
-                    formats: vec![
-                        preparation,
-                        crucible::node_contract::host_scheduling_complete_continuation_schema()
-                            .unwrap(),
-                    ],
+                    formats: vec![preparation, continuation],
                     extensions: Extensions::new(),
                 },
                 profile_ref: definition.clone(),

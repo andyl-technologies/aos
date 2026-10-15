@@ -267,6 +267,40 @@ impl CollectingCompleteRestorationSource {
             .map_err(|error| RuntimeError::SchedulerRefused(error.reason))
     }
 
+    /// Authenticates this exact unbound source and its actual restored Host.
+    ///
+    /// This is an origin/identity phase check; it observes no native liveness,
+    /// performs no hashing and grants no report, preparation or installation.
+    ///
+    /// # Errors
+    /// Refuses foreign creation, a bound/spent source, missing tickets or another
+    /// archive-backed Host allocation, including an attached or prepared node.
+    pub fn authenticate_original_prebirth_host_data(
+        &self,
+        host: &Rc<super::super::HostSchedulingSource>,
+    ) -> Result<(), RuntimeError> {
+        self.original.authenticate_original_prebirth_host_data(host)
+    }
+
+    /// Counts the actual verified prebirth archive and same restored Host owners.
+    ///
+    /// The existing source backing is counted once, while the Host's independent
+    /// cloned metadata and actual Rc/header are additional owners. Inline caller
+    /// capsule and native-ticket handles, code factory/graph and Source3 remain
+    /// separate. This observes data and grants no native or restoration rights.
+    ///
+    /// # Errors
+    /// Refuses another original Host/source, a spent preparation phase, unknown
+    /// retained backing, checked overflow or the requested-storage maximum.
+    pub fn retained_original_prebirth_storage_data(
+        &self,
+        host: &Rc<super::super::HostSchedulingSource>,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        self.original
+            .retained_original_prebirth_storage_data(host, maximum)
+    }
+
     /// Issues the single source-owned Host2 archive ticket without cloning bodies.
     ///
     /// # Errors
@@ -280,6 +314,50 @@ impl CollectingCompleteRestorationSource {
 }
 
 impl ConformanceRuntime {
+    /// Verifies historical complete source using its distinct installed code graph.
+    ///
+    /// No live ConformanceGraph or code-native Child is required. The opaque code
+    /// graph retains full structural validation; the actual selected-load receipt
+    /// and all source/native/common/Host codecs are verified before ticket issue.
+    /// Source remains explicitly unbound until actual fresh graph preparation.
+    ///
+    /// # Errors
+    /// Refuses foreign code/plan, absent signed-load origin, changed collecting
+    /// provenance, unsupported cold codecs or exhausted finite storage.
+    pub fn prepare_complete_original_archive_code_source(
+        graph: &crate::node_admission::CompleteArchiveCodeGraph,
+        archive: NativeArchiveRecord,
+        factory: &dyn NativeWorldFactory,
+        limits: super::super::HostSchedulingContinuationLimits,
+    ) -> Result<CollectingCompleteRestorationSource, StateError> {
+        archive
+            .authenticate_complete_load_admission()
+            .map_err(crate::node_state::schema)?;
+        let historical = archive
+            .collecting_complete_capture_provenance()?
+            .ok_or_else(|| crate::node_state::schema(RuntimeError::ForeignAuthority))?;
+        let plan = graph.plan().evidence();
+        if historical.plan != *plan.plan_ref
+            || historical.refused != *plan.refused_ref
+            || historical.sources != plan.sources
+            || historical.world != *plan.world
+        {
+            return Err(crate::node_state::schema(RuntimeError::ForeignAuthority));
+        }
+        graph.authenticate_archive_source(factory, &archive, &historical)?;
+        let source = archive.into_complete_original_restoration_source_scoped(
+            &graph.graph,
+            factory,
+            limits,
+            Some(graph.plan().retained()),
+        )?;
+        graph
+            .plan()
+            .reauthenticate()
+            .map_err(crate::node_state::schema)?;
+        Ok(CollectingCompleteRestorationSource { original: source })
+    }
+
     /// Prepares complete historical source under a genuine fresh collecting plan.
     ///
     /// The actual installed code factory authenticates historical complete

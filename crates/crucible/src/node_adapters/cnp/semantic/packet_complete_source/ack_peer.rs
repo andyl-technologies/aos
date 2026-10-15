@@ -239,6 +239,7 @@ impl PacketCompleteSemanticSource {
     ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
         if self.ack_birth_attempted
+            || self.complete_bytes_launch_reserved.get()
             || self.ack_peer_birth.get_mut().is_some()
             || self.preconstruction.get_mut().is_some()
         {
@@ -335,6 +336,36 @@ impl PacketCompleteSemanticSource {
                 == crucible_node_provider::reference_packet::service::complete_restore::PACKET_CANONICAL_RESTORE_INPUTS_FEATURE)
         {
             return Err(refused("restore input emitter planned feature absent"));
+        }
+        if self
+            .selected_fresh_restore_allocation_selection()?
+            .is_some()
+        {
+            use crucible_node_provider::reference_packet::service::fresh_restore_allocation::{
+                PACKET_FRESH_RESTORE_ALLOCATION_FEATURE,
+                PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING,
+                PACKET_FRESH_RESTORE_ALLOCATION_QUERY,
+            };
+            if !registration
+                .features
+                .iter()
+                .any(|feature| feature.as_str() == PACKET_FRESH_RESTORE_ALLOCATION_FEATURE)
+                || [
+                    PACKET_FRESH_RESTORE_ALLOCATION_QUERY,
+                    PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING,
+                ]
+                .iter()
+                .any(|name| {
+                    !registration
+                        .envelope_extensions
+                        .iter()
+                        .any(|actual| actual == name)
+                })
+            {
+                return Err(refused(
+                    "fresh allocation planned registration is incomplete",
+                ));
+            }
         }
         let frame_bytes = usize::try_from(launch.limits.frame_bytes.get())
             .map_err(|_| refused("ACK assigned frame bank extent overflow"))?;
@@ -469,6 +500,42 @@ impl PacketCompleteSemanticSource {
                 serde_json::to_value(selection).map_err(unknown)?,
             );
         }
+        if let Some(selection) = self.selected_capture_allocation_selection()? {
+            let value = birth
+                .as_object_mut()
+                .ok_or_else(|| refused("capture allocation source binding is not an object"))?;
+            value.insert(
+                "schema".into(),
+                serde_json::Value::String(
+                    "source-owned.packet-canonical-ack-source-binding/12".into(),
+                ),
+            );
+            // Binding12 is a distinct closed shape, including literal nulls for
+            // independent unselected restore routes. Earlier editions stay exact.
+            value.insert(
+                "native_codec_metadata_extent".into(),
+                serde_json::to_value(self.selected_native_ack_codec_metadata_extent()?)
+                    .map_err(unknown)?,
+            );
+            value.insert(
+                "protocol_metadata_limits".into(),
+                serde_json::to_value(self.selected_protocol_metadata_limits()?).map_err(unknown)?,
+            );
+            value.insert(
+                "complete_restore_selection".into(),
+                serde_json::to_value(self.selected_complete_restore_selection()?)
+                    .map_err(unknown)?,
+            );
+            value.insert(
+                "restore_input_emitter_selection".into(),
+                serde_json::to_value(self.selected_restore_input_emitter_selection()?)
+                    .map_err(unknown)?,
+            );
+            value.insert(
+                "capture_allocation_selection".into(),
+                serde_json::to_value(selection).map_err(unknown)?,
+            );
+        }
         let host = serde_json::json!({
             "schema": "source-owned.packet-canonical-ack-registration/5",
             "role": "controller",
@@ -525,6 +592,8 @@ impl PacketCompleteSemanticSource {
             &mut source_birth,
             &mut host_registration,
             self.ack_peer_birth.get_mut(),
+            launch.capture_allocation_selection.is_some()
+                || launch.fresh_restore_allocation_selection.is_some(),
         );
         if let (Some(source), Some(registration)) = (source_birth, host_registration) {
             self.ack_birth_input_banks = Some((source, registration));
@@ -548,6 +617,10 @@ impl PacketCompleteSemanticSource {
             || launch.complete_restore_selection != self.selected_complete_restore_selection()?
             || launch.restore_input_emitter_selection
                 != self.selected_restore_input_emitter_selection()?
+            || launch.capture_allocation_selection
+                != self.selected_capture_allocation_selection()?
+            || launch.fresh_restore_allocation_selection
+                != self.selected_fresh_restore_allocation_selection()?
             || launch.ack_emitter_selection != self.selected_ack_emitter_selection()?
             || launch.confirmation_selection != self.selected_confirmation_selection()?
             || &launch.capture_profile != self.selected_capture_profile()?
@@ -593,8 +666,11 @@ impl PacketCompleteSemanticSource {
             .map_err(|_| refused("complete private ACK birth is busy"))?;
         let original = std::cell::Ref::filter_map(slot, Option::as_ref)
             .map_err(|_| refused("complete private ACK birth is absent"))?;
+        original.authenticate_report_startup_before_boot(self)?;
         original.begin_private_boot()?;
-        Ok(PacketCompleteAckPeerBootMaterial::from_original(original))
+        Ok(PacketCompleteAckPeerBootMaterial::from_original(
+            self, original,
+        ))
     }
 }
 

@@ -86,6 +86,14 @@ pub trait ConformanceResultPublisher {
     }
 }
 
+// Initial and restored worlds have distinct lifecycle entry points. A restored
+// runtime cannot activate its blank birth model through ordinary initial APIs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CollectionOrigin {
+    Initial,
+    CompleteRestoration,
+}
+
 /// Owns authentic native collection lifecycle under an opaque original plan.
 ///
 /// The underlying runtime and graph are private. Every callback uses the same
@@ -97,9 +105,26 @@ pub struct ConformanceRuntime {
     activation: Option<WorldActivation>,
     quantized: bool,
     exact_inputs: Option<Rc<super::HostSchedulingSource>>,
+    origin: CollectionOrigin,
 }
 
 impl ConformanceRuntime {
+    pub(crate) fn authenticate_complete_original_restoration_origin(
+        &self,
+    ) -> Result<(), RuntimeError> {
+        if self.origin != CollectionOrigin::CompleteRestoration {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+
+    fn authenticate_initial_origin(&self) -> Result<(), RuntimeError> {
+        if self.origin != CollectionOrigin::Initial {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+
     /// Attaches the actual host queue owner before collecting original readiness.
     ///
     /// The source-created node must already belong to this same complete graph;
@@ -288,6 +313,7 @@ impl ConformanceRuntime {
             activation: None,
             quantized,
             exact_inputs: None,
+            origin: CollectionOrigin::Initial,
         })
     }
 
@@ -297,6 +323,7 @@ impl ConformanceRuntime {
     /// Refuses revoked/changed collection authority or incomplete actual readiness.
     pub fn arm_all(&mut self) -> Result<(), RuntimeError> {
         self.current()?;
+        self.authenticate_initial_origin()?;
         self.runtime.arm_all()?;
         self.current()
     }
@@ -318,6 +345,7 @@ impl ConformanceRuntime {
         maximum_record_bytes: usize,
     ) -> Result<(), RuntimeError> {
         self.current()?;
+        self.authenticate_initial_origin()?;
         if self.activation.is_some() {
             return Err(RuntimeError::ForeignAuthority);
         }
@@ -347,6 +375,7 @@ impl ConformanceRuntime {
         publisher: &mut dyn ActivationPublisher,
     ) -> Result<(), RuntimeError> {
         self.current()?;
+        self.authenticate_initial_origin()?;
         if self.activation.is_some() {
             return Err(RuntimeError::ForeignAuthority);
         }

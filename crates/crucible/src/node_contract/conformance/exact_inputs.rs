@@ -93,6 +93,100 @@ impl ConformanceRuntime {
             activation: None,
             quantized: false,
             exact_inputs: Some(source),
+            origin: CollectionOrigin::Initial,
+        })
+    }
+
+    /// Creates the inactive complete-restoration runtime under its bound source.
+    ///
+    /// The caller retains the same opaque fresh graph with its prebirth source
+    /// capsule. Every actual node must carry that graph's original collecting
+    /// plan; the actual Host node retains the source-issued archive ticket. Its
+    /// original scheduler allocation attaches once before native preparation.
+    /// This creates neither a completed restoration context nor Arm/activation.
+    ///
+    /// # Errors
+    /// Retains supplied owners on foreign/expired source binding, unsupported
+    /// input mode, another original Host/node, unavailable custody or attachment
+    /// failure. Source12 and whole-preparation issuers remain independent.
+    pub fn from_prepared_complete_original_restoration(
+        graph: Rc<ConformanceGraph>,
+        mut prepared: PreparedRealization,
+        source: Rc<super::super::HostSchedulingSource>,
+        archive: &CollectingCompleteRestorationSource,
+    ) -> Result<Self, ConformanceRuntimeFailure> {
+        let checked: Result<(), RuntimeError> = (|| {
+            let original = archive.original_source_data(&graph)?;
+            source
+                .authenticate_complete_archive_source(&original.inner)
+                .map_err(|_| RuntimeError::ForeignAuthority)?;
+            graph
+                .authenticate_exact_input_scope(&source)
+                .map_err(|error| RuntimeError::SchedulerRefused(error.message))?;
+            if prepared.nodes.iter().any(|node| {
+                !node
+                    .collection_scope()
+                    .is_some_and(|scope| scope.same_original(graph.plan()))
+            }) || graph.graph.node_ids().any(|node| {
+                graph.graph.descriptor(node).is_some_and(|descriptor| {
+                    descriptor.ports.iter().any(|port| {
+                        port.lanes
+                            .iter()
+                            .any(|lane| lane.direction == Direction::Input)
+                    }) && graph.graph.binding(node).is_none_or(|binding| {
+                        binding.compatibility.operating_contract.mode != OperatingMode::Exact
+                    })
+                })
+            }) {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+            Ok(())
+        })();
+        if let Err(error) = checked {
+            return Err(ConformanceRuntimeFailure::retained(
+                error.to_string(),
+                prepared,
+            ));
+        }
+        let Some(slot) = prepared.custody_slot.take() else {
+            return Err(ConformanceRuntimeFailure::retained(
+                "original complete restoration custody is unavailable",
+                prepared,
+            ));
+        };
+        let nodes = std::mem::take(&mut prepared.nodes);
+        let mut runtime = NodeRuntime::new_for_purpose(
+            &graph.graph,
+            nodes,
+            prepared.activation.clone(),
+            prepared.limits,
+            slot,
+            Some(Rc::clone(&graph)),
+        )
+        .map_err(|failure| ConformanceRuntimeFailure {
+            reason: failure.error.to_string(),
+            _retained: None,
+            _preparation: Some(failure),
+            _runtime: None,
+        })?;
+        let attached = archive
+            .original_source_data(&graph)
+            .and_then(|archive| runtime.attach_complete_original_host_source(&source, archive));
+        if let Err(error) = attached {
+            return Err(ConformanceRuntimeFailure {
+                reason: error.to_string(),
+                _retained: None,
+                _preparation: None,
+                _runtime: Some(Box::new(runtime)),
+            });
+        }
+        Ok(Self {
+            graph,
+            runtime,
+            activation: None,
+            quantized: false,
+            exact_inputs: Some(source),
+            origin: CollectionOrigin::CompleteRestoration,
         })
     }
 
@@ -115,7 +209,9 @@ impl ConformanceRuntime {
         let source = Rc::clone(
             self.exact_inputs
                 .as_ref()
-                .ok_or(RuntimePollFailure::Admission(RuntimeError::ForeignAuthority))?,
+                .ok_or(RuntimePollFailure::Admission(
+                    RuntimeError::ForeignAuthority,
+                ))?,
         );
         self.graph
             .authenticate_exact_input_scope(&source)
@@ -152,7 +248,9 @@ impl ConformanceRuntime {
                 .map_err(scheduler_failure)?;
             return Err(error);
         }
-        let acknowledgement = self.runtime.stage_exact_inputs_with_lineage(original, &source)?;
+        let acknowledgement = self
+            .runtime
+            .stage_exact_inputs_with_lineage(original, &source)?;
         self.current().map_err(RuntimePollFailure::Admission)?;
         let commit = self.runtime.commit_input_acknowledgement(acknowledgement)?;
         self.current().map_err(RuntimePollFailure::Admission)?;

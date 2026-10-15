@@ -346,6 +346,43 @@ pub trait NativeWorldFactory {
         ))
     }
 
+    /// Authenticates actual installed code against one complete structural request.
+    ///
+    /// This data-only entry is separate from live collecting graph authority.
+    /// It requires a concrete installed archive-code factory and actual plan;
+    /// launch/decoded fields alone cannot opt in. No native preparation occurs.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects a foreign plan/code factory, unsupported
+    /// class/profile/resource selection or changed original structural request.
+    fn authenticate_complete_archive_code_request(
+        &self,
+        _plan: &crate::node_admission::InstalledConformancePlan,
+        _request: crate::node_admission::AdmissionRequest<'_>,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed complete archive-code request is unsupported",
+        ))
+    }
+
+    /// Authenticates a selected code claim without issuing behavioral acceptance.
+    ///
+    /// Only the private archive-code structural validator uses this hook. Its
+    /// result has no live or ordinary graph conversion. Full historical cold
+    /// codec validation and independent fresh target gates remain mandatory.
+    ///
+    /// # Errors
+    /// Defaults to refusal for unknown code, Node/profile or immutable claims.
+    fn authenticate_complete_archive_code_claim(
+        &self,
+        _plan: &crate::node_admission::InstalledConformancePlan,
+        _claim: crate::node_admission::QualificationClaim<'_>,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed complete archive-code claim is unsupported",
+        ))
+    }
+
     /// Authenticates installed historical code before collecting source tickets.
     ///
     /// This separate data-validation entry requires an actual installed code

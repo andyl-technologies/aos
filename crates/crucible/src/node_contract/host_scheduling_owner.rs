@@ -27,6 +27,7 @@ mod capture_dependencies;
 pub use capture_dependencies::{HostCaptureDependencyLookupData, HostCaptureDependencyStorageData};
 
 mod continuation;
+mod prebirth_storage;
 mod requested_storage;
 pub use continuation::{
     HostSchedulingContinuationLimits, HostSchedulingContinuationRecord,

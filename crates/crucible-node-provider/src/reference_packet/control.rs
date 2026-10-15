@@ -164,9 +164,22 @@ pub struct PacketControl {
         Option<super::service::PacketNative5ProtocolMetadataBirthFacts>,
     complete_restore_input_emitter_selection:
         Option<super::service::complete_restore::PacketNative5RestoreInputEmitterSelection>,
+    complete_capture_allocation_selection:
+        Option<super::service::capture_allocation::PacketNative5CaptureAllocationSelection>,
 }
 
 impl PacketControl {
+    // This chooses a restriction. The real private boot scope independently
+    // authenticates the Source-issued startup allocation before the first read.
+    pub(crate) fn requires_original_capture_report_query(&self) -> Result<bool, ProviderError> {
+        if self.capture_creator != std::process::id() {
+            return Err(ProviderError::Correlation(
+                "native report query foreign creator",
+            ));
+        }
+        Ok(self.complete_capture_allocation_selection.is_some() && self.active.is_some())
+    }
+
     pub(super) fn install_common_coordinator(
         &mut self,
         installed: super::coordinator::PacketCoordinatorInstallation,
@@ -302,6 +315,7 @@ impl PacketControl {
             complete_protocol_metadata_limits: None,
             complete_protocol_metadata_birth_facts: None,
             complete_restore_input_emitter_selection: None,
+            complete_capture_allocation_selection: None,
         })
     }
 

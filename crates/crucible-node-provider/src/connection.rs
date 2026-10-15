@@ -46,7 +46,15 @@ mod confirmation;
 mod native5_birth;
 pub use native5_birth::{Native5ConnectionBirth, Native5ConnectionBirthRefusal};
 mod exchange;
-pub(crate) use exchange::{OriginalPacketPrefixStorageData, PreparedOriginalRestoreHeldProof};
+pub(crate) use exchange::{
+    OriginalContinuationContentExtent, OriginalPacketPrefixProjectionInput,
+    OriginalPacketPrefixProjectionStorageData, OriginalPacketPrefixStorageData,
+    OriginalReportQueryReceiveStorageData, PreparedOriginalRestoreHeldProof,
+    authenticate_original_report_query_header_data,
+    original_packet_prefix_startup_counter_scratch_data,
+    original_report_query_receive_counter_scratch_data, original_report_query_receive_storage_data,
+    quote_original_packet_prefix_startup_storage_data,
+};
 mod native5_codec;
 pub use native5_codec::CanonicalAckCodecMetadataExtent;
 pub(crate) use native5_codec::{Native5CodecOwner, ProtocolCodecView};

@@ -90,6 +90,28 @@ impl World {
         >,
         ack: Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
     ) -> Self {
+        Self::with_report_startup(
+            peer,
+            host_executable,
+            proof_bytes,
+            effect_phases,
+            confirmation,
+            ack,
+            false,
+        )
+    }
+
+    pub(super) fn with_report_startup(
+        peer: ContentRef,
+        host_executable: ContentRef,
+        proof_bytes: Vec<u8>,
+        effect_phases: &[u16],
+        confirmation: Option<
+            crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+        ack: Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+        report_startup: bool,
+    ) -> Self {
         let mut content = BTreeMap::new();
         let proof = canonical::content_ref(&proof_bytes, "application/json").unwrap();
         content.insert(proof.clone(), proof_bytes.clone());
@@ -156,7 +178,7 @@ impl World {
             },
         ];
         let mut members = [
-            Definition::new(
+            Definition::with_report_startup(
                 peer.clone(),
                 &producer,
                 0,
@@ -164,8 +186,9 @@ impl World {
                 effect_phases,
                 confirmation,
                 ack,
+                report_startup,
             ),
-            Definition::new(
+            Definition::with_report_startup(
                 peer.clone(),
                 &relay,
                 1,
@@ -173,8 +196,9 @@ impl World {
                 effect_phases,
                 confirmation,
                 ack,
+                report_startup,
             ),
-            Definition::new(
+            Definition::with_report_startup(
                 peer,
                 &sink,
                 2,
@@ -182,6 +206,7 @@ impl World {
                 effect_phases,
                 confirmation,
                 ack,
+                report_startup,
             ),
         ];
         for member in &members {
@@ -206,13 +231,16 @@ impl World {
                 extensions: Extensions::new(),
             })
             .collect();
-        let all_nodes: Vec<Id> = members
+        let mut all_nodes: Vec<Id> = members
             .iter()
             .map(|member| member.installation.descriptor.id.clone())
             .chain(std::iter::once(host.selection.descriptor.id.clone()))
             .collect();
+        // Every selected participant, including the actual Host, honestly
+        // advertises Unqualified repeatability in this collecting-only profile.
+        all_nodes.sort();
         let requirements = ScenarioRequirements {
-            accepted_nondeterministic_nodes: all_nodes[..3].to_vec(),
+            accepted_nondeterministic_nodes: all_nodes,
             accepted_limited_state_nodes: vec![],
             ..ScenarioRequirements::default()
         };

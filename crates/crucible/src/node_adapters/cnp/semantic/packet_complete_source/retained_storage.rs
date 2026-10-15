@@ -9,6 +9,12 @@ use super::super::retained_storage::CnpRetainedStorageReport;
 use super::*;
 use std::rc::Rc;
 
+#[derive(Clone, Copy)]
+enum PrebirthStoragePurpose {
+    Code,
+    ReportStartup,
+}
+
 /// Reports actual retained Source component layouts and unresolved read owners.
 ///
 /// Shared views are conservatively repeated across component rows. Neither
@@ -68,6 +74,155 @@ impl PacketCompleteSourceRetainedStorage {
 }
 
 impl PacketCompleteSemanticSource {
+    /// Observes the actual Source before any native or private-birth attempt.
+    ///
+    /// The separately installed archive-code factory uses this phase for its
+    /// code-selection Sources. Absent capture, registry and static-input banks
+    /// have no allocation in this phase; present banks retain their actual
+    /// capacities. This never clears an unresolved live ownership report.
+    /// External receiver, Host, factory and code-graph owners remain separate.
+    ///
+    /// # Errors
+    /// Refuses foreign creation custody, any spent launch/private birth/native
+    /// association, a busy owner, unsupported retained backing or the bound.
+    pub fn original_complete_code_retained_storage_data(
+        self: &Rc<Self>,
+        maximum: usize,
+    ) -> Result<usize, OperationFailure> {
+        self.original_prebirth_storage_data(PrebirthStoragePurpose::Code, maximum)
+    }
+
+    /// Observes actual pre-Child owners beneath an unstarted original private birth.
+    ///
+    /// This counts the existing key/birth banks and all present Source banks.
+    /// The installed policy must separately admit prospective report, prefix,
+    /// ACK/error and counter owners before finalizing the private boot. A
+    /// successful observation is data and cannot issue that admission.
+    ///
+    /// # Errors
+    /// Refuses another creator, missing/failed/started private birth, any launch
+    /// or native-association attempt, unsupported backing or the supplied bound.
+    pub fn original_complete_report_startup_retained_storage_data(
+        self: &Rc<Self>,
+        maximum: usize,
+    ) -> Result<usize, OperationFailure> {
+        self.original_prebirth_storage_data(PrebirthStoragePurpose::ReportStartup, maximum)
+    }
+
+    fn authenticate_prebirth_storage_phase(
+        &self,
+        purpose: PrebirthStoragePurpose,
+    ) -> Result<(), OperationFailure> {
+        // Creator checks precede all interior loans. A dropped reservation
+        // cannot erase its spent launch flag and reopen the pre-Child phase.
+        self.ensure_origin()?;
+        if self.complete_bytes_launch_reserved.get()
+            || self.registry_retention_attempted.get()
+            || self.registry_retention_failed.get()
+            || self
+                .preconstruction
+                .try_borrow()
+                .map_err(unknown)?
+                .is_some()
+            || self
+                .original_extension_registry
+                .try_borrow()
+                .map_err(unknown)?
+                .is_some()
+        {
+            return Err(refused(
+                "original Source is outside its pre-Child storage phase",
+            ));
+        }
+        let unbound = match &self.original {
+            CompletePacketOriginal::Producer(source) => source.complete_preparation_unbound()?,
+            CompletePacketOriginal::Reactive(source) => source.complete_preparation_unbound()?,
+        };
+        if !unbound {
+            return Err(refused(
+                "pre-Child Source already has original native custody",
+            ));
+        }
+        let birth = self.ack_peer_birth.try_borrow().map_err(unknown)?;
+        match purpose {
+            PrebirthStoragePurpose::Code => {
+                if self.ack_birth_attempted
+                    || birth.is_some()
+                    || self
+                        .ack_peer_association
+                        .try_borrow()
+                        .map_err(unknown)?
+                        .is_some()
+                {
+                    return Err(refused("archive code Source has attempted private birth"));
+                }
+            }
+            PrebirthStoragePurpose::ReportStartup => {
+                if !self.ack_birth_attempted {
+                    return Err(refused(
+                        "report startup Source has no original private birth",
+                    ));
+                }
+                birth
+                    .as_ref()
+                    .ok_or_else(|| refused("report startup private birth is absent"))?
+                    .authenticate_unstarted_storage_phase()?;
+                self.ack_peer_association
+                    .try_borrow()
+                    .map_err(unknown)?
+                    .as_ref()
+                    .ok_or_else(|| refused("report startup reserved ACK banks are absent"))?
+                    .authenticate_reserved_prebirth_data()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn original_prebirth_storage_data(
+        self: &Rc<Self>,
+        purpose: PrebirthStoragePurpose,
+        maximum: usize,
+    ) -> Result<usize, OperationFailure> {
+        self.authenticate_prebirth_storage_phase(purpose)?;
+        let holders = self.original_complete_holder_storage_data(maximum)?;
+        let installation = self.original_complete_installation_storage_data(maximum)?;
+        let boot = self.original_complete_boot_association_storage_data(maximum)?;
+        let lineage = match &self.original {
+            CompletePacketOriginal::Producer(_) => 0,
+            CompletePacketOriginal::Reactive(source) => retained_values::sum(
+                [
+                    source.complete_prebirth_input_static_storage(maximum)?,
+                    source.complete_retained_lineage_storage(maximum)?,
+                ],
+                maximum,
+            )?,
+        };
+
+        // Only this explicit unlaunched phase accepts an actually absent bank.
+        // The live complete observer keeps its existing mandatory-bank checks.
+        let capture = if self.capture_banks.try_borrow().map_err(unknown)?.is_some() {
+            self.original_complete_capture_bank_storage_data(maximum)?
+        } else {
+            0
+        };
+        let execution = self.original_complete_execution_storage_data(maximum)?;
+        let registry = self.original_registry_capture_storage_data(maximum)?;
+        let total = retained_values::sum(
+            [
+                holders,
+                installation,
+                boot,
+                lineage,
+                capture,
+                execution,
+                registry,
+            ],
+            maximum,
+        )?;
+        self.authenticate_prebirth_storage_phase(purpose)?;
+        Ok(total)
+    }
+
     /// Observes all supported original Source component storage in one bound.
     ///
     /// Borrows the actual Rc and its retained fields without cloning journals,
@@ -178,3 +333,7 @@ impl PacketCompleteSemanticSource {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "retained_storage/prebirth_tests.rs"]
+mod prebirth_tests;

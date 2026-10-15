@@ -24,6 +24,12 @@ pub(crate) use restore_prepare::{
     VerifiedCanonicalRestoreInputAdmission, VerifiedCompleteRestorePrepare,
 };
 
+#[path = "report_startup.rs"]
+mod report_startup;
+pub(crate) use report_startup::{
+    OriginalNativeReportStartupAllocation, original_native_report_startup_scope_layout_data,
+};
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BootData {
@@ -140,7 +146,17 @@ impl NativeAckBoot {
             "ack_emitter_selection",
             "codec_metadata_extent",
         ];
-        let schema = if launch.restore_input_emitter_selection.is_some() {
+        let report_selected = launch.capture_allocation_selection.is_some()
+            || launch.fresh_restore_allocation_selection.is_some();
+        let schema = if report_selected {
+            keys.extend([
+                "native_codec_metadata_extent", "protocol_metadata_limits",
+                "complete_restore_selection", "restore_input_emitter_selection",
+                "capture_allocation_selection", "fresh_restore_allocation_selection",
+                "report_startup_allocation",
+            ]);
+            "source-owned.packet-canonical-ack-source-binding/13"
+        } else if launch.restore_input_emitter_selection.is_some() {
             keys.extend(["native_codec_metadata_extent", "protocol_metadata_limits", "complete_restore_selection", "restore_input_emitter_selection"]);
             "source-owned.packet-canonical-ack-source-binding/11"
         } else if launch.complete_restore_selection == Some(
@@ -190,6 +206,40 @@ impl NativeAckBoot {
         if let Some(emitter) = launch.restore_input_emitter_selection {
             expected_source["restore_input_emitter_selection"] =
                 serde_json::to_value(emitter).map_err(ContractError::from)?;
+        }
+        if let Some(selection) = launch.capture_allocation_selection {
+            expected_source["capture_allocation_selection"] =
+                serde_json::to_value(selection).map_err(ContractError::from)?;
+            expected_source["complete_restore_selection"] =
+                serde_json::to_value(launch.complete_restore_selection)
+                    .map_err(ContractError::from)?;
+            expected_source["restore_input_emitter_selection"] =
+                serde_json::to_value(launch.restore_input_emitter_selection)
+                    .map_err(ContractError::from)?;
+        }
+        if report_selected {
+            report_startup::authenticate_binding_data(
+                &source["report_startup_allocation"],
+                launch.capture_allocation_selection,
+                launch.fresh_restore_allocation_selection,
+            )?;
+            expected_source["capture_allocation_selection"] =
+                serde_json::to_value(launch.capture_allocation_selection)
+                    .map_err(ContractError::from)?;
+            expected_source["fresh_restore_allocation_selection"] =
+                serde_json::to_value(launch.fresh_restore_allocation_selection)
+                    .map_err(ContractError::from)?;
+            expected_source["complete_restore_selection"] =
+                serde_json::to_value(launch.complete_restore_selection)
+                    .map_err(ContractError::from)?;
+            expected_source["restore_input_emitter_selection"] =
+                serde_json::to_value(launch.restore_input_emitter_selection)
+                    .map_err(ContractError::from)?;
+            // The private Source finalizer is the only cross-process issuer.
+            // Validate the closed data and purpose association before retaining
+            // its exact object; no portable row alone can construct a token.
+            expected_source["report_startup_allocation"] =
+                source["report_startup_allocation"].clone();
         }
         if *source != expected_source {
             return Err(ProviderError::Correlation(

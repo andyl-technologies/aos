@@ -35,7 +35,7 @@ fn put(content: &mut BTreeMap<ContentRef, Vec<u8>>, value: &impl Serialize) -> C
 }
 
 impl Definition {
-    pub(super) fn new(
+    pub(super) fn with_report_startup(
         executable: ContentRef,
         model: &impl Serialize,
         member: usize,
@@ -45,6 +45,7 @@ impl Definition {
             crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection,
         >,
         ack: Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+        report_startup: bool,
     ) -> Self {
         let id = |value: &str| match value {
             "packet"
@@ -279,15 +280,38 @@ impl Definition {
             qualification_refs: vec![proof.clone()],
             extensions: Extensions::new(),
         };
-        let declaration = crucible_node_provider::reference_packet::continuation_contracts::complete_packet_ack_emitter_declaration(
-            &provider, confirmation.as_ref(), ack.as_ref(),
-        ).unwrap();
+        let (declaration, report_contracts) = if report_startup {
+            use crucible_node_provider::reference_packet::{
+                continuation_contracts::complete_packet_capture_allocation_declaration,
+                service::capture_allocation::PacketNative5CaptureAllocationSelection,
+            };
+            let selected = PacketNative5CaptureAllocationSelection::OriginalObserve12;
+            let declaration = complete_packet_capture_allocation_declaration(
+                &provider,
+                confirmation.as_ref(),
+                ack.as_ref(),
+                None,
+                None,
+                Some(&selected),
+            )
+            .unwrap();
+            (declaration.peer, declaration.restoration)
+        } else {
+            (crucible_node_provider::reference_packet::continuation_contracts::complete_packet_ack_emitter_declaration(
+                &provider, confirmation.as_ref(), ack.as_ref(),
+            ).unwrap(), Vec::new())
+        };
         for (_, reference, bytes) in declaration
             .confirmation
             .into_iter()
             .chain(declaration.ack_emitter)
             .chain(declaration.admission)
         {
+            content.insert(reference, bytes);
+        }
+        for (schema, bytes) in report_contracts {
+            let reference = canonical::content_ref(&bytes, "application/json").unwrap();
+            assert_eq!(reference, schema.definition);
             content.insert(reference, bytes);
         }
         let provider = declaration.provider;

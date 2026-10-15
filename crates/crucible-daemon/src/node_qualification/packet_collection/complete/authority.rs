@@ -4,7 +4,9 @@
 //! launches remain owned throughout preparation. Every normative obligation is
 //! explicit and unexecuted. Capture and operation callbacks inherit refusal.
 
+mod report_startup;
 mod retained;
+pub use report_startup::PacketCompleteReportStartupHolder;
 
 use super::super::scope;
 use super::{
@@ -80,6 +82,9 @@ pub struct InstalledPacketCompleteCollectionAuthority {
     refused_bytes: Vec<u8>,
     roots: Vec<ContentRef>,
     private_launches: [Vec<u8>; 3],
+    original_launches: [PacketNative5SourceLaunch; 3],
+    report_startup_holder:
+        OnceCell<std::rc::Weak<RefCell<report_startup::PacketCompleteReportStartupHolder>>>,
     directories: [PathBuf; 3],
     original_ack_hello: RefCell<[Option<OriginalAckHelloSlot>; 3]>,
     original_ack_callback_started: Cell<bool>,
@@ -191,6 +196,7 @@ impl InstalledPacketCompleteCollectionAuthority {
             original_ack_callback_started: Cell::new(false),
             capture_factory: OnceCell::new(),
             execution_scene: OnceCell::new(),
+            report_startup_holder: OnceCell::new(),
             roster: request.roster,
             host: request.host,
             graph_policy: request.graph_policy,
@@ -203,6 +209,7 @@ impl InstalledPacketCompleteCollectionAuthority {
             refused_bytes,
             roots,
             private_launches: [first?, second?, third?],
+            original_launches: request.launches,
             directories: request.directories,
         });
         original.current()?;
@@ -488,6 +495,18 @@ pub(super) fn authenticate_expected_launch_selections(
         || launch.protocol_metadata_limits
             != source
                 .selected_protocol_metadata_limits()
+                .map_err(operation_qualification)?
+        || launch.capture_allocation_selection
+            != source
+                .selected_capture_allocation_selection()
+                .map_err(operation_qualification)?
+        || launch.fresh_restore_allocation_selection
+            != source
+                .selected_fresh_restore_allocation_selection()
+                .map_err(operation_qualification)?
+        || launch.restore_input_emitter_selection
+            != source
+                .selected_restore_input_emitter_selection()
                 .map_err(operation_qualification)?
         || launch.native_codec_metadata_extent
             != source

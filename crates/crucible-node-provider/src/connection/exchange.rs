@@ -18,7 +18,14 @@ mod proof_receive;
 
 #[path = "exchange_storage.rs"]
 mod storage;
-pub(crate) use storage::OriginalPacketPrefixStorageData;
+pub(crate) use storage::{
+    OriginalContinuationContentExtent, OriginalPacketPrefixProjectionInput,
+    OriginalPacketPrefixProjectionStorageData, OriginalPacketPrefixStorageData,
+    OriginalReportQueryReceiveStorageData, authenticate_original_report_query_header_data,
+    original_packet_prefix_startup_counter_scratch_data,
+    original_report_query_receive_counter_scratch_data, original_report_query_receive_storage_data,
+    quote_original_packet_prefix_startup_storage_data,
+};
 
 const MAXIMUM_EXCHANGE_BYTES: usize = 32 * 1024 * 1024;
 

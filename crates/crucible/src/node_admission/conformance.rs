@@ -13,7 +13,17 @@ use crucible_node_contract::{
 
 use super::*;
 
+mod archive_code;
 mod extensions;
+mod report_startup;
+
+pub(crate) use report_startup::{OriginalReportStartupMember, StartupRows};
+
+pub use archive_code::{CompleteArchiveCodeGraph, admit_complete_archive_code_graph};
+pub use report_startup::{
+    CompleteOriginalReportStartupAdmission, OriginalReportStartupMemberScope,
+    OriginalReportStartupPolicy, OriginalReportStartupScope, OriginalReportStartupStorage,
+};
 
 const MAXIMUM_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 const MAXIMUM_SOURCE_OBJECTS: usize = 32;
@@ -45,6 +55,62 @@ pub struct ConformancePlanEvidence<'a> {
 /// [`AdmissionEvidence`]. Collection authorization must never issue an accepted
 /// class or use vendor-selected omissions as a normative witness population.
 pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
+    /// Reads the installed resource policy before startup observers or reports allocate.
+    ///
+    /// This callback authenticates the actual immutable Source/launch roster and
+    /// registered pre-Child holder using only origin checks and borrowed data.
+    /// Its declared scratch is admitted before the owning observation callback.
+    ///
+    /// # Errors
+    /// Defaults to refusal for an absent installed startup action or foreign holder.
+    fn original_report_startup_policy(
+        &self,
+        _plan: ConformancePlanEvidence<'_>,
+        _scope: &OriginalReportStartupScope<'_>,
+    ) -> Result<OriginalReportStartupPolicy, EvidenceError> {
+        Err(failure(
+            "installed original report startup policy is unavailable",
+        ))
+    }
+
+    /// Observes the actual registered startup holder under its admitted scratch.
+    ///
+    /// The holder excludes the three Source roots counted independently by Core.
+    /// No native query, controller callback, graph admission or report allocation
+    /// may occur here. Returning these data does not construct a startup grant.
+    ///
+    /// # Errors
+    /// Defaults to refusal for unknown ownership, changed policy or association.
+    fn authenticate_original_report_startup(
+        &self,
+        _plan: ConformancePlanEvidence<'_>,
+        _scope: &OriginalReportStartupScope<'_>,
+        _policy: &OriginalReportStartupPolicy,
+    ) -> Result<OriginalReportStartupStorage, EvidenceError> {
+        Err(failure(
+            "installed original report startup holder is unavailable",
+        ))
+    }
+
+    /// Rechecks a private startup member against its actual registered holder.
+    ///
+    /// The callback authenticates the same plan, Source and holder revision with
+    /// borrowed origin data only. It must not enter ordinary plan/currentness
+    /// callbacks, hash or serialize data, allocate, query the kernel or perform
+    /// native work. Private-boot and launch authentication remain independent.
+    ///
+    /// # Errors
+    /// Defaults to refusal for an absent, expired, borrowed or changed holder.
+    fn authenticate_original_report_startup_member(
+        &self,
+        _plan: ConformancePlanEvidence<'_>,
+        _scope: &OriginalReportStartupMemberScope<'_>,
+    ) -> Result<(), EvidenceError> {
+        Err(failure(
+            "installed original report startup member is unavailable",
+        ))
+    }
+
     /// Observes actual installed authority backing without authorizing a claim.
     ///
     /// The caller charges this concrete Rc data/header root separately. A

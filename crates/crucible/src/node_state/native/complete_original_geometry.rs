@@ -211,3 +211,9 @@ mod host_edge_count_controls {
         );
     }
 }
+
+impl crate::node_contract::NodeRuntime {
+    pub(crate) fn capture_selected_json_counter_scratch_data() -> usize {
+        super::core_decode_credit::scanner_storage()
+    }
+}

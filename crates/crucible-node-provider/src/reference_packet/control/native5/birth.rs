@@ -194,6 +194,7 @@ impl PacketControl {
             complete_protocol_metadata_limits: None,
             complete_protocol_metadata_birth_facts: None,
             complete_restore_input_emitter_selection: None,
+            complete_capture_allocation_selection: None,
         }
     }
 }

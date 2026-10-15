@@ -567,3 +567,7 @@ mod tests {
         );
     }
 }
+
+pub(super) fn counter_scratch_data() -> usize {
+    std::mem::size_of::<Credit>() + std::mem::size_of::<Container<'_>>()
+}

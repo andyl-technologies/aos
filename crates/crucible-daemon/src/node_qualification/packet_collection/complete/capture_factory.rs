@@ -6,10 +6,14 @@
 
 use std::{cell::RefCell, mem::size_of, rc::Rc};
 
+mod archive_code;
 mod archive_validation;
 mod dependencies;
 mod key;
+mod restoration_prebirth;
 mod restoration_source;
+pub use archive_code::PacketCompleteArchiveCodeFactory;
+pub use restoration_prebirth::PacketCompleteRestorationPrebirth;
 mod retained;
 
 use crucible::{
@@ -34,6 +38,7 @@ use crucible::{
 use crucible_node_contract::{CaptureManifest, CapturedOwner, ContentRef, Id, Position, U64};
 use crucible_node_provider::reference_packet::continuation_contracts::PACKET_COMPLETE_LINEAGE_PROFILE;
 
+use super::super::fixture::PacketFixtureMeasurements;
 use super::capture_records::{error, operation_failure, refused};
 use super::{
     InstalledPacketCompleteCollectionAuthority, capture_records::PacketCompleteCaptureRecords,
@@ -538,6 +543,9 @@ impl NativeWorldFactory for PacketCompleteCaptureFactory {
                 // traversal frames/unwind and allocator rounding remain separate
                 // source/qualification obligations; this is not a stack bound.
                 .checked_add(dependencies::requested_scratch_bytes())
+                // Full streamed-file scratch can coexist with the retained
+                // owners above; repeated synchronous checks share one slot.
+                .and_then(|bytes| bytes.checked_add(PacketFixtureMeasurements::streaming_scratch_bytes()))
                 .and_then(|bytes| bytes.checked_add(size_of::<super::retained::Counter>()))
                 .and_then(|bytes| bytes.checked_add(size_of::<super::retained::Counter>()))
                 .and_then(|bytes| bytes.checked_add(size_of::<crucible_node_provider::retained_metadata::RetainedProtocolMetadataFacts>()))

@@ -70,6 +70,31 @@ impl AdmissionEvidence for InstalledPacketCompleteCollectionAuthority {
 }
 
 impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthority {
+    fn original_report_startup_policy(
+        &self,
+        _plan: ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalReportStartupScope<'_>,
+    ) -> Result<crucible::node_admission::OriginalReportStartupPolicy, EvidenceError> {
+        self.original_report_startup_policy_data(scope)
+    }
+
+    fn authenticate_original_report_startup(
+        &self,
+        _plan: ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalReportStartupScope<'_>,
+        policy: &crucible::node_admission::OriginalReportStartupPolicy,
+    ) -> Result<crucible::node_admission::OriginalReportStartupStorage, EvidenceError> {
+        self.original_report_startup_storage_data(scope, policy)
+    }
+
+    fn authenticate_original_report_startup_member(
+        &self,
+        _plan: ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalReportStartupMemberScope<'_>,
+    ) -> Result<(), EvidenceError> {
+        self.authenticate_original_report_startup_member_data(scope)
+    }
+
     fn retained_requested_storage_data(
         &self,
         maximum: usize,

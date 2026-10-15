@@ -20,6 +20,9 @@ use serde::{Deserialize, Serialize};
 use super::{PacketProgramDefinition, control::PacketControlSelection};
 use crate::{ProviderError, handshake::Limits, reference_service::InstalledContent};
 
+pub mod capture_allocation;
+pub mod report_startup;
+
 pub mod confirmation;
 pub use confirmation::PacketNative5ConfirmationSelection;
 
@@ -336,3 +339,6 @@ pub(crate) fn prepared_blob_proof_codec_for_test(
     )?;
     Ok(std::rc::Rc::new(policy))
 }
+
+/// Defines inert fresh inactive allocation query/report grammar.
+pub mod fresh_restore_allocation;

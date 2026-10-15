@@ -147,7 +147,7 @@ pub(super) fn validate(
         .map(|one| one.descriptor.id.clone())
         .collect();
     nodes.push(host.descriptor.id.clone());
-    if nodes.iter().collect::<BTreeSet<_>>().len() != 4
+    if !exact_collecting_nondeterminism_roster(&nodes, &original.accepted_nondeterministic_nodes)
         || canonical::json_hash("cnp.admission-requirements.v1", &original)? != requirements
         || original.deterministic
         || original.exact_capture
@@ -156,7 +156,6 @@ pub(super) fn validate(
         || original.isolated_fork
         || !original.accepted_quantized_nodes.is_empty()
         || !original.accepted_visibility_conversions.is_empty()
-        || original.accepted_nondeterministic_nodes != nodes[..3]
         || !original.accepted_limited_state_nodes.is_empty()
     {
         return Err(refused());
@@ -557,6 +556,19 @@ pub(super) fn validate_host_core_objects(
     Ok(())
 }
 
+/// Requires explicit acceptance of every actual unqualified collecting participant.
+///
+/// The caller supplies the three native descriptors and the actual selected Host.
+/// Only that exact four-owner set, in canonical order without extras, is accepted.
+/// This predicate performs no original file read or qualification callback.
+pub(super) fn exact_collecting_nondeterminism_roster(nodes: &[Id], accepted: &[Id]) -> bool {
+    let expected: BTreeSet<_> = nodes.iter().collect();
+    nodes.len() == 4
+        && expected.len() == 4
+        && accepted.len() == 4
+        && expected.into_iter().eq(accepted.iter())
+}
+
 fn validate_host_definition(
     request: &PacketCompleteGraphRequest<'_>,
 ) -> Result<(), QualificationError> {
@@ -743,6 +755,73 @@ fn selected_native_definition_bodies(
             crucible_node_provider::reference_packet::service::complete_restore::complete_restore_selected_contracts(selection)
                 .map_err(|error| QualificationError::Evidence(error.to_string()))?
         );
+    }
+    if source
+        .selected_capture_allocation_selection()
+        .map_err(|error| QualificationError::Evidence(error.reason))?
+        .is_some()
+    {
+        if ack != Some(PacketNative5AckEmitterSelection::CanonicalSdkBlob5)
+            || confirmation != Some(PacketNative5ConfirmationSelection::AfterProtocolPoll5)
+        {
+            return Err(refused());
+        }
+        use crucible_node_provider::reference_packet::service::capture_allocation::{
+            capture_allocation_contract, capture_allocation_record_schema,
+            capture_allocation_schema,
+        };
+        let body = capture_allocation_contract()
+            .map_err(|error| QualificationError::Evidence(error.to_string()))?;
+        for schema in [
+            capture_allocation_schema(),
+            capture_allocation_record_schema(),
+        ] {
+            definitions.push((
+                schema.map_err(|error| QualificationError::Evidence(error.to_string()))?,
+                body.clone(),
+            ));
+        }
+    }
+    if source
+        .selected_fresh_restore_allocation_selection()
+        .map_err(|error| QualificationError::Evidence(error.reason))?
+        .is_some()
+    {
+        use crucible_node_provider::reference_packet::service::{
+            complete_restore::{
+                PacketNative5CompleteRestoreSelection, PacketNative5RestoreInputEmitterSelection,
+            },
+            fresh_restore_allocation::{
+                PacketNativeFreshRestoreAllocationSchema, fresh_restore_allocation_contract,
+                fresh_restore_allocation_schema,
+            },
+        };
+        if source
+            .selected_complete_restore_selection()
+            .map_err(|error| QualificationError::Evidence(error.reason))?
+            != Some(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
+            || source
+                .selected_restore_input_emitter_selection()
+                .map_err(|error| QualificationError::Evidence(error.reason))?
+                != Some(PacketNative5RestoreInputEmitterSelection::CanonicalSdkRestoreInputs12)
+        {
+            return Err(refused());
+        }
+        let body = fresh_restore_allocation_contract()
+            .map_err(|error| QualificationError::Evidence(error.to_string()))?;
+        for kind in [
+            PacketNativeFreshRestoreAllocationSchema::Query,
+            PacketNativeFreshRestoreAllocationSchema::Report,
+            PacketNativeFreshRestoreAllocationSchema::Proof,
+            PacketNativeFreshRestoreAllocationSchema::Receipt,
+            PacketNativeFreshRestoreAllocationSchema::PrepareBinding,
+        ] {
+            definitions.push((
+                fresh_restore_allocation_schema(kind)
+                    .map_err(|error| QualificationError::Evidence(error.to_string()))?,
+                body.clone(),
+            ));
+        }
     }
     Ok(definitions)
 }

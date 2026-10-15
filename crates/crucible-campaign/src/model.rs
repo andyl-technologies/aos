@@ -81,7 +81,7 @@ pub struct CampaignLineage {
     genesis: ConfigurationId,
     genesis_content: ConfigurationArtifactId,
     crucible_version: String,
-    qemu_build: String,
+    backend_build_identity: String,
     protocol_versions: BTreeMap<String, u32>,
     scenario_schema: u32,
     exact_closure_schema: u32,
@@ -102,15 +102,15 @@ impl CampaignLineage {
         genesis: ConfigurationId,
         genesis_content: ConfigurationArtifactId,
         crucible_version: impl Into<String>,
-        qemu_build: impl Into<String>,
+        backend_build_identity: impl Into<String>,
         protocol_versions: BTreeMap<String, u32>,
         scenario_schema: u32,
         exact_closure_schema: u32,
     ) -> Result<Self, CampaignCodecError> {
         let crucible_version = crucible_version.into();
-        let qemu_build = qemu_build.into();
+        let backend_build_identity = backend_build_identity.into();
         validate_identifier(&crucible_version, "Crucible version is invalid")?;
-        validate_identifier(&qemu_build, "QEMU build identity is invalid")?;
+        validate_identifier(&backend_build_identity, "backend build identity is invalid")?;
         if protocol_versions.is_empty() || protocol_versions.len() > MAX_VERSION_COMPONENTS {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "protocol-version set is empty or oversized",
@@ -136,7 +136,7 @@ impl CampaignLineage {
             genesis,
             genesis_content,
             crucible_version,
-            qemu_build,
+            backend_build_identity,
             protocol_versions,
             scenario_schema,
             exact_closure_schema,
@@ -180,10 +180,21 @@ impl CampaignLineage {
         &self.crucible_version
     }
 
-    /// Returns the QEMU build and atomic-patch identity.
+    /// Returns the exact backend build compatibility identity.
+    ///
+    /// This single opaque identifier does not replace a mixed-world owner roster.
+    #[must_use]
+    pub fn backend_build_identity(&self) -> &str {
+        &self.backend_build_identity
+    }
+
+    /// Returns the backend build identity through the legacy QEMU-named accessor.
+    ///
+    /// This compatibility alias returns the same value as
+    /// [`Self::backend_build_identity`]. It does not select a QEMU backend.
     #[must_use]
     pub fn qemu_build(&self) -> &str {
-        &self.qemu_build
+        self.backend_build_identity()
     }
 
     /// Returns component protocol versions in canonical component order.
@@ -238,7 +249,7 @@ impl Canonical for CampaignLineage {
         self.genesis.encode(encoder);
         self.genesis_content.encode(encoder);
         self.crucible_version.encode(encoder);
-        self.qemu_build.encode(encoder);
+        self.backend_build_identity.encode(encoder);
         self.protocol_versions.encode(encoder);
         self.scenario_schema.encode(encoder);
         self.exact_closure_schema.encode(encoder);
@@ -256,6 +267,7 @@ impl Canonical for CampaignLineage {
             ConfigurationId::decode(decoder)?,
             ConfigurationArtifactId::decode(decoder)?,
             decoder.string_bounded(MAX_IDENTIFIER_BYTES, "crucible-version-bytes")?,
+            // Preserve the historical limit category of this positional slot.
             decoder.string_bounded(MAX_IDENTIFIER_BYTES, "qemu-build-id-bytes")?,
             decoder.map_bounded_by(
                 MAX_VERSION_COMPONENTS,

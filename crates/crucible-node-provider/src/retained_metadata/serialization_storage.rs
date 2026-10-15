@@ -670,6 +670,36 @@ impl OriginalSerializationStorageProjection {
         })
     }
 
+    /// Adds a closed future array's inline slots and parser/canonical geometry.
+    ///
+    /// Its elements are counted separately in traversal order by the same
+    /// closed producer. This reserves no array and grants no decode credit.
+    pub(crate) fn add_array_extent(&mut self, elements: usize) -> Result<(), ProviderError> {
+        let refused = projection_excess;
+        self.credit.sequence_containers = self
+            .credit
+            .sequence_containers
+            .checked_add(1)
+            .ok_or_else(refused)?;
+        self.credit.sequence_elements = self
+            .credit
+            .sequence_elements
+            .checked_add(elements)
+            .ok_or_else(refused)?;
+        let encoded = elements.checked_add(2).ok_or_else(refused)?;
+        self.credit.encoded(encoded).map_err(|_| refused())?;
+        let slots = elements
+            .checked_mul(value_slot_bytes())
+            .ok_or_else(refused)?;
+        self.credit.add(slots).map_err(|_| refused())?;
+        let parser = elements
+            .checked_mul(4)
+            .and_then(|count| count.checked_add(4))
+            .and_then(|count| count.checked_mul(value_slot_bytes()))
+            .ok_or_else(refused)?;
+        self.credit.parser(parser).map_err(|_| refused())
+    }
+
     /// Adds the braces of one fixed object; its fields are counted separately.
     pub(crate) fn add_object(&mut self) -> Result<(), ProviderError> {
         self.credit.encoded(2).map_err(|_| projection_excess())
@@ -678,6 +708,29 @@ impl OriginalSerializationStorageProjection {
     /// Adds one key, separator and actual DOM/parser/canonical map entry layout.
     pub(crate) fn add_field(&mut self, key: &str) -> Result<(), ProviderError> {
         self.credit.key(key).map_err(|_| projection_excess())?;
+        self.field_entry_layout()
+    }
+
+    /// Bounds a closed producer's future UTF-8 key without constructing it.
+    ///
+    /// The caller derives the extent from the actual key type's contract, such
+    /// as Id's128-byte grammar, and separately authenticates its actual source
+    /// plan. Six-byte JSON escaping and UTF-16 sort storage are preserved.
+    /// This constructs neither an Id nor a map or live source permission.
+    pub(crate) fn add_field_extent(&mut self, bytes: usize) -> Result<(), ProviderError> {
+        self.credit
+            .string_extent(bytes)
+            .map_err(|_| projection_excess())?;
+        self.credit.encoded(1).map_err(|_| projection_excess())?;
+        let sort = bytes
+            .checked_mul(8)
+            .and_then(|bytes| bytes.checked_add(16))
+            .ok_or_else(projection_excess)?;
+        self.credit.add(sort).map_err(|_| projection_excess())?;
+        self.field_entry_layout()
+    }
+
+    fn field_entry_layout(&mut self) -> Result<(), ProviderError> {
         self.credit.encoded(1).map_err(|_| projection_excess())?;
         self.credit
             .add(map_node_bytes().map_err(|_| projection_excess())?)

@@ -16,6 +16,9 @@ use crucible_node_contract::{ContentRef, Id, Validate};
 
 use super::{OperationFailure, refused};
 
+#[path = "report_startup.rs"]
+mod report_startup;
+
 /// Borrows one original source-owned private boot material transfer.
 ///
 /// This loan has no public constructor, Clone or serialization implementation.
@@ -23,6 +26,7 @@ use super::{OperationFailure, refused};
 /// private child launch. A copied key or decoded birth value cannot issue a
 /// source association or native admission marker.
 pub struct PacketCompleteAckPeerBootMaterial<'a> {
+    source: &'a super::super::PacketCompleteSemanticSource,
     original: std::cell::Ref<'a, OriginalAckPeerBirth>,
 }
 
@@ -40,6 +44,8 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Origi
     boot_started: std::cell::Cell<bool>,
     ready: bool,
     failed: bool,
+    report_startup_required: bool,
+    report_startup: Option<report_startup::OriginalReportStartupFinalization>,
 }
 
 pub(super) struct OriginalAckPeerInputs<'a> {
@@ -85,6 +91,16 @@ impl HostRevision {
 }
 
 impl OriginalAckPeerBirth {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_unstarted_storage_phase(
+        &self,
+    ) -> Result<(), OperationFailure> {
+        self.ensure_origin()?;
+        if !self.ready || self.failed || self.boot_started.get() {
+            return Err(refused("original private birth is not ready and unstarted"));
+        }
+        Ok(())
+    }
+
     // Only the original Source's selected-birth constructor calls this function.
     // The two full canonical input banks come from that same Source and must be
     // reserved and charged before this transfer. They are not public permits.
@@ -94,6 +110,7 @@ impl OriginalAckPeerBirth {
         source_birth: &mut Option<Vec<u8>>,
         expected_host_registration: &mut Option<Vec<u8>>,
         completed: &mut Option<Self>,
+        report_startup_required: bool,
     ) -> Result<(), OperationFailure> {
         if completed.is_some() {
             return Err(refused("original ACK birth slot is occupied"));
@@ -129,6 +146,8 @@ impl OriginalAckPeerBirth {
             boot_started: std::cell::Cell::new(false),
             ready: false,
             failed: false,
+            report_startup_required,
+            report_startup: None,
         });
         let original = completed
             .as_mut()
@@ -253,23 +272,34 @@ impl OriginalAckPeerBirth {
 }
 
 impl<'a> PacketCompleteAckPeerBootMaterial<'a> {
-    pub(super) fn from_original(original: std::cell::Ref<'a, OriginalAckPeerBirth>) -> Self {
-        Self { original }
+    pub(super) fn from_original(
+        source: &'a super::super::PacketCompleteSemanticSource,
+        original: std::cell::Ref<'a, OriginalAckPeerBirth>,
+    ) -> Self {
+        Self { source, original }
+    }
+
+    fn authenticate_startup_member(&self) -> Result<(), OperationFailure> {
+        self.original
+            .authenticate_report_startup_before_boot(self.source)
     }
 
     /// Rechecks the actual original creator and complete measured executable.
     ///
     /// # Errors
-    /// Refuses changed creator/thread, file identity or complete executable bytes.
+    /// Refuses an expired selected startup member, changed creator/thread, file
+    /// identity or complete executable bytes.
     pub fn authenticate_original(&self) -> Result<(), OperationFailure> {
+        self.authenticate_startup_member()?;
         self.original.authenticate_original()
     }
 
     /// Borrows the private key solely for the original supervised boot writer.
     ///
     /// # Errors
-    /// Refuses a foreign original creator or thread.
+    /// Refuses a foreign creator/thread or an expired selected startup member.
     pub fn private_key(&self) -> Result<&[u8; 32], OperationFailure> {
+        self.authenticate_startup_member()?;
         self.original.ensure_origin()?;
         Ok(&self.original.key)
     }
@@ -277,8 +307,9 @@ impl<'a> PacketCompleteAckPeerBootMaterial<'a> {
     /// Borrows the original birth identity without issuing peer admission.
     ///
     /// # Errors
-    /// Refuses a foreign original creator or thread.
+    /// Refuses a foreign creator/thread or an expired selected startup member.
     pub fn birth_id(&self) -> Result<&[u8; 32], OperationFailure> {
+        self.authenticate_startup_member()?;
         self.original.ensure_origin()?;
         Ok(&self.original.birth_id)
     }
@@ -286,8 +317,9 @@ impl<'a> PacketCompleteAckPeerBootMaterial<'a> {
     /// Borrows the actual measured host executable reference.
     ///
     /// # Errors
-    /// Refuses a foreign original creator or thread.
+    /// Refuses a foreign creator/thread or an expired selected startup member.
     pub fn host_executable(&self) -> Result<&ContentRef, OperationFailure> {
+        self.authenticate_startup_member()?;
         self.original.ensure_origin()?;
         Ok(&self.original.host_executable)
     }
@@ -295,8 +327,9 @@ impl<'a> PacketCompleteAckPeerBootMaterial<'a> {
     /// Borrows the exact private launch identity.
     ///
     /// # Errors
-    /// Refuses a foreign original creator or thread.
+    /// Refuses a foreign creator/thread or an expired selected startup member.
     pub fn private_launch(&self) -> Result<&Id, OperationFailure> {
+        self.authenticate_startup_member()?;
         self.original.ensure_origin()?;
         Ok(&self.original.private_launch)
     }
@@ -304,8 +337,9 @@ impl<'a> PacketCompleteAckPeerBootMaterial<'a> {
     /// Borrows the full original source birth binding bytes.
     ///
     /// # Errors
-    /// Refuses a foreign original creator or thread.
+    /// Refuses a foreign creator/thread or an expired selected startup member.
     pub fn source_birth_bytes(&self) -> Result<&[u8], OperationFailure> {
+        self.authenticate_startup_member()?;
         self.original.ensure_origin()?;
         Ok(&self.original.source_birth)
     }
@@ -313,8 +347,9 @@ impl<'a> PacketCompleteAckPeerBootMaterial<'a> {
     /// Borrows the complete expected host registration association bytes.
     ///
     /// # Errors
-    /// Refuses a foreign original creator or thread.
+    /// Refuses a foreign creator/thread or an expired selected startup member.
     pub fn expected_host_registration_bytes(&self) -> Result<&[u8], OperationFailure> {
+        self.authenticate_startup_member()?;
         self.original.ensure_origin()?;
         Ok(&self.original.expected_host_registration)
     }
@@ -339,6 +374,11 @@ impl OriginalAckPeerBirth {
                 self.private_launch.allocated_capacity(),
                 self.source_birth.capacity(),
                 self.expected_host_registration.capacity(),
+                self.report_startup
+                    .as_ref()
+                    .map(|state| state.retained_storage_data(maximum))
+                    .transpose()?
+                    .unwrap_or(0),
             ],
             maximum,
         )

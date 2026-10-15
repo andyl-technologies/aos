@@ -310,10 +310,29 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 .remaining()?;
         }
         self.reserve()?;
+        let original_report_query = if self.native.requires_original_capture_report_query()? {
+            let Some(Transport::Connected(connection)) = self.transport.as_ref() else {
+                return Err(ProviderError::Conflict(
+                    "native report original connection absent",
+                ));
+            };
+            let token = connection.original_native_owned11_admission()?;
+            Some(token.retain_original_report_startup_allocation(
+                connection,
+                super::service::report_startup::PacketNativeReportStartupPurpose::OriginalObserve12,
+            )?)
+        } else {
+            None
+        };
         let frame = match self.transport.as_mut() {
-            Some(Transport::Connected(connection)) => connection
-                .receive()?
-                .ok_or(ProviderError::Frame("packet endpoint original peer closed"))?,
+            Some(Transport::Connected(connection)) => {
+                let frame = if let Some(scope) = original_report_query.as_ref() {
+                    connection.receive_original_native_report_query(scope)?
+                } else {
+                    connection.receive()?
+                };
+                frame.ok_or(ProviderError::Frame("packet endpoint original peer closed"))?
+            }
             _ => {
                 return Err(ProviderError::Conflict(
                     "packet original exchange unavailable",
@@ -326,6 +345,15 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             ));
         };
         let request = frame.envelope;
+        if original_report_query.is_some() {
+            // The real admitted receive is installed before typed decoding.
+            // The remaining complete owning publisher is deliberately closed;
+            // numeric/partial growth facts cannot authorize an incomplete row.
+            return Err(ProviderError::Correlation(
+                "native original allocation report publisher incomplete",
+            ));
+        }
+
         if let Some(restore) = selected_restore {
             if restore(
                 self,

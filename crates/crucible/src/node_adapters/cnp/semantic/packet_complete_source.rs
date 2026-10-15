@@ -36,6 +36,12 @@ mod native_objects;
 #[path = "packet_complete_source/ancestry.rs"]
 mod ancestry;
 
+#[path = "packet_complete_source/capture_allocation_selection.rs"]
+mod capture_allocation_selection;
+
+#[path = "packet_complete_source/fresh_restore_allocation_selection.rs"]
+mod fresh_restore_allocation_selection;
+
 #[path = "packet_complete_source/capture_banks.rs"]
 mod capture_banks;
 #[path = "packet_complete_source/execution.rs"]
@@ -105,6 +111,8 @@ pub struct PacketCompleteSemanticSource {
     complete_restore_selection: Option<Option<crucible_node_provider::reference_packet::service::complete_restore::PacketNative5CompleteRestoreSelection>>,
     restore_input_emitter_selection: Option<Option<crucible_node_provider::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection>>,
     protocol_metadata_limits: Option<crucible_node_provider::reference_packet::service::PacketNative5ProtocolMetadataLimits>,
+    capture_allocation_selection: Option<Option<crucible_node_provider::reference_packet::service::capture_allocation::PacketNative5CaptureAllocationSelection>>,
+    fresh_restore_allocation_selection: Option<Option<crucible_node_provider::reference_packet::service::fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection>>,
     original_extension_registry: std::cell::RefCell<Option<crucible_node_provider::handshake::OriginalExtensionRegistryOwner>>,
     registry_capture: std::cell::RefCell<Option<registry_capture::OriginalCompleteRegistryCapture>>,
     registry_retention_attempted: std::cell::Cell<bool>,
@@ -146,6 +154,8 @@ impl PacketCompleteSemanticSource {
             native_ack_codec_metadata_extent: None,
             ack_birth_input_banks: None,
             protocol_metadata_limits: None,
+            capture_allocation_selection: None,
+            fresh_restore_allocation_selection: None,
             original_extension_registry: std::cell::RefCell::new(None),
             registry_capture: std::cell::RefCell::new(None),
             registry_retention_attempted: std::cell::Cell::new(false),
@@ -189,6 +199,8 @@ impl PacketCompleteSemanticSource {
             native_ack_codec_metadata_extent: None,
             ack_birth_input_banks: None,
             protocol_metadata_limits: None,
+            capture_allocation_selection: None,
+            fresh_restore_allocation_selection: None,
             original_extension_registry: std::cell::RefCell::new(None),
             registry_capture: std::cell::RefCell::new(None),
             registry_retention_attempted: std::cell::Cell::new(false),

@@ -99,3 +99,51 @@ fn unsupported_custom_bytes_and_display_codecs_cannot_enroll_storage() {
     assert!(actual_serialization_storage_data(&RawBytes, Default::default(), MAXIMUM).is_err());
     assert!(actual_serialization_storage_data(&DisplayValue, Default::default(), MAXIMUM).is_err());
 }
+
+#[test]
+fn future_key_extent_covers_real_maximum_id_and_escaped_key_layouts() -> TestResult {
+    for key in ["x".repeat(128), "\n\"\\\u{0}".repeat(8)] {
+        let actual = std::collections::BTreeMap::from([(key.clone(), false)]);
+        let mut fields = MetadataObserver::new();
+        fields.observe(&actual)?;
+        let actual = actual_serialization_storage_data(&actual, fields.finish(), MAXIMUM)?;
+        let mut future = OriginalSerializationStorageProjection::new(MAXIMUM)?;
+        future.add_object()?;
+        future.add_field_extent(key.len())?;
+        future.add_value(&false)?;
+        let future = future.finish(MAXIMUM)?;
+        assert!(future.maximum_encoded_bytes >= actual.maximum_encoded_bytes);
+        assert!(future.projected_parser_requested_bytes >= actual.projected_parser_requested_bytes);
+        assert!(future.dom_and_canonical_scratch_bytes >= actual.dom_and_canonical_scratch_bytes);
+    }
+    let mut future = OriginalSerializationStorageProjection::new(MAXIMUM)?;
+    assert!(future.add_field_extent(usize::MAX).is_err());
+    Ok(())
+}
+
+#[test]
+fn closed_array_projection_matches_actual_tuple_slots_and_sequence_counts() -> TestResult {
+    let strings = ["actual", "\n\u{0}", "independent owned field"];
+    let mut future = OriginalSerializationStorageProjection::new(MAXIMUM)?;
+    future.add_array_extent(strings.len())?;
+    for value in strings {
+        future.add_string(value)?;
+    }
+    let future = future.finish(MAXIMUM)?;
+    let actual = actual_serialization_storage_data(&strings, Default::default(), MAXIMUM)?;
+    assert_eq!(future.sequence_elements, actual.sequence_elements);
+    assert_eq!(future.sequence_containers, actual.sequence_containers);
+    assert_eq!(future.maximum_encoded_bytes, actual.maximum_encoded_bytes);
+    assert_eq!(
+        future.projected_parser_requested_bytes,
+        actual.projected_parser_requested_bytes
+    );
+    assert_eq!(
+        future.dom_and_canonical_scratch_bytes,
+        actual.dom_and_canonical_scratch_bytes
+    );
+
+    let mut huge = OriginalSerializationStorageProjection::new(MAXIMUM)?;
+    assert!(huge.add_array_extent(usize::MAX).is_err());
+    Ok(())
+}

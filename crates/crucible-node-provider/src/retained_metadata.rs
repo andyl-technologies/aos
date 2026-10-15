@@ -769,7 +769,7 @@ impl<T: ObserveMetadata, const N: usize> ObserveMetadata for [T; N] {
 mod complete_source;
 pub use complete_source::{
     RetainedCompleteSourceDefinition, RetainedCompleteSourceMetadata,
-    observe_retained_native_coordinator,
+    observe_retained_native_coordinator, observe_retained_native_launch,
 };
 
 mod native_record;
@@ -798,3 +798,6 @@ pub use capture_data::RetainedCaptureProtocolData;
 
 #[path = "retained_metadata/serialization_storage.rs"]
 pub(crate) mod serialization_storage;
+
+pub(crate) mod requested_storage;
+pub(crate) use requested_storage::requested_metadata_backing_storage_data;

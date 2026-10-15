@@ -121,6 +121,8 @@ pub(super) fn install() -> Installed {
             .read_exact(&mut secret)
             .unwrap();
         PacketNative5SourceLaunch {
+            capture_allocation_selection: None,
+            fresh_restore_allocation_selection: None,
             native_codec_metadata_extent: Some(crucible_node_provider::client::CanonicalAckCodecMetadataExtent::CanonicalAck512KiB),
             capture_profile: capture_profile.clone(),
             confirmation_selection: Some(crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection::AfterProtocolPoll5),

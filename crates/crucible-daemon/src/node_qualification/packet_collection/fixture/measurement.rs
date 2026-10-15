@@ -14,6 +14,7 @@ use super::refused;
 use crate::node_qualification::QualificationError;
 
 const MAXIMUM_ARTIFACT: u64 = 512 * 1024 * 1024;
+const STREAMING_BUFFER_BYTES: usize = 256 * 1024;
 const ROLES: [&str; 8] = [
     "adapter_source",
     "build_closure",
@@ -54,9 +55,18 @@ pub struct PacketFixtureMeasurements {
 }
 
 impl PacketFixtureMeasurements {
+    /// Returns the fixed transient buffer required by one complete file read.
+    ///
+    /// Reads are synchronous and invoke no callbacks while the buffer is live.
+    /// Initial authentication has this same fixed stack extent; runtime storage
+    /// admission charges the full buffer separately from retained file owners.
+    pub const fn streaming_scratch_bytes() -> usize {
+        std::mem::size_of::<[u8; STREAMING_BUFFER_BYTES]>()
+    }
+
     /// Remeasures all selected files and the actual current host executable.
     ///
-    /// The streaming reader uses a fixed 64 KiB buffer. Complete file identity
+    /// The streaming reader uses a fixed 256 KiB buffer. Complete file identity
     /// and metadata must remain unchanged across the read. This operation grants
     /// no process ownership, readiness, behavioral class or native certificate.
     ///
@@ -177,7 +187,7 @@ fn measured_reader(
     hash.update(&11u32.to_be_bytes());
     hash.update(b"cnp.blob.v1");
     hash.update(&length.to_be_bytes());
-    let mut buffer = [0u8; 65_536];
+    let mut buffer = [0u8; STREAMING_BUFFER_BYTES];
     let mut received = 0u64;
     loop {
         let count = file.read(&mut buffer).map_err(io)?;

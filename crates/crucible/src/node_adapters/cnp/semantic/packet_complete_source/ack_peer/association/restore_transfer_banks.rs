@@ -113,3 +113,13 @@ mod tests {
         assert_eq!(association.allocated_bank_bytes().unwrap(), total);
     }
 }
+
+impl OriginalRestoreTransferBanks {
+    pub(super) fn authenticate_reserved_prebirth_data(&self) -> Result<(), OperationFailure> {
+        let Self { prepare, commit } = self;
+        if prepare.iter().chain(commit).any(|bank| !bank.is_empty()) {
+            return Err(refused("reserved prebirth transfer banks are already used"));
+        }
+        Ok(())
+    }
+}

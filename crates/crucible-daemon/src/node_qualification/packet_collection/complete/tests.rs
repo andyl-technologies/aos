@@ -7,7 +7,7 @@
 // crucible-lint: allow panic-shortcut -- Assertions and fixture setup panics are the test oracle.
 #![allow(clippy::unwrap_used)]
 
-use crucible::node_adapters::cnp::PacketCompleteSemanticSource;
+use crucible::node_adapters::cnp::{CnpSemanticSource, PacketCompleteSemanticSource};
 use crucible::node_admission::{AdmissionEvidence, QualificationClaim};
 use crucible_node_contract::{ContentRef, Id, canonical};
 use crucible_node_provider::reference_packet::service::PacketConnectedSourceProgram;
@@ -27,7 +27,7 @@ fn id(value: &str) -> Id {
     Id::new(value).unwrap()
 }
 
-struct Scene {
+pub(super) struct Scene {
     world: configuration::World,
     roster: PacketCompleteRoster,
     measurements: PacketFixtureMeasurements,
@@ -52,6 +52,46 @@ impl Scene {
         ack: Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
         native_extent: bool,
     ) -> Self {
+        Self::with_selected_report_startup(
+            distinct,
+            effect_phases,
+            confirmation,
+            ack,
+            native_extent,
+            None,
+        )
+    }
+
+    fn report_startup(frame_bytes: u64) -> Self {
+        use crucible_node_provider::reference_packet::service::{
+            PacketNative5ConfirmationSelection, ack_emitter::PacketNative5AckEmitterSelection,
+        };
+        Self::with_selected_report_startup(
+            false,
+            &[1, 2],
+            Some(PacketNative5ConfirmationSelection::AfterProtocolPoll5),
+            Some(PacketNative5AckEmitterSelection::CanonicalSdkBlob5),
+            true,
+            Some(frame_bytes),
+        )
+    }
+
+    fn with_selected_report_startup(
+        distinct: bool,
+        effect_phases: &[u16],
+        confirmation: Option<
+            crucible_node_provider::reference_packet::service::PacketNative5ConfirmationSelection,
+        >,
+        ack: Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
+        native_extent: bool,
+        report_frame_bytes: Option<u64>,
+    ) -> Self {
+        let report_startup = report_frame_bytes.is_some();
+        let mut selected_storage = storage_selection();
+        if let Some(frame_bytes) = report_frame_bytes {
+            selected_storage.limits.frame_bytes = crucible_node_contract::U64::new(frame_bytes);
+            selected_storage.validate().unwrap();
+        }
         let directory = tempfile::tempdir().unwrap();
         let executable = std::env::current_exe().unwrap();
         let host = canonical::content_ref(
@@ -111,7 +151,17 @@ impl Scene {
             measurements.clone(),
         ])
         .unwrap();
-        let mut world = if confirmation.is_some() || ack.is_some() {
+        let mut world = if report_startup {
+            configuration::World::with_report_startup(
+                peer_reference,
+                host,
+                proof,
+                effect_phases,
+                confirmation,
+                ack,
+                true,
+            )
+        } else if confirmation.is_some() || ack.is_some() {
             configuration::World::with_native_selection(
                 peer_reference,
                 host,
@@ -138,7 +188,7 @@ impl Scene {
                         selection,
                         program.clone(),
                         world.coordinator.clone(),
-                        storage_selection(),
+                        selected_storage.clone(),
                     )
                 }
                 PacketConnectedSourceProgram::Reactive { program } => {
@@ -146,15 +196,25 @@ impl Scene {
                         selection,
                         program.clone(),
                         world.coordinator.clone(),
-                        storage_selection(),
+                        selected_storage.clone(),
                     )
                 }
             }
             .unwrap();
             if confirmation.is_some() || ack.is_some() {
-                source.bind_original_capture_profile(
-                    crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile::OriginalArrays6,
-                ).unwrap();
+                use crucible_node_contract::U64;
+                use crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile;
+                // Trial windows are constructor inputs, never a whole-memory admission.
+                let profile = if report_startup {
+                    PacketNative5CaptureProfile::OwnedProtocol11 {
+                        native_before_protocol_bytes: U64::new(1024 * 1024),
+                        native_after_protocol_bytes: U64::new(1024 * 1024),
+                        host_protocol_bytes: U64::new(1024 * 1024),
+                    }
+                } else {
+                    PacketNative5CaptureProfile::OriginalArrays6
+                };
+                source.bind_original_capture_profile(profile).unwrap();
                 source
                     .bind_original_confirmation_selection(confirmation)
                     .unwrap();
@@ -170,6 +230,35 @@ impl Scene {
                             .unwrap();
                     }
                 }
+            }
+            if report_startup {
+                use crucible_node_provider::reference_packet::service::{
+                    PacketNative5ProtocolMetadataLimits,
+                    capture_allocation::PacketNative5CaptureAllocationSelection,
+                };
+                source
+                    .bind_original_protocol_metadata_limits(PacketNative5ProtocolMetadataLimits {
+                        native_before_rows: crucible_node_contract::U64::new(8192),
+                        native_after_rows: crucible_node_contract::U64::new(8192),
+                    })
+                    .unwrap();
+                source
+                    .bind_original_capture_allocation_selection(Some(
+                        PacketNative5CaptureAllocationSelection::OriginalObserve12,
+                    ))
+                    .unwrap();
+                source
+                    .reserve_complete_capture_banks_owned11(
+                        crucible::node_adapters::cnp::PacketCompleteCaptureBankLimits {
+                            host_protocol_bytes: 1024 * 1024,
+                            semantic_bytes: 65_536,
+                            ancestry_bytes: 65_536,
+                            journal_bytes: 65_536,
+                        },
+                        8192,
+                        64 * 1024 * 1024,
+                    )
+                    .unwrap();
             }
             Rc::new(source)
         });
@@ -200,6 +289,100 @@ impl Scene {
             coordinator: &self.world.coordinator,
         }
     }
+}
+
+/// Builds actual ready private births without constructing a Child or native session.
+///
+/// This control performs executable/file measurements, socket binds and entropy
+/// reads. Its trial bank windows do not establish native whole-memory admission.
+pub(super) fn report_startup_fixture() -> (
+    Scene,
+    Rc<std::cell::RefCell<super::PacketCompleteReportStartupHolder>>,
+) {
+    report_startup_fixture_with_frame(16 * 1024)
+}
+
+/// Selects the actual common finite frame limit before constructing any Source.
+///
+/// The 64 KiB variant deliberately retains its 512 MiB refusal coverage.
+pub(super) fn report_startup_fixture_with_frame(
+    frame_bytes: u64,
+) -> (
+    Scene,
+    Rc<std::cell::RefCell<super::PacketCompleteReportStartupHolder>>,
+) {
+    use crucible::node_adapters::cnp::{
+        PacketCompleteAckHostRegistrationPlan, PacketCompleteEffectReceiverGroup,
+    };
+    use crucible_node_contract::{Extensions, ResourceLimits, U64};
+    use std::os::unix::{fs::MetadataExt, net::UnixDatagram};
+
+    let mut scene = Scene::report_startup(frame_bytes);
+    let mut launches = authority::launches(&scene);
+    for launch in &mut launches {
+        launch.controller_uid = U64::new(u64::from(std::fs::metadata("/proc/self").unwrap().uid()));
+    }
+    let receivers =
+        std::array::from_fn(|member| UnixDatagram::bind(&launches[member].effects).unwrap());
+    let (group, reader) = PacketCompleteEffectReceiverGroup::from_original_receivers(receivers);
+    for member in 0..3 {
+        let source = Rc::get_mut(&mut scene.roster.sources[member]).unwrap();
+        source
+            .bind_original_effect_receiver(
+                Rc::clone(&group),
+                member,
+                launches[member].effects.clone(),
+            )
+            .unwrap();
+        let mut features = source.installation().provider.extensions_supported.clone();
+        features.push(id("cnp.core/1"));
+        features.push(id("cnp.extension-negotiation/1"));
+        features.sort();
+        features.dedup();
+        let mut envelope_extensions = vec![
+            "cnp.extension-negotiation/1".into(),
+            "source-owned.packet-canonical-ack-admission/5".into(),
+            "source-owned.packet-input/4".into(),
+            crucible_node_provider::reference_packet::service::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION.into(),
+        ];
+        envelope_extensions.sort();
+        source
+            .reserve_original_canonical_ack_peer_birth(
+                &launches[member],
+                id(&format!("report-startup-private-{member}")),
+                PacketCompleteAckHostRegistrationPlan {
+                    connection_id: id(&format!("report-startup-connection-{member}")),
+                    features,
+                    extensions: Vec::new(),
+                    envelope_extensions,
+                },
+                64 * 1024 * 1024,
+            )
+            .unwrap();
+    }
+    let (graph_owner, authority) = authority::try_collection_authority(&scene, launches).unwrap();
+    let plan = Rc::new(authority.collection_plan().unwrap());
+    let resources = ResourceLimits {
+        cpu_budget_ns: U64::new(3_000_000_000),
+        memory_bytes: U64::new(512 * 1024 * 1024),
+        writable_bytes: U64::new(1024 * 1024),
+        processes: U64::new(3),
+        descriptors: U64::new(128),
+        pending_events: U64::new(16),
+        content_bytes: U64::new(512 * 1024 * 1024),
+        maximum_operations: U64::new(64),
+        extensions: Extensions::new(),
+    };
+    let holder = super::PacketCompleteReportStartupHolder::install_original_scene(
+        graph_owner,
+        authority,
+        plan,
+        resources,
+        group,
+        reader,
+    )
+    .unwrap();
+    (scene, holder)
 }
 
 fn storage_selection()
@@ -303,3 +486,6 @@ mod authority;
 
 #[path = "tests/selected.rs"]
 mod selected;
+
+#[path = "tests/report_frame_fit.rs"]
+mod report_frame_fit;

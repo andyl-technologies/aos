@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 
 use super::*;
+use crate::node_contract::NodeRuntime;
 
 #[path = "host_node_owned.rs"]
 mod host_node_owned;
@@ -625,3 +626,9 @@ impl crate::node_contract::NodeRuntime {
 
 #[path = "retained_typed.rs"]
 mod retained_typed;
+
+impl NodeRuntime {
+    pub(crate) fn capture_serialization_counter_scratch_data() -> usize {
+        super::serialization::counter_scratch_data()
+    }
+}

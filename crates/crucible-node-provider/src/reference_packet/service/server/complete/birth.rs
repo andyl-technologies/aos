@@ -489,6 +489,11 @@ impl CompleteBirth {
                 self.launch.capture_profile.clone(),
             )?
         };
+        let policy = policy
+            .with_capture_allocation_selection(self.launch.capture_allocation_selection)?
+            .with_fresh_restore_allocation_selection(
+                self.launch.fresh_restore_allocation_selection,
+            )?;
         self.policy = Some(Rc::new(policy));
         if self
             .policy
@@ -675,6 +680,18 @@ impl CompleteBirth {
                 .ok_or_else(absent)?
                 .bind_complete_original_restore_input_emitter_selection(emitter)?;
         }
+        if let Some(selection) = self.launch.capture_allocation_selection {
+            self.native
+                .as_mut()
+                .ok_or_else(absent)?
+                .bind_complete_original_capture_allocation_selection(selection)?;
+        }
+        self.native
+            .as_ref()
+            .ok_or_else(absent)?
+            .authenticate_complete_capture_allocation_selection(
+                self.launch.capture_allocation_selection,
+            )?;
         self.cut.ensure_current()?;
         self.endpoint = Some(
             match super::super::super::super::endpoint::PacketEndpoint::new_complete(

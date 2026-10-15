@@ -13,7 +13,7 @@ impl OriginalAckPeerAssociation {
         if let Some(restore) = self.restore.as_ref() {
             restore.authenticate_unpopulated_capture_metadata()?;
         }
-        let mut bytes = self.allocated_bank_bytes()?;
+        let mut bytes = sum([self.allocated_bank_bytes()?], maximum)?;
         for value in self
             .normalized
             .iter()

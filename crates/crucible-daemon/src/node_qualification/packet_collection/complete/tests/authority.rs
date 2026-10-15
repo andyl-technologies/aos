@@ -36,7 +36,9 @@ pub(super) fn launches(
                 }
             }
         };
-        let selected = storage_selection();
+        let selected = scene.roster.sources[member]
+            .selected_storage_selection()
+            .unwrap();
         PacketNative5SourceLaunch {
             native_codec_metadata_extent: scene.roster.sources[member]
                 .selected_native_ack_codec_metadata_extent()
@@ -63,8 +65,16 @@ pub(super) fn launches(
                 bytes: Bytes::new(bytes.clone()),
             },
             limits: selected.limits,
-            storage: selected.storage,
-            protocol_metadata_limits: None,
+            storage: selected.storage.clone(),
+            protocol_metadata_limits: scene.roster.sources[member]
+                .selected_protocol_metadata_limits()
+                .unwrap(),
+            capture_allocation_selection: scene.roster.sources[member]
+                .selected_capture_allocation_selection()
+                .unwrap(),
+            fresh_restore_allocation_selection: scene.roster.sources[member]
+                .selected_fresh_restore_allocation_selection()
+                .unwrap(),
             complete_restore_selection: None,
             restore_input_emitter_selection: None,
             effects: scene
@@ -211,3 +221,6 @@ fn erased_complete_authority_reports_actual_nested_storage_after_revocation() {
         Some(registration),
     );
 }
+
+#[path = "authority/archive_code.rs"]
+mod archive_code;

@@ -92,6 +92,48 @@ fn scope_named(
     scope_named_with_limits(feature, suffix, participant, None)
 }
 
+fn rename_scope(coordinator: &mut PacketNative5CoordinatorInstallation, suffix: &str) {
+    let identities: Vec<_> = coordinator
+        .participants
+        .iter()
+        .map(|peer| &peer.realization.bindings[0].authority)
+        .chain(std::iter::once(&coordinator.host.binding.authority))
+        .flat_map(|authority| {
+            [
+                authority.session_id.as_str().to_owned(),
+                authority.incarnation_id.as_str().to_owned(),
+            ]
+        })
+        .collect();
+    fn map_template(value: &mut Value, identities: &[String], suffix: &str) {
+        match value {
+            Value::String(id) if identities.contains(id) => *id = format!("{id}-{suffix}"),
+            Value::Array(rows) => rows
+                .iter_mut()
+                .for_each(|row| map_template(row, identities, suffix)),
+            Value::Object(fields) => fields
+                .values_mut()
+                .for_each(|field| map_template(field, identities, suffix)),
+            _ => {}
+        }
+    }
+    map_template(&mut coordinator.template, &identities, suffix);
+    map_template(&mut coordinator.host.initial_node, &identities, suffix);
+    for (index, peer) in coordinator.participants.iter_mut().enumerate() {
+        let binding = &mut peer.realization.bindings[0];
+        binding.authority.session_id = id(&format!("{}-{suffix}", binding.authority.session_id));
+        binding.authority.incarnation_id =
+            id(&format!("{}-{suffix}", binding.authority.incarnation_id));
+        coordinator.template["nodes"][index]["binding"] = serde_json::to_value(binding).unwrap();
+    }
+    let binding = &mut coordinator.host.binding;
+    binding.authority.session_id = id(&format!("{}-{suffix}", binding.authority.session_id));
+    binding.authority.incarnation_id =
+        id(&format!("{}-{suffix}", binding.authority.incarnation_id));
+    coordinator.host.initial_node["binding"] = serde_json::to_value(&*binding).unwrap();
+    coordinator.template["nodes"][3]["binding"] = serde_json::to_value(binding).unwrap();
+}
+
 fn scope_named_with_limits(
     feature: bool,
     suffix: Option<&str>,
@@ -877,11 +919,26 @@ pub(super) fn original_canonical_ack_controller_scope() -> (
     PacketControlSelection,
     InstalledContent,
 ) {
+    original_canonical_ack_controller_scope_with_identity_suffix(None)
+}
+
+#[allow(clippy::unwrap_used)]
+pub(super) fn original_canonical_ack_controller_scope_with_identity_suffix(
+    suffix: Option<&str>,
+) -> (
+    Handshake,
+    ConnectionAuthority,
+    PacketControlSelection,
+    InstalledContent,
+) {
     let participant = 0;
-    let coordinator = five_with_ack_emitter(
+    let mut coordinator = five_with_ack_emitter(
         Some(&crate::reference_packet::service::PacketNative5ConfirmationSelection::AfterProtocolPoll5),
         Some(&crate::reference_packet::service::PacketNative5AckEmitterSelection::CanonicalSdkBlob5),
     );
+    if let Some(suffix) = suffix {
+        rename_scope(&mut coordinator, suffix);
+    }
     let selection = coordinator.participants[participant].clone();
     let binding = &selection.realization.bindings[0];
     let session = binding.authority.session_id.clone();

@@ -139,6 +139,14 @@ pub struct PacketNative5SourceLaunch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_input_emitter_selection:
         Option<super::complete_restore::PacketNative5RestoreInputEmitterSelection>,
+    /// Selects the separately source-bound original Observe allocation producer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_allocation_selection:
+        Option<super::capture_allocation::PacketNative5CaptureAllocationSelection>,
+    /// Selects a distinct readonly fresh target query after its actual Admit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fresh_restore_allocation_selection:
+        Option<super::fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection>,
     /// Names the privately owned native effect receiver.
     pub effects: PathBuf,
 }
@@ -175,6 +183,28 @@ impl PacketNative5SourceLaunch {
         }
         if let Some(metadata) = self.protocol_metadata_limits {
             metadata.validate_data()?;
+        }
+        if self.capture_allocation_selection.is_some()
+            && (!owned
+                || self.protocol_metadata_limits.is_none()
+                || self.native_codec_metadata_extent
+                    != Some(crate::client::CanonicalAckCodecMetadataExtent::CanonicalAck512KiB)
+                || self.ack_emitter_selection
+                    != Some(super::PacketNative5AckEmitterSelection::CanonicalSdkBlob5))
+        {
+            return Err(ProviderError::Correlation(
+                "native Capture allocation birth tuple",
+            ));
+        }
+        if self.fresh_restore_allocation_selection.is_some()
+            && (!owned
+                || self.protocol_metadata_limits.is_none()
+                || self.native_codec_metadata_extent != Some(crate::client::CanonicalAckCodecMetadataExtent::CanonicalAck512KiB)
+                || self.ack_emitter_selection != Some(super::PacketNative5AckEmitterSelection::CanonicalSdkBlob5)
+                || self.complete_restore_selection != Some(super::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
+                || self.restore_input_emitter_selection != Some(super::complete_restore::PacketNative5RestoreInputEmitterSelection::CanonicalSdkRestoreInputs12))
+        {
+            return Err(ProviderError::Correlation("native fresh report birth tuple"));
         }
         self.controller_executable.validate()?;
         self.selection.provider.validate()?;
@@ -260,7 +290,9 @@ impl PacketNative5SourceLaunch {
                     ))?,
                 restoration,
             )?
-            .with_restore_input_emitter_selection(self.restore_input_emitter_selection)?;
+            .with_restore_input_emitter_selection(self.restore_input_emitter_selection)?
+            .with_capture_allocation_selection(self.capture_allocation_selection)?
+            .with_fresh_restore_allocation_selection(self.fresh_restore_allocation_selection)?;
         } else if let Some(metadata) = self.protocol_metadata_limits {
             super::super::Native5Policy::from_original_launch_with_protocol_metadata(
                 self.selection.clone(),
@@ -277,7 +309,9 @@ impl PacketNative5SourceLaunch {
                         "owned native codec extent absent",
                     ))?,
                 metadata,
-            )?;
+            )?
+            .with_capture_allocation_selection(self.capture_allocation_selection)?
+            .with_fresh_restore_allocation_selection(self.fresh_restore_allocation_selection)?;
         } else if let Some(emitter) = self.ack_emitter_selection {
             let confirmation = self
                 .confirmation_selection

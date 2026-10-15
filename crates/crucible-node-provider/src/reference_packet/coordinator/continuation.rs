@@ -331,3 +331,15 @@ pub(crate) fn original_canonical_ack_controller_scope() -> (
 ) {
     tests::original_canonical_ack_controller_scope()
 }
+
+#[cfg(test)]
+pub(crate) fn original_canonical_ack_controller_scope_with_identity_suffix(
+    suffix: Option<&str>,
+) -> (
+    crate::handshake::Handshake,
+    crate::handshake::ConnectionAuthority,
+    PacketControlSelection,
+    crate::reference_service::InstalledContent,
+) {
+    tests::original_canonical_ack_controller_scope_with_identity_suffix(suffix)
+}

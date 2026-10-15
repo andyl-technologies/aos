@@ -18,6 +18,25 @@ use std::mem::{align_of, size_of};
 #[path = "exchange_ack_storage.rs"]
 mod acknowledgements;
 
+#[path = "exchange_continuation_storage.rs"]
+mod continuation;
+pub(crate) use continuation::OriginalContinuationContentExtent;
+
+#[path = "exchange_packet_projection.rs"]
+mod packet_projection;
+pub(crate) use packet_projection::{
+    OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData,
+    original_packet_prefix_startup_counter_scratch_data,
+    quote_original_packet_prefix_startup_storage_data,
+};
+
+#[path = "exchange_report_query.rs"]
+mod report_query;
+pub(crate) use report_query::{
+    OriginalReportQueryReceiveStorageData, authenticate_original_report_query_header_data,
+    original_report_query_receive_counter_scratch_data, original_report_query_receive_storage_data,
+};
+
 /// Names each independent original prefix obligation without authorizing it.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct OriginalPacketPrefixStorageData {

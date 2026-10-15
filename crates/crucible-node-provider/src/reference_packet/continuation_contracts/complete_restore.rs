@@ -153,3 +153,79 @@ pub fn complete_packet_restore_input_emitter_declaration(
     declaration.peer.provider.validate()?;
     Ok(declaration)
 }
+
+/// Adds the original Observe report family before provider and binding hashes.
+///
+/// None delegates exactly to the previous restoration-input declaration. Some
+/// records both complete schema definitions and the content feature. The caller
+/// must also select the owning profile, native metadata banks and native codec
+/// before Source birth; this declaration creates no live observer or admission.
+///
+/// # Errors
+/// Refuses missing confirmation/ACK, conflicting full schemas or invalid fixed
+/// provider declaration data.
+pub fn complete_packet_capture_allocation_declaration(
+    provider: &ProviderManifest,
+    confirmation: Option<&PacketNative5ConfirmationSelection>,
+    ack: Option<&PacketNative5AckEmitterSelection>,
+    restoration: Option<&PacketNative5CompleteRestoreSelection>,
+    input_emitter: Option<&crate::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection>,
+    capture_allocation: Option<&crate::reference_packet::service::capture_allocation::PacketNative5CaptureAllocationSelection>,
+) -> Result<PacketNative5CompleteRestoreDeclaration, ProviderError> {
+    let mut declaration = complete_packet_restore_input_emitter_declaration(
+        provider,
+        confirmation,
+        ack,
+        restoration,
+        input_emitter,
+    )?;
+    if capture_allocation.is_none() {
+        return Ok(declaration);
+    }
+    if confirmation != Some(&PacketNative5ConfirmationSelection::AfterProtocolPoll5)
+        || ack != Some(&PacketNative5AckEmitterSelection::CanonicalSdkBlob5)
+    {
+        return Err(ProviderError::Correlation(
+            "capture allocation requires original ACK peer",
+        ));
+    }
+    use crate::reference_packet::service::capture_allocation::{
+        PACKET_NATIVE_CAPTURE_ALLOCATION_FEATURE, capture_allocation_contract,
+        capture_allocation_record_schema, capture_allocation_schema,
+    };
+    let body = capture_allocation_contract()?;
+    for schema in [
+        capture_allocation_schema()?,
+        capture_allocation_record_schema()?,
+    ] {
+        let formats = &mut declaration.peer.provider.implementation.formats;
+        if let Some(existing) = formats.iter().find(|format| format.id == schema.id) {
+            if existing != &schema {
+                return Err(ProviderError::Correlation(
+                    "capture allocation full schema differs",
+                ));
+            }
+        } else {
+            formats.push(schema.clone());
+        }
+        declaration.restoration.push((schema, body.clone()));
+    }
+    let features = &mut declaration.peer.provider.extensions_supported;
+    if !features
+        .iter()
+        .any(|feature| feature.as_str() == PACKET_NATIVE_CAPTURE_ALLOCATION_FEATURE)
+    {
+        features.push(crucible_node_contract::Id::new(
+            PACKET_NATIVE_CAPTURE_ALLOCATION_FEATURE,
+        )?);
+    }
+    declaration
+        .peer
+        .provider
+        .implementation
+        .formats
+        .sort_by(|a, b| a.id.cmp(&b.id));
+    features.sort();
+    declaration.peer.provider.validate()?;
+    Ok(declaration)
+}

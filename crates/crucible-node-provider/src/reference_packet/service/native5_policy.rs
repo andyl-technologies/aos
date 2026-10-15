@@ -25,6 +25,9 @@ use crate::{
     reference_service::InstalledContent,
 };
 
+mod capture_metadata;
+mod fresh_restore_policy;
+mod report_startup;
 mod restore_input_policy;
 mod restore_policy;
 mod restore_transfer_policy;
@@ -61,10 +64,23 @@ pub(crate) struct Native5Policy {
         Option<super::complete_restore::PacketNative5RestoreInputEmitterSelection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     restore_input_emitter_definition: Option<ContentRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_allocation_selection:
+        Option<super::capture_allocation::PacketNative5CaptureAllocationSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_allocation_definitions: Option<[ContentRef; 2]>,
 }
 
 impl Native5Policy {
     pub(crate) fn authenticate_owned11_snapshot_definition(&self) -> Result<(), ProviderError> {
+        if self.capture_allocation_selection.is_some() {
+            // The selected quote owner cannot be omitted from the old full
+            // snapshot11 class. A separate full owning codec must replace this
+            // refusal before selected Capture can be promoted.
+            return Err(ProviderError::Correlation(
+                "selected Capture owning codec not installed",
+            ));
+        }
         let schema = super::native_owned11_snapshot_schema()?;
         if !matches!(
             self.capture_profile,
@@ -86,7 +102,7 @@ impl Native5Policy {
     // A distinct exhaustive leaf preserves all selected fields and actual
     // coordinator backing capacity without changing earlier codec editions.
     pub(crate) fn borrowed_owned11_protocol_view(&self) -> impl Serialize + '_ {
-        restore_input_policy::InputOwnedPolicyView(self)
+        capture_metadata::CaptureOwnedPolicyView(self)
     }
 
     fn original_owned11_protocol_view(&self) -> impl Serialize + '_ {
@@ -107,6 +123,8 @@ impl Native5Policy {
             complete_restore_transfer_definitions: _,
             restore_input_emitter_selection: _,
             restore_input_emitter_definition: _,
+            capture_allocation_selection: _,
+            capture_allocation_definitions: _,
         } = self;
         (
             "source-private.native5-policy-owned/11",
@@ -157,6 +175,8 @@ impl Native5Policy {
             complete_restore_transfer_definitions,
             restore_input_emitter_selection,
             restore_input_emitter_definition,
+            capture_allocation_selection,
+            capture_allocation_definitions,
         } = self;
         observer.observe(selection)?;
         observer.observe(coordinator)?;
@@ -173,7 +193,16 @@ impl Native5Policy {
         observer.observe(complete_restore_definitions)?;
         observer.observe(complete_restore_transfer_definitions)?;
         observer.observe(restore_input_emitter_selection)?;
-        observer.observe(restore_input_emitter_definition)
+        observer.observe(restore_input_emitter_definition)?;
+        // The absent branch has the exact old traversal population as well as
+        // old serialized bytes. Populated fields retain every independent row,
+        // including an inconsistent partial value that immutable validation
+        // will separately refuse.
+        if capture_allocation_selection.is_some() || capture_allocation_definitions.is_some() {
+            observer.observe(capture_allocation_selection)?;
+            observer.observe(capture_allocation_definitions)?;
+        }
+        Ok(())
     }
 
     pub(super) fn from_original_launch(
@@ -234,6 +263,8 @@ impl Native5Policy {
             complete_restore_transfer_definitions: None,
             restore_input_emitter_selection: None,
             restore_input_emitter_definition: None,
+            capture_allocation_selection: None,
+            capture_allocation_definitions: None,
         };
         Ok(policy)
     }
@@ -419,11 +450,11 @@ impl Native5Policy {
     }
 
     pub(crate) fn protocol_view(&self) -> impl Serialize + '_ {
-        restore_input_policy::InputPolicyView(self)
+        capture_metadata::CapturePolicyView(self)
     }
 
     pub(crate) fn compact_protocol_view(&self) -> impl Serialize + '_ {
-        restore_input_policy::InputCompactPolicyView(self)
+        capture_metadata::CaptureCompactPolicyView(self)
     }
 
     fn original_compact_protocol_view(&self) -> impl Serialize + '_ {
@@ -453,6 +484,7 @@ impl Native5Policy {
     // All fields are privately owned immutable values validated at construction.
     // No callback, decoder or mutable accessor changes them after publication.
     fn validate_immutable_content(&self) -> Result<(), ProviderError> {
+        self.validate_capture_allocation_content()?;
         self.validate_complete_restore_content()?;
         if let Some(metadata) = self.protocol_metadata_limits {
             metadata.validate_data()?;
@@ -533,6 +565,7 @@ impl Native5Policy {
         &self,
         authority: &ConnectionAuthority,
     ) -> Result<(), ProviderError> {
+        self.validate_capture_allocation_negotiation(authority)?;
         self.validate_complete_restore_negotiation(authority)?;
         authority.ensure_live()?;
         if self.ack_emitter_selection.is_some()

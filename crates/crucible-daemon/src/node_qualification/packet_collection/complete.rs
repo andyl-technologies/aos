@@ -7,7 +7,10 @@
 mod authority;
 mod capture_factory;
 mod capture_records;
-pub use capture_factory::{PacketCompleteCaptureFactory, PacketCompleteWorldCapture};
+pub use capture_factory::{
+    PacketCompleteArchiveCodeFactory, PacketCompleteCaptureFactory,
+    PacketCompleteRestorationPrebirth, PacketCompleteWorldCapture,
+};
 mod execution;
 pub use execution::{
     PacketCompleteExecutionActor, PacketCompleteExecutionError, PacketCompleteExecutionScene,
@@ -36,7 +39,10 @@ fn refused() -> QualificationError {
 #[cfg(test)]
 mod tests;
 
-pub use authority::{InstalledPacketCompleteCollectionAuthority, PacketCompleteCollectionRequest};
+pub use authority::{
+    InstalledPacketCompleteCollectionAuthority, PacketCompleteCollectionRequest,
+    PacketCompleteReportStartupHolder,
+};
 pub use population::{PacketCompletePopulationRequest, PacketCompleteWitnessPopulation};
 
 mod witness;

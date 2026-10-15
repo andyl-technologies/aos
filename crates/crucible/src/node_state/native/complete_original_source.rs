@@ -19,6 +19,8 @@ use crucible_node_contract::ContentRef;
 mod collecting;
 use collecting::CompleteOriginalSourcePurpose;
 
+mod prebirth_storage;
+
 /// Retains a source-verified complete archive without issuing fresh readiness.
 ///
 /// This handle has no public constructor or serialization. Source-specific

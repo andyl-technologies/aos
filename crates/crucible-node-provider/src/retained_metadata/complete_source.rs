@@ -49,6 +49,90 @@ pub fn observe_retained_native_coordinator(
     Ok(observer.finish())
 }
 
+/// Reports actual backing retained by one original typed native launch.
+///
+/// The enclosing launch header or array is excluded. Independently retained
+/// encoded launch bytes, private boot data, Source holders and observation
+/// scratch remain separate owning terms. This counts private token and path
+/// capacities without serializing or exposing their contents.
+///
+/// # Errors
+/// Refuses checked arithmetic overflow or the finite traversal/depth limit.
+pub fn observe_retained_native_launch(
+    original: &crate::reference_packet::service::PacketNative5SourceLaunch,
+) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+    use crate::reference_packet::service::{
+        PacketConnectedSourceProgram, PacketNative5SourceLaunch, PacketNative5StorageLimits,
+    };
+
+    let PacketNative5SourceLaunch {
+        schema_version,
+        selection,
+        program,
+        controller_pid,
+        controller_uid,
+        controller_executable,
+        admission_token,
+        initial_coordinator,
+        limits,
+        storage,
+        capture_profile,
+        confirmation_selection,
+        ack_emitter_selection,
+        native_codec_metadata_extent,
+        protocol_metadata_limits,
+        complete_restore_selection,
+        restore_input_emitter_selection,
+        capture_allocation_selection,
+        fresh_restore_allocation_selection,
+        effects,
+    } = original;
+    let mut observer = MetadataObserver::new();
+    observer.observe(schema_version)?;
+    observer.observe(selection)?;
+    match program {
+        PacketConnectedSourceProgram::Producer { program } => observer.observe(program)?,
+        PacketConnectedSourceProgram::Reactive { program } => observer.observe(program)?,
+    }
+    observer.observe(controller_pid)?;
+    observer.observe(controller_uid)?;
+    observer.observe(controller_executable)?;
+    observer.observe(admission_token)?;
+    observer.observe(initial_coordinator)?;
+    observer.observe(limits)?;
+
+    let PacketNative5StorageLimits {
+        snapshot_bytes,
+        control_snapshot_bytes,
+        protocol_snapshot_bytes,
+        frame_bank_bytes,
+        frames_per_direction,
+        hello_bytes,
+        settlement_bytes,
+    } = storage;
+    observer.observe(snapshot_bytes)?;
+    observer.observe(control_snapshot_bytes)?;
+    observer.observe(protocol_snapshot_bytes)?;
+    observer.observe(frame_bank_bytes)?;
+    observer.observe(frames_per_direction)?;
+    observer.observe(hello_bytes)?;
+    observer.observe(settlement_bytes)?;
+
+    observer.observe(capture_profile)?;
+    observer.observe(confirmation_selection)?;
+    observer.observe(ack_emitter_selection)?;
+    observer.observe(native_codec_metadata_extent)?;
+    observer.observe(protocol_metadata_limits)?;
+    observer.observe(complete_restore_selection)?;
+    observer.observe(restore_input_emitter_selection)?;
+    observer.observe(capture_allocation_selection)?;
+    observer.observe(fresh_restore_allocation_selection)?;
+    // PathBuf exposes the real native OsString backing capacity. A lossy or
+    // serialized path length would omit its separately retained spare storage.
+    observer.vector::<u8>(effects.capacity())?;
+    Ok(observer.finish())
+}
+
 /// Borrows the closed actual contract/provider owners in a complete installation.
 ///
 /// References must point to the caller's retained originals. Facts are data only;

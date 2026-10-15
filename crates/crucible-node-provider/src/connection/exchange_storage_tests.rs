@@ -426,3 +426,6 @@ fn changed_underquoted_inputs_refuse_before_the_owning_plan_is_constructed() -> 
     assert_eq!(connection.guard.incoming_requests().count(), 1);
     Ok(())
 }
+
+#[path = "exchange_packet_projection_tests.rs"]
+mod packet_projection;

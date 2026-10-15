@@ -1,0 +1,171 @@
+//! Checks the pre-typed query data predicate without inventing startup authority.
+//!
+//! crucible-lint: panic-shortcut: fixture assertions intentionally stop the test.
+
+use super::*;
+use crate::envelope::Nullable;
+use crucible_node_contract::{Bytes, Extensions};
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+fn selected_observe(selection: &PacketControlSelection) -> Result<Envelope, ProviderError> {
+    let binding = &selection.realization.bindings[0];
+    let body = serde_json::to_value(crate::bodies::ObserveRequest {
+        binding_hash: selection.realization.owner_bindings[0].identity()?,
+        owner_generation: binding.authority.owner_generation,
+        after_observation_sequence: U64::new(0),
+        maximum_items: U64::new(1),
+        extensions: Extensions::new(),
+    })
+    .map_err(crucible_node_contract::ContractError::from)?;
+    let Value::Object(body) = body else {
+        return Err(query_error());
+    };
+    Ok(Envelope {
+        protocol: "CNP/1".into(),
+        message: MessageKind::Request,
+        session_id: Nullable(Some(binding.authority.session_id.clone())),
+        incarnation_id: Nullable(Some(binding.authority.incarnation_id.clone())),
+        node_id: Nullable(Some(binding.compatibility.node_id.clone())),
+        execution_owner_id: Nullable(Some(binding.compatibility.execution_owner.id.clone())),
+        capture_owner_id: Nullable(None),
+        operation_id: Nullable(None),
+        request_id: Nullable(Some(Id::new("startup-query")?)),
+        sequence: U64::new(2),
+        method: Method::Observe,
+        body,
+        extensions: Extensions::new(),
+    })
+}
+
+#[test]
+fn real_observe_contract_scope_passes_closed_header_predicate() -> TestResult {
+    let (_handshake, _authority, selection, _) =
+        crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+    let query = selected_observe(&selection)?;
+
+    authenticate_original_report_query_header_data(&selection, Purpose::OriginalObserve12, &query)?;
+    assert!(matches!(
+        crate::bodies::decode_request(query.method, &query.body)?,
+        RequestBody::Observe(_)
+    ));
+    Ok(())
+}
+
+#[test]
+fn foreign_scope_wrong_method_response_and_number_refuse_before_typed_decode() -> TestResult {
+    let (_handshake, _authority, selection, _) =
+        crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+    let query = selected_observe(&selection)?;
+    authenticate_original_report_query_header_data(&selection, Purpose::OriginalObserve12, &query)?;
+    for changed in 0..6 {
+        let mut wrong = query.clone();
+        match changed {
+            0 => wrong.session_id = Nullable(Some(Id::new("foreign-session")?)),
+            1 => wrong.execution_owner_id = Nullable(Some(Id::new("foreign-owner")?)),
+            2 => wrong.method = Method::Realize,
+            3 => wrong.message = MessageKind::Response,
+            4 => {
+                wrong
+                    .body
+                    .insert("owner_generation".into(), serde_json::json!(1));
+            }
+            5 => {
+                wrong.body.insert(
+                    "maximum_items".into(),
+                    serde_json::json!("18446744073709551616"),
+                );
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            authenticate_original_report_query_header_data(
+                &selection,
+                Purpose::OriginalObserve12,
+                &wrong
+            )
+            .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn fresh_query_requires_exact_sole_nonce_and_completed_admit_extension() -> TestResult {
+    let (_handshake, _authority, selection, _) =
+        crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+    let mut query = selected_observe(&selection)?;
+    let data = PacketNativeFreshRestoreAllocationQuery {
+        schema: PACKET_FRESH_RESTORE_ALLOCATION_QUERY.into(),
+        nonce: Bytes::new(vec![1; 32]),
+        completed_admit_request: Bytes::new(vec![2; 32]),
+        completed_admit_response: Bytes::new(vec![3; 32]),
+    };
+    query.extensions.insert(
+        PACKET_FRESH_RESTORE_ALLOCATION_QUERY.into(),
+        serde_json::to_value(&data)?,
+    );
+    authenticate_original_report_query_header_data(
+        &selection,
+        Purpose::FreshCompletedAdmit13,
+        &query,
+    )?;
+    assert!(
+        authenticate_original_report_query_header_data(
+            &selection,
+            Purpose::OriginalObserve12,
+            &query
+        )
+        .is_err()
+    );
+
+    let mut changed = query.clone();
+    changed.extensions.insert("extra".into(), Value::Null);
+    assert!(
+        authenticate_original_report_query_header_data(
+            &selection,
+            Purpose::FreshCompletedAdmit13,
+            &changed
+        )
+        .is_err()
+    );
+    let value = query
+        .extensions
+        .get_mut(PACKET_FRESH_RESTORE_ALLOCATION_QUERY)
+        .and_then(Value::as_object_mut)
+        .ok_or_else(query_error)?;
+    value.insert("nonce".into(), Value::String("short".into()));
+    assert!(
+        authenticate_original_report_query_header_data(
+            &selection,
+            Purpose::FreshCompletedAdmit13,
+            &query
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn query_storage_keeps_full_raw_receive_separate_from_original_clone() -> TestResult {
+    let (_handshake, authority, _selection, _) =
+        crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+    let active = query_receive_storage_from_limits(authority.limits(), Purpose::OriginalObserve12)?;
+    let fresh =
+        query_receive_storage_from_limits(authority.limits(), Purpose::FreshCompletedAdmit13)?;
+    let raw = usize::try_from(authority.limits().frame_bytes.get())?;
+
+    assert_eq!(active.maximum_frame_body_bytes, raw);
+    assert!(active.raw_and_envelope_requested_bytes > acknowledgements::open_ack_storage(raw)?);
+    assert!(fresh.typed_query_requested_bytes > active.typed_query_requested_bytes);
+    assert_eq!(active.original_literal_required_bytes, raw + 4);
+    assert_eq!(
+        active.original_descriptor_required_bytes,
+        crate::transport::original_frames::original_frame_slot_layout()
+    );
+    assert_eq!(
+        active.declared_counter_scratch_bytes,
+        original_report_query_receive_counter_scratch_data()
+    );
+    assert!(fresh.requested_bytes()? > active.requested_bytes()?);
+    Ok(())
+}

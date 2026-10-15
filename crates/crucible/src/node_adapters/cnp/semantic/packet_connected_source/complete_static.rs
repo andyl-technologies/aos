@@ -14,6 +14,25 @@ pub(super) struct CompleteInputStaticRows {
 }
 
 impl PacketConnectedSemanticSource {
+    pub(in crate::node_adapters::cnp::semantic) fn complete_prebirth_input_static_storage(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, OperationFailure> {
+        self.local_owner()?;
+        if !self.world.is_complete() || !self.complete_preparation_unbound()? {
+            return Err(refused("complete static data is outside its unbound phase"));
+        }
+        let slot = self
+            .complete_input_static
+            .try_borrow()
+            .map_err(|_| refused("complete static bank busy"))?;
+        match slot.as_ref() {
+            None => Ok(0),
+            Some(original) if original.complete && !original.failed => original.storage(maximum),
+            Some(_) => Err(refused("complete static graph rows incomplete")),
+        }
+    }
+
     pub(in crate::node_adapters::cnp::semantic) fn retain_complete_input_static_rows(
         &self,
         supplied: &[(InputPayload, Vec<ContentRef>)],

@@ -367,6 +367,63 @@ mod tests {
     }
 
     #[test]
+    fn prebirth_original_host_guard_counts_actual_spares_without_runtime_permission() {
+        let (selection, world) = complete_selection();
+        let mut owner =
+            HostSchedulingOwner::new_complete_original_continuation(selection, world).unwrap();
+        let source = Rc::get_mut(&mut owner.source).unwrap();
+        source.authenticate_original_report_startup_data().unwrap();
+        let before = source
+            .retained_prebirth_host_metadata_data(usize::MAX)
+            .unwrap();
+        source.selection.domains.connections.reserve_exact(32);
+        let after = source
+            .retained_prebirth_host_metadata_data(usize::MAX)
+            .unwrap();
+
+        assert!(after > before);
+        assert_eq!(
+            source.retained_prebirth_host_metadata_data(after).unwrap(),
+            after
+        );
+        assert!(
+            source
+                .retained_prebirth_host_metadata_data(after - 1)
+                .is_err()
+        );
+        assert!(source.authenticate_current().is_err());
+        source.attachment_attempted.set(true);
+        assert!(source.authenticate_original_report_startup_data().is_err());
+        assert!(source.attachment_attempted.get());
+    }
+
+    #[test]
+    fn prebirth_host_origin_refuses_before_busy_loans_and_preserves_spent_node() {
+        let (selection, world) = complete_selection();
+        let mut owner =
+            HostSchedulingOwner::new_complete_original_continuation(selection, world).unwrap();
+        let source = Rc::get_mut(&mut owner.source).unwrap();
+        let current = source.process;
+        source.process = 0;
+        let loan = source.attached.borrow_mut();
+        assert!(matches!(
+            source.authenticate_prebirth_storage_data(None),
+            Err(RuntimeError::ForeignAuthority)
+        ));
+        drop(loan);
+        source.process = current;
+        let loan = source.attached.borrow_mut();
+        assert!(matches!(
+            source.authenticate_prebirth_storage_data(None),
+            Err(RuntimeError::OutstandingObligations)
+        ));
+        drop(loan);
+        source.node_created.set(true);
+        assert!(source.authenticate_original_report_startup_data().is_err());
+        assert!(source.node_created.get());
+    }
+
+    #[test]
     fn complete_factory_selection_is_distinct_and_does_not_create_live_permission() {
         let (selection, world) = complete_selection();
         assert!(HostSchedulingOwner::new(selection.clone(), world.clone()).is_err());

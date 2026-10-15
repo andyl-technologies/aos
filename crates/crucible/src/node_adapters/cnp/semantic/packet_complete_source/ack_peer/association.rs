@@ -1018,3 +1018,58 @@ impl PacketCompleteSemanticSource {
 
 #[path = "association/retained.rs"]
 mod retained;
+
+impl OriginalAckPeerAssociation {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_reserved_prebirth_data(
+        &self,
+    ) -> Result<(), OperationFailure> {
+        let Self {
+            restore,
+            restore_transfer_banks,
+            emitter,
+            restore_input_emitter,
+            native,
+            hello,
+            banks,
+            normalized,
+            context,
+            proof,
+            attempted,
+            ready,
+            failed,
+            signing_attempted,
+            sealed,
+            publication_attempted,
+            completed_mechanism,
+        } = self;
+        if emitter.is_some()
+            || restore_input_emitter.is_some()
+            || native.is_some()
+            || hello.is_some()
+            || normalized.iter().any(Option::is_some)
+            || context.is_some()
+            || proof.is_some()
+            || *attempted
+            || *ready
+            || *failed
+            || *signing_attempted
+            || *sealed
+            || *publication_attempted
+            || completed_mechanism.get()
+            || banks.iter().any(|bank| !bank.is_empty())
+        {
+            return Err(refused("reserved prebirth ACK association is already used"));
+        }
+        if let Some(restore) = restore {
+            restore.authenticate_reserved_prebirth_data()?;
+        }
+        if let Some(transfer) = restore_transfer_banks {
+            transfer.authenticate_reserved_prebirth_data()?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[path = "association/prebirth_storage_tests.rs"]
+mod prebirth_storage_tests;

@@ -31,6 +31,17 @@ pub struct BorrowedCompactBytes<'a> {
 }
 
 impl<'a> BorrowedCompactBytes<'a> {
+    /// Names the actual encoded chunk and borrowed serializer headers.
+    ///
+    /// This excludes generic serializer state, recursive/compiler frames and
+    /// allocator residency, which require separate simultaneous admission.
+    pub(crate) const fn requested_serialization_scratch_bytes() -> usize {
+        ENCODED_CHUNK_BYTES
+            + std::mem::size_of::<Chunks<'static>>()
+            + std::mem::size_of::<BorrowedCompactBytes<'static>>()
+            + 2 * std::mem::size_of::<std::slice::Chunks<'static, u8>>()
+    }
+
     /// Borrows a complete byte slice without allocation or interpretation.
     pub fn new(bytes: &'a [u8]) -> Self {
         Self { bytes }
