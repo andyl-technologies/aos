@@ -15,7 +15,7 @@ mod retained;
 
 use std::{
     cell::Cell,
-    fs::Metadata,
+    fs::{File, Metadata},
     os::unix::fs::{FileExt, MetadataExt},
     path::{Path, PathBuf},
     sync::Arc,
@@ -255,19 +255,103 @@ impl CurrentFiles {
     // The count reports actual full descriptor measurements in this pass.
     // No successful result or deduplication state survives the call.
     fn read_current(&self) -> Result<u32, QualificationError> {
+        self.read_current_data::<QualificationError>()
+    }
+
+    /// Quotes the complete selected read, including path conversion and results.
+    ///
+    /// Only never-leased complete-byte originals have a closed native startup
+    /// profile. The quote follows original owned paths/pins without kernel work.
+    ///
+    /// # Errors
+    /// Refuses foreign/revoked originals, acquired leases or arithmetic overflow.
+    pub(in super::super) fn original_native_startup_currentness_storage_data(
+        &self,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        use std::mem::size_of;
+        if self.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.revoked.get() || self.originals.len() != 10 {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        if self
+            .originals
+            .iter()
+            .any(|original| original.file.lease().is_some())
+        {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let mut maximum_path = 0usize;
+        let mut maximum_media = 0usize;
+        for original in &self.originals {
+            maximum_path = maximum_path.max(original.path.as_os_str().as_encoded_bytes().len());
+            maximum_media = maximum_media.max(original.content.media_type.capacity());
+        }
+        // File metadata path conversion uses either std's fixed 384-byte bank
+        // or one owned NUL-terminated path. Sum both, conservatively.
+        let dynamic = maximum_path
+            .checked_add(1)
+            .and_then(|bytes| bytes.checked_add(maximum_media))
+            .and_then(|bytes| bytes.checked_add(9 + 11 + 64))
+            .ok_or(RuntimeError::ResourceLimit)?;
+        [
+            PacketFixtureMeasurements::streaming_scratch_bytes(),
+            size_of::<u16>(),
+            size_of::<[Facts; 4]>(),
+            size_of::<[Metadata; 5]>(),
+            size_of::<blake3::Hasher>(),
+            size_of::<blake3::Hash>(),
+            std::mem::size_of_val(&blake3::Hash::from([0; 32]).to_hex()),
+            size_of::<crucible_node_contract::ContentRef>(),
+            size_of::<(&File, u64)>(),
+            size_of::<[u64; 4]>(),
+            size_of::<[usize; 4]>(),
+            384,
+            dynamic,
+        ]
+        .into_iter()
+        .try_fold(0usize, |sum, bytes| {
+            sum.checked_add(bytes).ok_or(RuntimeError::ResourceLimit)
+        })
+    }
+
+    /// Runs the unchanged complete descriptor/path pass with raw failure status.
+    ///
+    /// # Errors
+    /// Refuses inadequate credit or any original namespace, bytes or revision
+    /// drift. Observed file failures revoke the same original owner permanently.
+    pub(in super::super) fn authenticate_original_native_startup_currentness(
+        &self,
+        maximum: usize,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        if self.original_native_startup_currentness_storage_data()? > maximum {
+            return Err(crucible::node_contract::RuntimeError::ResourceLimit);
+        }
+        let result = self
+            .read_current_data::<crucible::node_contract::RuntimeError>()
+            .map(|_| ());
+        if result.is_err() {
+            self.revoked.set(true);
+        }
+        result
+    }
+
+    fn read_current_data<E: measurement::MeasurementFailure>(&self) -> Result<u32, E> {
         if self.process != std::process::id() || self.originals.len() != 10 {
-            return Err(refused());
+            return Err(E::refused());
         }
         let mut complete_measurements = 0_u16;
         for (index, original) in self.originals.iter().enumerate() {
-            let descriptor = original.file.file().metadata().map_err(measurement::io)?;
-            let path = std::fs::metadata(&original.path).map_err(measurement::io)?;
+            let descriptor = original.file.file().metadata().map_err(E::io)?;
+            let path = std::fs::metadata(&original.path).map_err(E::io)?;
             if !descriptor.is_file()
                 || !path.is_file()
                 || Facts::from(&descriptor) != original.facts
                 || Facts::from(&path) != original.facts
             {
-                return Err(refused());
+                return Err(E::refused());
             }
             // Only an earlier completed full hash in THIS pass can cover an
             // alias. Exact revision facts and the entire ContentRef, including
@@ -283,19 +367,19 @@ impl CurrentFiles {
                     });
             let complete_read = original.file.lease().is_none() && !measured_alias;
             let measured = if let Some(lease) = original.file.lease() {
-                lease.verify_current().map_err(|_| refused())?;
-                original.file.file().metadata().map_err(measurement::io)?
+                lease.verify_current().map_err(|_| E::refused())?;
+                original.file.file().metadata().map_err(E::io)?
             } else if measured_alias {
-                original.file.file().metadata().map_err(measurement::io)?
+                original.file.file().metadata().map_err(E::io)?
             } else {
-                measurement::measured_file_at(original.file.file(), &original.content)?
+                measurement::measured_file_at_data::<E>(original.file.file(), &original.content)?
             };
-            let path = std::fs::metadata(&original.path).map_err(measurement::io)?;
+            let path = std::fs::metadata(&original.path).map_err(E::io)?;
             if Facts::from(&measured) != original.facts || Facts::from(&path) != original.facts {
-                return Err(refused());
+                return Err(E::refused());
             }
             if let Some(lease) = original.file.lease() {
-                lease.verify_current().map_err(|_| refused())?;
+                lease.verify_current().map_err(|_| E::refused())?;
             }
             // Mark only an actual full read after its own terminal fences.
             if complete_read {

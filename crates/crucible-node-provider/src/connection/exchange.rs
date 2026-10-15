@@ -9,6 +9,10 @@ use super::*;
 #[path = "exchange_snapshot.rs"]
 mod snapshot;
 
+#[path = "exchange_record_projection.rs"]
+mod completed_record_projection;
+pub(crate) use completed_record_projection::OriginalPacketCompletedRecordEncodingData;
+
 #[path = "restore_proof.rs"]
 mod restore_proof;
 pub(crate) use restore_proof::PreparedOriginalRestoreHeldProof;
@@ -19,11 +23,14 @@ mod proof_receive;
 #[path = "exchange_storage.rs"]
 mod storage;
 pub(crate) use storage::{
-    OriginalContinuationContentExtent, OriginalPacketPrefixProjectionInput,
-    OriginalPacketPrefixProjectionStorageData, OriginalPacketPrefixStorageData,
-    OriginalReportQueryReceiveStorageData, authenticate_original_report_query_header_data,
+    OriginalContinuationContentExtent, OriginalContinuationPrefixKind,
+    OriginalContinuationPrefixStorageData, OriginalContinuationPrefixStorageInput,
+    OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData,
+    OriginalPacketPrefixStorageData, OriginalReportQueryReceiveStorageData,
+    authenticate_original_report_query_header_data,
     original_packet_prefix_startup_counter_scratch_data,
     original_report_query_receive_counter_scratch_data, original_report_query_receive_storage_data,
+    quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
 };
 
@@ -479,7 +486,59 @@ impl<S: ProviderStream> PreparedExchange<S> {
             connection: &mut self.connection,
             complete: false,
         };
-        let result = publish_with_ack_scope(attempt.connection, &mut self.record, validate, true);
+        let result = (|| {
+            let canonical_literals =
+                completed_record_projection::original_capture_proof_literals_required(
+                    attempt.connection,
+                )?;
+            publish_with_ack_scope(
+                attempt.connection,
+                &mut self.record,
+                validate,
+                true,
+                canonical_literals,
+                None,
+            )
+        })();
+        if result.is_ok() {
+            self.phase = Phase::Complete;
+            attempt.complete = true;
+        } else {
+            self.phase = Phase::Failed;
+        }
+        result
+    }
+
+    pub(crate) fn publish_original_native_birth(
+        &mut self,
+        scope: &crate::reference_packet::service::ack_emitter::OriginalNativeBirthReadScope<'_>,
+        validate: &mut dyn FnMut(&Envelope, &ReceivedFrame) -> Result<(), ProviderError>,
+    ) -> Result<(), ProviderError> {
+        scope.authenticate_connection(&self.connection)?;
+        if self.phase != Phase::Prepared {
+            return Err(ProviderError::Conflict(
+                "native birth prefix already attempted",
+            ));
+        }
+        self.phase = Phase::Publishing;
+        let mut attempt = PublicationAttempt {
+            connection: &mut self.connection,
+            complete: false,
+        };
+        let result = (|| {
+            let canonical_literals =
+                completed_record_projection::original_capture_proof_literals_required(
+                    attempt.connection,
+                )?;
+            publish_with_ack_scope(
+                attempt.connection,
+                &mut self.record,
+                validate,
+                false,
+                canonical_literals,
+                Some(scope),
+            )
+        })();
         if result.is_ok() {
             self.phase = Phase::Complete;
             attempt.complete = true;
@@ -541,7 +600,16 @@ fn publish<S: ProviderStream>(
     record: &mut ExchangeRecord,
     validate: &mut dyn FnMut(&Envelope, &ReceivedFrame) -> Result<(), ProviderError>,
 ) -> Result<(), ProviderError> {
-    publish_with_ack_scope(connection, record, validate, false)
+    let canonical_literals =
+        completed_record_projection::original_capture_proof_literals_required(connection)?;
+    publish_with_ack_scope(
+        connection,
+        record,
+        validate,
+        false,
+        canonical_literals,
+        None,
+    )
 }
 
 fn publish_with_ack_scope<S: ProviderStream>(
@@ -549,6 +617,10 @@ fn publish_with_ack_scope<S: ProviderStream>(
     record: &mut ExchangeRecord,
     validate: &mut dyn FnMut(&Envelope, &ReceivedFrame) -> Result<(), ProviderError>,
     canonical_ack_scope: bool,
+    canonical_literals: bool,
+    baseline: Option<
+        &crate::reference_packet::service::ack_emitter::OriginalNativeBirthReadScope<'_>,
+    >,
 ) -> Result<(), ProviderError> {
     for index in 0..record.originals.len() {
         connection.check_authority()?;
@@ -573,7 +645,9 @@ fn publish_with_ack_scope<S: ProviderStream>(
         if original.message == MessageKind::Response {
             connection.guard.confirm_response_sent(original)?;
         } else if original.message == MessageKind::Request {
-            let received = if canonical_ack_scope {
+            let received = if let Some(scope) = baseline {
+                connection.receive_original_prepared_native_birth_proof(record, index, scope)?
+            } else if canonical_ack_scope {
                 connection.receive_original_canonical_blob_ack()?
             } else if connection.role == EndpointRole::Provider
                 && connection.native5_codec.is_some()
@@ -598,6 +672,18 @@ fn publish_with_ack_scope<S: ProviderStream>(
                 ));
             }
             original.matches_response(&reply.envelope)?;
+            if canonical_literals {
+                // The raw reply is already in this record and the original
+                // frame bank. Refusal retains it and terminates this prefix;
+                // only canonical closed successes may reach the next proof.
+                completed_record_projection::authenticate_successful_ack(original, reply)?;
+                completed_record_projection::authenticate_current_proof_literal(
+                    connection,
+                    record,
+                    index,
+                    &reply.envelope,
+                )?;
+            }
             validate(original, reply)?;
         }
     }

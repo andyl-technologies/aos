@@ -5,6 +5,8 @@
 //! array before any observation. No callback follows a raw pointer or accepts
 //! a caller-computed byte total, and no report admits its own construction.
 
+mod native_startup;
+pub use native_startup::PacketCompleteNativeLaunchInputs;
 mod preparation;
 pub use preparation::PacketCompletePreparationConnection;
 
@@ -41,6 +43,10 @@ pub struct PacketCompleteReportStartupHolder {
     attempted: Cell<bool>,
     in_flight: Cell<bool>,
     completed: Cell<bool>,
+    native_attempted: Cell<bool>,
+    native_in_flight: Cell<bool>,
+    native_completed: Cell<bool>,
+    native_launches: RefCell<native_startup::NativeLaunchOwners>,
     preparations: RefCell<preparation::PreparationOwners>,
 }
 
@@ -199,6 +205,10 @@ impl PacketCompleteReportStartupHolder {
             attempted: Cell::new(false),
             in_flight: Cell::new(false),
             completed: Cell::new(false),
+            native_attempted: Cell::new(false),
+            native_in_flight: Cell::new(false),
+            native_completed: Cell::new(false),
+            native_launches: RefCell::new(native_startup::NativeLaunchOwners::new()),
             preparations: RefCell::new(preparation::PreparationOwners::new()),
         }));
         authority

@@ -12,6 +12,7 @@ use continuation::{ContentExtent, ProjectedBody, copy_storage};
 mod startup;
 pub(crate) use startup::{
     original_packet_prefix_startup_counter_scratch_data,
+    quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
 };
 
@@ -34,6 +35,63 @@ pub(crate) struct OriginalPacketPrefixProjectionStorageData {
 }
 
 impl OriginalPacketPrefixProjectionStorageData {
+    /// Counts the completed record using this same closed outgoing grammar.
+    pub(crate) fn completed_record_encoding_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+    ) -> Result<super::super::OriginalPacketCompletedRecordEncodingData, ProviderError> {
+        connection.protocol_owner.ensure_current()?;
+        connection.authenticate_native5_source_codec()?;
+        let chunk = allowance(connection.authority.limits().blob_chunk_bytes.get())?.min(4096);
+        if chunk == 0 {
+            return Err(credit());
+        }
+        let mut nodes = self.terminal.serialized_value_nodes;
+        let mut records = self.terminal.serialized_capacity_records;
+        let transfer = add("packet-transfer-".len(), 20)?;
+        let mut count = 1usize;
+        for object in self.objects.iter().flatten() {
+            for (method, body) in [
+                (Method::BlobBegin, ProjectedBody::Begin(transfer, object)),
+                (Method::BlobFinish, ProjectedBody::Finish(transfer)),
+            ] {
+                let frame = continuation::projected_packet_frame(
+                    &connection.authority,
+                    method,
+                    body,
+                    self.maximum_requested_bytes,
+                )?;
+                nodes = add(nodes, frame.serialized_value_nodes)?;
+                records = add(records, frame.serialized_capacity_records)?;
+                count = add(count, 1)?;
+            }
+            let mut remaining = object.payload;
+            while remaining > 0 {
+                let bytes = remaining.min(chunk);
+                let encoded = mul(bytes.div_ceil(3), 4)?;
+                let frame = continuation::projected_packet_frame(
+                    &connection.authority,
+                    Method::BlobChunk,
+                    ProjectedBody::Chunk(transfer, encoded),
+                    self.maximum_requested_bytes,
+                )?;
+                nodes = add(nodes, frame.serialized_value_nodes)?;
+                records = add(records, frame.serialized_capacity_records)?;
+                count = add(count, 1)?;
+                remaining -= bytes;
+            }
+        }
+        if count != self.exchange.frames {
+            return Err(refused());
+        }
+        connection.quote_original_packet_completed_record_encoding_data(
+            &self.exchange,
+            nodes,
+            records,
+            self.maximum_requested_bytes,
+        )
+    }
+
     pub(crate) fn requested_bytes(&self) -> Result<usize, ProviderError> {
         sum(&[
             self.exchange.requested_bytes()?,

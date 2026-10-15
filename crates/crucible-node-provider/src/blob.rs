@@ -372,6 +372,22 @@ pub struct BlobReceiver {
 }
 
 impl BlobReceiver {
+    // The selected baseline constructs exactly one empty receiver ledger. Its
+    // private records/pins trees have no node allocation before the restricted
+    // initial lifecycle; later content input needs an independent action.
+    pub(crate) fn original_empty_shared_requested_storage_data() -> Result<usize, ProviderError> {
+        std::mem::size_of::<RefCell<ReceiverState>>()
+            .checked_add(
+                crate::retained_metadata::requested_storage::shared_header_storage_data(
+                    1,
+                    std::mem::align_of::<RefCell<ReceiverState>>(),
+                )?,
+            )
+            .ok_or(ProviderError::ResourceExhausted(
+                "native empty blob ledger layout",
+            ))
+    }
+
     /// Creates a finite receiver without allocating declared content objects.
     ///
     /// # Errors

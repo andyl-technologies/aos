@@ -498,7 +498,7 @@ impl PacketCompleteReportStartupHolder {
         Ok(member)
     }
 
-    fn host_policy_data(
+    pub(super) fn host_policy_data(
         &self,
     ) -> Result<crucible::node_admission::OriginalFreshRestoreHostPolicy, RuntimeError> {
         let counter_bytes = std::mem::size_of::<Counter>()
@@ -526,6 +526,24 @@ impl PacketCompleteReportStartupHolder {
         held: &Self,
         selected: Option<usize>,
         maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        Self::holder_storage_data(original, held, selected, maximum, true)
+    }
+
+    pub(super) fn native_holder_storage_data(
+        original: &Rc<RefCell<Self>>,
+        held: &Self,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        Self::holder_storage_data(original, held, None, maximum, false)
+    }
+
+    fn holder_storage_data(
+        original: &Rc<RefCell<Self>>,
+        held: &Self,
+        selected: Option<usize>,
+        maximum: usize,
+        require_complete_preparations: bool,
     ) -> Result<usize, RuntimeError> {
         held.authenticate_origin()
             .map_err(|_| RuntimeError::ForeignAuthority)?;
@@ -562,14 +580,14 @@ impl PacketCompleteReportStartupHolder {
                 )
                 .map_err(storage_failure)?;
         }
+        held.charge_native_launch_storage_precredit_data(&mut counter)?;
         let owners = held
             .preparations
             .try_borrow()
             .map_err(|_| RuntimeError::OwnerBusy)?;
-        let scratch = owners
-            .scratch
-            .as_ref()
-            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if require_complete_preparations && owners.scratch.is_none() {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
         for (member, peer) in owners.peers.iter().enumerate() {
             // A partial baseline constructor has no complete typed row. It
             // cannot become a zero-cost hole in the subsequent HOST admission.
@@ -593,23 +611,31 @@ impl PacketCompleteReportStartupHolder {
             }
             // Core independently observes the selected preparation. Other peers
             // remain simultaneous original owners and cannot disappear by label.
-            let preparation = peer
-                .preparation
-                .as_ref()
-                .ok_or(RuntimeError::OwnerUnavailable)?;
-            if Some(member) != selected {
-                counter
-                    .add(
-                        preparation
-                            .retained_requested_storage_precredit_data(
-                                scratch,
-                                peer.registry.as_ref(),
-                                peer.supervisor.as_ref(),
-                                counter.remaining(),
-                            )?
-                            .complete_requested_bytes_precredit_data()?,
-                    )
-                    .map_err(storage_failure)?;
+            if let Some(preparation) = &peer.preparation {
+                let scratch = owners
+                    .scratch
+                    .as_ref()
+                    .ok_or(RuntimeError::OwnerUnavailable)?;
+                if Some(member) != selected {
+                    counter
+                        .add(
+                            preparation
+                                .retained_requested_storage_precredit_data(
+                                    scratch,
+                                    peer.registry.as_ref(),
+                                    peer.supervisor.as_ref(),
+                                    counter.remaining(),
+                                )?
+                                .complete_requested_bytes_precredit_data()?,
+                        )
+                        .map_err(storage_failure)?;
+                }
+            } else if require_complete_preparations
+                || peer.registry.is_some()
+                || peer.ticket.get().is_some()
+            {
+                // A partial row cannot stand in for a complete preparation.
+                return Err(RuntimeError::OwnerUnavailable);
             }
             counter.charge(&peer.planned_id).map_err(storage_failure)?;
             if let Some(ticket) = peer.ticket.get() {
@@ -620,13 +646,16 @@ impl PacketCompleteReportStartupHolder {
             }
             // The known SDK owner aliases the installed operational supervisor;
             // per-view charging is conservative and explicitly takes no refund.
-            let facts = peer
-                .supervisor
-                .as_ref()
-                .ok_or(RuntimeError::OwnerUnavailable)?
-                .original_retained_metadata_facts()
-                .map_err(|_| RuntimeError::UnsupportedFacet)?;
-            counter.metadata(&facts).map_err(storage_failure)?;
+            match (&peer.supervisor, &peer.operational) {
+                (Some(owner), Some(_)) => {
+                    let facts = owner
+                        .original_retained_metadata_facts()
+                        .map_err(|_| RuntimeError::UnsupportedFacet)?;
+                    counter.metadata(&facts).map_err(storage_failure)?;
+                }
+                (None, None) if !require_complete_preparations && peer.preparation.is_none() => {}
+                _ => return Err(RuntimeError::OwnerUnavailable),
+            }
         }
         held.authenticate_origin()
             .map_err(|_| RuntimeError::ForeignAuthority)?;

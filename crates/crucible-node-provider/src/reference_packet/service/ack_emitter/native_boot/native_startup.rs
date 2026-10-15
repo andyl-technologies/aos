@@ -10,14 +10,16 @@ use crate::reference_packet::service::native_startup::{
     PacketNativeStartupAllocation, PacketNativeStartupAllocationRow,
 };
 
-pub(super) struct OriginalNativeStartupBoot {
-    pub(super) allocation: PacketNativeStartupAllocation,
-    pub(super) source_digest: [u8; 32],
-    pub(super) launch_digest: [u8; 32],
-    pub(super) birth_id: [u8; 32],
-    pub(super) native_birth_issued: bool,
-    pub(super) baseline_complete: bool,
-    pub(super) prepare_startup_issued: bool,
+pub(in crate::reference_packet::service::ack_emitter::native_boot) struct OriginalNativeStartupBoot
+{
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) allocation:
+        PacketNativeStartupAllocation,
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) source_digest: [u8; 32],
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) launch_digest: [u8; 32],
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) birth_id: [u8; 32],
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) native_birth_issued: bool,
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) baseline_complete: bool,
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) prepare_startup_issued: bool,
 }
 
 impl NativeAckBoot {
@@ -87,3 +89,7 @@ impl NativeAckBoot {
         Ok(row)
     }
 }
+
+#[path = "native_startup_receive.rs"]
+mod receive;
+pub(crate) use receive::OriginalNativeBirthReadScope;

@@ -45,7 +45,7 @@ pub struct HistoricalNativeConnection {
     pub admission: HistoricalNativeAckToken,
 }
 
-fn codec(
+pub(super) fn codec(
     input: &[u8],
     ledger: &mut NativeLedger<'_, '_, '_, '_, '_>,
     build: bool,
@@ -63,6 +63,7 @@ fn codec(
             | "source-private.native5-policy-owned-complete-restore/14"
             | "source-private.native5-policy-owned-restore-transfer/15"
             | "source-private.native5-policy-owned-restore-input-emitter/16"
+            | "source-private.native5-policy-owned-capture-allocation/17"
     ) {
         return Err(invalid());
     }
@@ -78,7 +79,14 @@ pub(super) fn read(
     build: bool,
 ) -> Result<Option<HistoricalNativeConnection>, ProviderError> {
     let mut fields = Fields::array(input)?;
-    tag(&mut fields, super::outer::COMPLETE_NATIVE_CONNECTION_FORMAT)?;
+    tag(
+        &mut fields,
+        if ledger.requires_startup_class()? {
+            super::outer::COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT
+        } else {
+            super::outer::COMPLETE_NATIVE_CONNECTION_FORMAT
+        },
+    )?;
     if plain_string(next(&mut fields)?)? != "historical-source-owner" {
         return Err(invalid());
     }

@@ -27,6 +27,8 @@ pub struct HistoricalNativeBootstrap {
     pub boot_value: Value,
     /// Shares the original boot history with the historical admission token.
     pub boot: Rc<HistoricalNativeBoot>,
+    /// Retains the full fixed original startup preamble and nonrenewing flags.
+    pub startup: Option<super::startup::HistoricalNativeStartupBootstrap>,
 }
 
 impl HistoricalNativeBootstrap {
@@ -64,6 +66,11 @@ impl HistoricalNativeBootstrap {
                 super::super::correspondence::json_value(&self.boot_value, body)?;
             }
         }
+        match (&self.startup, &self.boot.startup) {
+            (None, None) => {}
+            (Some(startup), Some(_)) => startup.authenticate(self)?,
+            _ => return Err(invalid()),
+        }
         Ok(())
     }
 }
@@ -75,8 +82,29 @@ pub(super) fn read(
     bootstrap_layout: usize,
     boot_layout: usize,
 ) -> Result<Option<HistoricalNativeBootstrap>, ProviderError> {
+    let startup_class = ledger.requires_startup_class()?;
+    let (input, startup_input) = if startup_class {
+        let mut wrapper = Fields::array(input)?;
+        tag(
+            &mut wrapper,
+            "source-private.native-private-bootstrap-startup/14",
+        )?;
+        let base = next(&mut wrapper)?;
+        let startup = next(&mut wrapper)?;
+        wrapper.finish()?;
+        (base, Some(startup))
+    } else {
+        (input, None)
+    };
     let mut fields = Fields::array(input)?;
-    tag(&mut fields, "source-private.native-private-bootstrap/11")?;
+    tag(
+        &mut fields,
+        if startup_class {
+            "source-private.native-private-bootstrap/14"
+        } else {
+            "source-private.native-private-bootstrap/11"
+        },
+    )?;
     tag(&mut fields, "closed-original-private-stream")?;
     tag(&mut fields, "original-cut-transferred")?;
     if ledger.ledger.row(MetadataRecordKind::Boxed, 1)? != bootstrap_layout {
@@ -125,6 +153,11 @@ pub(super) fn read(
     let boot_value = ledger.ledger.read::<Value>(boot_raw, build)?;
     let boot = ledger.boot(next(&mut fields)?, build, boot_layout)?;
     fields.finish()?;
+    let startup = if let Some(input) = startup_input {
+        super::startup::read_bootstrap(input, ledger.ledger, build)?
+    } else {
+        None
+    };
     if !build {
         return Ok(None);
     }
@@ -135,5 +168,6 @@ pub(super) fn read(
         launch_bytes: launch_bytes.ok_or_else(invalid)?,
         boot_value: boot_value.ok_or_else(invalid)?,
         boot: boot.ok_or_else(invalid)?,
+        startup,
     }))
 }

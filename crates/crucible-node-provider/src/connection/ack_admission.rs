@@ -297,3 +297,40 @@ impl<S: ProviderStream> Connection<S> {
         Ok(policy.protocol_metadata_limits())
     }
 }
+
+impl OriginalNativeAckConnectionIdentity {
+    pub(crate) fn observe_unique_capture_metadata(
+        &self,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        use crate::retained_metadata::aliases::MetadataSharedKind;
+        self.actor.ensure_current()?;
+        let Self {
+            actor,
+            authority,
+            policy,
+            frames,
+            admit_id,
+            admit_sequence,
+            literal_index,
+            literal_length,
+            literal_digest: _,
+        } = self;
+        roots.observe_shared(observer, MetadataSharedKind::ProtocolOwner, actor.as_ref())?;
+        authority.observe_unique_capture_metadata(roots, observer)?;
+        if roots.observe_shared(observer, MetadataSharedKind::NativePolicy, policy.as_ref())? {
+            policy.observe_unique_capture_metadata(roots, observer)?;
+        }
+        if roots.observe_shared(observer, MetadataSharedKind::FrameBank, frames.as_ref())? {
+            frames
+                .try_borrow()
+                .map_err(|_| ProviderError::Conflict("native identity unique frame bank borrowed"))?
+                .observe_owned11_metadata(observer)?;
+        }
+        observer.observe(admit_id)?;
+        observer.observe(admit_sequence)?;
+        observer.observe(literal_index)?;
+        observer.observe(literal_length)
+    }
+}

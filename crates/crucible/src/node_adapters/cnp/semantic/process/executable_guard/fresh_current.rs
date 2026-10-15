@@ -22,6 +22,36 @@ pub(in crate::node_adapters::cnp::semantic) struct FreshCurrentScratch {
 }
 
 impl FreshCurrentScratch {
+    pub(super) fn read_original_native_link(&mut self, pid: u32) -> Result<usize, RuntimeError> {
+        let path_len = self.proc_path(pid, b"/exe")?.to_bytes_with_nul().len();
+        let path = CStr::from_bytes_with_nul(&self.path[..path_len])
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        rustix::fs::readlinkat_raw(rustix::fs::CWD, path, &mut self.link[..])
+            .map_err(|_| RuntimeError::OwnerUnavailable)
+    }
+
+    pub(super) fn original_native_link_data(&self) -> &[u8] {
+        &self.link
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn for_original_native_startup()
+    -> Result<Self, RuntimeError> {
+        let maximum = OriginalExecutable::original_native_startup_link_bytes();
+        let mut link = Vec::new();
+        link.try_reserve_exact(maximum)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        if link.capacity() > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        link.resize(maximum, 0);
+        Ok(Self {
+            stat: [0; 32 * 1024 + 1],
+            bytes: [0; 8192],
+            link,
+            path: [0; 32],
+        })
+    }
+
     pub(in crate::node_adapters::cnp::semantic) fn declared_scratch_data() -> usize {
         size_of::<Self>()
             + size_of::<blake3::Hasher>()
@@ -77,6 +107,9 @@ impl OriginalExecutable {
         if self.original.lease().is_some() {
             return Err(RuntimeError::UnsupportedFacet);
         }
+        if self.bounded_birth {
+            return Ok(Self::original_native_startup_link_bytes());
+        }
         self.original_target
             .as_os_str()
             .as_bytes()
@@ -128,7 +161,7 @@ impl OriginalExecutable {
         result
     }
 
-    fn fresh_fences(
+    pub(super) fn fresh_fences(
         &self,
         kernel: &KernelIdentity,
         scratch: &mut FreshCurrentScratch,
@@ -181,7 +214,10 @@ impl OriginalExecutable {
         kernel.ensure_fresh_current(scratch)
     }
 
-    fn measure_fresh_bytes(&self, scratch: &mut FreshCurrentScratch) -> Result<(), RuntimeError> {
+    pub(super) fn measure_fresh_bytes(
+        &self,
+        scratch: &mut FreshCurrentScratch,
+    ) -> Result<(), RuntimeError> {
         let expected = &self.expected;
         if expected.hash.algorithm != "blake3-256"
             || expected.hash.domain != "cnp.blob.v1"

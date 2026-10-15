@@ -8,11 +8,21 @@
 //! {schema: "source-owned.packet-native-control-state/5", captured_process,
 //!  administrative_cut, local_cursor, model, control: {all original fields}}
 //! ```
+//!
+//! Explicitly selected allocation capture uses edition 6 and includes the
+//! original `complete_capture_allocation_selection` in `control`. Edition 5
+//! forbids that key, including null; neither edition grants restoration rights.
+//!
+//! ```text
+//! {schema: "source-owned.packet-native-control-state/6", ...,
+//!  control: {..., complete_capture_allocation_selection: "original_observe12"}}
+//! ```
 
 use super::super::continuation_models::PacketOriginalModelSnapshot;
 use super::*;
 
 const SCHEMA: &str = "source-owned.packet-native-control-state/5";
+const CAPTURE_ALLOCATION_SCHEMA: &str = "source-owned.packet-native-control-state/6";
 const MAXIMUM_BYTES: usize = 8 * 1024 * 1024;
 
 /// Retains complete bytes produced directly from the same native control allocation.
@@ -94,6 +104,10 @@ struct ControlView<'a> {
     complete_restore_input_emitter_selection: &'a Option<
         super::super::service::complete_restore::PacketNative5RestoreInputEmitterSelection,
     >,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    complete_capture_allocation_selection: &'a Option<
+        super::super::service::capture_allocation::PacketNative5CaptureAllocationSelection,
+    >,
 }
 
 #[derive(Serialize)]
@@ -140,6 +154,11 @@ impl PacketControl {
                 "packet whole control snapshot ceiling",
             ));
         }
+        if self.complete_capture_allocation_selection.is_some() {
+            self.authenticate_complete_capture_allocation_selection(
+                self.complete_capture_allocation_selection,
+            )?;
+        }
         let local_cursor = self.program.inventory()?.reached;
         if administrative_cut < local_cursor {
             return Err(ProviderError::Correlation(
@@ -182,7 +201,11 @@ impl PacketControl {
             content.push((reference, bytes.as_slice()));
         }
         let view = SnapshotView {
-            schema: SCHEMA,
+            schema: if self.complete_capture_allocation_selection.is_some() {
+                CAPTURE_ALLOCATION_SCHEMA
+            } else {
+                SCHEMA
+            },
             captured_process: U64::new(u64::from(std::process::id())),
             administrative_cut,
             local_cursor,
@@ -217,6 +240,7 @@ impl PacketControl {
                 complete_restore_selection: &self.complete_restore_selection,
                 complete_restore_input_emitter_selection: &self
                     .complete_restore_input_emitter_selection,
+                complete_capture_allocation_selection: &self.complete_capture_allocation_selection,
             },
         };
         crate::connection::serialized_credit(&view, maximum_bytes)?;
@@ -261,6 +285,14 @@ impl PacketDecodedControlSnapshot {
     /// Returns the distinct retained original local model cursor.
     pub fn local_cursor(&self) -> Position {
         self.record.local_cursor
+    }
+
+    /// Returns the explicit historical allocation family without granting live currency.
+    pub fn capture_allocation_selection(
+        &self,
+    ) -> Option<super::super::service::capture_allocation::PacketNative5CaptureAllocationSelection>
+    {
+        self.record.control.complete_capture_allocation_selection
     }
 
     /// Borrows bounded decoded model data without transferring native authority.
@@ -323,6 +355,9 @@ struct ControlState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     complete_restore_input_emitter_selection:
         Option<super::super::service::complete_restore::PacketNative5RestoreInputEmitterSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    complete_capture_allocation_selection:
+        Option<super::super::service::capture_allocation::PacketNative5CaptureAllocationSelection>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -363,11 +398,10 @@ pub fn decode_packet_control_snapshot(
             "packet control snapshot canonical bytes",
         ));
     }
+    // Check key presence before Option deserialization can erase explicit null.
+    authenticate_control_edition_data(&value)?;
     let record: ControlRecord = serde_json::from_value(value).map_err(ContractError::from)?;
-    if record.schema != SCHEMA
-        || record.captured_process.get() == 0
-        || record.local_cursor > record.administrative_cut
-    {
+    if record.captured_process.get() == 0 || record.local_cursor > record.administrative_cut {
         return Err(ProviderError::Correlation(
             "packet complete control snapshot scope",
         ));
@@ -403,6 +437,31 @@ pub fn decode_packet_control_snapshot(
         ));
     }
     Ok(PacketDecodedControlSnapshot { record, model })
+}
+
+// This closed edition discriminator borrows the already parsed input. It does
+// not build a definition, normalize bytes or infer a selected family from null.
+fn authenticate_control_edition_data(value: &Value) -> Result<(), ProviderError> {
+    let schema = value.get("schema").and_then(Value::as_str);
+    let control =
+        value
+            .get("control")
+            .and_then(Value::as_object)
+            .ok_or(ProviderError::Correlation(
+                "packet complete Control object absent",
+            ))?;
+    let selection = control.get("complete_capture_allocation_selection");
+    match (schema, selection) {
+        (Some(SCHEMA), None) => Ok(()),
+        (Some(CAPTURE_ALLOCATION_SCHEMA), Some(Value::String(selected)))
+            if selected == "original_observe12" =>
+        {
+            Ok(())
+        }
+        _ => Err(ProviderError::Correlation(
+            "packet complete Control edition/selection differs",
+        )),
+    }
 }
 
 impl ControlState {
@@ -517,6 +576,52 @@ impl ControlState {
             return Err(ProviderError::Correlation(
                 "native5 captured metadata facts lack selection",
             ));
+        }
+        if self.complete_capture_allocation_selection.is_some() {
+            use super::super::service::capture_allocation::{
+                PACKET_NATIVE_CAPTURE_ALLOCATION_FEATURE, capture_allocation_record_schema,
+                capture_allocation_schema,
+            };
+            if !owned_protocol
+                || self.complete_protocol_metadata_limits.is_none()
+                || self.complete_protocol_metadata_birth_facts.is_none()
+                || self.complete_ack_emitter_selection.is_none()
+                || self.complete_coordinator.is_none()
+                || self.complete_storage.is_none()
+                || !self
+                    .selection
+                    .provider
+                    .extensions_supported
+                    .iter()
+                    .any(|feature| feature.as_str() == PACKET_NATIVE_CAPTURE_ALLOCATION_FEATURE)
+            {
+                return Err(ProviderError::Correlation(
+                    "captured native allocation family lacks original tuple",
+                ));
+            }
+            for schema in [
+                capture_allocation_schema()?,
+                capture_allocation_record_schema()?,
+            ] {
+                if !self
+                    .selection
+                    .provider
+                    .implementation
+                    .formats
+                    .contains(&schema)
+                    || !self.selection.realization.bindings.iter().all(|binding| {
+                        binding
+                            .compatibility
+                            .implementation
+                            .formats
+                            .contains(&schema)
+                    })
+                {
+                    return Err(ProviderError::Correlation(
+                        "captured native allocation definition differs",
+                    ));
+                }
+            }
         }
         if self.complete_restore_input_emitter_selection.is_some() {
             let schema =

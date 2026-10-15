@@ -385,3 +385,46 @@ pub(in crate::reference_packet) fn original_validation_layouts() -> [usize; 4] {
         size_of::<OriginalStage>().max(size_of::<OriginalCommit>()),
     ]
 }
+
+impl PacketConnectedProgram {
+    pub(crate) fn quote_original_live_capture_encoding(
+        &self,
+        maximum: usize,
+    ) -> Result<super::super::serialization_storage::NativeModelCaptureEncodingData, ProviderError>
+    {
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        let cursor = self.observe_original_live_capture_metadata(&mut observer)?;
+        let facts = observer.finish();
+        let state = ConnectedView {
+            definition: &self.definition,
+            native_pid: self.native_pid,
+            reached: self.reached,
+            gate_closed: self.gate_closed,
+            reactions: &self.reactions,
+            delivered_inputs: &self.delivered_inputs,
+            publications: &self.publications,
+            outputs: &self.outputs,
+            stages: &self.stages,
+            grants: &self.grants,
+            retired: &self.retired,
+            reactions_completed: self.reactions_completed,
+            packet_effects: self.packet_effects,
+            failed: self.failed,
+        };
+        super::super::serialization_storage::model_encoding_storage_data(
+            &self.definition,
+            &state,
+            cursor,
+            [
+                0,
+                self.reactions.capacity(),
+                self.delivered_inputs.capacity(),
+                self.publications.capacity(),
+                self.outputs.capacity(),
+                self.stages.capacity(),
+            ],
+            facts,
+            maximum,
+        )
+    }
+}

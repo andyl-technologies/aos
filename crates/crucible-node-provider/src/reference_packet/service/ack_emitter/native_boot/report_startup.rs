@@ -11,6 +11,9 @@ use crate::reference_packet::service::report_startup::{
     PACKET_NATIVE_REPORT_STARTUP_ALLOCATION_SCHEMA, PacketNativeReportStartupAllocationRow,
     PacketNativeReportStartupPurpose,
 };
+use crate::retained_metadata::{
+    MetadataObserver, NativeCaptureMetadataRoots, aliases::MetadataSharedKind,
+};
 use serde_json::{Map, Value};
 
 pub(crate) struct OriginalNativeReportStartupAllocation {
@@ -70,6 +73,17 @@ impl OriginalNativeReportStartupAllocation {
             .authenticate_original_report_query_header_data(self.purpose, original)
     }
 
+    fn authenticate_fresh_purpose<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_current(connection)?;
+        if self.purpose != PacketNativeReportStartupPurpose::FreshCompletedAdmit13 {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
     pub(crate) fn authenticate_current<S: ProviderStream>(
         &self,
         connection: &Connection<S>,
@@ -89,6 +103,99 @@ impl OriginalNativeReportStartupAllocation {
             return Err(refused());
         }
         Ok(())
+    }
+
+    /// Requires the distinct complete native baseline construction owner.
+    ///
+    /// Report binding13 admits added publication only. The baseline189 owner
+    /// and resource-admitted boot6 consumer are absent from this partial cut;
+    /// no report row, selector or installed ACK substitutes for that owner.
+    ///
+    /// # Errors
+    /// Refuses a changed report origin and the currently unavailable complete
+    /// baseline admission before report/cache/proof materialization.
+    pub(crate) fn authenticate_complete_native_baseline<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_current(connection)?;
+        Err(ProviderError::Correlation(
+            "native report complete baseline allocation admission unavailable",
+        ))
+    }
+
+    pub(crate) fn maximum_requested_bytes(&self) -> Result<usize, ProviderError> {
+        let maximum = usize::try_from(self.row.requested_peak_data()?).map_err(|_| refused())?;
+        if maximum > 512 * 1024 * 1024 {
+            return Err(refused());
+        }
+        Ok(maximum)
+    }
+
+    // A whole caller must invoke this before its full quote capsule or complete
+    // report owner is constructed. The closed pre-child allowance is not a
+    // promise that any future changed private layout will fit it.
+    pub(crate) fn authenticate_compiled_headers<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        quote: usize,
+        owner: usize,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_current(connection)?;
+        if quote
+            > usize::try_from(self.row.declared_counter_scratch_bytes.get())
+                .map_err(|_| refused())?
+            || owner
+                > usize::try_from(self.row.retained_growth_bytes.get()).map_err(|_| refused())?
+        {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn authenticate_actual_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        actual: &PacketNativeReportStartupAllocationRow,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_current(connection)?;
+        self.row.authenticate_actual_data(actual)
+    }
+
+    pub(crate) fn observe_unique_capture_metadata<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        roots: &mut NativeCaptureMetadataRoots,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_current(connection)?;
+        let Self {
+            boot,
+            policy,
+            purpose,
+            row,
+            source_digest,
+        } = self;
+        if roots.observe_shared(observer, MetadataSharedKind::NativeBoot, boot.as_ref())? {
+            boot.try_borrow()
+                .map_err(|_| refused())?
+                .observe_unique_capture_metadata(roots, observer)?;
+        }
+        if roots.observe_shared(observer, MetadataSharedKind::NativePolicy, policy.as_ref())? {
+            policy.observe_unique_capture_metadata(roots, observer)?;
+        }
+        observer.observe(&match purpose {
+            PacketNativeReportStartupPurpose::OriginalObserve12 => 0u8,
+            PacketNativeReportStartupPurpose::FreshCompletedAdmit13 => 1u8,
+        })?;
+        observer.observe(&row.raw_report_capacity)?;
+        observer.observe(&row.retained_growth_bytes)?;
+        observer.observe(&row.maximum_simultaneous_transient_bytes)?;
+        observer.observe(&row.declared_counter_scratch_bytes)?;
+        // The fixed digest has no owned children. Its complete inline storage
+        // is part of this capsule's actual compiled scratch/header layout.
+        observer.observe(&source_digest.as_bytes().len())?;
+        self.authenticate_current(connection)
     }
 }
 

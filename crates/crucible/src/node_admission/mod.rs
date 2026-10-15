@@ -453,3 +453,12 @@ pub(crate) fn test_fixture_reference_device(
 ) -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
     tests::reference_device_fixture_with_content(executable)
 }
+
+pub use conformance::{
+    CompleteOriginalNativeStartupAdmission, OriginalNativeStartupMemberScope,
+    OriginalNativeStartupPolicy, OriginalNativeStartupScope, OriginalNativeStartupStorage,
+};
+
+pub(crate) use conformance::{
+    NativeStartupRows, OriginalNativeStartupMember, OriginalNativeStartupQuote,
+};

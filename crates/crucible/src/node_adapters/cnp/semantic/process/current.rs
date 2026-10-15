@@ -11,6 +11,9 @@ mod retained_storage;
 #[path = "current/fresh_current.rs"]
 mod fresh_current;
 
+#[path = "current/native_startup.rs"]
+mod native_startup;
+
 use crucible_node_contract::U64;
 use crucible_node_provider::{ProviderError, client::CnpRegistrarRead};
 

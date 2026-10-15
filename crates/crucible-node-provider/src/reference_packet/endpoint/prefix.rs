@@ -115,6 +115,42 @@ pub(super) fn prepare_with_storage_data<S: ProviderStream>(
     )
 }
 
+/// Recounts an actual reply under a preconstruction upper before any frames.
+pub(super) fn prepare_with_projection_storage_data<S: ProviderStream>(
+    transport: &mut Option<Transport<S>>,
+    next_sequence: &mut u64,
+    retained_credit: &mut usize,
+    authority: &ConnectionAuthority,
+    request: &Envelope,
+    reply: &PacketControlReply,
+    projection: &OriginalPacketPrefixProjectionStorageData,
+) -> Result<(), ProviderError> {
+    let Some(Transport::Connected(connection)) = transport.as_ref() else {
+        return Err(ProviderError::Conflict(
+            "packet prospective prefix original connection absent",
+        ));
+    };
+    connection.authenticate_original_packet_prefix_builder_authority_data(authority)?;
+    let actual = projection.authenticate_actual_inputs(
+        connection,
+        *next_sequence,
+        request,
+        &reply.body,
+        &reply.evidence,
+    )?;
+    // Existing242 independently requotes these exact actual inputs again before
+    // frames. The prospective upper itself is never passed as an exact quote.
+    prepare_with_storage_data(
+        transport,
+        next_sequence,
+        retained_credit,
+        authority,
+        request,
+        reply,
+        &actual,
+    )
+}
+
 struct PrefixInput<'a> {
     authority: &'a ConnectionAuthority,
     request: &'a Envelope,
@@ -140,6 +176,7 @@ fn prepare_inner<S: ProviderStream>(
                 "packet prefix original unavailable before storage recheck",
             ));
         };
+        connection.authenticate_original_packet_prefix_builder_authority_data(authority)?;
         connection.authenticate_requoted_original_packet_prefix_storage_data(
             *next_sequence,
             request,

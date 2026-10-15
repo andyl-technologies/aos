@@ -13,6 +13,27 @@ impl<S: ProviderStream> Connection<S> {
         record: &ExchangeRecord,
         index: usize,
     ) -> Result<Option<ReceivedFrame>, ProviderError> {
+        self.receive_original_prepared_blob_proof_with_birth(record, index, None)
+    }
+
+    pub(super) fn receive_original_prepared_native_birth_proof(
+        &mut self,
+        record: &ExchangeRecord,
+        index: usize,
+        scope: &crate::reference_packet::service::ack_emitter::OriginalNativeBirthReadScope<'_>,
+    ) -> Result<Option<ReceivedFrame>, ProviderError> {
+        scope.authenticate_connection(self)?;
+        self.receive_original_prepared_blob_proof_with_birth(record, index, Some(scope))
+    }
+
+    fn receive_original_prepared_blob_proof_with_birth(
+        &mut self,
+        record: &ExchangeRecord,
+        index: usize,
+        scope: Option<
+            &crate::reference_packet::service::ack_emitter::OriginalNativeBirthReadScope<'_>,
+        >,
+    ) -> Result<Option<ReceivedFrame>, ProviderError> {
         self.protocol_owner.ensure_current()?;
         self.authenticate_native5_source_codec()?;
         if self.role != EndpointRole::Provider
@@ -46,7 +67,7 @@ impl<S: ProviderStream> Connection<S> {
         }
         self.ensure_no_pending_native_restore_response()?;
         self.check_authority()?;
-        let result = self.receive_original_prepared_blob_proof_inner(&record.originals[index]);
+        let result = self.receive_original_prepared_blob_proof_inner(record, index, scope);
         match &result {
             Ok(None) => self.contain(ConnectionFailure::Read),
             Err(_) => self.contain(ConnectionFailure::Protocol),
@@ -57,8 +78,13 @@ impl<S: ProviderStream> Connection<S> {
 
     fn receive_original_prepared_blob_proof_inner(
         &mut self,
-        original: &Envelope,
+        record: &ExchangeRecord,
+        index: usize,
+        scope: Option<
+            &crate::reference_packet::service::ack_emitter::OriginalNativeBirthReadScope<'_>,
+        >,
     ) -> Result<Option<ReceivedFrame>, ProviderError> {
+        let original = &record.originals[index];
         let Some(value) = self.reader.read()? else {
             return Ok(None);
         };
@@ -68,6 +94,34 @@ impl<S: ProviderStream> Connection<S> {
             self.guard
                 .authenticate_prepared_blob_proof_header(original, &envelope)
         })?;
+        if let Some(scope) = scope {
+            scope.authenticate_connection(self)?;
+            scope.authenticate_proof_data(original, &envelope, record)?;
+            let slot = self
+                .reader
+                .original_slot()
+                .ok_or(ProviderError::Correlation(
+                    "native birth proof literal absent",
+                ))?;
+            let bank = self
+                .original_frames
+                .as_ref()
+                .ok_or(ProviderError::Correlation("native birth proof bank absent"))?
+                .try_borrow()
+                .map_err(|_| ProviderError::Conflict("native birth proof bank borrowed"))?;
+            let frame = bank.frame(slot).ok_or(ProviderError::Correlation(
+                "native birth proof frame absent",
+            ))?;
+            if !frame.complete || frame.transferred != frame.bytes.len() || frame.bytes.len() < 4 {
+                return Err(ProviderError::Correlation(
+                    "native birth proof frame incomplete",
+                ));
+            }
+            crate::protocol_snapshot::owned11::correspondence::envelope(
+                &envelope,
+                &frame.bytes[4..],
+            )?;
+        }
         let body = self.validate_body(&envelope, true)?;
         self.retain_original_request_id(&envelope, self.reader.original_slot())?;
         self.authority.with_live(|| self.guard.receive(&envelope))?;

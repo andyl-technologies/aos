@@ -17,9 +17,11 @@ use base64::Engine;
 use crucible_node_contract::ContentRef;
 
 struct Parts<'a> {
+    class: super::super::shared::NativeArchiveClass,
     connection: [&'a [u8]; 15],
     blobs: &'a [u8],
     service: &'a [u8],
+    capture_allocation: Option<&'a [u8]>,
     records: &'a [u8],
     aliases: &'a [u8],
 }
@@ -28,18 +30,26 @@ fn parts(input: &[u8]) -> Result<Parts<'_>, ProviderError> {
     let mut outer = Fields::array(input)?;
     tag(&mut outer, "source-private.cnp-protocol/11")?;
     let mut state = Fields::array(next(&mut outer)?)?;
-    tag(&mut state, "source-private.native-state/11")?;
+    let format = plain_string(next(&mut state)?)?;
+    let class = super::super::shared::NativeArchiveClass::read(format)?;
     let connection = array(next(&mut state)?)?;
     let blobs = next(&mut state)?;
     let service = next(&mut state)?;
+    let capture_allocation = if class.capture() {
+        Some(next(&mut state)?)
+    } else {
+        None
+    };
     state.finish()?;
     let records = next(&mut outer)?;
     let aliases = next(&mut outer)?;
     outer.finish()?;
     Ok(Parts {
+        class,
         connection,
         blobs,
         service,
+        capture_allocation,
         records,
         aliases,
     })
@@ -98,7 +108,8 @@ impl SealedHistoricalNativeState {
         }
         let before = parts(&self.encoded)?;
         let later = parts(&after.encoded)?;
-        if before.blobs != later.blobs
+        if before.class != later.class
+            || before.blobs != later.blobs
             || before.service != later.service
             || before.aliases != later.aliases
         {
@@ -107,6 +118,18 @@ impl SealedHistoricalNativeState {
         for i in [0, 1, 2, 4, 5, 8, 9, 10, 11, 12, 13] {
             if before.connection[i] != later.connection[i] {
                 return Err(invalid());
+            }
+        }
+        match (before.capture_allocation, later.capture_allocation) {
+            (None, None) => {}
+            (Some(first), Some(last)) => capture_allocation_static(first, last)?,
+            _ => return Err(invalid()),
+        }
+        for state in [before_state, after_state] {
+            if let Some(owner) = &state.capture_allocation {
+                if owner.capture_request_data() != Some(capture_request) {
+                    return Err(invalid());
+                }
             }
         }
         static_token(before.connection[14], later.connection[14])?;
@@ -713,4 +736,30 @@ mod tests {
         assert!(complete(&frame(bytes.len() - 1, true)).is_err());
         assert!(complete(&frame(bytes.len(), false)).is_err());
     }
+}
+
+// Both fourth-owner frame views are independently checked aliases of each
+// connection's complete bank. Their changing suffix is checked once through
+// that bank below; all other original Observe/currency/report data stays exact.
+fn capture_allocation_static(before: &[u8], after: &[u8]) -> Result<(), ProviderError> {
+    let first = array::<11>(before)?;
+    let last = array::<11>(after)?;
+    if plain_string(first[0])? != "source-private.native-capture-allocation-owner/12"
+        || first[0] != last[0]
+    {
+        return Err(invalid());
+    }
+    for i in [1, 2, 3, 4, 6, 7, 8, 9, 10] {
+        if first[i] != last[i] {
+            return Err(invalid());
+        }
+    }
+    let first_sdk = array::<5>(first[5])?;
+    let last_sdk = array::<5>(last[5])?;
+    for i in 0..4 {
+        if first_sdk[i] != last_sdk[i] {
+            return Err(invalid());
+        }
+    }
+    frame_capacity(first_sdk[4], last_sdk[4])
 }

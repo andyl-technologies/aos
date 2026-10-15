@@ -18,7 +18,34 @@ pub(super) struct NativeSharedEntry {
     pub(super) blobs: Option<Rc<super::blob::HistoricalNativeBlobLedger>>,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum NativeArchiveClass {
+    Legacy11,
+    Capture12,
+    Startup13,
+    StartupCapture14,
+}
+
+impl NativeArchiveClass {
+    pub(super) fn read(format: &str) -> Result<Self, ProviderError> {
+        match format {
+            "source-private.native-state/11" => Ok(Self::Legacy11),
+            "source-private.native-state/12" => Ok(Self::Capture12),
+            "source-private.native-state/13" => Ok(Self::Startup13),
+            "source-private.native-state/14" => Ok(Self::StartupCapture14),
+            _ => Err(invalid()),
+        }
+    }
+    pub(super) fn startup(self) -> bool {
+        matches!(self, Self::Startup13 | Self::StartupCapture14)
+    }
+    pub(super) fn capture(self) -> bool {
+        matches!(self, Self::Capture12 | Self::StartupCapture14)
+    }
+}
+
 pub(super) struct NativeLedger<'ledger, 'records, 'scratch, 'input, 'groups> {
+    pub(super) class: Option<NativeArchiveClass>,
     pub(super) ledger: &'ledger mut Ledger<'records, 'scratch, 'input>,
     pub(super) groups: Option<&'groups mut [NativeSharedEntry]>,
     // Historical payload layouts can differ from original private live types.
@@ -28,6 +55,20 @@ pub(super) struct NativeLedger<'ledger, 'records, 'scratch, 'input, 'groups> {
 }
 
 impl NativeLedger<'_, '_, '_, '_, '_> {
+    pub(super) fn select_class(&mut self, class: NativeArchiveClass) -> Result<(), ProviderError> {
+        if self.class.is_some_and(|existing| existing != class) {
+            return Err(invalid());
+        }
+        self.class = Some(class);
+        Ok(())
+    }
+
+    pub(super) fn requires_startup_class(&self) -> Result<bool, ProviderError> {
+        self.class
+            .map(NativeArchiveClass::startup)
+            .ok_or_else(invalid)
+    }
+
     fn payload<T>(&mut self) -> Result<(), ProviderError> {
         self.historical_payload_layout_bytes = self
             .historical_payload_layout_bytes

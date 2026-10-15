@@ -24,6 +24,9 @@ use super::current::KernelIdentity;
 #[path = "executable_guard/fresh_current.rs"]
 mod fresh_current;
 
+#[path = "executable_guard/native_startup.rs"]
+mod native_startup;
+
 pub(in crate::node_adapters::cnp::semantic) use fresh_current::FreshCurrentScratch;
 
 const MAXIMUM_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
@@ -71,6 +74,7 @@ pub(super) struct OriginalExecutable {
     revision: FileRevision,
     expected: ContentRef,
     revoked: Cell<bool>,
+    bounded_birth: bool,
 }
 
 impl OriginalExecutable {
@@ -159,6 +163,7 @@ impl OriginalExecutable {
             revision,
             expected: expected.clone(),
             revoked: Cell::new(false),
+            bounded_birth: false,
         };
 
         guard.fences(kernel)?;
@@ -184,6 +189,14 @@ impl OriginalExecutable {
 
     pub(super) fn ensure_current(&self, kernel: &KernelIdentity) -> Result<(), ProviderError> {
         self.ensure_origin()?;
+        if self.bounded_birth {
+            let mut scratch = self
+                .fresh_current_scratch()
+                .map_err(|_| changed("selected native executable scratch refused"))?;
+            return self
+                .ensure_fresh_current(kernel, &mut scratch)
+                .map_err(|_| changed("selected native executable changed"));
+        }
         if self.revoked.get() {
             return Err(changed("generic original executable permanently revoked"));
         }

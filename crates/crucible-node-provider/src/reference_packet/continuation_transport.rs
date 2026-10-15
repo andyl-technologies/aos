@@ -45,11 +45,49 @@ pub struct PacketCapturePrefix<S: ProviderStream> {
     state: PrefixState,
 }
 
+/// Counts only named concrete owner/planner layouts, not compiler stack.
+pub(crate) fn original_continuation_prefix_layout_data<S: ProviderStream>(
+    kind: OriginalContinuationPrefixKind,
+) -> Result<usize, ProviderError> {
+    let owner = match kind {
+        OriginalContinuationPrefixKind::Capture => std::mem::size_of::<PacketCapturePrefix<S>>()
+            .checked_add(std::mem::size_of::<CaptureSource>()),
+        OriginalContinuationPrefixKind::AfterConfirmation => {
+            confirmation::original_confirmation_prefix_layout_data::<S>()
+        }
+    }
+    .ok_or(ProviderError::ResourceExhausted(
+        "continuation prefix owner layouts",
+    ))?;
+    owner
+        .checked_add(std::mem::size_of::<frames::CapturePlan>())
+        .ok_or(ProviderError::ResourceExhausted(
+            "continuation prefix planner layout",
+        ))
+}
+
 struct CaptureSource {
     response: Envelope,
     snapshot: (ContentRef, Vec<u8>),
     anchor: (ContentRef, Vec<u8>),
     control: Option<(ContentRef, Vec<u8>)>,
+}
+
+impl CaptureSource {
+    fn observe_storage_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        observer.observe(&self.response)?;
+        for (reference, bytes) in [&self.snapshot, &self.anchor]
+            .into_iter()
+            .chain(self.control.iter())
+        {
+            observer.observe(reference)?;
+            observer.observe(bytes)?;
+        }
+        Ok(())
+    }
 }
 
 enum CaptureTransport<S: ProviderStream> {
@@ -106,7 +144,7 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
         snapshot: (ContentRef, Vec<u8>),
         anchor: (ContentRef, Vec<u8>),
     ) -> Result<(), ProviderError> {
-        self.prepare_source(response, snapshot, anchor, None)
+        self.prepare_source(response, snapshot, anchor, None, None)
     }
 
     /// Retains and exports the separately promised original control snapshot.
@@ -129,7 +167,23 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
         anchor: (ContentRef, Vec<u8>),
         control: (ContentRef, Vec<u8>),
     ) -> Result<(), ProviderError> {
-        self.prepare_source(response, snapshot, anchor, Some(control))
+        self.prepare_source(response, snapshot, anchor, Some(control), None)
+    }
+
+    /// Prepares the same complete prefix after a closed native storage quote.
+    ///
+    /// This requotes the actual supplied owners before the first frame builder.
+    /// The native caller separately authenticates its whole Source allowance
+    /// before cloning the supplied payloads or invoking this method.
+    pub(crate) fn prepare_complete_with_storage_data(
+        &mut self,
+        response: Envelope,
+        snapshot: (ContentRef, Vec<u8>),
+        anchor: (ContentRef, Vec<u8>),
+        control: (ContentRef, Vec<u8>),
+        storage: &OriginalContinuationPrefixStorageData,
+    ) -> Result<(), ProviderError> {
+        self.prepare_source(response, snapshot, anchor, Some(control), Some(storage))
     }
 
     fn prepare_source(
@@ -138,6 +192,7 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
         snapshot: (ContentRef, Vec<u8>),
         anchor: (ContentRef, Vec<u8>),
         control: Option<(ContentRef, Vec<u8>)>,
+        storage: Option<&OriginalContinuationPrefixStorageData>,
     ) -> Result<(), ProviderError> {
         if self.state != PrefixState::Unprepared {
             return Err(ProviderError::Conflict(
@@ -151,16 +206,40 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
             anchor,
             control,
         });
+        if storage.is_some_and(|storage| storage.kind != OriginalContinuationPrefixKind::Capture) {
+            return Err(ProviderError::Correlation(
+                "capture storage planner differs",
+            ));
+        }
         let Some(CaptureTransport::Connected(connection)) = self.transport.as_mut() else {
             return Err(ProviderError::Conflict(
                 "capture original connection unavailable",
             ));
         };
-        let authority = connection.provider_authority()?;
         let source = self
             .source
             .as_ref()
             .ok_or(ProviderError::Conflict("capture source absent"))?;
+        if let Some(storage) = storage {
+            let control = source
+                .control
+                .as_ref()
+                .ok_or(ProviderError::Conflict("capture control absent"))?;
+            connection.authenticate_native5_source_codec()?;
+            let mut source_metadata = crate::retained_metadata::MetadataObserver::new();
+            source.observe_storage_data(&mut source_metadata)?;
+            storage.authenticate_source_owner_storage_data(&source_metadata.finish())?;
+            storage.authenticate_actual_inputs(
+                connection,
+                &source.response,
+                &[
+                    (&source.snapshot.0, &source.snapshot.1),
+                    (&source.anchor.0, &source.anchor.1),
+                    (&control.0, &control.1),
+                ],
+            )?;
+        }
+        let authority = connection.provider_authority()?;
         let plan = frames::plan(authority, source)?;
         self.windows = plan.windows;
         self.contents = plan.contents;
@@ -177,12 +256,21 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
         self.records
             .try_reserve_exact(self.windows.len())
             .map_err(|_| ProviderError::ResourceExhausted("capture whole exchange record slots"))?;
-        self.prepare_next_window()?;
+        if let Some(storage) = storage {
+            self.reconcile_storage_data(storage)?;
+        }
+        self.prepare_next_window(storage)?;
+        if let Some(storage) = storage {
+            self.reconcile_storage_data(storage)?;
+        }
         self.state = PrefixState::Prepared;
         Ok(())
     }
 
-    fn prepare_next_window(&mut self) -> Result<(), ProviderError> {
+    fn prepare_next_window(
+        &mut self,
+        storage: Option<&OriginalContinuationPrefixStorageData>,
+    ) -> Result<(), ProviderError> {
         let originals = self
             .windows
             .pop_front()
@@ -199,7 +287,14 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
         let Some(CaptureTransport::Prepared(exchange)) = self.transport.as_mut() else {
             return Err(ProviderError::Conflict("capture prepared window absent"));
         };
-        exchange.prepare_in_place()
+        if let Some(storage) = storage {
+            exchange.reconcile_original_continuation_window_storage_data(storage)?;
+        }
+        exchange.prepare_in_place()?;
+        if let Some(storage) = storage {
+            exchange.reconcile_original_continuation_window_storage_data(storage)?;
+        }
+        Ok(())
     }
 
     /// Bounds the after-suffix encoding on the same unpublished first window.
@@ -244,7 +339,7 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
             ));
         }
         self.state = PrefixState::Publishing;
-        let result = self.publish_original_windows();
+        let result = self.publish_original_windows(None);
         self.state = if result.is_ok() {
             PrefixState::Complete
         } else {
@@ -253,7 +348,35 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
         result
     }
 
-    fn publish_original_windows(&mut self) -> Result<(), ProviderError> {
+    /// Publishes the same actual windows with their admitted heap reconciliation.
+    ///
+    /// No quote is installed as persistent permission or a new receive mode.
+    /// Every later window is checked before its canonical/guard construction.
+    pub(crate) fn publish_with_storage_data(
+        &mut self,
+        storage: &OriginalContinuationPrefixStorageData,
+    ) -> Result<(), ProviderError> {
+        if self.state != PrefixState::Prepared
+            || storage.kind != OriginalContinuationPrefixKind::Capture
+        {
+            return Err(ProviderError::Conflict("capture quoted publication phase"));
+        }
+        self.state = PrefixState::Publishing;
+        let result = self
+            .reconcile_storage_data(storage)
+            .and_then(|()| self.publish_original_windows(Some(storage)));
+        self.state = if result.is_ok() {
+            PrefixState::Complete
+        } else {
+            PrefixState::Failed
+        };
+        result
+    }
+
+    fn publish_original_windows(
+        &mut self,
+        storage: Option<&OriginalContinuationPrefixStorageData>,
+    ) -> Result<(), ProviderError> {
         loop {
             let Some(CaptureTransport::Prepared(exchange)) = self.transport.as_mut() else {
                 return Err(ProviderError::Conflict(
@@ -273,11 +396,52 @@ impl<S: ProviderStream> PacketCapturePrefix<S> {
             let (connection, record) = exchange.into_parts();
             self.records.push(record);
             self.transport = Some(CaptureTransport::Connected(connection));
+            if let Some(storage) = storage {
+                self.reconcile_storage_data(storage)?;
+            }
             if self.windows.is_empty() {
                 return Ok(());
             }
-            self.prepare_next_window()?;
+            self.prepare_next_window(storage)?;
         }
+    }
+
+    fn reconcile_storage_data(
+        &self,
+        storage: &OriginalContinuationPrefixStorageData,
+    ) -> Result<(), ProviderError> {
+        let active = match self.transport.as_ref() {
+            Some(CaptureTransport::Prepared(exchange)) => Some(exchange.record()),
+            _ => None,
+        };
+        let originals = self
+            .windows
+            .iter()
+            .map(Vec::len)
+            .chain(self.records.iter().map(|record| record.originals().len()))
+            .chain(active.map(|record| record.originals().len()))
+            .try_fold(0usize, |sum, count| sum.checked_add(count))
+            .ok_or(ProviderError::ResourceExhausted("quoted prefix population"))?;
+        storage.reconcile_window_population_data(
+            self.windows.len(),
+            self.records.len(),
+            active.is_some(),
+            originals,
+        )?;
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        let source = self
+            .source
+            .as_ref()
+            .ok_or(ProviderError::Conflict("capture source absent"))?;
+        source.observe_storage_data(&mut observer)?;
+        observe_prefix_owners(
+            &self.transport,
+            &self.windows,
+            &self.records,
+            &self.contents,
+            &mut observer,
+        )?;
+        storage.reconcile_owner_metadata_data(&observer.finish())
     }
 
     /// Moves the same connection after complete publication, retaining history here.
@@ -400,3 +564,39 @@ impl PacketCapturePrefix<crate::client::DeadlineStream> {
         exchange.preflight_native_owned11_after_protocol_capacity(after, blobs, context)
     }
 }
+fn observe_prefix_owners<S: ProviderStream>(
+    transport: &Option<CaptureTransport<S>>,
+    windows: &VecDeque<Vec<Envelope>>,
+    records: &Vec<ExchangeRecord>,
+    contents: &BTreeMap<Id, ContentRef>,
+    observer: &mut crate::retained_metadata::MetadataObserver,
+) -> Result<(), ProviderError> {
+    observer.vector::<Vec<Envelope>>(windows.capacity())?;
+    for window in windows {
+        observer.observe(window)?;
+    }
+    observer.vector::<ExchangeRecord>(records.capacity())?;
+    observer.observe(contents)?;
+    match transport {
+        Some(CaptureTransport::Connected(connection)) => {
+            for record in records {
+                record.observe_original_continuation_storage_data(connection, observer)?;
+            }
+        }
+        Some(CaptureTransport::Prepared(exchange)) => {
+            for record in records {
+                exchange.observe_original_continuation_prior_record_data(record, observer)?;
+            }
+            exchange.observe_original_continuation_storage_data(observer)?;
+        }
+        None => {
+            return Err(ProviderError::Conflict(
+                "quoted prefix original connection absent",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod storage_tests;

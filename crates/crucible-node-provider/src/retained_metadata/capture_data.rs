@@ -47,31 +47,7 @@ fn observe_response(
     observer: &mut MetadataObserver,
 ) -> Result<(), ProviderError> {
     let ResponseBody { shape, result } = response;
-    match shape {
-        ResponseShape::Accepted {
-            operation_state,
-            result,
-            extensions,
-        }
-        | ResponseShape::Completed {
-            operation_state,
-            result,
-            extensions,
-        } => {
-            observer.observe(operation_state)?;
-            observer.observe(result)?;
-            observer.observe(extensions)?;
-        }
-        ResponseShape::Error {
-            operation_state,
-            error,
-            extensions,
-        } => {
-            observer.observe(operation_state)?;
-            observer.observe(error)?;
-            observer.observe(extensions)?;
-        }
-    }
+    observe_response_shape(shape, observer)?;
     match result {
         None => Ok(()),
         Some(MethodResult::BeginAccepted(value)) => observer.observe(value),
@@ -104,6 +80,38 @@ fn observe_response(
             "retained Capture result method family differs",
         )),
     }
+}
+
+pub(super) fn observe_response_shape(
+    shape: &ResponseShape,
+    observer: &mut MetadataObserver,
+) -> Result<(), ProviderError> {
+    match shape {
+        ResponseShape::Accepted {
+            operation_state,
+            result,
+            extensions,
+        }
+        | ResponseShape::Completed {
+            operation_state,
+            result,
+            extensions,
+        } => {
+            observer.observe(operation_state)?;
+            observer.observe(result)?;
+            observer.observe(extensions)?;
+        }
+        ResponseShape::Error {
+            operation_state,
+            error,
+            extensions,
+        } => {
+            observer.observe(operation_state)?;
+            observer.observe(error)?;
+            observer.observe(extensions)?;
+        }
+    }
+    Ok(())
 }
 
 fields!(ErrorRecord, code, message, effect, retryable, details);

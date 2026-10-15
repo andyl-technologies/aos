@@ -48,6 +48,74 @@ impl<'a> BorrowedCompactBytes<'a> {
     }
 }
 
+/// Reports the fixed compact serializer's prospective layout without byte data.
+///
+/// No Serialize implementation is provided: this is an encoding demand, not a
+/// substitute compact body, original allocation identity or storage allowance.
+pub(crate) struct CompactBytesSerializationLayoutData {
+    pub(crate) maximum_raw_bytes: usize,
+    pub(crate) full_chunks: usize,
+    pub(crate) final_encoded_chunk_bytes: usize,
+    pub(crate) chunk_count: usize,
+    pub(crate) maximum_base64_bytes: usize,
+    pub(crate) maximum_encoded_bytes: usize,
+}
+
+impl BorrowedCompactBytes<'_> {
+    /// Counts the closed compact grammar for an explicit prospective raw extent.
+    ///
+    /// The bound comes from an independently derived body plan. No raw payload,
+    /// owning Vec, fake ContentRef or completed native owner is created. Exact
+    /// ASCII base64 geometry uses the same private constants as Serialize.
+    ///
+    /// # Errors
+    /// Refuses checked chunk/base64/tuple arithmetic overflow.
+    pub(crate) fn serialization_layout_data(
+        maximum_raw_bytes: usize,
+    ) -> Result<CompactBytesSerializationLayoutData, ProviderError> {
+        let overflow = || ProviderError::ResourceExhausted("compact serialization layout data");
+        let full_chunks = maximum_raw_bytes / RAW_CHUNK_BYTES;
+        let remainder = maximum_raw_bytes % RAW_CHUNK_BYTES;
+        let final_encoded_chunk_bytes =
+            remainder.div_ceil(3).checked_mul(4).ok_or_else(overflow)?;
+        let chunk_count = full_chunks
+            .checked_add(usize::from(remainder != 0))
+            .ok_or_else(overflow)?;
+        let maximum_base64_bytes = full_chunks
+            .checked_mul(ENCODED_CHUNK_BYTES)
+            .and_then(|bytes| bytes.checked_add(final_encoded_chunk_bytes))
+            .ok_or_else(overflow)?;
+        let mut remaining = maximum_raw_bytes;
+        let mut length_digits = 1usize;
+        while remaining >= 10 {
+            remaining /= 10;
+            length_digits += 1;
+        }
+        // Outer/inner brackets, tag quotes, two tuple commas, decimal length,
+        // each unescaped ASCII chunk's quotes and its list separators.
+        let maximum_encoded_bytes = TAG
+            .len()
+            .checked_add(8)
+            .and_then(|bytes| bytes.checked_add(length_digits))
+            .and_then(|bytes| bytes.checked_add(maximum_base64_bytes))
+            .and_then(|bytes| {
+                chunk_count
+                    .checked_mul(2)
+                    .and_then(|quotes| bytes.checked_add(quotes))
+            })
+            .and_then(|bytes| bytes.checked_add(chunk_count.saturating_sub(1)))
+            .ok_or_else(overflow)?;
+        Ok(CompactBytesSerializationLayoutData {
+            maximum_raw_bytes,
+            full_chunks,
+            final_encoded_chunk_bytes,
+            chunk_count,
+            maximum_base64_bytes,
+            maximum_encoded_bytes,
+        })
+    }
+}
+
 impl Serialize for BorrowedCompactBytes<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut tuple = serializer.serialize_tuple(3)?;
@@ -809,5 +877,49 @@ mod borrowed_range_tests {
             assert!(plan.copy_range(usize::MAX, &mut untouched).is_err());
             assert_eq!(untouched, [71; 2]);
         }
+    }
+}
+
+#[cfg(test)]
+mod serialization_layout_tests {
+    use super::*;
+
+    #[test]
+    fn prospective_compact_layout_matches_actual_encoder_across_chunk_boundaries()
+    -> Result<(), ProviderError> {
+        for length in [
+            0usize,
+            1,
+            2,
+            3,
+            RAW_CHUNK_BYTES - 1,
+            RAW_CHUNK_BYTES,
+            RAW_CHUNK_BYTES + 1,
+            2 * RAW_CHUNK_BYTES,
+            2 * RAW_CHUNK_BYTES + 2,
+        ] {
+            let original = vec![0xa5; length];
+            let layout = BorrowedCompactBytes::serialization_layout_data(original.len())?;
+            let encoded = serde_json::to_vec(&BorrowedCompactBytes::new(&original))
+                .map_err(crucible_node_contract::ContractError::from)?;
+            let validated =
+                ValidatedCompactBytes::validate(&encoded, encoded.len(), original.len())?;
+            assert_eq!(layout.maximum_raw_bytes, validated.decoded_length());
+            assert_eq!(layout.maximum_encoded_bytes, encoded.len());
+            assert_eq!(
+                layout.chunk_count,
+                layout.full_chunks + usize::from(layout.final_encoded_chunk_bytes != 0)
+            );
+            assert_eq!(
+                layout.maximum_base64_bytes,
+                layout.full_chunks * ENCODED_CHUNK_BYTES + layout.final_encoded_chunk_bytes
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compact_layout_refuses_overflow_without_allocating_body() {
+        assert!(BorrowedCompactBytes::serialization_layout_data(usize::MAX).is_err());
     }
 }

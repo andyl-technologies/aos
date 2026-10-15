@@ -9,7 +9,7 @@ use crate::protocol_snapshot::{ProtocolCaptureCut, ProtocolSnapshotReservation};
 use crate::retained_metadata::{MetadataObserver, aliases::MetadataSharedKind};
 use serde::{Serialize, Serializer};
 
-struct NativeCodecView<'a>(&'a Native5CodecOwner);
+pub(super) struct NativeCodecView<'a>(pub(super) &'a Native5CodecOwner);
 
 impl Serialize for NativeCodecView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -26,7 +26,9 @@ impl Serialize for NativeCodecView<'_> {
     }
 }
 
-struct NativeConnectionView<'a>(&'a Connection<crate::client::DeadlineStream>);
+pub(super) struct NativeConnectionView<'a>(
+    pub(super) &'a Connection<crate::client::DeadlineStream>,
+);
 
 impl Serialize for NativeConnectionView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -81,7 +83,7 @@ impl Serialize for NativeConnectionView<'_> {
 }
 
 impl NativeConnectionView<'_> {
-    fn observe(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
+    pub(super) fn observe(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
         let connection = self.0;
         observer.shared_original(
             MetadataSharedKind::ProtocolOwner,
@@ -496,5 +498,106 @@ impl Connection<crate::client::DeadlineStream> {
             ));
         }
         NativeConnectionView(self).observe(observer)
+    }
+}
+
+impl NativeConnectionView<'_> {
+    pub(super) fn observe_unique_capture_metadata(
+        &self,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let connection = self.0;
+        let Connection {
+            reader,
+            authority,
+            guard,
+            supervisor,
+            schemas,
+            protocol_owner,
+            native5_blobs,
+            native5_codec,
+            original_canonical_ack_admission,
+            original_restore_inputs,
+            original_restore_responses,
+            original_complete_restoration,
+            packet_schema: _,
+            original_frames,
+            connected_packet_schema: _,
+            fenced,
+            role,
+        } = connection;
+        if *fenced
+            || *role != EndpointRole::Provider
+            || original_restore_inputs.is_some()
+            || original_complete_restoration.is_some()
+            || original_restore_responses.iter().any(Option::is_some)
+        {
+            return Err(ProviderError::Correlation(
+                "native unique Capture SDK phase differs",
+            ));
+        }
+        roots.observe_shared(
+            observer,
+            MetadataSharedKind::ProtocolOwner,
+            protocol_owner.as_ref(),
+        )?;
+        authority.observe_unique_capture_metadata(roots, observer)?;
+        guard.observe_owned_metadata(observer)?;
+        let codec = native5_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation("native unique codec absent"))?;
+        let Native5CodecOwner::NativePacket(policy) = codec.as_ref() else {
+            return Err(ProviderError::Correlation(
+                "native unique codec role differs",
+            ));
+        };
+        if !std::ptr::addr_eq(Rc::as_ptr(schemas), Rc::as_ptr(policy)) {
+            return Err(ProviderError::Correlation(
+                "native unique erased policy differs",
+            ));
+        }
+        // The erased verifier is a real separate strong edge to the policy;
+        // the codec enum is its own Rc allocation and owns another policy edge.
+        roots.observe_shared_edge(observer, MetadataSharedKind::NativePolicy, schemas.as_ref())?;
+        if roots.observe_shared(observer, MetadataSharedKind::Codec, codec.as_ref())?
+            && roots.observe_shared(observer, MetadataSharedKind::NativePolicy, policy.as_ref())?
+        {
+            policy.observe_unique_capture_metadata(roots, observer)?;
+        }
+        let frames = original_frames.as_ref().ok_or(ProviderError::Correlation(
+            "native unique frame bank absent",
+        ))?;
+        let reader_facts = reader.original_owned11_facts(frames)?;
+        if reader_facts.failed {
+            return Err(ProviderError::Correlation("native unique reader failed"));
+        }
+        for _ in 0..2 {
+            if roots.observe_shared(observer, MetadataSharedKind::FrameBank, frames.as_ref())? {
+                frames
+                    .try_borrow()
+                    .map_err(|_| ProviderError::Conflict("native unique bank borrowed"))?
+                    .observe_owned11_metadata(observer)?;
+            }
+        }
+        reader
+            .stream_ref()
+            .observe_unique_capture_metadata(roots, observer)?;
+        native5_blobs
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "native unique blob owner absent",
+            ))?
+            .borrowed_owned11_protocol_view()?
+            .observe_unique_capture_metadata(roots, observer)?;
+        roots.observe_shared_edge(
+            observer,
+            MetadataSharedKind::NativeSupervisor,
+            supervisor.as_ref(),
+        )?;
+        let token = original_canonical_ack_admission
+            .as_ref()
+            .ok_or(ProviderError::Correlation("native unique ACK token absent"))?;
+        token.observe_unique_capture_metadata(connection, roots, observer)
     }
 }

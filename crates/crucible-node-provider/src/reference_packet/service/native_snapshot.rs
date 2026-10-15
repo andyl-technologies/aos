@@ -153,17 +153,33 @@ pub struct PacketNativeOwned11EndpointPlan<'a> {
 impl<'a> PacketNativeOwned11EndpointPlan<'a> {
     fn validate(input: &'a [u8]) -> Result<Self, ProviderError> {
         let mut tuple = Fields::array(input)?;
-        if plain_string(required(&mut tuple)?)? != "source-owned.packet-native-endpoint-state/11" {
+        let value =
+            Self::read_original_fields(&mut tuple, "source-owned.packet-native-endpoint-state/11")?;
+        tuple.finish()?;
+        Ok(value)
+    }
+
+    fn read_original_fields(tuple: &mut Fields<'a>, tag: &str) -> Result<Self, ProviderError> {
+        Self::read_original_fields_at_context(
+            tuple,
+            tag,
+            "same-original-native-protocol-service-context/11",
+        )
+    }
+
+    fn read_original_fields_at_context(
+        tuple: &mut Fields<'a>,
+        tag: &str,
+        context: &str,
+    ) -> Result<Self, ProviderError> {
+        if plain_string(required(tuple)?)? != tag {
             return Err(invalid());
         }
         let mut fields = [&[][..]; 13];
         for field in &mut fields {
-            *field = required(&mut tuple)?;
+            *field = required(tuple)?;
         }
-        tuple.finish()?;
-        if plain_string(fields[5])? != "same-original-native-protocol-service-context/11"
-            || fields[12] != b"true"
-        {
+        if plain_string(fields[5])? != context || fields[12] != b"true" {
             return Err(invalid());
         }
         for (index, capacity_index) in [(6, 7), (8, 9)] {
@@ -242,8 +258,17 @@ impl<'a> PacketNativeBeforeProtocolPlan<'a> {
         maximum_input: usize,
         maximum_capacity: usize,
     ) -> Result<Self, ProviderError> {
+        Self::validate_edition(input, maximum_input, maximum_capacity, BEFORE_TAG)
+    }
+
+    fn validate_edition(
+        input: &'a [u8],
+        maximum_input: usize,
+        maximum_capacity: usize,
+        tag: &str,
+    ) -> Result<Self, ProviderError> {
         let mut tuple = Fields::array(input)?;
-        if plain_string(required(&mut tuple)?)? != BEFORE_TAG {
+        if plain_string(required(&mut tuple)?)? != tag {
             return Err(invalid());
         }
         let reference = required(&mut tuple)?;
@@ -428,3 +453,15 @@ pub fn packet_native_owned11_snapshot_validation_layouts()
         compact_plan_header_bytes: std::mem::size_of::<ValidatedCompactBytes<'static>>(),
     }
 }
+
+mod capture_allocation;
+pub use capture_allocation::{
+    PacketNativeOwned12SnapshotPlan, native_owned12_snapshot_contract,
+    native_owned12_snapshot_schema, packet_native_owned12_snapshot_validation_layouts,
+};
+
+mod startup_capture_allocation;
+pub use startup_capture_allocation::{
+    PacketNativeOwned13SnapshotPlan, native_owned13_snapshot_contract,
+    native_owned13_snapshot_schema, packet_native_owned13_snapshot_validation_layouts,
+};

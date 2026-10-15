@@ -359,6 +359,66 @@ impl OriginalFrameReservation {
         Ok((bytes, descriptors))
     }
 
+    /// Bounds full selected compact literals and initialized descriptors.
+    ///
+    /// The caller derives the proposed initialized suffix from its closed
+    /// original publication plan. These data cannot reserve bank credit or
+    /// authorize traffic. Both per-direction limits and the existing B/F banks
+    /// remain unchanged; incomplete current I/O cannot become a completed cut.
+    pub(crate) fn selected_initialized_encoding_data(
+        &self,
+        maximum_retained_bytes: usize,
+        maximum_incoming_frames: usize,
+        maximum_outgoing_frames: usize,
+    ) -> Result<(usize, usize), ProviderError> {
+        let exhausted = || {
+            ProviderError::ResourceExhausted("selected initialized original frame encoding bound")
+        };
+        if !self.complete()
+            || maximum_retained_bytes < self.bytes.len()
+            || maximum_retained_bytes > self.maximum_bytes
+            || maximum_incoming_frames < self.incoming
+            || maximum_incoming_frames > self.maximum_frames
+            || maximum_outgoing_frames < self.outgoing
+            || maximum_outgoing_frames > self.maximum_frames
+        {
+            return Err(exhausted());
+        }
+        let bytes = maximum_retained_bytes
+            .div_ceil(3)
+            .checked_mul(4)
+            .and_then(|bytes| {
+                maximum_retained_bytes
+                    .div_ceil(3072)
+                    .checked_mul(3)
+                    .and_then(|overhead| bytes.checked_add(overhead))
+            })
+            .and_then(|bytes| bytes.checked_add(64))
+            .ok_or_else(exhausted)?;
+        let request = [255u8; 128];
+        let descriptor = crate::connection::serialized_credit(
+            &(
+                "outgoing",
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+                false,
+                Some(request.as_slice()),
+            ),
+            1024,
+        )?;
+        let descriptors = maximum_incoming_frames
+            .checked_add(maximum_outgoing_frames)
+            .and_then(|frames| {
+                descriptor
+                    .checked_add(1)
+                    .and_then(|width| frames.checked_mul(width))
+            })
+            .and_then(|bytes| bytes.checked_add(2))
+            .ok_or_else(exhausted)?;
+        Ok((bytes, descriptors))
+    }
+
     pub(crate) fn protocol_view(&self) -> impl serde::Serialize + '_ {
         self.protocol_view_with_encoding(false)
     }
@@ -637,4 +697,75 @@ impl OriginalFrameReservation {
 /// Reports the actual private descriptor layout to the checked data decoder.
 pub(crate) const fn original_frame_slot_layout() -> usize {
     std::mem::size_of::<Slot>()
+}
+
+#[cfg(test)]
+mod selected_initialized_encoding_tests {
+    use super::*;
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn selected_initialized_bound_covers_actual_compact_bank_without_using_spare_as_content()
+    -> TestResult {
+        let mut bank = OriginalFrameReservation::reserve(4096, 16)?;
+        for direction in [FrameDirection::Incoming, FrameDirection::Outgoing] {
+            let slot = bank.begin(direction, 5)?;
+            bank.append(slot, &[0, 0, 0, 1, b'0'])?;
+            bank.retain_request(slot, &crucible_node_contract::Id::new("original")?)?;
+            if direction == FrameDirection::Outgoing {
+                bank.advance(slot, 5)?;
+            }
+            bank.finish(slot)?;
+        }
+        let original = serde_json::to_vec(&bank.protocol_view_with_encoding(true))?;
+        let (literal, descriptors) = bank.selected_initialized_encoding_data(10, 1, 1)?;
+        let compact = crate::connection::serialized_credit(
+            &crate::protocol_snapshot::ProtocolBytes {
+                bytes: &bank.bytes,
+                compact: true,
+            },
+            usize::MAX,
+        )?;
+        let full = bank.maximum_encoding_growth(true)?;
+
+        assert!(compact <= literal);
+        assert!(original.len() <= literal + descriptors + 6 * 20 + 10);
+        assert!(literal < full.0);
+        assert!(descriptors < full.1);
+        assert_eq!(
+            serde_json::to_vec(&bank.protocol_view_with_encoding(true))?,
+            original
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn selected_initialized_bound_refuses_short_direction_bytes_and_partial_io_without_mutation()
+    -> TestResult {
+        let mut bank = OriginalFrameReservation::reserve(64, 2)?;
+        let slot = bank.begin(FrameDirection::Incoming, 5)?;
+        bank.append(slot, &[0, 0, 0, 1, b'0'])?;
+        let partial = serde_json::to_vec(&bank.protocol_view_with_encoding(true))?;
+        assert!(bank.selected_initialized_encoding_data(5, 1, 0).is_err());
+        assert_eq!(
+            serde_json::to_vec(&bank.protocol_view_with_encoding(true))?,
+            partial
+        );
+        bank.finish(slot)?;
+        let complete = serde_json::to_vec(&bank.protocol_view_with_encoding(true))?;
+        assert!(bank.selected_initialized_encoding_data(4, 1, 0).is_err());
+        assert!(bank.selected_initialized_encoding_data(5, 0, 0).is_err());
+        assert!(bank.selected_initialized_encoding_data(65, 1, 0).is_err());
+        assert!(bank.selected_initialized_encoding_data(5, 3, 0).is_err());
+        assert!(
+            bank.selected_initialized_encoding_data(usize::MAX, 1, 0)
+                .is_err()
+        );
+        bank.selected_initialized_encoding_data(5, 1, 0)?;
+        assert_eq!(
+            serde_json::to_vec(&bank.protocol_view_with_encoding(true))?,
+            complete
+        );
+        Ok(())
+    }
 }

@@ -330,29 +330,10 @@ impl PacketNativeCaptureAllocationRecord {
 /// # Errors
 /// Reports failure to canonicalize the fixed source-owned definition.
 pub fn capture_allocation_contract() -> Result<Vec<u8>, ProviderError> {
-    Ok(canonical::canonical_json(&serde_json::json!({
-        "schema":"source-owned.packet-native-capture-allocation-contract/12",
-        "feature":PACKET_NATIVE_CAPTURE_ALLOCATION_FEATURE,
-        "selection":"original_observe12",
-        "report":PACKET_NATIVE_CAPTURE_ALLOCATION_REPORT,
-        "report_media":PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA,
-        "report_maximum_encoded_bytes":MAXIMUM_NATIVE_CAPTURE_ALLOCATION_REPORT_BYTES,
-        "report_fields":["schema","scope","before","after","metadata_banks","retained_requested_bytes","shared_edges","unique_roots","growth","transients"],
-        "scope_fields":["native_pid","observe_request","observe_sequence","observe_hash","session","incarnation","node","owner","binding_hash","world","activation","world_generation","owner_generation","model_cursor","control_originals_before","endpoint_records_before","provider_next_sequence_before"],
-        "reservation_fields":["encoded_capacity","literal_and_descriptor_bytes","current_encoded_bytes"],
-        "growth_fields":["observe_publication_bytes","capture_request_bytes","capture_publication_bytes","after_confirmation_bytes"],
-        "transient_fields":["observe_encoding_bytes","model_control_encoding_bytes","native_before_encoding_bytes","native_after_encoding_bytes","quote_scratch_bytes"],
-        "metadata_banks":"exact independently allocated before/after protocol metadata bank facts, including spare record and alias capacities; never a substitute for whole native storage",
-        "record":{"schema":PACKET_NATIVE_CAPTURE_ALLOCATION_RECORD,"fields":["schema","native","allocation"],"native":"complete unmodified PacketNative5Record receipt5 with its exact original Observe and underlying producer2/reactive4 reference"},
-        "producer":"same actual active original native Control/model, endpoint, Connection, BlobReceiver, registrar, bootstrap, supervisor, immutable policy, original operational cut and both actual precharged reservations; all erased or incomplete fields refuse",
-        "identity":"process-local typed alias roster counts every strong edge and walks each actual payload once, including independently cloned authority fields; no pointers, Rust layouts or roster identities are serialized",
-        "currency":"report owner retained by SAME endpoint before fallible publication; actual completed Observe/current model cursor/Control identity and originals/endpoint-record sequence boundary reauthenticated before first Capture; no intervening semantic operation or alternate connection",
-        "requested_storage":"actual current retained requested backing and inline roots plus all independent future retained components, maximum complete transient phase and known quote scratch; physical allocator/compiler/whole Source admission remain separate",
-        "capture_input":"after successful selected Observe, restrict next receive to exact scoped Begin/Capture before arbitrary typed-body allocation; ordinary full negotiated raw and JSON parsing still apply",
-        "codec":"selection requires explicit policy17, Control6, endpoint15 and nativeSnapshot12 full owning coverage and matching cold decoder before Capture; old None policy16/Control5/endpoint14/snapshot11 and ordinary receipt5 remain exact",
-        "source":"same source-bound selected contract before birth; Source authenticates actual original Observe terminal/raw report, current kernel/controller/runtime and whole four-owner requested allocation before any Capture request; readonly preflight issues no RPC",
-        "authority":"data only; numeric peak, portable record, report hash, metadata facts or decoded selector grant no Source acceptance, Core ticket, allocation permission, Arm, Ready, Capture or restoration"
-    }))?)
+    Ok(canonical::canonical_json(
+        &serde_json::to_value(CaptureAllocationContractValue)
+            .map_err(crucible_node_contract::ContractError::from)?,
+    )?)
 }
 
 /// Binds the complete original-Observe report schema definition.
@@ -474,4 +455,181 @@ impl crate::retained_metadata::ObserveMetadata for PacketNative5CaptureAllocatio
             Self::OriginalObserve12 => Ok(()),
         }
     }
+}
+
+// One borrowed compiled roster drives BOTH the existing canonical definition
+// and its prospective DOM/canonical counter. No schema bytes or field values
+// are regenerated independently in the admission calculation.
+struct CaptureAllocationContractValue;
+
+impl serde::Serialize for CaptureAllocationContractValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use crate::reference_packet::service::native_startup::contract_value::ContractValue as V;
+        static VALUE: V<'static> = V::Object(&[
+            (
+                "schema",
+                V::Text("source-owned.packet-native-capture-allocation-contract/12"),
+            ),
+            ("feature", V::Text(PACKET_NATIVE_CAPTURE_ALLOCATION_FEATURE)),
+            ("selection", V::Text("original_observe12")),
+            ("report", V::Text(PACKET_NATIVE_CAPTURE_ALLOCATION_REPORT)),
+            (
+                "report_media",
+                V::Text(PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA),
+            ),
+            (
+                "report_maximum_encoded_bytes",
+                V::Number(MAXIMUM_NATIVE_CAPTURE_ALLOCATION_REPORT_BYTES as u64),
+            ),
+            (
+                "report_fields",
+                V::Array(&[
+                    V::Text("schema"),
+                    V::Text("scope"),
+                    V::Text("before"),
+                    V::Text("after"),
+                    V::Text("metadata_banks"),
+                    V::Text("retained_requested_bytes"),
+                    V::Text("shared_edges"),
+                    V::Text("unique_roots"),
+                    V::Text("growth"),
+                    V::Text("transients"),
+                ]),
+            ),
+            (
+                "scope_fields",
+                V::Array(&[
+                    V::Text("native_pid"),
+                    V::Text("observe_request"),
+                    V::Text("observe_sequence"),
+                    V::Text("observe_hash"),
+                    V::Text("session"),
+                    V::Text("incarnation"),
+                    V::Text("node"),
+                    V::Text("owner"),
+                    V::Text("binding_hash"),
+                    V::Text("world"),
+                    V::Text("activation"),
+                    V::Text("world_generation"),
+                    V::Text("owner_generation"),
+                    V::Text("model_cursor"),
+                    V::Text("control_originals_before"),
+                    V::Text("endpoint_records_before"),
+                    V::Text("provider_next_sequence_before"),
+                ]),
+            ),
+            (
+                "reservation_fields",
+                V::Array(&[
+                    V::Text("encoded_capacity"),
+                    V::Text("literal_and_descriptor_bytes"),
+                    V::Text("current_encoded_bytes"),
+                ]),
+            ),
+            (
+                "growth_fields",
+                V::Array(&[
+                    V::Text("observe_publication_bytes"),
+                    V::Text("capture_request_bytes"),
+                    V::Text("capture_publication_bytes"),
+                    V::Text("after_confirmation_bytes"),
+                ]),
+            ),
+            (
+                "transient_fields",
+                V::Array(&[
+                    V::Text("observe_encoding_bytes"),
+                    V::Text("model_control_encoding_bytes"),
+                    V::Text("native_before_encoding_bytes"),
+                    V::Text("native_after_encoding_bytes"),
+                    V::Text("quote_scratch_bytes"),
+                ]),
+            ),
+            (
+                "metadata_banks",
+                V::Text(
+                    "exact independently allocated before/after protocol metadata bank facts, including spare record and alias capacities; never a substitute for whole native storage",
+                ),
+            ),
+            (
+                "record",
+                V::Object(&[
+                    ("schema", V::Text(PACKET_NATIVE_CAPTURE_ALLOCATION_RECORD)),
+                    (
+                        "fields",
+                        V::Array(&[V::Text("schema"), V::Text("native"), V::Text("allocation")]),
+                    ),
+                    (
+                        "native",
+                        V::Text(
+                            "complete unmodified PacketNative5Record receipt5 with its exact original Observe and underlying producer2/reactive4 reference",
+                        ),
+                    ),
+                ]),
+            ),
+            (
+                "producer",
+                V::Text(
+                    "same actual active original native Control/model, endpoint, Connection, BlobReceiver, registrar, bootstrap, supervisor, immutable policy, original operational cut and both actual precharged reservations; all erased or incomplete fields refuse",
+                ),
+            ),
+            (
+                "identity",
+                V::Text(
+                    "process-local typed alias roster counts every strong edge and walks each actual payload once, including independently cloned authority fields; no pointers, Rust layouts or roster identities are serialized",
+                ),
+            ),
+            (
+                "currency",
+                V::Text(
+                    "report owner retained by SAME endpoint before fallible publication; actual completed Observe/current model cursor/Control identity and originals/endpoint-record sequence boundary reauthenticated before first Capture; no intervening semantic operation or alternate connection",
+                ),
+            ),
+            (
+                "requested_storage",
+                V::Text(
+                    "actual current retained requested backing and inline roots plus all independent future retained components, maximum complete transient phase and known quote scratch; physical allocator/compiler/whole Source admission remain separate",
+                ),
+            ),
+            (
+                "capture_input",
+                V::Text(
+                    "after successful selected Observe, restrict next receive to exact scoped Begin/Capture before arbitrary typed-body allocation; ordinary full negotiated raw and JSON parsing still apply",
+                ),
+            ),
+            (
+                "codec",
+                V::Text(
+                    "selection requires explicit policy17, Control6, endpoint15 and nativeSnapshot12 full owning coverage and matching cold decoder before Capture; old None policy16/Control5/endpoint14/snapshot11 and ordinary receipt5 remain exact",
+                ),
+            ),
+            (
+                "source",
+                V::Text(
+                    "same source-bound selected contract before birth; Source authenticates actual original Observe terminal/raw report, current kernel/controller/runtime and whole four-owner requested allocation before any Capture request; readonly preflight issues no RPC",
+                ),
+            ),
+            (
+                "authority",
+                V::Text(
+                    "data only; numeric peak, portable record, report hash, metadata facts or decoded selector grant no Source acceptance, Core ticket, allocation permission, Arm, Ready, Capture or restoration",
+                ),
+            ),
+        ]);
+        serde::Serialize::serialize(&VALUE, serializer)
+    }
+}
+
+pub(crate) fn capture_allocation_contract_storage_data(
+    maximum: usize,
+) -> Result<
+    crate::retained_metadata::serialization_storage::OriginalSerializationStorageData,
+    ProviderError,
+> {
+    // This unit struct and its borrowed literals own no heap/Bytes formatter.
+    crate::retained_metadata::serialization_storage::actual_serialization_storage_data(
+        &CaptureAllocationContractValue,
+        crate::retained_metadata::RetainedProtocolMetadataFacts::default(),
+        maximum,
+    )
 }

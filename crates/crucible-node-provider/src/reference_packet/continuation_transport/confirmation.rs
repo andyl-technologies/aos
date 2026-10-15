@@ -20,6 +20,16 @@ pub(crate) struct PacketAfterConfirmationPrefix<S: ProviderStream> {
     state: PrefixState,
 }
 
+pub(super) fn original_confirmation_prefix_layout_data<S: ProviderStream>() -> Option<usize> {
+    std::mem::size_of::<PacketAfterConfirmationPrefix<S>>()
+        .checked_add(std::mem::size_of::<ConfirmationPreparation<'static>>())
+}
+
+struct ConfirmationPreparation<'a> {
+    maximum_after: usize,
+    storage: Option<&'a OriginalContinuationPrefixStorageData>,
+}
+
 impl<S: ProviderStream> PacketAfterConfirmationPrefix<S> {
     pub(crate) fn new(connection: Connection<S>) -> Self {
         Self {
@@ -46,6 +56,50 @@ impl<S: ProviderStream> PacketAfterConfirmationPrefix<S> {
         after: (&ContentRef, &[u8]),
         maximum_after: usize,
     ) -> Result<(), ProviderError> {
+        self.prepare_inner(
+            original_poll,
+            response,
+            receipt,
+            after,
+            ConfirmationPreparation {
+                maximum_after,
+                storage: None,
+            },
+        )
+    }
+
+    pub(crate) fn prepare_with_storage_data(
+        &mut self,
+        original_poll: &Envelope,
+        response: Envelope,
+        receipt: &crate::reference_packet::service::confirmation::PacketNativeAfterConfirmationReceipt,
+        after: (&ContentRef, &[u8]),
+        storage: &OriginalContinuationPrefixStorageData,
+    ) -> Result<(), ProviderError> {
+        self.prepare_inner(
+            original_poll,
+            response,
+            receipt,
+            after,
+            ConfirmationPreparation {
+                maximum_after: usize::MAX,
+                storage: Some(storage),
+            },
+        )
+    }
+
+    fn prepare_inner(
+        &mut self,
+        original_poll: &Envelope,
+        response: Envelope,
+        receipt: &crate::reference_packet::service::confirmation::PacketNativeAfterConfirmationReceipt,
+        after: (&ContentRef, &[u8]),
+        preparation: ConfirmationPreparation<'_>,
+    ) -> Result<(), ProviderError> {
+        let ConfirmationPreparation {
+            mut maximum_after,
+            storage,
+        } = preparation;
         if self.state != PrefixState::Unprepared {
             return Err(ProviderError::Conflict(
                 "after confirmation already attempted",
@@ -53,15 +107,26 @@ impl<S: ProviderStream> PacketAfterConfirmationPrefix<S> {
         }
         self.state = PrefixState::Failed;
         self.response = Some(response);
+        if let Some(storage) = storage {
+            if storage.kind != OriginalContinuationPrefixKind::AfterConfirmation {
+                return Err(ProviderError::Correlation(
+                    "confirmation storage planner differs",
+                ));
+            }
+            maximum_after = storage.maximum_payload_bytes_data(0)?;
+        }
         let Some(CaptureTransport::Connected(connection)) = self.transport.as_mut() else {
             return Err(ProviderError::Conflict(
                 "after confirmation original connection absent",
             ));
         };
-        let authority = connection.provider_authority()?.clone();
         let response = self.response.as_ref().ok_or(ProviderError::Conflict(
             "after confirmation original response absent",
         ))?;
+        if let Some(storage) = storage {
+            storage.authenticate_actual_inputs(connection, response, &[after])?;
+        }
+        let authority = connection.provider_authority()?.clone();
         let plan = confirmation_frames::confirmation_plan(
             &authority,
             response,
@@ -86,12 +151,21 @@ impl<S: ProviderStream> PacketAfterConfirmationPrefix<S> {
         self.records
             .try_reserve_exact(self.windows.len())
             .map_err(|_| ProviderError::ResourceExhausted("after confirmation record slots"))?;
-        self.prepare_next()?;
+        if let Some(storage) = storage {
+            self.reconcile_storage_data(storage)?;
+        }
+        self.prepare_next(storage)?;
+        if let Some(storage) = storage {
+            self.reconcile_storage_data(storage)?;
+        }
         self.state = PrefixState::Prepared;
         Ok(())
     }
 
-    fn prepare_next(&mut self) -> Result<(), ProviderError> {
+    fn prepare_next(
+        &mut self,
+        storage: Option<&OriginalContinuationPrefixStorageData>,
+    ) -> Result<(), ProviderError> {
         let originals = self.windows.pop_front().ok_or(ProviderError::Conflict(
             "after confirmation next window absent",
         ))?;
@@ -108,7 +182,14 @@ impl<S: ProviderStream> PacketAfterConfirmationPrefix<S> {
                 "after confirmation prepared window absent",
             ));
         };
-        exchange.prepare_in_place()
+        if let Some(storage) = storage {
+            exchange.reconcile_original_continuation_window_storage_data(storage)?;
+        }
+        exchange.prepare_in_place()?;
+        if let Some(storage) = storage {
+            exchange.reconcile_original_continuation_window_storage_data(storage)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn publish(&mut self) -> Result<(), ProviderError> {
@@ -116,7 +197,7 @@ impl<S: ProviderStream> PacketAfterConfirmationPrefix<S> {
             return Err(ProviderError::Conflict("after confirmation not prepared"));
         }
         self.state = PrefixState::Publishing;
-        let result = self.publish_once();
+        let result = self.publish_once(None);
         self.state = if result.is_ok() {
             PrefixState::Complete
         } else {
@@ -125,7 +206,33 @@ impl<S: ProviderStream> PacketAfterConfirmationPrefix<S> {
         result
     }
 
-    fn publish_once(&mut self) -> Result<(), ProviderError> {
+    pub(crate) fn publish_with_storage_data(
+        &mut self,
+        storage: &OriginalContinuationPrefixStorageData,
+    ) -> Result<(), ProviderError> {
+        if self.state != PrefixState::Prepared
+            || storage.kind != OriginalContinuationPrefixKind::AfterConfirmation
+        {
+            return Err(ProviderError::Conflict(
+                "confirmation quoted publication phase",
+            ));
+        }
+        self.state = PrefixState::Publishing;
+        let result = self
+            .reconcile_storage_data(storage)
+            .and_then(|()| self.publish_once(Some(storage)));
+        self.state = if result.is_ok() {
+            PrefixState::Complete
+        } else {
+            PrefixState::Failed
+        };
+        result
+    }
+
+    fn publish_once(
+        &mut self,
+        storage: Option<&OriginalContinuationPrefixStorageData>,
+    ) -> Result<(), ProviderError> {
         loop {
             let Some(CaptureTransport::Prepared(exchange)) = self.transport.as_mut() else {
                 return Err(ProviderError::Conflict(
@@ -145,11 +252,52 @@ impl<S: ProviderStream> PacketAfterConfirmationPrefix<S> {
             let (connection, record) = exchange.into_parts();
             self.records.push(record);
             self.transport = Some(CaptureTransport::Connected(connection));
+            if let Some(storage) = storage {
+                self.reconcile_storage_data(storage)?;
+            }
             if self.windows.is_empty() {
                 return Ok(());
             }
-            self.prepare_next()?;
+            self.prepare_next(storage)?;
         }
+    }
+
+    fn reconcile_storage_data(
+        &self,
+        storage: &OriginalContinuationPrefixStorageData,
+    ) -> Result<(), ProviderError> {
+        let active = match self.transport.as_ref() {
+            Some(CaptureTransport::Prepared(exchange)) => Some(exchange.record()),
+            _ => None,
+        };
+        let originals = self
+            .windows
+            .iter()
+            .map(Vec::len)
+            .chain(self.records.iter().map(|record| record.originals().len()))
+            .chain(active.map(|record| record.originals().len()))
+            .try_fold(0usize, |sum, count| sum.checked_add(count))
+            .ok_or(ProviderError::ResourceExhausted("quoted prefix population"))?;
+        storage.reconcile_window_population_data(
+            self.windows.len(),
+            self.records.len(),
+            active.is_some(),
+            originals,
+        )?;
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        let response = self
+            .response
+            .as_ref()
+            .ok_or(ProviderError::Conflict("confirmation response absent"))?;
+        observer.observe(response)?;
+        observe_prefix_owners(
+            &self.transport,
+            &self.windows,
+            &self.records,
+            &self.contents,
+            &mut observer,
+        )?;
+        storage.reconcile_owner_metadata_data(&observer.finish())
     }
 
     pub(crate) fn take_completed_connection(&mut self) -> Result<Connection<S>, ProviderError> {

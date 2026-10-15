@@ -41,7 +41,8 @@ mod tests;
 
 pub use authority::{
     InstalledPacketCompleteCollectionAuthority, PacketCompleteCollectionRequest,
-    PacketCompletePreparationConnection, PacketCompleteReportStartupHolder,
+    PacketCompleteNativeLaunchInputs, PacketCompletePreparationConnection,
+    PacketCompleteReportStartupHolder,
 };
 pub use population::{PacketCompletePopulationRequest, PacketCompleteWitnessPopulation};
 

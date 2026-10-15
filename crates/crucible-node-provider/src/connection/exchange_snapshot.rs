@@ -212,12 +212,195 @@ impl ExchangeRecord {
     }
 }
 
+impl ExchangeRecord {
+    /// Observes the actual complete endpoint record in one shared native quote.
+    ///
+    /// The current connection must be authenticated before this method. Both
+    /// actual retained Rc edges join the same typed identity roster; repeated
+    /// frame-bank payloads are visited once. Ordinary wire metadata is unchanged.
+    pub(crate) fn observe_unique_capture_metadata<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        use crate::retained_metadata::aliases::MetadataSharedKind;
+        let Self {
+            originals,
+            canonical,
+            acknowledgements: _,
+            sent,
+            original_slots,
+            original_actor,
+        } = self;
+        connection.protocol_owner.ensure_current()?;
+        connection.authenticate_native5_source_codec()?;
+        let (actor, bank) = original_actor.as_ref().ok_or(ProviderError::Correlation(
+            "native Capture record original actor absent",
+        ))?;
+        actor.ensure_current()?;
+        if !Rc::ptr_eq(actor, &connection.protocol_owner)
+            || connection
+                .original_frames
+                .as_ref()
+                .is_none_or(|actual| !Rc::ptr_eq(bank, actual))
+            || *sent != originals.len()
+            || originals.is_empty()
+            || original_slots.len() != originals.len()
+            || canonical.len() != originals.len()
+        {
+            return Err(ProviderError::Correlation(
+                "native Capture record owner or progress differs",
+            ));
+        }
+        roots.observe_shared(observer, MetadataSharedKind::ProtocolOwner, actor.as_ref())?;
+        if roots.observe_shared(observer, MetadataSharedKind::FrameBank, bank.as_ref())? {
+            bank.try_borrow()
+                .map_err(|_| ProviderError::Conflict("native Capture record frame bank borrowed"))?
+                .observe_owned11_metadata(observer)?;
+        }
+        self.observe_owned12_capture_children(observer)?;
+        actor.ensure_current()
+    }
+}
+
+impl ExchangeRecord {
+    // Selected full-class child storage only. Ordinary owned11/None keeps its
+    // historical traversal. Actor and frame-bank edges belong to its caller.
+    pub(super) fn observe_owned12_capture_children(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        use crate::bodies::{
+            BlobBeginResult, BlobChunkResult, BlobFinishResult, OperationState, ResponseShape,
+        };
+        let Self {
+            originals,
+            canonical,
+            acknowledgements,
+            sent,
+            original_slots,
+            original_actor: _,
+        } = self;
+        observer.observe(originals)?;
+        observe_original_canonical_byte_banks(canonical, observer)?;
+        observer.observe(original_slots)?;
+        observer.observe(sent)?;
+        observer.vector::<ReceivedFrame>(acknowledgements.capacity())?;
+        for frame in acknowledgements {
+            let ReceivedFrame { envelope, body } = frame;
+            observer.observe(envelope)?;
+            let ReceivedBody::Response(body) = body else {
+                return Err(ProviderError::Correlation(
+                    "native Capture cached request/notification unresolved",
+                ));
+            };
+            observer.boxed_value(body.as_ref())?;
+            let ResponseBody { shape, result } = body.as_ref();
+            let ResponseShape::Completed {
+                operation_state: OperationState::Completed,
+                result: raw_result,
+                extensions,
+            } = shape
+            else {
+                return Err(ProviderError::Correlation(
+                    "native Capture cached proof not completed",
+                ));
+            };
+            observer.observe(raw_result)?;
+            observer.observe(extensions)?;
+            match result.as_ref() {
+                Some(MethodResult::BlobBegin(BlobBeginResult {
+                    transfer_id,
+                    next_offset,
+                    maximum_chunk_bytes,
+                })) => {
+                    observer.observe(transfer_id)?;
+                    observer.observe(next_offset)?;
+                    observer.observe(maximum_chunk_bytes)?;
+                }
+                Some(MethodResult::BlobChunk(BlobChunkResult {
+                    transfer_id,
+                    next_offset,
+                })) => {
+                    observer.observe(transfer_id)?;
+                    observer.observe(next_offset)?;
+                }
+                Some(MethodResult::BlobFinish(BlobFinishResult {
+                    transfer_id,
+                    content,
+                })) => {
+                    observer.observe(transfer_id)?;
+                    observer.observe(content)?;
+                }
+                _ => {
+                    return Err(ProviderError::Correlation(
+                        "native Capture cached family unresolved",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn observe_original_canonical_byte_banks(
+    banks: &Vec<Vec<u8>>,
+    observer: &mut crate::retained_metadata::MetadataObserver,
+) -> Result<(), ProviderError> {
+    // Primitive bytes have no nested owners. Record every actual allocation
+    // and initialized extent once. Integer-array serialization, byte work,
+    // physical literal correspondence and cold reconstruction stay unchanged.
+    observer.vector::<Vec<u8>>(banks.capacity())?;
+    for bytes in banks {
+        observer.vector::<u8>(bytes.capacity())?;
+        observer.observe(&bytes.len())?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- Fixture failures deliberately panic.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crucible_node_contract::U64;
+
+    #[test]
+    fn selected_canonical_bank_metadata_preserves_allocations_without_primitive_visits()
+    -> Result<(), ProviderError> {
+        let mut banks = Vec::with_capacity(7);
+        let mut first = Vec::with_capacity(4096);
+        first.extend_from_slice(&[0, 127, 255]);
+        banks.push(first);
+        banks.push(vec![255; 65_536]);
+        let original_bytes =
+            serde_json::to_vec(&banks).map_err(crucible_node_contract::ContractError::from)?;
+        let mut ordinary = crate::retained_metadata::MetadataObserver::new();
+        ordinary.observe(&banks)?;
+        let ordinary = ordinary.finish();
+        let mut selected = crate::retained_metadata::MetadataObserver::new();
+        observe_original_canonical_byte_banks(&banks, &mut selected)?;
+        let selected = selected.finish();
+
+        assert_eq!(selected.capacity_records, ordinary.capacity_records);
+        assert_eq!(
+            selected.vector_capacity_bytes,
+            ordinary.vector_capacity_bytes
+        );
+        assert_eq!(selected.observed_nodes, banks.len());
+        assert_eq!(
+            ordinary.observed_nodes,
+            selected.observed_nodes + 1 + banks.iter().map(Vec::len).sum::<usize>()
+        );
+        assert_eq!(
+            serde_json::to_vec(&banks).map_err(crucible_node_contract::ContractError::from)?,
+            original_bytes
+        );
+        assert_eq!(banks.capacity(), 7);
+        assert_eq!(banks[0].capacity(), 4096);
+        Ok(())
+    }
 
     #[test]
     fn native5_original_exchange_view_preserves_slots_capacities_and_decoded_refusal() {

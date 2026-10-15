@@ -180,3 +180,68 @@ where
 fn invalid() -> ProviderError {
     ProviderError::Correlation("original native startup allocation data")
 }
+
+mod storage;
+pub use storage::{
+    PacketNativeBirthStartupInputs, PacketNativeBirthStartupStorageData,
+    original_native_birth_startup_counter_scratch_data, original_native_birth_startup_storage_data,
+    original_native_private_boot_fields_storage_data,
+};
+
+pub(crate) mod contract_value;
+
+mod preamble;
+pub use preamble::{
+    ORIGINAL_NATIVE_STARTUP_PREAMBLE_BYTES, PacketNativeStartupPreambleData,
+    authenticate_original_native_startup_preamble_data,
+    decode_original_native_startup_preamble_data, encode_original_native_startup_preamble_data,
+};
+
+// The authenticated fixed prefix precedes all dynamic private reader banks.
+// This floor is not the full native birth quote; the original typed launch and
+// boot are recounted separately before that phase starts.
+pub(crate) fn original_native_private_bootstrap_floor_data() -> Result<usize, ProviderError> {
+    use crate::transport::original_frames::original_frame_slot_layout;
+    (1024usize * 1024 + 512 * 1024 + 8)
+        .checked_add(original_native_private_invocation_backing_data()?)
+        .and_then(|bytes|bytes.checked_add(original_native_private_bank_shared_layout_data().ok()?))
+        .and_then(|bytes| bytes.checked_add(4usize.checked_mul(original_frame_slot_layout())?))
+        .and_then(|bytes| bytes.checked_add(
+            crate::reference_packet::service::ack_emitter::original_native_private_bootstrap_layout()))
+        .ok_or_else(invalid)
+}
+
+pub(crate) mod data_equality;
+
+pub(crate) fn original_native_private_bank_shared_layout_data() -> Result<usize, ProviderError> {
+    use crate::transport::original_frames::OriginalFrameReservation;
+    use std::{
+        cell::RefCell,
+        mem::{align_of, size_of},
+    };
+    size_of::<RefCell<OriginalFrameReservation>>()
+        .checked_add(
+            crate::retained_metadata::requested_storage::shared_header_storage_data(
+                1,
+                align_of::<RefCell<OriginalFrameReservation>>(),
+            )?,
+        )
+        .ok_or_else(invalid)
+}
+
+// Selected Linux/std source: ArgsOs owns the three invocation strings and its
+// Vec slots; Stdin initializes one DEFAULT_BUF_SIZE buffer. The real launcher
+// fixes argv to executable/socket/flag with both path extents at most 4096.
+// These are requested Rust backings, not kernel or physical process memory.
+pub(crate) fn original_native_private_invocation_backing_data() -> Result<usize, ProviderError> {
+    if !cfg!(all(target_os = "linux", target_pointer_width = "64")) {
+        return Err(invalid());
+    }
+    let slots = 4usize
+        .checked_mul(std::mem::size_of::<std::ffi::OsString>())
+        .ok_or_else(invalid)?;
+    8192usize
+        .checked_add(2 * 4096 + "--original-native-startup14".len())
+        .and_then(|bytes| bytes.checked_add(slots))
+        .ok_or_else(invalid)
+}

@@ -30,16 +30,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = std::env::args_os().skip(1);
     let socket = PathBuf::from(arguments.next().ok_or("expected private packet socket")?);
     let original_boot = match arguments.next() {
-        None => false,
-        Some(flag) if flag == "--original-canonical-ack-boot" => true,
+        None => None,
+        Some(flag) if flag == "--original-canonical-ack-boot" => Some(false),
+        Some(flag) if flag == "--original-native-startup14" => Some(true),
         Some(_) => return Err("unexpected private packet argument".into()),
     };
     if arguments.next().is_some() {
         return Err("unexpected private packet argument".into());
     }
-    if original_boot {
-        let mut service =
-            PacketSourceService::accept_original_private_bootstrap(&socket, std::io::stdin())?;
+    if let Some(admitted) = original_boot {
+        if admitted && socket.as_os_str().len() > 4096 {
+            return Err("native startup socket path exceeds fixed original bound".into());
+        }
+        let mut service = if admitted {
+            PacketSourceService::accept_original_native_startup_bootstrap(&socket)?
+        } else {
+            PacketSourceService::accept_original_private_bootstrap(&socket, std::io::stdin())?
+        };
         return drive(&mut service);
     }
     let value = FrameReader::with_limits(std::io::stdin().lock(), 1024 * 1024, 64)?

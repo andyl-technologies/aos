@@ -425,34 +425,23 @@ fn tree_layout(facts: RetainedProtocolMetadataFacts) -> (usize, usize) {
         })
 }
 
-// Mirrors the source-pinned Rust 1.98.1 B=6 requested-layout bound. An empty
-// retained map can own a root; no generic type substitutes its actual alignment.
+// Existing restore callers use the same checked SDK metadata layout producer.
 pub(super) fn tree_storage(
     containers: usize,
     entries: usize,
     value: usize,
     alignment: usize,
 ) -> Result<usize, ProviderError> {
-    std::alloc::Layout::from_size_align(0, alignment).map_err(|_| refused())?;
-    let alignment = alignment.max(align_of::<usize>());
-    let node = sum(&[
-        size_of::<usize>(),
-        2 * size_of::<u16>(),
-        12 * size_of::<usize>(),
-        multiply(11, value)?,
-        multiply(8, alignment - 1)?,
-    ])?;
-    multiply(add(containers, entries)?, node)
+    crate::retained_metadata::requested_storage::tree_storage_data(
+        containers, entries, value, alignment,
+    )
 }
 
 pub(super) fn shared_header_storage(
     views: usize,
     alignment: usize,
 ) -> Result<usize, ProviderError> {
-    std::alloc::Layout::from_size_align(0, alignment).map_err(|_| refused())?;
-    let alignment = alignment.max(align_of::<usize>());
-    let base = add(2 * size_of::<usize>(), alignment - 1)? & !(alignment - 1);
-    multiply(views, add(base, alignment - 1)?)
+    crate::retained_metadata::requested_storage::shared_header_storage_data(views, alignment)
 }
 
 fn request_digest(

@@ -14,6 +14,8 @@ use crate::reference_packet::{
 use crate::{ProviderError, client::CanonicalAckCodecMetadataExtent};
 use crucible_node_contract::ContentRef;
 
+mod capture;
+
 /// Owns all immutable native policy fields as inert historical data.
 pub struct HistoricalNativePolicy {
     /// Retains the complete source-selected control declaration.
@@ -50,6 +52,10 @@ pub struct HistoricalNativePolicy {
     pub restore_input_emitter_selection: Option<crate::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection>,
     /// Retains its exact immutable schema definition.
     pub restore_input_emitter_definition: Option<ContentRef>,
+    /// Retains the original Observe allocation-report selection as data only.
+    pub capture_allocation_selection: Option<crate::reference_packet::service::capture_allocation::PacketNative5CaptureAllocationSelection>,
+    /// Retains both full report and record definitions, in that order.
+    pub capture_allocation_definitions: Option<[ContentRef; 2]>,
     /// Retains independent selected row allowances without installation rights.
     pub protocol_metadata_limits:
         Option<crate::reference_packet::service::PacketNative5ProtocolMetadataLimits>,
@@ -64,6 +70,9 @@ impl HistoricalNativePolicy {
     ) -> Result<Option<Self>, ProviderError> {
         let mut fields = Fields::array(input)?;
         let policy_tag = super::super::typed::plain_string(next(&mut fields)?)?;
+        if policy_tag == capture::CAPTURE_POLICY_FORMAT {
+            return capture::read_selected(fields, ledger, build, allow_transfer);
+        }
         if policy_tag == "source-private.native5-policy-owned-restore-input-emitter/16" {
             if allow_transfer
                 || super::super::typed::plain_string(next(&mut fields)?)?
@@ -285,6 +294,8 @@ impl HistoricalNativePolicy {
             complete_restore_transfer_definitions: None,
             restore_input_emitter_selection: None,
             restore_input_emitter_definition: None,
+            capture_allocation_selection: None,
+            capture_allocation_definitions: None,
         }))
     }
 }

@@ -112,3 +112,5 @@ mod contract;
 mod selection;
 pub use contract::{native_after_confirmation_contract, native_after_confirmation_schema};
 pub use selection::PacketNative5ConfirmationSelection;
+
+pub(crate) use contract::native_after_confirmation_contract_storage_data;

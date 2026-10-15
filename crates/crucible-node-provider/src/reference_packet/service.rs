@@ -21,7 +21,13 @@ use super::{PacketProgramDefinition, control::PacketControlSelection};
 use crate::{ProviderError, handshake::Limits, reference_service::InstalledContent};
 
 pub mod capture_allocation;
+pub mod native_startup;
 pub mod report_startup;
+
+pub(crate) use ack_emitter::{
+    OriginalNativePrepareStartupAllocation, measure_original_prepare_executable_data,
+    original_prepare_executable_measurement_counter_scratch_data,
+};
 
 pub mod confirmation;
 pub use confirmation::PacketNative5ConfirmationSelection;
@@ -29,7 +35,6 @@ pub use confirmation::PacketNative5ConfirmationSelection;
 mod connected;
 mod native5;
 mod native5_policy;
-pub mod native_startup;
 pub use native5::{
     PacketNative5CaptureProfile, PacketNative5SourceLaunch, PacketNative5StorageLimits,
 };
@@ -216,6 +221,21 @@ impl PacketSourceService {
         ack_emitter::native_boot::accept(socket, original)
     }
 
+    /// Authenticates the distinct resource-admitted private bootstrap revision.
+    ///
+    /// The inherited channel consumes its fixed version-fourteen prefix before
+    /// private parser/model construction, then authenticates the same birth.
+    /// This entry grants neither semantic activation nor whole capture rights.
+    ///
+    /// # Errors
+    /// Refuses missing private origin, changed parent or MAC, widened compiled
+    /// owners, expired original cut, or another launch/boot/source revision.
+    pub fn accept_original_native_startup_bootstrap(
+        socket: &std::path::Path,
+    ) -> Result<Self, ProviderError> {
+        ack_emitter::native_boot::accept_admitted(socket)
+    }
+
     /// Installs a complete original native source after actual peer authentication.
     ///
     /// # Errors
@@ -343,6 +363,16 @@ pub(crate) fn prepared_blob_proof_codec_for_test(
 
 /// Defines inert fresh inactive allocation query/report grammar.
 pub mod fresh_restore_allocation;
+
+pub use native_snapshot::{
+    PacketNativeOwned12SnapshotPlan, native_owned12_snapshot_contract,
+    native_owned12_snapshot_schema, packet_native_owned12_snapshot_validation_layouts,
+};
+
+pub use native_snapshot::{
+    PacketNativeOwned13SnapshotPlan, native_owned13_snapshot_contract,
+    native_owned13_snapshot_schema, packet_native_owned13_snapshot_validation_layouts,
+};
 
 pub use ack_emitter::{
     PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,

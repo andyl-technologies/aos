@@ -4,8 +4,19 @@
 //! when the same-process typed identity roster reports a first payload visit.
 
 use super::*;
+use crate::retained_metadata::{MetadataObserver, NativeCaptureMetadataRoots};
 
 impl Native5Policy {
+    pub(crate) fn observe_unique_capture_metadata(
+        &self,
+        _roots: &mut NativeCaptureMetadataRoots,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        // Every present field is independently owned plain data. This delegates
+        // to the exhaustive destructure; it does not invent another strong edge.
+        self.observe_retained_metadata(observer)
+    }
+
     pub(crate) fn authenticate_capture_request_header_data(
         &self,
         envelope: &Envelope,

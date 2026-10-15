@@ -27,6 +27,19 @@ pub(super) struct OriginalReportStartupFinalization {
 }
 
 impl OriginalReportStartupFinalization {
+    pub(super) fn authenticated_rows_data(
+        &self,
+        source: &PacketCompleteSemanticSource,
+    ) -> Result<StartupRows, crate::node_contract::RuntimeError> {
+        if !self.complete {
+            return Err(crate::node_contract::RuntimeError::OwnerUnavailable);
+        }
+        self.member
+            .authenticate(source)
+            .map_err(|_| crate::node_contract::RuntimeError::ForeignAuthority)?;
+        Ok(self.member.rows)
+    }
+
     pub(super) fn retained_storage_data(&self, maximum: usize) -> Result<usize, OperationFailure> {
         self.retained_storage_data_with_error::<OperationFailure>(maximum)
     }
@@ -262,7 +275,8 @@ impl OriginalAckPeerBirth {
         if !self.ready || self.failed {
             return Err(refused("reserved private birth is incomplete or failed"));
         }
-        self.authenticate_report_startup_before_boot(source)
+        self.authenticate_report_startup_before_boot(source)?;
+        self.authenticate_native_startup_before_boot(source)
     }
 
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_report_startup_before_boot(

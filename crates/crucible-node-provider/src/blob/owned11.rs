@@ -83,6 +83,10 @@ impl BlobStateOwned11View<'_> {
         observer: &mut MetadataObserver,
     ) -> Result<(), ProviderError> {
         observer.shared_original(MetadataSharedKind::BlobLedger, self.owner.as_ref())?;
+        self.observe_owned_children(observer)
+    }
+
+    fn observe_owned_children(&self, observer: &mut MetadataObserver) -> Result<(), ProviderError> {
         let ReceiverState {
             records,
             reserved,
@@ -262,6 +266,30 @@ impl OperationContentPin {
         receiver: &BlobReceiver,
         observer: &mut MetadataObserver,
     ) -> Result<(), ProviderError> {
+        self.observe_original_pin_fields(receiver, observer)?
+            .observe_owned11_metadata(observer)
+    }
+
+    /// Observes this actual pin edge in the same native Capture identity roster.
+    ///
+    /// Pin-owned identifiers and schema backing are independent. Only the real
+    /// shared receiver ledger payload is walked once across receiver and pins.
+    /// The caller authenticates its original Connection before this data loan.
+    pub(crate) fn observe_unique_capture_metadata(
+        &self,
+        receiver: &BlobReceiver,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.observe_original_pin_fields(receiver, observer)?
+            .observe_unique_capture_metadata(roots, observer)
+    }
+
+    fn observe_original_pin_fields<'a>(
+        &'a self,
+        receiver: &BlobReceiver,
+        observer: &mut MetadataObserver,
+    ) -> Result<BlobStateOwned11View<'a>, ProviderError> {
         let Self {
             receiver: owner,
             key,
@@ -320,6 +348,200 @@ impl OperationContentPin {
         observer.observe(operation)?;
         observer.observe(schema)?;
         observer.observe(settled)?;
-        state.observe_owned11_metadata(observer)
+        Ok(state)
+    }
+}
+
+impl BlobStateOwned11View<'_> {
+    pub(crate) fn observe_unique_capture_metadata(
+        &self,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        if roots.observe_shared(
+            observer,
+            MetadataSharedKind::BlobLedger,
+            self.owner.as_ref(),
+        )? {
+            self.observe_owned_children(observer)?;
+        }
+        Ok(())
+    }
+}
+
+impl BlobOwned11View<'_> {
+    pub(crate) fn observe_unique_capture_metadata(
+        &self,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let BlobReceiver {
+            session,
+            incarnation,
+            limits: _,
+            state: _,
+            supervisor,
+        } = self.receiver;
+        observer.observe(session)?;
+        observer.observe(incarnation)?;
+        self.state
+            .observe_unique_capture_metadata(roots, observer)?;
+        roots.observe_shared_edge(
+            observer,
+            MetadataSharedKind::NativeSupervisor,
+            supervisor.as_ref(),
+        )
+    }
+}
+
+// crucible-lint: allow panic-shortcut -- actual pin/ledger identity, ownership and borrow refusal observations.
+#[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "real pin and shared-ledger data assertions"
+)]
+mod capture_pin_tests {
+    use super::*;
+    use crate::retained_metadata::NativeCaptureMetadataRoots;
+    use crucible_node_contract::canonical;
+
+    #[derive(Default)]
+    struct Supervisor(RefCell<Vec<BlobQuarantine>>);
+
+    impl BlobSupervisor for Supervisor {
+        fn quarantine(&self, custody: BlobQuarantine) {
+            self.0.borrow_mut().push(custody);
+        }
+    }
+
+    struct Schema;
+
+    impl BlobSchemaVerifier for Schema {
+        fn verify_schema(
+            &self,
+            _: &ContentRef,
+            content: &ContentRef,
+            bytes: &[u8],
+        ) -> Result<(), ProviderError> {
+            content.verify(bytes)?;
+            Ok(())
+        }
+    }
+
+    fn receiver(authority: &crate::handshake::ConnectionAuthority) -> BlobReceiver {
+        BlobReceiver::new(
+            authority.session_id().clone(),
+            authority.incarnation_id().clone(),
+            BlobLimits {
+                reserved_bytes: 1024,
+                content_bytes: 512,
+                chunk_bytes: 64,
+                transfers_per_origin: 4,
+                tombstones_per_origin: 4,
+                chunks_per_transfer: 8,
+                operation_pins: 4,
+            },
+            Rc::new(Supervisor::default()),
+        )
+        .unwrap()
+    }
+
+    fn pins(receiver: &mut BlobReceiver) -> (OperationContentPin, OperationContentPin) {
+        let key = TransferKey {
+            origin: RequestOrigin::Controller,
+            session: receiver.session.clone(),
+            incarnation: receiver.incarnation.clone(),
+            transfer: Id::new("pin-transfer").unwrap(),
+        };
+        let content =
+            canonical::content_ref(b"actual retained content", "application/octet-stream").unwrap();
+        receiver.begin(key.clone(), content.clone()).unwrap();
+        receiver
+            .chunk(
+                &key,
+                U64::new(0),
+                &Bytes::new(b"actual retained content".to_vec()),
+            )
+            .unwrap();
+        let verified = receiver.finish(&key).unwrap();
+        let first = receiver
+            .pin_operation(
+                &verified,
+                Id::new("first-operation").unwrap(),
+                content.clone(),
+                &Schema,
+            )
+            .unwrap();
+        let second = receiver
+            .pin_operation(
+                &verified,
+                Id::new("second-operation").unwrap(),
+                content,
+                &Schema,
+            )
+            .unwrap();
+        (first, second)
+    }
+
+    #[test]
+    fn two_actual_pins_retain_independent_fields_and_walk_one_shared_ledger() {
+        let (_handshake, authority) = crate::handshake::tests::authority();
+        let mut receiver = receiver(&authority);
+        let (first, second) = pins(&mut receiver);
+        let mut roots = NativeCaptureMetadataRoots::new();
+        let mut observer = MetadataObserver::new();
+
+        first
+            .observe_unique_capture_metadata(&receiver, &mut roots, &mut observer)
+            .unwrap();
+        assert_eq!(roots.finish().unwrap(), (1, 1));
+        let once = observer.finish();
+        // Observe the same actual ledger with a second independently owned pin.
+        let mut roots = NativeCaptureMetadataRoots::new();
+        let mut observer = MetadataObserver::new();
+        first
+            .observe_unique_capture_metadata(&receiver, &mut roots, &mut observer)
+            .unwrap();
+        second
+            .observe_unique_capture_metadata(&receiver, &mut roots, &mut observer)
+            .unwrap();
+        assert_eq!(roots.finish().unwrap(), (2, 1));
+        let twice = observer.finish();
+
+        assert_eq!(twice.shared_backing_views, once.shared_backing_views);
+        assert_eq!(twice.shared_value_bytes, once.shared_value_bytes);
+        assert_eq!(twice.vector_capacity_bytes, once.vector_capacity_bytes);
+        assert_eq!(twice.tree_entries, once.tree_entries);
+        assert!(twice.string_capacity_bytes > once.string_capacity_bytes);
+    }
+
+    #[test]
+    fn unique_pin_walk_refuses_foreign_receiver_and_mutable_ledger_before_root_credit() {
+        let (_handshake, authority) = crate::handshake::tests::authority();
+        let mut original = receiver(&authority);
+        let foreign = receiver(&authority);
+        let (first, _second) = pins(&mut original);
+        let mut roots = NativeCaptureMetadataRoots::new();
+        let mut observer = MetadataObserver::new();
+
+        assert!(
+            first
+                .observe_unique_capture_metadata(&foreign, &mut roots, &mut observer)
+                .is_err()
+        );
+        assert_eq!(roots.finish().unwrap(), (0, 0));
+        let guard = original.state.borrow_mut();
+        assert!(
+            first
+                .observe_unique_capture_metadata(&original, &mut roots, &mut observer)
+                .is_err()
+        );
+        assert_eq!(roots.finish().unwrap(), (0, 0));
+        drop(guard);
+
+        first
+            .observe_unique_capture_metadata(&original, &mut roots, &mut observer)
+            .unwrap();
+        assert_eq!(roots.finish().unwrap(), (1, 1));
     }
 }

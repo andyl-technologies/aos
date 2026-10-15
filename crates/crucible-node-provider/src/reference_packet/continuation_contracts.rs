@@ -81,17 +81,10 @@ pub fn complete_packet_contract() -> Result<Vec<u8>, ProviderError> {
 /// # Errors
 /// Reports canonical encoding failure of the fixed specification.
 pub fn complete_ingress_contract() -> Result<Vec<u8>, ProviderError> {
-    Ok(canonical::canonical_json(&json!({
-        "schema":"source-owned.packet-ingress-contract/5",
-        "identifier":"source-owned.packet-ingress/5",
-        "coordinator":PACKET_NATIVE5_COORDINATOR_SCHEMA,
-        "roster":"Complete original native3 plus independently selected concrete Host2; empty preparation template followed by all four actual original preparations, each joined to retained native/host Arm before WorldActivate",
-        "ordinary_input":"Unchanged source-owned.packet-input/4 request-only extension and complete Stage/Commit4 source journals under fresh actual owner bindings",
-        "ordinary_bodies":"Unchanged baseline ActivationManifest; distinct complete CommonGrant5 restoration association and exact original output retirement population; producer.v1/reactive.v4 historical consumption bodies remain unchanged under the independently authenticated source-five owner association",
-        "restore_ingress":"Separate pre-Ready actual original target channel installs complete snapshot5 and locally source-authenticated settlement journal5, actual native protocol/counter history and complete original fresh target/InputACK association; no labels issuing association",
-        "limits":{"coordinator_bytes":131072,"frame_bytes":65536,"grant_retirement_bytes":8192,"blob_chunk_bytes":4096},
-        "authority":"This fixed grammar provides no source currentness, capture, Ready, class acceptance or restored-native permission; installed whole-source/current/fresh-issuer validators remain mandatory"
-    }))?)
+    Ok(canonical::canonical_json(
+        &serde_json::to_value(CompleteIngressContractValue)
+            .map_err(crucible_node_contract::ContractError::from)?,
+    )?)
 }
 
 /// Binds the distinct live source-five receipt grammar to its complete specification.
@@ -178,3 +171,73 @@ pub use complete_restore::{
     complete_packet_restore_declaration, complete_packet_restore_input_emitter_declaration,
 };
 pub use fresh_restore::complete_packet_fresh_restore_allocation_declaration;
+
+// One borrowed compiled roster drives BOTH the existing canonical definition
+// and its prospective DOM/canonical counter. No schema bytes or field values
+// are regenerated independently in the admission calculation.
+struct CompleteIngressContractValue;
+
+impl serde::Serialize for CompleteIngressContractValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use crate::reference_packet::service::native_startup::contract_value::ContractValue as V;
+        static VALUE: V<'static> = V::Object(&[
+            ("schema", V::Text("source-owned.packet-ingress-contract/5")),
+            ("identifier", V::Text("source-owned.packet-ingress/5")),
+            ("coordinator", V::Text(PACKET_NATIVE5_COORDINATOR_SCHEMA)),
+            (
+                "roster",
+                V::Text(
+                    "Complete original native3 plus independently selected concrete Host2; empty preparation template followed by all four actual original preparations, each joined to retained native/host Arm before WorldActivate",
+                ),
+            ),
+            (
+                "ordinary_input",
+                V::Text(
+                    "Unchanged source-owned.packet-input/4 request-only extension and complete Stage/Commit4 source journals under fresh actual owner bindings",
+                ),
+            ),
+            (
+                "ordinary_bodies",
+                V::Text(
+                    "Unchanged baseline ActivationManifest; distinct complete CommonGrant5 restoration association and exact original output retirement population; producer.v1/reactive.v4 historical consumption bodies remain unchanged under the independently authenticated source-five owner association",
+                ),
+            ),
+            (
+                "restore_ingress",
+                V::Text(
+                    "Separate pre-Ready actual original target channel installs complete snapshot5 and locally source-authenticated settlement journal5, actual native protocol/counter history and complete original fresh target/InputACK association; no labels issuing association",
+                ),
+            ),
+            (
+                "limits",
+                V::Object(&[
+                    ("coordinator_bytes", V::Number(131072 as u64)),
+                    ("frame_bytes", V::Number(65536 as u64)),
+                    ("grant_retirement_bytes", V::Number(8192 as u64)),
+                    ("blob_chunk_bytes", V::Number(4096 as u64)),
+                ]),
+            ),
+            (
+                "authority",
+                V::Text(
+                    "This fixed grammar provides no source currentness, capture, Ready, class acceptance or restored-native permission; installed whole-source/current/fresh-issuer validators remain mandatory",
+                ),
+            ),
+        ]);
+        serde::Serialize::serialize(&VALUE, serializer)
+    }
+}
+
+pub(crate) fn complete_ingress_contract_storage_data(
+    maximum: usize,
+) -> Result<
+    crate::retained_metadata::serialization_storage::OriginalSerializationStorageData,
+    ProviderError,
+> {
+    // This unit struct and its borrowed literals own no heap/Bytes formatter.
+    crate::retained_metadata::serialization_storage::actual_serialization_storage_data(
+        &CompleteIngressContractValue,
+        crate::retained_metadata::RetainedProtocolMetadataFacts::default(),
+        maximum,
+    )
+}

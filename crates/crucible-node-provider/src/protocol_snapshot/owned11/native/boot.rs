@@ -43,33 +43,67 @@ impl HistoricalType for HistoricalNativeBootData {
         ledger: &mut Ledger<'_, '_, '_>,
         build: bool,
     ) -> Result<Option<Self>, ProviderError> {
-        let mut fields = Fields::array(input)?;
-        tag(&mut fields, "source-private.native-ack-boot-data/11")?;
-        let raw_schema = next(&mut fields)?;
-        if plain_string(raw_schema)? != "source-owned.packet-canonical-ack-private-boot/5" {
-            return Err(invalid());
-        }
-        let schema = ledger.read::<String>(raw_schema, build)?;
-        let private_key = bank(next(&mut fields)?, ledger, build, Some(32))?;
-        let birth_id = bank(next(&mut fields)?, ledger, build, Some(32))?;
-        let source_birth = ledger.read::<Value>(next(&mut fields)?, build)?;
-        let expected_host_registration = ledger.read::<Value>(next(&mut fields)?, build)?;
-        let private_launch = ledger.read::<Id>(next(&mut fields)?, build)?;
-        let host_executable = ledger.read::<ContentRef>(next(&mut fields)?, build)?;
-        fields.finish()?;
-        if !build {
-            return Ok(None);
-        }
-        Ok(Some(Self {
-            schema: schema.ok_or_else(invalid)?,
-            private_key: Bytes::new(private_key.ok_or_else(invalid)?),
-            birth_id: Bytes::new(birth_id.ok_or_else(invalid)?),
-            source_birth: source_birth.ok_or_else(invalid)?,
-            expected_host_registration: expected_host_registration.ok_or_else(invalid)?,
-            private_launch: private_launch.ok_or_else(invalid)?,
-            host_executable: host_executable.ok_or_else(invalid)?,
-        }))
+        read_data(input, ledger, build, false)
     }
+}
+
+struct HistoricalStartupBootData(HistoricalNativeBootData);
+
+impl HistoricalType for HistoricalStartupBootData {
+    fn read(
+        input: &[u8],
+        ledger: &mut Ledger<'_, '_, '_>,
+        build: bool,
+    ) -> Result<Option<Self>, ProviderError> {
+        read_data(input, ledger, build, true).map(|data| data.map(Self))
+    }
+}
+
+fn read_data(
+    input: &[u8],
+    ledger: &mut Ledger<'_, '_, '_>,
+    build: bool,
+    startup: bool,
+) -> Result<Option<HistoricalNativeBootData>, ProviderError> {
+    let mut fields = Fields::array(input)?;
+    tag(
+        &mut fields,
+        if startup {
+            "source-private.native-ack-boot-data/14"
+        } else {
+            "source-private.native-ack-boot-data/11"
+        },
+    )?;
+    let raw_schema = next(&mut fields)?;
+    if plain_string(raw_schema)?
+        != if startup {
+            "source-owned.packet-canonical-ack-private-boot/6"
+        } else {
+            "source-owned.packet-canonical-ack-private-boot/5"
+        }
+    {
+        return Err(invalid());
+    }
+    let schema = ledger.read::<String>(raw_schema, build)?;
+    let private_key = bank(next(&mut fields)?, ledger, build, Some(32))?;
+    let birth_id = bank(next(&mut fields)?, ledger, build, Some(32))?;
+    let source_birth = ledger.read::<Value>(next(&mut fields)?, build)?;
+    let expected_host_registration = ledger.read::<Value>(next(&mut fields)?, build)?;
+    let private_launch = ledger.read::<Id>(next(&mut fields)?, build)?;
+    let host_executable = ledger.read::<ContentRef>(next(&mut fields)?, build)?;
+    fields.finish()?;
+    if !build {
+        return Ok(None);
+    }
+    Ok(Some(HistoricalNativeBootData {
+        schema: schema.ok_or_else(invalid)?,
+        private_key: Bytes::new(private_key.ok_or_else(invalid)?),
+        birth_id: Bytes::new(birth_id.ok_or_else(invalid)?),
+        source_birth: source_birth.ok_or_else(invalid)?,
+        expected_host_registration: expected_host_registration.ok_or_else(invalid)?,
+        private_launch: private_launch.ok_or_else(invalid)?,
+        host_executable: host_executable.ok_or_else(invalid)?,
+    }))
 }
 
 /// Retains every successful native admission boot field as inert history.
@@ -96,6 +130,8 @@ pub struct HistoricalNativeBoot {
     pub proof: PacketCanonicalAckAdmissionProof,
     /// Retains the exact assigned Admit including its proof and sequence.
     pub original: Envelope,
+    /// Retains the distinct complete boot6 startup owner, never a live issuer.
+    pub startup: Option<super::startup::HistoricalNativeStartupBoot>,
 }
 
 fn present<'a>(fields: &mut Fields<'a>) -> Result<&'a [u8], ProviderError> {
@@ -122,13 +158,39 @@ pub(super) fn read(
     ledger: &mut NativeLedger<'_, '_, '_, '_, '_>,
     build: bool,
 ) -> Result<Option<HistoricalNativeBoot>, ProviderError> {
+    let startup_class = ledger.requires_startup_class()?;
+    let (input, startup_input) = if startup_class {
+        let mut wrapper = Fields::array(input)?;
+        tag(&mut wrapper, "source-private.native-ack-boot-startup/14")?;
+        let base = next(&mut wrapper)?;
+        let startup = next(&mut wrapper)?;
+        wrapper.finish()?;
+        (base, Some(startup))
+    } else {
+        (input, None)
+    };
     let mut fields = Fields::array(input)?;
-    tag(&mut fields, "source-private.native-ack-boot/11")?;
+    tag(
+        &mut fields,
+        if startup_class {
+            "source-private.native-ack-boot/14"
+        } else {
+            "source-private.native-ack-boot/11"
+        },
+    )?;
     let creator = ledger.ledger.read::<u32>(next(&mut fields)?, build)?;
     tag(&mut fields, "same-original-thread")?;
-    let data = ledger
-        .ledger
-        .read::<HistoricalNativeBootData>(next(&mut fields)?, build)?;
+    let raw_data = next(&mut fields)?;
+    let data = if startup_class {
+        ledger
+            .ledger
+            .read::<HistoricalStartupBootData>(raw_data, build)?
+            .map(|value| value.0)
+    } else {
+        ledger
+            .ledger
+            .read::<HistoricalNativeBootData>(raw_data, build)?
+    };
     let launch_body = bank(next(&mut fields)?, ledger.ledger, build, None)?;
     let policy = ledger.policy(next(&mut fields)?, build)?;
     let source_body = bank(next(&mut fields)?, ledger.ledger, build, None)?;
@@ -164,10 +226,15 @@ pub(super) fn read(
         }
     }
     fields.finish()?;
+    let startup = if let Some(input) = startup_input {
+        super::startup::read_boot(input, ledger.ledger, build)?
+    } else {
+        None
+    };
     if !build {
         return Ok(None);
     }
-    Ok(Some(HistoricalNativeBoot {
+    let owner = HistoricalNativeBoot {
         creator: creator.ok_or_else(invalid)?,
         data: data.ok_or_else(invalid)?,
         launch_body: launch_body.ok_or_else(invalid)?,
@@ -179,5 +246,10 @@ pub(super) fn read(
         context: context.ok_or_else(invalid)?,
         proof: proof.ok_or_else(invalid)?,
         original: original.ok_or_else(invalid)?,
-    }))
+        startup,
+    };
+    if let Some(startup) = &owner.startup {
+        startup.authenticate(&owner)?;
+    }
+    Ok(Some(owner))
 }

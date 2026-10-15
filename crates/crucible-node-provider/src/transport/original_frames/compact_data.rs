@@ -298,6 +298,50 @@ impl DecodedCompactOriginalFrames {
     pub fn allocated_bytes(&self) -> usize {
         self.bank.allocated_bytes()
     }
+
+    /// Counts one complete historical prefix with the original bank capacities.
+    ///
+    /// Later appended slots remain outside the saved cut. This data-only loan
+    /// neither renews lifetime credit nor reconstructs a live receiving phase.
+    pub(crate) fn original_storage_prefix_data(
+        &self,
+        last_slot: usize,
+        maximum_frame_bytes: usize,
+    ) -> Result<crate::protocol_snapshot::OriginalProtocolStorageFacts, ProviderError> {
+        let count = last_slot
+            .checked_add(1)
+            .ok_or_else(CompactFrameCursor::invalid)?;
+        let prefix = self
+            .bank
+            .slots
+            .get(..count)
+            .ok_or_else(CompactFrameCursor::invalid)?;
+        let mut facts = self.bank.storage_facts(maximum_frame_bytes);
+        facts.retained_bytes = 0;
+        facts.incoming_frames = 0;
+        facts.outgoing_frames = 0;
+        facts.all_io_complete = true;
+        for slot in prefix {
+            if !slot.complete
+                || slot.transferred != slot.length
+                || slot.start != facts.retained_bytes
+            {
+                return Err(CompactFrameCursor::invalid());
+            }
+            facts.retained_bytes = facts
+                .retained_bytes
+                .checked_add(slot.length)
+                .ok_or_else(CompactFrameCursor::invalid)?;
+            let direction = match slot.direction {
+                FrameDirection::Incoming => &mut facts.incoming_frames,
+                FrameDirection::Outgoing => &mut facts.outgoing_frames,
+            };
+            *direction = direction
+                .checked_add(1)
+                .ok_or_else(CompactFrameCursor::invalid)?;
+        }
+        Ok(facts)
+    }
 }
 
 struct CompactFrameCursor<'a> {
@@ -497,5 +541,100 @@ mod tests {
         assert_eq!(restored.bank.bytes.capacity(), 64);
         assert_eq!(restored.bank.slots.capacity(), 4);
         assert!(restored.frames().next().is_none());
+    }
+}
+
+#[cfg(test)]
+mod historical_prefix_tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn append(
+        bank: &mut OriginalFrameReservation,
+        direction: FrameDirection,
+        body: &[u8],
+    ) -> Result<usize, ProviderError> {
+        let slot = bank.begin(direction, bank.maximum_bytes - bank.bytes.len())?;
+        bank.append(
+            slot,
+            &u32::try_from(body.len())
+                .map_err(|_| CompactFrameCursor::invalid())?
+                .to_be_bytes(),
+        )?;
+        bank.append(slot, body)?;
+        if direction == FrameDirection::Outgoing {
+            bank.advance(slot, body.len() + 4)?;
+        }
+        bank.finish(slot)?;
+        Ok(slot)
+    }
+
+    #[test]
+    fn saved_prefix_keeps_original_capacities_after_real_appended_slots() -> TestResult {
+        let mut bank = OriginalFrameReservation::reserve(8192, 8)?;
+        append(&mut bank, FrameDirection::Outgoing, b"hello")?;
+        let observe = append(&mut bank, FrameDirection::Incoming, b"observe")?;
+        let saved = bank.storage_facts(65536);
+        append(&mut bank, FrameDirection::Outgoing, b"proof")?;
+        append(&mut bank, FrameDirection::Incoming, b"ack")?;
+        let restored = DecodedCompactOriginalFrames { bank };
+
+        assert_eq!(
+            restored.original_storage_prefix_data(observe, 65536)?,
+            saved
+        );
+        assert_ne!(restored.bank.storage_facts(65536), saved);
+        for changed in [
+            crate::protocol_snapshot::OriginalProtocolStorageFacts {
+                retained_bytes: saved.retained_bytes + 1,
+                ..saved
+            },
+            crate::protocol_snapshot::OriginalProtocolStorageFacts {
+                incoming_frames: saved.incoming_frames + 1,
+                ..saved
+            },
+            crate::protocol_snapshot::OriginalProtocolStorageFacts {
+                byte_capacity: saved.byte_capacity + 1,
+                ..saved
+            },
+        ] {
+            assert_ne!(
+                restored.original_storage_prefix_data(observe, 65536)?,
+                changed
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn incomplete_suffix_cannot_replace_an_incomplete_saved_prefix() -> TestResult {
+        let mut bank = OriginalFrameReservation::reserve(8192, 8)?;
+        let observe = append(&mut bank, FrameDirection::Incoming, b"observe")?;
+        let saved = bank.storage_facts(65536);
+        let partial = bank.begin(FrameDirection::Incoming, 4096)?;
+        bank.append(partial, b"\0\0")?;
+        let restored = DecodedCompactOriginalFrames { bank };
+
+        assert_eq!(
+            restored.original_storage_prefix_data(observe, 65536)?,
+            saved
+        );
+        assert!(
+            restored
+                .original_storage_prefix_data(partial, 65536)
+                .is_err()
+        );
+        assert!(
+            restored
+                .original_storage_prefix_data(usize::MAX, 65536)
+                .is_err()
+        );
+        assert!(
+            restored
+                .original_storage_prefix_data(partial + 1, 65536)
+                .is_err()
+        );
+        Ok(())
     }
 }

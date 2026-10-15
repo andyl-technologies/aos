@@ -3,8 +3,11 @@
 use crate::reference_packet::service::{PacketNative5SourceLaunch, PacketSourceService};
 use crate::transport::original_frames::OriginalFrameReservation;
 use crate::{ProviderError, client::OriginalNative5BirthCut, transport::FrameReader};
+use serde::Deserialize;
 use std::{cell::RefCell, os::fd::AsFd, path::Path, rc::Rc, time::Duration};
 
+#[path = "bootstrap_admitted.rs"]
+pub(super) mod admitted;
 #[path = "bootstrap_owned11.rs"]
 mod owned11;
 
@@ -18,6 +21,7 @@ struct Bootstrap<S> {
     launch: Option<PacketNative5SourceLaunch>,
     boot_value: Option<serde_json::Value>,
     boot: Option<Rc<RefCell<super::boot::NativeAckBoot>>>,
+    startup: Option<admitted::OriginalNativeStartupBootstrap>,
 }
 
 pub(in crate::reference_packet::service) fn accept(
@@ -43,6 +47,7 @@ pub(in crate::reference_packet::service) fn accept(
         launch: None,
         boot_value: None,
         boot: None,
+        startup: None,
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.prepare(socket)));
     match result {
@@ -54,6 +59,58 @@ pub(in crate::reference_packet::service) fn accept(
             std::hint::black_box((&owner, &failure));
             std::thread::park();
         },
+    }
+}
+
+// This distinct entry consumes the fixed origin prefix before allocating a
+// reader, literal bank or typed launch. Old boot5 entry behavior is preserved.
+pub(in crate::reference_packet::service) fn accept_admitted(
+    socket: &Path,
+) -> Result<PacketSourceService, ProviderError> {
+    // rustix's safe std-enabled handle borrows fd0 without constructing std's
+    // global buffered Stdin owner before the private prefix admission.
+    let startup = admitted::OriginalNativeStartupBootstrap::read_original(&rustix::stdio::stdin())?;
+    let stdin = std::io::stdin();
+    let cut = OriginalNative5BirthCut::from_original_preparser_cut(startup.original_cut)?;
+    let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(
+        1024 * 1024 + 512 * 1024 + 8,
+        2,
+    )?));
+    let stream = super::owned_read::OriginalPrivateBootstrapStream {
+        original: stdin,
+        cut: Some(cut),
+    };
+    let mut reader = FrameReader::with_limits(
+        stream,
+        startup.maximum_launch_bytes.max(startup.maximum_boot_bytes),
+        64,
+    )?;
+    reader.install_originals(Rc::clone(&bank));
+    let mut owner = Bootstrap {
+        reader,
+        literals: bank,
+        launch_value: None,
+        launch_bytes: Vec::new(),
+        launch: None,
+        boot_value: None,
+        boot: None,
+        startup: Some(startup),
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.prepare(socket)));
+    match result {
+        Ok(Ok(mut service)) => {
+            service._private_bootstrap = Some(Box::new(owner));
+            Ok(service)
+        }
+        failure => {
+            if let Some(startup) = owner.startup.as_mut() {
+                startup.failed = true;
+            }
+            loop {
+                std::hint::black_box((&owner, &failure));
+                std::thread::park();
+            }
+        }
     }
 }
 
@@ -69,10 +126,27 @@ impl<S: AsFd> Bootstrap<S> {
                 .as_ref()
                 .ok_or(ProviderError::Frame("native launch slot absent"))?,
         )?;
-        self.launch = Some(PacketNative5SourceLaunch::decode(
-            &self.launch_bytes,
-            1024 * 1024,
-        )?);
+        self.launch = Some(if let Some(startup) = self.startup.as_ref() {
+            startup.ensure_original()?;
+            let data = startup.data()?;
+            if self.launch_bytes.len() != startup.maximum_launch_bytes
+                || blake3::hash(&self.launch_bytes).as_bytes() != &data.launch_digest
+            {
+                return Err(ProviderError::Correlation(
+                    "native startup launch literal differs",
+                ));
+            }
+            // Full policy validation constructs schema owners. It follows the
+            // actual native row recount, rather than running in the pre-parser.
+            PacketNative5SourceLaunch::deserialize(
+                self.launch_value
+                    .as_ref()
+                    .ok_or(ProviderError::Frame("native startup launch value absent"))?,
+            )
+            .map_err(crucible_node_contract::ContractError::from)?
+        } else {
+            PacketNative5SourceLaunch::decode(&self.launch_bytes, 1024 * 1024)?
+        });
         let launch = self
             .launch
             .as_ref()
@@ -91,28 +165,56 @@ impl<S: AsFd> Bootstrap<S> {
         {
             return Err(ProviderError::Correlation("native inherited peer identity"));
         }
-        let exe = std::path::Path::new("/proc")
-            .join(launch.controller_pid.get().to_string())
-            .join("exe");
-        if crate::conformance::measure_executable(&exe)? != launch.controller_executable {
-            return Err(ProviderError::Correlation(
-                "native inherited peer executable",
-            ));
+        if self.startup.is_none() {
+            let exe = std::path::Path::new("/proc")
+                .join(launch.controller_pid.get().to_string())
+                .join("exe");
+            if crate::conformance::measure_executable(&exe)? != launch.controller_executable {
+                return Err(ProviderError::Correlation(
+                    "native inherited peer executable",
+                ));
+            }
         }
         self.boot_value = Some(
             self.reader
-                .read_retained_with_maximum_bytes(512 * 1024)?
+                .read_retained_with_maximum_bytes(
+                    self.startup
+                        .as_ref()
+                        .map_or(512 * 1024, |startup| startup.maximum_boot_bytes),
+                )?
                 .ok_or(ProviderError::Frame("native private boot absent"))?
                 .value,
         );
-        super::boot::NativeAckBoot::prepare_into(
-            self.boot_value
-                .as_ref()
-                .ok_or(ProviderError::Frame("native boot slot absent"))?,
-            launch,
-            self.launch_bytes.clone(),
-            &mut self.boot,
-        )?;
+        let boot_value = self
+            .boot_value
+            .as_ref()
+            .ok_or(ProviderError::Frame("native boot slot absent"))?;
+        if let Some(startup) = self.startup.as_mut() {
+            super::boot::NativeAckBoot::prepare_original_startup_into(
+                boot_value,
+                launch,
+                self.launch_bytes.clone(),
+                startup,
+                &mut self.boot,
+            )?;
+            launch.validate()?;
+            if admitted::measure_original_controller_executable(launch.controller_pid)?
+                != launch.controller_executable
+            {
+                startup.failed = true;
+                return Err(ProviderError::Correlation(
+                    "native startup controller executable differs",
+                ));
+            }
+            startup.ensure_original()?;
+        } else {
+            super::boot::NativeAckBoot::prepare_into(
+                boot_value,
+                launch,
+                self.launch_bytes.clone(),
+                &mut self.boot,
+            )?;
+        }
         self.reader
             .stream_mut()
             .cut

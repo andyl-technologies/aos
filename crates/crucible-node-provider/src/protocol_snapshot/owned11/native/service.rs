@@ -45,7 +45,14 @@ pub(super) fn read(
     build: bool,
 ) -> Result<Option<HistoricalNativeService>, ProviderError> {
     let mut fields = Fields::array(input)?;
-    tag(&mut fields, super::outer::COMPLETE_NATIVE_SERVICE_FORMAT)?;
+    tag(
+        &mut fields,
+        if ledger.requires_startup_class()? {
+            "source-private.native-service/14"
+        } else {
+            super::outer::COMPLETE_NATIVE_SERVICE_FORMAT
+        },
+    )?;
     let negotiation = ledger
         .ledger
         .read::<HistoricalNativeExtensionNegotiation>(next(&mut fields)?, build)?;

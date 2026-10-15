@@ -49,12 +49,14 @@ mod native5_birth;
 pub use native5_birth::{Native5ConnectionBirth, Native5ConnectionBirthRefusal};
 mod exchange;
 pub(crate) use exchange::{
-    OriginalContinuationContentExtent, OriginalPacketPrefixProjectionInput,
-    OriginalPacketPrefixProjectionStorageData, OriginalPacketPrefixStorageData,
-    OriginalReportQueryReceiveStorageData, PreparedOriginalRestoreHeldProof,
-    authenticate_original_report_query_header_data,
+    OriginalContinuationContentExtent, OriginalContinuationPrefixKind,
+    OriginalContinuationPrefixStorageData, OriginalContinuationPrefixStorageInput,
+    OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData,
+    OriginalPacketPrefixStorageData, OriginalReportQueryReceiveStorageData,
+    PreparedOriginalRestoreHeldProof, authenticate_original_report_query_header_data,
     original_packet_prefix_startup_counter_scratch_data,
     original_report_query_receive_counter_scratch_data, original_report_query_receive_storage_data,
+    quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
 };
 mod fresh_restore_receive;
@@ -70,7 +72,13 @@ pub(crate) fn controller_owned_codec_layout() -> usize {
     Native5CodecOwner::controller_owned_layout()
 }
 
+mod native_capture_encoding;
 mod native_owned11;
+mod native_owned12;
+pub(crate) use native_capture_encoding::{
+    NativeOwned12CaptureBeforeEncodingData, NativeOwned12CaptureEncodingData,
+    NativeOwned12CaptureEncodingPlan, NativeOwned12CaptureSuffixData,
+};
 mod original_frames;
 mod original_history;
 pub(crate) use native_owned11::NativeOwned11AfterProtocolCapacityFacts;
@@ -85,6 +93,7 @@ mod packet_schema;
 mod prepared;
 pub(crate) use prepared::serialized_credit;
 
+pub(crate) use exchange::OriginalPacketCompletedRecordEncodingData;
 pub use exchange::{ExchangeFailure, ExchangeRecord, OriginalSentFrameView, PreparedExchange};
 pub use prepared::PreparedSend;
 
@@ -603,6 +612,14 @@ impl<S: ProviderStream> Connection<S> {
         &mut self,
         maximum_body_bytes: Option<usize>,
     ) -> Result<Option<ReceivedFrame>, ProviderError> {
+        self.receive_inner_with_capture_filter(maximum_body_bytes, false)
+    }
+
+    fn receive_inner_with_capture_filter(
+        &mut self,
+        maximum_body_bytes: Option<usize>,
+        capture_only: bool,
+    ) -> Result<Option<ReceivedFrame>, ProviderError> {
         let value = match maximum_body_bytes {
             None => self.reader.read()?,
             Some(maximum) => self
@@ -615,6 +632,17 @@ impl<S: ProviderStream> Connection<S> {
         };
         let envelope: Envelope =
             serde_json::from_value(value).map_err(crucible_node_contract::ContractError::from)?;
+        if capture_only {
+            let Native5CodecOwner::NativePacket(policy) = self
+                .native5_codec
+                .as_deref()
+                .ok_or(ProviderError::Correlation("native Capture codec absent"))?
+            else {
+                return Err(ProviderError::Correlation("native Capture codec role"));
+            };
+            policy.authenticate_capture_request_header_data(&envelope)?;
+            native_capture_receive::authenticate_capture_scalar_grammar(&envelope)?;
+        }
         let body = self.validate_body(&envelope, true)?;
         self.retain_original_request_id(&envelope, self.reader.original_slot())?;
         self.authority.with_live(|| self.guard.receive(&envelope))?;
@@ -770,6 +798,23 @@ mod restore_realize;
 
 mod restore_input_protocol;
 
+mod native_capture_quote;
+pub(crate) use native_capture_quote::{NativeCaptureSdkCompletedQuote, NativeCaptureSdkStateQuote};
+
+mod native_capture_receive;
+
+mod report_query_original;
+
+mod native_confirmation_receive;
+
+mod native_startup_protocol;
+
+mod native_owned14;
+
+pub(crate) use native_startup_protocol::counter_scratch_data as original_native_startup_protocol_counter_scratch_data;
+
+mod native_birth;
+
 impl Connection<crate::client::DeadlineStream> {
     pub(crate) fn observe_original_host_live_metadata_extras(
         &self,
@@ -840,3 +885,8 @@ impl Connection<crate::client::DeadlineStream> {
         observer.observe(fenced)
     }
 }
+
+pub(crate) use native_capture_quote::{
+    NativeCaptureSdkSnapshotBankQuote, NativeCaptureSdkStateData,
+};
+pub(crate) use native_capture_receive::NativeCaptureFutureReceiveQuote;

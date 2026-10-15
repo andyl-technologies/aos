@@ -18,7 +18,7 @@ use super::{
     blob::HistoricalNativeBlobReceiver,
     connection::HistoricalNativeConnection,
     service::HistoricalNativeService,
-    shared::{NativeLedger, NativeSharedEntry},
+    shared::{NativeArchiveClass, NativeLedger, NativeSharedEntry},
 };
 use crate::{ProviderError, retained_metadata::records::ValidatedMetadataRecords};
 
@@ -26,6 +26,17 @@ use crate::{ProviderError, retained_metadata::records::ValidatedMetadataRecords}
 pub const COMPLETE_NATIVE_CONNECTION_FORMAT: &str = "source-private.native-connection-complete/11";
 /// Identifies the complete service-root class, including original typed registrar.
 pub const COMPLETE_NATIVE_SERVICE_FORMAT: &str = "source-private.native-service/11";
+/// Identifies the four-leaf class retaining the completed original Observe owner.
+pub const COMPLETE_NATIVE_CAPTURE_ALLOCATION_FORMAT: &str = "source-private.native-state/12";
+/// Identifies the three-leaf class owning the complete original boot6 startup.
+pub const COMPLETE_NATIVE_STARTUP_FORMAT: &str = "source-private.native-state/13";
+/// Identifies the four-leaf class owning boot6 and the actual Capture original.
+pub const COMPLETE_NATIVE_STARTUP_CAPTURE_FORMAT: &str = "source-private.native-state/14";
+/// Identifies the startup-aware complete connection leaf.
+pub const COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT: &str =
+    "source-private.native-connection-complete-startup/14";
+/// Identifies the startup-aware complete service leaf.
+pub const COMPLETE_NATIVE_STARTUP_SERVICE_FORMAT: &str = "source-private.native-service/14";
 
 /// Reports all known native requested backing and reconstruction temporary terms.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,6 +59,8 @@ pub struct HistoricalNativeState {
     pub blobs: HistoricalNativeBlobReceiver,
     /// Retains all successful closed service roots and aliases.
     pub service: HistoricalNativeService,
+    /// Retains the complete original Observe allocation owner in the selected class.
+    pub capture_allocation: Option<super::capture_owner::HistoricalNativeCaptureAllocationOwner>,
 }
 
 impl HistoricalNativeState {
@@ -74,6 +87,11 @@ impl HistoricalNativeState {
         {
             return Err(invalid());
         }
+        match (&self.capture_allocation, connection.policy.capture_allocation_selection) {
+            (None, None) => {}
+            (Some(owner), Some(crate::reference_packet::service::capture_allocation::PacketNative5CaptureAllocationSelection::OriginalObserve12)) => owner.authenticate_connection(connection)?,
+            _ => return Err(invalid()),
+        }
         Ok(())
     }
 }
@@ -95,7 +113,9 @@ fn read(
     build: bool,
 ) -> Result<Option<HistoricalNativeState>, ProviderError> {
     let mut fields = Fields::array(input)?;
-    tag(&mut fields, "source-private.native-state/11")?;
+    let format = super::super::typed::plain_string(next(&mut fields)?)?;
+    let class = NativeArchiveClass::read(format)?;
+    ledger.select_class(class)?;
     let connection = super::connection::read(next(&mut fields)?, ledger, build)?;
     let blobs = super::blob::read_receiver(
         next(&mut fields)?,
@@ -104,6 +124,11 @@ fn read(
         crate::reference_packet::service::original_native_supervisor_layout(),
     )?;
     let service = super::service::read(next(&mut fields)?, ledger, build)?;
+    let capture_allocation = if class.capture() {
+        super::capture_owner::read(next(&mut fields)?, ledger, build)?
+    } else {
+        None
+    };
     fields.finish()?;
     if !build {
         return Ok(None);
@@ -112,6 +137,7 @@ fn read(
         connection: connection.ok_or_else(invalid)?,
         blobs: blobs.ok_or_else(invalid)?,
         service: service.ok_or_else(invalid)?,
+        capture_allocation,
     }))
 }
 
@@ -151,12 +177,14 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
         let mut ledger = super::super::outer::make_ledger(&records, limits);
         ledger.aliases = Some(aliases.views()?);
         let mut native = NativeLedger {
+            class: None,
             ledger: &mut ledger,
             groups: None,
             historical_payload_layout_bytes: 0,
             correlation_capacity_span: None,
         };
         read(data, &mut native, false)?;
+        let startup_class = native.requires_startup_class()?;
         let historical_payload_layout_bytes = native.historical_payload_layout_bytes;
         let correlation_capacity_span = native.correlation_capacity_span.ok_or_else(invalid)?;
         if ledger.rows.next().is_some() {
@@ -194,7 +222,13 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
                 recorded,
                 native_group_lookup_bytes,
                 historical_payload_layout_bytes,
-                semantic_validation_stack_bytes: super::blob::PIN_IDENTITY_SCRATCH_BYTES,
+                semantic_validation_stack_bytes: super::blob::PIN_IDENTITY_SCRATCH_BYTES
+                    .checked_add(if startup_class {
+                        super::startup::declared_scratch_bytes()
+                    } else {
+                        0
+                    })
+                    .ok_or_else(invalid)?,
             },
         })
     }
@@ -209,17 +243,151 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
     /// # Errors
     /// Refuses a partial compatibility class; validation never infers missing fields.
     pub fn complete_schema_identity(&self) -> Result<(&'static str, &'static str), ProviderError> {
-        let mut fields = Fields::array(self.data)?;
-        tag(&mut fields, "source-private.native-state/11")?;
-        let mut connection = Fields::array(next(&mut fields)?)?;
-        tag(&mut connection, COMPLETE_NATIVE_CONNECTION_FORMAT)?;
-        next(&mut fields)?;
-        let mut service = Fields::array(next(&mut fields)?)?;
-        tag(&mut service, COMPLETE_NATIVE_SERVICE_FORMAT)?;
+        self.authenticate_class(NativeArchiveClass::Legacy11)?;
         Ok((
             COMPLETE_NATIVE_CONNECTION_FORMAT,
             COMPLETE_NATIVE_SERVICE_FORMAT,
         ))
+    }
+
+    /// Returns the exact old four-owner class and its connection/service identities.
+    ///
+    /// # Errors
+    /// Refuses startup editions or a missing actual Capture original.
+    pub fn complete_capture_allocation_schema_identity(
+        &self,
+    ) -> Result<(&'static str, &'static str, &'static str), ProviderError> {
+        self.authenticate_class(NativeArchiveClass::Capture12)?;
+        Ok((
+            COMPLETE_NATIVE_CAPTURE_ALLOCATION_FORMAT,
+            COMPLETE_NATIVE_CONNECTION_FORMAT,
+            COMPLETE_NATIVE_SERVICE_FORMAT,
+        ))
+    }
+
+    /// Returns the explicit startup three-root historical class.
+    ///
+    /// # Errors
+    /// Refuses another edition, missing startup leaves or selected Capture state.
+    pub fn complete_native_startup_schema_identity(
+        &self,
+    ) -> Result<(&'static str, &'static str, &'static str), ProviderError> {
+        self.authenticate_class(NativeArchiveClass::Startup13)?;
+        Ok((
+            COMPLETE_NATIVE_STARTUP_FORMAT,
+            COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT,
+            COMPLETE_NATIVE_STARTUP_SERVICE_FORMAT,
+        ))
+    }
+
+    /// Returns the explicit startup four-root historical Capture class.
+    ///
+    /// # Errors
+    /// Refuses another edition or an absent actual Capture original.
+    pub fn complete_native_startup_capture_allocation_schema_identity(
+        &self,
+    ) -> Result<(&'static str, &'static str, &'static str), ProviderError> {
+        self.authenticate_class(NativeArchiveClass::StartupCapture14)?;
+        Ok((
+            COMPLETE_NATIVE_STARTUP_CAPTURE_FORMAT,
+            COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT,
+            COMPLETE_NATIVE_STARTUP_SERVICE_FORMAT,
+        ))
+    }
+
+    fn authenticate_class(&self, expected: NativeArchiveClass) -> Result<(), ProviderError> {
+        let mut fields = Fields::array(self.data)?;
+        if NativeArchiveClass::read(super::super::typed::plain_string(next(&mut fields)?)?)?
+            != expected
+        {
+            return Err(invalid());
+        }
+        let mut connection = Fields::array(next(&mut fields)?)?;
+        tag(
+            &mut connection,
+            if expected.startup() {
+                COMPLETE_NATIVE_STARTUP_CONNECTION_FORMAT
+            } else {
+                COMPLETE_NATIVE_CONNECTION_FORMAT
+            },
+        )?;
+        for _ in 0..3 {
+            next(&mut connection)?;
+        }
+        let mut codec = Fields::array(next(&mut connection)?)?;
+        tag(&mut codec, "source-private.native-codec/11")?;
+        let mut policy = Fields::array(next(&mut codec)?)?;
+        let policy_tag = super::super::typed::plain_string(next(&mut policy)?)?;
+        // A fresh-query owner requires its own future full class. Neither this
+        // three-root class nor the Capture owner implicitly owns that cache.
+        if policy_tag == "source-private.native5-policy-owned-fresh-restore-allocation/18"
+            || (policy_tag == "source-private.native5-policy-owned-capture-allocation/17")
+                != expected.capture()
+        {
+            return Err(invalid());
+        }
+        next(&mut fields)?;
+        let mut service = Fields::array(next(&mut fields)?)?;
+        tag(
+            &mut service,
+            if expected.startup() {
+                COMPLETE_NATIVE_STARTUP_SERVICE_FORMAT
+            } else {
+                COMPLETE_NATIVE_SERVICE_FORMAT
+            },
+        )?;
+        if expected.capture() {
+            let mut owner = Fields::array(next(&mut fields)?)?;
+            tag(
+                &mut owner,
+                "source-private.native-capture-allocation-owner/12",
+            )?;
+            for _ in 0..9 {
+                next(&mut owner)?;
+            }
+            if next(&mut owner)? == b"null" {
+                return Err(invalid());
+            }
+            owner.finish()?;
+        }
+        fields.finish()
+    }
+
+    /// Reconstructs only the explicit startup three-root historical class.
+    ///
+    /// # Errors
+    /// Refuses another class, occupied output or failed exact correspondence.
+    pub fn reconstruct_native_startup_into(
+        &mut self,
+        completed: &mut Option<HistoricalNativeState>,
+    ) -> Result<(), ProviderError> {
+        self.complete_native_startup_schema_identity()?;
+        self.reconstruct_after_class_check(completed)
+    }
+
+    /// Reconstructs only the explicit startup four-root historical Capture class.
+    ///
+    /// # Errors
+    /// Refuses another class, occupied output or failed exact correspondence.
+    pub fn reconstruct_native_startup_capture_allocation_into(
+        &mut self,
+        completed: &mut Option<HistoricalNativeState>,
+    ) -> Result<(), ProviderError> {
+        self.complete_native_startup_capture_allocation_schema_identity()?;
+        self.reconstruct_after_class_check(completed)
+    }
+
+    /// Reconstructs the explicitly admitted four-owner historical class.
+    ///
+    /// # Errors
+    /// Refuses another class, occupied output, allocation or correspondence errors.
+    /// Completed or partial owning data remains in the caller's output slot.
+    pub fn reconstruct_capture_allocation_into(
+        &mut self,
+        completed: &mut Option<HistoricalNativeState>,
+    ) -> Result<(), ProviderError> {
+        self.complete_capture_allocation_schema_identity()?;
+        self.reconstruct_after_class_check(completed)
     }
 
     /// Retains final data owners before checking repeated physical correspondence.
@@ -235,6 +403,13 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
         completed: &mut Option<HistoricalNativeState>,
     ) -> Result<(), ProviderError> {
         self.complete_schema_identity()?;
+        self.reconstruct_after_class_check(completed)
+    }
+
+    fn reconstruct_after_class_check(
+        &mut self,
+        completed: &mut Option<HistoricalNativeState>,
+    ) -> Result<(), ProviderError> {
         if completed.is_some() {
             return Err(invalid());
         }
@@ -255,6 +430,7 @@ impl<'a, 'scratch> ValidatedNativeOwnedProtocol11<'a, 'scratch> {
         ledger.aliases = Some(self.aliases.views()?);
         ledger.selected_groups = Some(&mut selected);
         let mut native = NativeLedger {
+            class: None,
             ledger: &mut ledger,
             groups: Some(&mut groups),
             historical_payload_layout_bytes: 0,
@@ -336,6 +512,79 @@ impl ValidatedNativeOwnedProtocol11<'_, '_> {
         completed: &mut Option<SealedHistoricalNativeState>,
     ) -> Result<(), ProviderError> {
         self.complete_schema_identity()?;
+        self.reconstruct_sealed_after_class_check(
+            reference,
+            encoded_bank,
+            completed,
+            NativeArchiveClass::Legacy11,
+        )
+    }
+
+    /// Retains exact verified bytes and the admitted four-owner historical class.
+    ///
+    /// # Errors
+    /// Refuses another class, occupied output, insufficient preowned bank, changed
+    /// full reference, failed allocation or any typed/raw/alias correspondence.
+    pub fn reconstruct_capture_allocation_sealed_into(
+        &mut self,
+        reference: &crucible_node_contract::ContentRef,
+        encoded_bank: &mut Option<Vec<u8>>,
+        completed: &mut Option<SealedHistoricalNativeState>,
+    ) -> Result<(), ProviderError> {
+        self.complete_capture_allocation_schema_identity()?;
+        self.reconstruct_sealed_after_class_check(
+            reference,
+            encoded_bank,
+            completed,
+            NativeArchiveClass::Capture12,
+        )
+    }
+
+    /// Seals the explicit startup three-root historical class into preowned storage.
+    ///
+    /// # Errors
+    /// Refuses wrong class, full reference, output occupancy or allocation/correspondence failure.
+    pub fn reconstruct_native_startup_sealed_into(
+        &mut self,
+        reference: &crucible_node_contract::ContentRef,
+        encoded_bank: &mut Option<Vec<u8>>,
+        completed: &mut Option<SealedHistoricalNativeState>,
+    ) -> Result<(), ProviderError> {
+        self.complete_native_startup_schema_identity()?;
+        self.reconstruct_sealed_after_class_check(
+            reference,
+            encoded_bank,
+            completed,
+            NativeArchiveClass::Startup13,
+        )
+    }
+
+    /// Seals the explicit startup four-root historical class into preowned storage.
+    ///
+    /// # Errors
+    /// Refuses wrong class, full reference, output occupancy or allocation/correspondence failure.
+    pub fn reconstruct_native_startup_capture_allocation_sealed_into(
+        &mut self,
+        reference: &crucible_node_contract::ContentRef,
+        encoded_bank: &mut Option<Vec<u8>>,
+        completed: &mut Option<SealedHistoricalNativeState>,
+    ) -> Result<(), ProviderError> {
+        self.complete_native_startup_capture_allocation_schema_identity()?;
+        self.reconstruct_sealed_after_class_check(
+            reference,
+            encoded_bank,
+            completed,
+            NativeArchiveClass::StartupCapture14,
+        )
+    }
+
+    fn reconstruct_sealed_after_class_check(
+        &mut self,
+        reference: &crucible_node_contract::ContentRef,
+        encoded_bank: &mut Option<Vec<u8>>,
+        completed: &mut Option<SealedHistoricalNativeState>,
+        class: NativeArchiveClass,
+    ) -> Result<(), ProviderError> {
         if completed.is_some()
             || encoded_bank
                 .as_ref()
@@ -354,7 +603,8 @@ impl ValidatedNativeOwnedProtocol11<'_, '_> {
         });
         let owner = completed.as_mut().ok_or_else(invalid)?;
         owner.encoded.extend_from_slice(self.input);
-        self.reconstruct_complete_into(&mut owner.historical)?;
+        self.authenticate_class(class)?;
+        self.reconstruct_after_class_check(&mut owner.historical)?;
         // The immutable plan and same final encoded bank remain in custody;
         // completed data cannot subsequently escape through a mutable getter.
         owner
@@ -401,3 +651,42 @@ pub(crate) fn original_restore_decoder_layouts() -> (usize, usize, usize, usize)
 
 #[path = "predecessor.rs"]
 mod predecessor;
+
+#[cfg(test)]
+mod startup_class_tests {
+    use super::*;
+    use crate::protocol_snapshot::owned11::{json_value::HistoricalJsonLimits, typed::Ledger};
+
+    #[test]
+    fn original_startup_class_rejects_legacy_connection_before_capacity_consumption() {
+        let records = ValidatedMetadataRecords::validate(b"[]", 8, 8192).unwrap();
+        let limits = HistoricalJsonLimits {
+            maximum_input_bytes: 8192,
+            maximum_nodes: 256,
+            maximum_depth: 32,
+            maximum_owned_backing_bytes: 8192,
+            maximum_tree_entries: 64,
+        };
+        for format in [
+            "source-private.native-state/13",
+            "source-private.native-state/14",
+        ] {
+            let encoded =
+                serde_json::to_vec(&(format, (COMPLETE_NATIVE_CONNECTION_FORMAT,), (), ()))
+                    .unwrap();
+            let mut ledger = Ledger::new(records.rows(), limits);
+            let mut native = NativeLedger {
+                class: None,
+                ledger: &mut ledger,
+                groups: None,
+                historical_payload_layout_bytes: 0,
+                correlation_capacity_span: None,
+            };
+
+            assert!(read(&encoded, &mut native, false).is_err());
+            assert!(native.requires_startup_class().unwrap());
+            assert_eq!(native.historical_payload_layout_bytes, 0);
+            assert!(native.ledger.rows.next().is_none());
+        }
+    }
+}

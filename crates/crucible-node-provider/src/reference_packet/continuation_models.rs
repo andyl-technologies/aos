@@ -473,3 +473,38 @@ pub(in crate::reference_packet) fn original_model_validation_layouts() -> [usize
         connected[3],
     ]
 }
+
+impl PacketProgram {
+    pub(crate) fn quote_original_live_capture_encoding(
+        &self,
+        maximum: usize,
+    ) -> Result<super::serialization_storage::NativeModelCaptureEncodingData, ProviderError> {
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        let cursor = self.observe_original_live_capture_metadata(&mut observer)?;
+        let facts = observer.finish();
+        let definition = ProducerDefinitionView {
+            schema: "source-owned.packet-program.v1",
+            events: &self.events,
+        };
+        let state = ProducerView {
+            events: &self.events,
+            next_event: self.next_event,
+            reached: self.reached,
+            gate_closed: self.gate_closed,
+            outputs: &self.outputs,
+            grants: &self.grants,
+            private_mutations: self.private_mutations,
+            packet_effects: self.packet_effects,
+            retired: &self.retired,
+            failed: self.failed,
+        };
+        super::serialization_storage::model_encoding_storage_data(
+            &definition,
+            &state,
+            cursor,
+            [self.events.capacity(), 0, 0, 0, self.outputs.capacity(), 0],
+            facts,
+            maximum,
+        )
+    }
+}

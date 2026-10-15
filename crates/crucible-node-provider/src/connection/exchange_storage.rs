@@ -20,13 +20,17 @@ mod acknowledgements;
 
 #[path = "exchange_continuation_storage.rs"]
 mod continuation;
-pub(crate) use continuation::OriginalContinuationContentExtent;
+pub(crate) use continuation::{
+    OriginalContinuationContentExtent, OriginalContinuationPrefixKind,
+    OriginalContinuationPrefixStorageData, OriginalContinuationPrefixStorageInput,
+};
 
 #[path = "exchange_packet_projection.rs"]
 mod packet_projection;
 pub(crate) use packet_projection::{
     OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData,
     original_packet_prefix_startup_counter_scratch_data,
+    quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
 };
 
@@ -110,6 +114,27 @@ impl OriginalPacketPrefixStorageData {
 }
 
 impl<S: ProviderStream> Connection<S> {
+    /// Binds a storage-backed builder to the quoted original registration.
+    pub(crate) fn authenticate_original_packet_prefix_builder_authority_data(
+        &self,
+        builder: &ConnectionAuthority,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.authority.ensure_live()?;
+        builder.ensure_live()?;
+        // Registration identity includes the actual revocation/gate owners.
+        // Full limits equality covers chunk partitioning, request population
+        // and raw ACK accounting as well as the emitted scope IDs.
+        if !builder.same_registration(&self.authority)
+            || builder.limits() != self.authority.limits()
+        {
+            return Err(ProviderError::Correlation(
+                "packet prefix builder authority changed",
+            ));
+        }
+        Ok(())
+    }
+
     /// Requotes actual inputs on the same current owner before plan construction.
     ///
     /// Scalar storage correspondence is not content or source authority. This

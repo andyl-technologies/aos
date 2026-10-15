@@ -49,9 +49,21 @@ pub enum MetadataSharedKind {
     OperationalDeadline,
     /// Names the actual prepared archive-mapping identity retained by restore.
     ArchivedMapping,
+    /// Names the actual native Control capture identity allocation.
+    NativeControlIdentity,
 }
 
 impl MetadataSharedKind {
+    /// Counts this closed wire kind and the largest local group index.
+    pub(crate) fn maximum_row_encoded_bytes_data(self) -> Result<usize, ProviderError> {
+        let integer = crate::connection::serialized_credit(&usize::MAX, 64)?;
+        self.name()
+            .len()
+            .checked_add(integer)
+            .and_then(|bytes| bytes.checked_add(5))
+            .ok_or_else(credit)
+    }
+
     fn name(self) -> &'static str {
         match self {
             Self::ProtocolOwner => "protocol-owner",
@@ -71,6 +83,7 @@ impl MetadataSharedKind {
             Self::HostSupervisor => "host-supervisor",
             Self::OperationalDeadline => "operational-deadline",
             Self::ArchivedMapping => "archived-mapping",
+            Self::NativeControlIdentity => "native-control-identity",
         }
     }
 }
@@ -113,6 +126,24 @@ pub struct MetadataAliasBank {
 }
 
 impl MetadataAliasBank {
+    /// Bounds a row for kinds already present in this same typed alias walk.
+    ///
+    /// A stable full-family suffix may remove edges or change group numbers,
+    /// but must not introduce another shared-root kind. Callers establish that
+    /// family invariant independently; this number creates no alias permission.
+    pub(crate) fn maximum_existing_kind_row_encoding_data(&self) -> Result<usize, ProviderError> {
+        let name = self
+            .rows
+            .iter()
+            .map(|row| row.kind.name().len())
+            .max()
+            .unwrap_or(0);
+        let integer = crate::connection::serialized_credit(&usize::MAX, 64)?;
+        name.checked_add(integer)
+            .and_then(|bytes| bytes.checked_add(5))
+            .ok_or_else(credit)
+    }
+
     /// Reserves both fixed-capacity banks before any source state copies.
     ///
     /// # Errors
@@ -306,4 +337,19 @@ impl MetadataAliasBank {
     pub(crate) fn retained_rows_of_kind(&self, kind: MetadataSharedKind) -> usize {
         self.rows.iter().filter(|row| row.kind == kind).count()
     }
+}
+
+// crucible-lint: allow panic-shortcut -- exact actual wire widths are fixture observations.
+#[cfg(test)]
+#[test]
+#[expect(
+    clippy::unwrap_used,
+    reason = "actual alias-row serialization is the test observation"
+)]
+fn maximum_alias_row_width_matches_actual_current_kind_and_usize() {
+    let kind = MetadataSharedKind::NativeControlIdentity;
+    let row = serde_json::to_vec(&(kind.name(), usize::MAX)).unwrap();
+    assert_eq!(kind.maximum_row_encoded_bytes_data().unwrap(), row.len());
+    let smaller = serde_json::to_vec(&(kind.name(), 0usize)).unwrap();
+    assert!(smaller.len() <= row.len());
 }

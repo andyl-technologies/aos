@@ -70,6 +70,37 @@ impl AdmissionEvidence for InstalledPacketCompleteCollectionAuthority {
 }
 
 impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthority {
+    fn original_native_startup_policy(
+        &self,
+        _plan: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalNativeStartupScope<'_>,
+    ) -> Result<
+        crucible::node_admission::OriginalNativeStartupPolicy,
+        crucible::node_contract::RuntimeError,
+    > {
+        self.original_native_startup_policy_data(scope)
+    }
+
+    fn authenticate_original_native_startup(
+        &self,
+        _plan: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalNativeStartupScope<'_>,
+        policy: &crucible::node_admission::OriginalNativeStartupPolicy,
+    ) -> Result<
+        crucible::node_admission::OriginalNativeStartupStorage,
+        crucible::node_contract::RuntimeError,
+    > {
+        self.authenticate_original_native_startup_data(scope, policy)
+    }
+
+    fn authenticate_original_native_startup_member(
+        &self,
+        _plan: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalNativeStartupMemberScope<'_>,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        self.authenticate_original_native_startup_member_data(scope)
+    }
+
     fn authenticate_original_fresh_restore_host_member(
         &self,
         _plan: ConformancePlanEvidence<'_>,

@@ -169,18 +169,65 @@ impl MeasurementReader for PositionalFile<'_> {
     }
 }
 
+pub(super) trait MeasurementFailure {
+    fn refused() -> Self;
+    fn io(error: std::io::Error) -> Self;
+    fn contract(error: crucible_node_contract::ContractError) -> Self;
+}
+
+impl MeasurementFailure for QualificationError {
+    fn refused() -> Self {
+        refused()
+    }
+    fn io(error: std::io::Error) -> Self {
+        io(error)
+    }
+    fn contract(error: crucible_node_contract::ContractError) -> Self {
+        error.into()
+    }
+}
+
+impl MeasurementFailure for crucible::node_contract::RuntimeError {
+    fn refused() -> Self {
+        Self::InvalidReceipt
+    }
+    fn io(_: std::io::Error) -> Self {
+        Self::OwnerUnavailable
+    }
+    fn contract(_: crucible_node_contract::ContractError) -> Self {
+        Self::InvalidReceipt
+    }
+}
+
+pub(super) fn measured_file_at_data<E: MeasurementFailure>(
+    file: &File,
+    expected: &ContentRef,
+) -> Result<std::fs::Metadata, E> {
+    measured_reader_data(&mut PositionalFile { file, offset: 0 }, expected)
+}
+
 fn measured_reader(
     file: &mut impl MeasurementReader,
     expected: &ContentRef,
 ) -> Result<std::fs::Metadata, QualificationError> {
-    expected.validate()?;
+    measured_reader_data(file, expected)
+}
+
+// Both entry points execute the same complete hash and terminal metadata fences.
+// Only refusal representation differs; the selected native action never formats
+// a kernel error before returning its bounded raw status.
+fn measured_reader_data<E: MeasurementFailure>(
+    file: &mut impl MeasurementReader,
+    expected: &ContentRef,
+) -> Result<std::fs::Metadata, E> {
+    expected.validate().map_err(E::contract)?;
     let length = expected.length.get();
     if length == 0 || length > MAXIMUM_ARTIFACT || expected.hash.domain != "cnp.blob.v1" {
-        return Err(refused());
+        return Err(E::refused());
     }
-    let before = file.metadata().map_err(io)?;
+    let before = file.metadata().map_err(E::io)?;
     if !before.is_file() || before.len() != length {
-        return Err(refused());
+        return Err(E::refused());
     }
     let mut hash = blake3::Hasher::new();
     hash.update(b"CNP/1\0");
@@ -190,14 +237,14 @@ fn measured_reader(
     let mut buffer = [0u8; STREAMING_BUFFER_BYTES];
     let mut received = 0u64;
     loop {
-        let count = file.read(&mut buffer).map_err(io)?;
+        let count = file.read(&mut buffer).map_err(E::io)?;
         if count == 0 {
             break;
         }
         received = received
             .checked_add(count as u64)
             .filter(|size| *size <= length)
-            .ok_or_else(refused)?;
+            .ok_or_else(E::refused)?;
         hash.update(&buffer[..count]);
     }
     let actual = ContentRef {
@@ -209,7 +256,7 @@ fn measured_reader(
         length: U64::new(received),
         media_type: expected.media_type.clone(),
     };
-    let after = file.metadata().map_err(io)?;
+    let after = file.metadata().map_err(E::io)?;
     let facts = |m: &std::fs::Metadata| {
         (
             m.dev(),
@@ -222,7 +269,7 @@ fn measured_reader(
         )
     };
     if actual != *expected || facts(&before) != facts(&after) {
-        return Err(refused());
+        return Err(E::refused());
     }
     Ok(after)
 }

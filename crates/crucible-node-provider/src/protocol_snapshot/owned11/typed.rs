@@ -623,3 +623,7 @@ macro_rules! historical_struct {
     };
 }
 pub(crate) use historical_struct;
+
+// Only the actual closed Position/Phase serializer is admitted by this leaf.
+#[path = "typed/position.rs"]
+mod position;

@@ -56,6 +56,22 @@ pub(crate) struct OriginalNativeCaptureContext<'a> {
 }
 
 impl OriginalNativeCaptureContext<'_> {
+    /// Reports the fixed startup loan and codec counter layouts.
+    ///
+    /// This excludes compiler/recursive traversal frames, allocator overhead,
+    /// preowned record/alias banks, unique identity rosters and retained payloads. It is requested
+    /// storage data and supplies no allocation or original startup authority.
+    pub(crate) fn startup_protocol_counter_scratch_data() -> usize {
+        [
+            std::mem::size_of::<OriginalNativeServiceOwned11<'static>>(),
+            NativeAckBoot::startup_protocol_counter_scratch_data(),
+            crate::connection::original_native_startup_protocol_counter_scratch_data(),
+        ]
+        .into_iter()
+        .try_fold(0usize, usize::checked_add)
+        .unwrap_or(usize::MAX)
+    }
+
     pub(crate) fn authenticate_original<S: ProviderStream>(
         &self,
         connection: &Connection<S>,
@@ -81,16 +97,65 @@ impl OriginalNativeCaptureContext<'_> {
         connection: &'a Connection<DeadlineStream>,
         blobs: &BlobReceiver,
     ) -> Result<OriginalNativeServiceOwned11<'a>, ProviderError> {
+        self.borrow_at_edition(connection, blobs, false)
+    }
+
+    pub(crate) fn requires_original_native_startup_codec<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        blobs: &BlobReceiver,
+    ) -> Result<bool, ProviderError> {
         self.authenticate_original(connection, blobs)?;
+        connection
+            .original_native_owned11_admission()?
+            .boot
+            .try_borrow()
+            .map_err(|_| ProviderError::Conflict("native startup boot borrowed"))?
+            .requires_startup_codec_data()
+    }
+
+    pub(crate) fn borrow_original_startup<'a>(
+        &'a self,
+        connection: &'a Connection<DeadlineStream>,
+        blobs: &BlobReceiver,
+    ) -> Result<OriginalNativeServiceOwned11<'a>, ProviderError> {
+        self.borrow_at_edition(connection, blobs, true)
+    }
+
+    pub(crate) fn borrow_current_original_protocol_data<'a>(
+        &'a self,
+        connection: &'a Connection<DeadlineStream>,
+        blobs: &BlobReceiver,
+    ) -> Result<OriginalNativeServiceOwned11<'a>, ProviderError> {
+        let startup = self.requires_original_native_startup_codec(connection, blobs)?;
+        self.borrow_at_edition(connection, blobs, startup)
+    }
+
+    fn borrow_at_edition<'a>(
+        &'a self,
+        connection: &'a Connection<DeadlineStream>,
+        blobs: &BlobReceiver,
+        startup: bool,
+    ) -> Result<OriginalNativeServiceOwned11<'a>, ProviderError> {
+        self.authenticate_original(connection, blobs)?;
+        if self.requires_original_native_startup_codec(connection, blobs)? != startup {
+            return Err(ProviderError::Correlation(
+                "native service codec edition differs",
+            ));
+        }
         connection.authenticate_original_service_deadline(self.service.deadline)?;
         let token = connection.original_native_owned11_admission()?;
-        let bootstrap = OriginalNativeBootstrapOwned11::borrow_original(
-            self.service.bootstrap.ok_or(ProviderError::Correlation(
-                "native original bootstrap absent",
-            ))?,
-            token,
-            connection,
-        )?;
+        let retained = self.service.bootstrap.ok_or(ProviderError::Correlation(
+            "native original bootstrap absent",
+        ))?;
+        let bootstrap = if startup {
+            OriginalNativeBootstrapOwned11::borrow_original_startup(retained, token, connection)?
+        } else {
+            OriginalNativeBootstrapOwned11::borrow_original(retained, token, connection)?
+        };
+        // The primitive birth cut remains historical data after transfer.
+        // The service's same deadline owner may reset for later operations;
+        // its current cut is authenticated independently against Connection.
         let OriginalServiceHandshake::Selected {
             handshake,
             registry,
@@ -108,6 +173,7 @@ impl OriginalNativeCaptureContext<'_> {
         Ok(OriginalNativeServiceOwned11 {
             creator: std::process::id(),
             thread: std::thread::current().id(),
+            startup,
             roots: self,
             bootstrap,
             supervisor,
@@ -118,6 +184,7 @@ impl OriginalNativeCaptureContext<'_> {
 }
 
 pub(crate) struct OriginalNativeServiceOwned11<'a> {
+    startup: bool,
     creator: u32,
     thread: std::thread::ThreadId,
     roots: &'a OriginalNativeCaptureContext<'a>,
@@ -131,6 +198,33 @@ pub(crate) struct OriginalNativeServiceOwned11<'a> {
 }
 
 impl OriginalNativeServiceOwned11<'_> {
+    pub(crate) const fn current_protocol_format_data(&self) -> &'static str {
+        if self.startup {
+            "source-private.native-state/13"
+        } else {
+            "source-private.native-state/11"
+        }
+    }
+
+    pub(crate) fn observe_current_protocol_metadata_data(
+        &self,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.observe_metadata_at_edition(observer)
+    }
+
+    pub(crate) fn observe_startup_metadata(
+        &self,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        if !self.startup {
+            return Err(ProviderError::Correlation(
+                "native startup service edition absent",
+            ));
+        }
+        self.observe_metadata_at_edition(observer)
+    }
+
     fn ensure_origin_and_cut(&self) -> Result<(), ProviderError> {
         if self.creator != std::process::id() || self.thread != std::thread::current().id() {
             return Err(ProviderError::Correlation(
@@ -154,20 +248,43 @@ impl OriginalNativeServiceOwned11<'_> {
         &self,
         observer: &mut MetadataObserver,
     ) -> Result<(), ProviderError> {
+        if self.startup {
+            return Err(ProviderError::Correlation(
+                "native service startup edition requires explicit observer",
+            ));
+        }
+        self.observe_metadata_at_edition(observer)
+    }
+
+    fn observe_metadata_at_edition(
+        &self,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
         self.ensure_origin_and_cut()?;
         self.negotiation.observe_owned11_metadata(observer)?;
-        self.bootstrap.observe_owned11_metadata(observer)?;
+        if self.startup {
+            self.bootstrap.observe_startup_metadata(observer)?;
+        } else {
+            self.bootstrap.observe_owned11_metadata(observer)?;
+        }
         observer.shared_original(
             MetadataSharedKind::NativeSupervisor,
             self.roots.service.supervisor.as_ref(),
         )?;
         self.supervisor.observe_owned11_metadata(observer)?;
         observer.shared_original(MetadataSharedKind::NativeBoot, self.roots.boot.as_ref())?;
-        self.roots
-            .boot
-            .try_borrow()
-            .map_err(|_| ProviderError::Conflict("native endpoint boot borrowed"))?
-            .observe_owned11_metadata(observer)?;
+        {
+            let boot = self
+                .roots
+                .boot
+                .try_borrow()
+                .map_err(|_| ProviderError::Conflict("native endpoint boot borrowed"))?;
+            if self.startup {
+                boot.observe_startup_metadata(observer)?;
+            } else {
+                boot.observe_owned11_metadata(observer)?;
+            }
+        }
         observer.shared_original(MetadataSharedKind::NativePolicy, self.roots.policy.as_ref())?;
         let boot = self
             .roots
@@ -194,6 +311,26 @@ impl Serialize for OriginalNativeServiceOwned11<'_> {
             .boot
             .try_borrow()
             .map_err(|_| serde::ser::Error::custom("native endpoint boot borrowed"))?;
+        if self.startup {
+            let boot_view = boot
+                .borrowed_startup_protocol_view()
+                .map_err(serde::ser::Error::custom)?;
+            let policy = boot
+                .policy
+                .as_ref()
+                .ok_or_else(|| serde::ser::Error::custom("native endpoint policy absent"))?;
+            return (
+                "source-private.native-service/14",
+                &self.negotiation,
+                &self.bootstrap,
+                "source-private.native-supervisor-owner/11",
+                &self.supervisor,
+                boot_view,
+                policy.borrowed_owned11_protocol_view(),
+                "opaque-original-service-cut",
+            )
+                .serialize(serializer);
+        }
         let boot_view = boot
             .borrowed_owned11_protocol_view()
             .map_err(serde::ser::Error::custom)?;
@@ -303,5 +440,58 @@ impl NativeRestoreServiceAllocationQuote {
 
     pub(crate) fn retained_facts(&self) -> crate::retained_metadata::RetainedProtocolMetadataFacts {
         self.facts
+    }
+}
+
+impl OriginalNativeServiceOwned11<'_> {
+    pub(crate) fn observe_unique_capture_metadata(
+        &self,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.ensure_origin_and_cut()?;
+        self.negotiation
+            .observe_unique_capture_metadata(roots, observer)?;
+        self.bootstrap
+            .observe_unique_capture_metadata(roots, observer)?;
+        if roots.observe_shared(
+            observer,
+            MetadataSharedKind::NativeSupervisor,
+            self.roots.service.supervisor.as_ref(),
+        )? {
+            self.supervisor.observe_owned11_metadata(observer)?;
+        }
+        if roots.observe_shared(
+            observer,
+            MetadataSharedKind::NativeBoot,
+            self.roots.boot.as_ref(),
+        )? {
+            self.roots
+                .boot
+                .try_borrow()
+                .map_err(|_| ProviderError::Conflict("native Capture endpoint boot borrowed"))?
+                .observe_unique_capture_metadata(roots, observer)?;
+        }
+        if roots.observe_shared(
+            observer,
+            MetadataSharedKind::NativePolicy,
+            self.roots.policy.as_ref(),
+        )? {
+            let boot =
+                self.roots.boot.try_borrow().map_err(|_| {
+                    ProviderError::Conflict("native Capture endpoint boot borrowed")
+                })?;
+            boot.policy
+                .as_ref()
+                .ok_or(ProviderError::Correlation(
+                    "native Capture endpoint policy absent",
+                ))?
+                .observe_unique_capture_metadata(roots, observer)?;
+        }
+        self.roots
+            .service
+            .deadline
+            .observe_unique_capture_metadata(roots, observer)?;
+        self.ensure_origin_and_cut()
     }
 }

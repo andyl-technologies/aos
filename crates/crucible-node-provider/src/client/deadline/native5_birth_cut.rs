@@ -6,6 +6,7 @@
 //! to ordinary later controls is explicit and grants no semantic permission.
 
 use super::*;
+use crate::ProviderError;
 use crate::protocol_snapshot::ProtocolCaptureOwner;
 
 #[derive(Clone, Copy)]
@@ -29,6 +30,21 @@ struct BirthCut {
 pub struct OriginalNative5BirthCut(Rc<BirthCut>);
 
 impl OriginalNative5BirthCut {
+    // The nested ExchangeDeadline Rc is independently counted by the actual
+    // service root roster; this helper names only this additional BirthCut Rc.
+    pub(crate) fn original_requested_layout_data() -> Result<usize, ProviderError> {
+        std::mem::size_of::<BirthCut>()
+            .checked_add(
+                crate::retained_metadata::requested_storage::shared_header_storage_data(
+                    1,
+                    std::mem::align_of::<BirthCut>(),
+                )?,
+            )
+            .ok_or(ProviderError::ResourceExhausted(
+                "original native birth cut layout",
+            ))
+    }
+
     /// Starts the single original cut before the service exposes native effects.
     ///
     /// # Errors
@@ -38,6 +54,21 @@ impl OriginalNative5BirthCut {
         Ok(Self(Rc::new(BirthCut {
             owner: ProtocolCaptureOwner::new(),
             original: deadline.original_cut(),
+            deadline,
+            refusal: Cell::new(None),
+        })))
+    }
+
+    // The fixed pre-parser has already started this actual cut before any Rc
+    // or frame-bank allocation. Transferring it cannot renew the birth budget.
+    pub(crate) fn from_original_preparser_cut(original: OperationalDeadline) -> io::Result<Self> {
+        if original.is_expired() {
+            return Err(refusal_error(Refusal::Expired));
+        }
+        let deadline = ExchangeDeadline(Rc::new(Cell::new(original)));
+        Ok(Self(Rc::new(BirthCut {
+            owner: ProtocolCaptureOwner::new(),
+            original,
             deadline,
             refusal: Cell::new(None),
         })))

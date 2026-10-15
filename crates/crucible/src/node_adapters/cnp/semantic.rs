@@ -59,8 +59,9 @@ pub use packet_complete_source::{
     PacketCompleteArchivedSemantics, PacketCompleteCaptureBankFacts,
     PacketCompleteCaptureBankLimits, PacketCompleteCaptureDependencyLookupData,
     PacketCompleteCaptureDependencyStorageData, PacketCompleteEffectReceiverGroup,
-    PacketCompleteEffectReceiverReader, PacketCompleteNativeRecord, PacketCompleteNativeWitness,
-    PacketCompleteRestorePreparation, PacketCompleteSemanticSource, PacketCompleteSettledJournal,
+    PacketCompleteEffectReceiverReader, PacketCompleteNativeRecord,
+    PacketCompleteNativeStartupWire, PacketCompleteNativeWitness, PacketCompleteRestorePreparation,
+    PacketCompleteSemanticSource, PacketCompleteSettledJournal,
     PacketCompleteSourceRetainedStorage, PacketCompleteSourceRole,
 };
 pub use packet_connected_source::{

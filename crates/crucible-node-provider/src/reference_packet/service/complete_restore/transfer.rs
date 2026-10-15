@@ -631,3 +631,5 @@ fn same_digest(actual: &Bytes, expected: &Bytes) -> Result<(), ProviderError> {
 // crucible-lint: allow panic-shortcut -- Closed protocol data controls panic on fixture failures.
 #[allow(clippy::unwrap_used)]
 mod tests;
+
+pub(crate) use contract::complete_restore_transfer_contract_storage_data;

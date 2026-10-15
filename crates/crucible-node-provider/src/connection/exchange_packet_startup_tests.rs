@@ -100,6 +100,7 @@ fn prospective_heap_count_does_not_admit_or_require_a_wire_window() -> TestResul
             objects: &objects,
             maximum_requested_bytes: MAXIMUM,
         },
+        false,
     )?;
 
     assert!(data.exchange.requests > usize::try_from(authority.limits().requests.get())?);
@@ -136,6 +137,7 @@ fn startup_counter_preserves_content_cap_and_total_one_short_refusal() -> TestRe
                 objects,
                 maximum_requested_bytes: maximum,
             },
+            false,
         )
     };
     let data = count(&objects, MAXIMUM)?;

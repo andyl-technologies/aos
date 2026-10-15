@@ -166,12 +166,32 @@ fn original(
         reference_children(PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA)?,
     ])?;
     let completed_owner = sum(&[
-        size_of::<crate::reference_packet::service::PacketSourceService>(),
+        crate::reference_packet::endpoint::original_capture_report_owner_layout_data(),
         shapes.original.dom_and_canonical_scratch_bytes,
         size_of::<PacketNativeCaptureAllocationReport>(),
         shapes.report.dom_and_canonical_scratch_bytes,
         PACKET_NATIVE_REPORT_STARTUP_RAW_CAPACITY,
         reference_children(PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA)?,
+    ])?;
+    let [owner_binding] = launch.selection.realization.owner_bindings.as_slice() else {
+        return Err(refused());
+    };
+    let mut identity_fields = MetadataObserver::new();
+    identity_fields.observe(owner_binding)?;
+    let identity =
+        crate::retained_metadata::serialization_storage::actual_serialization_storage_data(
+            owner_binding,
+            identity_fields.finish(),
+            MAXIMUM_COMPILED_PROJECTION_BYTES,
+        )?;
+    // The real selected dispatcher hashes this same immutable binding while
+    // comparing the request, producing receipt5 and building ObservationBatch.
+    let binding_identity_transient = sum(&[
+        mul(3, identity.requested_total()?)?,
+        mul(
+            3,
+            "blake3-256".len() + "cnp.owner-binding.v1".len() + 2 * blake3::OUT_LEN,
+        )?,
     ])?;
     let retained = sum(&[
         prefix.exchange.requested_bytes()?, // Includes temporary terms conservatively.
@@ -181,13 +201,12 @@ fn original(
         cache_bytes,
         completed_owner,
         new_tree_backing,
-        // The selected policy additionally retains two independent full schema
-        // definition references. These are new publication-class fields; the
-        // baseline native service/model/SDK birth remains a separate action.
+        // Independent policy definition refs belong to this publication class.
         mul(2, size_of::<ContentRef>())?,
         mul(2, reference_children("application/json")?)?,
     ])?;
     let transient = sum(&[
+        binding_identity_transient,
         initial_receive,
         shapes.original.requested_total()?,
         shapes.raw.requested_total()?,
@@ -198,7 +217,8 @@ fn original(
         // The receipt constructor owns a complete original clone and independent
         // scope strings. Charging its full DOM shape plus actual typed header
         // dominates those scalar children without manufacturing a receipt DTO.
-        size_of::<crate::reference_packet::control::PacketNative5Record>(),
+        size_of::<crate::reference_packet::control::ProducedOriginalObserveReceipt>(),
+        128, // Id::new grammar bound of the independently retained activation witness.
         shapes.receipt.dom_and_canonical_scratch_bytes,
         size_of::<crucible_node_contract::ObservationBatch>(),
         size_of::<crate::bodies::ObserveResult>(),
@@ -300,7 +320,8 @@ fn authenticate_tuple(
 pub fn original_report_startup_counter_scratch_data() -> usize {
     let result = schema_generation::requested_data().and_then(|schemas| sum(&[
         schemas,
-        size_of::<crate::reference_packet::service::PacketSourceService>(),
+        crate::reference_packet::control::original_observe_dispatch_scratch_data(),
+        crate::reference_packet::endpoint::original_capture_report_quote_layout_data(),
         size_of::<PacketNativeReportStartupStorageData>(),
         size_of::<observe::OriginalObserveStartupShapes>(),
         size_of::<OriginalSerializationStorageProjection>(),
@@ -313,6 +334,8 @@ pub fn original_report_startup_counter_scratch_data() -> usize {
         crate::connection::original_report_query_receive_counter_scratch_data(),
         super::super::fresh_restore_allocation::fresh_restore_allocation_startup_counter_scratch_data(),
         crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::requested_serialization_scratch_bytes(),
+        crate::connection::NativeCaptureSdkStateQuote::requested_scratch_bytes(),
+        crate::protocol_snapshot::owned11::correspondence::closed_envelope_comparison_scratch_data(),
         size_of::<[u8; 20]>(),
     ]));
     match result {

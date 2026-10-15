@@ -26,6 +26,38 @@ pub(crate) fn quote_original_packet_prefix_startup_storage_data(
         launch.limits,
         launch.selection.provider.extensions_supported.len(),
         input,
+        false,
+    )
+}
+
+/// Counts the same closed initial Discover/Realize/Admit proof grammar.
+///
+/// Only the baseline constructor projection calls this data function. Empty
+/// evidence means the actual Discover/Admit response has no ACK receive phase;
+/// Realize independently names both actual proof objects. This issues no scope.
+pub(crate) fn quote_original_packet_baseline_prefix_startup_storage_data(
+    launch: &PacketNative5SourceLaunch,
+    input: OriginalPacketPrefixProjectionInput<'_>,
+) -> Result<OriginalPacketPrefixProjectionStorageData, ProviderError> {
+    crucible_node_contract::Validate::validate(&launch.limits)?;
+    if !matches!(input.objects.len(), 0 | 2) {
+        return Err(refused());
+    }
+    let binding = launch
+        .selection
+        .realization
+        .bindings
+        .first()
+        .ok_or_else(refused)?;
+    quote_startup_parts(
+        (
+            &binding.authority.session_id,
+            &binding.authority.incarnation_id,
+        ),
+        launch.limits,
+        launch.selection.provider.extensions_supported.len(),
+        input,
+        true,
     )
 }
 
@@ -34,9 +66,10 @@ fn quote_startup_parts(
     limits: crate::handshake::Limits,
     maximum_extensions: usize,
     input: OriginalPacketPrefixProjectionInput<'_>,
+    allow_empty_baseline: bool,
 ) -> Result<OriginalPacketPrefixProjectionStorageData, ProviderError> {
     let (session, incarnation) = scope;
-    if input.objects.is_empty() || input.objects.len() > 3 {
+    if (!allow_empty_baseline && input.objects.is_empty()) || input.objects.len() > 3 {
         return Err(refused());
     }
     let maximum_frame = allowance(limits.frame_bytes.get())?;
@@ -105,7 +138,11 @@ fn quote_startup_parts(
             size_of::<std::collections::btree_map::Values<'static, Id, Envelope>>(),
         )?,
         successful_ack_cache_requested_bytes: 0,
-        one_open_ack_requested_bytes: acknowledgements::open_ack_storage(maximum_frame)?,
+        one_open_ack_requested_bytes: if requests == 0 {
+            0 // No provider proof request exists, so no ACK reader runs.
+        } else {
+            acknowledgements::open_ack_storage(maximum_frame)?
+        },
         containment_requested_bytes: add(
             startup_containment(maximum_extensions, input.original)?,
             mul(add(mul(2, requests)?, 8)?, size_of::<Envelope>())?,

@@ -793,6 +793,9 @@ impl ObserveMetadata for crate::reference_packet::service::complete_restore::Pac
 mod common_data;
 pub use common_data::RetainedCommonProtocolData;
 
+mod capture_roots;
+pub(crate) use capture_roots::NativeCaptureMetadataRoots;
+
 mod capture_data;
 pub use capture_data::RetainedCaptureProtocolData;
 
@@ -801,3 +804,6 @@ pub(crate) mod serialization_storage;
 
 pub(crate) mod requested_storage;
 pub(crate) use requested_storage::requested_metadata_backing_storage_data;
+
+mod native_capture_data;
+pub use native_capture_data::RetainedNativeCaptureAllocationData;

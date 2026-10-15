@@ -12,6 +12,30 @@ use std::io::Write;
 
 const MAXIMUM_COMPARISON_WORK: usize = 64 * 1024 * 1024;
 
+// Names only the explicit borrowed parser/writer layouts used by envelope().
+// Recursive compiler frames and caller-owned raw/typed banks remain separate.
+pub(crate) fn envelope_counter_scratch_data() -> usize {
+    std::mem::size_of::<Fields<'static>>() * 2
+        + std::mem::size_of::<ComparisonSink<'static>>()
+        + std::mem::size_of::<serde_json::Serializer<&mut ComparisonSink<'static>>>()
+        + std::mem::size_of::<usize>()
+        + 20
+}
+
+/// Names the fixed scanner/writer layouts and one decimal formatter bank.
+///
+/// Closed proof ACKs contain string/U64 leaves; each scalar formatter finishes
+/// before the next one. Recursive/compiler frames and allocator residency are
+/// separate obligations, not inferred by this requested-layout data getter.
+pub(crate) const fn closed_envelope_comparison_scratch_data() -> usize {
+    std::mem::size_of::<Fields<'static>>()
+        + std::mem::size_of::<ComparisonSink<'static>>()
+        + std::mem::size_of::<serde_json::Serializer<&mut ComparisonSink<'static>>>()
+        + std::mem::size_of::<[u8; 128]>()
+        + std::mem::size_of::<usize>()
+        + 20
+}
+
 pub(crate) fn envelope(original: &Envelope, bytes: &[u8]) -> Result<(), ProviderError> {
     let mut fields = Fields::object(bytes)?;
     let mut work = MAXIMUM_COMPARISON_WORK;
@@ -37,7 +61,13 @@ pub(crate) fn envelope(original: &Envelope, bytes: &[u8]) -> Result<(), Provider
     scalar(fields.named("operation_id")?, &original.operation_id)?;
     scalar(fields.named("protocol")?, &original.protocol)?;
     scalar(fields.named("request_id")?, &original.request_id)?;
-    scalar(fields.named("sequence")?, &original.sequence)?;
+    // The sequence has the closed U64 string grammar. Comparing its checked
+    // digits avoids the U64 serializer's temporary String during cold walks.
+    if super::typed::unsigned(super::typed::plain_string(fields.named("sequence")?)?.as_bytes())?
+        != original.sequence.get()
+    {
+        return Err(invalid());
+    }
     scalar(fields.named("session_id")?, &original.session_id)?;
     fields.finish()
 }
@@ -145,7 +175,7 @@ fn charge(work: &mut usize, extent: usize) -> Result<(), ProviderError> {
     Ok(())
 }
 
-fn scalar(bytes: &[u8], original: &impl Serialize) -> Result<(), ProviderError> {
+pub(super) fn scalar(bytes: &[u8], original: &impl Serialize) -> Result<(), ProviderError> {
     if !serialized_equal(bytes, original)? {
         return Err(invalid());
     }
@@ -240,6 +270,22 @@ mod tests {
         changed = expected.clone();
         changed.sequence = U64::new(3);
         assert!(envelope(&changed, &bytes).is_err());
+    }
+
+    #[test]
+    fn envelope_sequence_retains_canonical_u64_grammar_without_temporary_encoding() {
+        let mut expected = original();
+        expected.sequence = U64::new(u64::MAX);
+        let bytes = canonical::canonical_json(&serde_json::to_value(&expected).unwrap()).unwrap();
+
+        envelope(&expected, &bytes).unwrap();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        let changed = text.replace(
+            "\"sequence\":\"18446744073709551615\"",
+            "\"sequence\":\"018446744073709551615\"",
+        );
+        assert_ne!(changed, text);
+        assert!(envelope(&expected, changed.as_bytes()).is_err());
     }
 
     #[test]

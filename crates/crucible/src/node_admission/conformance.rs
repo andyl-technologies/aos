@@ -16,7 +16,17 @@ use super::*;
 mod archive_code;
 mod extensions;
 mod fresh_restore_host;
+mod native_startup;
 mod report_startup;
+pub(crate) use native_startup::{
+    NativeStartupRows, OriginalNativeStartupMember, OriginalNativeStartupQuote,
+};
+
+pub use native_startup::{
+    CompleteOriginalNativeStartupAdmission, OriginalNativeStartupMemberScope,
+    OriginalNativeStartupPolicy, OriginalNativeStartupScope, OriginalNativeStartupStorage,
+};
+
 pub use fresh_restore_host::{
     CompleteOriginalFreshRestoreHostWindow, OriginalFreshRestoreHostMemberScope,
     OriginalFreshRestoreHostPolicy, OriginalFreshRestoreHostScope, OriginalFreshRestoreHostStorage,
@@ -60,6 +70,43 @@ pub struct ConformancePlanEvidence<'a> {
 /// [`AdmissionEvidence`]. Collection authorization must never issue an accepted
 /// class or use vendor-selected omissions as a normative witness population.
 pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
+    /// Selects the installed resource action for the same pre-Child native roster.
+    ///
+    /// # Errors
+    /// Defaults to refusal; limits or report grants cannot substitute this action.
+    fn original_native_startup_policy(
+        &self,
+        _: &ConformancePlanEvidence,
+        _: &OriginalNativeStartupScope<'_>,
+    ) -> Result<OriginalNativeStartupPolicy, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Authenticates and observes the actual registered baseline holder.
+    ///
+    /// # Errors
+    /// Refuses unsupported, foreign, busy, revoked or unpriced owners.
+    fn authenticate_original_native_startup(
+        &self,
+        _: &ConformancePlanEvidence,
+        _: &OriginalNativeStartupScope<'_>,
+        _: &OriginalNativeStartupPolicy,
+    ) -> Result<OriginalNativeStartupStorage, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Checks a privately issued member without invoking live native callbacks.
+    ///
+    /// # Errors
+    /// Refuses a foreign, revoked or unsupported same-holder member.
+    fn authenticate_original_native_startup_member(
+        &self,
+        _: &ConformancePlanEvidence,
+        _: &OriginalNativeStartupMemberScope<'_>,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
     /// Reads the actual installed host-query resource action without allocation.
     ///
     /// # Errors

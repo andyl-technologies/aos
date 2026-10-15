@@ -47,6 +47,29 @@ impl PacketCompleteAckPeerBootFrame {
         Ok(self.frame.capacity())
     }
 
+    /// Observes this actual encoded bank without a currentness callback.
+    ///
+    /// The owner inline layout is counted by its containing launch holder.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator/thread or a capacity above the caller window.
+    pub fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        if self.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        if self.frame.capacity() > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        Ok(self.frame.capacity())
+    }
+
     /// Reports the actual literal offset without claiming remote completion.
     ///
     /// # Errors
@@ -155,7 +178,7 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
         // Both parsed trees and the final encoded buffer are distinct source
         // scratch/backing. The full capture peak must account them separately.
         let body = serde_json::json!({
-            "schema": "source-owned.packet-canonical-ack-private-boot/5",
+            "schema": self.original_private_boot_schema_data()?,
             "private_key": Bytes::new(self.private_key()?.to_vec()),
             "birth_id": Bytes::new(self.birth_id()?.to_vec()),
             "source_birth": canonical::parse_json(source_birth, MAXIMUM_ACK_SOURCE_BIRTH_BYTES)

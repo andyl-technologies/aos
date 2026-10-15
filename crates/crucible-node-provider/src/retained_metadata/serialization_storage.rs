@@ -47,9 +47,27 @@ struct Credit {
     parser_requested: usize,
     sequence_elements: usize,
     sequence_containers: usize,
+    serialized_value_nodes: usize,
+    serialized_capacity_records: usize,
 }
 
 impl Credit {
+    fn serialized_node(&mut self, has_backing: bool) -> Result<(), Excess> {
+        self.serialized_value_nodes = self.serialized_value_nodes.checked_add(1).ok_or(Excess)?;
+        if has_backing {
+            self.serialized_capacity_records = self
+                .serialized_capacity_records
+                .checked_add(1)
+                .ok_or(Excess)?;
+        }
+        Ok(())
+    }
+
+    fn scalar(&mut self, encoded: usize) -> Result<(), Excess> {
+        self.serialized_node(false)?;
+        self.encoded(encoded)
+    }
+
     fn add(&mut self, bytes: usize) -> Result<(), Excess> {
         self.used = self
             .used
@@ -78,6 +96,7 @@ impl Credit {
     }
 
     fn container(&mut self, capacity: usize, map: bool) -> Result<Container<'_>, Excess> {
+        self.serialized_node(true)?;
         if self.depth >= 64 {
             return Err(Excess);
         }
@@ -129,6 +148,7 @@ impl Credit {
     }
 
     fn string_storage(&mut self, bytes: usize, escaped: usize) -> Result<(), Excess> {
+        self.serialized_node(true)?;
         self.add(bytes)?;
         // The actual canonical Parser owns a growable decoded UTF-8 bank.
         // Its min-capacity16 and doubling requests are bounded per string.
@@ -172,6 +192,7 @@ impl Credit {
     }
 
     fn variant(&mut self, variant: &str) -> Result<(), Excess> {
+        self.serialized_node(true)?;
         self.encoded(2)?;
         self.add(map_node_bytes()?)?;
         self.parser(map_node_bytes()?)?;
@@ -194,6 +215,12 @@ pub(crate) struct OriginalSerializationStorageData {
     pub(crate) maximum_encoded_bytes: usize,
     pub(crate) sequence_elements: usize,
     pub(crate) sequence_containers: usize,
+    /// Counts logical serialized JSON values plus map-key strings.
+    /// Typed metadata wrapper/alias visits are separate, not implied by this count.
+    pub(crate) serialized_value_nodes: usize,
+    /// Counts logical JSON string/key, array and object backing records.
+    /// This is not the complete typed owner's capacity/alias roster.
+    pub(crate) serialized_capacity_records: usize,
 }
 
 impl OriginalSerializationStorageData {
@@ -250,6 +277,8 @@ pub(crate) fn actual_serialization_storage_data(
         parser_requested: 0,
         sequence_elements: 0,
         sequence_containers: 0,
+        serialized_value_nodes: 0,
+        serialized_capacity_records: 0,
     };
     value.serialize(&mut credit).map_err(|_| refused())?;
     let output = credit
@@ -266,6 +295,8 @@ pub(crate) fn actual_serialization_storage_data(
         maximum_encoded_bytes: credit.encoded_upper,
         sequence_elements: credit.sequence_elements,
         sequence_containers: credit.sequence_containers,
+        serialized_value_nodes: credit.serialized_value_nodes,
+        serialized_capacity_records: credit.serialized_capacity_records,
     };
     if result.requested_total()? > maximum {
         return Err(refused());
@@ -279,6 +310,17 @@ fn value_slot_bytes() -> usize {
 
 fn map_node_bytes() -> Result<usize, Excess> {
     map_node_bytes_for::<String, serde_json::Value>()
+}
+
+/// Reports the same compiled requested node bound used by this serializer.
+///
+/// Closed native field counters supply their actual K/V types and separately
+/// prove the number of logical entries/containers. This grants no allocation
+/// permission and makes no allocator or physical-residency claim.
+pub(crate) fn original_serialization_tree_node_requested_bytes_data<K, V>()
+-> Result<usize, ProviderError> {
+    map_node_bytes_for::<K, V>()
+        .map_err(|_| ProviderError::ResourceExhausted("serialization tree layout"))
 }
 
 fn map_node_bytes_for<K, V>() -> Result<usize, Excess> {
@@ -362,91 +404,91 @@ impl<'a> ser::Serializer for &'a mut Credit {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(5)
+            self.scalar(5)
         }
     }
     fn serialize_i8(self, _: i8) -> Result<(), Excess> {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(4)
+            self.scalar(4)
         }
     }
     fn serialize_i16(self, _: i16) -> Result<(), Excess> {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(6)
+            self.scalar(6)
         }
     }
     fn serialize_i32(self, _: i32) -> Result<(), Excess> {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(11)
+            self.scalar(11)
         }
     }
     fn serialize_i64(self, _: i64) -> Result<(), Excess> {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(21)
+            self.scalar(21)
         }
     }
     fn serialize_i128(self, _: i128) -> Result<(), Excess> {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(40)
+            self.scalar(40)
         }
     }
     fn serialize_u8(self, _: u8) -> Result<(), Excess> {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(3)
+            self.scalar(3)
         }
     }
     fn serialize_u16(self, _: u16) -> Result<(), Excess> {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(5)
+            self.scalar(5)
         }
     }
     fn serialize_u32(self, _: u32) -> Result<(), Excess> {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(10)
+            self.scalar(10)
         }
     }
     fn serialize_u64(self, _: u64) -> Result<(), Excess> {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(20)
+            self.scalar(20)
         }
     }
     fn serialize_u128(self, _: u128) -> Result<(), Excess> {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(39)
+            self.scalar(39)
         }
     }
     fn serialize_f32(self, _: f32) -> Result<(), Excess> {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(132)
+            self.scalar(132)
         }
     }
     fn serialize_f64(self, _: f64) -> Result<(), Excess> {
         if self.map_key {
             Err(Excess)
         } else {
-            self.encoded(132)
+            self.scalar(132)
         }
     }
     fn serialize_char(self, value: char) -> Result<(), Excess> {
@@ -468,16 +510,16 @@ impl<'a> ser::Serializer for &'a mut Credit {
         Err(Excess)
     }
     fn serialize_none(self) -> Result<(), Excess> {
-        self.encoded(4)
+        self.scalar(4)
     }
     fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<(), Excess> {
         value.serialize(self)
     }
     fn serialize_unit(self) -> Result<(), Excess> {
-        self.encoded(4)
+        self.scalar(4)
     }
     fn serialize_unit_struct(self, _: &'static str) -> Result<(), Excess> {
-        self.encoded(4)
+        self.scalar(4)
     }
     fn serialize_unit_variant(
         self,
@@ -673,6 +715,8 @@ impl OriginalSerializationStorageProjection {
                 parser_requested: 0,
                 sequence_elements: 0,
                 sequence_containers: 0,
+                serialized_value_nodes: 0,
+                serialized_capacity_records: 0,
             },
         })
     }
@@ -682,6 +726,9 @@ impl OriginalSerializationStorageProjection {
     /// Its elements are counted separately in traversal order by the same
     /// closed producer. This reserves no array and grants no decode credit.
     pub(crate) fn add_array_extent(&mut self, elements: usize) -> Result<(), ProviderError> {
+        self.credit
+            .serialized_node(true)
+            .map_err(|_| projection_excess())?;
         let refused = projection_excess;
         self.credit.sequence_containers = self
             .credit
@@ -709,6 +756,9 @@ impl OriginalSerializationStorageProjection {
 
     /// Adds the braces of one fixed object; its fields are counted separately.
     pub(crate) fn add_object(&mut self) -> Result<(), ProviderError> {
+        self.credit
+            .serialized_node(true)
+            .map_err(|_| projection_excess())?;
         self.credit.encoded(2).map_err(|_| projection_excess())
     }
 
@@ -804,6 +854,8 @@ impl OriginalSerializationStorageProjection {
             maximum_encoded_bytes: self.credit.encoded_upper,
             sequence_elements: self.credit.sequence_elements,
             sequence_containers: self.credit.sequence_containers,
+            serialized_value_nodes: self.credit.serialized_value_nodes,
+            serialized_capacity_records: self.credit.serialized_capacity_records,
         };
         if result.requested_total()? > maximum {
             return Err(projection_excess());
@@ -819,3 +871,70 @@ fn projection_excess() -> ProviderError {
 #[cfg(test)]
 #[path = "serialization_storage_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod logical_event_tests {
+    use super::*;
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn actual_serializer_and_closed_projection_count_same_keys_values_and_backings() -> TestResult {
+        let value = serde_json::json!({"a":["x",true,null],"b":{}});
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        observer.observe(&value)?;
+        let actual = actual_serialization_storage_data(&value, observer.finish(), usize::MAX)?;
+        let mut projected = OriginalSerializationStorageProjection::new(usize::MAX)?;
+        projected.add_object()?;
+        projected.add_field("a")?;
+        projected.add_array_extent(3)?;
+        projected.add_string("x")?;
+        projected.add_value(&true)?;
+        projected.add_value(&Option::<bool>::None)?;
+        projected.add_field("b")?;
+        projected.add_object()?;
+        let projected = projected.finish(usize::MAX)?;
+        assert_eq!(actual.serialized_value_nodes, 8);
+        assert_eq!(actual.serialized_capacity_records, 6);
+        assert_eq!(
+            projected.serialized_value_nodes,
+            actual.serialized_value_nodes
+        );
+        assert_eq!(
+            projected.serialized_capacity_records,
+            actual.serialized_capacity_records
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scalar_and_string_events_remain_distinct_from_typed_wrapper_observation() -> TestResult {
+        let numeric = actual_serialization_storage_data(
+            &7u16,
+            RetainedProtocolMetadataFacts::default(),
+            usize::MAX,
+        )?;
+        assert_eq!(
+            (
+                numeric.serialized_value_nodes,
+                numeric.serialized_capacity_records
+            ),
+            (1, 0)
+        );
+        let text = actual_serialization_storage_data(
+            &"seven",
+            RetainedProtocolMetadataFacts::default(),
+            usize::MAX,
+        )?;
+        assert_eq!(
+            (
+                text.serialized_value_nodes,
+                text.serialized_capacity_records
+            ),
+            (1, 1)
+        );
+        let mut counter = OriginalSerializationStorageProjection::new(usize::MAX)?;
+        counter.credit.serialized_value_nodes = usize::MAX;
+        assert!(counter.add_object().is_err());
+        Ok(())
+    }
+}

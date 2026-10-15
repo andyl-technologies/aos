@@ -382,6 +382,55 @@ impl ProtocolSnapshotReservation {
         Ok(original)
     }
 
+    /// Quotes the actual four backing families requested by a fresh owned11 bank.
+    ///
+    /// This data counter allocates nothing and grants no native construction.
+    /// The caller admits all simultaneous original owners first and rechecks
+    /// actual capacities after the reservation. Inline headers are separate.
+    ///
+    /// # Errors
+    /// Refuses the same positive constructor limits or checked layout overflow.
+    pub(crate) fn original_owned11_reservation_requested_storage_data(
+        maximum: usize,
+        history_bytes: usize,
+        lifetime_frames: usize,
+        maximum_metadata_rows: usize,
+    ) -> Result<usize, ProviderError> {
+        use crate::transport::original_frames::{
+            MAX_ORIGINAL_FRAME_BYTES, MAX_ORIGINAL_FRAMES_PER_DIRECTION, original_frame_slot_layout,
+        };
+        if maximum == 0
+            || maximum > MAX_ORIGINAL_FRAME_BYTES
+            || !(4..=MAX_ORIGINAL_FRAME_BYTES).contains(&history_bytes)
+            || lifetime_frames == 0
+            || lifetime_frames > MAX_ORIGINAL_FRAMES_PER_DIRECTION
+            || maximum_metadata_rows == 0
+            || maximum_metadata_rows > 131_072
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "native owned11 birth bank",
+            ));
+        }
+        let aliases = MetadataAliasBank::reservation_requested_bytes(maximum_metadata_rows)?;
+        maximum
+            .checked_add(history_bytes)
+            .and_then(|bytes| {
+                lifetime_frames
+                    .checked_mul(2)
+                    .and_then(|frames| frames.checked_mul(original_frame_slot_layout()))
+                    .and_then(|frames| bytes.checked_add(frames))
+            })
+            .and_then(|bytes| {
+                maximum_metadata_rows
+                    .checked_mul(std::mem::size_of::<MetadataCapacityRecord>())
+                    .and_then(|records| bytes.checked_add(records))
+            })
+            .and_then(|bytes| bytes.checked_add(aliases))
+            .ok_or(ProviderError::ResourceExhausted(
+                "native owned11 birth bank",
+            ))
+    }
+
     pub(crate) fn uses_owned11_encoding(&self) -> bool {
         self.owned11_records.is_some()
     }
@@ -1567,6 +1616,7 @@ pub(crate) fn protocol_capture_owner_layout() -> usize {
 }
 
 mod native_metadata_quote;
+pub(crate) use native_metadata_quote::NativeProtocolMetadataQuote;
 
 impl ProtocolSnapshotReservation {
     pub(crate) const fn maximum_bytes(&self) -> usize {

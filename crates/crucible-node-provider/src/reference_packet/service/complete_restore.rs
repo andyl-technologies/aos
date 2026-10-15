@@ -427,3 +427,6 @@ pub use input_emitter::{
     PACKET_CANONICAL_RESTORE_INPUTS_FEATURE, PacketNative5RestoreInputEmitterSelection,
     canonical_restore_inputs_contract, canonical_restore_inputs_schema,
 };
+
+pub(crate) use contract::complete_restore_contract_storage_data;
+pub(crate) use restored_record::native_restored_record_contract_storage_data;

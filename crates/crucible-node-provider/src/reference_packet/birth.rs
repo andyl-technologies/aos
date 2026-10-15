@@ -35,6 +35,16 @@ impl<C> PacketModelBirthFailure<C> {
 }
 
 impl PacketProgram {
+    // This is the actual empty output bank reserved by new_retained below.
+    // The transferred event configuration is counted independently by the caller.
+    pub(crate) fn original_initial_reservation_requested_bytes() -> Result<usize, ProviderError> {
+        MAXIMUM_EVENTS
+            .checked_mul(std::mem::size_of::<PacketPublication>())
+            .ok_or(ProviderError::ResourceExhausted(
+                "producer birth requested storage",
+            ))
+    }
+
     /// Constructs the producer while retaining all original inputs on refusal.
     ///
     /// Validation and finite storage reservation borrow the original inputs before

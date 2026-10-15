@@ -198,6 +198,36 @@ impl ConnectionAuthority {
         )
     }
 
+    /// Counts newly requested independent children of the actual Clone impl.
+    ///
+    /// The three Arc fields retain the same current payloads and allocate no
+    /// new backing. Their real edges/header slots live in the containing
+    /// authority layout; the outer unique SDK walk owns those existing roots.
+    pub(crate) fn observe_prospective_clone_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            shared_epoch: _,
+            registration_gate: _,
+            extensions: _,
+            epoch,
+            connection,
+            session,
+            incarnation,
+            limits,
+            features,
+            envelope_extensions,
+        } = self;
+        observer.observe(epoch)?;
+        observer.observe(connection)?;
+        observer.observe(session)?;
+        observer.observe(incarnation)?;
+        observer.observe(limits)?;
+        observer.observe(features)?;
+        observer.observe(envelope_extensions)
+    }
+
     pub(crate) fn observe_retained_metadata(
         &self,
         observer: &mut crate::retained_metadata::MetadataObserver,
@@ -805,4 +835,55 @@ fn constant_equal(left: &[u8], right: &[u8; 32]) -> bool {
         .zip(right)
         .fold(0u8, |difference, (left, right)| difference | (left ^ right))
         == 0
+}
+
+impl ConnectionAuthority {
+    pub(crate) fn observe_unique_capture_metadata(
+        &self,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        use crate::retained_metadata::aliases::MetadataSharedKind;
+        let Self {
+            shared_epoch,
+            registration_gate,
+            epoch,
+            connection,
+            session,
+            incarnation,
+            limits,
+            features,
+            envelope_extensions,
+            extensions,
+        } = self;
+        roots.observe_shared(
+            observer,
+            MetadataSharedKind::RegistrarEpoch,
+            shared_epoch.as_ref(),
+        )?;
+        roots.observe_shared(
+            observer,
+            MetadataSharedKind::RegistrarGate,
+            registration_gate.as_ref(),
+        )?;
+        observer.observe(epoch)?;
+        observer.observe(connection)?;
+        observer.observe(session)?;
+        observer.observe(incarnation)?;
+        observer.observe(limits)?;
+        observer.observe(features)?;
+        observer.observe(envelope_extensions)?;
+        if let Some(selected) = extensions
+            && roots.observe_shared(
+                observer,
+                MetadataSharedKind::SelectedExtensions,
+                selected.as_ref(),
+            )?
+        {
+            for selection in selected.iter() {
+                observer.observe(selection)?;
+            }
+        }
+        Ok(())
+    }
 }

@@ -92,3 +92,74 @@ impl PacketCompleteRestorationPrebirth {
         Ok(counter.bytes())
     }
 }
+
+impl PacketCompleteRestorationPrebirth {
+    pub(in crate::node_qualification::packet_collection::complete) fn authenticate_native_startup_target_precredit_data(
+        &self,
+        authority: &InstalledPacketCompleteCollectionAuthority,
+        plan: &InstalledConformancePlan,
+    ) -> Result<(), RuntimeError> {
+        // Authenticate raw creators before following the archive/factory graph.
+        if self.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        let factory = &self.factory.inner;
+        if factory.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if factory.thread != std::thread::current().id() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        factory
+            .authority
+            .capture_graph_policy()
+            .authenticate_retained_origin_data()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        if std::ptr::eq(authority, factory.authority.as_ref())
+            || self.binding_attempted
+            || self.runtime_attempted
+            || self.runtime.is_some()
+            || self.failed_runtime.is_some()
+            || self.fresh_graph.is_some()
+            || self.fresh_factory.is_some()
+            || self.native.iter().any(Option::is_none)
+            || self.host_ticket.is_some()
+        {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let host = self
+            .host
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .source();
+        if !Rc::ptr_eq(&host, authority.host_source()) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.source
+            .authenticate_original_prebirth_host_data(&host)?;
+        let historical = self.code_graph.plan().evidence();
+        let fresh = plan.evidence();
+        if historical.plan_ref != fresh.plan_ref
+            || historical.refused_ref != fresh.refused_ref
+            || historical.sources != fresh.sources
+            || historical.world != fresh.world
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        for (ticket, source) in self.native.iter().zip(&authority.roster().sources) {
+            if ticket
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?
+                .owner()?
+                .owner
+                != source.installation().owner.owner.id
+            {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+        }
+        Ok(())
+    }
+}

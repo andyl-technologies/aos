@@ -385,8 +385,37 @@ impl PacketControl {
                 "native5 underlying live original differs",
             ));
         }
+        let receipt = self.original_complete_receipt_data(request, native_record)?;
+        let bytes = if let Some(evidence) = &self.complete_restored_evidence {
+            encode(&evidence.wrap(receipt, request.method == Method::WorldActivate)?)?
+        } else if self.complete_restored_hold.is_some() {
+            return Err(ProviderError::Correlation(
+                "restored native completed pair absent",
+            ));
+        } else {
+            encode(&receipt)?
+        };
+        let root = reference(&bytes)?;
+        self.install_content(root.clone(), &bytes)?;
+        Ok((root, bytes))
+    }
+
+    // Builds data only. The legacy caller validates its decoded original;
+    // the selected producer constructs raw and receipt together under the
+    // same private Control currency. This helper authenticates neither route.
+    pub(super) fn original_complete_receipt_data(
+        &self,
+        request: &Envelope,
+        native_record: ContentRef,
+    ) -> Result<PacketNative5Record, ProviderError> {
+        if self.capture_creator != std::process::id() {
+            return Err(ProviderError::Correlation(
+                "native5 receipt foreign creator",
+            ));
+        }
+        let current = U64::new(u64::from(std::process::id()));
         let binding = &self.selection.realization.bindings[0];
-        let receipt = PacketNative5Record {
+        Ok(PacketNative5Record {
             schema: "source-owned.packet-receipt/5".into(),
             native_pid: current,
             original: request.clone(),
@@ -413,19 +442,7 @@ impl PacketControl {
                     "native5 original storage birth is unbound",
                 ))?
                 .clone(),
-        };
-        let bytes = if let Some(evidence) = &self.complete_restored_evidence {
-            encode(&evidence.wrap(receipt, request.method == Method::WorldActivate)?)?
-        } else if self.complete_restored_hold.is_some() {
-            return Err(ProviderError::Correlation(
-                "restored native completed pair absent",
-            ));
-        } else {
-            encode(&receipt)?
-        };
-        let root = reference(&bytes)?;
-        self.install_content(root.clone(), &bytes)?;
-        Ok((root, bytes))
+        })
     }
 
     pub(super) fn record_evidence(

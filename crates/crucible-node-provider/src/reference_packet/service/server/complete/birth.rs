@@ -804,3 +804,82 @@ impl InstalledExtensionNegotiationVerifier for EmptyBootExtensions {
         }
     }
 }
+
+// Each payload is an actual original failure/custody owner above. They are
+// conservatively summed even though successful transfer makes phases exclusive.
+pub(in crate::reference_packet::service) fn original_native_birth_phase_layout_bytes()
+-> Result<usize, ProviderError> {
+    [
+        std::mem::size_of::<CompleteBirth>(),
+        std::mem::size_of::<PacketSourceService>(),
+        std::mem::size_of::<crate::client::OriginalNative5BirthStreamRefusal>(),
+        std::mem::size_of::<
+            crate::native_hello::OriginalNativeHelloBindRefusal<OriginalNative5BirthStream>,
+        >(),
+        std::mem::size_of::<Native5ConnectionBirthRefusal<DeadlineStream>>(),
+        std::mem::size_of::<
+            super::super::super::super::endpoint::PacketCompleteEndpointRefusal<DeadlineStream>,
+        >(),
+        std::mem::size_of::<crate::client::ExchangeDeadline>(),
+    ]
+    .into_iter()
+    .try_fold(0usize, |total, bytes| {
+        total
+            .checked_add(bytes)
+            .ok_or(ProviderError::ResourceExhausted(
+                "native birth phase headers",
+            ))
+    })
+}
+
+// This roster is specific to the actual original CompleteBirth constructors:
+// two independent frame-bank Rcs (control and Hello), native policy and sealed
+// codec, connection actor, Control identity, shared deadline and empty registry.
+// The existing private-bootstrap bank is charged by its separate phase.
+pub(in crate::reference_packet::service) fn original_native_birth_shared_layout_bytes()
+-> Result<usize, ProviderError> {
+    fn shared<T>() -> Result<usize, ProviderError> {
+        std::mem::size_of::<T>()
+            .checked_add(
+                crate::retained_metadata::requested_storage::shared_header_storage_data(
+                    1,
+                    std::mem::align_of::<T>(),
+                )?,
+            )
+            .ok_or(ProviderError::ResourceExhausted(
+                "native shared birth header",
+            ))
+    }
+    let terms = [
+        shared::<std::cell::RefCell<OriginalFrameReservation>>()?,
+        shared::<std::cell::RefCell<OriginalFrameReservation>>()?,
+        shared::<std::cell::RefCell<super::super::super::ack_emitter::NativeAckBoot>>()?,
+        shared::<Native5Policy>()?,
+        shared::<crate::connection::Native5CodecOwner>()?,
+        shared::<crate::protocol_snapshot::ProtocolCaptureOwner>()?,
+        shared::<()>()?,
+        shared::<std::cell::Cell<crate::operational_time::OperationalDeadline>>()?,
+        crate::client::OriginalNative5BirthCut::original_requested_layout_data()?,
+        shared::<EmptyBootExtensions>()?,
+        shared::<std::sync::atomic::AtomicU64>()?,
+        shared::<std::sync::Mutex<()>>()?,
+        // The selected empty extension roster retains its real Arc allocation.
+        crate::retained_metadata::requested_storage::shared_header_storage_data(
+            1,
+            std::mem::align_of::<crucible_node_contract::ExtensionSelection>(),
+        )?,
+        shared::<Supervisor>()?,
+        // Supervisor::new reserves one incident and one blob quarantine slot.
+        // The selected original driver stops/holds on the first failure. These
+        // are actual inline Vec payload slots, not claims that failures are empty.
+        std::mem::size_of::<crate::connection::ConnectionIncident>(),
+        std::mem::size_of::<crate::blob::BlobQuarantine>(),
+        crate::blob::BlobReceiver::original_empty_shared_requested_storage_data()?,
+    ];
+    terms.into_iter().try_fold(0usize, |sum, term| {
+        sum.checked_add(term)
+            .ok_or(ProviderError::ResourceExhausted(
+                "native shared birth roster",
+            ))
+    })
+}

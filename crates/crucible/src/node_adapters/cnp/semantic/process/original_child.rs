@@ -80,7 +80,7 @@ impl OriginalChild {
                 "selected original child identity or parent streams differ",
             ));
         }
-        identity.ensure_current()?;
+        executable.ensure_kernel_current(identity)?;
         executable.ensure_current(identity)?;
 
         #[cfg(target_os = "linux")]
@@ -129,7 +129,7 @@ impl OriginalChild {
             checkpoint()?;
             // Reuse all existing complete executable, kernel and namespace
             // checks before the caller may move or drop its original Child.
-            identity.ensure_current()?;
+            executable.ensure_kernel_current(identity)?;
             executable.ensure_current(identity)?;
             executable.ensure_origin()?;
             original.ensure_origin()?;

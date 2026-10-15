@@ -303,3 +303,32 @@ impl DeadlineStream {
         Ok(self.deadline.clone())
     }
 }
+
+impl ExchangeDeadline {
+    pub(crate) fn observe_unique_capture_metadata(
+        &self,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), crate::ProviderError> {
+        roots.observe_shared(
+            observer,
+            crate::retained_metadata::aliases::MetadataSharedKind::OperationalDeadline,
+            self.0.as_ref(),
+        )?;
+        Ok(())
+    }
+}
+
+impl DeadlineStream {
+    pub(crate) fn observe_unique_capture_metadata(
+        &self,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), crate::ProviderError> {
+        let Self {
+            stream: _,
+            deadline,
+        } = self;
+        deadline.observe_unique_capture_metadata(roots, observer)
+    }
+}

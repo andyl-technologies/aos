@@ -17,8 +17,13 @@ use crucible_node_contract::{ContentRef, Id, Validate};
 
 use super::{OperationFailure, refused};
 
+#[path = "native_startup.rs"]
+mod native_startup;
+#[path = "native_wire.rs"]
+mod native_wire;
 #[path = "report_startup.rs"]
 mod report_startup;
+pub use native_wire::PacketCompleteNativeStartupWire;
 
 /// Borrows one original source-owned private boot material transfer.
 ///
@@ -47,6 +52,7 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Origi
     failed: bool,
     report_startup_required: bool,
     report_startup: Option<report_startup::OriginalReportStartupFinalization>,
+    native_startup: Option<native_startup::OriginalNativeStartupFinalization>,
 }
 
 pub(super) struct OriginalAckPeerInputs<'a> {
@@ -164,6 +170,7 @@ impl OriginalAckPeerBirth {
             failed: false,
             report_startup_required,
             report_startup: None,
+            native_startup: None,
         });
         let original = completed
             .as_mut()
@@ -288,6 +295,23 @@ impl OriginalAckPeerBirth {
 }
 
 impl<'a> PacketCompleteAckPeerBootMaterial<'a> {
+    pub(in crate::node_adapters::cnp::semantic) fn original_native_startup_authentication_scratch_data()
+    -> usize {
+        use std::mem::size_of;
+        // The exact same material uses its retained file and fixed stream bank.
+        // File-open conversion is the pinned small-C-string stack path.
+        16 * 1024
+            + size_of::<blake3::Hasher>()
+            + size_of::<File>()
+            + 2 * size_of::<std::fs::Metadata>()
+            + 3 * size_of::<HostRevision>()
+            + size_of::<blake3::Hash>()
+            + 64
+            + 384
+            + size_of::<std::io::Error>()
+            + size_of::<OperationFailure>()
+    }
+
     pub(super) fn from_original(
         source: &'a super::super::PacketCompleteSemanticSource,
         original: std::cell::Ref<'a, OriginalAckPeerBirth>,
@@ -297,7 +321,9 @@ impl<'a> PacketCompleteAckPeerBootMaterial<'a> {
 
     fn authenticate_startup_member(&self) -> Result<(), OperationFailure> {
         self.original
-            .authenticate_report_startup_before_boot(self.source)
+            .authenticate_report_startup_before_boot(self.source)?;
+        self.original
+            .authenticate_native_startup_before_boot(self.source)
     }
 
     /// Rechecks the actual original creator and complete measured executable.
@@ -393,6 +419,11 @@ impl OriginalAckPeerBirth {
                 self.source_birth.capacity(),
                 self.expected_host_registration.capacity(),
                 self.report_startup
+                    .as_ref()
+                    .map(|state| state.retained_storage_data_with_error::<E>(maximum))
+                    .transpose()?
+                    .unwrap_or(0),
+                self.native_startup
                     .as_ref()
                     .map(|state| state.retained_storage_data_with_error::<E>(maximum))
                     .transpose()?

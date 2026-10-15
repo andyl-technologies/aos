@@ -24,15 +24,19 @@ pub(crate) use restore_prepare::{
     VerifiedCanonicalRestoreInputAdmission, VerifiedCompleteRestorePrepare,
 };
 
-#[path = "native_startup.rs"]
-mod native_startup;
-use native_startup::OriginalNativeStartupBoot;
-
 #[path = "report_startup.rs"]
 mod report_startup;
 pub(crate) use report_startup::{
     OriginalNativeReportStartupAllocation, original_native_report_startup_scope_layout_data,
 };
+
+#[path = "native_startup.rs"]
+pub(super) mod native_startup;
+pub(crate) use native_startup::OriginalNativeBirthReadScope;
+
+// Keep the prospective baseline producer tied to the exact constructor banks.
+pub(crate) const ORIGINAL_ACK_CONTEXT_BANK_BYTES: [usize; 5] =
+    [512 * 1024, 4 * 1024, 416 * 1024, 16 * 1024, 65_536];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,7 +53,6 @@ struct BootData {
 pub(crate) struct NativeAckBoot {
     // Only the separate resource-admitted bootstrap constructor may create
     // Some. The existing boot5 constructor remains explicitly unavailable to it.
-    startup: Option<OriginalNativeStartupBoot>,
     creator: u32,
     thread: ThreadId,
     data: BootData,
@@ -67,6 +70,7 @@ pub(crate) struct NativeAckBoot {
     verified: bool,
     restoration: Option<Rc<RefCell<restore::NativeCompleteRestoreAttempt>>>,
     transfer: Option<Rc<RefCell<restore_prepare::NativeCompleteRestorePrepareAttempt>>>,
+    startup: Option<native_startup::OriginalNativeStartupBoot>,
 }
 
 /// Returns the actual shared boot payload layout for historical row validation.
@@ -95,8 +99,55 @@ impl NativeAckBoot {
         crate::connection::serialized_credit(value, 512 * 1024)?;
         let data: BootData =
             BootData::deserialize(value).map_err(crucible_node_contract::ContractError::from)?;
+        Self::prepare_data_into(data, launch, original_launch_body, None, completed)
+    }
+
+    // Only the actual selected inherited bootstrap owns the nonrenewing claim.
+    // The ordinary boot5 entry cannot supply it or accept the new class.
+    pub(super) fn prepare_original_startup_into(
+        value: &serde_json::Value,
+        launch: &PacketNative5SourceLaunch,
+        original_launch_body: Vec<u8>,
+        startup: &mut super::bootstrap::admitted::OriginalNativeStartupBootstrap,
+        completed: &mut Option<Rc<RefCell<Self>>>,
+    ) -> Result<(), ProviderError> {
+        if completed.is_some() {
+            return Err(ProviderError::Conflict("native ACK boot already attempted"));
+        }
+        startup.ensure_original()?;
+        crate::connection::serialized_credit(value, startup.maximum_boot_bytes)?;
+        let data: BootData =
+            BootData::deserialize(value).map_err(crucible_node_contract::ContractError::from)?;
+        let admitted = startup.claim_birth_data(
+            launch,
+            &original_launch_body,
+            &data.source_birth,
+            &data.expected_host_registration,
+            &data.private_launch,
+            data.private_key.as_slice(),
+            data.birth_id.as_slice(),
+        )?;
+        let result = Self::prepare_data_into(
+            data,
+            launch,
+            original_launch_body,
+            Some(admitted),
+            completed,
+        );
+        if result.is_err() {
+            startup.failed = true;
+        }
+        result
+    }
+
+    fn prepare_data_into(
+        data: BootData,
+        launch: &PacketNative5SourceLaunch,
+        original_launch_body: Vec<u8>,
+        startup: Option<native_startup::OriginalNativeStartupBoot>,
+        completed: &mut Option<Rc<RefCell<Self>>>,
+    ) -> Result<(), ProviderError> {
         let original = Rc::new(RefCell::new(Self {
-            startup: None,
             creator: std::process::id(),
             thread: std::thread::current().id(),
             data,
@@ -114,13 +165,20 @@ impl NativeAckBoot {
             verified: false,
             restoration: None,
             transfer: None,
+            startup,
         }));
         *completed = Some(Rc::clone(&original));
         let mut owner = original
             .try_borrow_mut()
             .map_err(|_| ProviderError::Conflict("native ACK boot borrowed"))?;
         owner.ensure_origin()?;
-        if owner.data.schema != "source-owned.packet-canonical-ack-private-boot/5"
+        let startup_selected = owner.startup.is_some();
+        let boot_schema = if startup_selected {
+            crate::reference_packet::service::native_startup::PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA
+        } else {
+            "source-owned.packet-canonical-ack-private-boot/5"
+        };
+        if owner.data.schema != boot_schema
             || owner.data.private_key.as_slice().len() != 32
             || owner.data.birth_id.as_slice().len() != 32
             || owner.data.host_executable != launch.controller_executable
@@ -156,7 +214,15 @@ impl NativeAckBoot {
         ];
         let report_selected = launch.capture_allocation_selection.is_some()
             || launch.fresh_restore_allocation_selection.is_some();
-        let schema = if report_selected {
+        let schema = if startup_selected {
+            keys.extend([
+                "native_codec_metadata_extent", "protocol_metadata_limits",
+                "complete_restore_selection", "restore_input_emitter_selection",
+                "capture_allocation_selection", "fresh_restore_allocation_selection",
+                "report_startup_allocation", "native_startup_allocation",
+            ]);
+            crate::reference_packet::service::native_startup::PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA
+        } else if report_selected {
             keys.extend([
                 "native_codec_metadata_extent", "protocol_metadata_limits",
                 "complete_restore_selection", "restore_input_emitter_selection",
@@ -249,6 +315,43 @@ impl NativeAckBoot {
             expected_source["report_startup_allocation"] =
                 source["report_startup_allocation"].clone();
         }
+        if startup_selected {
+            for (name, value) in [
+                (
+                    "native_codec_metadata_extent",
+                    serde_json::to_value(launch.native_codec_metadata_extent),
+                ),
+                (
+                    "protocol_metadata_limits",
+                    serde_json::to_value(launch.protocol_metadata_limits),
+                ),
+                (
+                    "complete_restore_selection",
+                    serde_json::to_value(launch.complete_restore_selection),
+                ),
+                (
+                    "restore_input_emitter_selection",
+                    serde_json::to_value(launch.restore_input_emitter_selection),
+                ),
+                (
+                    "capture_allocation_selection",
+                    serde_json::to_value(launch.capture_allocation_selection),
+                ),
+                (
+                    "fresh_restore_allocation_selection",
+                    serde_json::to_value(launch.fresh_restore_allocation_selection),
+                ),
+            ] {
+                expected_source[name] = value.map_err(ContractError::from)?;
+            }
+            if !report_selected {
+                expected_source["report_startup_allocation"] = serde_json::Value::Null;
+            }
+            // The actual private scope already compared the complete closed
+            // object with its fixed MAC-bound rows before model construction.
+            expected_source["native_startup_allocation"] =
+                source["native_startup_allocation"].clone();
+        }
         if *source != expected_source {
             return Err(ProviderError::Correlation(
                 "native original source binding differs",
@@ -261,12 +364,7 @@ impl NativeAckBoot {
                 "native ACK boot input extent",
             ));
         }
-        for (bank, limit) in
-            owner
-                .banks
-                .iter_mut()
-                .zip([512 * 1024, 4 * 1024, 416 * 1024, 16 * 1024, 65536])
-        {
+        for (bank, limit) in owner.banks.iter_mut().zip(ORIGINAL_ACK_CONTEXT_BANK_BYTES) {
             bank.try_reserve_exact(limit)
                 .map_err(|_| ProviderError::ResourceExhausted("native ACK context bank"))?;
         }
@@ -363,7 +461,11 @@ impl NativeAckBoot {
                 "native assigned Admit body differs",
             ));
         }
-        let native_executable = crate::conformance::measure_executable(&std::env::current_exe()?)?;
+        let native_executable = if owner.startup.is_some() {
+            measure_original_prepare_executable_data(std::path::Path::new("/proc/self/exe"))?
+        } else {
+            crate::conformance::measure_executable(&std::env::current_exe()?)?
+        };
         owner.normalized[0] = Some(
             serde_json::json!({"schema":"source-owned.packet-canonical-ack-birth-association/5","birth_id":owner.data.birth_id,"private_launch":owner.data.private_launch,"host_executable":owner.data.host_executable,"source_binding":owner.data.source_birth,"expected_host_registration":owner.data.expected_host_registration}),
         );

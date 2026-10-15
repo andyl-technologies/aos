@@ -236,6 +236,7 @@ fn row(input: &[u8]) -> Result<(MetadataSharedKind, usize), ProviderError> {
         "private-bootstrap-bank" => MetadataSharedKind::PrivateBootstrapBank,
         "installed-registry" => MetadataSharedKind::InstalledRegistry,
         "native-supervisor" => MetadataSharedKind::NativeSupervisor,
+        "native-control-identity" => MetadataSharedKind::NativeControlIdentity,
         "blob-ledger" => MetadataSharedKind::BlobLedger,
         "host-supervisor" => MetadataSharedKind::HostSupervisor,
         "operational-deadline" => MetadataSharedKind::OperationalDeadline,

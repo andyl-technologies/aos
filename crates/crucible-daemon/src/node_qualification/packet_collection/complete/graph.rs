@@ -205,6 +205,47 @@ impl InstalledPacketCompleteGraphPolicy {
         &self.measurements
     }
 
+    /// Quotes the same member's complete retained-file validation phase.
+    ///
+    /// # Errors
+    /// Refuses foreign/revoked policy, another member or unresolved file backing.
+    pub(in crate::node_qualification::packet_collection::complete) fn original_native_launch_currentness_storage_data(
+        &self,
+        member: usize,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        self.authenticate_retained_origin_data()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        if !self.revision.get() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.files
+            .get(member)
+            .ok_or(RuntimeError::ForeignAuthority)?
+            .original_native_startup_currentness_storage_data()
+    }
+
+    /// Checks every original member file before the selected Child effect.
+    ///
+    /// # Errors
+    /// Refuses inadequate credit, changed complete bytes, namespace or revision.
+    pub(in crate::node_qualification::packet_collection::complete) fn authenticate_original_native_launch_currentness(
+        &self,
+        member: usize,
+        maximum: usize,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        self.original_native_launch_currentness_storage_data(member)?;
+        self.files
+            .get(member)
+            .ok_or(RuntimeError::ForeignAuthority)?
+            .authenticate_original_native_startup_currentness(maximum)?;
+        if !self.revision.get() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+
     pub(super) fn read_current(&self) -> Result<(), QualificationError> {
         if self.process != std::process::id()
             || self.thread != std::thread::current().id()

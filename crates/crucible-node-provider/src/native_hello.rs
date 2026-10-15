@@ -59,6 +59,41 @@ impl<S: Read + Write> OriginalNativeHelloBindRefusal<S> {
 }
 
 impl OriginalNativeHelloJournal {
+    /// Observes the actual Hello bank in the native Capture shared-root roster.
+    ///
+    /// The original creator guard precedes every bank borrow. This journal's
+    /// inline owner, phase and framing fields remain part of the caller's root;
+    /// only its actual shared bank payload and child capacities are deduplicated.
+    pub(crate) fn observe_unique_capture_metadata(
+        &self,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.owner.ensure_current()?;
+        let Self {
+            bank,
+            maximum_bytes,
+            maximum_nesting,
+            owner: _,
+            attempted,
+            received,
+            write_started,
+            failed,
+        } = self;
+        let original = bank
+            .try_borrow()
+            .map_err(|_| ProviderError::Conflict("native Hello Capture metadata bank borrowed"))?;
+        if roots.observe_shared(
+            observer,
+            crate::retained_metadata::aliases::MetadataSharedKind::FrameBank,
+            bank.as_ref(),
+        )? {
+            original.observe_owned11_metadata(observer)?;
+        }
+        observer.observe(&[*maximum_bytes, *maximum_nesting])?;
+        observer.observe(&[*attempted, *received, *write_started, *failed])
+    }
+
     /// Binds framing while returning both original owners on every refusal.
     ///
     /// This owning complete-source transition performs no reads, writes, or
@@ -722,5 +757,85 @@ mod tests {
         assert_eq!(original.maximum_nesting, 0);
         assert!(!original.attempted);
         assert_eq!(original.original_frames().frames().count(), 0);
+    }
+}
+
+// crucible-lint: allow panic-shortcut -- real original Hello bank identity and origin/borrow refusal observations.
+#[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "actual journal bank and origin controls"
+)]
+mod capture_metadata_tests {
+    use super::*;
+    use crate::retained_metadata::{MetadataObserver, NativeCaptureMetadataRoots};
+
+    #[test]
+    fn hello_unique_walk_counts_repeated_bank_once_and_distinct_equal_banks_separately() {
+        let first = OriginalNativeHelloJournal::reserve(128, 64).unwrap();
+        let second = OriginalNativeHelloJournal::reserve(128, 64).unwrap();
+        let mut roots = NativeCaptureMetadataRoots::new();
+        let mut observer = MetadataObserver::new();
+        first
+            .observe_unique_capture_metadata(&mut roots, &mut observer)
+            .unwrap();
+        let first_edges = roots.finish().unwrap();
+        assert_eq!(first_edges, (1, 1));
+        let once = observer.finish();
+
+        let mut roots = NativeCaptureMetadataRoots::new();
+        let mut observer = MetadataObserver::new();
+        first
+            .observe_unique_capture_metadata(&mut roots, &mut observer)
+            .unwrap();
+        first
+            .observe_unique_capture_metadata(&mut roots, &mut observer)
+            .unwrap();
+        assert_eq!(roots.finish().unwrap(), (2, 1));
+        let repeated = observer.finish();
+        assert_eq!(repeated.vector_capacity_bytes, once.vector_capacity_bytes);
+        assert_eq!(repeated.shared_value_bytes, once.shared_value_bytes);
+
+        let mut roots = NativeCaptureMetadataRoots::new();
+        let mut observer = MetadataObserver::new();
+        first
+            .observe_unique_capture_metadata(&mut roots, &mut observer)
+            .unwrap();
+        second
+            .observe_unique_capture_metadata(&mut roots, &mut observer)
+            .unwrap();
+        assert_eq!(roots.finish().unwrap(), (2, 2));
+        let distinct = observer.finish();
+        assert_eq!(
+            distinct.vector_capacity_bytes,
+            2 * once.vector_capacity_bytes
+        );
+        assert_eq!(distinct.shared_value_bytes, 2 * once.shared_value_bytes);
+    }
+
+    #[test]
+    fn hello_unique_walk_checks_actual_origin_and_borrow_before_root_credit() {
+        let mut original = OriginalNativeHelloJournal::reserve(128, 64).unwrap();
+        let mut roots = NativeCaptureMetadataRoots::new();
+        let mut observer = MetadataObserver::new();
+        let borrowed = original.bank.borrow_mut();
+        assert!(
+            original
+                .observe_unique_capture_metadata(&mut roots, &mut observer)
+                .is_err()
+        );
+        assert_eq!(roots.finish().unwrap(), (0, 0));
+        drop(borrowed);
+
+        // This is a real creator-thread mismatch, without changing an ID label.
+        original.owner = std::thread::spawn(ProtocolCaptureOwner::new)
+            .join()
+            .unwrap();
+        assert!(
+            original
+                .observe_unique_capture_metadata(&mut roots, &mut observer)
+                .is_err()
+        );
+        assert_eq!(roots.finish().unwrap(), (0, 0));
     }
 }

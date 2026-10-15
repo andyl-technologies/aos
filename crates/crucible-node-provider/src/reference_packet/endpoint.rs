@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use crucible_node_contract::{ContentRef, Id};
+use crucible_node_contract::{ContentRef, Id, U64};
 
 use super::control::{PacketControl, PacketControlSelection};
 use crate::{
@@ -16,7 +16,18 @@ use crate::{
 };
 
 mod capture;
+mod capture_allocation;
+pub(crate) use capture_allocation::{
+    OriginalNativeCaptureAllocationOwned12, original_capture_report_owner_layout_data,
+};
+pub(crate) use capture_quote::original_capture_report_quote_layout_data;
+mod capture_candidate;
+pub(crate) use capture_candidate::NativeCaptureCandidateOwnerData;
+mod capture_outer_projection;
 mod capture_owned11;
+mod capture_publication;
+mod capture_quote;
+mod capture_report_obligations;
 mod complete;
 mod confirmation;
 pub use complete::{PacketCompleteEndpointRecovery, PacketCompleteEndpointRefusal};
@@ -96,6 +107,7 @@ pub struct PacketEndpoint<S: ProviderStream> {
     held: bool,
     complete: Option<complete::CompleteEndpointState>,
     capture: Option<capture::CaptureFlight<S>>,
+    capture_allocation_attempt: Option<Box<capture_publication::NativeCaptureAllocationAttempt>>,
     pending_capture: Option<capture::PendingCapture>,
     after_confirmation: Option<confirmation::AfterConfirmation<S>>,
     canonical_ack_boot: Option<Rc<std::cell::RefCell<super::service::ack_emitter::NativeAckBoot>>>,
@@ -133,6 +145,19 @@ type OriginalSelectedCapture<S> = fn(
     &super::service::OriginalNativeServiceCaptureContext<'_>,
     &crate::client::ExchangeDeadline,
 ) -> Result<(), ProviderError>;
+
+type OriginalSelectedReport<S> = fn(
+    &mut PacketEndpoint<S>,
+    Envelope,
+    &ObserveRequest,
+    &super::service::OriginalNativeServiceCaptureContext<'_>,
+    &super::service::ack_emitter::OriginalNativeReportStartupAllocation,
+) -> Result<(), ProviderError>;
+
+type OriginalSelectedNext<S> = fn(
+    &mut PacketEndpoint<S>,
+    &super::service::OriginalNativeServiceCaptureContext<'_>,
+) -> Result<Option<ReceivedFrame>, ProviderError>;
 
 type OriginalSelectedRestore<S> = fn(
     &mut PacketEndpoint<S>,
@@ -207,6 +232,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             held: false,
             complete: None,
             capture: None,
+            capture_allocation_attempt: None,
             pending_capture: None,
             after_confirmation: None,
             canonical_ack_boot: None,
@@ -271,7 +297,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             &crate::client::ExchangeDeadline,
         )>,
     ) -> Result<(), ProviderError> {
-        self.step_with_original_context(context, None, None, None, None)
+        self.step_with_original_context(context, None, None, None, None, None, None)
     }
 
     pub(crate) fn step_with_selected_context(
@@ -281,7 +307,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
     ) -> Result<(), ProviderError> {
         self.authenticate_selected_registration(handshake)?;
         deadline.remaining()?;
-        self.step_with_original_context(None, Some(deadline), None, None, None)
+        self.step_with_original_context(None, Some(deadline), None, None, None, None, None)
     }
 
     fn step_with_original_context(
@@ -294,6 +320,8 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         service_context: Option<&super::service::OriginalNativeServiceCaptureContext<'_>>,
         selected_capture: Option<OriginalSelectedCapture<S>>,
         selected_restore: Option<OriginalSelectedRestore<S>>,
+        selected_report: Option<OriginalSelectedReport<S>>,
+        selected_next: Option<OriginalSelectedNext<S>>,
     ) -> Result<(), ProviderError> {
         self.ensure_complete_origin()?;
         if self.held {
@@ -310,7 +338,9 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 .remaining()?;
         }
         self.reserve()?;
-        let original_report_query = if self.native.requires_original_capture_report_query()? {
+        let original_report_query = if self.capture_allocation_attempt.is_none()
+            && self.native.requires_original_capture_report_query()?
+        {
             let Some(Transport::Connected(connection)) = self.transport.as_ref() else {
                 return Err(ProviderError::Conflict(
                     "native report original connection absent",
@@ -324,34 +354,64 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         } else {
             None
         };
-        let frame = match self.transport.as_mut() {
-            Some(Transport::Connected(connection)) => {
-                let frame = if let Some(scope) = original_report_query.as_ref() {
-                    connection.receive_original_native_report_query(scope)?
-                } else {
-                    connection.receive()?
-                };
-                frame.ok_or(ProviderError::Frame("packet endpoint original peer closed"))?
+        let frame =
+            if self.capture_allocation_attempt.is_some() {
+                let receive = selected_next.ok_or(ProviderError::Correlation(
+                    "native Report next original receiver absent",
+                ))?;
+                receive(
+                    self,
+                    service_context.ok_or(ProviderError::Correlation(
+                        "native Report next original service absent",
+                    ))?,
+                )?
+            } else {
+                match self.transport.as_mut() {
+                    Some(Transport::Connected(connection)) => {
+                        let birth_read = self.canonical_ack_boot.as_ref().map(|boot|
+                        super::service::ack_emitter::NativeAckBoot::original_birth_read_scope(
+                            boot,self.native.endpoint_scope()?,self.records.len(),
+                        )).transpose()?.flatten();
+                        if let Some(scope) = birth_read.as_ref() {
+                            connection.receive_original_native_birth_request(scope)?
+                        } else if let Some(scope) = original_report_query.as_ref() {
+                            connection.receive_original_native_report_query(scope)?
+                        } else {
+                            connection.receive()?
+                        }
+                    }
+                    _ => {
+                        return Err(ProviderError::Conflict(
+                            "packet original exchange unavailable",
+                        ));
+                    }
+                }
             }
-            _ => {
-                return Err(ProviderError::Conflict(
-                    "packet original exchange unavailable",
-                ));
-            }
-        };
+            .ok_or(ProviderError::Frame("packet endpoint original peer closed"))?;
         let ReceivedBody::Request(body) = frame.body else {
             return Err(ProviderError::Correlation(
                 "packet endpoint requires original request",
             ));
         };
         let request = frame.envelope;
-        if original_report_query.is_some() {
-            // The real admitted receive is installed before typed decoding.
-            // The remaining complete owning publisher is deliberately closed;
-            // numeric/partial growth facts cannot authorize an incomplete row.
-            return Err(ProviderError::Correlation(
-                "native original allocation report publisher incomplete",
-            ));
+        if let Some(scope) = original_report_query.as_ref() {
+            let RequestBody::Observe(observed) = body.as_ref() else {
+                return Err(ProviderError::Correlation(
+                    "native report requires actual Observe",
+                ));
+            };
+            let report = selected_report.ok_or(ProviderError::Correlation(
+                "native report original service publisher absent",
+            ))?;
+            return report(
+                self,
+                request,
+                observed,
+                service_context.ok_or(ProviderError::Correlation(
+                    "native report original service context absent",
+                ))?,
+                scope,
+            );
         }
 
         if let Some(restore) = selected_restore {
@@ -488,8 +548,27 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             Some(Transport::Prepared(exchange, acknowledgements)) => (exchange, acknowledgements),
             _ => return Err(ProviderError::Conflict("packet prepared prefix absent")),
         };
-        exchange
-            .publish(&mut |original, received| acknowledgements.validate(original, received))?;
+        let birth_publication = self
+            .canonical_ack_boot
+            .as_ref()
+            .map(|boot| {
+                super::service::ack_emitter::NativeAckBoot::original_birth_publication_scope(
+                    boot,
+                    self.native.endpoint_scope()?,
+                    self.records.len(),
+                )
+            })
+            .transpose()?
+            .flatten();
+        if let Some(scope) = birth_publication.as_ref() {
+            exchange.publish_original_native_birth(scope, &mut |original, received| {
+                acknowledgements.validate(original, received)
+            })?;
+        } else {
+            exchange
+                .publish(&mut |original, received| acknowledgements.validate(original, received))?;
+        }
+        drop(birth_publication);
         let Some(Transport::Prepared(exchange, _)) = self.transport.take() else {
             return Err(ProviderError::Conflict(
                 "packet original prefix disappeared",
@@ -498,6 +577,17 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         let (connection, record) = exchange.into_parts();
         self.records.push(record);
         self.transport = Some(Transport::Connected(connection));
+        if request.method == Method::Admit {
+            if let (Some(boot), Some(Transport::Connected(connection))) =
+                (self.canonical_ack_boot.as_ref(), self.transport.as_ref())
+            {
+                super::service::ack_emitter::NativeAckBoot::complete_original_native_birth(
+                    boot,
+                    connection,
+                    &self.records,
+                )?;
+            }
+        }
         self.held = false;
         Ok(())
     }
@@ -679,6 +769,8 @@ impl PacketEndpoint<crate::client::DeadlineStream> {
             Some(service),
             Some(Self::capture_original_owned11),
             Some(Self::restore_original_transfer),
+            Some(Self::publish_original_capture_allocation_observe),
+            Some(Self::receive_original_capture_allocation_next),
         )
     }
 }

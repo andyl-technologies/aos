@@ -247,3 +247,34 @@ fn current_proof_header_requote_refuses_a_short_foreign_authority_bound() -> Tes
     assert!(short.reader.stream_ref().output.is_empty());
     Ok(())
 }
+
+#[test]
+fn storage_backed_builder_rejects_foreign_authority_before_frames() -> TestResult {
+    let (_handshake, connection, request) = fixture()?;
+    let (_foreign_handshake, foreign, _) = longer_scope_fixture()?;
+    let body = response_body()?;
+    let bytes = b"same actual report proof".to_vec();
+    let evidence = vec![(canonical::content_ref(&bytes, "application/json")?, bytes)];
+    let projection = projected(&connection, &request, &body, &evidence)?;
+    projection.authenticate_actual_inputs(&connection, 2, &request, &body, &evidence)?;
+
+    connection.authenticate_original_packet_prefix_builder_authority_data(&connection.authority)?;
+    connection
+        .guard
+        .preflight_original_packet_prefix_data(&request, 2, 4, 3)?;
+    let result =
+        connection.authenticate_original_packet_prefix_builder_authority_data(&foreign.authority);
+
+    assert!(matches!(
+        result,
+        Err(ProviderError::Correlation(
+            "packet prefix builder authority changed"
+        ))
+    ));
+    connection
+        .guard
+        .preflight_original_packet_prefix_data(&request, 2, 4, 3)?;
+    assert!(connection.reader.stream_ref().output.is_empty());
+    assert_eq!(connection.guard.incoming_requests().count(), 1);
+    Ok(())
+}

@@ -454,3 +454,5 @@ pub mod continuation_contracts;
 pub(crate) use service::Native5Policy;
 
 mod restore_fresh;
+
+mod serialization_storage;

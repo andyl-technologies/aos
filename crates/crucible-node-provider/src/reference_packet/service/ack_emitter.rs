@@ -28,17 +28,10 @@ pub const PACKET_NATIVE_CANONICAL_ACK_FEATURE: &str = "source-owned.packet-canon
 /// # Errors
 /// Refuses canonical encoding failure or invalid static contract values.
 pub fn native_canonical_blob_ack_contract() -> Result<Vec<u8>, ProviderError> {
-    Ok(canonical::canonical_json(&serde_json::json!({
-        "schema": "source-owned.packet-canonical-blob-ack-contract/5",
-        "feature": PACKET_NATIVE_CANONICAL_ACK_FEATURE,
-        "selection": "canonical_sdk_blob5",
-        "writer": "same original SDK ClientSession receive_transfer; BlobBegin, BlobChunk or BlobFinish completed success with empty body and envelope extensions, or no send on failure",
-        "scope": "same original source-owned controller, native peer executable and kernel identity, Hello registrar, immutable codec, Capture and confirmation; opaque host lease never crosses process as authority",
-        "extent": "complete canonical envelope plus four-byte header, bounded original ASCII IDs, all U64 digits and full ContentRef hash, length and escaped media type",
-        "native_receive": "selected original acknowledgement scope reserves bounded literal slot before its first header byte and refuses oversized header before body allocation or read; exact partial original remains owned and uncertain",
-        "settlement": "source retains complete original request, response and literal suffix; no lifetime credit refund, replay, metadata ticket or Ready permission",
-        "legacy": "absent selection keeps negotiated raw frame ceiling and old codec bytes"
-    }))?)
+    Ok(canonical::canonical_json(
+        &serde_json::to_value(NativeCanonicalBlobAckContractValue)
+            .map_err(crucible_node_contract::ContractError::from)?,
+    )?)
 }
 
 /// Binds the complete immutable canonical emitter specification.
@@ -100,20 +93,90 @@ mod admission_projection;
 pub(crate) use admission_projection::validate_proof_value;
 
 pub(in crate::reference_packet::service) mod native_boot;
+pub(crate) use native_boot::ORIGINAL_ACK_CONTEXT_BANK_BYTES;
+
 pub(crate) use native_boot::{
     NativeAckBoot, NativeRestoredControlEvidence, OriginalCanonicalAckControlAdmit,
-    OriginalCompleteRestoreCommit, OriginalNativeBootstrapOwned11,
+    OriginalCompleteRestoreCommit, OriginalNativeBirthReadScope, OriginalNativeBootstrapOwned11,
     OriginalNativeReportStartupAllocation, VerifiedCanonicalAckAdmission,
     VerifiedCanonicalRestoreInputAdmission, VerifiedCompleteRestoration,
     VerifiedCompleteRestorationHeld, VerifiedCompleteRestorePrepare,
     original_native_ack_boot_layout, original_native_private_bootstrap_layout,
     original_native_report_startup_scope_layout_data,
 };
-
 pub(crate) use native_boot::{
     OriginalNativePrepareStartupAllocation, measure_original_prepare_executable_data,
     original_prepare_executable_measurement_counter_scratch_data,
 };
+
+// One borrowed compiled roster drives BOTH the existing canonical definition
+// and its prospective DOM/canonical counter. No schema bytes or field values
+// are regenerated independently in the admission calculation.
+struct NativeCanonicalBlobAckContractValue;
+
+impl serde::Serialize for NativeCanonicalBlobAckContractValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use crate::reference_packet::service::native_startup::contract_value::ContractValue as V;
+        static VALUE: V<'static> = V::Object(&[
+            (
+                "schema",
+                V::Text("source-owned.packet-canonical-blob-ack-contract/5"),
+            ),
+            ("feature", V::Text(PACKET_NATIVE_CANONICAL_ACK_FEATURE)),
+            ("selection", V::Text("canonical_sdk_blob5")),
+            (
+                "writer",
+                V::Text(
+                    "same original SDK ClientSession receive_transfer; BlobBegin, BlobChunk or BlobFinish completed success with empty body and envelope extensions, or no send on failure",
+                ),
+            ),
+            (
+                "scope",
+                V::Text(
+                    "same original source-owned controller, native peer executable and kernel identity, Hello registrar, immutable codec, Capture and confirmation; opaque host lease never crosses process as authority",
+                ),
+            ),
+            (
+                "extent",
+                V::Text(
+                    "complete canonical envelope plus four-byte header, bounded original ASCII IDs, all U64 digits and full ContentRef hash, length and escaped media type",
+                ),
+            ),
+            (
+                "native_receive",
+                V::Text(
+                    "selected original acknowledgement scope reserves bounded literal slot before its first header byte and refuses oversized header before body allocation or read; exact partial original remains owned and uncertain",
+                ),
+            ),
+            (
+                "settlement",
+                V::Text(
+                    "source retains complete original request, response and literal suffix; no lifetime credit refund, replay, metadata ticket or Ready permission",
+                ),
+            ),
+            (
+                "legacy",
+                V::Text("absent selection keeps negotiated raw frame ceiling and old codec bytes"),
+            ),
+        ]);
+        serde::Serialize::serialize(&VALUE, serializer)
+    }
+}
+
+pub(crate) fn native_canonical_blob_ack_contract_storage_data(
+    maximum: usize,
+) -> Result<
+    crate::retained_metadata::serialization_storage::OriginalSerializationStorageData,
+    ProviderError,
+> {
+    // This unit struct and its borrowed literals own no heap/Bytes formatter.
+    crate::retained_metadata::serialization_storage::actual_serialization_storage_data(
+        &NativeCanonicalBlobAckContractValue,
+        crate::retained_metadata::RetainedProtocolMetadataFacts::default(),
+        maximum,
+    )
+}
+
 pub use native_boot::{
     PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,
     original_native_prepare_startup_storage_data,

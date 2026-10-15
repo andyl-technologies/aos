@@ -93,3 +93,64 @@ fn alias_byte_drift_revokes_and_restoring_the_original_bytes_does_not_clear_it()
     assert!(files.current().is_err());
     assert!(files.revoked.get());
 }
+
+#[test]
+fn selected_native_file_fence_exact_budget_and_one_short_preserve_currentness() {
+    use crucible::node_contract::RuntimeError;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("native-peer");
+    let bytes = b"complete independently pinned peer";
+    std::fs::write(&path, bytes).unwrap();
+    let reference = canonical::content_ref(bytes, "application/octet-stream").unwrap();
+    let files = complete_byte_originals(&[(path.as_path(), &reference); 10]).unwrap();
+    let exact = files
+        .original_native_startup_currentness_storage_data()
+        .unwrap();
+    assert!(
+        exact >= PacketFixtureMeasurements::streaming_scratch_bytes() + std::mem::size_of::<u16>()
+    );
+
+    assert!(matches!(
+        files.authenticate_original_native_startup_currentness(exact - 1),
+        Err(RuntimeError::ResourceLimit)
+    ));
+    assert!(!files.revoked.get());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(
+        files
+            .authenticate_original_native_startup_currentness(exact)
+            .is_ok()
+    );
+    assert_eq!(files.read_current().unwrap(), 1);
+    assert!(files.current().is_ok());
+}
+
+#[test]
+fn selected_native_file_fence_keeps_path_and_byte_drift_sticky() {
+    use crucible::node_contract::RuntimeError;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("native-peer");
+    let replacement = directory.path().join("same-bytes-new-inode");
+    let bytes = b"same independently pinned body";
+    std::fs::write(&path, bytes).unwrap();
+    let reference = canonical::content_ref(bytes, "application/octet-stream").unwrap();
+    let files = complete_byte_originals(&[(path.as_path(), &reference); 10]).unwrap();
+    let exact = files
+        .original_native_startup_currentness_storage_data()
+        .unwrap();
+    assert!(
+        files
+            .authenticate_original_native_startup_currentness(exact)
+            .is_ok()
+    );
+
+    std::fs::write(&replacement, bytes).unwrap();
+    std::fs::rename(&replacement, &path).unwrap();
+    assert!(matches!(
+        files.authenticate_original_native_startup_currentness(exact),
+        Err(RuntimeError::InvalidReceipt)
+    ));
+    assert!(files.revoked.get());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(files.current().is_err());
+}

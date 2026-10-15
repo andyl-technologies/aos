@@ -50,7 +50,14 @@ pub(super) fn read(
     boot_layout: usize,
 ) -> Result<Option<HistoricalNativeAckToken>, ProviderError> {
     let mut fields = Fields::array(input)?;
-    tag(&mut fields, "source-private.native-ack-token/11")?;
+    tag(
+        &mut fields,
+        if ledger.requires_startup_class()? {
+            "source-private.native-ack-token/14"
+        } else {
+            "source-private.native-ack-token/11"
+        },
+    )?;
     let identity = super::identity::read(next(&mut fields)?, ledger, build)?;
     let boot = ledger.boot(next(&mut fields)?, build, boot_layout)?;
     let policy = ledger.policy(next(&mut fields)?, build)?;

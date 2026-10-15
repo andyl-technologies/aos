@@ -7,18 +7,20 @@
 mod boot;
 mod bootstrap;
 mod owned_read;
+pub(crate) use boot::ORIGINAL_ACK_CONTEXT_BANK_BYTES;
 
 pub(crate) use boot::{
     NativeAckBoot, NativeRestoredControlEvidence, OriginalCanonicalAckControlAdmit,
-    OriginalCompleteRestoreCommit, OriginalNativeReportStartupAllocation,
-    VerifiedCanonicalAckAdmission, VerifiedCanonicalRestoreInputAdmission,
-    VerifiedCompleteRestoration, VerifiedCompleteRestorationHeld, VerifiedCompleteRestorePrepare,
+    OriginalCompleteRestoreCommit, OriginalNativeBirthReadScope,
+    OriginalNativeReportStartupAllocation, VerifiedCanonicalAckAdmission,
+    VerifiedCanonicalRestoreInputAdmission, VerifiedCompleteRestoration,
+    VerifiedCompleteRestorationHeld, VerifiedCompleteRestorePrepare,
     original_native_ack_boot_layout, original_native_report_startup_scope_layout_data,
 };
-pub(in crate::reference_packet::service) use bootstrap::accept;
 pub(crate) use bootstrap::{
     OriginalNativeBootstrapOwned11, original_native_private_bootstrap_layout,
 };
+pub(in crate::reference_packet::service) use bootstrap::{accept, accept_admitted};
 
 pub(crate) use boot::{
     OriginalNativePrepareStartupAllocation, measure_original_prepare_executable_data,

@@ -512,3 +512,45 @@ mod original_registry_snapshot;
 pub use original_registry_snapshot::{
     ORIGINAL_HOST_EXTENSION_REGISTRY_FORMAT, OriginalExtensionRegistryView,
 };
+
+impl<R: OriginalEmptyExtensionRegistry> OriginalExtensionNegotiationOwned11<'_, R> {
+    pub(crate) fn observe_unique_capture_metadata(
+        &self,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        use crate::retained_metadata::aliases::MetadataSharedKind;
+        self.original.verify_authority(self.authority)?;
+        let ExtensionHandshake {
+            handshake,
+            installed,
+            selected,
+            original_registry,
+        } = self.original;
+        if original_registry.is_some() {
+            return Err(registry_refused());
+        }
+        handshake.observe_unique_capture_metadata_data(roots, observer)?;
+        roots.observe_shared(
+            observer,
+            MetadataSharedKind::InstalledRegistry,
+            installed.as_ref(),
+        )?;
+        roots.observe_shared(
+            observer,
+            MetadataSharedKind::InstalledRegistry,
+            self.registry.as_ref(),
+        )?;
+        let selected = selected.as_ref().ok_or_else(registry_refused)?;
+        if roots.observe_shared(
+            observer,
+            MetadataSharedKind::SelectedExtensions,
+            selected.as_ref(),
+        )? {
+            for selection in selected.iter() {
+                observer.observe(selection)?;
+            }
+        }
+        Ok(())
+    }
+}

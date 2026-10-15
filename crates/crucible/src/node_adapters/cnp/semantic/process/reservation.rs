@@ -23,6 +23,7 @@ pub struct CnpSemanticLaunchReservation {
     guard: CnpSemanticLaunchGuard,
     complete_bytes: bool,
     original_pidfd: bool,
+    native_startup: bool,
     attempted: bool,
     authenticated: bool,
 }
@@ -34,6 +35,9 @@ pub struct CnpSemanticReservationFailure {
     /// Owns the same actual Child, cached identity and supervisor reservation.
     pub original: CnpSemanticLaunchReservation,
 }
+
+#[path = "reservation_storage.rs"]
+mod retained_storage;
 
 impl CnpSemanticLaunchReservation {
     /// Allocates the complete holder and reads its installed identity before spawn.
@@ -85,6 +89,16 @@ impl CnpSemanticLaunchReservation {
         Self::reserve_selected(directory, executable, slot, true, true)
     }
 
+    pub(in crate::node_adapters::cnp::semantic) fn reserve_original_native_startup(
+        directory: PathBuf,
+        executable: ContentRef,
+        slot: Box<dyn CnpSemanticProcessSlot>,
+    ) -> Self {
+        let mut original = Self::reserve_selected(directory, executable, slot, true, true);
+        original.native_startup = true;
+        original
+    }
+
     fn reserve_selected(
         directory: PathBuf,
         executable: ContentRef,
@@ -134,6 +148,7 @@ impl CnpSemanticLaunchReservation {
             },
             complete_bytes,
             original_pidfd,
+            native_startup: false,
             attempted: false,
             authenticated: false,
         }
@@ -157,6 +172,16 @@ impl CnpSemanticLaunchReservation {
             ));
         }
         self.attempted = true;
+        let mut native_scratch = if self.native_startup {
+            Some(
+                super::executable_guard::FreshCurrentScratch::for_original_native_startup()
+                    .map_err(|_| {
+                        ProviderError::ResourceExhausted("selected native launch scratch")
+                    })?,
+            )
+        } else {
+            None
+        };
         let custody = self
             .guard
             .custody
@@ -172,9 +197,26 @@ impl CnpSemanticLaunchReservation {
         custody.provider_pid = child.id();
         custody.group = i32::try_from(child.id()).ok().and_then(Pid::from_raw);
 
-        let identity = current::KernelIdentity::capture(custody.provider_pid)?;
+        let identity = if let Some(scratch) = native_scratch.as_mut() {
+            current::KernelIdentity::capture_original_native_startup(custody.provider_pid, scratch)
+                .map_err(|_| {
+                    ProviderError::Correlation("selected native kernel acquisition refused")
+                })?
+        } else {
+            current::KernelIdentity::capture(custody.provider_pid)?
+        };
         custody.kernel_identity = Some(identity);
-        let executable = if self.complete_bytes {
+        let executable = if let Some(scratch) = native_scratch.as_mut() {
+            super::executable_guard::OriginalExecutable::open_original_native_startup(
+                custody.provider_pid,
+                &custody.expected_executable,
+                &identity,
+                scratch,
+            )
+            .map_err(|_| {
+                ProviderError::Correlation("selected native executable acquisition refused")
+            })?
+        } else if self.complete_bytes {
             super::executable_guard::OriginalExecutable::open_complete_bytes(
                 custody.provider_pid,
                 &custody.expected_executable,

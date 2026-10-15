@@ -73,7 +73,8 @@ mod ack_peer;
 mod world_admission;
 pub use ack_peer::{
     PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame,
-    PacketCompleteAckPeerBootMaterial, PacketCompleteRestorePreparation,
+    PacketCompleteAckPeerBootMaterial, PacketCompleteNativeStartupWire,
+    PacketCompleteRestorePreparation,
 };
 pub(super) use world_admission::OriginalCompletedCanonicalAckWorldAdmission;
 

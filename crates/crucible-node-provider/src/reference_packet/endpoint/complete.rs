@@ -27,6 +27,57 @@ pub(super) struct CompleteEndpointState {
 }
 
 impl CompleteEndpointState {
+    pub(super) fn authenticate_live_capture_quote(
+        &self,
+        native: &PacketControl,
+    ) -> Result<(), ProviderError> {
+        self.ensure_origin()?;
+        let Self {
+            creator: _,
+            thread: _,
+            storage: _,
+            profile,
+            hello: _,
+            metadata_limits,
+            metadata_birth_facts,
+            before,
+            after,
+            poisoned,
+            unwind_payload,
+        } = self;
+        if *poisoned
+            || unwind_payload.is_some()
+            || !matches!(
+                profile,
+                Some(PacketNative5CaptureProfile::OwnedProtocol11 { .. })
+            )
+        {
+            return Err(ProviderError::Correlation(
+                "native Observe quote complete endpoint unresolved",
+            ));
+        }
+        native.authenticate_complete_capture_allocation_selection(Some(
+            super::super::service::capture_allocation::PacketNative5CaptureAllocationSelection::OriginalObserve12,
+        ))?;
+        if self.original_metadata_birth_facts(*metadata_limits)? != *metadata_birth_facts {
+            return Err(ProviderError::Correlation(
+                "native Observe quote metadata allocations changed",
+            ));
+        }
+        let before = before.as_ref().ok_or(ProviderError::Correlation(
+            "native Observe quote original before bank absent",
+        ))?;
+        let after = after.as_ref().ok_or(ProviderError::Correlation(
+            "native Observe quote original after bank absent",
+        ))?;
+        if !before.unused_for_after_preflight() || !after.unused_for_after_preflight() {
+            return Err(ProviderError::Correlation(
+                "native Observe quote follows original Capture attempt",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn ensure_origin(&self) -> Result<(), ProviderError> {
         if self.creator != std::process::id() {
             return Err(ProviderError::Correlation(
@@ -497,6 +548,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             held: false,
             complete: Some(state),
             capture: None,
+            capture_allocation_attempt: None,
             pending_capture: None,
             after_confirmation: None,
             canonical_ack_boot: None,

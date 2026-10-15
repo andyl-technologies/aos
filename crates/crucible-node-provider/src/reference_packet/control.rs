@@ -21,6 +21,29 @@ use crate::{
 use super::{PacketGrant, PacketInventory, PacketProgram};
 
 mod capture;
+mod capture_projection;
+mod capture_report_projection;
+mod content;
+mod continuation_projection;
+mod observe_control_growth;
+mod observe_dispatch;
+use observe_dispatch::OriginalObserveDispatch;
+pub(crate) use observe_dispatch::original_observe_dispatch_scratch_data;
+mod observe_publication_projection;
+pub(crate) use observe_control_growth::{
+    NativeObserveControlGrowthData, NativeObserveControlGrowthInput,
+};
+mod stopped_observe;
+pub(crate) use capture_report_projection::{
+    NativeCaptureReportObservationContext, NativeCaptureReportProjectionData,
+};
+pub(crate) use continuation_projection::NativeContinuationTerminalProjectionData;
+pub(crate) use observe_publication_projection::NativeObservePublicationProjectionData;
+pub(crate) use stopped_observe::{
+    NativeStoppedObserveRecordStorageData, ProducedOriginalObserveReceipt,
+};
+mod capture_quote;
+pub(crate) use capture_projection::NativeProjectedCaptureRequestData;
 mod continuation;
 pub use capture::{PacketOriginalCaptureComponent, PacketOriginalCaptureReservation};
 mod input;
@@ -97,6 +120,18 @@ pub struct PacketControlReply {
 // The source owner retains its original Unknown reservation independently of
 // whatever correlation the transport preparation managed to reserve.
 type PrepareReply<'a> = dyn FnMut(&PacketControlReply) -> Result<(), ProviderError> + 'a;
+
+// Only the selected original Observe producer can transform the prospective
+// reply before both transport preparation and immutable Control cache insertion.
+// Generic preflight callbacks retain their existing borrowed reply API.
+struct OriginalObserveAllocationPreparation<'a> {
+    currency: &'a restore_fresh::PacketLiveCaptureControlCurrency,
+    raw_record: &'a NativeStoppedObserveRecordStorageData<'a>,
+    transform_and_prepare: &'a mut dyn FnMut(
+        &mut PacketControlReply,
+        &ProducedOriginalObserveReceipt,
+    ) -> Result<(), ProviderError>,
+}
 
 struct ReplyPreparation<'a> {
     callback: Option<&'a mut PrepareReply<'a>>,
@@ -521,42 +556,13 @@ impl PacketControl {
         object: ContentRef,
         bytes: &[u8],
     ) -> Result<(), ProviderError> {
-        if (self.connected_coordinator.is_some() || self.complete_coordinator.is_some())
-            && bytes.len() > super::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES
-        {
-            return Err(ProviderError::ResourceExhausted(
-                "packet complete connected content",
-            ));
-        }
-        object.verify(bytes)?;
-        if let Some(original) = self.content.get(&object) {
-            return if original == bytes {
-                Ok(())
-            } else {
-                Err(ProviderError::Conflict("packet original content"))
-            };
-        }
-        let total = self
-            .content_bytes
-            .checked_add(bytes.len())
-            .ok_or(ProviderError::ResourceExhausted("packet content bytes"))?;
-        // Only explicitly installed connected-four/complete-five coordinators need the larger
-        // complete coordinator object. Socket frames and old profiles stay fixed;
-        // every byte remains charged to the same original total content ledger.
-        let maximum_object =
-            if self.connected_coordinator.is_some() || self.complete_coordinator.is_some() {
-                super::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES
-            } else {
-                FRAME
-            };
-        if self.content.len() >= OBJECTS || total > CONTENT_BYTES || bytes.len() > maximum_object {
-            return Err(ProviderError::ResourceExhausted(
-                "packet complete native content",
-            ));
-        }
-        self.content.insert(object, bytes.to_vec());
-        self.content_bytes = total;
-        Ok(())
+        content::install_original_content(
+            &mut self.content,
+            &mut self.content_bytes,
+            self.connected_coordinator.is_some() || self.complete_coordinator.is_some(),
+            object,
+            bytes,
+        )
     }
 
     /// Copies the administrative native projection without executing a callback.
@@ -591,6 +597,7 @@ impl PacketControl {
                 callback: None,
                 attempted: false,
             },
+            None,
             None,
         )
     }
@@ -630,6 +637,7 @@ impl PacketControl {
                 attempted: false,
             },
             None,
+            None,
         )
     }
 
@@ -665,6 +673,41 @@ impl PacketControl {
                 attempted: false,
             },
             Some(&handoff),
+            None,
+        )
+    }
+
+    pub(crate) fn dispatch_original_capture_allocation_observe(
+        &mut self,
+        request: &Envelope,
+        currency: &restore_fresh::PacketLiveCaptureControlCurrency,
+        raw_record: &NativeStoppedObserveRecordStorageData<'_>,
+        transform_and_prepare: &mut dyn FnMut(
+            &mut PacketControlReply,
+            &ProducedOriginalObserveReceipt,
+        ) -> Result<(), ProviderError>,
+    ) -> Result<&PacketControlReply, ProviderError> {
+        currency.authenticate_before_observe(self)?;
+        if request.method != Method::Observe
+            || !matches!(self.complete_capture_allocation_selection,
+                Some(super::service::capture_allocation::PacketNative5CaptureAllocationSelection::OriginalObserve12))
+            || request.request_id.0.as_ref().is_none_or(|id| self.originals.contains_key(id))
+        {
+            return Err(ProviderError::Correlation("native allocation Observe is not a fresh selected original"));
+        }
+        let mut selected = OriginalObserveAllocationPreparation {
+            currency,
+            raw_record,
+            transform_and_prepare,
+        };
+        self.dispatch_prepared(
+            request,
+            &mut ReplyPreparation {
+                callback: None,
+                attempted: false,
+            },
+            None,
+            Some(&mut selected),
         )
     }
 
@@ -675,6 +718,7 @@ impl PacketControl {
         canonical_ack_admit: Option<
             &super::service::ack_emitter::OriginalCanonicalAckControlAdmit<'_>,
         >,
+        selected_observe: Option<&mut OriginalObserveAllocationPreparation<'_>>,
     ) -> Result<&PacketControlReply, ProviderError> {
         if self.capture_creator != std::process::id() {
             return Err(ProviderError::Correlation(
@@ -684,6 +728,17 @@ impl PacketControl {
         if self.complete_coordinator.is_some() && self.complete_storage.is_none() {
             return Err(ProviderError::Correlation(
                 "native5 original storage birth is unbound",
+            ));
+        }
+        if selected_observe.is_none()
+            && request.method == Method::Observe
+            && self.complete_capture_allocation_selection.is_some()
+        {
+            // The selected family must transform the same reply before cache
+            // insertion. Generic fresh/cached dispatch cannot emit receipt5 or
+            // bypass that original publication path.
+            return Err(ProviderError::Correlation(
+                "native allocation Observe requires its original producer",
             ));
         }
         encode(request)?;
@@ -775,9 +830,38 @@ impl PacketControl {
             ),
         );
         self.native_effect_attempted = false;
-        let result = self.execute(request, decoded, preparation);
+        let mut produced_receipt = None;
+        let stopped_observe = selected_observe.as_ref().map(|selected| {
+            (
+                selected.currency,
+                selected.raw_record,
+                &mut produced_receipt,
+            )
+        });
+        let result = self.execute(request, decoded, preparation, stopped_observe);
         match result {
-            Ok(reply) => {
+            Ok(mut reply) => {
+                if let Some(selected) = selected_observe {
+                    // Move the produced owners into the already reserved cache
+                    // before any currency check or publication callback can fail
+                    // or unwind. A held selected route cannot replay this row.
+                    self.originals
+                        .get_mut(&id)
+                        .ok_or(ProviderError::Frame("packet original reservation absent"))?
+                        .1 = reply;
+                    let dispatch = OriginalObserveDispatch::begin(
+                        self,
+                        selected.currency,
+                        request,
+                        produced_receipt.as_ref(),
+                    )?;
+                    dispatch.transform_and_install(preparation, selected.transform_and_prepare)?;
+                    return Ok(&self
+                        .originals
+                        .get(&id)
+                        .ok_or(ProviderError::Frame("packet original reservation absent"))?
+                        .1);
+                }
                 if !preparation.attempted
                     && let Err(error) = preparation.prepare(&reply, &mut self.fenced)
                 {
@@ -792,7 +876,10 @@ impl PacketControl {
                 Ok(&original.1)
             }
             Err(error) => {
-                if self.native_effect_attempted || preparation.attempted {
+                if selected_observe.is_some()
+                    || self.native_effect_attempted
+                    || preparation.attempted
+                {
                     self.fenced = true;
                     return Err(error);
                 }
@@ -870,6 +957,11 @@ impl PacketControl {
         request: &Envelope,
         body: RequestBody,
         preparation: &mut ReplyPreparation<'_>,
+        stopped_observe: Option<(
+            &restore_fresh::PacketLiveCaptureControlCurrency,
+            &NativeStoppedObserveRecordStorageData<'_>,
+            &mut Option<ProducedOriginalObserveReceipt>,
+        )>,
     ) -> Result<PacketControlReply, ProviderError> {
         if request.body.get("extensions").is_some_and(|extensions| {
             extensions
@@ -976,7 +1068,7 @@ impl PacketControl {
             RequestBody::Input(input) => self.input(request, input),
             RequestBody::Poll(_) => self.poll(request),
             RequestBody::Cancel(_) => self.cancel(request),
-            RequestBody::Observe(observe) => self.observe(request, observe),
+            RequestBody::Observe(observe) => self.observe(request, observe, stopped_observe),
             RequestBody::Retire(retire) => self.retire(retire),
             // The installed source has no ingress or optional state/mutation
             // facet. Unsupported syntax cannot fabricate another native path.
@@ -1463,6 +1555,11 @@ impl PacketControl {
         &mut self,
         request: &Envelope,
         observe: ObserveRequest,
+        stopped_record: Option<(
+            &restore_fresh::PacketLiveCaptureControlCurrency,
+            &NativeStoppedObserveRecordStorageData<'_>,
+            &mut Option<ProducedOriginalObserveReceipt>,
+        )>,
     ) -> Result<PacketControlReply, ProviderError> {
         let binding = &self.selection.realization.bindings[0];
         if observe.binding_hash != self.selection.realization.owner_bindings[0].identity()?
@@ -1483,7 +1580,26 @@ impl PacketControl {
                 "packet observation before global activation",
             ))?
             .clone();
-        let proof = self.proof(request, None)?;
+        let selected_stopped = stopped_record.is_some();
+        let evidence = if let Some((currency, admitted, receipt_slot)) = stopped_record {
+            if receipt_slot.is_some() {
+                return Err(ProviderError::Conflict(
+                    "native Observe receipt already produced",
+                ));
+            }
+            let produced =
+                self.retain_original_stopped_observe_evidence(request, currency, admitted)?;
+            *receipt_slot = Some(produced.receipt);
+            produced.evidence
+        } else {
+            let proof = self.proof(request, None)?;
+            self.record_evidence(proof)?
+        };
+        let measurement_ref = evidence
+            .last()
+            .ok_or(ProviderError::Correlation("native Observe receipt absent"))?
+            .0
+            .clone();
         let binding = &self.selection.realization.bindings[0];
         let batch = ObservationBatch {
             schema_version: 1,
@@ -1504,18 +1620,28 @@ impl PacketControl {
             last_sequence: U64::new(0),
             events: vec![],
             visibility: Visibility::Staged,
-            measurement_ref: proof.0.clone(),
+            measurement_ref,
             extensions: Extensions::new(),
         };
-        reply(
-            ObserveResult {
-                observations: vec![batch],
-                next_sequence: U64::new(1),
-                complete: true,
-                inventory_hash: self.program.inventory_hash()?,
+        let result = ObserveResult {
+            observations: vec![batch],
+            next_sequence: U64::new(1),
+            complete: true,
+            inventory_hash: if selected_stopped {
+                self.program.stopped_original_inventory_hash()?
+            } else {
+                self.program.inventory_hash()?
             },
-            self.record_evidence(proof)?,
-        )
+        };
+        if selected_stopped {
+            // The private stopped producer above already supplied the exact
+            // raw/receipt association under the same completed currency. This
+            // closed result contains no arbitrary JSON extensions or events;
+            // preserve it directly instead of encoding and parsing it twice.
+            stopped_observe::original_stopped_observe_reply(result, evidence)
+        } else {
+            reply(result, evidence)
+        }
     }
 
     fn retire(&mut self, retire: RetireRequest) -> Result<PacketControlReply, ProviderError> {
@@ -1631,4 +1757,6 @@ impl std::io::Write for Extent {
 mod restore_model;
 pub(crate) use restore_model::{PacketCompleteRestorePhysicalHold, PacketPreparedCompleteModel};
 mod restore_fresh;
-pub(crate) use restore_fresh::PacketFreshRestoreControlAllocation;
+pub(crate) use restore_fresh::{
+    PacketFreshRestoreControlAllocation, PacketLiveCaptureControlCurrency,
+};

@@ -25,7 +25,7 @@ mod frame;
 pub(super) use association::OriginalAckPeerAssociation;
 pub use association::PacketCompleteRestorePreparation;
 pub(super) use birth::OriginalAckPeerBirth;
-pub use birth::PacketCompleteAckPeerBootMaterial;
+pub use birth::{PacketCompleteAckPeerBootMaterial, PacketCompleteNativeStartupWire};
 pub use frame::PacketCompleteAckPeerBootFrame;
 
 /// Selects one full planned controller registration for preparation only.
@@ -667,6 +667,7 @@ impl PacketCompleteSemanticSource {
         let original = std::cell::Ref::filter_map(slot, Option::as_ref)
             .map_err(|_| refused("complete private ACK birth is absent"))?;
         original.authenticate_report_startup_before_boot(self)?;
+        original.authenticate_native_startup_before_boot(self)?;
         original.begin_private_boot()?;
         Ok(PacketCompleteAckPeerBootMaterial::from_original(
             self, original,

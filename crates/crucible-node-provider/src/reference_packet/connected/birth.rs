@@ -4,6 +4,28 @@ use super::*;
 use crate::reference_packet::PacketModelBirthFailure;
 
 impl PacketConnectedProgram {
+    // These are precisely the five empty banks returned by prepared below.
+    // Inline Vec headers and the transferred definition belong to caller roots.
+    pub(crate) fn original_initial_reservation_requested_bytes() -> Result<usize, ProviderError> {
+        let event_slot = std::mem::size_of::<PacketReaction>()
+            .checked_add(std::mem::size_of::<PacketDeliveredInput>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PacketPendingPublication>()))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PacketConnectedPublication>()))
+            .ok_or(ProviderError::ResourceExhausted(
+                "reactive birth requested storage",
+            ))?;
+        MAXIMUM_EVENTS
+            .checked_mul(event_slot)
+            .and_then(|bytes| {
+                MAXIMUM_BATCHES
+                    .checked_mul(std::mem::size_of::<OriginalStage>())
+                    .and_then(|stages| bytes.checked_add(stages))
+            })
+            .ok_or(ProviderError::ResourceExhausted(
+                "reactive birth requested storage",
+            ))
+    }
+
     /// Constructs the reactive actor while retaining original inputs on refusal.
     ///
     /// All fallible checks and finite bank reservations precede transfer of the

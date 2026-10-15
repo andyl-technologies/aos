@@ -438,3 +438,5 @@ fn validate_connected_program_definition(
 }
 
 mod restore_fresh;
+
+mod stopped_inventory;
