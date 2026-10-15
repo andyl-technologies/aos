@@ -69,6 +69,7 @@ fn captured_material(seed: u8) -> CapturedFingerprintMaterial {
     CapturedFingerprintMaterial {
         file: sealed_material(seed),
         material_length: 1,
+        progress: MaterialDigestProgress::default(),
     }
 }
 
@@ -201,6 +202,13 @@ fn detached_capture_refuses_incomplete_component_material() {
             remaining_bytes: 1,
         })
     );
+    assert_eq!(captured.device.progress.consumed, 1);
+    assert_eq!(captured.device.file.metadata().unwrap().len(), 1);
+    // SAFETY: the retained File still owns this descriptor after read refusal.
+    assert_eq!(
+        unsafe { libc::lseek(captured.device.file.as_raw_fd(), 0, libc::SEEK_CUR) },
+        1
+    );
 }
 
 #[test]
@@ -295,8 +303,14 @@ fn borrowed_digest_preserves_full_stride_short_reads_and_interrupted_requests() 
     };
     let mut workspace = test_workspace();
 
-    let actual =
-        digest_device_material(&mut reader, 70_000, "device state", &mut workspace).unwrap();
+    let actual = digest_device_material(
+        &mut reader,
+        70_000,
+        "device state",
+        &mut workspace,
+        &mut MaterialDigestProgress::default(),
+    )
+    .unwrap();
 
     assert_eq!(actual, expected);
     assert_eq!(reader.requests, [65_536, 65_536, 65_536, 3_440]);
@@ -316,7 +330,13 @@ fn borrowed_digest_preserves_the_exact_remaining_extent_at_eof_and_io_refusal() 
         let mut workspace = test_workspace();
 
         assert_eq!(
-            digest_device_material(&mut reader, 100, "device state", &mut workspace),
+            digest_device_material(
+                &mut reader,
+                100,
+                "device state",
+                &mut workspace,
+                &mut MaterialDigestProgress::default()
+            ),
             Err(FingerprintSamplerError::DigestRead {
                 component: "device state",
                 remaining_bytes: 93,
@@ -337,7 +357,14 @@ fn borrowed_digest_does_not_read_beyond_the_declared_material() {
     };
     let mut workspace = test_workspace();
 
-    let actual = digest_device_material(&mut reader, 7, "device state", &mut workspace).unwrap();
+    let actual = digest_device_material(
+        &mut reader,
+        7,
+        "device state",
+        &mut workspace,
+        &mut MaterialDigestProgress::default(),
+    )
+    .unwrap();
 
     assert_eq!(actual, <[u8; 32]>::from(Sha256::digest([0x3a; 7])));
     assert_eq!(reader.requests, [7]);
@@ -354,9 +381,91 @@ fn zero_extent_digest_has_no_read_request() {
     };
     let mut workspace = test_workspace();
 
-    let actual = digest_device_material(&mut reader, 0, "device state", &mut workspace).unwrap();
+    let actual = digest_device_material(
+        &mut reader,
+        0,
+        "device state",
+        &mut workspace,
+        &mut MaterialDigestProgress::default(),
+    )
+    .unwrap();
 
     assert_eq!(actual, <[u8; 32]>::from(Sha256::digest([])));
     assert!(reader.requests.is_empty());
     assert_eq!(reader.steps.len(), 1);
+}
+
+#[test]
+fn failed_read_keeps_cursor_hash_and_first_failure_without_replay() {
+    let mut reader = TranscriptReader {
+        payload: vec![0x3a; 12],
+        offset: 0,
+        steps: [
+            ReadStep::Interrupted,
+            ReadStep::Bytes(7),
+            ReadStep::Failure,
+            ReadStep::Bytes(5),
+        ]
+        .into(),
+        requests: Vec::new(),
+    };
+    let mut progress = MaterialDigestProgress::default();
+    let mut workspace = test_workspace();
+
+    let failure = digest_device_material(
+        &mut reader,
+        12,
+        "device state",
+        &mut workspace,
+        &mut progress,
+    );
+    let requests = reader.requests.clone();
+    let repeated = digest_device_material(
+        &mut reader,
+        12,
+        "device state",
+        &mut workspace,
+        &mut progress,
+    );
+
+    assert_eq!(
+        failure,
+        Err(FingerprintSamplerError::DigestRead {
+            component: "device state",
+            remaining_bytes: 5
+        })
+    );
+    assert_eq!(repeated, failure);
+    assert_eq!(progress.consumed, 7);
+    assert_eq!(reader.offset, 7);
+    assert_eq!(reader.requests, requests);
+    assert_eq!(reader.requests, [12, 12, 5]);
+    assert_eq!(reader.steps.len(), 1);
+    assert_eq!(
+        <[u8; 32]>::from(progress.hasher.clone().finalize()),
+        <[u8; 32]>::from(Sha256::digest([0x3a; 7]))
+    );
+}
+
+#[test]
+fn completed_digest_keeps_owned_file_until_the_capture_is_released() {
+    let mut captured = captured_sample();
+    let descriptor = captured.device.file.as_raw_fd();
+    let metadata = captured.device.file.metadata().unwrap();
+    let mut workspace = test_workspace();
+
+    let first = captured.digest(&mut workspace).unwrap();
+    let second = captured.digest(&mut workspace).unwrap();
+
+    assert_eq!(first, second);
+    assert_eq!(captured.device.progress.consumed, 1);
+    assert_eq!(
+        captured.device.file.metadata().unwrap().ino(),
+        metadata.ino()
+    );
+    // SAFETY: the retained File owns this descriptor throughout both digests.
+    assert_eq!(unsafe { libc::lseek(descriptor, 0, libc::SEEK_CUR) }, 1);
+
+    drop(captured);
+    assert_returned_descriptor_closed(descriptor, metadata.dev(), metadata.ino());
 }

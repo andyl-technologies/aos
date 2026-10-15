@@ -32,10 +32,11 @@ impl StartupQuery {
 }
 
 fn work(request: u32) -> LiveFingerprintDigestWork {
-    LiveFingerprintDigestWork {
-        captured: CapturedFingerprintSample::test_empty(),
-        capture_request: request,
-    }
+    LiveFingerprintDigestWork::new(CapturedFingerprintSample::test_empty(), request)
+}
+
+fn take_received(control: &FingerprintWorkerControl) -> LiveFingerprintDigestWork {
+    control.receive().unwrap().take().unwrap()
 }
 
 fn control() -> Arc<FingerprintWorkerControl> {
@@ -71,9 +72,9 @@ fn capacity_one_blocks_then_wakes_producer_without_replacing_first_capture() {
     wait_blocked(&control, &deadline);
 
     assert!(!producer.is_finished());
-    assert_eq!(control.receive().unwrap().capture_request, 11);
+    assert_eq!(take_received(&control).capture_request, 11);
     assert!(producer.join().unwrap().is_ok());
-    assert_eq!(control.receive().unwrap().capture_request, 22);
+    assert_eq!(take_received(&control).capture_request, 22);
     control.close();
     assert!(control.receive().is_none());
 }
@@ -85,7 +86,7 @@ fn close_drains_pending_capture_and_refuses_new_producer() {
     control.close();
 
     assert!(control.enqueue(work(8)).is_err());
-    assert_eq!(control.receive().unwrap().capture_request, 7);
+    assert_eq!(take_received(&control).capture_request, 7);
     assert!(control.receive().is_none());
 }
 
@@ -100,7 +101,7 @@ fn close_wakes_blocked_producer_without_stealing_pending_capture() {
     control.close();
 
     assert!(producer.join().unwrap().is_err());
-    assert_eq!(control.receive().unwrap().capture_request, 7);
+    assert_eq!(take_received(&control).capture_request, 7);
     assert!(control.receive().is_none());
 }
 
@@ -281,7 +282,7 @@ fn queued_capture_is_independent_of_exclusive_workspace_digest_borrow() {
     drop(workspace);
     assert!(producer.join().unwrap().is_ok());
     assert!(finished_with_workspace_held);
-    assert_eq!(control.receive().unwrap().capture_request, 19);
+    assert_eq!(take_received(&control).capture_request, 19);
 }
 
 #[test]
@@ -295,7 +296,7 @@ fn fork_hold_refuses_pending_job_then_restores_same_owner_before_release() {
     // the concrete additional guard, rather than a forged parked-work receipt.
     assert!(unsafe { worker.hold_workspace_for_fork() }.is_err());
     assert!(control.workspace().is_some());
-    drop(control.receive().unwrap());
+    drop(take_received(&control));
     // SAFETY: the fixture has no outstanding actor or pending work.
     unsafe { worker.hold_workspace_for_fork() }.unwrap();
     assert!(control.workspace().is_none());
@@ -510,4 +511,273 @@ fn parent_park_workspace_refuses_actual_recursive_control_and_mapping_borrows() 
     );
     drop(mapping);
     drop(worker);
+}
+
+#[test]
+fn completed_publication_and_exact_ack_release_inflight_material() {
+    let slot = FingerprintSampleSlot::new();
+    let request = slot.request_capture_v1();
+    let mut workspace = DeviceDigestWorkspace::test_owner();
+    workspace.map().unwrap();
+    let control = Arc::new(FingerprintWorkerControl::new(Some(workspace)));
+    assert!(control.enqueue(work(request)).is_ok());
+    control.close();
+
+    LiveFingerprintDigestWorker::run(
+        StableFingerprintSlotHandle::new(&slot),
+        &LiveWorkerQuiescence::new(crate::runtime::worker_quiescence::WORKER_ALL),
+        &control,
+    );
+
+    assert!(slot.snapshot().is_some());
+    assert_eq!(slot.pending_capture_request_v1(), None);
+    assert!(control.in_flight().is_none());
+    assert!(control.lock().failure.is_none());
+    let mut worker = worker(control);
+    worker.retire().unwrap();
+    assert!(worker.control.is_none());
+}
+
+#[test]
+fn changed_ack_keeps_published_material_and_blocks_retirement_and_fork() {
+    let slot = FingerprintSampleSlot::new();
+    let request = slot.request_capture_v1();
+    let mut workspace = DeviceDigestWorkspace::test_owner();
+    workspace.map().unwrap();
+    let control = Arc::new(FingerprintWorkerControl::new(Some(workspace)));
+    assert!(control.enqueue(work(request.wrapping_add(2))).is_ok());
+    control.close();
+
+    LiveFingerprintDigestWorker::run(
+        StableFingerprintSlotHandle::new(&slot),
+        &LiveWorkerQuiescence::new(crate::runtime::worker_quiescence::WORKER_ALL),
+        &control,
+    );
+
+    assert!(slot.snapshot().is_some());
+    assert_eq!(slot.pending_capture_request_v1(), Some(request));
+    assert_eq!(
+        control.in_flight().as_ref().unwrap().publication,
+        MaterialPublication::AcknowledgementAttempted
+    );
+    let mut worker = worker(control);
+    // SAFETY: this synchronous fixture has no worker/callback actors.
+    assert!(unsafe { worker.hold_workspace_for_fork() }.is_err());
+    assert!(worker.retire().is_err());
+    assert!(worker.control.as_ref().unwrap().in_flight().is_some());
+    assert!(worker.control.as_ref().unwrap().workspace().is_some());
+    // Fixture-only disposal: no Source owner or operating loan was constructed.
+    drop(worker.control.as_ref().unwrap().in_flight().take());
+    worker.retire().unwrap();
+}
+
+#[test]
+fn publication_refusal_does_not_ack_or_replay_and_keeps_the_received_body() {
+    let slot = FingerprintSampleSlot::new();
+    let request = slot.request_capture_v1();
+    let control = control();
+    assert!(control.enqueue(work(request)).is_ok());
+    let mut in_flight = control.receive().unwrap();
+    let material = in_flight.as_mut().unwrap();
+    let invalid = crucible_shmem::FingerprintSample {
+        vcpu_count: (crucible_shmem::FINGERPRINT_SAMPLE_MAX_VCPUS + 1) as u32,
+        ..crucible_shmem::FingerprintSample::default()
+    };
+
+    assert!(matches!(
+        material.publish(&slot, &invalid),
+        Err(FingerprintWorkerCause::Publication(_))
+    ));
+    assert_eq!(material.publication, MaterialPublication::Attempted);
+    assert!(matches!(
+        material.publish(&slot, &crucible_shmem::FingerprintSample::default()),
+        Err(FingerprintWorkerCause::UnsettledWork)
+    ));
+    drop(in_flight);
+
+    assert!(control.in_flight().is_some());
+    assert_eq!(slot.snapshot(), None);
+    assert_eq!(slot.pending_capture_request_v1(), Some(request));
+}
+
+#[test]
+fn read_failure_keeps_inflight_material_without_publication_or_ack() {
+    let slot = FingerprintSampleSlot::new();
+    let request = slot.request_capture_v1();
+    let mut workspace = DeviceDigestWorkspace::test_owner();
+    workspace.map().unwrap();
+    let control = Arc::new(FingerprintWorkerControl::new(Some(workspace)));
+    assert!(
+        control
+            .enqueue(LiveFingerprintDigestWork::new(
+                CapturedFingerprintSample::test_unreadable(),
+                request
+            ))
+            .is_ok()
+    );
+    control.close();
+
+    LiveFingerprintDigestWorker::run(
+        StableFingerprintSlotHandle::new(&slot),
+        &LiveWorkerQuiescence::new(crate::runtime::worker_quiescence::WORKER_ALL),
+        &control,
+    );
+
+    assert!(matches!(
+        control.lock().failure,
+        Some(FingerprintWorkerCause::Digest(_))
+    ));
+    assert_eq!(
+        control.in_flight().as_ref().unwrap().publication,
+        MaterialPublication::NotStarted
+    );
+    assert_eq!(slot.snapshot(), None);
+    assert_eq!(slot.pending_capture_request_v1(), Some(request));
+    let mut worker = worker(control);
+    assert!(worker.retire().is_err());
+    assert!(worker.control.as_ref().unwrap().in_flight().is_some());
+    // Explicit local fixture disposal after checking the retained failed path.
+    drop(worker.control.as_ref().unwrap().in_flight().take());
+    worker.retire().unwrap();
+}
+
+#[test]
+fn unwind_releases_only_the_borrow_and_keeps_the_received_capture() {
+    let control = control();
+    assert!(control.enqueue(work(5)).is_ok());
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _received = control.receive().unwrap();
+        panic!("failure after actual queue-to-inflight transfer");
+    }));
+
+    assert!(result.is_err());
+    assert!(control.in_flight.is_poisoned());
+    assert_eq!(control.in_flight().as_ref().unwrap().capture_request, 5);
+    assert!(control.lock().pending.is_none());
+}
+
+#[test]
+fn accepted_queued_or_inflight_capture_blocks_all_transfers_and_retirement() {
+    for received in [false, true] {
+        let control = Arc::new(FingerprintWorkerControl::new(Some(
+            DeviceDigestWorkspace::test_owner(),
+        )));
+        assert!(control.enqueue(work(91)).is_ok());
+        if received {
+            drop(control.receive().unwrap());
+        }
+        let mut worker = worker(control);
+
+        // SAFETY: no worker/callback actors exist. The real transfer gates must
+        // refuse both accepted states before moving the actual workspace.
+        unsafe {
+            assert!(worker.hold_workspace_for_fork().is_err());
+            assert!(worker.restore_workspace_after_fork().is_err());
+            assert!(worker.hold_workspace_for_parent_park().is_err());
+            assert!(worker.restore_workspace_for_parent_park().is_err());
+        }
+        assert!(worker.control.as_ref().unwrap().workspace().is_some());
+        assert!(worker.fork_workspace.get_mut().is_none());
+        assert!(worker.retire().is_err());
+        let retained = worker.control.as_ref().unwrap();
+        if received {
+            assert_eq!(retained.in_flight().as_ref().unwrap().capture_request, 91);
+        } else {
+            assert_eq!(
+                retained.lock().pending.as_ref().unwrap().capture_request,
+                91
+            );
+        }
+
+        // Explicit local fixture disposal supplies no Source/operation proof.
+        drop(retained.lock().pending.take());
+        drop(retained.in_flight().take());
+        worker.retire().unwrap();
+    }
+}
+
+#[test]
+fn already_held_workspace_cannot_bless_a_retry_with_retained_capture() {
+    let control = Arc::new(FingerprintWorkerControl::new(Some(
+        DeviceDigestWorkspace::test_owner(),
+    )));
+    let mut worker = worker(control);
+    // SAFETY: this local fixture has no callback or worker actors.
+    unsafe { worker.hold_workspace_for_fork() }.unwrap();
+    let retained = worker
+        .fork_workspace
+        .get_mut()
+        .as_ref()
+        .unwrap()
+        .descriptor_number();
+    assert!(worker.control.as_ref().unwrap().enqueue(work(64)).is_ok());
+
+    // SAFETY: the same actors remain excluded; the concrete queue debt must
+    // refuse an already-held retry without returning or replacing its owner.
+    assert!(unsafe { worker.hold_workspace_for_fork() }.is_err());
+    assert_eq!(
+        worker
+            .fork_workspace
+            .get_mut()
+            .as_ref()
+            .unwrap()
+            .descriptor_number(),
+        retained
+    );
+    assert!(worker.control.as_ref().unwrap().workspace().is_none());
+    assert_eq!(
+        worker
+            .control
+            .as_ref()
+            .unwrap()
+            .lock()
+            .pending
+            .as_ref()
+            .unwrap()
+            .capture_request,
+        64
+    );
+
+    // Local fixture disposal; no Source operation or physical terminal claimed.
+    drop(worker.control.as_ref().unwrap().lock().pending.take());
+    // SAFETY: exclusion remains and the local captured fixture was disposed.
+    unsafe { worker.restore_workspace_after_fork() }.unwrap();
+    worker.retire().unwrap();
+}
+
+#[test]
+fn fork_transfers_refuse_the_borrow_held_at_the_real_pending_park_cut() {
+    let control = Arc::new(FingerprintWorkerControl::new(Some(
+        DeviceDigestWorkspace::test_owner(),
+    )));
+    let mut worker = worker(Arc::clone(&control));
+    let quiescence = LiveWorkerQuiescence::new(crate::runtime::worker_quiescence::WORKER_ALL);
+    assert!(control.enqueue(work(72)).is_ok());
+    let idle = quiescence.idle(WORKER_FINGERPRINT);
+    let received = control.receive().unwrap();
+    let held = quiescence.hold();
+    assert_eq!(held.pending_mask & WORKER_FINGERPRINT, 0);
+    assert_ne!(held.parked_mask & WORKER_FINGERPRINT, 0);
+    let pending = idle.received();
+    assert_ne!(quiescence.snapshot().pending_mask & WORKER_FINGERPRINT, 0);
+
+    // SAFETY: the fixture has no concurrent callback/worker actors. It retains
+    // the actual receive borrow and real held/pending quiescence state that
+    // make a blocking fork transfer wait on its own release dependency.
+    unsafe {
+        assert!(worker.hold_workspace_for_fork().is_err());
+        assert!(worker.restore_workspace_after_fork().is_err());
+    }
+    assert!(worker.fork_workspace.get_mut().is_none());
+    assert!(control.workspace().is_some());
+    assert_eq!(received.as_ref().unwrap().capture_request, 72);
+
+    drop(received);
+    drop(pending);
+    quiescence.release();
+    // Dispose only this local fixture after proving no transfer consumed it.
+    drop(control.in_flight().take());
+    drop(control);
+    worker.retire().unwrap();
 }

@@ -19,6 +19,49 @@ use crate::runtime::worker_quiescence::{LiveWorkerQuiescence, WORKER_FINGERPRINT
 struct LiveFingerprintDigestWork {
     captured: CapturedFingerprintSample,
     capture_request: u32,
+    publication: MaterialPublication,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaterialPublication {
+    NotStarted,
+    Attempted,
+    Published,
+    AcknowledgementAttempted,
+    Acknowledged,
+}
+
+impl LiveFingerprintDigestWork {
+    fn new(captured: CapturedFingerprintSample, capture_request: u32) -> Self {
+        Self {
+            captured,
+            capture_request,
+            publication: MaterialPublication::NotStarted,
+        }
+    }
+
+    fn publish(
+        &mut self,
+        slot: &FingerprintSampleSlot,
+        sample: &crucible_shmem::FingerprintSample,
+    ) -> Result<(), FingerprintWorkerCause> {
+        if self.publication != MaterialPublication::NotStarted {
+            return Err(FingerprintWorkerCause::UnsettledWork);
+        }
+        self.publication = MaterialPublication::Attempted;
+        slot.publish(sample)
+            .map_err(FingerprintWorkerCause::Publication)?;
+        self.publication = MaterialPublication::Published;
+
+        self.publication = MaterialPublication::AcknowledgementAttempted;
+        if !slot.acknowledge_capture_v1(self.capture_request) {
+            return Err(FingerprintWorkerCause::CaptureChanged {
+                request: self.capture_request,
+            });
+        }
+        self.publication = MaterialPublication::Acknowledged;
+        Ok(())
+    }
 }
 
 /// A publication failure retained in its original prepaid worker control.
@@ -76,6 +119,8 @@ enum FingerprintWorkerCause {
     Publication(crucible_shmem::FingerprintSampleError),
     #[error("fingerprint capture request {request} changed before acknowledgement")]
     CaptureChanged { request: u32 },
+    #[error("worker retains an unfinished captured material transaction")]
+    UnsettledWork,
     #[error("worker panicked before joined retirement")]
     Panic,
     #[error("worker cleanup cannot establish unique ownership")]
@@ -97,6 +142,9 @@ struct FingerprintWorkerState {
 struct FingerprintWorkerControl {
     state: Mutex<FingerprintWorkerState>,
     workspace: Mutex<Option<DeviceDigestWorkspace>>,
+    // The worker borrows this prepaid slot; unwinding cannot drop the captured
+    // file or read transcript before the joined retirement disposition.
+    in_flight: Mutex<Option<LiveFingerprintDigestWork>>,
     available: Condvar,
     capacity: Condvar,
     #[cfg(test)]
@@ -123,6 +171,7 @@ impl FingerprintWorkerControl {
                 supervision_failure: None,
             }),
             workspace: Mutex::new(workspace),
+            in_flight: Mutex::new(None),
             available: Condvar::new(),
             capacity: Condvar::new(),
             #[cfg(test)]
@@ -133,6 +182,13 @@ impl FingerprintWorkerControl {
     fn workspace(&self) -> MutexGuard<'_, Option<DeviceDigestWorkspace>> {
         match self.workspace.lock() {
             Ok(workspace) => workspace,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn in_flight(&self) -> MutexGuard<'_, Option<LiveFingerprintDigestWork>> {
+        match self.in_flight.lock() {
+            Ok(work) => work,
             Err(poisoned) => poisoned.into_inner(),
         }
     }
@@ -170,7 +226,7 @@ impl FingerprintWorkerControl {
         Ok(())
     }
 
-    fn receive(&self) -> Option<LiveFingerprintDigestWork> {
+    fn receive(&self) -> Option<MutexGuard<'_, Option<LiveFingerprintDigestWork>>> {
         let mut state = self.lock();
         loop {
             if state.failure.is_some() {
@@ -178,10 +234,18 @@ impl FingerprintWorkerControl {
             }
             // Closing prevents new sends but drains an already queued capture,
             // matching the old capacity-one channel's receiver contract.
-            if let Some(work) = state.pending.take() {
+            if state.pending.is_some() {
+                let mut in_flight = self.in_flight();
+                if in_flight.is_some() {
+                    drop(in_flight);
+                    drop(state);
+                    self.refuse(FingerprintWorkerCause::UnsettledWork);
+                    return None;
+                }
+                *in_flight = state.pending.take();
                 drop(state);
                 self.capacity.notify_one();
-                return Some(work);
+                return Some(in_flight);
             }
             if state.closed {
                 return None;
@@ -319,11 +383,16 @@ impl LiveFingerprintDigestWorker {
     ) {
         loop {
             let idle = quiescence.idle(WORKER_FINGERPRINT);
-            let Some(work) = control.receive() else {
+            let Some(mut in_flight) = control.receive() else {
                 break;
             };
             let pending = idle.received();
             let _operation = pending.enter();
+            let Some(work) = in_flight.as_mut() else {
+                drop(in_flight);
+                control.refuse(FingerprintWorkerCause::UnsettledWork);
+                break;
+            };
             let sample = {
                 let mut retained = control.workspace();
                 let digest = match retained.as_mut() {
@@ -344,24 +413,26 @@ impl LiveFingerprintDigestWorker {
                     Ok(sample) => sample,
                     Err(source) => {
                         drop(retained);
+                        drop(in_flight);
                         control.refuse(source);
                         break;
                     }
                 }
             };
 
-            // Release the workspace borrow before publication, ACK and idle.
-            // The exact old SHA read requests and publication ordering remain.
-            if let Err(source) = slot.get().publish(&sample) {
-                control.refuse(FingerprintWorkerCause::Publication(source));
+            // The byte borrow ends here, but the file and transcript stay in
+            // the control until both publication and the real capture ACK.
+            if let Err(source) = work.publish(slot.get(), &sample) {
+                drop(in_flight);
+                control.refuse(source);
                 break;
             }
-            if !slot.get().acknowledge_capture_v1(work.capture_request) {
-                control.refuse(FingerprintWorkerCause::CaptureChanged {
-                    request: work.capture_request,
-                });
+            if work.publication != MaterialPublication::Acknowledged {
+                drop(in_flight);
+                control.refuse(FingerprintWorkerCause::UnsettledWork);
                 break;
             }
+            drop(in_flight.take());
         }
     }
 
@@ -413,10 +484,7 @@ impl LiveFingerprintDigestWorker {
             .as_ref()
             .ok_or(LiveVcpuTimeCallbackError::FingerprintWorkerUnavailable)?;
         control
-            .enqueue(LiveFingerprintDigestWork {
-                captured,
-                capture_request,
-            })
+            .enqueue(LiveFingerprintDigestWork::new(captured, capture_request))
             .map_err(|()| {
                 if control.lock().failure.is_some() {
                     Self::failed(control)
@@ -446,11 +514,13 @@ impl LiveFingerprintDigestWorker {
         }
         let control = self.control.as_ref().ok_or(-libc::EPROTO)?;
         let state = control.state.try_lock().map_err(park_lock_status)?;
+        let in_flight = control.in_flight.try_lock().map_err(park_lock_status)?;
         let mut workspace = control.workspace.try_lock().map_err(park_lock_status)?;
-        if state.failure.is_some() || state.pending.is_some() || state.closed {
+        if state.failure.is_some() || state.pending.is_some() || in_flight.is_some() || state.closed
+        {
             return Err(-libc::EPROTO);
         }
-        // SAFETY: the caller retains complete actual admission exclusion; both
+        // SAFETY: the caller retains complete actual admission exclusion; all
         // worker mutexes are borrowed without waiting before the transfer cut.
         let held = unsafe { &mut *self.fork_workspace.get() };
         if held.is_some() {
@@ -485,8 +555,10 @@ impl LiveFingerprintDigestWorker {
         }
         let control = self.control.as_ref().ok_or(-libc::EPROTO)?;
         let state = control.state.try_lock().map_err(park_lock_status)?;
+        let in_flight = control.in_flight.try_lock().map_err(park_lock_status)?;
         let mut workspace = control.workspace.try_lock().map_err(park_lock_status)?;
-        if state.failure.is_some() || state.pending.is_some() || state.closed {
+        if state.failure.is_some() || state.pending.is_some() || in_flight.is_some() || state.closed
+        {
             return Err(-libc::EPROTO);
         }
         // SAFETY: the caller retains complete actual admission exclusion and
@@ -524,20 +596,29 @@ impl LiveFingerprintDigestWorker {
             .ok_or(DeviceDigestWorkspaceError::Ownership {
                 reason: "worker control is absent",
             })?;
+        let state = control.state.try_lock().map_err(fork_lock_error)?;
+        let in_flight = control.in_flight.try_lock().map_err(fork_lock_error)?;
+        let mut workspace = control.workspace.try_lock().map_err(fork_lock_error)?;
+        if state.failure.is_some() || state.pending.is_some() || in_flight.is_some() || state.closed
+        {
+            return Err(DeviceDigestWorkspaceError::Ownership {
+                reason: "worker refused, closed or retains captured material",
+            });
+        }
+        // The worker may own its in-flight borrow while waiting for this park
+        // to release. None of these borrows may wait for that worker.
         // SAFETY: the caller holds complete callback/worker exclusion.
         let fork_workspace = unsafe { &mut *self.fork_workspace.get() };
         if fork_workspace.is_some() {
-            return Ok(());
+            return if workspace.is_none() {
+                Ok(())
+            } else {
+                Err(DeviceDigestWorkspaceError::Ownership {
+                    reason: "held and worker workspace owners overlap",
+                })
+            };
         }
-        {
-            let state = control.lock();
-            if state.failure.is_some() || state.pending.is_some() || state.closed {
-                return Err(DeviceDigestWorkspaceError::Ownership {
-                    reason: "worker refused, closed or has a queued capture",
-                });
-            }
-        }
-        *fork_workspace = control.workspace().take();
+        *fork_workspace = workspace.take();
         if fork_workspace.is_none() {
             return Err(DeviceDigestWorkspaceError::Ownership {
                 reason: "mapping is absent at fork hold",
@@ -565,9 +646,17 @@ impl LiveFingerprintDigestWorker {
             .ok_or(DeviceDigestWorkspaceError::Ownership {
                 reason: "worker control is absent",
             })?;
+        let state = control.state.try_lock().map_err(fork_lock_error)?;
+        let in_flight = control.in_flight.try_lock().map_err(fork_lock_error)?;
+        let mut workspace = control.workspace.try_lock().map_err(fork_lock_error)?;
+        if state.failure.is_some() || state.pending.is_some() || in_flight.is_some() || state.closed
+        {
+            return Err(DeviceDigestWorkspaceError::Ownership {
+                reason: "worker refused, closed or retains captured material",
+            });
+        }
         // SAFETY: the caller still holds complete callback/worker exclusion.
         let fork_workspace = unsafe { &mut *self.fork_workspace.get() };
-        let mut workspace = control.workspace();
         if workspace.is_some() && fork_workspace.is_some() {
             return Err(DeviceDigestWorkspaceError::Ownership {
                 reason: "parent mapping is duplicated",
@@ -642,9 +731,15 @@ impl LiveFingerprintDigestWorker {
                 control: Arc::clone(control),
             });
         }
-        // A failure may leave a queued detached File. Drop that real owner
-        // after the join and before workspace/control reclamation.
-        drop(control.lock().pending.take());
+        // A failed or unprocessed capture remains the same queued/in-flight
+        // owner. Joining and closing admission do not certify its terminal.
+        let queued = control.lock().pending.is_some();
+        if queued || control.in_flight().is_some() {
+            control.refuse(FingerprintWorkerCause::UnsettledWork);
+            return Err(FingerprintWorkerFailure {
+                control: Arc::clone(control),
+            });
+        }
         let workspace = control.workspace().take();
         if let Some(workspace) = workspace
             && let Err(failure) = workspace.try_close()
@@ -678,6 +773,15 @@ impl Drop for LiveFingerprintDigestWorker {
                 std::mem::forget(join);
             }
         }
+    }
+}
+
+fn fork_lock_error<T>(error: std::sync::TryLockError<T>) -> DeviceDigestWorkspaceError {
+    DeviceDigestWorkspaceError::Ownership {
+        reason: match error {
+            std::sync::TryLockError::WouldBlock => "worker mutex is contended at fork transfer",
+            std::sync::TryLockError::Poisoned(_) => "worker mutex is poisoned at fork transfer",
+        },
     }
 }
 
