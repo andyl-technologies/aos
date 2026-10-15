@@ -183,11 +183,33 @@ constructor assertions. A separate diagnostic executable reproduces both
 failures under the unchanged finite 768 MiB policy. Its first Source's native
 quote refuses while adding the second coordinator-decode allowance:
 742,759,697 + 268,290,528 exceeds 805,306,368 requested bytes. The coordinator's
-encoded body is 113,202 bytes. The native quote currently reuses the broader
-restore-owner typed-layout bounds; a native-specific refinement is in progress.
+encoded body is 113,202 bytes. That native quote reused the broader
+restore-owner typed-layout bounds; the refinement below separates those paths.
 These are quoted allowances, not measured physical allocations. The diagnostic
 does not establish a successful constructor, native readiness or exact Capture.
 Its instrumentation and raw evidence are excluded from the repository.
+
+### Native quote precision and repeated preparation
+
+Commit `b5e738f788` counts the native constructor's actual Value trees,
+coordinator DTOs and separate validator allocations. Known Source and Admit
+shapes retain every independent owner without expanding their encoded lengths
+into arbitrary JSON bounds. Generic restoration accounting and the private
+preauthentication parser remain unchanged. The whole-world calculation still
+sums all three native participants under the existing policy.
+
+Commit `f0185657d6` keeps a refused duplicate preparation from retiring an
+already retained scene. Only a newly entered failed preparation initiates
+retirement. Formatting is separate in `3d69f2f9b0`.
+
+Normal six-crate, all-feature/all-target checking passes for these changes.
+Independent review verifies the complete 6,065-file source, all sixteen changed
+roles, compiler metadata and dependency coverage. Twelve new controls cover
+owned decode storage, exact and one-byte-short budgets, unchanged contract
+bytes, duplicate custody, partial staging and changed source files. They remain
+unrun, along with the original two constructor assertions at this source
+revision. The earlier failures remain recorded; successful compilation does
+not establish that the complete constructor fits its finite policy.
 
 ## Work in progress
 
