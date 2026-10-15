@@ -55,6 +55,8 @@ extern "C" fn poll_register_result(
 
 #[path = "fault_command_test/event_backpressure.rs"]
 mod event_backpressure;
+
+mod negative_custody;
 use event_backpressure::{assert_event_ring_backpressure, assert_pump};
 
 #[test]
@@ -268,6 +270,7 @@ fn bridge_preserves_raw_result_counts_and_logical_event_ticks() {
         prepared_commands: BTreeSet::new(),
         prepare_only_commands: BTreeSet::new(),
         pending_command: None,
+        custody: bridge::custody::EffectCustody::default(),
         initialized: true,
     };
     let command = |kind, sequence, node_hash| FaultCommandHeaderV1 {

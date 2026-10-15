@@ -355,6 +355,7 @@ pub(crate) struct FaultCommandBridge {
     prepared_commands: BTreeSet<u64>,
     prepare_only_commands: BTreeSet<u64>,
     pending_command: Option<DequeuedFaultCommand>,
+    custody: bridge::custody::EffectCustody,
     initialized: bool,
 }
 
@@ -376,6 +377,26 @@ use test_support::{TEST_EVENT_PENDING, test_event_peek, test_event_poll, test_re
 /// Failure of the lossless fault command bridge.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FaultCommandBridgeError {
+    /// An earlier destructive effect has no authentic physical disposition.
+    #[error(
+        "fault command {stage} receipt {serial:?} remains unresolved (native={native_status:?}, publication_attempted={publication_attempted}, published={published})"
+    )]
+    EffectUnresolved {
+        /// The first local effect phase whose receipt must not be replayed.
+        stage: &'static str,
+        /// The retained local attempt, when a native call was entered.
+        serial: Option<u64>,
+        /// The actual native return, including unknown absence before return.
+        native_status: Option<i32>,
+        /// Whether the local public transport enqueue was entered.
+        publication_attempted: bool,
+        /// Whether that enqueue returned successfully before a later refusal.
+        published: bool,
+    },
+    /// The bounded local attempt journal cannot represent another serial.
+    #[error("fault command receipt serial overflow")]
+    ReceiptSerialOverflow,
+
     /// The physical owner refused access without donating semantic authority.
     #[error("native command storage refused ({status})")]
     PhysicalStorage {

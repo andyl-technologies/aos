@@ -14,6 +14,7 @@ use crate::startup_source::runtime_purpose::{CommandClaim, RuntimePurpose};
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod abi;
 mod placement;
@@ -32,6 +33,7 @@ pub(super) struct CommandStorage {
     id: u64,
     attempted: bool,
     transferred: bool,
+    local_debt_present: AtomicBool,
 }
 
 impl CommandStorage {
@@ -43,6 +45,7 @@ impl CommandStorage {
             id: 0,
             attempted: false,
             transferred: false,
+            local_debt_present: AtomicBool::new(false),
         }
     }
 
@@ -94,8 +97,15 @@ impl CommandStorage {
             return Err(physical_error(-libc::EPROTO));
         }
 
+        let debt = &self.local_debt_present;
         let initialized =
-            placement::initialize::<FaultCommandBridge, F>(id, self.projection, api, constructor);
+            placement::initialize::<FaultCommandBridge, _>(id, self.projection, api, || {
+                let body = constructor()?;
+                // The initializer still owns the complete typed value before
+                // placement/post. This records refusal only, never Source permission.
+                debt.store(!body.local_custody_is_empty(), Ordering::Release);
+                Ok(body)
+            });
         initialized?;
         let storage = self.projection;
         let status = (api.transfer)(id, runtime, &mut self.projection, self.holder.get());
@@ -149,6 +159,12 @@ impl CommandStorage {
     /// A refusal leaves the exact canonical field and Runtime intact. This is
     /// never called merely because a callback finished, ACK arrived or time ended.
     pub(super) fn identity_return(&mut self) -> bool {
+        // Do not irreversibly enter Source's once-destructor while valid pending
+        // work can still drain. False only removes this local extra refusal;
+        // actual Source child/use/material/Root gates remain mandatory.
+        if self.local_debt_present.load(Ordering::Acquire) {
+            return false;
+        }
         let Some(api) = self.api else {
             return true;
         };
@@ -217,7 +233,7 @@ impl Adapter {
                 physical_error(status)
             });
         }
-        let result = self.use_body(api, owner.id, action);
+        let result = self.use_body(api, owner.id, &owner.local_debt_present, action);
         let returned = self.return_use(api, owner.id);
         result.and_then(|value| returned.map(|()| value))
     }
@@ -226,6 +242,7 @@ impl Adapter {
         &mut self,
         api: Api,
         id: u64,
+        local_debt: &AtomicBool,
         action: impl FnOnce(&mut FaultCommandBridge) -> Result<T, FaultCommandBridgeError>,
     ) -> Result<T, FaultCommandBridgeError> {
         let loan = self
@@ -255,7 +272,8 @@ impl Adapter {
         // SAFETY: the genuine same-thread loan excludes destruction; the child
         // bridge mutex serializes Rust access. Checked exact geometry and Native
         // initialized journals describe this T, not a caller-nominated pointer.
-        action(unsafe { &mut *address.cast::<FaultCommandBridge>() })
+        let body = unsafe { &mut *address.cast::<FaultCommandBridge>() };
+        run_borrowed_body(body, local_debt, action)
     }
 
     fn return_use(&mut self, api: Api, id: u64) -> Result<(), FaultCommandBridgeError> {
@@ -312,8 +330,13 @@ impl LiveFaultCommandControl for Adapter {
         })
     }
 
-    fn dispatch_node_boundary(&mut self, raw: u64) -> Result<(), FaultCommandBridgeError> {
-        self.with_bridge(|bridge| bridge.dispatch_node_boundary(raw))
+    fn dispatch_node_boundary(
+        &mut self,
+        raw: u64,
+        control_request: u64,
+        frontier: u64,
+    ) -> Result<(), FaultCommandBridgeError> {
+        self.with_bridge(|bridge| bridge.dispatch_node_boundary(raw, control_request, frontier))
     }
 
     fn drain_publications(&mut self, offset: u64) -> Result<bool, FaultCommandBridgeError> {
@@ -324,8 +347,21 @@ impl LiveFaultCommandControl for Adapter {
         &mut self,
         frontier: u64,
     ) -> Result<bool, FaultCommandBridgeError> {
-        self.with_bridge(|bridge| Ok(bridge.command_frontier_is_settled(frontier)))
+        self.with_bridge(|bridge| bridge.command_frontier_is_settled(frontier))
     }
+}
+
+/// Refreshes only a negative destruction gate while the real typed use is live.
+fn run_borrowed_body<T>(
+    body: &mut FaultCommandBridge,
+    local_debt: &AtomicBool,
+    action: impl FnOnce(&mut FaultCommandBridge) -> Result<T, FaultCommandBridgeError>,
+) -> Result<T, FaultCommandBridgeError> {
+    // An unwind or incomplete action can only leave a conservative refusal.
+    local_debt.store(true, Ordering::Release);
+    let result = action(body);
+    local_debt.store(!body.local_custody_is_empty(), Ordering::Release);
+    result
 }
 
 fn source_error(source: StartupSourceError) -> FaultCommandBridgeError {

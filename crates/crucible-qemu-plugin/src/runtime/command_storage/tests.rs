@@ -19,6 +19,7 @@ struct Cuts {
     borrows: usize,
     returns: usize,
     creates: usize,
+    storage_returns: usize,
 }
 thread_local! { static CUTS: RefCell<Cuts> = RefCell::new(Cuts::default()); }
 
@@ -107,6 +108,7 @@ extern "C" fn holder(_: u64, _: *mut *mut Storage, out: *mut *mut Storage) -> i3
     0
 }
 extern "C" fn return_storage(_: u64, _: *mut *mut Storage) -> i32 {
+    CUTS.with_borrow_mut(|cuts| cuts.storage_returns += 1);
     -libc::ENOSYS
 }
 
@@ -248,4 +250,63 @@ fn a_nonconsuming_success_cannot_erase_debt_or_replace_the_primary_error() {
             });
         },
     );
+}
+
+#[test]
+fn live_local_debt_blocks_source_teardown_until_actual_borrowed_state_drains() {
+    crate::fault_command::test_support::with_initialized_bridge(|bridge, _, _| {
+        CUTS.with_borrow_mut(|cuts| *cuts = Cuts::default());
+        let mut owner = CommandStorage::new();
+        owner.api = Some(table());
+        let debt = &owner.local_debt_present;
+
+        // The live fixture body exercises the same used loan-local refresh. No
+        // fixture API lends a Bridge or authorizes a native Source effect.
+        run_borrowed_body(bridge, debt, |body| {
+            crate::fault_command::test_support::set_fixture_query_pending(body, 9, true);
+            Err::<(), _>(FaultCommandBridgeError::QemuSubmit {
+                status: -libc::ECANCELED,
+            })
+        })
+        .unwrap_or_else(|error| {
+            assert!(matches!(error, FaultCommandBridgeError::QemuSubmit { .. }))
+        });
+        assert!(owner.local_debt_present.load(Ordering::Acquire));
+        assert!(!owner.identity_return());
+        CUTS.with_borrow(|cuts| assert_eq!(cuts.storage_returns, 0));
+
+        run_borrowed_body(bridge, &owner.local_debt_present, |body| {
+            crate::fault_command::test_support::set_fixture_query_pending(body, 9, false);
+            Ok(())
+        })
+        .unwrap_or_else(|error| panic!("fixture drain: {error}"));
+        assert!(!owner.local_debt_present.load(Ordering::Acquire));
+        // The mock Source still refuses: empty local state grants no teardown.
+        assert!(!owner.identity_return());
+        CUTS.with_borrow(|cuts| assert_eq!(cuts.storage_returns, 1));
+    });
+}
+
+#[test]
+fn stale_empty_preflight_cannot_acknowledge_destruction_of_a_pending_bridge() {
+    crate::fault_command::test_support::with_initialized_bridge(|bridge, _, _| {
+        crate::fault_command::test_support::set_fixture_query_pending(bridge, 13, true);
+        let layout = std::alloc::Layout::new::<FaultCommandBridge>();
+        let mut destroyed = 0;
+
+        let status = placement::destroy::<FaultCommandBridge>(
+            std::ptr::from_mut(bridge).cast(),
+            layout.size(),
+            layout.align(),
+            &mut destroyed,
+        );
+
+        assert_eq!(status, -libc::EBUSY);
+        assert_eq!(destroyed, 0);
+        assert!(crate::fault_command::test_support::fixture_query_pending(
+            bridge, 13
+        ));
+        // Fixture backing stays alive. An actual Source-entered negative drop
+        // would retain its once-attempt debt and never call this callback again.
+    });
 }

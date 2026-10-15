@@ -7,6 +7,17 @@ use std::alloc::Layout;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+/// Adds local retained-content refusal to Source's independent physical gates.
+pub(super) trait DestructionDisposition {
+    fn destruction_refused(&self) -> bool;
+}
+
+impl DestructionDisposition for crate::fault_command::FaultCommandBridge {
+    fn destruction_refused(&self) -> bool {
+        !self.local_custody_is_empty()
+    }
+}
+
 struct Placement<F> {
     constructor: Option<F>,
     error: Option<FaultCommandBridgeError>,
@@ -22,6 +33,7 @@ pub(super) fn initialize<T, F>(
     constructor: F,
 ) -> Result<(), FaultCommandBridgeError>
 where
+    T: DestructionDisposition,
     F: FnOnce() -> Result<T, FaultCommandBridgeError>,
 {
     let mut input = Placement {
@@ -114,7 +126,7 @@ unsafe fn write_body<T>(
     0
 }
 
-extern "C" fn destroy<T>(
+pub(super) extern "C" fn destroy<T: DestructionDisposition>(
     address: *mut c_void,
     bytes: usize,
     alignment: usize,
@@ -124,6 +136,11 @@ extern "C" fn destroy<T>(
         return -libc::EINVAL;
     }
     let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: the recorded typed destructor is entered only for the exact
+        // initialized body after Source excluded all concurrent physical uses.
+        if unsafe { &*address.cast::<T>() }.destruction_refused() {
+            return -libc::EBUSY;
+        }
         // SAFETY: Source invokes the recorded destructor only for this exact
         // initialized T, after excluding physical uses and marking attempted.
         // Source retains negative/unknown drop and never repeats it or frees.
@@ -142,6 +159,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Tracked<'a>(&'a AtomicUsize);
+
+    impl DestructionDisposition for Tracked<'_> {
+        fn destruction_refused(&self) -> bool {
+            false
+        }
+    }
+
     impl Drop for Tracked<'_> {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);

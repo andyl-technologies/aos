@@ -1188,6 +1188,8 @@ pub(super) trait LiveFaultCommandControl {
     fn dispatch_node_boundary(
         &mut self,
         raw_icount: u64,
+        control_request: u64,
+        frontier: u64,
     ) -> Result<(), crate::fault_command::FaultCommandBridgeError>;
 
     fn drain_publications(
@@ -1248,8 +1250,10 @@ impl LiveFaultCommandControl for FaultCommandBridge {
     fn dispatch_node_boundary(
         &mut self,
         raw_icount: u64,
+        control_request: u64,
+        frontier: u64,
     ) -> Result<(), crate::fault_command::FaultCommandBridgeError> {
-        FaultCommandBridge::dispatch_node_boundary(self, raw_icount)
+        FaultCommandBridge::dispatch_node_boundary(self, raw_icount, control_request, frontier)
     }
 
     fn drain_publications(
@@ -1263,9 +1267,7 @@ impl LiveFaultCommandControl for FaultCommandBridge {
         &mut self,
         frontier: u64,
     ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
-        Ok(FaultCommandBridge::command_frontier_is_settled(
-            self, frontier,
-        ))
+        FaultCommandBridge::command_frontier_is_settled(self, frontier)
     }
 }
 
@@ -1358,6 +1360,8 @@ impl LiveFaultCommandControl for TestFaultCommandBridge {
     fn dispatch_node_boundary(
         &mut self,
         _raw_icount: u64,
+        _control_request: u64,
+        _frontier: u64,
     ) -> Result<(), crate::fault_command::FaultCommandBridgeError> {
         let mut observation = self
             .observation
@@ -2937,7 +2941,11 @@ impl LiveVcpuTimeCallbackState {
             != control_request
         {
             bridge
-                .dispatch_node_boundary(raw_icount)
+                .dispatch_node_boundary(
+                    raw_icount,
+                    u64::from(control_request),
+                    fault_command_frontier,
+                )
                 .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?;
             self.control_boundary_dispatch_generation
                 .store(control_request, Ordering::Release);
