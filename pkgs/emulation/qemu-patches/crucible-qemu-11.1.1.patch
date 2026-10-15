@@ -1,10 +1,10 @@
-From 4c186c458d25c7b8a09142e88488c22acea33ed0 Mon Sep 17 00:00:00 2001
+From f67e678b01d01125ca7844e39b5b1caaeed7cd69 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 10:23:17 -0700
-Subject: [PATCH] plugins: retain startup ownership and current process
- controls
+Date: Thu, 15 Oct 2026 10:54:33 -0700
+Subject: [PATCH] plugins: retain startup ownership and checkpoint control
+ paths
 
-Keep current startup ownership and checkpoint inventory controls, and align process-purpose unit fixtures with the current purpose and sealed-plan formats.
+Retain startup and checkpoint custody through cleanup, align current wire fixtures, and integrate ordinary system and tool dispatch paths.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -82754,10 +82754,10 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8b09b1d5b68194c04bddea695c83da173e76e646 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..62cbb7f7b1a6ec6554b0777651d723f0cd21e973 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -14,53 +14,7058 @@
+@@ -14,53 +14,7096 @@
   */
  
  #include "qemu/osdep.h"
@@ -83050,6 +83050,36 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8b09b1d5b68194c04bddea695c83da17
 +#endif
 +}
 +
++static bool crucible_checkpoint_decode_arm_digest(
++    const char *text, uint8_t digest[32], Error **errp)
++{
++    uint8_t decoded[32];
++
++    if (strlen(text) != 64) {
++        error_setg(errp, "Checkpoint ARM digest must have 64 lowercase hex digits");
++        return false;
++    }
++    for (size_t index = 0; index < sizeof(decoded); index++) {
++        unsigned byte = 0;
++
++        for (unsigned digit = 0; digit < 2; digit++) {
++            unsigned char value = text[2 * index + digit];
++            if (value >= '0' && value <= '9') {
++                value -= '0';
++            } else if (value >= 'a' && value <= 'f') {
++                value = value - 'a' + 10;
++            } else {
++                error_setg(errp, "Checkpoint ARM digest is not canonical hex");
++                return false;
++            }
++            byte = 16 * byte + value;
++        }
++        decoded[index] = byte;
++    }
++    memcpy(digest, decoded, sizeof(decoded));
++    return true;
++}
++
 +CrucibleCheckpointBegin *qmp_crucible_checkpoint_begin(
 +    const char *arm_request_digest, uint64_t request_generation, Error **errp)
 +{
@@ -83058,26 +83088,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8b09b1d5b68194c04bddea695c83da17
 +    CrucibleCheckpointBegin *result;
 +    int status = -ENOTSUP;
 +
-+    if (strlen(arm_request_digest) != 64) {
-+        error_setg(errp, "Checkpoint ARM digest must have 64 lowercase hex digits");
++    if (!crucible_checkpoint_decode_arm_digest(arm_request_digest, digest, errp)) {
 +        return NULL;
-+    }
-+    for (size_t index = 0; index < sizeof(digest); index++) {
-+        unsigned byte = 0;
-+
-+        for (unsigned digit = 0; digit < 2; digit++) {
-+            unsigned char value = arm_request_digest[2 * index + digit];
-+            if (value >= '0' && value <= '9') {
-+                value -= '0';
-+            } else if (value >= 'a' && value <= 'f') {
-+                value = value - 'a' + 10;
-+            } else {
-+                error_setg(errp, "Checkpoint ARM digest is not canonical hex");
-+                return NULL;
-+            }
-+            byte = 16 * byte + value;
-+        }
-+        digest[index] = byte;
 +    }
 +#ifdef CONFIG_PLUGIN
 +    status = qemu_crucible_checkpoint_begin_main_v1(digest, request_generation,
@@ -83085,6 +83097,32 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8b09b1d5b68194c04bddea695c83da17
 +#endif
 +    if (status) {
 +        error_setg_errno(errp, -status, "Checkpoint Main handoff is incomplete");
++        return NULL;
++    }
++    result = g_new0(CrucibleCheckpointBegin, 1);
++    result->arm_request_digest = g_strdup(arm_request_digest);
++    result->request_generation = request_generation;
++    result->connection_epoch = epoch;
++    return result;
++}
++
++CrucibleCheckpointBegin *qmp_crucible_checkpoint_end(
++    const char *arm_request_digest, uint64_t request_generation, Error **errp)
++{
++    uint8_t digest[32];
++    uint64_t epoch;
++    CrucibleCheckpointBegin *result;
++    int status = -ENOTSUP;
++
++    if (!crucible_checkpoint_decode_arm_digest(arm_request_digest, digest, errp)) {
++        return NULL;
++    }
++#ifdef CONFIG_PLUGIN
++    status = qemu_crucible_checkpoint_end_main_v1(digest, request_generation,
++                                                &epoch);
++#endif
++    if (status) {
++        error_setg_errno(errp, -status, "Checkpoint Main end is incomplete");
 +        return NULL;
 +    }
 +    result = g_new0(CrucibleCheckpointBegin, 1);
@@ -89832,7 +89870,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8b09b1d5b68194c04bddea695c83da17
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +7073,27 @@ void qmp_cont(Error **errp)
+@@ -68,7 +7111,27 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
@@ -89860,7 +89898,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8b09b1d5b68194c04bddea695c83da17
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +7141,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +7179,155 @@ void qmp_cont(Error **errp)
      }
  }
  
@@ -90016,7 +90054,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8b09b1d5b68194c04bddea695c83da17
  void qmp_add_client(const char *protocol, const char *fdname,
                      bool has_skipauth, bool skipauth, bool has_tls, bool tls,
                      Error **errp)
-@@ -207,3 +7381,49 @@ static void __attribute__((__constructor__)) monitor_init_qmp_commands(void)
+@@ -207,3 +7419,49 @@ static void __attribute__((__constructor__)) monitor_init_qmp_commands(void)
                           qmp_marshal_qmp_capabilities,
                           QCO_ALLOW_PRECONFIG, 0);
  }
@@ -173340,7 +173378,7 @@ index 57a2c904bb1f0440ffa3e6f1bc292148837b6e05..e8c421f2a64183c9f8c67dd8a9bcc029
 +    return -EINVAL;
 +}
 diff --git a/qapi/qmp-dispatch.c b/qapi/qmp-dispatch.c
-index e3897d51977e1afd115daecf33c124004415c05a..79e873965aa64b271d971f0d87fd104a1d257b39 100644
+index e3897d51977e1afd115daecf33c124004415c05a..55eac6ad6499c79cd4aea8270634c3847047aa11 100644
 --- a/qapi/qmp-dispatch.c
 +++ b/qapi/qmp-dispatch.c
 @@ -14,6 +14,7 @@
@@ -173351,7 +173389,7 @@ index e3897d51977e1afd115daecf33c124004415c05a..79e873965aa64b271d971f0d87fd104a
  #include "qapi/compat-policy.h"
  #include "qapi/error.h"
  #include "qapi/qmp-registry.h"
-@@ -117,6 +118,8 @@ typedef struct QmpDispatchBH {
+@@ -117,16 +118,39 @@ typedef struct QmpDispatchBH {
      QObject **ret;
      Error **errp;
      Coroutine *co;
@@ -173360,17 +173398,24 @@ index e3897d51977e1afd115daecf33c124004415c05a..79e873965aa64b271d971f0d87fd104a
  } QmpDispatchBH;
  
  static void do_qmp_dispatch_bh(void *opaque)
-@@ -125,8 +128,23 @@ static void do_qmp_dispatch_bh(void *opaque)
+ {
+     QmpDispatchBH *data = opaque;
++    int status = 0;
  
      assert(monitor_cur() == NULL);
      monitor_set_cur(qemu_coroutine_self(), data->cur_mon);
 -    data->cmd->fn(data->args, data->ret, data->errp);
-+    int status = monitor_qmp_main_dispatch_enter(data->cur_mon);
++    /* Generic callers have no Monitor and acquire no Main scope. */
++    if (data->cur_mon) {
++        status = monitor_qmp_main_dispatch_enter(data->cur_mon);
++    }
 +    if (!status) {
 +        data->cmd->fn(data->args, data->ret, data->errp);
 +    }
 +    data->scope_first_status = status;
-+    data->scope_post_status = monitor_qmp_main_dispatch_leave(data->cur_mon);
++    if (data->cur_mon) {
++        data->scope_post_status = monitor_qmp_main_dispatch_leave(data->cur_mon);
++    }
      monitor_set_cur(qemu_coroutine_self(), NULL);
 +    if (data->scope_post_status) {
 +        /* The real Main keeper/loan and awaiting coroutine frame remain held.
@@ -182398,7 +182443,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..dcb0a7d895f4fab804f83577c6cfd112c1cdad1d
+index 0000000000000000000000000000000000000000..e5822471780821d36922424bfa6263ee8b9c9afc
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,83 @@
@@ -182426,7 +182471,7 @@ index 0000000000000000000000000000000000000000..dcb0a7d895f4fab804f83577c6cfd112
 +    'include/plugins/qemu-plugin.h':
 +        'e90a655812ce9e96eaec89a7bcb45594984e405cb3b5bf7acb59887932b8aa7e',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '697b277e7bf399d924bfd955d7d8e11f93d7703564d06f0375e4dda7cd9da926',
++        'f34e3efe66f6f6f7177bac6962e60abd36c581a75cd2a19af524eba64a9bab3f',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -183183,16 +183228,57 @@ index 3b2f2680b19359e94216b26f102fd8821ad0a9e7..a68f987124085568898504a31ef43242
 +
 +# Common QObject and socket users retain explicit negative Source providers.
 +stub_ss.add(files('crucible-qmp-allocation.c', 'crucible-socket-ingress.c'))
+diff --git a/stubs/monitor-core.c b/stubs/monitor-core.c
+index a7c32297c90a64bdc63955c5177a4efe873abb2a..201cd7cfc9144d8671e3d35dfd99c43f7f07a854 100644
+--- a/stubs/monitor-core.c
++++ b/stubs/monitor-core.c
+@@ -12,6 +12,17 @@ Monitor *monitor_set_cur(Coroutine *co, Monitor *mon)
+     return NULL;
+ }
+ 
++int monitor_qmp_main_dispatch_enter(Monitor *mon)
++{
++    return -ENOTSUP;
++}
++
++int monitor_qmp_main_dispatch_leave(Monitor *mon)
++{
++    /* This provider cannot acquire a Main scope. */
++    return 0;
++}
++
+ void qapi_event_emit(QAPIEvent event, QDict *qdict)
+ {
+ }
+diff --git a/stubs/replay-tools.c b/stubs/replay-tools.c
+index 17dc3babd9b126df5333e177e3dae4a9b8962266..56e82e3c148743798a25c78ce39c760c393da646 100644
+--- a/stubs/replay-tools.c
++++ b/stubs/replay-tools.c
+@@ -41,6 +41,11 @@ bool replay_checkpoint(ReplayCheckpoint checkpoint)
+     return true;
+ }
+ 
++bool replay_mutex_locked(void)
++{
++    return false;
++}
++
+ void replay_mutex_lock(void)
+ {
+ }
 diff --git a/stubs/runstate-check.c b/stubs/runstate-check.c
-index c47abdf84b71af28d8fad626d89043c9449f4978..4527fd981d1cd754da1029f1280ed29a5104f6cb 100644
+index c47abdf84b71af28d8fad626d89043c9449f4978..e1f7cf30614c6084dd02b4bb5f9c93eb2b02e1d4 100644
 --- a/stubs/runstate-check.c
 +++ b/stubs/runstate-check.c
-@@ -1,7 +1,53 @@
+@@ -1,7 +1,61 @@
  #include "qemu/osdep.h"
  
 +#include "qemu/plugin.h"
 +#include "system/cpus.h"
  #include "system/runstate.h"
++#ifdef CONFIG_PLUGIN
++#include "plugins/crucible-checkpoint-receiving.h"
++#endif
 +
  bool runstate_check(RunState state)
  {
@@ -183216,6 +183302,11 @@ index c47abdf84b71af28d8fad626d89043c9449f4978..4527fd981d1cd754da1029f1280ed29a
 +}
 +
 +#ifdef CONFIG_PLUGIN
++void qemu_crucible_checkpoint_snapshot_job_freed_v1(void *job_identity)
++{
++    /* Block-only utilities have no Receiving request to update. */
++}
++
 +bool qemu_plugin_crucible_vmstop_pending(void)
 +{
 +    return false;
@@ -222816,7 +222907,7 @@ index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..6c7ba80758bc241c359de22b3e84c2ce907cc60f
+index 0000000000000000000000000000000000000000..175183172ffcdf0d8d6a1736ea5d971bb997ff49
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -222834,7 +222925,7 @@ index 0000000000000000000000000000000000000000..6c7ba80758bc241c359de22b3e84c2ce
 +    'include/system/crucible-ram-quiescence.h':
 +        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '697b277e7bf399d924bfd955d7d8e11f93d7703564d06f0375e4dda7cd9da926',
++        'f34e3efe66f6f6f7177bac6962e60abd36c581a75cd2a19af524eba64a9bab3f',
 +}
 +
 +FUNCTIONS = (
@@ -222922,7 +223013,7 @@ index 0000000000000000000000000000000000000000..6c7ba80758bc241c359de22b3e84c2ce
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2e9691e0e4b38d75b6e9ff533b9cce9016837fb1
+index 0000000000000000000000000000000000000000..fd66379f45604c30cdafd35026253c8ba0ae60f4
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -222953,7 +223044,7 @@ index 0000000000000000000000000000000000000000..2e9691e0e4b38d75b6e9ff533b9cce90
 +    'include/system/crucible-ram-quiescence.h':
 +        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '697b277e7bf399d924bfd955d7d8e11f93d7703564d06f0375e4dda7cd9da926',
++        'f34e3efe66f6f6f7177bac6962e60abd36c581a75cd2a19af524eba64a9bab3f',
 +}
 +
 +FUNCTIONS = (
@@ -223169,7 +223260,7 @@ index 0000000000000000000000000000000000000000..2e9691e0e4b38d75b6e9ff533b9cce90
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..dbb0944f8364a4aa61a78be0b427150d5084ce10
+index 0000000000000000000000000000000000000000..4b4284301c6550815ddd81937149f15deef20e47
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -223193,7 +223284,7 @@ index 0000000000000000000000000000000000000000..dbb0944f8364a4aa61a78be0b427150d
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '697b277e7bf399d924bfd955d7d8e11f93d7703564d06f0375e4dda7cd9da926',
++        'f34e3efe66f6f6f7177bac6962e60abd36c581a75cd2a19af524eba64a9bab3f',
 +}
 +
 +FUNCTIONS = (
@@ -223287,7 +223378,7 @@ index 0000000000000000000000000000000000000000..dbb0944f8364a4aa61a78be0b427150d
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..3fdfed8200a94d934e1de430b4e4935e7d7754f9
+index 0000000000000000000000000000000000000000..0ab78516dcc36c4fd0db406cae24efbc3b9ca231
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -223328,9 +223419,9 @@ index 0000000000000000000000000000000000000000..3fdfed8200a94d934e1de430b4e4935e
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '697b277e7bf399d924bfd955d7d8e11f93d7703564d06f0375e4dda7cd9da926',
++        'f34e3efe66f6f6f7177bac6962e60abd36c581a75cd2a19af524eba64a9bab3f',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'eae81d3a22693db6e0a431472b742580749f25f9d97bdf63d1703fff78466a59',
++        'a8d2186b1cf35cedc08c8cf0abf24072bc55a978531307cda5884ccf9ae2b7d0',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -223466,7 +223557,7 @@ index 0000000000000000000000000000000000000000..3fdfed8200a94d934e1de430b4e4935e
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8c2f1e6abffb5e4481122b33faeb4ceade9263df
+index 0000000000000000000000000000000000000000..d1010907ed316e54b293f283a4256414be87a29e
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,812 @@
@@ -223508,7 +223599,7 @@ index 0000000000000000000000000000000000000000..8c2f1e6abffb5e4481122b33faeb4cea
 +    'plugins/crucible-paged-ram.c':
 +        '322bf51026f20cdf74bd105706e6d2121127409ff6867a06a5cb67b5e1be85f9',
 +    'monitor/qmp-cmds.c':
-+        'fdd97526198c0b69110aab04ea94b2643b95bdd38ddc37b0da8940b91ada7c1c',
++        '0b2c2b17f0a87bdf5d70ebae885e07b1c00d2a6944b58ed105f5ca1e5d2c6649',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'plugins/crucible-startup-source.c':
@@ -281456,6 +281547,78 @@ index 20eae38e03f4bfdecabb3dbb3e86825ccea99dc3..04de194b418607fea624f67aa6a43708
  
      g_test_run();
  
+diff --git a/tests/unit/test-qmp-cmds.c b/tests/unit/test-qmp-cmds.c
+index ad538868863aa12c3453e6d653212948f9ae2a26..8b89c2b028fa37b88c223ddaa24dbe7d051c4c55 100644
+--- a/tests/unit/test-qmp-cmds.c
++++ b/tests/unit/test-qmp-cmds.c
+@@ -6,12 +6,16 @@
+ #include "qobject/qstring.h"
+ #include "qapi/error.h"
+ #include "qapi/qobject-input-visitor.h"
++#include "qemu/aio.h"
++#include "qemu/coroutine.h"
++#include "qemu/main-loop.h"
+ #include "tests/test-qapi-types.h"
+ #include "tests/test-qapi-visit.h"
+ #include "test-qapi-commands.h"
+ #include "test-qapi-init-commands.h"
+ 
+ static QmpCommandList qmp_commands;
++static unsigned user_def_cmd_calls;
+ 
+ UserDefThree *qmp_test_cmd_return_def_three(Error **errp)
+ {
+@@ -20,6 +24,8 @@ UserDefThree *qmp_test_cmd_return_def_three(Error **errp)
+ 
+ void qmp_user_def_cmd(Error **errp)
+ {
++    g_assert_false(qemu_in_coroutine());
++    user_def_cmd_calls++;
+ }
+ 
+ void qmp_test_flags_command(Error **errp)
+@@ -199,6 +205,30 @@ static void test_dispatch_cmd(void)
+     qobject_unref(ret);
+ }
+ 
++static void coroutine_fn dispatch_cmd_from_coroutine(void *opaque)
++{
++    bool *complete = opaque;
++
++    g_assert_true(qemu_in_coroutine());
++    test_dispatch_cmd();
++    *complete = true;
++}
++
++static void test_dispatch_cmd_bh(void)
++{
++    AioContext *context = iohandler_get_aio_context();
++    bool complete = false;
++    unsigned before = user_def_cmd_calls;
++    Coroutine *coroutine = qemu_coroutine_create(dispatch_cmd_from_coroutine,
++                                                &complete);
++
++    aio_co_enter(context, coroutine);
++    while (!complete) {
++        aio_poll(context, true);
++    }
++    g_assert_cmpuint(user_def_cmd_calls, ==, before + 1);
++}
++
+ static void test_dispatch_cmd_oob(void)
+ {
+     QDict *ret;
+@@ -408,8 +438,10 @@ static void test_dealloc_partial(void)
+ int main(int argc, char **argv)
+ {
+     g_test_init(&argc, &argv, NULL);
++    qemu_init_main_loop(&error_abort);
+ 
+     g_test_add_func("/qmp/dispatch_cmd", test_dispatch_cmd);
++    g_test_add_func("/qmp/dispatch_cmd_bh", test_dispatch_cmd_bh);
+     g_test_add_func("/qmp/dispatch_cmd_oob", test_dispatch_cmd_oob);
+     g_test_add_func("/qmp/dispatch_cmd_failure", test_dispatch_cmd_failure);
+     g_test_add_func("/qmp/dispatch_cmd_io", test_dispatch_cmd_io);
 diff --git a/tests/unit/test-rcu-list.c b/tests/unit/test-rcu-list.c
 index 8dde3e61a84bd208ab06c47ae4422c2214150fcd..0ea48ed727ff451ce8efa23036931254957747a4 100644
 --- a/tests/unit/test-rcu-list.c
