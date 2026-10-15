@@ -204,3 +204,45 @@ release and pending-statistics fields, binds the release from the actual MMU,
 and checks that source relationship during the diagnostic closure walk.
 The complete patched file, this patch, and the invoked recipe remain in the
 matching gem5 corresponding-source output. No new native file is introduced.
+
+The Linux device fixture PID1 is shared by the AArch64 and x86-64 packages.
+`../_gem5/linux-device-init.c` replaces the ARM-only filename and retains its
+MIT notice; the architecture-specific syscall and entry assembly are also MIT.
+The new `linux-init-artifact-check.py` and `linux-init-artifact-tests.py` controls
+are MIT. The shared fixture recipe co-retains these source inputs, the unchanged
+MIT initramfs packer and socket ABI shim, the selected sanitized kernel headers,
+their original source provider, the build recipes and exact binary commitments.
+Linux UAPI headers retain their individual notices and applicable Linux-syscall
+exception; this inventory does not relicense them. Artifact and ARM code-parity
+checks do not establish Linux boot, guest device parity, native process ownership,
+CPU timing, capture or restored continuation.
+
+## Installed x86 Linux model asset preparation
+
+`_gem5/x86-linux-bundle.py`, `_gem5/x86-linux-bundle-check.py`, and
+`gem5-x86-linux-model-assets.nix` are independently authored MIT-licensed AOS
+build/host utilities. They bind source-built kernel, PID1/initramfs, native
+controller and configuration bytes and prepare a private resource tree without
+executing a guest or emulator. They are separate from native source issuers,
+checkpoint adoption, device parity and CPU timing qualification. The package
+retains these utilities, its recipe and selected-artifact specification in its
+source output and retains the matching native corresponding-source dependency.
+Kernel/PID1/configuration inputs retain their own original licenses and notices;
+the MIT utility license does not relicense those dependencies.
+
+## Native x86 Linux PID1 boot check
+
+`_gem5/x86-linux-native-boot-check.py` and its separate modeled-clock
+`_gem5/x86-linux-native-boot-unit-check.py` controls are independently authored
+MIT utilities. The check recipe retains both sources and the matching complete
+native and guest source dependencies. The installed component and asset bundles
+select the same deepest native foundation; no upstream file licenses change.
+The actual boot phase requires both PID1 console lines from the PC UART and
+retains bounded transcript and native publication digests. It does not establish
+common-node source authority, capture, restored continuation, device parity or
+CPU timing. Modeled-clock controls cannot stand in for that actual boot phase.
+
+The MIT `_gem5/x86-linux-native-boot-compare.py` control compares the retained
+raw console bytes, native UART birth digests and final tick/event counts from
+two fresh invocations of that same fixed boot. It establishes only the recorded
+workload observation, not general timing accuracy, capture or restoration.

@@ -1,10 +1,10 @@
 ##! Fixed x86 controller components; complete native admission remains refused
 {
   mkDerivation,
-  gem5-terminal-runtime-foundation,
+  gem5-native-original-scope-foundation,
   gem5-x86-linux-loader-check,
 }: let
-  native = gem5-terminal-runtime-foundation;
+  native = gem5-native-original-scope-foundation;
   helperNames = [
     "native-controller.py"
     "native-controller-models.py"

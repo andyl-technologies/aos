@@ -1,7 +1,7 @@
 ##! Source-owned fixed ARM Linux process-image and UART continuation mechanism
 {
   mkDerivation,
-  gem5-terminal-runtime-foundation,
+  gem5-native-original-scope-foundation,
   gem5-aarch64-linux,
   gem5-aarch64-linux-device-fixture,
   gem5-aarch64-bootloader,
@@ -69,7 +69,7 @@ in
     };
     buildDeps = [python3 coreutils];
     runtimeDeps = [
-      gem5-terminal-runtime-foundation
+      gem5-native-original-scope-foundation
       gem5-aarch64-linux
       gem5-aarch64-linux-device-fixture
       gem5-aarch64-bootloader
@@ -97,8 +97,8 @@ in
           witness_root="$(mktemp -d /tmp/gem5-arm-shared-controller.XXXXXXXX)"
           ${coreutils}/bin/timeout 600 ${python3}/bin/python3 -B \
             ${helperSource}/native-controller-arm-root-check.py \
-            ${gem5-terminal-runtime-foundation}/bin/gem5 ${helperSource} "$witness_root/native" \
-            ${gem5-terminal-runtime-foundation}/share/gem5/configs \
+            ${gem5-native-original-scope-foundation}/bin/gem5 ${helperSource} "$witness_root/native" \
+            ${gem5-native-original-scope-foundation}/share/gem5/configs \
             ${gem5-aarch64-linux}/boot/vmlinux \
             ${gem5-aarch64-linux-device-fixture}/initrd.img \
             ${gem5-aarch64-bootloader}/share/gem5/bootloader/boot_v2.arm64 \

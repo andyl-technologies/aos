@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT */
-/* Freestanding PID1: the syscall ABI and structures come from ARM kernel UAPI. */
+/* Freestanding PID1 using the selected architecture's sanitized Linux UAPI. */
 #include <asm/errno.h>
 #include <asm/fcntl.h>
 #include <asm/unistd.h>
@@ -7,9 +7,22 @@
 #include <linux/if_packet.h>
 #include <linux/sockios.h>
 
-_Static_assert(sizeof(struct ifreq) == 40, "AArch64 Linux interface ioctl extent");
+#if defined(__aarch64__) && !defined(__ILP32__)
+_Static_assert(__NR_read == 63 && __NR_write == 64 && __NR_openat == 56 &&
+               __NR_mount == 40 && __NR_ppoll == 73,
+               "AArch64 Linux syscall headers required");
+#elif defined(__x86_64__) && !defined(__ILP32__)
+_Static_assert(__NR_read == 0 && __NR_write == 1 && __NR_openat == 257 &&
+               __NR_mount == 165 && __NR_ppoll == 271,
+               "x86-64 Linux syscall headers required");
+#else
+#error "Linux PID1 supports only the AArch64 and x86-64 LP64 syscall ABIs"
+#endif
+
+_Static_assert(sizeof(long) == 8 && sizeof(void *) == 8, "Linux LP64 ABI required");
+_Static_assert(sizeof(struct ifreq) == 40, "Linux interface ioctl extent");
 _Static_assert(__builtin_offsetof(struct ifreq, ifr_flags) == 16,
-               "AArch64 Linux interface flags offset");
+               "Linux interface flags offset");
 
 #define AF_PACKET 17
 #define SOCK_RAW 3
@@ -54,6 +67,7 @@ static long
 syscall6(long number, long first, long second, long third,
          long fourth, long fifth, long sixth)
 {
+#if defined(__aarch64__)
     register long x0 __asm__("x0") = first;
     register long x1 __asm__("x1") = second;
     register long x2 __asm__("x2") = third;
@@ -65,6 +79,18 @@ syscall6(long number, long first, long second, long third,
                      : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(x8)
                      : "memory", "cc");
     return x0;
+#else
+    register long result __asm__("rax") = number;
+    register long r10 __asm__("r10") = fourth;
+    register long r8 __asm__("r8") = fifth;
+    register long r9 __asm__("r9") = sixth;
+    /* SYSCALL uses r10 for argument four and destroys rcx/r11. */
+    __asm__ volatile("syscall" : "+a"(result)
+                     : "D"(first), "S"(second), "d"(third),
+                       "r"(r10), "r"(r8), "r"(r9)
+                     : "rcx", "r11", "memory", "cc");
+    return result;
+#endif
 }
 
 static long
@@ -286,5 +312,11 @@ init_main(void)
 __attribute__((naked, noreturn)) void
 _start(void)
 {
+#if defined(__aarch64__)
     __asm__ volatile("bl init_main\n1: wfe\nb 1b");
+#else
+    /* The SysV call boundary requires a 16-byte aligned caller stack. */
+    __asm__ volatile("cld\nxor %ebp, %ebp\nand $-16, %rsp\n"
+                     "call init_main\n1: pause\njmp 1b");
+#endif
 }

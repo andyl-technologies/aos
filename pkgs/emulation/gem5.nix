@@ -27,6 +27,16 @@
   makeFoundation = import ./_gem5/foundation.nix {
     inherit mkDerivation python3-3_12;
   };
+  # Runtime caches are not implementation source and must not affect wrapper
+  # identity or escape into its corresponding-source output.
+  hostControls = builtins.path {
+    path = ./_gem5;
+    name = "_gem5";
+    filter = path: _type: let
+      name = builtins.baseNameOf path;
+    in
+      name != "__pycache__" && builtins.match ".*[.]py[co]" name == null;
+  };
   recipes =
     map (name: ./. + "/${name}")
     (builtins.filter (name: builtins.match "gem5.*\\.nix" name != null)
@@ -34,7 +44,7 @@
 in
   makeFoundation (native
     // {
-      hostControls = ./_gem5;
+      inherit hostControls;
       hostRecipes = recipes;
       hostLicenseInventory = ./gem5-patches/LICENSES.md;
       phases = [

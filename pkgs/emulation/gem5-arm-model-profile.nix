@@ -2,7 +2,7 @@
 {
   mkDerivation,
   gem5-shared-controller-arm-check,
-  gem5-terminal-runtime-foundation,
+  gem5-native-original-scope-foundation,
   gem5-aarch64-linux,
   gem5-aarch64-linux-device-fixture,
   gem5-aarch64-bootloader,
@@ -12,7 +12,7 @@
 }: let
   proof = gem5-shared-controller-arm-check;
   source = "${proof}/share/gem5/arm-controller-proof-source";
-  native = gem5-terminal-runtime-foundation;
+  native = gem5-native-original-scope-foundation;
   specification = builtins.toJSON {
     configuration_tree = "${native}/share/gem5/configs";
     artifacts = {

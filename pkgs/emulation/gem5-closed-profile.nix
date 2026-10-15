@@ -1,7 +1,7 @@
 ##! Source-owned gem5 closed-profile bundle with genuine native continuation proofs
 {
   mkDerivation,
-  gem5,
+  gem5-native-original-scope-foundation,
   dmtcp,
   gem5-process-custody,
   gem5-process-image-inventory,
@@ -11,6 +11,9 @@
   llvm,
   abseil-cpp,
 }: let
+  # Production profiles use the complete native implementation and its source.
+  # Existing live continuation witnesses still determine profile acceptance.
+  gem5 = gem5-native-original-scope-foundation;
   installed = "@out@/share/crucible/gem5";
   specification = builtins.toJSON {
     artifacts = {
