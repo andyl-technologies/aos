@@ -5009,6 +5009,53 @@ The failed package attempt remains failed. A fresh full package and matching
 corresponding-source build, installed readback and the relevant gates remain
 required; component checks supply no native readiness or preservation claim.
 
+## Provider, application and native package qualification
+
+Commit `19b42f9d65` adds checked provider storage projections and authenticates
+prepared native Blob acknowledgements against their pending request before typed
+body validation. A fresh provider executable passes all 89 selected controls with
+zero ignored. Independent review joins its complete 435-file owned dependency
+set: 191 selected files and 244 unchanged committed files. The provider changes
+have no dependency on the pending Core changes. Commit `15a7be2dec` applies the
+sole formatting hunk separately. Review identity: `e39e1b2b`.
+
+The ordinary production compiler build and installed compiler verification pass.
+The separate application-target gate compiles 167 test targets across all 48
+selected application packages, including 69 integration targets. This verifies
+the captured source, including its new untracked Rust modules; it does not run
+the application tests. Later source changes require renewed current-source
+qualification. Application handoff identity: `c675ad34`.
+
+The fresh ordinary QEMU package and matching corresponding-source build pass.
+All 3,792 compile/link steps, 589 upstream TAP checks, 44 project model/cost
+fixtures and 274 static predicates complete. Installed readback verifies both
+registered archives, the complete retained source tree, licenses and the
+aggregate-only publication policy. The native source remains `508d5e7438`.
+Binary output `2p2gw8hrlifkvdjfg4y1gy8m94qhxfri` and source output
+`mspkhspmc2h81j5s1awgk97zxygs031x` are the qualified pair; a later workspace
+capture selects a different source output and requires its own readback.
+These results do not establish current ABI/license gate success or complete
+scenario preservation. Independent installed review identity: `37815d23`.
+
+The corrected x86 and ARM Linux/PID1 asset recipes produce all nine requested
+asset/source outputs, and seventeen artifact/data controls pass. The first
+actual gem5 x86 Linux boot stops before either PID1 marker; the second attempt
+never starts. Its UART reaches guest time 1.936521 seconds under a fixed
+two-second virtual horizon. The retained log does not distinguish an exhausted
+horizon from an empty event queue. No boot, capture, restoration or readiness
+success follows from the asset checks. Asset/data review identity: `937ddc1a`;
+failed boot handoff: `56797136`.
+
+Fresh Core and daemon executables compile, but their focused controls report
+54 passes/one failure and fourteen passes/three failures respectively. Static
+inspection identifies the same original-waker representation mismatch in both
+executables. A reviewed production correction awaits regression testing;
+the failed results remain failed. All three separately run canonical-ACK
+integration controls pass. Their original compilation succeeded, while its
+postcollector failed on an incorrect source-module count. Corrected dependency
+validation qualifies the same executable without recompilation or changing that
+outer failure. Independent adoption review identity: `077c63f3`.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
