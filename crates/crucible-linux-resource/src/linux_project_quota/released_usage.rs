@@ -1,15 +1,26 @@
-//! Diagnostics for project-quota usage that outlives an emptied run directory.
+//! Draining and diagnosing project-quota usage that outlives an emptied run
+//! directory.
 //!
-//! When release still finds accounted usage, a bounded `/proc` scan names
-//! processes that hold deleted files on the run directory's filesystem, and
-//! processes whose descriptor tables it could not read. Because a kernel can
-//! also keep a file alive with no descriptor or mapping in any table, the
-//! scan additionally names exiting tasks and unix sockets with unread queued
-//! bytes. The scan never influences the release decision.
+//! Reaping the last process that held a project file does not settle the
+//! project's accounted usage synchronously: the kernel may finish the final
+//! file release and inode eviction on deferred work shortly afterwards. Release
+//! therefore re-reads the kernel's own usage counters until both reach zero or
+//! a fixed number of short pauses is spent. The wait observes only that
+//! signal; it never deletes, closes, or repeats anything, and usage still held
+//! at the bound fails the release closed.
+//!
+//! When usage remains, a bounded `/proc` scan names processes that hold
+//! deleted files on the run directory's filesystem, and processes whose
+//! descriptor tables it could not read. Because a kernel can also keep a file
+//! alive with no descriptor or mapping in any table, the scan additionally
+//! names exiting tasks and unix sockets with unread queued bytes. The scan
+//! never influences the release decision.
 
 use std::fs;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
 use rustix::process::{Pid, PidfdFlags, PidfdGetfdFlags};
 
@@ -21,6 +32,79 @@ const MAX_REPORTED_HOLDERS: usize = 8;
 
 /// Linux `PF_EXITING` task flag from `/proc/<pid>/stat`.
 const PF_EXITING: u64 = 0x4;
+
+/// Most pauses release takes while waiting for released usage to reach zero.
+///
+/// With [`RELEASED_USAGE_READ_INTERVAL`] this bounds the wait to about one
+/// second without reading a host clock. Deferred kernel release settles within
+/// milliseconds of the reap; the bound only keeps a genuinely held project
+/// from stalling release indefinitely.
+const RELEASED_USAGE_DRAIN_PAUSES: usize = 1_000;
+
+/// Pause between project-usage reads while waiting for the drain.
+const RELEASED_USAGE_READ_INTERVAL: Duration = Duration::from_millis(1);
+
+/// Project usage observed by [`await_released_usage_drain`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReleasedUsage {
+    /// Both accounted counters read zero.
+    Drained,
+    /// Usage was still accounted when the pause budget ran out.
+    Held {
+        /// Last observed accounted bytes.
+        bytes: u64,
+        /// Last observed accounted inode count.
+        inodes: u64,
+    },
+}
+
+/// Waits a fixed bounded number of read intervals for released usage to drain.
+///
+/// # Errors
+///
+/// Returns the first error from `read_usage`.
+pub(super) fn drain_released_usage<E>(
+    read_usage: impl FnMut() -> Result<(u64, u64), E>,
+) -> Result<ReleasedUsage, E> {
+    await_released_usage_drain(
+        read_usage,
+        sleeping_pauses(RELEASED_USAGE_DRAIN_PAUSES, RELEASED_USAGE_READ_INTERVAL),
+    )
+}
+
+/// Reads released project usage until it drains or `pause` declines to wait.
+///
+/// `read_usage` returns accounted `(bytes, inodes)`. Usage is read at least
+/// once and once more after every accepted pause, so the final answer always
+/// reflects a read taken after the last wait. A read error ends the wait
+/// immediately and is returned unchanged, because release cannot prove an
+/// unreadable project is empty.
+fn await_released_usage_drain<E>(
+    mut read_usage: impl FnMut() -> Result<(u64, u64), E>,
+    mut pause: impl FnMut() -> bool,
+) -> Result<ReleasedUsage, E> {
+    loop {
+        let (bytes, inodes) = read_usage()?;
+        if bytes == 0 && inodes == 0 {
+            return Ok(ReleasedUsage::Drained);
+        }
+        if !pause() {
+            return Ok(ReleasedUsage::Held { bytes, inodes });
+        }
+    }
+}
+
+/// Returns a pause that sleeps `interval` at most `budget` times.
+fn sleeping_pauses(mut budget: usize, interval: Duration) -> impl FnMut() -> bool {
+    move || {
+        let Some(remaining) = budget.checked_sub(1) else {
+            return false;
+        };
+        budget = remaining;
+        thread::sleep(interval);
+        true
+    }
+}
 
 /// Scans for deleted-file holders, then re-reads the project usage.
 ///

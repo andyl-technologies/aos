@@ -82,3 +82,102 @@ fn names_a_socket_whose_queue_holds_unread_bytes() {
     );
     assert!(report.contains("queued 6"), "{report}");
 }
+
+/// Replays scripted usage reads and counts the pauses the drain requests.
+struct ScriptedUsage {
+    reads: std::collections::VecDeque<Result<(u64, u64), &'static str>>,
+    pauses: usize,
+}
+
+impl ScriptedUsage {
+    fn new(reads: impl IntoIterator<Item = Result<(u64, u64), &'static str>>) -> Self {
+        Self {
+            reads: reads.into_iter().collect(),
+            pauses: 0,
+        }
+    }
+
+    fn drain(&mut self, pause_budget: usize) -> Result<ReleasedUsage, &'static str> {
+        let reads = &mut self.reads;
+        let pauses = &mut self.pauses;
+        await_released_usage_drain(
+            || reads.pop_front().expect("drain read past the script"),
+            || {
+                if *pauses == pause_budget {
+                    return false;
+                }
+                *pauses += 1;
+                true
+            },
+        )
+    }
+}
+
+#[test]
+fn drain_releases_immediately_when_usage_is_already_zero() {
+    let mut usage = ScriptedUsage::new([Ok((0, 0))]);
+
+    assert_eq!(usage.drain(4), Ok(ReleasedUsage::Drained));
+    assert_eq!(usage.pauses, 0);
+}
+
+#[test]
+fn drain_waits_for_deferred_release_to_settle() {
+    let mut usage = ScriptedUsage::new([Ok((200_704, 1)), Ok((4_096, 1)), Ok((0, 0))]);
+
+    assert_eq!(usage.drain(4), Ok(ReleasedUsage::Drained));
+    assert_eq!(usage.pauses, 2);
+    assert!(usage.reads.is_empty());
+}
+
+#[test]
+fn drain_reports_the_last_read_when_usage_outlives_the_budget() {
+    let mut usage = ScriptedUsage::new([Ok((8_192, 2)), Ok((8_192, 2)), Ok((4_096, 1))]);
+
+    assert_eq!(
+        usage.drain(2),
+        Ok(ReleasedUsage::Held {
+            bytes: 4_096,
+            inodes: 1
+        })
+    );
+    assert_eq!(usage.pauses, 2);
+}
+
+#[test]
+fn drain_treats_nonzero_inodes_alone_as_held() {
+    let mut usage = ScriptedUsage::new([Ok((0, 1))]);
+
+    assert_eq!(
+        usage.drain(0),
+        Ok(ReleasedUsage::Held {
+            bytes: 0,
+            inodes: 1
+        })
+    );
+}
+
+#[test]
+fn drain_stops_at_the_first_unreadable_usage() {
+    let mut usage = ScriptedUsage::new([Ok((4_096, 1)), Err("quotactl refused")]);
+
+    assert_eq!(usage.drain(4), Err("quotactl refused"));
+    assert_eq!(usage.pauses, 1);
+}
+
+#[test]
+fn sleeping_pauses_stop_after_their_budget() {
+    let mut pause = sleeping_pauses(2, Duration::ZERO);
+
+    assert!(pause());
+    assert!(pause());
+    assert!(!pause());
+    assert!(!pause());
+}
+
+#[test]
+fn sleeping_pauses_without_a_budget_decline_at_once() {
+    let mut pause = sleeping_pauses(0, Duration::ZERO);
+
+    assert!(!pause());
+}

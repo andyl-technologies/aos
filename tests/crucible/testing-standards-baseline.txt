@@ -42,6 +42,9 @@
 # Block and 9p `Retry` variants retain one original request after an injected
 # guest-delivery or ring-settlement refusal; every test runs once and fails on
 # its first unmet assertion. These exact targets expose modeled transport states.
+# The released project-quota drain sleeps a fixed number of short intervals
+# between reads of the kernel's own usage counters, waiting for deferred file
+# release after process reap; held usage at the bound fails release closed.
 crucible-api	src/vm_lifecycle/checkpoint_store/tests	retry	1
 crucible-api	src/vm_lifecycle/checkpoint_store/storage/tests	std::thread::sleep	1
 crucible-api	src/vm_lifecycle/checkpoint_store/storage/tests	thread::sleep	1
@@ -112,6 +115,7 @@ crucible-daemon	src/supervision	thread::sleep	1
 crucible-daemon	src/qemu_campaign_lifecycle/tests/fresh_execution	retry	1
 crucible-daemon	src/qemu_campaign_lifecycle/tests/host_parallel_native	retry	1
 crucible-daemon	src/qemu_resource_guard/tests	retry	1
+crucible-linux-resource	src/linux_project_quota/released_usage	thread::sleep	1
 crucible-qemu	src/linux_attempt_host	retry	1
 crucible-qemu	src/unix_socket_path	thread::sleep	1
 crucible-qemu	src/linux_attempt_host	thread::sleep	1
