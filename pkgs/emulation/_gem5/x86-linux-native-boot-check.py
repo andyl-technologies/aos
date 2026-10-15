@@ -18,10 +18,18 @@ import m5
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 MAX_TRANSCRIPT_BYTES = 256 * 1024
 MAX_EVENTS = 500_000_000
-MAX_TICK = 2_000_000_000_000
+DEFAULT_HORIZON_SECONDS = "2"
 EVENT_BATCH = 128
+TICKS_PER_SECOND = 1_000_000_000_000
 REQUIRED_LINES = (b"GEM5_LINUX_INIT_READY", b"GEM5_LINUX_PROBE_COMPLETE")
 FAILURE_TEXT = (b"GEM5_DEVICE_FAILURE", b"GEM5_LINUX_PROBE_FAILED", b"Kernel panic")
+
+
+def horizon_tick(seconds):
+    """Selects one finite diagnostic case at the fixed native 1 THz clock."""
+    if type(seconds) is not str or seconds not in ("2", "4"):
+        raise ValueError("native boot horizon must select the two- or four-second case")
+    return int(seconds) * TICKS_PER_SECOND
 
 
 def load(name, source):
@@ -52,7 +60,8 @@ def read_document(path):
 class Console:
     """Retains the bounded raw UART transcript and its original birth digest."""
 
-    def __init__(self, path):
+    def __init__(self, path, horizon_seconds=DEFAULT_HORIZON_SECONDS):
+        self.maximum_tick = horizon_tick(horizon_seconds)
         self.stream = Path(path).open("xb")
         self.byte_hash = hashlib.sha256()
         self.birth_hash = hashlib.sha256()
@@ -83,7 +92,7 @@ class Console:
             numeric.append(int(value))
         identifier, tick, ordinal, tie = numeric
         if (identifier != self.last_identifier + 1 or not ordinal or not tie
-                or tick > m5.curTick() or tick > MAX_TICK):
+                or tick > m5.curTick() or tick >= self.maximum_tick):
             raise ValueError("native boot UART birth or FIFO order differs")
         payload = publication["payload"]
         if (type(payload) is not list or len(payload) != 1
@@ -127,9 +136,11 @@ class Console:
 
 
 def main():
-    if len(sys.argv) != 6:
-        raise ValueError("expected installed-helper manifest prepared-data transcript receipt")
-    helper_path, manifest_path, prepared_path, transcript_path, receipt_path = sys.argv[1:]
+    if len(sys.argv) not in (6, 7):
+        raise ValueError("expected installed-helper manifest prepared-data transcript receipt [horizon-seconds]")
+    helper_path, manifest_path, prepared_path, transcript_path, receipt_path = sys.argv[1:6]
+    horizon_seconds = sys.argv[6] if len(sys.argv) == 7 else DEFAULT_HORIZON_SECONDS
+    maximum_tick = horizon_tick(horizon_seconds)
     bundle = load("crucible_x86_boot_asset_verifier", Path(helper_path))
     document = read_document(manifest_path)
     bundle.verify_data(document)
@@ -152,12 +163,12 @@ def main():
     model = adapter.X86LinuxModel({"guest_isa": "x86_64", "executable": "",
                                   "model": prepared["model"]}, Path(prepared["resource_root"]))
     root = model.realize()
-    console = Console(transcript_path)
+    console = Console(transcript_path, horizon_seconds)
     processed = 0
     try:
         while processed < MAX_EVENTS:
             requested = min(EVENT_BATCH, MAX_EVENTS - processed)
-            step = m5.simulateUntilBoundary(MAX_TICK, requested)
+            step = m5.simulateUntilBoundary(maximum_tick, requested)
             if not 0 <= step.processedEvents <= requested:
                 raise ValueError("native callback count exceeds its requested finite batch")
             processed += step.processedEvents
@@ -175,7 +186,7 @@ def main():
                 raise ValueError(
                     "native guest exhausted its tick horizon or event queue: "
                     f"current_tick={step.currentTick}, has_next_event={step.hasNextEvent}, "
-                    f"next_tick={next_tick}, exclusive_tick={MAX_TICK}, "
+                    f"next_tick={next_tick}, exclusive_tick={maximum_tick}, "
                     f"processed_events={processed}, requested_events={requested}"
                 )
         else:
@@ -188,7 +199,7 @@ def main():
         "model_id": "x86-linux-pc-atomic-functional-v1",
         "tick": str(m5.curTick()),
         "processed_events": processed,
-        "limits": {"maximum_tick": str(MAX_TICK), "maximum_events": MAX_EVENTS,
+        "limits": {"maximum_tick": str(maximum_tick), "maximum_events": MAX_EVENTS,
                    "maximum_transcript_bytes": MAX_TRANSCRIPT_BYTES},
         "required_lines": [line.decode("ascii") for line in REQUIRED_LINES],
         "console": console.summary(),

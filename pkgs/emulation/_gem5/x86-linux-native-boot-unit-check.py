@@ -92,5 +92,46 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual(self.console.last_identifier, 0)
 
 
+class HorizonTests(unittest.TestCase):
+    def test_only_named_finite_cases_are_accepted(self):
+        self.assertEqual(boot.horizon_tick("2"), 2_000_000_000_000)
+        self.assertEqual(boot.horizon_tick("4"), 4_000_000_000_000)
+        for value in ("0", "3", "5", "04", "4.0", "-4", 4, True, None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                boot.horizon_tick(value)
+
+    def test_uart_birth_refuses_the_exclusive_boundary_in_both_cases(self):
+        original_clock = boot.m5.curTick
+        self.addCleanup(setattr, boot.m5, "curTick", original_clock)
+        with tempfile.TemporaryDirectory() as directory:
+            for seconds in ("2", "4"):
+                limit = boot.horizon_tick(seconds)
+                boot.m5.curTick = lambda: limit + 1
+                console = boot.Console(Path(directory) / (seconds + ".bin"), seconds)
+                self.addCleanup(console.stream.close)
+                publication = {"output_id": "1", "tick": str(limit - 1),
+                               "event_ordinal": "20", "tick_ordinal": "1",
+                               "causal_parent": "17", "facet": "serial",
+                               "terminal": "system.pc.com_1.device", "payload": [65]}
+                console.consume(publication)
+                for tick in (limit, limit + 1):
+                    publication.update(output_id="2", tick=str(tick))
+                    with self.subTest(seconds=seconds, tick=tick), self.assertRaises(ValueError):
+                        console.consume(publication)
+                    self.assertEqual(console.bytes, 1)
+                    self.assertEqual(console.last_identifier, 1)
+
+    def test_four_seconds_does_not_expand_other_credits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            console = boot.Console(Path(directory) / "console.bin", "4")
+            self.addCleanup(console.stream.close)
+            self.assertEqual(console.maximum_tick, 4_000_000_000_000)
+            self.assertEqual(boot.MAX_EVENTS, 500_000_000)
+            self.assertEqual(boot.MAX_TRANSCRIPT_BYTES, 256 * 1024)
+            self.assertEqual(boot.EVENT_BATCH, 128)
+            self.assertEqual(boot.REQUIRED_LINES,
+                             (b"GEM5_LINUX_INIT_READY", b"GEM5_LINUX_PROBE_COMPLETE"))
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)

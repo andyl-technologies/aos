@@ -6,6 +6,9 @@
   python3,
   coreutils,
 }: let
+  # Bound guest progress separately from the measured native wall-time allowance.
+  horizonSeconds = 4;
+  slotWallSeconds = 2000;
   native = gem5-native-original-scope-foundation;
   assets = gem5-x86-linux-model-assets;
   manifest = "${assets}/share/crucible/gem5/x86-linux-assets.json";
@@ -51,11 +54,11 @@ in
             ${assets}/bin/gem5-x86-prepare "$PWD/native-root-$attempt" \
               > "prepared-data-$attempt.json"
             status=0
-            ${coreutils}/bin/timeout --signal=TERM --kill-after=10s 1200s \
+            ${coreutils}/bin/timeout --signal=TERM --kill-after=10s ${toString slotWallSeconds}s \
               ${native}/bin/gem5 --listener-mode=off --outdir="$PWD/native-root-$attempt" \
               ${bootCheck} ${assets.source}/x86-linux-bundle.py ${manifest} \
               "$PWD/prepared-data-$attempt.json" "$PWD/console-$attempt.bin" \
-              "$PWD/boot-receipt-$attempt.json" > "native-boot-$attempt.log" 2>&1 || status=$?
+              "$PWD/boot-receipt-$attempt.json" ${toString horizonSeconds} > "native-boot-$attempt.log" 2>&1 || status=$?
             cat "native-boot-$attempt.log"
             if [ "$status" -ne 0 ]; then
               if [ -f "console-$attempt.bin" ]; then
