@@ -126,8 +126,17 @@ empty `terrane` binary.
 
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
 
-The 2026-10-15 qualification candidate `c4e44d6208` has independently reviewed
-passing outputs for 87 of the 89 current gates, including every store gate,
+The corrected source checkpoint `d5b708f9ba` has independently reviewed passing
+outputs for 21 of the 89 current gates. Its strict native Clippy/rustdoc checks
+and application test-target compilation also pass. The full production
+package, feature matrix, local workflows and aggregate remain pending. Five
+isolated workers qualify that same immutable source: the aggregate, feature
+matrix, index maintenance, file-store conformance and collector gates. Nix
+shares identical prerequisite builds between their requests. No task checkbox
+or milestone advances from these partial results.
+
+The earlier 2026-10-15 qualification candidate `c4e44d6208` has independently
+reviewed passing outputs for 87 of the 89 current gates, including every store gate,
 all 183 index-maintenance selections, and the complete collector gate. Its
 strict native Clippy/rustdoc checks and application test-target compilation
 also pass. Its full production package run fails: 1,926 tests pass and two
@@ -143,17 +152,16 @@ five-minute local-deletion runner group; indexed overlay replay receives a
 finite three-minute allowance. These changes preserve fixtures, assertions,
 collector and lease clocks, publication deadlines and test selection. The
 corrected trunk requires a fresh full qualification before formal task merges
-or acceptance. The unchanged earlier feature matrix continues independently;
-its first native profile passes all 1,149 tests with none failed or ignored.
+or acceptance. The earlier feature matrix's first native profile passes all
+1,149 tests with none failed or ignored. Both superseded qualification requests
+are stopped after preserving their logs and partial results; neither supplies
+full qualification of the corrected source.
 T1 remains open at eight accepted tasks; T2 and branch work remain deferred.
-Parallel worklines cover codec and domain conformance, index lookup, collector
-lifetimes, permanent recovery, growing-index source acquisition, SDK completion
-and derived-record verification. Separate workers now isolate retirement-barrier
-directory cohorts, indexed overlay replay and index admission/publication.
-Workers retain disjoint file ownership and separate worktrees. Independent
-review remains separate. One qualification owner schedules isolated compiler
-and Nix requests.
-T2 and branch worklines remain deferred.
+Earlier implementation worklines cover codec and domain conformance, index
+lookup, collector lifetimes, permanent recovery, growing-index source
+acquisition, SDK completion and derived-record verification. Workers retain
+disjoint file ownership and separate worktrees. Independent review remains
+separate from implementation and qualification.
 
 The latest preparatory trunk checkpoint, `b0e33f9e16`, stages the reviewed
 Rust corrections from qualification candidate `98906289`. Their entire `crates/`
