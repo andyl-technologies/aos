@@ -3,7 +3,9 @@
 //! Actual full source/ELF bytes are streamed at issuance. The original file
 //! descriptors and complete Linux identity/revision facts then remain owned.
 //! A current read verifies original kernel read leases and namespace fences;
-//! unsupported leases retain complete bounded byte reads. Each lease precedes
+//! unsupported leases retain complete bounded byte reads. Repeated aliases share
+//! only a completed full-byte measurement within the same current read.
+//! Each lease precedes
 //! the initial complete measurement and is never reacquired or renewed. A pending
 //! break or observed drift permanently revokes this original revision, even if
 //! bytes are subsequently restored. This is installed source liveness, not an
@@ -99,8 +101,9 @@ impl CurrentFiles {
     /// Selects terminal complete-byte validation before any lease acquisition.
     ///
     /// The complete profile owns no notification worker. Every current read
-    /// still hashes all original descriptor bytes and checks the same original
-    /// path/process/metadata before and after; observed drift remains sticky.
+    /// still hashes every distinct original revision and full content pin, and
+    /// checks each original path/process/metadata before and after; observed
+    /// drift remains sticky.
     /// This never downgrades an acquired token or attempts lease acquisition.
     pub(in super::super) fn install_complete_bytes(
         selected: &PacketFixtureMeasurements,
@@ -242,18 +245,21 @@ impl CurrentFiles {
         if self.revoked.get() {
             return Err(refused());
         }
-        let result = self.read_current();
+        let result = self.read_current().map(|_| ());
         if result.is_err() {
             self.revoked.set(true);
         }
         result
     }
 
-    fn read_current(&self) -> Result<(), QualificationError> {
+    // The count reports actual full descriptor measurements in this pass.
+    // No successful result or deduplication state survives the call.
+    fn read_current(&self) -> Result<u32, QualificationError> {
         if self.process != std::process::id() || self.originals.len() != 10 {
             return Err(refused());
         }
-        for original in &self.originals {
+        let mut complete_measurements = 0_u16;
+        for (index, original) in self.originals.iter().enumerate() {
             let descriptor = original.file.file().metadata().map_err(measurement::io)?;
             let path = std::fs::metadata(&original.path).map_err(measurement::io)?;
             if !descriptor.is_file()
@@ -263,11 +269,22 @@ impl CurrentFiles {
             {
                 return Err(refused());
             }
-            // Metadata alone is not a byte certificate. A current original
-            // kernel lease enforces the retained full-byte measurement; absent
-            // support requires hashing all bytes during every current read.
+            // Only an earlier completed full hash in THIS pass can cover an
+            // alias. Exact revision facts and the entire ContentRef, including
+            // media type, must match. A lease-only check never sets this bit.
+            let measured_alias = self.originals[..index]
+                .iter()
+                .enumerate()
+                .any(|(earlier_index, earlier)| {
+                    complete_measurements & (1_u16 << earlier_index) != 0
+                        && earlier.facts == original.facts
+                        && earlier.content == original.content
+                });
+            let complete_read = original.file.lease().is_none() && !measured_alias;
             let measured = if let Some(lease) = original.file.lease() {
                 lease.verify_current().map_err(|_| refused())?;
+                original.file.file().metadata().map_err(measurement::io)?
+            } else if measured_alias {
                 original.file.file().metadata().map_err(measurement::io)?
             } else {
                 measurement::measured_file_at(original.file.file(), &original.content)?
@@ -279,8 +296,12 @@ impl CurrentFiles {
             if let Some(lease) = original.file.lease() {
                 lease.verify_current().map_err(|_| refused())?;
             }
+            // Mark only an actual full read after its own terminal fences.
+            if complete_read {
+                complete_measurements |= 1_u16 << index;
+            }
         }
-        Ok(())
+        Ok(complete_measurements.count_ones())
     }
 }
 
@@ -341,3 +362,7 @@ pub(in super::super) fn current_answer<T, E>(
 #[cfg(test)]
 #[path = "current_files/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "current_files/batch_tests.rs"]
+mod batch_tests;
