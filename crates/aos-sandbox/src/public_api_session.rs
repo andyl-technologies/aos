@@ -9,6 +9,7 @@
 
 mod credentials;
 mod handshake_custody;
+mod ingress_limits;
 mod original_registration;
 mod registration;
 #[cfg(target_os = "linux")]
@@ -45,6 +46,11 @@ pub(crate) use credentials::{
     InitialEntitlementCredentialCustodyV1,
 };
 pub(crate) use original_registration::CurrentOriginalPublicRegistrationV3;
+pub use ingress_limits::{
+    MAXIMUM_DIAGNOSTIC_CONNECTIONS, MAXIMUM_DIAGNOSTIC_RPC_REQUESTS,
+    MAXIMUM_PUBLIC_CONNECTIONS, MAXIMUM_PUBLIC_HANDSHAKES, MAXIMUM_PUBLIC_RPC_REQUESTS,
+    MAXIMUM_RPC_ELEMENT_MEMORY_BYTES, MAXIMUM_RPC_MESSAGE_BYTES,
+};
 pub use stream::AuthenticatedPublicApiStream;
 pub use credentials::{
     GitCoverageCredentialCustodyV1, GitCoverageCredentialDataV1,

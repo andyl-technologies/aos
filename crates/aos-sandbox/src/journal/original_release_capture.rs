@@ -43,11 +43,18 @@ pub(super) fn native_release_replay_work_v1(
         .min(limits.maximum_records_per_transaction)
         .checked_mul(std::mem::size_of::<JournalRecord>())
         .ok_or_else(limit)?;
-    let frame_payload = limits
+    let advertised_payload = limits
         .maximum_record_bytes
         .checked_add(7)
-        .ok_or_else(limit)?
-        .min(physical);
+        .ok_or_else(limit)?;
+    // The shared frame reader grows only after bytes are actually read. The
+    // same capacity/scratch bound must cover direct Release-copy callers and
+    // initial captured-prefix receiving, not only the latter's correction.
+    let frame_payload = aos_sandbox_journal::framing::reached_frame_read_memory_bound_v1(
+        advertised_payload,
+        physical,
+    )
+    .map_err(|_| limit())?;
 
     Ok(NativeReleaseReplayWorkV1 {
         replay_indexes,
@@ -110,6 +117,47 @@ impl OriginalReleaseControllerNativeHistoryV1 {
         self.durable_end = end_offset;
         self.head = Some(head);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod reached_frame_memory_tests {
+    use super::*;
+    use aos_sandbox_journal::framing::FRAME_READ_SCRATCH_BYTES;
+
+    #[test]
+    fn release_replay_charges_growth_peak_and_scratch_on_tiny_physical_prefixes() {
+        let limits = JournalLimits::default();
+        let empty = native_release_replay_work_v1(0, limits).unwrap();
+        let reached = native_release_replay_work_v1(10, limits).unwrap();
+
+        assert_eq!(empty.frame_payload, FRAME_READ_SCRATCH_BYTES);
+        // Ten reached bytes can hold a new20-byte and old10-byte allocation.
+        assert_eq!(reached.frame_payload, FRAME_READ_SCRATCH_BYTES + 30);
+        assert_eq!(empty.pending_records, 0);
+        assert_eq!(reached.pending_records, 0);
+    }
+
+    #[test]
+    fn release_replay_caps_each_growth_buffer_at_the_declared_payload_limit() {
+        let limits = JournalLimits {
+            maximum_record_bytes: 1024,
+            ..JournalLimits::default()
+        };
+        let advertised = limits.maximum_record_bytes + 7;
+        let physical = advertised * 4;
+
+        let work = native_release_replay_work_v1(physical, limits).unwrap();
+
+        assert_eq!(
+            work.frame_payload,
+            FRAME_READ_SCRATCH_BYTES + 2 * advertised
+        );
+        assert_eq!(
+            work.pending_records,
+            (physical / HEADER_BYTES).min(limits.maximum_records_per_transaction)
+                * std::mem::size_of::<JournalRecord>()
+        );
     }
 }
 

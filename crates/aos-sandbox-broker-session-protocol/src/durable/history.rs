@@ -18,7 +18,9 @@ use super::{
 const MAGIC: &[u8; 8] = b"AOSBSH01";
 const VERSION: u16 = 1;
 const HEADER_BYTES: usize = 46;
-const MAXIMUM_RECORDS: usize = 8_192;
+
+/// Bounds the number of complete records accepted in one durable history.
+pub const MAXIMUM_RECORDS: usize = 8_192;
 
 /// Maximum encoded durable history accepted before allocating record storage.
 pub const BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES: usize = 64 * 1024 * 1024;
@@ -80,7 +82,9 @@ impl BrokerSessionDurableHistoryV1 {
             .try_into()
             .map_err(|_| BrokerSessionDurableError::InvalidLength)?;
         let mut cursor = HEADER_BYTES;
-        let mut records = Vec::with_capacity(count);
+        // An advertised count alone must not allocate a history. Grow only
+        // after the next complete record passes its existing validation.
+        let mut records = Vec::new();
         for _ in 0..count {
             let length = usize::try_from(read_u32(bytes, cursor)?)
                 .map_err(|_| BrokerSessionDurableError::InvalidLength)?;

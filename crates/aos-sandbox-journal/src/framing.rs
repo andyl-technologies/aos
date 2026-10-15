@@ -56,6 +56,8 @@ pub const HEADER_BYTES: usize = 72;
 pub const COMMIT_PAYLOAD_BYTES: usize = 36;
 /// Specifies the checksum's offset within the native frame header.
 pub const CHECKSUM_OFFSET: usize = 40;
+/// Bounds one frame reader's fixed payload staging buffer.
+pub const FRAME_READ_SCRATCH_BYTES: usize = 64 * 1024;
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.journal.transaction.v1\0";
 const FRAME_DOMAIN: &[u8] = b"aos.sandbox.journal.frame.v1\0";
 
@@ -138,6 +140,34 @@ fn read_frame<R: Read>(
     read_frame_retained(file, offset, maximum_record_bytes, None)
 }
 
+/// Bounds incremental payload growth and its fixed read scratch as DATA.
+///
+/// The reader grows only after receiving bytes and caps its requested Vec
+/// capacity at the declared payload length. Retained capacity is bounded by
+/// twice the reached payload; reallocation may additionally retain the old
+/// buffer, bounded by the reached payload. This includes both buffers at that
+/// peak, plus the fixed read scratch. A physical-prefix bound may conservatively
+/// include header bytes.
+///
+/// This calculation authenticates neither that prefix nor a receiving payer.
+/// It excludes the frame/header owners and all decoded domain representations.
+///
+/// # Errors
+///
+/// Returns a representation limit error on checked byte-count overflow.
+pub fn reached_frame_read_memory_bound_v1(
+    declared_payload_bound: usize,
+    reached_payload_bytes: usize,
+) -> Result<usize, FrameError> {
+    let new_capacity = declared_payload_bound.min(reached_payload_bytes.saturating_mul(2));
+    let old_capacity = declared_payload_bound.min(reached_payload_bytes);
+
+    new_capacity
+        .checked_add(old_capacity)
+        .and_then(|bytes| bytes.checked_add(FRAME_READ_SCRATCH_BYTES))
+        .ok_or(FrameError::LimitExceeded("frame read representation bytes"))
+}
+
 /// Reads one bounded native frame and retains selected partial scratch.
 ///
 /// EOF returns `None`, including a partial final frame. The decoder checks
@@ -147,12 +177,14 @@ fn read_frame<R: Read>(
 /// # Errors
 ///
 /// Returns the original I/O, version, structural, checksum, or width error.
-/// Selected scratch preserves the exact reached header and payload allocation.
+/// Selected scratch preserves the exact reached header, payload bytes and
+/// payload capacity. An advertised but missing payload never allocates its
+/// declared extent; one fixed buffer stages actual reads before Vec growth.
 ///
 /// # Panics
 ///
-/// Panics if the bounded payload capacity exceeds the platform's Vec allocation
-/// limit. Owners retain their existing configured allocation and physical bounds.
+/// Panics if capacity needed for actually reached bytes exceeds the platform's
+/// Vec allocation limit. Owners retain their allocation and physical backstops.
 pub fn read_frame_retained<R: Read>(
     file: &mut R,
     offset: u64,
@@ -207,14 +239,32 @@ pub fn read_frame_retained<R: Read>(
             return Err(FrameError::LimitExceeded("frame payload bytes"));
         }
 
-        payload_original = Some(vec![0_u8; payload_length]);
-        let payload = payload_original.as_mut().ok_or(FrameError::MissingRetainedPayload)?;
+        payload_original = Some(Vec::new());
+        let payload = payload_original
+            .as_mut()
+            .ok_or(FrameError::MissingRetainedPayload)?;
+        let mut staging = [0_u8; FRAME_READ_SCRATCH_BYTES];
         while payload_filled < payload_length {
-            let read = file.read(&mut payload[payload_filled..])?;
+            let remaining = payload_length - payload_filled;
+            let offered = remaining.min(staging.len());
+            let read = file.read(&mut staging[..offered])?;
             if read == 0 {
                 return Ok(None);
             }
-            payload_filled += read;
+
+            // Reserve only reached bytes. Capped doubling avoids quadratic
+            // copies on fragmented reads without reserving an advertised tail.
+            let reached = payload_filled + read;
+            if reached > payload.capacity() {
+                let capacity = payload
+                    .capacity()
+                    .saturating_mul(2)
+                    .max(reached)
+                    .min(payload_length);
+                payload.reserve_exact(capacity - payload.len());
+            }
+            payload.extend_from_slice(&staging[..read]);
+            payload_filled = reached;
         }
 
         let expected_checksum: [u8; 32] = header[CHECKSUM_OFFSET..]
@@ -401,9 +451,171 @@ mod tests {
         assert_eq!(payload_scratch.header.as_slice(), &encoded[..HEADER_BYTES]);
         assert_eq!(payload_scratch.payload_filled, 3);
         let retained_payload = payload_scratch.payload.unwrap();
-        assert_eq!(retained_payload.len(), payload.len());
-        assert_eq!(&retained_payload[..3], &payload[..3]);
-        assert_eq!(&retained_payload[3..], &[0; 4]);
+        assert_eq!(retained_payload.as_slice(), &payload[..3]);
+        assert!(retained_payload.capacity() <= 2 * payload_scratch.payload_filled);
+    }
+
+    #[test]
+    fn advertised_large_truncated_tail_retains_only_reached_bytes() {
+        let mut encoded = encode_frame(FrameKind::Record, 9, [3; 16], b"abc").unwrap();
+        let advertised = 256 * 1024 * 1024_u32;
+        encoded[36..40].copy_from_slice(&advertised.to_le_bytes());
+        let mut input = Cursor::new(&encoded);
+        let mut retained = None;
+
+        assert!(
+            read_frame_retained(&mut input, 17, advertised as usize, Some(&mut retained))
+                .unwrap()
+                .is_none()
+        );
+
+        assert_eq!(input.position(), encoded.len() as u64);
+        let retained = retained.unwrap();
+        assert_eq!(retained.payload_filled, 3);
+        let payload = retained.payload.unwrap();
+        assert_eq!(payload.as_slice(), b"abc");
+        assert!(payload.capacity() <= 6);
+        assert!(
+            payload.capacity() + FRAME_READ_SCRATCH_BYTES
+                <= reached_frame_read_memory_bound_v1(advertised as usize, 3).unwrap()
+        );
+    }
+
+    #[test]
+    fn missing_advertised_payload_does_not_reserve_a_payload_vec() {
+        let mut encoded = encode_frame(FrameKind::Record, 9, [3; 16], b"").unwrap();
+        encoded[36..40].copy_from_slice(&u32::MAX.to_le_bytes());
+        let mut input = Cursor::new(&encoded);
+        let mut retained = None;
+
+        assert!(
+            read_frame_retained(&mut input, 17, usize::MAX, Some(&mut retained))
+                .unwrap()
+                .is_none()
+        );
+
+        assert_eq!(input.position(), HEADER_BYTES as u64);
+        let retained = retained.unwrap();
+        assert_eq!(retained.payload_filled, 0);
+        let payload = retained.payload.unwrap();
+        assert!(payload.is_empty());
+        assert_eq!(payload.capacity(), 0);
+    }
+
+    #[test]
+    fn incremental_payload_reads_preserve_full_frames_and_next_frame_cursor() {
+        let payload = vec![19; 2 * FRAME_READ_SCRATCH_BYTES + 9];
+        let first = encode_frame(FrameKind::Record, 9, [3; 16], &payload).unwrap();
+        let second = encode_frame(FrameKind::Commit, 10, [3; 16], b"next").unwrap();
+        let mut encoded = first.clone();
+        encoded.extend_from_slice(&second);
+        let mut input = Cursor::new(encoded);
+
+        let (decoded, bytes) = read_frame(&mut input, 17, payload.len()).unwrap().unwrap();
+
+        assert_eq!(decoded.payload, payload);
+        assert_eq!(decoded.kind, FrameKind::Record);
+        assert_eq!(bytes, first.len() as u64);
+        assert_eq!(input.position(), first.len() as u64);
+        let (decoded, bytes) = read_frame(&mut input, 17 + bytes, 0).unwrap().unwrap();
+        assert_eq!(decoded.payload, b"next");
+        assert_eq!(bytes, second.len() as u64);
+        assert_eq!(input.position(), (first.len() + second.len()) as u64);
+    }
+
+    struct FailingPayloadReader {
+        input: Cursor<Vec<u8>>,
+        fail_after: u64,
+        kind: io::ErrorKind,
+        failures: usize,
+    }
+
+    impl Read for FailingPayloadReader {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            if self.input.position() == self.fail_after {
+                self.failures += 1;
+                return Err(io::Error::new(self.kind, "original injected read failure"));
+            }
+            let remaining = usize::try_from(self.fail_after - self.input.position()).unwrap();
+            let offered = remaining.min(bytes.len()).min(11);
+            self.input.read(&mut bytes[..offered])
+        }
+    }
+
+    #[test]
+    fn payload_io_failure_retains_native_cause_reached_prefix_and_cursor() {
+        for kind in [io::ErrorKind::Other, io::ErrorKind::Interrupted] {
+            let payload = vec![19; 2 * FRAME_READ_SCRATCH_BYTES];
+            let encoded = encode_frame(FrameKind::Record, 9, [3; 16], &payload).unwrap();
+            let mut input = FailingPayloadReader {
+                input: Cursor::new(encoded.clone()),
+                fail_after: (HEADER_BYTES + 73) as u64,
+                kind,
+                failures: 0,
+            };
+            let mut retained = None;
+
+            let failure =
+                match read_frame_retained(&mut input, 17, payload.len(), Some(&mut retained)) {
+                    Err(cause) => cause,
+                    Ok(_) => panic!("injected native read failure was not retained"),
+                };
+
+            assert!(
+                matches!(failure, FrameError::Io(ref cause) if cause.kind() == kind
+                && cause.to_string() == "original injected read failure")
+            );
+            assert_eq!(input.failures, 1);
+            assert_eq!(input.input.position(), (HEADER_BYTES + 73) as u64);
+            let retained = retained.unwrap();
+            assert_eq!(retained.header.as_slice(), &encoded[..HEADER_BYTES]);
+            assert_eq!(retained.header_filled, HEADER_BYTES);
+            assert_eq!(retained.payload_filled, 73);
+            let retained_payload = retained.payload.unwrap();
+            assert_eq!(retained_payload.as_slice(), &payload[..73]);
+            assert!(retained_payload.capacity() <= 2 * 73);
+        }
+    }
+
+    #[test]
+    fn corrupt_complete_payload_retains_exact_bytes_and_original_offset() {
+        let mut encoded = encode_frame(FrameKind::Record, 9, [3; 16], b"payload").unwrap();
+        encoded[HEADER_BYTES + 2] ^= 1;
+        let mut input = Cursor::new(&encoded);
+        let mut retained = None;
+
+        assert!(matches!(
+            read_frame_retained(&mut input, 37, 0, Some(&mut retained)),
+            Err(FrameError::ChecksumMismatch(37))
+        ));
+
+        assert_eq!(input.position(), encoded.len() as u64);
+        let retained = retained.unwrap();
+        assert_eq!(retained.payload_filled, 7);
+        assert_eq!(
+            retained.payload.unwrap().as_slice(),
+            &encoded[HEADER_BYTES..]
+        );
+    }
+
+    #[test]
+    fn reached_read_bound_includes_reallocation_peak_and_refuses_overflow() {
+        assert_eq!(
+            reached_frame_read_memory_bound_v1(0, 0).unwrap(),
+            FRAME_READ_SCRATCH_BYTES
+        );
+        assert_eq!(
+            reached_frame_read_memory_bound_v1(1000, 3).unwrap(),
+            FRAME_READ_SCRATCH_BYTES + 9
+        );
+        assert_eq!(
+            reached_frame_read_memory_bound_v1(10, 1000).unwrap(),
+            FRAME_READ_SCRATCH_BYTES + 20
+        );
+        assert!(matches!(
+            reached_frame_read_memory_bound_v1(usize::MAX, usize::MAX),
+            Err(FrameError::LimitExceeded("frame read representation bytes"))
+        ));
     }
 
     #[test]

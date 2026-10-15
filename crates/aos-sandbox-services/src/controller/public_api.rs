@@ -5,28 +5,24 @@
 //! Connection and concurrent-handshake bounds include clients that send nothing.
 
 use std::io;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use aos_sandbox::public_api_session::{
-    AuthenticatedPublicApiStream, PublicApiPeer, PublicApiSessionAcceptor,
+    AuthenticatedPublicApiStream, MAXIMUM_PUBLIC_CONNECTIONS, MAXIMUM_PUBLIC_HANDSHAKES,
+    PublicApiPeer, PublicApiSessionAcceptor,
 };
 use axum::extract::{ConnectInfo, Request, connect_info::Connected};
 use axum::http::StatusCode;
 use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse as _, Response};
 use axum::serve::{IncomingStream, Listener};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{UnixListener, UnixStream, unix::SocketAddr};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use super::{ControllerRuntimeError, ControllerServerTerminal};
 
 const SOCKET: &str = "/run/aos/sandboxd/public.sock";
-const MAXIMUM_CONNECTIONS: usize = 32;
-const MAXIMUM_HANDSHAKES: usize = 8;
 
 /// Loads protected TLS custody and binds the fixed controller-owned endpoint.
 ///
@@ -48,7 +44,7 @@ async fn bind_at(
     Ok(PublicListener {
         listener,
         acceptor,
-        capacity: Arc::new(Semaphore::new(MAXIMUM_CONNECTIONS)),
+        capacity: Arc::new(Semaphore::new(MAXIMUM_PUBLIC_CONNECTIONS)),
         handshakes: JoinSet::new(),
     })
 }
@@ -126,7 +122,7 @@ pub(super) fn bind_retained(
         Ok(listener) => listener,
         Err(cause) => terminal.runtime(ControllerRuntimeError::PublicServer(cause)),
     });
-    partial.capacity = Some(Arc::new(Semaphore::new(MAXIMUM_CONNECTIONS)));
+    partial.capacity = Some(Arc::new(Semaphore::new(MAXIMUM_PUBLIC_CONNECTIONS)));
     partial.handshakes = Some(JoinSet::new());
 
     if partial.listener.is_none()
@@ -242,13 +238,13 @@ impl Listener for PublicListener {
                     let permit = capacity.acquire_owned().await.map_err(io::Error::other)?;
                     let (stream, address) = self.listener.accept().await?;
                     Ok::<_, io::Error>((stream, address, permit))
-                }, if self.handshakes.len() < MAXIMUM_HANDSHAKES => {
+                }, if self.handshakes.len() < MAXIMUM_PUBLIC_HANDSHAKES => {
                     match accepted {
                         Ok((stream, address, permit)) => {
                             let acceptor = Arc::clone(&self.acceptor);
                             self.handshakes.spawn(async move {
                                 let stream = acceptor.accept(stream).await.ok()?;
-                                Some((PublicConnection { stream, _permit: permit }, address))
+                                Some((PublicConnection::new(stream, permit), address))
                             });
                         }
                         Err(error) => {
@@ -266,39 +262,8 @@ impl Listener for PublicListener {
     }
 }
 
-/// Holds a connection slot through HTTP/2 serving, not just its handshake.
-pub(super) struct PublicConnection {
-    stream: AuthenticatedPublicApiStream<UnixStream>,
-    _permit: OwnedSemaphorePermit,
-}
-
-impl AsyncRead for PublicConnection {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        buffer: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.stream).poll_read(context, buffer)
-    }
-}
-
-impl AsyncWrite for PublicConnection {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        bytes: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.stream).poll_write(context, bytes)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.stream).poll_flush(context)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.stream).poll_shutdown(context)
-    }
-}
+/// Holds a connection slot through HTTP/2 serving, including idle connections.
+type PublicConnection = super::ingress::LimitedConnection<AuthenticatedPublicApiStream<UnixStream>>;
 
 #[cfg(test)]
 mod tests {

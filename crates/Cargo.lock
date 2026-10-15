@@ -1389,6 +1389,7 @@ dependencies = [
  "buffa",
  "connectrpc",
  "ed25519-dalek",
+ "http-body-util",
  "rcgen",
  "reqwest",
  "rustix 1.1.4",
@@ -1397,6 +1398,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tower",
  "zeroize",
 ]
 

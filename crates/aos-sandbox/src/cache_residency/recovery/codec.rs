@@ -595,7 +595,8 @@ pub fn decode_eviction_plan(
     let target_reclaim_bytes = reader.u64()?;
     let valid_until = reader.u64()?;
     let count = read_count(&mut reader, maximum_candidates)?;
-    let mut candidates = Vec::with_capacity(count);
+    // A count alone must not allocate carriers for missing candidate bytes.
+    let mut candidates = Vec::new();
     for _ in 0..count {
         candidates.push(decode_eviction_candidate(
             read_length_prefixed(&mut reader, maximum_bytes)?,
@@ -830,12 +831,14 @@ pub fn decode_global_recovery_state(
     read_expected_digest(&mut reader, partition.digest())?;
     let node_quota = read_node_quota(&mut reader, partition)?;
     let project_count = read_count(&mut reader, limits.maximum_subjects)?;
-    let mut project_quotas = Vec::with_capacity(project_count);
+    // Retain only reached models; malformed later arrays cannot preallocate
+    // their configured maxima beside the already decoded earlier arrays.
+    let mut project_quotas = Vec::new();
     for _ in 0..project_count {
         project_quotas.push(read_project_quota(&mut reader, partition)?);
     }
     let watermark_count = read_count(&mut reader, limits.maximum_subjects)?;
-    let mut watermarks = Vec::with_capacity(watermark_count);
+    let mut watermarks = Vec::new();
     for _ in 0..watermark_count {
         watermarks.push(WatermarkRequirementV1 {
             reservation: CacheReservationId::from_bytes(
@@ -848,7 +851,7 @@ pub fn decode_global_recovery_state(
         });
     }
     let idempotency_count = read_count(&mut reader, limits.maximum_records)?;
-    let mut idempotency = Vec::with_capacity(idempotency_count);
+    let mut idempotency = Vec::new();
     for _ in 0..idempotency_count {
         idempotency.push(decode_idempotency(
             read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
@@ -869,12 +872,12 @@ pub fn decode_global_recovery_state(
         false => None,
     };
     let handoff_count = read_count(&mut reader, limits.maximum_records)?;
-    let mut handoffs = Vec::with_capacity(handoff_count);
+    let mut handoffs = Vec::new();
     for _ in 0..handoff_count {
         handoffs.push(read_handoff_state(&mut reader)?);
     }
     let lookup_count = read_count(&mut reader, limits.maximum_subjects)?;
-    let mut lookups = Vec::with_capacity(lookup_count);
+    let mut lookups = Vec::new();
     for _ in 0..lookup_count {
         lookups.push(read_lookup_state(&mut reader)?);
     }

@@ -17,6 +17,7 @@ use aos_sandbox_controller_runtime::controller_service::{
 };
 
 mod diagnostic;
+mod ingress;
 mod public_api;
 
 use diagnostic::bind_controller_socket;
@@ -125,13 +126,18 @@ fn controller_applications(
         CapabilityServiceExt::register(Arc::clone(&public_service), public_connect);
     let public_connect = CacheServiceExt::register(Arc::clone(&public_service), public_connect);
     let public_connect = OperatorServiceExt::register(Arc::clone(&public_service), public_connect);
-    let public_connect =
-        OperationServiceExt::register(public_service, public_connect).into_axum_service();
-    let public_application = axum::Router::new().fallback_service(public_connect);
+    let public_connect = OperationServiceExt::register(public_service, public_connect);
+    let public_application = ingress::application(
+        public_connect,
+        aos_sandbox::public_api_session::MAXIMUM_PUBLIC_RPC_REQUESTS,
+    );
     let connect =
         DiscoveryServiceExt::register(Arc::clone(&diagnostic_service), connectrpc::Router::new());
-    let connect = OperationServiceExt::register(diagnostic_service, connect).into_axum_service();
-    let application = axum::Router::new().fallback_service(connect);
+    let connect = OperationServiceExt::register(diagnostic_service, connect);
+    let application = ingress::application(
+        connect,
+        aos_sandbox::public_api_session::MAXIMUM_DIAGNOSTIC_RPC_REQUESTS,
+    );
 
     (public_application, application)
 }

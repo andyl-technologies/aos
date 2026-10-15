@@ -114,13 +114,15 @@ pub fn decode_typed_checkpoint(
     )?;
     let checkpoint = decode_checkpoint(read_length_prefixed(&mut reader, CHECKPOINT_BYTES)?)?;
     let baseline_count = read_count(&mut reader, limits.maximum_subjects)?;
-    let mut baselines = Vec::with_capacity(baseline_count);
+    // Advertised counts cap work, but only decoded elements earn carriers.
+    // Truncation cannot reserve the unmaterialized suffix of a nested model.
+    let mut baselines = Vec::new();
     for _ in 0..baseline_count {
         let record = read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?;
         baselines.push(decode_atomic_object_record(partition, record, limits)?);
     }
     let head_count = read_count(&mut reader, limits.maximum_records)?;
-    let mut family_heads = Vec::with_capacity(head_count);
+    let mut family_heads = Vec::new();
     for _ in 0..head_count {
         family_heads.push(CacheSubjectFamilyHeadV1 {
             subject: reader.digest()?,
@@ -236,7 +238,7 @@ pub(super) fn decode_atomic_payload_components(
         false => None,
     };
     let pin_count = read_count(&mut reader, limits.maximum_subjects)?;
-    let mut pins = Vec::with_capacity(pin_count);
+    let mut pins = Vec::new();
     for _ in 0..pin_count {
         pins.push(decode_pin(
             partition,
@@ -245,7 +247,7 @@ pub(super) fn decode_atomic_payload_components(
         )?);
     }
     let released_count = read_count(&mut reader, limits.maximum_subjects)?;
-    let mut released_pins = Vec::with_capacity(released_count);
+    let mut released_pins = Vec::new();
     for _ in 0..released_count {
         released_pins.push(decode_released_pin(
             partition,
@@ -267,7 +269,7 @@ pub(super) fn decode_atomic_payload_components(
         false => None,
     };
     let eviction_count = read_count(&mut reader, MAXIMUM_EVICTION_CANDIDATES)?;
-    let mut eviction_progress = Vec::with_capacity(eviction_count);
+    let mut eviction_progress = Vec::new();
     for _ in 0..eviction_count {
         let plan = eviction_plan
             .as_ref()

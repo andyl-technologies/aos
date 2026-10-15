@@ -2,7 +2,11 @@
 
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
+
+use aos_sandbox::public_api_session::MAXIMUM_DIAGNOSTIC_CONNECTIONS;
+use tokio::sync::Semaphore;
 
 use super::{ControllerRuntimeError, ControllerServerTerminal};
 
@@ -78,27 +82,36 @@ pub(super) async fn into_async_authenticated_listener(
 pub(super) struct AuthenticatedDiagnosticListener {
     listener: tokio::net::UnixListener,
     expected_uid: u32,
+    capacity: Arc<Semaphore>,
 }
 
 impl AuthenticatedDiagnosticListener {
-    const fn new(listener: tokio::net::UnixListener, expected_uid: u32) -> Self {
+    fn new(listener: tokio::net::UnixListener, expected_uid: u32) -> Self {
         Self {
             listener,
             expected_uid,
+            capacity: Arc::new(Semaphore::new(MAXIMUM_DIAGNOSTIC_CONNECTIONS)),
         }
     }
 }
 
 impl axum::serve::Listener for AuthenticatedDiagnosticListener {
-    type Io = tokio::net::UnixStream;
+    type Io = super::ingress::LimitedConnection<tokio::net::UnixStream>;
     type Addr = tokio::net::unix::SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
+            // Acquire before accepting so idle authenticated streams are counted.
+            let Ok(permit) = Arc::clone(&self.capacity).acquire_owned().await else {
+                return std::future::pending().await;
+            };
             match self.listener.accept().await {
                 Ok((stream, address)) => match stream.peer_cred() {
                     Ok(credentials) if credentials.uid() == self.expected_uid => {
-                        return (stream, address);
+                        return (
+                            super::ingress::LimitedConnection::new(stream, permit),
+                            address,
+                        );
                     }
                     Ok(credentials) => {
                         eprintln!(
@@ -171,6 +184,44 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(1), listener.accept())
                 .await
                 .unwrap();
+        });
+    }
+
+    #[test]
+    fn diagnostic_connection_slots_follow_actual_stream_lifetimes() {
+        let directory = tempfile::tempdir().unwrap();
+        let uid = rustix::process::getuid().as_raw();
+        let socket = directory.path().join("capacity.sock");
+        let listener = bind_controller_socket(&socket, uid, 0o660).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let mut listener = into_async_authenticated_listener(listener, uid)
+                .await
+                .unwrap();
+            let mut clients = Vec::new();
+            let mut accepted = Vec::new();
+            for _ in 0..MAXIMUM_DIAGNOSTIC_CONNECTIONS {
+                clients.push(tokio::net::UnixStream::connect(&socket).await.unwrap());
+                accepted.push(listener.accept().await.0);
+            }
+
+            clients.push(tokio::net::UnixStream::connect(&socket).await.unwrap());
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                    .await
+                    .is_err()
+            );
+
+            drop(accepted.pop());
+            let next = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+                .await
+                .unwrap();
+            assert_eq!(accepted.len(), MAXIMUM_DIAGNOSTIC_CONNECTIONS - 1);
+            drop(next);
         });
     }
 

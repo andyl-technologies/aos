@@ -58,6 +58,7 @@ pub use checkpoint::{
 pub use context::{ProtectedBrokerSessionKeyV1, ProtectedBrokerSessionVerificationContextV1};
 pub use durable::history::{
     BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES, BrokerSessionDurableHistoryV1,
+    MAXIMUM_RECORDS as BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_RECORDS,
 };
 pub use durable::{
     BROKER_SESSION_DURABLE_RECORD_MAXIMUM_BYTES, BrokerSessionDurableCasV1,
