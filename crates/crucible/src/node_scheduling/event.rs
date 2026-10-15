@@ -67,6 +67,17 @@ impl Delivery {
 pub struct ProducerSequences(BTreeMap<Id, Option<U64>>);
 
 impl ProducerSequences {
+    pub(crate) fn charge_original_retained_storage(
+        &self,
+        counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        counter.map(&self.0)?;
+        for identity in self.0.keys() {
+            counter.owned(identity)?;
+        }
+        Ok(())
+    }
+
     /// Returns the next identity, or permanent exhaustion, without allocating.
     pub fn next(&self, producer: &Id) -> Option<U64> {
         self.0.get(producer).copied().unwrap_or(Some(U64::new(0)))

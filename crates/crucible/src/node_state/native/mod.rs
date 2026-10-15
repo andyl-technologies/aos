@@ -13,8 +13,10 @@ mod capture;
 mod collecting_scope;
 mod complete_original_archive_storage;
 mod complete_original_capture;
+mod complete_original_dependency_storage;
 mod complete_original_factory_storage;
 pub use collecting_scope::CollectingCompleteCaptureProvenance;
+pub use complete_original_dependency_storage::CompleteOriginalCaptureDependencyStorage;
 pub use complete_original_factory_storage::CompleteOriginalCaptureFactoryStorage;
 mod complete_original_geometry;
 mod complete_original_index;
@@ -174,6 +176,30 @@ pub trait NativeWorldFactory {
         ))
     }
 
+    /// Observes dependency metadata after the original owning-node preflight.
+    ///
+    /// The actual Runtime7 body and private source plans already exist at this
+    /// point. This data callback counts only the distinct future born rows,
+    /// returned adjacency copies and one simultaneous lookup/hash scratch. The
+    /// early factory/cache storage callback remains independently admitted.
+    /// It performs no RPC or source effect and grants no allowance or ticket.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects an absent, foreign or stale original plan,
+    /// unsupported concrete producer or requested-layout overflow.
+    fn complete_original_capture_dependency_storage(
+        &self,
+        _graph: &AdmittedGraph,
+        _runtime: &crate::node_contract::OriginalLineageRuntimeRecord,
+        _scheduling: &crate::node_scheduling::SchedulingSnapshot,
+        _runtime_object: &crate::node_scheduling::InputPayload,
+        _limits: NativeArchiveLimits,
+    ) -> Result<CompleteOriginalCaptureDependencyStorage, StateError> {
+        Err(refused(
+            "installed complete dependency storage accounting is unsupported",
+        ))
+    }
+
     /// Narrows native records independently of reserved immutable and portable bytes.
     ///
     /// The legacy default preserves the original limit. A selected installed
@@ -317,6 +343,31 @@ pub trait NativeWorldFactory {
     ) -> Result<(), StateError> {
         Err(refused(
             "installed complete collecting factory is unsupported",
+        ))
+    }
+
+    /// Authenticates installed historical code before collecting source tickets.
+    ///
+    /// This separate data-validation entry requires an actual installed code
+    /// factory and its original code-selection graph. Core authenticates the
+    /// selected signed-load receipt and complete cold closure independently.
+    /// Success permits only creation of an explicitly unbound collecting source;
+    /// fresh target binding, native preparation, whole admission and completed
+    /// restoration remain separate mandatory gates before installation or Arm.
+    /// Retired source processes need not remain alive to validate their data.
+    ///
+    /// # Errors
+    /// Defaults to refusal; rejects foreign code authority/graph, changed signed
+    /// provenance, unsupported installed codecs or exhausted validation limits.
+    fn authenticate_complete_collecting_archive_code_source(
+        &self,
+        _plan: &crate::node_admission::InstalledConformancePlan,
+        _graph: &AdmittedGraph,
+        _archive: &NativeArchiveRecord,
+        _scope: &CollectingCompleteCaptureProvenance,
+    ) -> Result<(), StateError> {
+        Err(refused(
+            "installed collecting historical code validation is unsupported",
         ))
     }
 

@@ -8,6 +8,40 @@ use super::*;
 use crate::node_contract::{NodeRuntime, RuntimeError};
 
 impl PreparedHostSchedulingNode {
+    pub(super) fn original_retained_node_backing(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, OperationFailure> {
+        use crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter;
+        // Reuse the exact existing supported phase fence without treating its
+        // partial metadata total as this node's complete retained owner row.
+        self.retained_requested_storage_excluding_source()?;
+        let result = (|| -> Result<usize, RuntimeError> {
+            let mut counter = RetainedRuntimeCounter::new(maximum);
+            counter.add(NodeRuntime::capture_host_node_metadata_storage(
+                &self.activation,
+                &self.route,
+                self.ready.as_ref(),
+            )?)?;
+            if let Some(plan) = &self.plan {
+                plan.charge_original_retained_storage(&mut counter)?;
+            }
+            if counter.rc(&self.source)? {
+                let source = self
+                    .source
+                    .retained_original_metadata_bytes_excluding_runtime(maximum)
+                    .map_err(|_| RuntimeError::UnsupportedFacet)?;
+                counter.add(source)?;
+            }
+            // The source's Weak anchor visitor already includes this actual
+            // unit allocation. Its alias here owns no independent child heaps.
+            Ok(counter.bytes())
+        })()
+        .map_err(failure)?;
+        self.current()?;
+        Ok(result)
+    }
+
     pub(in crate::node_contract::host_scheduling_owner) fn retained_requested_storage_excluding_source(
         &self,
     ) -> Result<usize, OperationFailure> {

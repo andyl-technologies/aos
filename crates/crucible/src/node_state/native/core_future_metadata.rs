@@ -1185,15 +1185,36 @@ pub(super) struct CompleteCaptureAllocationPeak {
 ///
 /// Only the closed archive writer can issue this value after its named sum.
 /// The original runtime/plan/cut association remains in the geometry seal.
-/// This additional check does not remove the two pending conservative gates.
+/// The budget includes the actual live runtime's independently owned backing,
+/// beyond the portable snapshots and future metadata. Its original owner loan
+/// must still be current immediately before the capture geometry is sealed.
 pub(crate) struct CompleteCaptureAllocationBudget {
+    runtime_identity: crate::node_contract::OriginalRuntimeStorageIdentity,
+    writer_total: usize,
+    runtime_owned: usize,
+    runtime_observer_scratch: usize,
     total: usize,
     maximum: usize,
 }
 
 impl CompleteCaptureAllocationBudget {
     pub(crate) fn authenticate(&self, maximum: usize) -> Result<(), RuntimeError> {
-        if maximum != self.maximum || self.total > maximum {
+        let total = add(
+            self.writer_total,
+            add(self.runtime_owned, self.runtime_observer_scratch)?,
+        )?;
+        if maximum != self.maximum || self.total != total || total > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        Ok(())
+    }
+
+    /// Rechecks the same live runtime without expanding its admitted owner row.
+    pub(super) fn authenticate_runtime(&self, runtime: &NodeRuntime) -> Result<(), RuntimeError> {
+        self.runtime_identity.authenticate(runtime)?;
+        self.authenticate(self.maximum)?;
+        let actual = runtime.original_retained_requested_storage_data(self.runtime_owned)?;
+        if actual > self.runtime_owned {
             return Err(RuntimeError::ResourceLimit);
         }
         Ok(())
@@ -1201,12 +1222,38 @@ impl CompleteCaptureAllocationBudget {
 }
 
 impl CompleteCaptureAllocationPeak {
+    /// Issues a writer budget only after walking the actual live runtime.
+    ///
+    /// Portable Runtime7/Scheduling snapshots are separate owned copies. Their
+    /// named terms cannot replace live nodes, process/SDK capsules, activations
+    /// or original supervision. Observer scratch is admitted before the walk;
+    /// only the remaining simultaneous credit is available to its real owners.
     pub(super) fn issue_budget(
         &self,
+        runtime: &NodeRuntime,
         maximum: usize,
+        content_maximum: usize,
     ) -> Result<CompleteCaptureAllocationBudget, RuntimeError> {
+        let runtime_identity = runtime.original_retained_storage_identity()?;
+        let writer_total = self.total()?;
+        let runtime_observer_scratch =
+            NodeRuntime::original_retained_requested_storage_scratch_bytes();
+        let available = maximum
+            .min(content_maximum)
+            .checked_sub(add(writer_total, runtime_observer_scratch)?)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        let runtime_owned = runtime.original_retained_requested_storage_data(available)?;
+        let total = add(writer_total, add(runtime_observer_scratch, runtime_owned)?)?;
+        if total > maximum || total > content_maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        runtime_identity.authenticate(runtime)?;
         Ok(CompleteCaptureAllocationBudget {
-            total: self.admit(maximum)?,
+            runtime_identity,
+            writer_total,
+            runtime_owned,
+            runtime_observer_scratch,
+            total,
             maximum,
         })
     }
@@ -1314,9 +1361,15 @@ mod tests {
     }
 
     #[test]
-    fn named_budget_retains_exact_bound_and_refuses_reinterpretation() {
-        // This constructs allocation data, not source/factory/capture authority.
-        let peak = CompleteCaptureAllocationPeak {
+    fn named_data_total_refuses_one_short_without_issuing_a_runtime_budget() {
+        // Arithmetic data alone cannot construct the writer's owning budget.
+        let peak = allocation_peak();
+        assert_eq!(peak.admit(55), Ok(55));
+        assert_eq!(peak.admit(54), Err(RuntimeError::ResourceLimit));
+    }
+
+    fn allocation_peak() -> CompleteCaptureAllocationPeak {
+        CompleteCaptureAllocationPeak {
             current_core: 1,
             original_payloads: 2,
             cached_preflight: 3,
@@ -1327,17 +1380,101 @@ mod tests {
             future_metadata: 8,
             future_content: 9,
             selected_sources: 10,
-        };
+        }
+    }
+
+    #[test]
+    fn actual_unknown_runtime_cannot_issue_budget_or_lose_original_owners()
+    -> Result<(), RuntimeError> {
+        // This real Core fixture owns modeled nodes with unsupported erased
+        // backing. Its portable snapshots cannot authorize a whole budget.
+        let (runtime, _) = crate::node_contract::test_capture_ticket_fixture();
+        let before = runtime.original_capture_journal()?;
+        let peak = allocation_peak();
+        let result = peak.issue_budget(&runtime, 64 * 1024 * 1024, 64 * 1024 * 1024);
+        assert!(matches!(result, Err(RuntimeError::UnsupportedFacet)));
+        assert_eq!(runtime.original_capture_journal()?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn named_budget_retains_exact_bound_and_refuses_reinterpretation()
+    -> Result<(), RuntimeError> {
+        // These are genuine admitted Core owners with a closed, initial-only
+        // model data observer. No native codec or Capture outcome is qualified.
+        let (runtime, control) =
+            crate::node_contract::test_known_initial_storage_fixture();
+        let peak = allocation_peak();
+        let runtime_bytes = runtime.original_retained_requested_storage_data(64 * 1024 * 1024)?;
+        let scratch = NodeRuntime::original_retained_requested_storage_scratch_bytes();
+        let exact = add(peak.total()?, add(runtime_bytes, scratch)?)?;
+        let before = runtime.original_capture_journal()?;
+        let effects = control.effect_counts();
+
+        let budget = peak.issue_budget(&runtime, exact, exact)?;
+
+        assert_eq!(budget.runtime_owned, runtime_bytes);
+        assert_eq!(budget.runtime_observer_scratch, scratch);
+        assert_eq!(budget.total, exact);
+        budget.authenticate(exact)?;
+        budget.authenticate_runtime(&runtime)?;
+        let (foreign, _) = crate::node_contract::test_known_initial_storage_fixture();
+        assert_eq!(
+            budget.authenticate_runtime(&foreign),
+            Err(RuntimeError::ForeignAuthority)
+        );
+        assert_eq!(
+            budget.authenticate(exact - 1),
+            Err(RuntimeError::ResourceLimit)
+        );
+        assert_eq!(
+            budget.authenticate(exact + 1),
+            Err(RuntimeError::ResourceLimit)
+        );
         assert!(matches!(
-            peak.issue_budget(54),
+            peak.issue_budget(&runtime, exact - 1, exact),
             Err(RuntimeError::ResourceLimit)
         ));
-        let budget = peak.issue_budget(55);
-        assert!(budget.is_ok_and(|budget| {
-            budget.authenticate(55) == Ok(())
-                && budget.authenticate(54) == Err(RuntimeError::ResourceLimit)
-                && budget.authenticate(56) == Err(RuntimeError::ResourceLimit)
-        }));
+        assert!(matches!(
+            peak.issue_budget(&runtime, exact, exact - 1),
+            Err(RuntimeError::ResourceLimit)
+        ));
+        assert_eq!(runtime.original_capture_journal()?, before);
+        assert_eq!(control.effect_counts(), effects);
+
+        // Even an empty model output Vec with real spare backing is outside
+        // this initial-only owner class. Neither issuance nor requery may turn
+        // that new unsupported allocation into zero, discard it or mutate work.
+        control.reserve_output_bank();
+        assert_eq!(
+            budget.authenticate_runtime(&runtime),
+            Err(RuntimeError::UnsupportedFacet)
+        );
+        assert!(matches!(
+            peak.issue_budget(&runtime, 64 * 1024 * 1024, 64 * 1024 * 1024),
+            Err(RuntimeError::UnsupportedFacet)
+        ));
+        assert_eq!(runtime.original_capture_journal()?, before);
+        assert_eq!(control.effect_counts(), effects);
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_observer_scratch_is_admitted_before_unknown_owners_are_walked() {
+        let (runtime, _) = crate::node_contract::test_capture_ticket_fixture();
+        let peak = allocation_peak();
+        let exact = 55 + NodeRuntime::original_retained_requested_storage_scratch_bytes();
+        // One byte short fails before the real runtime walker can reach its
+        // unsupported modeled node, and neither whole ceiling is substituted.
+        assert!(matches!(
+            peak.issue_budget(&runtime, exact - 1, usize::MAX),
+            Err(RuntimeError::ResourceLimit)
+        ));
+        assert!(matches!(
+            peak.issue_budget(&runtime, usize::MAX, exact - 1),
+            Err(RuntimeError::ResourceLimit)
+        ));
+        assert!(runtime.original_capture_journal().is_ok());
     }
 
     #[test]

@@ -4,6 +4,15 @@ use super::*;
 use crate::node_qualification::packet_collection::complete::retained::Counter;
 
 impl InstalledPacketCompleteGraphPolicy {
+    pub(in crate::node_qualification::packet_collection::complete) fn authenticate_retained_origin_data(
+        &self,
+    ) -> Result<(), QualificationError> {
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
     pub(in crate::node_qualification::packet_collection::complete) fn charge_retained_storage(
         &self,
         counter: &mut Counter,

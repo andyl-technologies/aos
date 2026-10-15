@@ -10,13 +10,13 @@
 mod budget;
 mod capture;
 mod conformance;
+mod historical_protocol;
 mod implementation;
 mod input;
 mod lifecycle;
 mod node;
 mod operations;
 mod packet_complete_source;
-mod historical_protocol;
 pub use historical_protocol::{
     PacketCompleteHistoricalAllocationFacts, PacketCompleteHistoricalNativeGroup,
     PacketCompleteHistoricalProtocolData, PacketCompleteHistoricalProtocolDataBudget,
@@ -55,7 +55,8 @@ pub use packet_complete_source::{
     PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame,
     PacketCompleteAckPeerBootMaterial, PacketCompleteArchivedOwnerData,
     PacketCompleteArchivedSemantics, PacketCompleteCaptureBankFacts,
-    PacketCompleteCaptureBankLimits, PacketCompleteEffectReceiverGroup,
+    PacketCompleteCaptureBankLimits, PacketCompleteCaptureDependencyLookupData,
+    PacketCompleteCaptureDependencyStorageData, PacketCompleteEffectReceiverGroup,
     PacketCompleteEffectReceiverReader, PacketCompleteNativeRecord, PacketCompleteNativeWitness,
     PacketCompleteRestorePreparation, PacketCompleteSemanticSource, PacketCompleteSettledJournal,
     PacketCompleteSourceRetainedStorage, PacketCompleteSourceRole,

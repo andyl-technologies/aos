@@ -114,7 +114,7 @@ fn source(archive: NativeArchiveRecord) -> CompleteOriginalRestorationSource {
             administrative,
             host: Rc::new(host),
             runtime,
-            collecting_plan: None,
+            purpose: CompleteOriginalSourcePurpose::new(None),
             process: std::process::id(),
             thread: thread::current().id(),
             host_issued: Cell::new(false),

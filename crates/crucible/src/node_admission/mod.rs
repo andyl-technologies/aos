@@ -9,6 +9,7 @@
 
 mod capabilities;
 mod conformance;
+pub(crate) use conformance::WeakInstalledConformancePlan;
 mod error;
 mod evidence;
 mod extensions;
@@ -96,6 +97,8 @@ pub struct AdmittedGraph {
     selected_extensions: AdmittedExtensionSet,
     capability_requirements: Option<AdmittedCapabilitySelection>,
 }
+
+mod retained_runtime_storage;
 
 impl AdmittedGraph {
     /// Borrows explicit mandatory capabilities bound into the selected scenario root.

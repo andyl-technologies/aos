@@ -174,6 +174,97 @@ pub struct CollectingCompleteRestorationSource {
 }
 
 impl CollectingCompleteRestorationSource {
+    /// Binds this verified source once to its actual fresh collecting target.
+    ///
+    /// All three native tickets and the Host2 ticket must already have been
+    /// issued. Their real owning adopters check transfers independently. The
+    /// target graph authenticates its own actual
+    /// installed authority and archive-ticketed host. Matching historical plan
+    /// bytes are compatibility data, never a substitute for those fresh checks.
+    /// A refused first attempt remains spent; no ticket or binding is renewed.
+    ///
+    /// # Errors
+    /// Refuses foreign creation custody, missing tickets, reused target binding,
+    /// another archive/host, revoked graph or changed historical plan selection.
+    pub fn bind_original_target_plan(
+        &self,
+        graph: &ConformanceGraph,
+        host: &Rc<super::super::HostSchedulingSource>,
+    ) -> Result<(), RuntimeError> {
+        self.original.inner.bind_collecting_target(graph, host)
+    }
+
+    /// Transfers one original native-owner ticket before target binding starts.
+    ///
+    /// This forwards to the same signed source allocation. It does not create
+    /// fresh process custody, install a model or authorize a restoration MAC.
+    ///
+    /// # Errors
+    /// Refuses foreign creator custody, a host/unknown owner, repeated issuance
+    /// or any target-binding attempt, including a failed earlier attempt.
+    pub fn take_native_ticket(
+        &self,
+        owner: &Id,
+    ) -> Result<crate::node_state::CompleteOriginalNativeTicket, RuntimeError> {
+        self.original.take_native_ticket(owner)
+    }
+
+    /// Borrows the verified source beneath its exact installed collecting graph.
+    ///
+    /// The borrow retains the original signed backing and private source
+    /// identity. Portable equal plan documents cannot substitute another plan.
+    /// This loan grants no native installation or preparation permission.
+    ///
+    /// # Errors
+    /// Refuses foreign creation custody, another original plan or revoked graph
+    /// authority. The source's own ticket/context gates remain independent.
+    pub fn original_source_data(
+        &self,
+        graph: &ConformanceGraph,
+    ) -> Result<&crate::node_state::CompleteOriginalRestorationSource, RuntimeError> {
+        self.original.inner.authenticate_birth()?;
+        graph.reauthenticate().map_err(|error| {
+            RuntimeError::SchedulerRefused(error.message)
+        })?;
+        if !self
+            .original
+            .inner
+            .collecting_plan()?
+            .is_some_and(|plan| plan.same_original(graph.plan()))
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.original.inner.authenticate_birth()?;
+        Ok(&self.original)
+    }
+
+    /// Prepares the actual archive-ticketed Host2 node under this same plan.
+    ///
+    /// The selected host source must already retain this source's one-shot
+    /// ticket and belong to the actual graph's original authority. Its private
+    /// node anchor is allocated once; no Ready or restored activation is issued.
+    ///
+    /// # Errors
+    /// Refuses a foreign source/plan/host, changed target selection or repeated
+    /// host preparation. A successful node must stay retained through failure.
+    pub fn prepare_original_host_node(
+        &self,
+        graph: &ConformanceGraph,
+        source: &Rc<super::super::HostSchedulingSource>,
+        target: &ActivationRecord,
+    ) -> Result<super::super::PreparedHostSchedulingNode, RuntimeError> {
+        let archive = self.original_source_data(graph)?;
+        graph.authenticate_exact_input_scope(source).map_err(|error| {
+            RuntimeError::SchedulerRefused(error.message)
+        })?;
+        source.prepare_complete_collecting_restoration_node(
+            &graph.graph,
+            target,
+            archive,
+            graph.plan(),
+        ).map_err(|error| RuntimeError::SchedulerRefused(error.reason))
+    }
+
     /// Issues the single source-owned Host2 archive ticket without cloning bodies.
     ///
     /// # Errors
@@ -189,9 +280,11 @@ impl CollectingCompleteRestorationSource {
 impl ConformanceRuntime {
     /// Prepares complete historical source under a genuine fresh collecting plan.
     ///
-    /// The concrete factory must authenticate held fresh native registrations and
-    /// historical complete codecs before this method issues the Host2 source.
-    /// New Host source and private Runtime7 context are checked later before Arm.
+    /// The actual installed code factory authenticates historical complete
+    /// codecs under its code-selection graph before this issues an explicitly
+    /// unbound source. Its tickets construct the actual fresh owners, then
+    /// `bind_original_target_plan` binds their distinct graph. Genuine whole
+    /// preparation and completed native restoration remain mandatory before Arm.
     ///
     /// # Errors
     /// Defaults to refusal; rejects missing collecting provenance, changed
@@ -219,7 +312,7 @@ impl ConformanceRuntime {
         {
             return Err(crate::node_state::schema(RuntimeError::ForeignAuthority));
         }
-        factory.authenticate_complete_collecting_restoration_source(
+        factory.authenticate_complete_collecting_archive_code_source(
             graph.plan(),
             &graph.graph,
             &archive,

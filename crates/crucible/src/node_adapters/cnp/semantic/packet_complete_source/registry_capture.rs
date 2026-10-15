@@ -27,6 +27,23 @@ pub(super) struct OriginalCompleteRegistryCapture {
 }
 
 impl OriginalCompleteRegistryCapture {
+    pub(super) fn completed_payload(&self) -> Result<&InputPayload, OperationFailure> {
+        if !self.reserved || !self.attempted || self.failed {
+            return Err(refused("original registry output is incomplete"));
+        }
+        self.payload
+            .as_ref()
+            .ok_or_else(|| refused("original registry output is absent"))
+    }
+
+    pub(super) fn take_completed_payload(&mut self) -> Option<InputPayload> {
+        self.payload.take()
+    }
+
+    pub(super) fn restore_completed_payload(&mut self, payload: Option<InputPayload>) {
+        self.payload = payload;
+    }
+
     fn reservation_storage(encoded: usize, rows: usize) -> Result<usize, OperationFailure> {
         if encoded == 0 {
             return Err(refused("complete registry encoded bank is empty"));

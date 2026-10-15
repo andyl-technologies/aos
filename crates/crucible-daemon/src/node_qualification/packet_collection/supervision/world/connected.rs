@@ -27,6 +27,7 @@ impl PacketWorldHostSupervisor {
         coordinator: &PacketConnectedCoordinatorInstallation,
         limits: RuntimeLimits,
     ) -> Result<PacketWorldOriginalReservations, QualificationError> {
+        self.authenticate_selected_origin()?;
         for participant in &coordinator.participants {
             coordinator
                 .validate(participant)

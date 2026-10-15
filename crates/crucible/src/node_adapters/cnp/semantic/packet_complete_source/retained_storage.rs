@@ -26,6 +26,8 @@ pub struct PacketCompleteSourceRetainedStorage {
     pub static_lineage: usize,
     /// Counts actual capture/return banks, fullrefs and SDK snapshot metadata.
     pub capture_banks: usize,
+    /// Counts actual backend/output preparation and moved SDK association owners.
+    pub execution: usize,
     /// Counts the retained typed registry owner and its separate complete archive banks.
     pub registry: usize,
     native_reads: [Option<CnpRetainedStorageReport>; 2],
@@ -119,6 +121,7 @@ impl PacketCompleteSemanticSource {
         let boot_association = self.original_complete_boot_association_storage_data(maximum)?;
         let static_lineage = self.original_complete_static_lineage_storage_data(maximum)?;
         let capture_banks = self.original_complete_capture_bank_storage_data(maximum)?;
+        let execution = self.original_complete_execution_storage_data(maximum)?;
         let registry = retained_values::sum(
             [
                 self.original_extension_registry_storage_data(maximum)?,
@@ -150,6 +153,7 @@ impl PacketCompleteSemanticSource {
                 boot_association,
                 static_lineage,
                 capture_banks,
+                execution,
                 registry,
             ],
             maximum,
@@ -167,6 +171,7 @@ impl PacketCompleteSemanticSource {
             boot_association,
             static_lineage,
             capture_banks,
+            execution,
             registry,
             native_reads,
             known_requested_bytes,

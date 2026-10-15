@@ -70,6 +70,15 @@ impl AdmissionEvidence for InstalledPacketCompleteCollectionAuthority {
 }
 
 impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthority {
+    fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, EvidenceError> {
+        self.original_retained_authority_backing(maximum)
+            .map(Some)
+            .map_err(evidence_error)
+    }
+
     fn authenticate_collection_world(
         &self,
         plan: ConformancePlanEvidence<'_>,
@@ -215,6 +224,17 @@ impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthorit
 }
 
 impl CnpSemanticRegistrationPolicy for InstalledPacketCompleteCollectionAuthority {
+    fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, OperationFailure> {
+        InstalledPacketCompleteCollectionAuthority::original_retained_requested_storage_data(
+            self, maximum,
+        )
+        .map(Some)
+        .map_err(operation_error)
+    }
+
     fn authenticate(&self, selected: &CnpSemanticInstallation) -> Result<(), OperationFailure> {
         self.current().map_err(operation_error)?;
         self.index(selected).map_err(operation_error)?;
@@ -223,6 +243,17 @@ impl CnpSemanticRegistrationPolicy for InstalledPacketCompleteCollectionAuthorit
 }
 
 impl CnpSemanticConformanceAuthority for InstalledPacketCompleteCollectionAuthority {
+    fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, OperationFailure> {
+        InstalledPacketCompleteCollectionAuthority::original_retained_requested_storage_data(
+            self, maximum,
+        )
+        .map(Some)
+        .map_err(operation_error)
+    }
+
     fn authenticate_graph(
         &self,
         scope: CnpSemanticRealizationScope<'_>,

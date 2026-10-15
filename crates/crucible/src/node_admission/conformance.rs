@@ -5,7 +5,7 @@
 //! explicit collection authorization. Its private ordinary graph cannot escape through a getter or
 //! serialized record, so missing class evidence cannot become ordinary admission.
 
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crucible_node_contract::{
     ContentRef, HashRef, NodeBinding, NodeDescriptor, OwnerBinding, WorldBinding,
@@ -45,6 +45,22 @@ pub struct ConformancePlanEvidence<'a> {
 /// [`AdmissionEvidence`]. Collection authorization must never issue an accepted
 /// class or use vendor-selected omissions as a normative witness population.
 pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
+    /// Observes actual installed authority backing without authorizing a claim.
+    ///
+    /// The caller charges this concrete Rc data/header root separately. A
+    /// supported row includes all independently owned child heaps and retained
+    /// shared owners; unresolved backing returns `None`, never scalar zero.
+    ///
+    /// # Errors
+    /// Refuses foreign original custody, busy loans, arithmetic overflow or a
+    /// requested extent above `maximum`. It performs no admission or native work.
+    fn retained_requested_storage_data(
+        &self,
+        _maximum: usize,
+    ) -> Result<Option<usize>, EvidenceError> {
+        Ok(None)
+    }
+
     /// Reauthenticates the complete original refused plan and installed prerequisites.
     ///
     /// # Errors
@@ -279,7 +295,69 @@ struct Plan {
 /// There is no decoded constructor, public Clone, or accepted-token conversion.
 pub struct InstalledConformancePlan(Rc<Plan>);
 
+/// Observes an actual installed plan without retaining its authority graph.
+///
+/// Native tickets retain their archive source; the source must not strongly own
+/// the fresh authority that in turn owns those same tickets. Factories/runtimes
+/// keep the strong plan, and an expired observation never renews one.
+pub(crate) struct WeakInstalledConformancePlan(Weak<Plan>);
+
+impl WeakInstalledConformancePlan {
+    pub(crate) fn upgrade(&self) -> Result<InstalledConformancePlan, EvidenceError> {
+        self.0.upgrade().map(InstalledConformancePlan)
+            .ok_or_else(|| failure("original collecting plan owner is unavailable"))
+    }
+
+    pub(crate) fn retained_allocation_bytes(&self) -> usize {
+        // A Weak keeps the allocation even after Plan's child owners drop.
+        // Strong owners separately account their reachable child allocations.
+        crate::node_contract::NodeRuntime::capture_shared_allocation_storage::<Plan>()
+    }
+}
+
+
 impl InstalledConformancePlan {
+    pub(crate) fn downgrade(&self) -> WeakInstalledConformancePlan {
+        WeakInstalledConformancePlan(Rc::downgrade(&self.0))
+    }
+
+    pub(crate) fn same_authority(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self.0.authority.as_ref(), other.0.authority.as_ref())
+    }
+
+    pub(crate) fn charge_original_retained_storage(
+        &self,
+        counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        if !counter.rc(&self.0)? {
+            return Ok(());
+        }
+        let Plan {
+            plan_ref,
+            plan_bytes,
+            refused_ref,
+            refused_bytes,
+            world,
+            sources,
+            authority,
+        } = self.0.as_ref();
+        counter.owned(plan_ref)?;
+        counter.owned(plan_bytes)?;
+        counter.owned(refused_ref)?;
+        counter.owned(refused_bytes)?;
+        counter.owned(world)?;
+        counter.owned(sources)?;
+        if counter.rc(authority)? {
+            let backing = authority
+                .retained_requested_storage_data(counter.maximum())
+                .map_err(|_| RuntimeError::UnsupportedFacet)?
+                .ok_or(RuntimeError::UnsupportedFacet)?;
+            counter.add(backing)?;
+        }
+        Ok(())
+    }
+
     /// Authenticates and retains the complete independently installed original plan.
     ///
     /// # Errors
@@ -462,6 +540,24 @@ pub struct ConformanceGraph {
 }
 
 impl ConformanceGraph {
+    pub(crate) fn charge_original_retained_storage(
+        &self,
+        counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        let Self {
+            graph,
+            plan,
+            descriptors,
+            bindings,
+            owners,
+        } = self;
+        graph.charge_original_retained_storage(counter)?;
+        plan.charge_original_retained_storage(counter)?;
+        counter.owned(descriptors)?;
+        counter.owned(bindings)?;
+        counter.owned(owners)
+    }
+
     /// Borrows the original complete immutable world without its ordinary seal.
     pub fn world(&self) -> &WorldBinding {
         self.graph.world()

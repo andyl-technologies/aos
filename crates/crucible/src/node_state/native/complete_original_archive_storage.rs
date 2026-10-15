@@ -8,6 +8,25 @@ use super::{CompleteOriginalArchiveValidation, StateError};
 use crate::node_contract::{NodeRuntime, RuntimeOriginalCaptureJournal};
 
 impl CompleteOriginalArchiveValidation<'_> {
+    /// Counts this context's actual verified content owner without copying it.
+    ///
+    /// The native factory joins this separate content row with actual live or
+    /// historical owners before cold copies. The private Core validation origin
+    /// is authenticated on both sides; no decoder DTO selects another closure.
+    /// This is requested-layout data, not allocation or restoration authority.
+    ///
+    /// # Errors
+    /// Refuses foreign/stale validation origin or checked content-layout overflow.
+    pub fn retained_verified_content_allocation_bytes(&self) -> Result<usize, StateError> {
+        self.original_write_runtime_data()?;
+        let bytes = self
+            .content
+            .capture_owned_storage()
+            .map_err(super::super::schema)?;
+        self.original_write_runtime_data()?;
+        Ok(bytes)
+    }
+
     /// Counts retained core validation owners, excluding verified object content.
     ///
     /// The count includes actual Runtime7 and scheduling container capacities,
@@ -87,7 +106,8 @@ impl CompleteOriginalArchiveValidation<'_> {
                 "archived Host2 exceeds selected record credit",
             ));
         }
-        reference.verify(bytes).map_err(super::super::schema)?;
+        // This full-reference lookup borrows immutable, already authenticated
+        // closure bytes; no allocating hash is needed before storage admission.
         let limits = HostSchedulingContinuationLimits {
             maximum_record_bytes: bytes.len(),
             lineage,
@@ -158,4 +178,160 @@ impl CompleteOriginalArchiveValidation<'_> {
             )
             .ok_or_else(|| super::refused("archived Host2 retained storage overflow"))
     }
+}
+
+impl CompleteOriginalArchiveValidation<'_> {
+    /// Validates the original Host2 settlement and decodes its unchanged record.
+    ///
+    /// The native factory supplies the same signed administrative owner row.
+    /// Complete Runtime7 and the host journal are compared to their exact
+    /// canonical producer encodings before Host2 reconstruction. All dynamic
+    /// comparison and decoder storage is admitted alongside the actual caller
+    /// owners and verified content; historical data constructs no live source.
+    ///
+    /// # Errors
+    /// Refuses another attempt, owner, snapshot, operation, runtime or journal,
+    /// a noncanonical producer body, missing content or insufficient storage.
+    pub fn decode_original_host_capture_data(
+        &self,
+        owner: &super::NativeOwnerState,
+        attempt: &crate::node_contract::OriginalCaptureAttemptRecord,
+        settled: &crate::node_contract::OriginalCaptureOwnerRecord,
+        additional_retained_bytes: usize,
+        maximum_total_bytes: usize,
+    ) -> Result<crate::node_contract::HostSchedulingContinuationRecord, StateError> {
+        use crate::node_contract::OriginalCaptureOwnerState;
+
+        // Both original-write and selected-load purposes come from the private
+        // Core origin. Merely possessing public archive/runtime DTOs is not one.
+        self.original_write_runtime_data()?;
+        let OriginalCaptureOwnerState::Settled { snapshot, journal } = &settled.state else {
+            return Err(super::refused(
+                "complete host administrative row is unsettled",
+            ));
+        };
+        if self.administrative.attempts.as_slice() != std::slice::from_ref(attempt)
+            || attempt.capture_id != self.archive.manifest().capture_id
+            || attempt.source_activation != self.runtime.source_activation
+            || attempt.cut != self.runtime.capture_cut
+            || attempt.ordinal != self.runtime.capture_ordinal
+            || !attempt.owners.contains(settled)
+            || settled.owner.owner != owner.owner
+            || settled.participants != owner.participants
+            || snapshot != &owner.state
+            || !owner.evidence.contains(journal.as_ref())
+            || journal.media_type
+                != "application/vnd.crucible.host-scheduling-capture-journal+json;version=2"
+        {
+            return Err(super::refused(
+                "complete host settlement differs from original attempt",
+            ));
+        }
+        self.authenticate_original_encoding_data(
+            self.runtime,
+            &attempt.source_runtime,
+            additional_retained_bytes,
+            maximum_total_bytes,
+        )?;
+        let expected = OriginalHostJournalData {
+            schema: "source-owned.host-scheduling-capture-journal/2",
+            capture_id: &attempt.capture_id,
+            operation: &settled.operation,
+            owner: &settled.owner,
+            participants: &settled.participants,
+            cut: attempt.cut,
+            ordinal: attempt.ordinal,
+            runtime: &attempt.source_runtime,
+            snapshot,
+            transition: "one original unchanged-cut common snapshot; no native operation, input or acknowledgement submitted",
+        };
+        let additional = additional_retained_bytes
+            .checked_add(std::mem::size_of::<OriginalHostJournalData<'_>>())
+            .ok_or_else(|| super::refused("complete host journal comparison storage overflow"))?;
+        self.authenticate_original_encoding_data(
+            &expected,
+            journal,
+            additional,
+            maximum_total_bytes,
+        )?;
+        let record = self.decode_host_continuation_data(
+            snapshot,
+            self.lineage_limits(),
+            additional_retained_bytes,
+            maximum_total_bytes,
+        )?;
+        self.original_write_runtime_data()?;
+        Ok(record)
+    }
+
+    fn authenticate_original_encoding_data(
+        &self,
+        expected: &impl serde::Serialize,
+        reference: &crucible_node_contract::ContentRef,
+        additional_retained_bytes: usize,
+        maximum_total_bytes: usize,
+    ) -> Result<(), StateError> {
+        use crucible_node_contract::canonical;
+
+        let maximum = maximum_total_bytes
+            .min(self.archive.limits.state.maximum_total_content_bytes)
+            .min(self.archive.limits.native.maximum_total_record_bytes);
+        let bytes = self
+            .content
+            .get(reference)
+            .ok_or_else(|| super::refused("complete original producer body absent"))?;
+        // This full-reference lookup borrows immutable, already authenticated
+        // closure bytes; no allocating hash is needed before storage admission.
+        if bytes.len() > self.archive.limits.state.maximum_record_bytes {
+            return Err(super::refused(
+                "complete original producer record exceeds credit",
+            ));
+        }
+        let retained = self
+            .retained_allocation_bytes_excluding_content()?
+            .checked_add(
+                self.content
+                    .capture_owned_storage()
+                    .map_err(super::super::schema)?,
+            )
+            .and_then(|total| total.checked_add(additional_retained_bytes))
+            // Closed U64 format scratch precedes both counting serializers.
+            .and_then(|total| total.checked_add(20))
+            .filter(|total| *total <= maximum)
+            .ok_or_else(|| {
+                super::refused("complete original comparison retained storage exhausted")
+            })?;
+        let value = NodeRuntime::capture_serialization_storage(expected, maximum)
+            .map_err(super::super::schema)?;
+        let encoded = NodeRuntime::capture_encoded_output_storage(expected, maximum)
+            .map_err(super::super::schema)?;
+        retained
+            .checked_add(value)
+            .and_then(|total| total.checked_add(encoded))
+            .filter(|total| *total <= maximum)
+            .ok_or_else(|| {
+                super::refused("complete original comparison transient storage exhausted")
+            })?;
+
+        let value = serde_json::to_value(expected).map_err(super::super::schema)?;
+        let canonical = canonical::canonical_json(&value).map_err(super::super::schema)?;
+        if canonical != bytes {
+            return Err(super::refused("complete original producer body differs"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct OriginalHostJournalData<'a> {
+    schema: &'static str,
+    capture_id: &'a crucible_node_contract::Id,
+    operation: &'a crucible_node_contract::Id,
+    owner: &'a crate::node_contract::OwnerIdentity,
+    participants: &'a [crucible_node_contract::Id],
+    cut: crucible_node_contract::Position,
+    ordinal: crucible_node_contract::U64,
+    runtime: &'a crucible_node_contract::ContentRef,
+    snapshot: &'a crucible_node_contract::ContentRef,
+    transition: &'static str,
 }

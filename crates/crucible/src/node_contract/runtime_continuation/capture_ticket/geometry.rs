@@ -341,7 +341,29 @@ impl crate::node_contract::NodeRuntime {
         Ok(geometry)
     }
 
-    pub(super) fn retained_original_capture_buffer_bytes(&self) -> Result<usize, RuntimeError> {
+    pub(in crate::node_contract) fn charge_original_capture_activation_backings(
+        &self,
+        counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
+    ) -> Result<(), RuntimeError> {
+        for attempt in self.original_capture_attempts.values() {
+            let facts = attempt
+                .activation
+                .retained_requested_storage_data(counter.maximum())?;
+            // The attempt visitor already counts this independent record clone.
+            // Its actual shared authority/preparation roots remain Core owners.
+            counter.views(
+                0,
+                facts
+                    .shared_allocations()
+                    .map(|row| (row.identity(), row.requested_bytes())),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::node_contract) fn retained_original_capture_buffer_bytes(
+        &self,
+    ) -> Result<usize, RuntimeError> {
         let mut total = 0usize;
         if let Some(history) = &self.original_capture_history {
             history.authenticate_target(&self.authority)?;

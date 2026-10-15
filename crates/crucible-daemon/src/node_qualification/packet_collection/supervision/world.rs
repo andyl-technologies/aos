@@ -50,6 +50,8 @@ pub struct PacketWorldSupervisionObservation {
 pub struct PacketWorldHostSupervisor {
     mailboxes: [Rc<Mailbox>; 3],
     runtime: RuntimeCustodyQueue,
+    complete_wake: Option<crucible::node_contract::RuntimeCustodyWakeReader>,
+    complete_origin: Option<(u32, std::thread::ThreadId)>,
 }
 
 impl PacketWorldHostSupervisor {
@@ -61,6 +63,27 @@ impl PacketWorldHostSupervisor {
     pub fn new() -> Result<Self, QualificationError> {
         let runtime = RuntimeCustodyQueue::new(1)
             .map_err(|_| QualificationError::Refused("packet world runtime allocation"))?;
+        Ok(Self::with_runtime(runtime, None))
+    }
+
+    /// Preallocates the selected four-owner cleanup queue before native birth.
+    ///
+    /// This fixes a bounded notification owner and does not create an activation,
+    /// Arm or Ready receipt. Keep this supervisor through cancellation and unwind.
+    ///
+    /// # Errors
+    /// Refuses unavailable finite queue, descriptor or host allocation resources.
+    pub fn new_complete_original() -> Result<Self, QualificationError> {
+        let (runtime, wake) = RuntimeCustodyQueue::new_with_bounded_wake(1).map_err(|_| {
+            QualificationError::Refused("complete original notification reservation")
+        })?;
+        Ok(Self::with_runtime(runtime, Some(wake)))
+    }
+
+    fn with_runtime(
+        runtime: RuntimeCustodyQueue,
+        complete_wake: Option<crucible::node_contract::RuntimeCustodyWakeReader>,
+    ) -> Self {
         let mailboxes = std::array::from_fn(|_| {
             Rc::new(Mailbox {
                 reserved: Cell::new(false),
@@ -75,7 +98,15 @@ impl PacketWorldHostSupervisor {
                 keepalive: Cell::new(None),
             })
         });
-        Ok(Self { mailboxes, runtime })
+        let complete_origin = complete_wake
+            .as_ref()
+            .map(|_| (std::process::id(), std::thread::current().id()));
+        Self {
+            mailboxes,
+            runtime,
+            complete_wake,
+            complete_origin,
+        }
     }
 
     /// Reserves all three original peers beneath one complete activation proposal.
@@ -91,7 +122,11 @@ impl PacketWorldHostSupervisor {
         activation: &ActivationRecord,
         limits: RuntimeLimits,
     ) -> Result<PacketWorldOriginalReservations, QualificationError> {
-        if activation.owners.len() != 3 || self.mailboxes.iter().any(|m| m.reserved.get()) {
+        self.authenticate_selected_origin()?;
+        let expected_owners = if self.complete_wake.is_some() { 4 } else { 3 };
+        if activation.owners.len() != expected_owners
+            || self.mailboxes.iter().any(|m| m.reserved.get())
+        {
             return Err(QualificationError::Refused(
                 "packet world supervision roster",
             ));
@@ -145,6 +180,141 @@ impl PacketWorldHostSupervisor {
         }
     }
 
+    fn authenticate_selected_origin(&self) -> Result<(), QualificationError> {
+        match (&self.complete_wake, self.complete_origin) {
+            (None, None) => Ok(()),
+            (Some(wake), Some((process, thread)))
+                if process == std::process::id() && thread == std::thread::current().id() =>
+            {
+                wake.original_cleanup_waker()
+                    .map(|_| ())
+                    .map_err(|_| QualificationError::Refused("complete original supervisor origin"))
+            }
+            _ => Err(QualificationError::Refused(
+                "complete original supervisor origin",
+            )),
+        }
+    }
+
+    /// Checks actual runtime custody against this same selected original queue.
+    ///
+    /// # Errors
+    /// Refuses an unselected supervisor, foreign creator or another actual queue.
+    pub fn authenticate_complete_original_runtime(
+        &self,
+        runtime: &mut crucible::node_contract::ConformanceRuntime,
+    ) -> Result<(), QualificationError> {
+        self.authenticate_selected_origin()?;
+        self.complete_wake
+            .as_ref()
+            .ok_or(QualificationError::Refused(
+                "complete original notification selection",
+            ))?
+            .original_cleanup_waker()
+            .map_err(|_| QualificationError::Refused("complete original notification origin"))?;
+        runtime
+            .authenticate_original_custody_queue(&self.runtime)
+            .map_err(|_| QualificationError::Refused("complete original runtime queue identity"))
+    }
+
+    /// Drives bounded cleanup passes on this same selected four-owner supervisor.
+    ///
+    /// Every pending pass waits for a concrete notification or a five millisecond
+    /// operational fallback. No simulation coordinate is advanced. An exhausted
+    /// pass budget returns Pending and retains the same custody for another call.
+    /// Ordinary three-owner caller-context polling remains unchanged.
+    ///
+    /// # Errors
+    /// Refuses an unselected/foreign notifier, zero/excessive pass count or sticky
+    /// transport fault. No error releases or replaces original native custody.
+    pub fn drive_complete_original_reclamation(
+        &self,
+        maximum_passes: usize,
+    ) -> Result<
+        Poll<Result<PacketWorldSupervisionObservation, PacketSupervisionFailure>>,
+        QualificationError,
+    > {
+        self.authenticate_selected_origin()?;
+        let wake = self
+            .complete_wake
+            .as_ref()
+            .ok_or(QualificationError::Refused(
+                "complete original notification selection",
+            ))?;
+        if maximum_passes == 0 || maximum_passes > 64 {
+            return Err(QualificationError::Refused("complete cleanup pass bound"));
+        }
+        let waker = wake
+            .original_cleanup_waker()
+            .map_err(|_| QualificationError::Refused("complete original notification origin"))?;
+        for _ in 0..maximum_passes {
+            let mut context = Context::from_waker(&waker);
+            let observed = self.poll_reclamation(&mut context);
+            if observed.is_ready() {
+                return Ok(observed);
+            }
+            let notification = wake
+                .wait(std::time::Duration::from_millis(5))
+                .map_err(|_| QualificationError::Refused("complete original notification wait"))?;
+            if matches!(
+                notification,
+                crucible::node_contract::RuntimeCustodyWakeWait::Fault(_)
+            ) {
+                return Err(QualificationError::Refused(
+                    "complete cleanup notification fault; original custody retained",
+                ));
+            }
+        }
+        Ok(Poll::Pending)
+    }
+
+    /// Reports backing of this actual selected supervisor, excluding its inline root.
+    ///
+    /// Shared queue/mailbox/notifier allocations may conservatively repeat another
+    /// retained view. Returned or busy native custody and arbitrary wake backing
+    /// remain unknown. Kernel descriptors and allocator residency are separate.
+    ///
+    /// # Errors
+    /// Refuses incomplete original backing observations or exhausted requested credit.
+    pub fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, QualificationError> {
+        self.authenticate_selected_origin()?;
+        let wake = self
+            .complete_wake
+            .as_ref()
+            .ok_or(QualificationError::Refused(
+                "complete original notification selection",
+            ))?;
+        let waker = wake
+            .original_cleanup_waker()
+            .map_err(|_| QualificationError::Refused("complete original notification origin"))?;
+        drop(waker);
+        let mut counter = super::super::complete::retained::Counter::new(maximum);
+        for mailbox in &self.mailboxes {
+            let bytes = super::requested_storage::retained_mailbox_storage_data(mailbox, maximum)
+                .map_err(|error| QualificationError::Evidence(error.reason))?
+                .ok_or(QualificationError::Refused(
+                    "complete original mailbox backing unknown",
+                ))?;
+            counter.add(bytes)?;
+        }
+        counter.add(
+            self.runtime
+                .retained_requested_storage_data(maximum)
+                .map_err(|_| QualificationError::Refused("complete runtime queue backing"))?
+                .ok_or(QualificationError::Refused(
+                    "complete runtime queue backing unknown",
+                ))?,
+        )?;
+        counter
+            .add(wake.retained_requested_storage_data(maximum).map_err(|_| {
+                QualificationError::Refused("complete original notifier backing")
+            })?)?;
+        Ok(counter.bytes())
+    }
+
     /// Drives authentic complete-world and per-peer cleanup without dropping originals.
     ///
     /// Native custody is moved back into its original mailbox before the cleanup
@@ -157,6 +327,13 @@ impl PacketWorldHostSupervisor {
         &self,
         context: &mut Context<'_>,
     ) -> Poll<Result<PacketWorldSupervisionObservation, PacketSupervisionFailure>> {
+        if self.authenticate_selected_origin().is_err() {
+            return Poll::Ready(Err(PacketSupervisionFailure::Runtime(
+                crucible::node_contract::RuntimePollFailure::Admission(
+                    crucible::node_contract::RuntimeError::ForeignAuthority,
+                ),
+            )));
+        }
         if self.mailboxes.iter().any(|m| m.invalid.get()) {
             return Poll::Ready(Err(PacketSupervisionFailure::Duplicate));
         }
@@ -237,3 +414,7 @@ impl CnpSemanticProcessSlot for WorldNativeSlot {
 #[cfg(test)]
 #[path = "world_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "world/bounded_wake_tests.rs"]
+mod bounded_wake_tests;

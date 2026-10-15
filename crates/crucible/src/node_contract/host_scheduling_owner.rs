@@ -23,6 +23,9 @@ use crate::node_admission::ConformanceGraph;
 use super::runtime::scheduling_state::OriginalSchedulingSource;
 use super::{ActivationRecord, NodeRoute, OperationFailure, OwnerIdentity, RuntimeError};
 
+mod capture_dependencies;
+pub use capture_dependencies::{HostCaptureDependencyLookupData, HostCaptureDependencyStorageData};
+
 mod continuation;
 mod requested_storage;
 pub use continuation::{
@@ -305,6 +308,7 @@ impl HostSchedulingOwner {
                 attachment_attempted: Cell::new(false),
                 node: RefCell::new(Weak::new()),
                 attached: RefCell::new(None),
+                capture_dependencies: RefCell::new(None),
             }),
         })
     }
@@ -342,6 +346,7 @@ pub struct HostSchedulingSource {
     attachment_attempted: Cell<bool>,
     node: RefCell<Weak<()>>,
     attached: RefCell<Option<OriginalSchedulingSource>>,
+    capture_dependencies: RefCell<Option<Rc<capture_dependencies::OriginalHostDependencyPlan>>>,
 }
 
 impl HostSchedulingSource {

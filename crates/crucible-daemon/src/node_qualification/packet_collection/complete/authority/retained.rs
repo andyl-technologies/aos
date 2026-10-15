@@ -4,6 +4,68 @@ use super::*;
 use crate::node_qualification::packet_collection::complete::retained::Counter;
 
 impl InstalledPacketCompleteCollectionAuthority {
+    pub(super) fn original_retained_authority_backing(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, QualificationError> {
+        // Raw source creator checks precede inherited RefCell/SDK observation.
+        // This is a data loan; no native-currentness or graph qualifier runs.
+        let mut sources = [0usize; 3];
+        for (slot, source) in sources.iter_mut().zip(&self.roster.sources) {
+            *slot = source
+                .original_complete_retained_storage_data(maximum)
+                .and_then(|report| report.complete_requested_bytes())
+                .map_err(|_| refused())?;
+        }
+        let mut counter = Counter::new(maximum);
+        self.charge_retained_storage(&mut counter)?;
+        for source in sources {
+            // Each report includes its actual source Rc root and underlying
+            // source Box. The fixed roster was authenticated as three distinct
+            // allocations; equal source labels do not provide any refund.
+            counter.add(source)?;
+        }
+        // These private Weak links were issued only from the original installed
+        // factory/scene. A live upgrade retains their concrete root while the
+        // compiled inline/header is observed; child heaps belong to the actor's
+        // separate factory/scene row and are not followed recursively here.
+        if let Some(factory) = self.capture_factory.get() {
+            let factory = factory.upgrade().ok_or_else(refused)?;
+            counter.rc(&factory)?;
+        }
+        if let Some(scene) = self.execution_scene.get() {
+            let scene = scene.upgrade().ok_or_else(refused)?;
+            counter.rc(&scene)?;
+        }
+        Ok(counter.bytes())
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete) fn original_execution_scene_storage_data(
+        &self,
+    ) -> Result<Option<Rc<super::super::execution::PacketCompleteExecutionScene>>, QualificationError>
+    {
+        self.graph_policy.authenticate_retained_origin_data()?;
+        let scene = self.execution_scene.get().and_then(std::rc::Weak::upgrade);
+        self.graph_policy.authenticate_retained_origin_data()?;
+        Ok(scene)
+    }
+
+    /// Counts nested owners of the actual erased registration/conformance issuer.
+    ///
+    /// The process observer separately charges this authority's enclosing Rc and
+    /// inline payload. This loan follows actual backing identities only, avoids
+    /// current/kernel callbacks, and remains data after collection revocation.
+    pub(super) fn original_retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, QualificationError> {
+        self.graph_policy.authenticate_retained_origin_data()?;
+        let mut counter = Counter::new(maximum);
+        self.charge_retained_storage(&mut counter)?;
+        self.graph_policy.authenticate_retained_origin_data()?;
+        Ok(counter.bytes())
+    }
+
     pub(in crate::node_qualification::packet_collection::complete) fn charge_retained_storage(
         &self,
         counter: &mut Counter,
@@ -50,6 +112,15 @@ impl InstalledPacketCompleteCollectionAuthority {
                     counter.metadata(&facts)?;
                 }
             }
+        }
+        // Weak links retain their allocation even after the payload is dropped.
+        // Charge their requested layout conservatively without marking a strong
+        // owner's nested fields as visited: a later strong walk must still run.
+        if let Some(factory) = self.capture_factory.get() {
+            counter.weak(factory)?;
+        }
+        if let Some(scene) = self.execution_scene.get() {
+            counter.weak(scene)?;
         }
         Ok(())
     }

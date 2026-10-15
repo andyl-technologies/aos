@@ -230,6 +230,38 @@ impl HostSchedulingSource {
         activation: &ActivationRecord,
         archive: &crate::node_state::CompleteOriginalRestorationSource,
     ) -> Result<PreparedHostSchedulingNode, OperationFailure> {
+        self.prepare_complete_restoration_node_scoped(graph, activation, archive, None)
+    }
+
+    pub(crate) fn prepare_complete_collecting_restoration_node(
+        self: &Rc<Self>,
+        graph: &crate::node_admission::AdmittedGraph,
+        activation: &ActivationRecord,
+        archive: &crate::node_state::CompleteOriginalRestorationSource,
+        plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<PreparedHostSchedulingNode, OperationFailure> {
+        archive.inner.authenticate_birth().map_err(failure)?;
+        plan.reauthenticate().map_err(failure)?;
+        if !archive.inner.collecting_plan().map_err(failure)?
+            .is_some_and(|original| original.same_original(plan))
+        {
+            return Err(failure("complete host belongs to another collecting plan"));
+        }
+        self.prepare_complete_restoration_node_scoped(
+            graph,
+            activation,
+            archive,
+            Some(plan.retained()),
+        )
+    }
+
+    fn prepare_complete_restoration_node_scoped(
+        self: &Rc<Self>,
+        graph: &crate::node_admission::AdmittedGraph,
+        activation: &ActivationRecord,
+        archive: &crate::node_state::CompleteOriginalRestorationSource,
+        plan: Option<crate::node_admission::InstalledConformancePlan>,
+    ) -> Result<PreparedHostSchedulingNode, OperationFailure> {
         archive.inner.authenticate_birth().map_err(failure)?;
         self.authenticate_complete_archive_source(&archive.inner)?;
         let selected = self.selection();
@@ -262,6 +294,7 @@ impl HostSchedulingSource {
         Ok(PreparedHostSchedulingNode::new_complete_restoration(
             Rc::clone(self),
             anchor,
+            plan,
             activation.clone(),
             NodeRoute {
                 node: selected.descriptor.id.clone(),

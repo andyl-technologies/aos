@@ -83,6 +83,15 @@ impl PacketCompleteCaptureBanks {
             )?;
         }
 
+        if self.protocol_detached {
+            if self.protocol.is_some()
+                || self.settled_protocol.is_some()
+                || self.protocol_payload.is_some()
+            {
+                return Err(refused("detached original host owner remains duplicated"));
+            }
+            return Ok(bytes);
+        }
         let metadata = match (
             &self.protocol,
             &self.settled_protocol,
@@ -164,6 +173,8 @@ mod tests {
             CnpSemanticSnapshotReservation::reserve(1024, 65536).unwrap()
         }
         PacketCompleteCaptureBanks {
+            protocol_detached: false,
+            transferred: false,
             semantic: Some(bank()),
             semantic_snapshot: None,
             ancestry: Some(bank()),

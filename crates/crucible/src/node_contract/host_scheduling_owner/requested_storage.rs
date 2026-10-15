@@ -68,6 +68,9 @@ impl HostSchedulingSource {
                     .checked_add(attached.retained_metadata_bytes_excluding_runtime()?)
                     .ok_or(RuntimeError::ResourceLimit)?;
             }
+            total = total
+                .checked_add(self.retained_dependency_storage()?)
+                .ok_or(RuntimeError::ResourceLimit)?;
             if total > maximum {
                 return Err(RuntimeError::ResourceLimit);
             }

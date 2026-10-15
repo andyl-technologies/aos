@@ -34,7 +34,7 @@ mod attempt_precharge;
 mod value_layout;
 
 #[path = "capture_ticket/owned.rs"]
-mod owned;
+pub(crate) mod owned;
 
 #[path = "capture_ticket/serialization.rs"]
 mod serialization;

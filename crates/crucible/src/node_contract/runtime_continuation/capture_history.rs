@@ -83,7 +83,8 @@ impl NodeRuntime {
         limits: OriginalLineageRestorationLimits,
     ) -> Result<OriginalLineageRestoration<'a>, RuntimeError> {
         source.inner.authenticate_birth()?;
-        self.authenticate_complete_restoration_purpose(source.inner.collecting_plan()?)?;
+        let bound_plan = source.inner.collecting_plan()?;
+        self.authenticate_complete_restoration_purpose(bound_plan.as_ref())?;
         self.scheduling_origin()?.current()?;
         if self.activated
             || self.barrier.record() != target

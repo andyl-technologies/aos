@@ -15,6 +15,10 @@ use crate::node_contract::{
 };
 use crucible_node_contract::ContentRef;
 
+#[path = "complete_original_source/collecting.rs"]
+mod collecting;
+use collecting::CompleteOriginalSourcePurpose;
+
 /// Retains a source-verified complete archive without issuing fresh readiness.
 ///
 /// This handle has no public constructor or serialization. Source-specific
@@ -30,7 +34,7 @@ pub(crate) struct CompleteOriginalSource {
     administrative: RuntimeOriginalCaptureJournal,
     host: Rc<HostSchedulingContinuationRecord>,
     runtime: ContentRef,
-    collecting_plan: Option<crate::node_admission::InstalledConformancePlan>,
+    purpose: CompleteOriginalSourcePurpose,
     process: u32,
     thread: ThreadId,
     host_issued: Cell<bool>,
@@ -96,6 +100,7 @@ impl CompleteOriginalRestorationSource {
         owner: &Id,
     ) -> Result<CompleteOriginalNativeTicket, RuntimeError> {
         self.inner.authenticate_birth()?;
+        self.inner.authenticate_ticket_phase()?;
         let owners = self.inner.archive.owners();
         if owners.len() != 4 || owner == &self.inner.host.source.owner.owner.id {
             return Err(RuntimeError::ForeignAuthority);
@@ -133,6 +138,7 @@ impl CompleteOriginalRestorationSource {
     /// target binding that has already started.
     pub fn take_host_ticket(&self) -> Result<CompleteOriginalHostTicket, RuntimeError> {
         self.inner.authenticate_birth()?;
+        self.inner.authenticate_ticket_phase()?;
         if self.inner.target_started.get() || self.inner.host_issued.replace(true) {
             return Err(RuntimeError::OutstandingObligations);
         }
@@ -167,9 +173,9 @@ impl CompleteOriginalSource {
 
     pub(crate) fn collecting_plan(
         &self,
-    ) -> Result<Option<&crate::node_admission::InstalledConformancePlan>, RuntimeError> {
+    ) -> Result<Option<crate::node_admission::InstalledConformancePlan>, RuntimeError> {
         self.authenticate_birth()?;
-        Ok(self.collecting_plan.as_ref())
+        self.purpose.bound_plan()
     }
 
     pub(crate) fn bind_target(&self, authority: &Rc<()>) -> Result<(), RuntimeError> {
@@ -395,7 +401,7 @@ impl NativeArchiveRecord {
                 administrative,
                 host: Rc::new(record),
                 runtime,
-                collecting_plan,
+                purpose: CompleteOriginalSourcePurpose::new(collecting_plan),
                 process: std::process::id(),
                 thread: thread::current().id(),
                 host_issued: Cell::new(false),
@@ -423,6 +429,11 @@ impl CompleteOriginalSource {
                 NodeRuntime::capture_shared_allocation_storage::<()>(),
             )?;
         }
+        bytes = add(
+            bytes,
+            self.purpose
+                .retained_plan_storage(self.archive.limits.state.maximum_total_content_bytes)?,
+        )?;
         bytes = add(bytes, self.archive.capture_owned_storage()?)?;
         bytes = add(bytes, self.content.capture_owned_storage()?)?;
         bytes = add(

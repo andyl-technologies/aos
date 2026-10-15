@@ -277,6 +277,46 @@ impl PacketCompleteSettledJournal {
             .ok_or_else(|| refused("complete journal registry reference absent"))
     }
 
+    /// Borrows the exact registry-bearing backend tuple without materializing JSON.
+    ///
+    /// This is the allocation-quoted producer view. The public backend value
+    /// remains the identical historical grammar used by the archive verifier.
+    pub(super) fn backend_registry_identity_view_data<'a>(
+        installed: &'a ImplementationIdentity,
+        key: &'a NativeStateKey,
+    ) -> impl serde::Serialize + 'a {
+        #[derive(serde::Serialize)]
+        struct Backend<'a> {
+            schema: &'static str,
+            native_snapshot_class: &'static str,
+            implementation: &'a ImplementationIdentity,
+            native_key: &'a NativeStateKey,
+            journal: &'static str,
+            ancestry_class: &'static str,
+            capacity_records: &'static str,
+            controller_class: &'static str,
+            connection_class: &'static str,
+            host_extension_registry_class: &'static str,
+            native_connection_class: &'static str,
+            native_service_class: &'static str,
+        }
+        Backend {
+            schema: "source-owned.packet-complete-archive-backend-before/15",
+            native_snapshot_class: "source-owned.packet-native-continuation/11",
+            implementation: installed,
+            native_key: key,
+            journal: PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA,
+            ancestry_class: PacketCompleteSemanticSource::REFERENCE_ANCESTRY_SCHEMA,
+            capacity_records: METADATA_CAPACITY_RECORD_FORMAT,
+            controller_class: COMPLETE_CONTROLLER_FORMAT,
+            connection_class: COMPLETE_CONNECTION_FORMAT,
+            host_extension_registry_class:
+                crucible_node_provider::handshake::ORIGINAL_HOST_EXTENSION_REGISTRY_FORMAT,
+            native_connection_class: COMPLETE_NATIVE_CONNECTION_FORMAT,
+            native_service_class: COMPLETE_NATIVE_SERVICE_FORMAT,
+        }
+    }
+
     /// Builds the explicitly registry-bearing measured backend data tuple.
     pub fn backend_registry_identity_data(
         installed: &ImplementationIdentity,

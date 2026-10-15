@@ -25,6 +25,7 @@ impl crate::node_contract::NodeRuntime {
         graph: &crate::node_admission::AdmittedGraph,
         original: &OriginalLineageRuntimeRecord,
         scheduling: &crate::node_scheduling::SchedulingSnapshot,
+        runtime_object: &InputPayload,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
         let mut found = None;
@@ -42,7 +43,13 @@ impl crate::node_contract::NodeRuntime {
                 let bytes =
                     credit::precharge(self, source.selection(), original, scheduling, maximum)?;
                 self.authenticate_host_scheduling_source(&source)?;
-                found = Some(bytes);
+                let dependencies =
+                    source.precharge_capture_dependency_plan(self, runtime_object, maximum)?;
+                let peak = storage::add(bytes, dependencies)?;
+                if peak > maximum {
+                    return Err(RuntimeError::ResourceLimit);
+                }
+                found = Some(peak);
             }
         }
         found.ok_or(RuntimeError::UnsupportedFacet)
@@ -94,8 +101,10 @@ impl OriginalHostCapturePreparation {
         runtime: &crate::node_contract::NodeRuntime,
         graph: &crate::node_admission::AdmittedGraph,
         original: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
         lineage: OriginalInputLineageLimits,
         maximum_record_bytes: usize,
+        maximum_total_bytes: usize,
     ) -> Result<Self, RuntimeError> {
         let mut host = None;
         for node in graph.node_ids() {
@@ -134,6 +143,12 @@ impl OriginalHostCapturePreparation {
             {
                 return Err(RuntimeError::InvalidReceipt);
             }
+            runtime.authenticate_host_scheduling_source(&source)?;
+            source.prepare_capture_dependency_plan(
+                &snapshot,
+                runtime_object,
+                maximum_total_bytes,
+            )?;
             runtime.authenticate_host_scheduling_source(&source)?;
             host = Some((source, snapshot));
         }

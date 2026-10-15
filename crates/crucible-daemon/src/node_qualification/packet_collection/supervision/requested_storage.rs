@@ -20,31 +20,35 @@ impl NativeSlot {
         &self,
         maximum: usize,
     ) -> Result<Option<usize>, OperationFailure> {
-        let mailbox = &self.mailbox;
-        // These private monotonic flags precede every insertion into the three
-        // non-Copy Cells. Do not take a Cell or invoke cleanup to inspect it.
-        // Returned/busy/invalid phases need a separate owning custody walker.
-        if self.transferred
-            || !mailbox.reserved.get()
-            || !mailbox.expected.get()
-            || mailbox.returned.get()
-            || mailbox.reaped.get()
-            || mailbox.journal_retained.get()
-            || mailbox.polling.get()
-            || mailbox.invalid.get()
-        {
+        if self.transferred {
             return Ok(None);
         }
-        let mut counter = Counter::new(maximum);
-        counter.rc(mailbox).map_err(|_| OperationFailure {
-            effects: EffectKnowledge::None,
-            reason: "packet process mailbox requested storage".to_owned(),
-        })?;
-        // With the above flags, native/journal/keepalive Cells are still empty.
-        // All remaining fields are fixed-size and included in Mailbox's inline
-        // allocation; no supervisor/runtime queue ownership is implied here.
-        Ok(Some(counter.bytes()))
+        retained_mailbox_storage_data(&self.mailbox, maximum)
     }
+}
+
+// A borrowed data loan must not construct NativeSlot: its Drop intentionally
+// releases an unused original reservation. Inspect the original flags in place.
+pub(super) fn retained_mailbox_storage_data(
+    mailbox: &Rc<Mailbox>,
+    maximum: usize,
+) -> Result<Option<usize>, OperationFailure> {
+    if !mailbox.reserved.get()
+        || !mailbox.expected.get()
+        || mailbox.returned.get()
+        || mailbox.reaped.get()
+        || mailbox.journal_retained.get()
+        || mailbox.polling.get()
+        || mailbox.invalid.get()
+    {
+        return Ok(None);
+    }
+    let mut counter = Counter::new(maximum);
+    counter.rc(mailbox).map_err(|_| OperationFailure {
+        effects: EffectKnowledge::None,
+        reason: "packet process mailbox requested storage".to_owned(),
+    })?;
+    Ok(Some(counter.bytes()))
 }
 
 #[cfg(test)]

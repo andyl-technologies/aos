@@ -173,3 +173,41 @@ fn preparation_authority_refuses_revoked_original_graph() {
     assert!(authority.current().is_err());
     assert!(authority.collection_plan().is_err());
 }
+
+#[test]
+fn erased_complete_authority_reports_actual_nested_storage_after_revocation() {
+    let scene = Scene::new();
+    let (graph_owner, authority) = collection_authority(&scene);
+    let maximum = 512 * 1024 * 1024;
+
+    let registration =
+        CnpSemanticRegistrationPolicy::retained_requested_storage_data(&*authority, maximum)
+            .unwrap()
+            .unwrap();
+    let conformance =
+        CnpSemanticConformanceAuthority::retained_requested_storage_data(&*authority, maximum)
+            .unwrap();
+    assert!(registration > 0);
+    assert_eq!(conformance, Some(registration));
+    assert_eq!(
+        CnpSemanticRegistrationPolicy::retained_requested_storage_data(&*authority, registration,)
+            .unwrap(),
+        Some(registration),
+    );
+    assert!(
+        CnpSemanticRegistrationPolicy::retained_requested_storage_data(
+            &*authority,
+            registration - 1,
+        )
+        .is_err()
+    );
+
+    drop(graph_owner);
+
+    assert!(authority.current().is_err());
+    assert_eq!(
+        CnpSemanticConformanceAuthority::retained_requested_storage_data(&*authority, maximum,)
+            .unwrap(),
+        Some(registration),
+    );
+}

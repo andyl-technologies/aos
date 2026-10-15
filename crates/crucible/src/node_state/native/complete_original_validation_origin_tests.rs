@@ -97,6 +97,14 @@ fn original_pre_sign_origin_is_exact_and_does_not_fake_historical_load_admission
         CompleteArchiveValidationOrigin::original_write(&archive, &record, &captures, &runtime)
             .unwrap();
     origin.authenticate(&record).unwrap();
+    assert!(std::ptr::eq(
+        origin
+            .original_write_runtime_data(&record)
+            .unwrap()
+            .unwrap(),
+        &runtime,
+    ));
+    assert!(origin.original_write_runtime_data(&record.clone()).is_err());
     let identity =
         index_identity_data(&record, archive.limits.state.maximum_record_bytes, 0).unwrap();
     assert_ne!(identity, *record.artifact());
@@ -135,6 +143,7 @@ fn original_origin_rejects_foreign_creator_wrong_directory_and_stale_attempt() {
             .unwrap();
     captures.erase_modeled_archive_write_active();
     assert!(original.authenticate(&record).is_err());
+    assert!(original.original_write_runtime_data(&record).is_err());
 }
 
 #[test]
@@ -194,6 +203,17 @@ fn historical_origin_requires_actual_selected_load_receipt_for_the_same_record()
     let selected = archive.load_complete_original(durable.artifact()).unwrap();
     let original = CompleteArchiveValidationOrigin::selected_load(&selected).unwrap();
     original.authenticate(&selected).unwrap();
+    assert!(
+        original
+            .original_write_runtime_data(&selected)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        original
+            .original_write_runtime_data(&selected.clone())
+            .is_err()
+    );
     assert!(original.authenticate(&selected.clone()).is_err());
     let expected = selected
         .complete_original_index_identity(archive.limits.state.maximum_record_bytes, 0)
@@ -201,5 +221,112 @@ fn historical_origin_requires_actual_selected_load_receipt_for_the_same_record()
     assert_eq!(
         index_identity_data(&selected, archive.limits.state.maximum_record_bytes, 0).unwrap(),
         expected
+    );
+}
+
+#[test]
+fn selected_load_limits_loan_keeps_actual_lower_archive_and_rejects_replaced_record() {
+    let directory = Directory::new();
+    let installed = NativeArchiveLimits::default();
+    let writer = NativeArchive::open(&directory.0, installed).unwrap();
+    let durable = super::super::complete_original_loader::tests::fixture(&writer);
+    let mut lower = installed;
+    lower.state.maximum_total_content_bytes -= 1;
+    lower.native.maximum_total_record_bytes -= 2;
+    lower.state.maximum_native_memory_bytes -= 3;
+    let reader = NativeArchive::open(&directory.0, lower).unwrap();
+    let selected = reader.load_complete_original(durable.artifact()).unwrap();
+    let origin = CompleteArchiveValidationOrigin::selected_load(&selected).unwrap();
+
+    let observed = origin.archive_limits_data(&selected).unwrap();
+
+    assert_eq!(
+        observed.state.maximum_total_content_bytes,
+        lower.state.maximum_total_content_bytes
+    );
+    assert_eq!(
+        observed.native.maximum_total_record_bytes,
+        lower.native.maximum_total_record_bytes
+    );
+    assert_eq!(
+        observed.state.maximum_native_memory_bytes,
+        lower.state.maximum_native_memory_bytes
+    );
+    assert!(
+        observed.state.maximum_total_content_bytes < installed.state.maximum_total_content_bytes
+    );
+    assert!(origin.archive_limits_data(&selected.clone()).is_err());
+    assert!(
+        origin
+            .original_write_runtime_data(&selected)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn original_loaded_inventory_checks_effective_counts_bytes_and_unproved_depth_without_copies() {
+    let directory = Directory::new();
+    let limits = NativeArchiveLimits::default();
+    let archive = NativeArchive::open(&directory.0, limits).unwrap();
+    let durable = super::super::complete_original_loader::tests::fixture(&archive);
+    let selected = archive.load_complete_original(durable.artifact()).unwrap();
+    selected
+        .authenticate_cold_inventory_limits_data(limits)
+        .unwrap();
+
+    let mut lower = limits;
+    lower.state.maximum_owners_or_domains = 0;
+    assert!(
+        selected
+            .authenticate_cold_inventory_limits_data(lower)
+            .is_err()
+    );
+    lower = limits;
+    lower.state.maximum_content_objects = selected.index.objects.len() - 1;
+    assert!(
+        selected
+            .authenticate_cold_inventory_limits_data(lower)
+            .is_err()
+    );
+    lower = limits;
+    lower.state.maximum_content_bytes = 0;
+    assert!(
+        selected
+            .authenticate_cold_inventory_limits_data(lower)
+            .is_err()
+    );
+    lower = limits;
+    lower.native.maximum_objects = 0;
+    assert!(
+        selected
+            .authenticate_cold_inventory_limits_data(lower)
+            .is_err()
+    );
+    lower = limits;
+    lower.native.maximum_record_bytes = 0;
+    assert!(
+        selected
+            .authenticate_cold_inventory_limits_data(lower)
+            .is_err()
+    );
+    lower = limits;
+    lower.state.maximum_dependency_depth -= 1;
+    assert!(
+        selected
+            .authenticate_cold_inventory_limits_data(lower)
+            .is_err()
+    );
+    selected
+        .authenticate_cold_inventory_limits_data(limits)
+        .unwrap();
+    assert_eq!(
+        selected.index.objects.len(),
+        archive
+            .load_complete_original(durable.artifact())
+            .unwrap()
+            .index
+            .objects
+            .len()
     );
 }

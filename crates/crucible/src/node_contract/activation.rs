@@ -173,6 +173,30 @@ pub(crate) struct ActivationBarrier {
 }
 
 impl ActivationBarrier {
+    pub(crate) fn charge_original_retained_storage(
+        &self,
+        counter: &mut super::runtime_owned_counter::RetainedRuntimeCounter,
+    ) -> Result<(), RuntimeError> {
+        let Self {
+            record,
+            ready,
+            state: _,
+            last_publication: _,
+            nodes,
+            preparation,
+        } = self;
+        counter.owned(record)?;
+        counter.set(ready)?;
+        for owner in ready {
+            counter.owned(owner)?;
+        }
+        counter.preparations(nodes)?;
+        if let Some(preparation) = preparation {
+            counter.publication(preparation)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(record: ActivationRecord) -> Result<Self, RuntimeError> {
         let unique: BTreeSet<_> = record.owners.iter().cloned().collect();
         if record.generation.get() == 0

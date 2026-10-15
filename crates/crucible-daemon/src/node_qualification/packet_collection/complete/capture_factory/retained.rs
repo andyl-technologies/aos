@@ -115,9 +115,35 @@ impl PacketCompleteCaptureFactory {
         maximum: usize,
     ) -> Result<usize, StateError> {
         self.current()?;
-        let scene = self.authority.original_execution_scene().map_err(error)?;
+        let bytes = self.actual_archive_daemon_requested_storage(maximum, true)?;
+        self.current()?;
+        Ok(bytes)
+    }
+
+    // The origin flag comes only from Core's authenticated private validation
+    // purpose. Cold loads have no original actor requirement or kernel callbacks.
+    pub(super) fn actual_archive_daemon_requested_storage(
+        &self,
+        maximum: usize,
+        original_write: bool,
+    ) -> Result<usize, StateError> {
+        self.authenticate_storage_origin()?;
+        let scene = self
+            .authority
+            .original_execution_scene_storage_data()
+            .map_err(error)?;
         let held = self.actor_storage_loan.try_borrow().map_err(error)?;
-        let actor_retained = retained_loan_data(held.as_ref(), Rc::as_ptr(&scene).cast())?;
+        let actor = match (held.as_ref(), scene.as_ref()) {
+            (Some(loan), Some(scene)) => {
+                Some(retained_loan_data(Some(loan), Rc::as_ptr(scene).cast())?)
+            }
+            (None, _) if !original_write => None,
+            _ => {
+                return Err(refused(
+                    "original archive actor storage loan is absent or foreign",
+                ));
+            }
+        };
         let mut counter = Counter::new(maximum);
         counter
             .shared_header(
@@ -126,7 +152,9 @@ impl PacketCompleteCaptureFactory {
                 std::mem::align_of::<Self>(),
             )
             .map_err(error)?;
-        counter.add(actor_retained).map_err(error)?;
+        if let Some(actor) = actor {
+            counter.add(actor).map_err(error)?;
+        }
         if counter.rc(&self.authority).map_err(error)? {
             self.authority
                 .charge_retained_storage(&mut counter)
@@ -141,12 +169,14 @@ impl PacketCompleteCaptureFactory {
                 )
                 .map_err(error)?;
         }
-        if counter.rc(&scene).map_err(error)? {
+        if let Some(scene) = scene.as_ref()
+            && counter.rc(scene).map_err(error)?
+        {
             scene.charge_retained_storage(&mut counter).map_err(error)?;
         }
-        // Cache rows are counted separately as actual old and projected future
-        // owners. Native/source and Host backings remain exact Core owner rows.
-        self.current()?;
+        // Actual cache rows are counted by the caller; native/source and Host
+        // backings remain distinct rows in the same full requested-storage sum.
+        self.authenticate_storage_origin()?;
         Ok(counter.bytes())
     }
 }

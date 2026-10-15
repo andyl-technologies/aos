@@ -16,7 +16,7 @@ use std::{cell::Cell, rc::Rc};
 
 mod fixture;
 
-fn storage_selection() -> PacketNative5StorageSelection {
+pub(super) fn storage_selection() -> PacketNative5StorageSelection {
     PacketNative5StorageSelection {
         storage: PacketNative5StorageLimits {
             snapshot_bytes: U64::new(65_536),
@@ -45,7 +45,7 @@ fn content(value: &impl serde::Serialize) -> ContentRef {
     .unwrap()
 }
 
-fn coordinator() -> PacketNative5CoordinatorInstallation {
+pub(super) fn coordinator() -> PacketNative5CoordinatorInstallation {
     let mut installed = fixture::five();
     for (index, selected) in installed.participants.iter_mut().enumerate() {
         let capabilities = CapabilityProfile {
@@ -88,7 +88,7 @@ fn coordinator() -> PacketNative5CoordinatorInstallation {
     installed
 }
 
-fn installation(
+pub(super) fn installation(
     installed: &PacketNative5CoordinatorInstallation,
     member: usize,
 ) -> CnpSemanticInstallation {
@@ -135,7 +135,7 @@ fn reactive(
     }
 }
 
-fn producer() -> PacketProgramDefinition {
+pub(super) fn producer() -> PacketProgramDefinition {
     PacketProgramDefinition {
         schema: "source-owned.packet-program.v1".into(),
         events: vec![

@@ -1565,6 +1565,13 @@ fn admitted_parts() -> AdmittedRuntimeParts {
 }
 
 fn admitted_parts_from_graph(graph: crate::node_admission::AdmittedGraph) -> AdmittedRuntimeParts {
+    admitted_parts_with_node(graph, |node| Box::new(node))
+}
+
+fn admitted_parts_with_node(
+    graph: crate::node_admission::AdmittedGraph,
+    wrap: fn(TestNode) -> Box<dyn SimulationNode>,
+) -> AdmittedRuntimeParts {
     let mut nodes: Vec<Box<dyn SimulationNode>> = Vec::new();
     let mut states = Vec::new();
     let mut owners = Vec::new();
@@ -1600,7 +1607,7 @@ fn admitted_parts_from_graph(graph: crate::node_admission::AdmittedGraph) -> Adm
             state: Rc::clone(&state),
         };
         owners.push(owner);
-        nodes.push(Box::new(node));
+        nodes.push(wrap(node));
         states.push(state);
     }
     let record = ActivationRecord {
@@ -2129,3 +2136,6 @@ pub(super) fn capture_ticket_fixture() -> (NodeRuntime, OriginalLineageRuntimeRe
 
 #[path = "runtime_deferred_validation_tests.rs"]
 mod deferred_validation;
+
+#[path = "runtime_tests/known_initial_storage.rs"]
+pub(crate) mod known_initial_storage;

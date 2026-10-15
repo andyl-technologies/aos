@@ -51,6 +51,29 @@ impl<'a> CompleteArchiveValidationOrigin<'a> {
         Ok(Self::SelectedLoad { record })
     }
 
+    fn original_write_runtime_data(
+        &self,
+        actual: &NativeArchiveRecord,
+    ) -> Result<Option<&NodeRuntime>, StateError> {
+        self.authenticate(actual)?;
+        let runtime = match self {
+            Self::OriginalWrite { runtime, .. } => Some(*runtime),
+            Self::SelectedLoad { .. } => None,
+        };
+        self.authenticate(actual)?;
+        Ok(runtime)
+    }
+
+    fn archive_limits_data(
+        &self,
+        actual: &NativeArchiveRecord,
+    ) -> Result<NativeArchiveLimits, StateError> {
+        self.authenticate(actual)?;
+        let limits = actual.limits;
+        self.authenticate(actual)?;
+        Ok(limits)
+    }
+
     pub(in crate::node_state::native) fn authenticate(
         &self,
         actual: &NativeArchiveRecord,
@@ -104,6 +127,36 @@ impl NativeArchiveRecord {
 }
 
 impl CompleteOriginalArchiveValidation<'_> {
+    /// Returns this authenticated writer or selected load's actual archive limits.
+    ///
+    /// The same record's immutable limits are copied after private validation
+    /// origin checks on both sides. A factory intersects them with its own
+    /// installed bounds before observing or decoding any vendor cold state.
+    /// This data loan grants no allocation, Capture or restoration authority.
+    ///
+    /// # Errors
+    /// Refuses foreign or stale origin, a replaced record, or a selected load
+    /// without its actual admission receipt.
+    pub fn archive_limits_data(&self) -> Result<NativeArchiveLimits, StateError> {
+        self.validation_origin.archive_limits_data(self.archive)
+    }
+
+    /// Borrows the actual live runtime retained by this original writer.
+    ///
+    /// A selected historical load has no original runtime loan and returns
+    /// `None`. This distinction comes from the authenticated private validation
+    /// origin, never from a supplied byte total or a decoded runtime snapshot.
+    /// The factory uses the live owner's exhaustive requested-storage observer
+    /// before cold reconstruction; this loan grants no capture or restore right.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator, replaced archive, changed original writer or
+    /// capture hold, or a historical load without its actual admission receipt.
+    pub fn original_write_runtime_data(&self) -> Result<Option<&NodeRuntime>, StateError> {
+        self.validation_origin
+            .original_write_runtime_data(self.archive)
+    }
+
     /// Identifies this context's exact index after genuine purpose authentication.
     ///
     /// Original write purpose comes only from the same active completed writer
@@ -177,3 +230,101 @@ pub(in crate::node_state::native) fn index_identity_data(
 #[cfg(test)]
 #[path = "complete_original_validation_origin_tests.rs"]
 mod tests;
+
+impl NativeArchiveRecord {
+    fn authenticate_cold_inventory_limits_data(
+        &self,
+        limits: NativeArchiveLimits,
+    ) -> Result<(), StateError> {
+        // The original admission proves graph closure under its own bound. It
+        // retains no actual maximum-depth fact, so a tighter depth needs a new
+        // bounded admission rather than an uncredited traversal here.
+        if limits.state.maximum_dependency_depth < self.limits.state.maximum_dependency_depth {
+            return Err(refused(
+                "effective archive depth requires narrower original admission",
+            ));
+        }
+        if self.manifest.owners.len() > limits.state.maximum_owners_or_domains
+            || self.index.owners.len() > limits.state.maximum_owners_or_domains
+            || self.index.objects.len() > limits.state.maximum_content_objects
+        {
+            return Err(refused(
+                "effective archive owner or content inventory exceeds credit",
+            ));
+        }
+        let mut edges = 0usize;
+        for object in &self.index.objects {
+            if object.reference.length.get() > limits.state.maximum_content_bytes as u64
+                || object.dependencies.len() > limits.state.maximum_content_objects
+            {
+                return Err(refused("effective archive object exceeds content credit"));
+            }
+            edges = edges
+                .checked_add(object.dependencies.len())
+                .filter(|edges| *edges <= limits.state.maximum_dependency_edges)
+                .ok_or_else(|| refused("effective archive dependency edges exceed credit"))?;
+        }
+        let mut count = 0usize;
+        let mut records = 0u64;
+        let mut artifacts = 0u64;
+        for owner in &self.index.owners {
+            count = count
+                .checked_add(1)
+                .and_then(|count| count.checked_add(owner.evidence.len()))
+                .and_then(|count| count.checked_add(owner.artifacts.len()))
+                .filter(|count| *count <= limits.native.maximum_objects)
+                .ok_or_else(|| refused("effective native inventory exceeds object credit"))?;
+            for reference in std::iter::once(&owner.state).chain(&owner.evidence) {
+                if reference.length.get() > limits.native.maximum_record_bytes as u64 {
+                    return Err(refused("effective native record exceeds record credit"));
+                }
+                records = records
+                    .checked_add(reference.length.get())
+                    .filter(|bytes| *bytes <= limits.native.maximum_total_record_bytes as u64)
+                    .ok_or_else(|| refused("effective native records exceed total credit"))?;
+            }
+            for artifact in &owner.artifacts {
+                if artifact.content.length.get() > limits.native.maximum_artifact_bytes {
+                    return Err(refused("effective native artifact exceeds file credit"));
+                }
+                artifacts = artifacts
+                    .checked_add(artifact.content.length.get())
+                    .filter(|bytes| *bytes <= limits.native.maximum_total_artifact_bytes)
+                    .ok_or_else(|| refused("effective native artifacts exceed total credit"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl CompleteOriginalArchiveValidation<'_> {
+    /// Checks actual authenticated inventory against the effective cold limits.
+    ///
+    /// This borrows existing index, content, manifest and domain rows without
+    /// hashing, cloning or traversing the dependency graph. A narrower depth
+    /// than the original admission is conservatively refused because no actual
+    /// depth fact was retained. These data checks grant no resource installation
+    /// right; any later installer must enforce every effective native limit.
+    ///
+    /// # Errors
+    /// Refuses foreign validation origin, excessive actual counts, bytes or
+    /// artifacts, arithmetic overflow, or an unproved narrower depth bound.
+    pub fn authenticate_cold_inventory_limits_data(
+        &self,
+        limits: NativeArchiveLimits,
+    ) -> Result<(), StateError> {
+        self.archive_limits_data()?;
+        self.archive
+            .authenticate_cold_inventory_limits_data(limits)?;
+        if self.graph.ownership_policy().domains.len() > limits.state.maximum_owners_or_domains
+            || self.content.object_count() > limits.state.maximum_content_objects
+            || self.content.total_bytes() > limits.state.maximum_total_content_bytes
+        {
+            return Err(refused(
+                "effective complete domain or verified content exceeds credit",
+            ));
+        }
+        self.archive_limits_data()?;
+        Ok(())
+    }
+}

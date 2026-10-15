@@ -80,6 +80,12 @@ impl CnpOriginalSemanticSnapshot {
         &self.payload
     }
 
+    // Only the complete owning adapter calls this after validating this exact
+    // snapshot's original opaque activation and all output slots by borrow.
+    pub(in crate::node_adapters::cnp::semantic) fn into_original_payload(self) -> InputPayload {
+        self.payload
+    }
+
     /// Authenticates the original opaque activation associated with these bytes.
     ///
     /// # Errors
@@ -218,6 +224,65 @@ pub(super) fn record_original_bytes(
     })
 }
 
+// Canonical backend data may contain arbitrary allowed extension Values.
+// The caller precharges Value construction and both canonical passes, including
+// canonical string/UTF-16 sorting scratch, before creating that Value.
+pub(super) fn record_canonical_component(
+    reservation: &mut Option<CnpSemanticSnapshotReservation>,
+    value: &serde_json::Value,
+) -> Result<(), OperationFailure> {
+    let bank = reservation
+        .as_mut()
+        .filter(|bank| !bank.started && bank.bytes.is_empty())
+        .ok_or_else(|| refused("original canonical bank is absent or used"))?;
+    bank.started = true;
+    let mut count = CanonicalBankCount {
+        bytes: 0,
+        maximum: bank.maximum,
+    };
+    canonical::canonical_json_to_writer(value, &mut count).map_err(super::unknown)?;
+    canonical::canonical_json_to_writer(value, &mut BankWriter(bank)).map_err(super::unknown)
+}
+
+pub(super) fn authenticate_canonical_component(
+    original: &InputPayload,
+    value: &serde_json::Value,
+) -> Result<(), OperationFailure> {
+    original
+        .reference
+        .verify(&original.bytes)
+        .map_err(super::unknown)?;
+    let mut writer = OriginalBytesWriter {
+        original: &original.bytes,
+        position: 0,
+    };
+    canonical::canonical_json_to_writer(value, &mut writer).map_err(super::unknown)?;
+    if writer.position != original.bytes.len() {
+        return Err(refused("original canonical component extent differs"));
+    }
+    Ok(())
+}
+
+struct CanonicalBankCount {
+    bytes: usize,
+    maximum: usize,
+}
+
+impl Write for CanonicalBankCount {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(bytes.len())
+            .filter(|total| *total <= self.maximum)
+            .ok_or_else(|| io::Error::other("original canonical bank exceeds selection"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 pub(super) fn record_component(
     reservation: &mut Option<CnpSemanticSnapshotReservation>,
     value: &impl serde::Serialize,
@@ -253,6 +318,65 @@ impl Write for OriginalBytesWriter<'_> {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+// The closed full reference has a fixed canonical key order. Stream that
+// exact spelling into a borrowed comparison sink; ordinary whole HashRef serde
+// has a different key order and provider-private parsing APIs are unnecessary.
+pub(super) fn authenticate_canonical_reference_bytes(
+    bytes: &[u8],
+    original: &crucible_node_contract::ContentRef,
+) -> Result<(), OperationFailure> {
+    let mut writer = OriginalBytesWriter {
+        original: bytes,
+        position: 0,
+    };
+    reference_chunk(&mut writer, b"{\"hash\":{\"algorithm\":")?;
+    reference_string(&mut writer, &original.hash.algorithm)?;
+    reference_chunk(&mut writer, b",\"digest\":")?;
+    reference_string(&mut writer, &original.hash.digest)?;
+    reference_chunk(&mut writer, b",\"domain\":")?;
+    reference_string(&mut writer, &original.hash.domain)?;
+    reference_chunk(&mut writer, b"},\"length\":\"")?;
+
+    let mut value = original.length.get();
+    let mut digits = [0u8; 20];
+    let mut first = digits.len();
+    loop {
+        first -= 1;
+        digits[first] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    reference_chunk(&mut writer, &digits[first..])?;
+    reference_chunk(&mut writer, b"\",\"media_type\":")?;
+    reference_string(&mut writer, &original.media_type)?;
+    reference_chunk(&mut writer, b"}")?;
+    if writer.position != bytes.len() {
+        return Err(refused("original canonical reference extent differs"));
+    }
+    Ok(())
+}
+
+fn reference_string(
+    writer: &mut OriginalBytesWriter<'_>,
+    value: &str,
+) -> Result<(), OperationFailure> {
+    // A JSON string scalar has the same escaping in serde and JCS. This writes
+    // directly to the sink without serde_json::to_string's owning String.
+    serde_json::to_writer(writer, value)
+        .map_err(|_| refused("original canonical reference scalar differs"))
+}
+
+fn reference_chunk(
+    writer: &mut OriginalBytesWriter<'_>,
+    value: &[u8],
+) -> Result<(), OperationFailure> {
+    writer
+        .write_all(value)
+        .map_err(|_| refused("original canonical reference fields differ"))
 }
 
 pub(super) fn authenticate_component(
@@ -479,3 +603,11 @@ impl CnpOriginalSemanticSnapshot {
         Ok(counter.finish())
     }
 }
+
+#[cfg(test)]
+#[path = "semantic_snapshot/reference_tests.rs"]
+mod reference_tests;
+
+#[cfg(test)]
+#[path = "semantic_snapshot/canonical_component_tests.rs"]
+mod canonical_component_tests;

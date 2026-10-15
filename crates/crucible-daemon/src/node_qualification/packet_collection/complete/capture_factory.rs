@@ -6,7 +6,10 @@
 
 use std::{cell::RefCell, mem::size_of, rc::Rc};
 
+mod archive_validation;
+mod dependencies;
 mod key;
+mod restoration_source;
 mod retained;
 
 use crucible::{
@@ -51,6 +54,7 @@ pub struct PacketCompleteCaptureFactory {
     process: u32,
     thread: std::thread::ThreadId,
     actor_storage_loan: RefCell<Option<retained::ActorStorageLoanState>>,
+    dependency_storage: RefCell<Option<dependencies::OriginalDependencyStorageScope>>,
 }
 
 impl PacketCompleteCaptureFactory {
@@ -92,6 +96,7 @@ impl PacketCompleteCaptureFactory {
             process: std::process::id(),
             thread: std::thread::current().id(),
             actor_storage_loan: RefCell::new(None),
+            dependency_storage: RefCell::new(None),
         });
         original.authenticate_preparation()?;
         original.authority.bind_capture_factory(&original)?;
@@ -247,6 +252,16 @@ impl PacketCompleteCaptureFactory {
 
     fn authenticate_graph(&self, graph: &AdmittedGraph) -> Result<(), StateError> {
         self.current()?;
+        self.authenticate_archive_graph_data(graph)?;
+        self.current()
+    }
+
+    fn authenticate_archive_graph_data(&self, graph: &AdmittedGraph) -> Result<(), StateError> {
+        self.authenticate_storage_origin()?;
+        self.authority
+            .capture_graph_policy()
+            .authenticate_retained_origin_data()
+            .map_err(error)?;
         if graph.world() != self.authority.world()
             || graph.world_binding_hash() != self.host.world()
             || !graph.selected_extensions().is_empty()
@@ -271,7 +286,7 @@ impl PacketCompleteCaptureFactory {
         {
             return Err(refused("complete factory host installation differs"));
         }
-        self.current()
+        self.authenticate_storage_origin()
     }
 
     fn authenticate_live(
@@ -301,6 +316,15 @@ impl PacketCompleteCaptureFactory {
     }
 
     fn authenticate_common_data(
+        &self,
+        runtime: &OriginalLineageRuntimeRecord,
+        scheduling: &SchedulingSnapshot,
+    ) -> Result<(), StateError> {
+        self.authenticate_archive_common_data(runtime, scheduling)?;
+        self.current()
+    }
+
+    fn authenticate_archive_common_data(
         &self,
         runtime: &OriginalLineageRuntimeRecord,
         scheduling: &SchedulingSnapshot,
@@ -378,7 +402,7 @@ impl PacketCompleteCaptureFactory {
                 ));
             }
         }
-        self.current()
+        self.authenticate_storage_origin()
     }
 
     fn prepare_records(&self, graph: &AdmittedGraph) -> Result<(), StateError> {
@@ -456,6 +480,24 @@ pub struct PacketCompleteWorldCapture<'a> {
 }
 
 impl NativeWorldFactory for PacketCompleteCaptureFactory {
+    fn authenticate_complete_original_lineage_archive(
+        &self,
+        scope: crucible::node_state::CompleteOriginalArchiveValidation<'_>,
+    ) -> Result<(), StateError> {
+        self.authenticate_original_complete_archive(scope)
+    }
+
+    fn complete_original_capture_dependency_storage(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &OriginalLineageRuntimeRecord,
+        scheduling: &SchedulingSnapshot,
+        runtime_object: &crucible::node_scheduling::InputPayload,
+        limits: NativeArchiveLimits,
+    ) -> Result<crucible::node_state::CompleteOriginalCaptureDependencyStorage, StateError> {
+        self.original_dependency_storage(graph, runtime, scheduling, runtime_object, limits)
+    }
+
     fn complete_original_capture_factory_storage(
         &self,
         graph: &AdmittedGraph,
@@ -495,7 +537,8 @@ impl NativeWorldFactory for PacketCompleteCaptureFactory {
                 // Known observer roots are charged explicitly. Compiler-generated
                 // traversal frames/unwind and allocator rounding remain separate
                 // source/qualification obligations; this is not a stack bound.
-                .checked_add(size_of::<super::retained::Counter>())
+                .checked_add(dependencies::requested_scratch_bytes())
+                .and_then(|bytes| bytes.checked_add(size_of::<super::retained::Counter>()))
                 .and_then(|bytes| bytes.checked_add(size_of::<super::retained::Counter>()))
                 .and_then(|bytes| bytes.checked_add(size_of::<crucible_node_provider::retained_metadata::RetainedProtocolMetadataFacts>()))
                 .and_then(|bytes| bytes.checked_add(crucible_node_provider::retained_metadata::original_metadata_observer_layout_bytes()))
@@ -526,6 +569,16 @@ impl NativeWorldFactory for PacketCompleteCaptureFactory {
             .ok_or_else(|| refused("complete runtime adjacency destination absent"))?
             .bind_runtime(runtime)?;
         self.authenticate_live(graph, runtime, scheduling)
+    }
+
+    fn authenticate_complete_collecting_archive_code_source(
+        &self,
+        plan: &InstalledConformancePlan,
+        graph: &AdmittedGraph,
+        archive: &NativeArchiveRecord,
+        scope: &crucible::node_state::CollectingCompleteCaptureProvenance,
+    ) -> Result<(), StateError> {
+        self.authenticate_original_archive_code_source(plan, graph, archive, scope)
     }
 
     fn authenticate_complete_collecting_capture(
@@ -612,6 +665,9 @@ impl NativeWorldFactory for PacketCompleteCaptureFactory {
         maximum: usize,
     ) -> Result<Vec<ContentRef>, StateError> {
         self.authenticate_graph(graph)?;
+        if let Some(dependencies) = self.original_born_dependencies(reference, bytes, maximum)? {
+            return Ok(dependencies);
+        }
         let records = self.records.try_borrow().map_err(error)?;
         records
             .as_ref()

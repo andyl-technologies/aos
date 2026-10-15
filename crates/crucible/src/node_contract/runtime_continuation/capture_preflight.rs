@@ -230,6 +230,7 @@ impl crate::node_contract::NodeRuntime {
             graph,
             source,
             scheduling,
+            runtime_object,
             limits.state.maximum_total_content_bytes,
         )
         .map_err(RuntimePollFailure::Admission)?;
@@ -238,8 +239,10 @@ impl crate::node_contract::NodeRuntime {
                 self,
                 graph,
                 source,
+                runtime_object,
                 lineage_limits,
                 limits.native.maximum_record_bytes,
+                limits.state.maximum_total_content_bytes,
             )
             .map_err(RuntimePollFailure::Admission)?,
         );

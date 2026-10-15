@@ -215,7 +215,11 @@ impl CnpSemanticProcessCustody {
         if let Some(value) = conformance
             && counter.rc(value)?
         {
-            let nested = value.retained_requested_storage_data(counter.remaining())?;
+            let nested =
+                super::super::CnpSemanticConformanceAuthority::retained_requested_storage_data(
+                    value.as_ref(),
+                    counter.remaining(),
+                )?;
             self.storage_origin_data()?;
             match nested {
                 Some(bytes) => counter.add(bytes)?,

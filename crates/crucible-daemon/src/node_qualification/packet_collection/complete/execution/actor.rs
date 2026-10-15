@@ -10,6 +10,7 @@ use std::{
     task::{Context, Poll},
 };
 
+use crucible::node_adapters::cnp::CnpSemanticSource;
 use crucible::node_contract::{
     ActivationPublisher, BeginResult, ConformanceResultPublisher, ConformanceRuntime,
     OperationToken,
@@ -76,6 +77,9 @@ pub struct PacketCompleteExecutionActor {
     next: usize,
     phase: Phase,
     attachment_attempted: bool,
+    supervisor: Rc<crate::node_qualification::PacketWorldHostSupervisor>,
+    supervision_proposal: Option<crucible::node_contract::ActivationRecord>,
+    supervision_attempted: bool,
     process: u32,
     thread: std::thread::ThreadId,
 }
@@ -95,6 +99,8 @@ impl PacketCompleteExecutionScene {
         if self.actor_reserved.replace(true) {
             return Err(refused());
         }
+        let supervisor =
+            Rc::new(crate::node_qualification::PacketWorldHostSupervisor::new_complete_original()?);
         let mut grants = Vec::new();
         grants
             .try_reserve_exact(schedule::GRANTS)
@@ -129,6 +135,9 @@ impl PacketCompleteExecutionScene {
             next: 0,
             phase: Phase::Reserved,
             attachment_attempted: false,
+            supervisor,
+            supervision_proposal: None,
+            supervision_attempted: false,
             process: std::process::id(),
             thread: std::thread::current().id(),
         }))
@@ -136,6 +145,91 @@ impl PacketCompleteExecutionScene {
 }
 
 impl PacketCompleteExecutionActor {
+    /// Reserves the same three native slots and one four-owner runtime slot once.
+    ///
+    /// Call this before Child and pass these exact returned slots into the real
+    /// selected Source/native construction. The proposal remains plain data;
+    /// existing Source/plan/Arm/current-runtime gates independently issue rights.
+    /// A failed first reservation stays spent and retains its original supervisor.
+    ///
+    /// # Errors
+    /// Refuses foreign creator, changed source owner roster/world, incompatible
+    /// finite limits, repeated reservation or exhausted original custody slots.
+    pub fn reserve_original_supervision(
+        &mut self,
+        proposal: &crucible::node_contract::ActivationRecord,
+        limits: crucible::node_contract::RuntimeLimits,
+    ) -> Result<
+        crate::node_qualification::PacketWorldOriginalReservations,
+        PacketCompleteExecutionError,
+    > {
+        self.require(Phase::Reserved)?;
+        self.original_creator()?;
+        if self.supervision_attempted
+            || proposal.owners.len() != 4
+            || proposal.world_binding_hash != *self.scene.authority.host_source().world()
+            || limits.maximum_nodes != 4
+            || limits.maximum_owners != 4
+            || limits.maximum_operations == 0
+            || limits.maximum_operations > 64
+        {
+            return Err(PacketCompleteExecutionError::Phase);
+        }
+        self.scene.current().map_err(failure)?;
+        for source in &self.scene.authority.roster().sources {
+            let installation = source.installation();
+            authenticate_proposed_owner(proposal, &installation.owner, &installation.binding)?;
+        }
+        let host = self.scene.authority.host_source().selection();
+        authenticate_proposed_owner(proposal, &host.owner, &host.binding)?;
+        self.supervision_attempted = true;
+        self.supervision_proposal = Some(proposal.clone());
+        self.supervisor
+            .reserve_original(proposal, limits)
+            .map_err(failure)
+    }
+
+    /// Borrows the same cleanup owner for retention outside actor unwind/drop.
+    ///
+    /// The caller retains an Rc alias through authentic reclamation. This owner
+    /// exposes only custody reservation/cleanup, never native execution authority.
+    pub fn original_supervisor(&self) -> &Rc<crate::node_qualification::PacketWorldHostSupervisor> {
+        &self.supervisor
+    }
+
+    /// Drives selected cleanup with the same bounded original wake allocation.
+    ///
+    /// Source/Child liveness is deliberately not required to reclaim old custody.
+    /// Cancellation, phase refusal and transport error leave this owner intact.
+    ///
+    /// # Errors
+    /// Refuses foreign creator, unsupported selection or exhausted transport/pass
+    /// bounds without dropping the original runtime or native capsules.
+    pub fn drive_original_reclamation(
+        &self,
+        maximum_passes: usize,
+    ) -> Result<
+        Poll<
+            Result<
+                crate::node_qualification::PacketWorldSupervisionObservation,
+                crate::node_qualification::PacketSupervisionFailure,
+            >,
+        >,
+        PacketCompleteExecutionError,
+    > {
+        self.original_creator()?;
+        self.supervisor
+            .drive_complete_original_reclamation(maximum_passes)
+            .map_err(failure)
+    }
+
+    fn original_creator(&self) -> Result<(), PacketCompleteExecutionError> {
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(PacketCompleteExecutionError::Phase);
+        }
+        Ok(())
+    }
+
     /// Moves the same actual inactive runtime into this original reservation once.
     ///
     /// # Errors
@@ -156,10 +250,21 @@ impl PacketCompleteExecutionActor {
         self.runtime = Some(incoming);
         let result = catch_unwind(AssertUnwindSafe(|| {
             self.scene.preparation().map_err(failure)?;
+            let proposal = self
+                .supervision_proposal
+                .as_ref()
+                .ok_or(PacketCompleteExecutionError::Phase)?;
             self.runtime
                 .as_mut()
                 .ok_or(PacketCompleteExecutionError::Phase)?
-                .validate_inactive_collection_plan(&self.scene.plan)
+                .validate_inactive_collection_proposal(&self.scene.plan, proposal)
+                .map_err(failure)?;
+            self.supervisor
+                .authenticate_complete_original_runtime(
+                    self.runtime
+                        .as_mut()
+                        .ok_or(PacketCompleteExecutionError::Phase)?,
+                )
                 .map_err(failure)
         }));
         match result {
@@ -351,6 +456,18 @@ impl PacketCompleteExecutionActor {
                 counter.charge(token.route()).map_err(failure)?;
             }
         }
+        if counter.rc(&self.supervisor).map_err(failure)? {
+            counter
+                .add(
+                    self.supervisor
+                        .retained_requested_storage_data(counter.remaining())
+                        .map_err(failure)?,
+                )
+                .map_err(failure)?;
+        }
+        counter
+            .charge(&self.supervision_proposal)
+            .map_err(failure)?;
         let identity = (self as *const Self).cast();
         self.phase = Phase::Held;
         let loan = factory
@@ -361,6 +478,8 @@ impl PacketCompleteExecutionActor {
         let freeze = ActorMetadataBorrow {
             _grants: &self.grants,
             _scene: &self.scene,
+            _supervisor: &self.supervisor,
+            _proposal: &self.supervision_proposal,
         };
         let result = factory
             .capture_original_world(
@@ -414,8 +533,35 @@ fn failure(error: impl std::fmt::Display) -> PacketCompleteExecutionError {
 struct ActorMetadataBorrow<'a> {
     _grants: &'a Vec<Grant>,
     _scene: &'a Rc<PacketCompleteExecutionScene>,
+    _supervisor: &'a Rc<crate::node_qualification::PacketWorldHostSupervisor>,
+    _proposal: &'a Option<crucible::node_contract::ActivationRecord>,
 }
 
 impl Drop for ActorMetadataBorrow<'_> {
     fn drop(&mut self) {}
 }
+
+fn authenticate_proposed_owner(
+    proposal: &crucible::node_contract::ActivationRecord,
+    owner: &crucible_node_contract::OwnerBinding,
+    binding: &crucible_node_contract::NodeBinding,
+) -> Result<(), PacketCompleteExecutionError> {
+    if binding
+        .authority
+        .activation_id
+        .as_ref()
+        .is_some_and(|actual| actual != &proposal.activation_id)
+        || !proposal.owners.iter().any(|actual| {
+            actual.owner == owner.owner.id
+                && actual.incarnation == binding.authority.incarnation_id
+                && actual.generation == binding.authority.owner_generation
+        })
+    {
+        return Err(PacketCompleteExecutionError::Phase);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "actor/supervision_tests.rs"]
+mod supervision_tests;

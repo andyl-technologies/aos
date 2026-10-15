@@ -376,6 +376,7 @@ impl NativeArchive {
                 graph,
                 &source,
                 &scheduler,
+                &runtime_object,
                 self.limits.state.maximum_total_content_bytes,
             )
             .map_err(schema)?;
@@ -392,6 +393,22 @@ impl NativeArchive {
                 },
             )
             .map_err(schema)?;
+        // Source born-row plans require the actual owning-node loan and this
+        // encoded Runtime7 identity. They cannot be demanded by the earlier
+        // factory-cache callback, which precedes that loan and body creation.
+        let dependency_limits = NativeArchiveLimits {
+            native: native_limits,
+            state: self.limits.state,
+        };
+        let dependency_storage = factory.complete_original_capture_dependency_storage(
+            graph,
+            &source,
+            &scheduler,
+            &runtime_object,
+            dependency_limits,
+        )?;
+        dependency_storage.validate(dependency_limits)?;
+        let dependency_peak = dependency_storage.peak()?;
         // This closed edition projects empty key-extension maps. Selected world
         // extensions alone do not imply that a source's native schema is closed.
         for owner in preflight.owners() {
@@ -474,6 +491,7 @@ impl NativeArchive {
         let known_immutable_banks = content.capture_owned_storage().map_err(schema)?;
         let mut current_core = known_snapshot_storage
             .checked_add(factory_peak)
+            .and_then(|bytes| bytes.checked_add(dependency_peak))
             .and_then(|bytes| bytes.checked_add(request_storage))
             .and_then(|bytes| bytes.checked_add(known_immutable_banks))
             .ok_or_else(|| refused("complete current core peak overflow"))?;
@@ -586,15 +604,20 @@ impl NativeArchive {
             future_content: future_content_banks,
             selected_sources,
         };
-        // Both existing final dispatch gates remain while the source verifier,
-        // restore and administrative scratch closure undergo independent review.
+        // These writer terms coexist with the separately observed actual live
+        // runtime below. Owning Source preflight still qualifies the remote
+        // native rows and complete selected codec before geometry is available.
         named_peak
             .admit(self.limits.state.maximum_total_content_bytes)
             .map_err(schema)?;
         // The same named total must also fit the remaining native record credit.
         // Retain it in the original geometry instead of accepting a parsed total.
         let allocation_budget = named_peak
-            .issue_budget(native_limits.maximum_total_record_bytes)
+            .issue_budget(
+                runtime,
+                native_limits.maximum_total_record_bytes,
+                self.limits.state.maximum_total_content_bytes,
+            )
             .map_err(schema)?;
 
         native_limits.maximum_record_bytes = geometry
@@ -608,6 +631,12 @@ impl NativeArchive {
             scope.authenticate(&source, &scheduler, &capture_id, factory)?;
         }
 
+        // The factory check can inspect shared Source owners. Recheck the same
+        // live runtime after that callback, before sealing or issuing a ticket;
+        // changed ownership cannot spend an earlier smaller observation.
+        allocation_budget
+            .authenticate_runtime(runtime)
+            .map_err(schema)?;
         let geometry = runtime
             .prepare_complete_capture_geometry_with_preflight(
                 activation,
@@ -638,6 +667,18 @@ impl NativeArchive {
         if let Some(scope) = collecting {
             scope.authenticate(&source, &scheduler, &capture_id, factory)?;
         }
+        // The same source-side plans and factory association remain bounded
+        // after producer effects, before the first returned dependency row is
+        // allocated. Actual Source output already checked its born capacities.
+        let observed_dependencies = factory.complete_original_capture_dependency_storage(
+            graph,
+            &source,
+            &scheduler,
+            &runtime_object,
+            dependency_limits,
+        )?;
+        observed_dependencies.validate(dependency_limits)?;
+        dependency_storage.authenticate_bound(&observed_dependencies)?;
         let captured_bodies = captures.read().map_err(schema)?;
         let mut states = Vec::new();
         let mut owners = Vec::new();
@@ -880,6 +921,8 @@ impl NativeArchive {
 /// validates every native snapshot, original capture request/response prefix,
 /// and actual host closure before this archive may be signed or adopted.
 pub struct CompleteOriginalArchiveValidation<'a> {
+    lineage_limits: OriginalInputLineageLimits,
+
     /// Borrows the exact admitted original world and source-selected bindings.
     pub graph: &'a crate::node_admission::AdmittedGraph,
     /// Borrows the independently authenticated index-three source.
@@ -896,6 +939,16 @@ pub struct CompleteOriginalArchiveValidation<'a> {
         &'a super::storage::complete_original_validation_origin::CompleteArchiveValidationOrigin<
             'a,
         >,
+}
+
+impl CompleteOriginalArchiveValidation<'_> {
+    /// Returns the unchanged lineage bounds admitted by this Core validation call.
+    ///
+    /// These limits describe historical input lookup and create no source,
+    /// Capture, allocation or fresh-restoration permission.
+    pub fn lineage_limits(&self) -> OriginalInputLineageLimits {
+        self.lineage_limits
+    }
 }
 
 impl NativeArchiveRecord {
@@ -995,6 +1048,7 @@ impl NativeArchiveRecord {
         self.validate_complete_original_owner_receipts(graph, &content)?;
         factory.authenticate_complete_original_lineage_archive(
             CompleteOriginalArchiveValidation {
+                lineage_limits: limits,
                 graph,
                 archive: self,
                 runtime: &runtime,

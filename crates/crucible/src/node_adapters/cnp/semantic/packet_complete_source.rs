@@ -38,6 +38,11 @@ mod ancestry;
 
 #[path = "packet_complete_source/capture_banks.rs"]
 mod capture_banks;
+#[path = "packet_complete_source/execution.rs"]
+mod execution;
+pub use execution::dependency_credit::{
+    PacketCompleteCaptureDependencyLookupData, PacketCompleteCaptureDependencyStorageData,
+};
 #[path = "packet_complete_source/capture_transcript.rs"]
 mod capture_transcript;
 
@@ -87,6 +92,7 @@ pub struct PacketCompleteSemanticSource {
     process: u32,
     thread: std::thread::ThreadId,
     capture_banks: std::cell::RefCell<Option<capture_banks::PacketCompleteCaptureBanks>>,
+    capture_execution: std::cell::RefCell<Option<execution::OriginalCompleteCaptureExecution>>,
     preconstruction: std::cell::RefCell<Option<preconstruction::OriginalCompletePreconstruction>>,
     effect_receiver: Option<effects::OriginalCompleteEffectReceiver>,
     ack_emitter_selection: Option<Option<crucible_node_provider::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>>,
@@ -129,6 +135,7 @@ impl PacketCompleteSemanticSource {
             process: std::process::id(),
             thread: std::thread::current().id(),
             capture_banks: std::cell::RefCell::new(None),
+            capture_execution: std::cell::RefCell::new(None),
             preconstruction: std::cell::RefCell::new(None),
             effect_receiver: None,
             ack_emitter_selection: None,
@@ -171,6 +178,7 @@ impl PacketCompleteSemanticSource {
             process: std::process::id(),
             thread: std::thread::current().id(),
             capture_banks: std::cell::RefCell::new(None),
+            capture_execution: std::cell::RefCell::new(None),
             preconstruction: std::cell::RefCell::new(None),
             effect_receiver: None,
             ack_emitter_selection: None,
@@ -487,6 +495,14 @@ impl CnpSemanticSource for PacketCompleteSemanticSource {
         super::semantic_snapshot::complete_size(runtime, maximum)?;
         self.authenticate_witness_scope(&scope)?;
         self.original_capture_bank_facts()?;
+        self.prepare_original_complete_capture_execution(
+            &scope,
+            runtime_object,
+            limits
+                .native
+                .maximum_total_record_bytes
+                .min(limits.state.maximum_total_content_bytes),
+        )?;
         self.original_ancestry_size(&scope)?;
         let chunk = usize::try_from(selected.limits.blob_chunk_bytes.get())
             .ok()
@@ -553,6 +569,27 @@ impl CnpSemanticSource for PacketCompleteSemanticSource {
         Err(refused(
             "complete native owning allocation report and whole peak are unavailable",
         ))
+    }
+
+    fn capture_original_lineage_continuation_with_ticket_into(
+        &self,
+        scope: CnpSemanticCaptureScope<'_>,
+        ticket: &OriginalLineageOwnerCaptureTicket<'_>,
+        activation: &WorldActivation,
+        record: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
+        limits: NativeCaptureLimits,
+        completed: &mut Option<InstalledOriginalLineageCapture>,
+    ) -> Result<(), OperationFailure> {
+        self.dispatch_original_complete_capture_into(
+            scope,
+            ticket,
+            activation,
+            record,
+            runtime_object,
+            limits,
+            completed,
+        )
     }
 
     fn requires_original_input_lineage(&self, _batch: &RuntimeInputBatch) -> bool {

@@ -23,6 +23,13 @@ mod conformance_dispatch;
 
 use conformance_dispatch::final_collection_scope;
 
+#[path = "runtime/retained_storage.rs"]
+mod retained_storage;
+
+pub(crate) use retained_storage::OriginalRuntimeStorageIdentity;
+
+pub(crate) use continuation::capture_ticket::owned::OwnedStorage as RuntimeOwnedStorage;
+
 #[path = "runtime/scheduling_state.rs"]
 pub(super) mod scheduling_state;
 
@@ -148,6 +155,28 @@ pub struct NodeRuntime {
 }
 
 impl NodeRuntime {
+    /// Authenticates this actual retained slot against the same original queue.
+    ///
+    /// The transient opaque correspondence is never stored or serialized and
+    /// grants no source, activation, native or readiness permission.
+    ///
+    /// # Errors
+    /// Refuses absent/generic custody, foreign creator or another queue allocation.
+    pub fn authenticate_original_custody_queue(
+        &self,
+        queue: &RuntimeCustodyQueue,
+    ) -> Result<(), RuntimeError> {
+        queue.authenticate_original_slot(
+            self.custody_slot
+                .as_deref()
+                .ok_or(RuntimeError::UnsupportedFacet)?,
+        )
+    }
+
+    pub(super) fn has_original_activation_proposal(&self, proposal: &ActivationRecord) -> bool {
+        self.barrier.record() == proposal
+    }
+
     pub(crate) fn attach_host_scheduling_owner(
         &mut self,
         source: &Rc<super::HostSchedulingSource>,
@@ -1518,6 +1547,15 @@ pub enum RuntimePollFailure {
 mod tests;
 #[cfg(test)]
 pub(crate) use tests::host_continuation_runtime_fixture;
+
+#[cfg(test)]
+pub(crate) use tests::known_initial_storage::fixture as test_known_initial_storage_fixture;
+
+/// Returns the original modeled runtime used by capture ownership controls.
+#[cfg(test)]
+pub(crate) fn test_capture_ticket_fixture() -> (NodeRuntime, OriginalLineageRuntimeRecord) {
+    tests::capture_ticket_fixture()
+}
 
 #[cfg(test)]
 pub(crate) fn test_original_admission(name: &str) -> OperationAdmission {

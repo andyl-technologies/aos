@@ -16,7 +16,7 @@ mod lineage_owned;
 #[path = "opaque_owned.rs"]
 mod opaque_owned;
 
-pub(super) trait OwnedStorage {
+pub(crate) trait OwnedStorage {
     fn owned_storage(&self) -> Result<usize, RuntimeError>;
 }
 
@@ -211,8 +211,23 @@ owned_fields!(crate::node_contract::OriginalLineageRow; object, dependencies);
 impl OwnedStorage for crate::node_contract::OperationRequest {
     fn owned_storage(&self) -> Result<usize, RuntimeError> {
         match self {
-            Self::ExactRun { .. } | Self::BoundarySettle { .. } => Ok(0),
-            _ => Err(RuntimeError::UnsupportedFacet),
+            Self::ExactRun { .. }
+            | Self::BoundarySettle { .. }
+            | Self::Pause
+            | Self::Observe
+            | Self::Capture
+            | Self::Shutdown => Ok(0),
+            Self::QuantumBegin {
+                window,
+                input_batch,
+                ..
+            } => storage::add(window.owned_storage()?, input_batch.owned_storage()?),
+            Self::QuantumClose { window } => window.owned_storage(),
+            Self::FaultInjectionV1(request) => request.owned_storage(),
+            Self::DebugConditionV1(request) => request.owned_storage(),
+            Self::FinalizeAssertions { barrier, receipt } => {
+                storage::add(barrier.owned_storage()?, receipt.owned_storage()?)
+            }
         }
     }
 }
@@ -220,35 +235,35 @@ impl OwnedStorage for crate::node_contract::OperationRequest {
 impl OwnedStorage for crate::node_contract::ProgressEvidence {
     fn owned_storage(&self) -> Result<usize, RuntimeError> {
         match self {
-            Self::Exact { .. } => Ok(0),
-            _ => Err(RuntimeError::UnsupportedFacet),
+            Self::Exact { .. } | Self::Administrative => Ok(0),
+            Self::Quantized {
+                window, closure, ..
+            } => storage::add(window.owned_storage()?, closure.owned_storage()?),
+            Self::Paused { stop_receipt, .. } => stop_receipt.owned_storage(),
+            Self::AssertionsFinalized {
+                barrier, report, ..
+            } => storage::add(barrier.owned_storage()?, report.owned_storage()?),
+            Self::FaultMutationApplied {
+                receipt, program, ..
+            } => storage::add(receipt.owned_storage()?, program.owned_storage()?),
+            Self::DebugConditionAppliedV1 {
+                stop_operation,
+                barrier,
+                report,
+                control,
+                ..
+            } => {
+                let bytes =
+                    storage::add(stop_operation.owned_storage()?, barrier.owned_storage()?)?;
+                let bytes = storage::add(bytes, report.owned_storage()?)?;
+                storage::add(bytes, control.owned_storage()?)
+            }
         }
     }
 }
 
-impl OwnedStorage for crate::node_scheduling::NativeSchedulingObservation {
-    fn owned_storage(&self) -> Result<usize, RuntimeError> {
-        if !self.external_inputs.is_empty() {
-            return Err(RuntimeError::UnsupportedFacet);
-        }
-        let mut bytes = self.node.owned_storage()?;
-        bytes = storage::add(bytes, self.owners.owned_storage()?)?;
-        bytes = storage::add(bytes, self.bounds.owned_storage()?)?;
-        bytes = storage::add(bytes, self.publications.owned_storage()?)?;
-        bytes = storage::add(bytes, self.input_progress.owned_storage()?)?;
-        // An unsupported empty native-ingress vector can still own slot storage.
-        bytes = storage::add(
-            bytes,
-            self.external_inputs
-                .capacity()
-                .checked_mul(size_of::<
-                    crate::node_scheduling::NativeExternalInputInventory,
-                >())
-                .ok_or(RuntimeError::ResourceLimit)?,
-        )?;
-        storage::add(bytes, self.proof_ref.owned_storage()?)
-    }
-}
+owned_fields!(crate::node_scheduling::NativeSchedulingObservation;
+    node, owners, bounds, publications, input_progress, external_inputs, proof_ref);
 
 impl OwnedStorage for crate::node_contract::SavedRuntimeResult {
     fn owned_storage(&self) -> Result<usize, RuntimeError> {
@@ -269,8 +284,7 @@ impl OwnedStorage for crate::node_scheduling::SavedPermission {
                 input_batch,
                 ..
             } => storage::add(window.owned_storage()?, input_batch.owned_storage()?),
-            // The closed complete route already excludes fault/epoch codecs.
-            Self::FaultInjectionV1 { .. } => Err(RuntimeError::UnsupportedFacet),
+            Self::FaultInjectionV1 { request } => request.owned_storage(),
         }
     }
 }
@@ -483,6 +497,21 @@ impl crate::node_contract::NodeRuntime {
         )
     }
 
+    /// Counts actual prepared native output metadata, excluding enclosing roots.
+    ///
+    /// # Errors
+    /// Refuses overflow in the same actual typed owner/participant/key walk.
+    pub(crate) fn capture_native_output_metadata_storage_data(
+        owner: &crucible_node_contract::Id,
+        participants: &Vec<crucible_node_contract::Id>,
+        key: &crate::node_contract::NativeStateKey,
+    ) -> Result<usize, RuntimeError> {
+        storage::add(
+            storage::add(owner.owned_storage()?, participants.owned_storage()?)?,
+            key.owned_storage()?,
+        )
+    }
+
     pub(crate) fn capture_native_key_storage(
         key: &crate::node_contract::NativeStateKey,
     ) -> Result<usize, RuntimeError> {
@@ -593,3 +622,6 @@ impl crate::node_contract::NodeRuntime {
         storage::protocol_shared_header_storage(views, maximum_data_alignment, maximum)
     }
 }
+
+#[path = "retained_typed.rs"]
+mod retained_typed;

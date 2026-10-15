@@ -121,6 +121,14 @@ impl PreparedHostSchedulingNode {
         // only infallible field construction.
         let owner_id = owner.owner.clone();
         let participants = self.source.selection.owner.owner.participant_ids.clone();
+        self.source
+            .retain_capture_journal_dependencies(
+                ticket.runtime_object(),
+                &snapshot.encoded().reference,
+                &journal.reference,
+                limits.maximum_total_record_bytes,
+            )
+            .map_err(failure)?;
         self.current()?;
         let snapshot = self
             .capture_preparation

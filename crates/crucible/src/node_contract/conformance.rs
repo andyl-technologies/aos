@@ -157,6 +157,40 @@ impl ConformanceRuntime {
         self.current()
     }
 
+    /// Authenticates the actual retained runtime slot against its original queue.
+    ///
+    /// # Errors
+    /// Refuses foreign current plan/custody or a different actual queue, including
+    /// equal-proposal queues. This creates no execution or readiness authority.
+    pub fn authenticate_original_custody_queue(
+        &mut self,
+        queue: &RuntimeCustodyQueue,
+    ) -> Result<(), RuntimeError> {
+        self.current()?;
+        self.runtime.authenticate_original_custody_queue(queue)?;
+        self.current()
+    }
+
+    /// Checks the same inactive collecting plan and original activation proposal.
+    ///
+    /// This borrows the actual runtime barrier; an equal external proposal does
+    /// not issue activation, readiness or permission to dispatch native work.
+    ///
+    /// # Errors
+    /// Refuses another original plan/proposal, an activated runtime or stale
+    /// whole-world source custody under the installed authority.
+    pub fn validate_inactive_collection_proposal(
+        &mut self,
+        plan: &crate::node_admission::InstalledConformancePlan,
+        proposal: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        self.validate_inactive_collection_plan(plan)?;
+        if !self.runtime.has_original_activation_proposal(proposal) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+
     /// Transfers the exact collecting world before any operational cleanup callback.
     ///
     /// The private runtime shell remains owned; no ordinary runtime or graph is

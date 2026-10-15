@@ -61,6 +61,7 @@ pub use semantic::{
     PacketCompleteAckPeerBootFrame, PacketCompleteAckPeerBootMaterial,
     PacketCompleteArchivedOwnerData, PacketCompleteArchivedSemantics,
     PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits,
+    PacketCompleteCaptureDependencyLookupData, PacketCompleteCaptureDependencyStorageData,
     PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader,
     PacketCompleteHistoricalAllocationFacts, PacketCompleteHistoricalNativeGroup,
     PacketCompleteHistoricalProtocolData, PacketCompleteHistoricalProtocolDataBudget,

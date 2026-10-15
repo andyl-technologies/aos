@@ -8,6 +8,10 @@ use std::{
 
 use super::*;
 
+#[path = "supervisor/bounded_wake.rs"]
+mod bounded_wake;
+pub use bounded_wake::{RuntimeCustodyWakeReader, RuntimeCustodyWakeWait};
+
 struct Mailbox {
     reserved: Cell<bool>,
     polling: Cell<bool>,
@@ -15,6 +19,10 @@ struct Mailbox {
 }
 
 struct QueueInner {
+    process: u32,
+    thread: std::thread::ThreadId,
+    notifier: Option<std::sync::Arc<bounded_wake::CustodyNotifier>>,
+    original_waker: Option<Waker>,
     mailboxes: Vec<Rc<Mailbox>>,
     cursor: Cell<usize>,
     waker: RefCell<Option<Waker>>,
@@ -71,6 +79,10 @@ impl RuntimeCustodyQueue {
         }
         Ok(Self {
             inner: Rc::new(QueueInner {
+                process: std::process::id(),
+                thread: std::thread::current().id(),
+                notifier: None,
+                original_waker: None,
                 mailboxes,
                 cursor: Cell::new(0),
                 waker: RefCell::new(None),
@@ -109,6 +121,32 @@ impl RuntimeCustodyQueue {
         &self,
         context: &mut Context<'_>,
     ) -> Poll<Result<(), super::super::RuntimePollFailure>> {
+        if self.inner.notifier.is_some() {
+            if self.inner.process != std::process::id()
+                || self.inner.thread != std::thread::current().id()
+            {
+                return Poll::Ready(Err(crate::node_contract::RuntimePollFailure::Admission(
+                    RuntimeError::ForeignAuthority,
+                )));
+            }
+            let Some(expected) = self.inner.original_waker.as_ref() else {
+                return Poll::Ready(Err(crate::node_contract::RuntimePollFailure::Admission(
+                    RuntimeError::ForeignAuthority,
+                )));
+            };
+            let stored = self.inner.waker.borrow();
+            if !context.waker().will_wake(expected)
+                || stored
+                    .as_ref()
+                    .is_some_and(|held| !held.will_wake(expected))
+            {
+                // Never discard an unknown retained wake owner to obtain budget
+                // credit. Ordinary queues keep their original arbitrary path.
+                return Poll::Ready(Err(crate::node_contract::RuntimePollFailure::Admission(
+                    RuntimeError::ForeignAuthority,
+                )));
+            }
+        }
         *self.inner.waker.borrow_mut() = Some(context.waker().clone());
         let count = self.inner.mailboxes.len();
         let start = self.inner.cursor.get();
@@ -175,6 +213,12 @@ impl RuntimeCustodySupervisor for RuntimeCustodyQueue {
         activation: &ActivationRecord,
         limits: RuntimeLimits,
     ) -> Result<Box<dyn RuntimeCustodySlot>, RuntimeError> {
+        if self.inner.notifier.is_some()
+            && (self.inner.process != std::process::id()
+                || self.inner.thread != std::thread::current().id())
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
         let mailbox = self
             .inner
             .mailboxes
@@ -184,6 +228,8 @@ impl RuntimeCustodySupervisor for RuntimeCustodyQueue {
         mailbox.reserved.set(true);
         *self.inner.keepalive.borrow_mut() = Some(Rc::clone(&self.inner));
         Ok(Box::new(QueueSlot {
+            process: std::process::id(),
+            thread: std::thread::current().id(),
             inner: Rc::clone(&self.inner),
             mailbox: Rc::clone(mailbox),
             activation: activation.clone(),
@@ -194,6 +240,8 @@ impl RuntimeCustodySupervisor for RuntimeCustodyQueue {
 }
 
 struct QueueSlot {
+    process: u32,
+    thread: std::thread::ThreadId,
     inner: Rc<QueueInner>,
     mailbox: Rc<Mailbox>,
     activation: ActivationRecord,
@@ -202,6 +250,37 @@ struct QueueSlot {
 }
 
 impl RuntimeCustodySlot for QueueSlot {
+    fn original_runtime_custody_queue(
+        &self,
+    ) -> Result<Option<RuntimeCustodyQueueWitness<'_>>, RuntimeError> {
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.transferred
+            || self.inner.process != self.process
+            || self.inner.thread != self.thread
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(Some(RuntimeCustodyQueueWitness { inner: &self.inner }))
+    }
+
+    fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, RuntimeError> {
+        use crate::node_contract::runtime::RuntimeOwnedStorage;
+
+        let Some(backing) = self.original_queue_storage(maximum)? else {
+            return Ok(None);
+        };
+        let bytes = backing
+            .checked_add(self.activation.owned_storage()?)
+            .filter(|bytes| *bytes <= maximum)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        Ok(Some(bytes))
+    }
+
     fn original_transferred(&self) -> bool {
         self.transferred
     }
@@ -289,3 +368,135 @@ fn release_keepalive_if_empty(inner: &Rc<QueueInner>) {
 #[cfg(test)]
 #[path = "supervisor_tests.rs"]
 mod tests;
+
+impl QueueSlot {
+    fn original_queue_storage(&self, maximum: usize) -> Result<Option<usize>, RuntimeError> {
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+
+        if self.inner.process != std::process::id()
+            || self.inner.thread != std::thread::current().id()
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.transferred {
+            return Ok(None);
+        }
+        if !self
+            .inner
+            .mailboxes
+            .iter()
+            .any(|mailbox| Rc::ptr_eq(mailbox, &self.mailbox))
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        queue_storage(&self.inner, maximum)
+    }
+}
+
+impl RuntimeCustodyQueue {
+    /// Reports actual retained queue backing without cleanup or native callbacks.
+    ///
+    /// # Errors
+    /// Refuses foreign creator, conflicting borrow or exhausted requested credit.
+    /// Unknown opaque wake/custody backing returns `None`, never zero.
+    pub fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, RuntimeError> {
+        queue_storage(&self.inner, maximum)
+    }
+}
+
+fn queue_storage(inner: &Rc<QueueInner>, maximum: usize) -> Result<Option<usize>, RuntimeError> {
+    use crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter;
+    if inner.process != std::process::id() || inner.thread != std::thread::current().id() {
+        return Err(RuntimeError::ForeignAuthority);
+    }
+    let waker = inner
+        .waker
+        .try_borrow()
+        .map_err(|_| RuntimeError::OutstandingObligations)?;
+    if let Some(waker) = waker.as_ref() {
+        let (Some(_), Some(expected)) = (&inner.notifier, &inner.original_waker) else {
+            return Ok(None);
+        };
+        if !waker.will_wake(expected) {
+            return Ok(None);
+        }
+    }
+    let keepalive = inner
+        .keepalive
+        .try_borrow()
+        .map_err(|_| RuntimeError::OutstandingObligations)?;
+    if keepalive
+        .as_ref()
+        .is_some_and(|held| !Rc::ptr_eq(held, inner))
+    {
+        return Ok(None);
+    }
+    for mailbox in &inner.mailboxes {
+        if mailbox.polling.get()
+            || mailbox
+                .custody
+                .try_borrow()
+                .map_err(|_| RuntimeError::OutstandingObligations)?
+                .is_some()
+        {
+            return Ok(None);
+        }
+    }
+    let mut counter = RetainedRuntimeCounter::new(maximum);
+    counter.rc(inner)?;
+    counter.slots(&inner.mailboxes)?;
+    for mailbox in &inner.mailboxes {
+        counter.rc(mailbox)?;
+    }
+    if let Some(notifier) = &inner.notifier {
+        counter.shared(
+            std::sync::Arc::as_ptr(notifier).cast(),
+            bounded_wake::notifier_requested(notifier, maximum)?,
+        )?;
+    }
+    Ok(Some(counter.bytes()))
+}
+
+/// Borrows one actual Core queue allocation under both original owning handles.
+///
+/// There is no public constructor, Clone implementation or serialized identity.
+/// This local correspondence grants no activation, source or native permission.
+pub struct RuntimeCustodyQueueWitness<'a> {
+    inner: &'a Rc<QueueInner>,
+}
+
+impl RuntimeCustodyQueue {
+    /// Authenticates an actual slot against this same original queue allocation.
+    ///
+    /// # Errors
+    /// Refuses foreign creator, generic unknown slots, transferred slots or a
+    /// distinct queue, even when all public proposal data are byte-identical.
+    pub fn authenticate_original_slot(
+        &self,
+        slot: &dyn RuntimeCustodySlot,
+    ) -> Result<(), RuntimeError> {
+        if self.inner.process != std::process::id()
+            || self.inner.thread != std::thread::current().id()
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let witness = slot
+            .original_runtime_custody_queue()?
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        if !Rc::ptr_eq(witness.inner, &self.inner) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        // Reauthenticate while the slot and actual queue are both still borrowed.
+        if witness.inner.process != std::process::id()
+            || witness.inner.thread != std::thread::current().id()
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+}

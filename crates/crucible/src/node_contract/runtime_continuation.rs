@@ -451,6 +451,36 @@ impl VerifiedNativeContinuation {
 
 /// Provides a pre-reserved owning mailbox for complete runtime supervision.
 pub trait RuntimeCustodySlot {
+    /// Borrows original Core queue correspondence without issuing any permission.
+    ///
+    /// Generic slots return unknown. Only the actual Core QueueSlot constructs
+    /// this transient noncloneable witness after checking its creator custody.
+    ///
+    /// # Errors
+    /// Refuses foreign creator or unavailable original queue correspondence.
+    fn original_runtime_custody_queue(
+        &self,
+    ) -> Result<Option<RuntimeCustodyQueueWitness<'_>>, RuntimeError> {
+        Ok(None)
+    }
+
+    /// Observes actual original supervisor backing without transferring custody.
+    ///
+    /// The runtime charges the concrete Box data separately. Implementations
+    /// include actual backing heaps and retained shared owners, and return
+    /// `None` for opaque or unsupported states. This observation neither polls
+    /// reclamation nor creates execution, cleanup or replacement authority.
+    ///
+    /// # Errors
+    /// Refuses conflicting borrows, foreign origin, arithmetic overflow or a
+    /// requested extent above `maximum`.
+    fn retained_requested_storage_data(
+        &self,
+        _maximum: usize,
+    ) -> Result<Option<usize>, RuntimeError> {
+        Ok(None)
+    }
+
     /// Checks that the reserved capacity belongs to this exact world and policy.
     ///
     /// # Errors
@@ -1043,7 +1073,10 @@ mod host_capture;
 #[path = "runtime_continuation/supervisor.rs"]
 mod supervisor;
 
-pub use supervisor::RuntimeCustodyQueue;
+pub use supervisor::{
+    RuntimeCustodyQueue, RuntimeCustodyQueueWitness, RuntimeCustodyWakeReader,
+    RuntimeCustodyWakeWait,
+};
 
 fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where

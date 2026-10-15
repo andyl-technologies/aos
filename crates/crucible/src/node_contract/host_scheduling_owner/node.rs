@@ -62,13 +62,14 @@ impl PreparedHostSchedulingNode {
     pub(super) fn new_complete_restoration(
         source: Rc<HostSchedulingSource>,
         anchor: Rc<()>,
+        plan: Option<InstalledConformancePlan>,
         activation: ActivationRecord,
         route: NodeRoute,
     ) -> Self {
         Self {
             source,
             anchor,
-            plan: None,
+            plan,
             activation,
             route,
             ready: None,
@@ -137,6 +138,13 @@ impl PreparedHostSchedulingNode {
 }
 
 impl SimulationNode for PreparedHostSchedulingNode {
+    fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, OperationFailure> {
+        self.original_retained_node_backing(maximum).map(Some)
+    }
+
     fn collection_scope(&self) -> Option<&InstalledConformancePlan> {
         self.plan.as_ref()
     }

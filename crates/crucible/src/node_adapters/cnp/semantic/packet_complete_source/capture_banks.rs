@@ -56,6 +56,9 @@ pub struct PacketCompleteCaptureBankFacts {
 }
 
 pub(super) struct PacketCompleteCaptureBanks {
+    // A detached host owner remains in execution; final output belongs to Core.
+    pub(super) protocol_detached: bool,
+    pub(super) transferred: bool,
     pub(super) semantic: Option<CnpSemanticSnapshotReservation>,
     pub(super) semantic_snapshot: Option<CnpOriginalSemanticSnapshot>,
     pub(super) ancestry: Option<CnpSemanticSnapshotReservation>,
@@ -151,6 +154,8 @@ impl PacketCompleteCaptureBanks {
             )?),
         ];
         let original = Self {
+            protocol_detached: false,
+            transferred: false,
             semantic: Some(semantic),
             semantic_snapshot: None,
             ancestry: Some(ancestry),
@@ -179,16 +184,19 @@ impl PacketCompleteCaptureBanks {
         let semantic_bytes = match (&self.semantic, &self.semantic_snapshot) {
             (Some(bank), None) => bank.allocated_bytes(),
             (None, Some(snapshot)) => snapshot.payload().bytes.capacity(),
+            (None, None) if self.transferred => 0,
             _ => return Err(refused("original semantic bank association is incomplete")),
         };
         let ancestry_bytes = match (&self.ancestry, &self.ancestry_record) {
             (Some(bank), None) => bank.allocated_bytes(),
             (None, Some(record)) => record.bytes.capacity(),
+            (None, None) if self.transferred => 0,
             _ => return Err(refused("original ancestry bank association is incomplete")),
         };
         let journal_bytes = match (&self.journal, &self.journal_record) {
             (Some(bank), None) => bank.allocated_bytes(),
             (None, Some(record)) => record.bytes.capacity(),
+            (None, None) if self.transferred => 0,
             _ => return Err(refused("original journal bank association is incomplete")),
         };
         let protocol_bytes = match (
@@ -229,6 +237,7 @@ impl PacketCompleteCaptureBanks {
                     .and_then(|bytes| bytes.checked_add(aliases))
                     .ok_or_else(|| refused("original protocol payload allocation overflow"))?
             }
+            (None, None, None) if self.protocol_detached => 0,
             _ => return Err(refused("original protocol bank association is incomplete")),
         };
         let mut native_capacity = [0usize; 3];
@@ -236,6 +245,7 @@ impl PacketCompleteCaptureBanks {
             *capacity = match (&self.native_banks[index], &self.native_objects[index]) {
                 (Some(bank), None) => bank.allocated_bytes(),
                 (None, Some(object)) => object.bytes.capacity(),
+                (None, None) if self.transferred => 0,
                 _ => return Err(refused("native return bank association is incomplete")),
             };
         }

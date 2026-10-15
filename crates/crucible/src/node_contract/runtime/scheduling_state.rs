@@ -41,6 +41,45 @@ struct OriginalLineageSchedulingIdentity {
 pub(in super::super) struct OriginalSchedulingState(Rc<Original>);
 
 impl OriginalSchedulingState {
+    pub(in super::super) fn charge_original_retained_storage(
+        &self,
+        counter: &mut super::super::runtime_owned_counter::RetainedRuntimeCounter,
+    ) -> Result<(), RuntimeError> {
+        self.original()?;
+        let Original {
+            process: _,
+            thread: _,
+            world,
+            authority: _,
+            live: _,
+            scheduler,
+            restored,
+        } = self.0.as_ref();
+        let state = scheduler
+            .try_borrow()
+            .map_err(|_| RuntimeError::OutstandingObligations)?;
+        let restored = restored
+            .try_borrow()
+            .map_err(|_| RuntimeError::OutstandingObligations)?;
+        if counter.rc(&self.0)? {
+            counter.owned(world)?;
+            if let Some(state) = state.as_ref() {
+                state.charge_original_retained_storage(counter)?;
+            }
+            if let Some(identity) = restored.as_ref() {
+                let OriginalLineageSchedulingIdentity {
+                    source,
+                    scheduling,
+                    target,
+                } = identity;
+                counter.owned(source)?;
+                counter.owned(scheduling)?;
+                counter.owned(target)?;
+            }
+        }
+        self.original()
+    }
+
     pub(in super::super) fn new(authority: &Rc<()>, world: HashRef) -> Self {
         Self(Rc::new(Original {
             process: std::process::id(),

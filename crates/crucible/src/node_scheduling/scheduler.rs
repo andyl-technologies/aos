@@ -107,6 +107,9 @@ pub struct CausalScheduler {
     restored_epochs: Option<super::SchedulingEpochEvidence>,
 }
 
+#[path = "scheduler/retained_storage.rs"]
+mod retained_storage;
+
 #[path = "condition_stop.rs"]
 mod condition_stop;
 #[path = "terminal.rs"]

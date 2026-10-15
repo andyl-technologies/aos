@@ -84,6 +84,53 @@ impl std::fmt::Debug for AdmittedExtensionSet {
 }
 
 impl AdmittedExtensionSet {
+    pub(crate) fn charge_original_retained_storage(
+        &self,
+        counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        let Self {
+            applications,
+            definitions,
+            objects,
+            application_bytes: _,
+            qualification_checks: _,
+        } = self;
+        counter.slots(applications)?;
+        for application in applications {
+            let AdmittedExtensionApplication {
+                scope,
+                selected,
+                handler_identity,
+                semantic_contract,
+            } = application;
+            counter.owned(scope.world_hash())?;
+            counter.owned(scope.record_hash())?;
+            if let Some(node) = scope.node() {
+                counter.owned(node)?;
+            }
+            if let Some(binding) = scope.binding_hash() {
+                counter.owned(binding)?;
+            }
+            charge_retained_path(scope.record_path(), counter)?;
+            counter.owned(selected)?;
+            counter.owned(handler_identity)?;
+            charge_retained_semantics(semantic_contract, counter)?;
+        }
+        counter.map(definitions)?;
+        for (reference, definition) in definitions {
+            counter.owned(reference)?;
+            counter.owned(definition.selection())?;
+            counter.owned(definition.handler_identity())?;
+            charge_retained_semantics(definition.semantic_contract(), counter)?;
+        }
+        counter.map(objects)?;
+        for (reference, bytes) in objects {
+            counter.owned(reference)?;
+            counter.rc(bytes)?;
+        }
+        Ok(())
+    }
+
     /// Iterates exact applications in deterministic graph-admission order.
     pub fn applications(&self) -> impl ExactSizeIterator<Item = &AdmittedExtensionApplication> {
         self.applications.iter()
@@ -871,4 +918,82 @@ fn scoped(
         required,
         observed,
     )
+}
+
+// Selected definitions retain data contracts, not the registry's installed
+// handler trait objects. Their own actual Rc byte allocations remain counted.
+fn charge_retained_semantics(
+    value: &ExtensionSemanticContract,
+    counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
+) -> Result<(), crate::node_contract::RuntimeError> {
+    let ExtensionSemanticContract {
+        class_contract,
+        facet_contract,
+        mode_contract,
+        port_contract,
+        timing_contract,
+        state_contract,
+        error_contract,
+        qualification_contract,
+        locations,
+        roles,
+        facets,
+        modes,
+        interfaces,
+        impact: _,
+    } = value;
+    for reference in [
+        class_contract,
+        facet_contract,
+        mode_contract,
+        port_contract,
+        timing_contract,
+        state_contract,
+        error_contract,
+        qualification_contract,
+    ] {
+        counter.owned(reference)?;
+    }
+    counter.set(locations)?;
+    for identities in [roles, facets, interfaces] {
+        counter.set(identities)?;
+        for identity in identities {
+            counter.owned(identity)?;
+        }
+    }
+    counter.slots(modes)
+}
+
+fn charge_retained_path(
+    path: &ExtensionRecordPath,
+    counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
+) -> Result<(), crate::node_contract::RuntimeError> {
+    match path {
+        ExtensionRecordPath::World | ExtensionRecordPath::Node => Ok(()),
+        ExtensionRecordPath::Port { port } => counter.owned(port),
+        ExtensionRecordPath::Lane { port, lane } => {
+            counter.owned(port)?;
+            counter.owned(lane)
+        }
+        ExtensionRecordPath::LaneSchema { port, lane, schema } => {
+            counter.owned(port)?;
+            counter.owned(lane)?;
+            counter.owned(schema)
+        }
+        ExtensionRecordPath::ImplementationSchema { schema, version: _ } => counter.owned(schema),
+        ExtensionRecordPath::AdvertisedFacet { facet }
+        | ExtensionRecordPath::SelectedFacet { facet } => counter.owned(facet),
+        ExtensionRecordPath::Artifact { artifact } => counter.owned(artifact),
+        ExtensionRecordPath::WorldNodeBindingRef { node } => counter.owned(node),
+        ExtensionRecordPath::OwnerNodeBindingRef { owner, node } => {
+            counter.owned(owner)?;
+            counter.owned(node)
+        }
+        ExtensionRecordPath::Owner { owner } => counter.owned(owner),
+        ExtensionRecordPath::Connection { connection } => counter.owned(connection),
+        ExtensionRecordPath::ConnectionSchema { connection, schema } => {
+            counter.owned(connection)?;
+            counter.owned(schema)
+        }
+    }
 }

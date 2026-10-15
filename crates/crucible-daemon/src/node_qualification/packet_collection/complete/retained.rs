@@ -8,7 +8,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     mem::{align_of, size_of},
     path::PathBuf,
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 use crucible::node_state::{
@@ -94,6 +94,14 @@ impl Counter {
         self.shared_header(Rc::as_ptr(owner).cast(), size_of::<T>(), align_of::<T>())
     }
 
+    /// Charges a retained Weak without marking any strong payload as walked.
+    pub(in crate::node_qualification::packet_collection) fn weak<T>(
+        &mut self,
+        _owner: &Weak<T>,
+    ) -> Result<(), QualificationError> {
+        self.add(shared_requested_storage(size_of::<T>(), align_of::<T>())?)
+    }
+
     pub(in crate::node_qualification::packet_collection) fn shared_header(
         &mut self,
         identity: *const (),
@@ -106,23 +114,25 @@ impl Counter {
         if self.shared_used == self.shared.len() {
             return Err(exhausted());
         }
-        // Two counters and conservative prefix/trailing padding use the same
-        // source-pinned Rc/Arc requested-layout model as Core. No raw pointer is
-        // dereferenced, serialized or accepted as source/native authority.
-        let padding = alignment
-            .max(align_of::<usize>())
-            .checked_sub(1)
-            .and_then(|value| value.checked_mul(2))
-            .ok_or_else(exhausted)?;
-        let bytes = inline
-            .checked_add(2 * size_of::<usize>())
-            .and_then(|n| n.checked_add(padding))
-            .ok_or_else(exhausted)?;
+        let bytes = shared_requested_storage(inline, alignment)?;
         self.add(bytes)?;
         self.shared[self.shared_used] = Some(identity);
         self.shared_used += 1;
         Ok(true)
     }
+}
+
+// Uses the same checked requested layout for strong and conservative Weak views.
+fn shared_requested_storage(inline: usize, alignment: usize) -> Result<usize, QualificationError> {
+    let padding = alignment
+        .max(align_of::<usize>())
+        .checked_sub(1)
+        .and_then(|value| value.checked_mul(2))
+        .ok_or_else(exhausted)?;
+    inline
+        .checked_add(2 * size_of::<usize>())
+        .and_then(|bytes| bytes.checked_add(padding))
+        .ok_or_else(exhausted)
 }
 
 pub(in crate::node_qualification::packet_collection) trait Owned {
@@ -354,6 +364,26 @@ mod tests {
         counter.charge(&first)?;
         counter.charge(&second)?;
         assert_eq!(counter.bytes(), first.capacity() + second.capacity());
+        Ok(())
+    }
+
+    #[test]
+    fn weak_view_preserves_later_strong_nested_walk() -> Result<(), QualificationError> {
+        let strong = Rc::new(String::with_capacity(2048));
+        let weak = Rc::downgrade(&strong);
+        let mut counter = Counter::new(8192);
+
+        counter.weak(&weak)?;
+        let header = counter.bytes();
+        assert!(counter.rc(&strong)?);
+        counter.charge(strong.as_ref())?;
+        assert_eq!(counter.bytes(), 2 * header + strong.capacity());
+        assert!(!counter.rc(&strong)?);
+
+        let mut exact = Counter::new(header);
+        exact.weak(&weak)?;
+        assert_eq!(exact.bytes(), header);
+        assert!(Counter::new(header - 1).weak(&weak).is_err());
         Ok(())
     }
 

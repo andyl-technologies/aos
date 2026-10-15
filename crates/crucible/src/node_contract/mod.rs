@@ -20,6 +20,8 @@ mod retirement_data;
 mod retirement_release;
 mod role_descriptions;
 mod runtime;
+#[path = "runtime/retained_storage/counter.rs"]
+pub(crate) mod runtime_owned_counter;
 mod terminal;
 mod traits;
 mod types;
@@ -41,6 +43,9 @@ pub(crate) use retirement_data::RetirementActivation;
 pub use retirement_release::GracefulRetirementQualification;
 pub use role_descriptions::*;
 pub use runtime::*;
+pub(crate) use runtime::OriginalRuntimeStorageIdentity;
+#[cfg(test)]
+pub(crate) use runtime::{test_capture_ticket_fixture, test_known_initial_storage_fixture};
 pub use terminal::*;
 pub use traits::*;
 pub use types::*;
