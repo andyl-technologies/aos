@@ -1,12 +1,12 @@
-From f71c4caaeb30625f34c2e6b0d06b014920a6ae0a Mon Sep 17 00:00:00 2001
+From 608679204529ddb8a6609c6fcb4f21167d149142 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 11:42:20 -0700
-Subject: [PATCH] plugins: retain owner lifetimes and ordinary target
- boundaries
+Date: Thu, 15 Oct 2026 11:58:58 -0700
+Subject: [PATCH] plugins: preserve owner lifetimes and ordinary target
+ integration
 
-Preserve checkpoint ownership, monitor dispatch and ordinary target absence
-handling, and keep the hot-fork actor fixture explicit about its unavailable
-dependencies while retaining its existing coordinator cases.
+Retain checkpoint ownership and ordinary target boundaries, and compile the
+procfd fixture with the genuine descriptor and negative allocation providers
+required by its unchanged OS and Error helper checks.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -264014,10 +264014,10 @@ index 0000000000000000000000000000000000000000..027c4ba3cdee068e50e70d17a9807697
 +}
 diff --git a/tests/unit/test-crucible-procfd-flags.py b/tests/unit/test-crucible-procfd-flags.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..243d010ed7442d66cc4c1dd552b6f20cf038ecf4
+index 0000000000000000000000000000000000000000..d8b0c5398f537da9e2e25a52d773c6a3cb5221b5
 --- /dev/null
 +++ b/tests/unit/test-crucible-procfd-flags.py
-@@ -0,0 +1,647 @@
+@@ -0,0 +1,650 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Run native procfd preparation and adoption bodies against Linux descriptors.
 +
@@ -264071,6 +264071,7 @@ index 0000000000000000000000000000000000000000..243d010ed7442d66cc4c1dd552b6f20c
 +
 +PRELUDE = r"""
 +#include "qemu/osdep.h"
++#include "qemu/crucible-descriptor-table.h"
 +#include "qapi/error.h"
 +#include "qemu/error-report.h"
 +#include "qemu/cutils.h"
@@ -264655,6 +264656,8 @@ index 0000000000000000000000000000000000000000..243d010ed7442d66cc4c1dd552b6f20c
 +        *shlex.split(os.environ["CC"]),
 +        *shlex.split(os.environ.get("CFLAGS", "")),
 +        "-std=gnu11", "-Wall", "-Werror", str(fixture), str(ROOT / "util/error.c"),
++        str(ROOT / "util/crucible-descriptor-table.c"),
++        str(ROOT / "stubs/crucible-qmp-allocation.c"),
 +        "-o", str(binary), *shlex.split(os.environ.get("LDFLAGS", "")),
 +    ]
 +    (args.output_dir / "compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
