@@ -23,6 +23,7 @@
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use crucible::model::ResolvedEffectTrace;
@@ -35,6 +36,7 @@ use crucible_campaign::{FindingKind, FindingSignature, ReproductionArtifactId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::attempt_event_log::AttemptEventLogVisitError;
 use crate::qemu_campaign_lifecycle::{
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
     QemuAttemptExecutionEvidenceSnapshot,
@@ -288,50 +290,68 @@ impl FindingProductionReplayExecutionSide {
     {
         if event_log_prefix.is_empty()
             && snapshot
-                .event_log_entries()
-                .first()
-                .is_some_and(|entry| entry.sequence() != 0)
+                .first_event_sequence()
+                .is_some_and(|sequence| sequence != 0)
         {
             return Ok(FindingProductionReplayCaptureOutcome::Incomplete(
                 FindingProductionReplayIncomplete::MissingEventLogPrefix,
             ));
         }
-        let event_count = event_log_prefix
-            .len()
-            .checked_add(snapshot.event_log_entries().len())
+        let count_limit = || FindingProductionReplayCaptureError::LimitExceeded {
+            limit: "finding-production-replay-event-count",
+        };
+        let bytes_limit = || FindingProductionReplayCaptureError::LimitExceeded {
+            limit: "finding-production-replay-event-bytes",
+        };
+        let event_count = usize::try_from(snapshot.event_log_len())
+            .ok()
+            .and_then(|native| event_log_prefix.len().checked_add(native))
             .and_then(|count| count.checked_add(usize::from(terminal_entry.is_some())))
-            .ok_or(FindingProductionReplayCaptureError::LimitExceeded {
-                limit: "finding-production-replay-event-count",
-            })?;
+            .ok_or_else(count_limit)?;
         if event_count > limits.max_events_per_side {
-            return Err(FindingProductionReplayCaptureError::LimitExceeded {
-                limit: "finding-production-replay-event-count",
-            });
+            return Err(count_limit());
         }
-        let event_bytes = event_log_prefix
-            .iter()
-            .chain(snapshot.event_log_entries())
-            .chain(terminal_entry)
-            .try_fold(0_usize, |total, entry| {
-                total.checked_add(entry.canonical_material_len()).ok_or(
-                    FindingProductionReplayCaptureError::LimitExceeded {
-                        limit: "finding-production-replay-event-bytes",
-                    },
-                )
+
+        // The native entries are segmented. Their size is summed in one
+        // streaming pass, so an oversized capture is refused before any
+        // entry is copied.
+        let mut event_bytes =
+            event_log_prefix
+                .iter()
+                .chain(terminal_entry)
+                .try_fold(0_usize, |total, entry| {
+                    total
+                        .checked_add(entry.canonical_material_len())
+                        .ok_or_else(bytes_limit)
+                })?;
+        snapshot
+            .try_for_each_event_log_entry(|entry| {
+                event_bytes = event_bytes
+                    .checked_add(entry.canonical_material_len())
+                    .ok_or_else(bytes_limit)?;
+                Ok(())
+            })
+            .map_err(|error| match error {
+                AttemptEventLogVisitError::Log(_) => {
+                    FindingProductionReplayCaptureError::InvalidEventLog
+                }
+                AttemptEventLogVisitError::Visit(error) => error,
             })?;
         if event_bytes > limits.max_event_bytes_per_side {
-            return Err(FindingProductionReplayCaptureError::LimitExceeded {
-                limit: "finding-production-replay-event-bytes",
-            });
+            return Err(bytes_limit());
         }
+
         let mut event_log = Vec::new();
-        event_log.try_reserve_exact(event_count).map_err(|_| {
-            FindingProductionReplayCaptureError::LimitExceeded {
-                limit: "finding-production-replay-event-count",
-            }
-        })?;
+        event_log
+            .try_reserve_exact(event_count)
+            .map_err(|_| count_limit())?;
         event_log.extend_from_slice(event_log_prefix);
-        event_log.extend_from_slice(snapshot.event_log_entries());
+        snapshot
+            .try_for_each_event_log_entry(|entry| {
+                event_log.push(entry.clone());
+                Ok::<(), Infallible>(())
+            })
+            .map_err(|_| FindingProductionReplayCaptureError::InvalidEventLog)?;
         event_log.extend(terminal_entry.cloned());
         validate_event_log_parts(&[], &event_log, snapshot.frontier())?;
         let Some(terminal_fingerprints) = snapshot.terminal_fingerprints() else {

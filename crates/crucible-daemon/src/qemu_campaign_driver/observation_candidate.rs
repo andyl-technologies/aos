@@ -10,7 +10,7 @@ const STOP_DIAGNOSTIC_CHARS: usize = 512;
 ///
 /// The leaf references the log's segments instead of embedding entries, so
 /// it stays far below the 64 MiB component-message bound (RFC-0020 CMEAS-22).
-const MAX_MEASUREMENT_EVIDENCE_LEAF_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_MEASUREMENT_EVIDENCE_LEAF_BYTES: usize = 64 * 1024 * 1024;
 
 pub(super) fn project_boundary(
     mut pending: QemuFreshPendingObservation,

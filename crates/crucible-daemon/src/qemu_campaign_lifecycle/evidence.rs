@@ -30,13 +30,13 @@ use super::{
     MAX_QEMU_ATTEMPT_GENERATION_NODES, QemuAttemptContinuation, QemuFreshAttemptLifecycleFactory,
     QemuFreshAttemptLifecycleOwner,
 };
-use crate::{
-    AttemptExecutionDisposition, AttemptExecutionReconciliationStep,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
-};
+use crate::{AttemptExecutionDisposition, AttemptExecutionReconciliationStep};
 
 const MAX_EXECUTION_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES * 2;
 const MAX_TERMINAL_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES;
+
+/// Largest encoded resolved-effect trace retained for one attempt.
+const MAX_RESOLVED_EFFECT_TRACE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Lifecycle wrapper that records exact process-local execution evidence.
 ///
@@ -423,6 +423,9 @@ impl<F> QemuObservedFreshAttemptLifecycleFactory<F> {
 
     /// Resets the worker evidence and derives the canonical VM-node sample set.
     ///
+    /// The recorded event log is bounded by the attempt's operational
+    /// `maximum_event_log_bytes`.
+    ///
     /// # Errors
     ///
     /// Returns a classified scheduler failure when the evidence owner cannot be
@@ -430,9 +433,10 @@ impl<F> QemuObservedFreshAttemptLifecycleFactory<F> {
     pub(crate) fn prepare_observation(
         &self,
         source: &crucible::ScenarioDefForm,
+        context: &AttemptExecutionContext,
     ) -> Result<Vec<NodeId>, AttemptWorkerFailure<SchedulerError>> {
         self.evidence
-            .reset()
+            .reset(context.maximum_event_log_bytes())
             .map_err(AttemptWorkerFailure::Retryable)?;
         let vm_nodes = source.world().vm_nodes();
         if vm_nodes.len() > MAX_TERMINAL_FINGERPRINT_SAMPLES {
@@ -530,17 +534,14 @@ where
             AttemptExecutionProduct::PreparedSemantic(result) => {
                 let attached = self
                     .evidence
-                    .snapshot()
+                    .terminal_fingerprints()
                     .map_err(map_terminal_evidence_snapshot_failure)
-                    .and_then(|snapshot| {
-                        snapshot
-                            .terminal_fingerprints()
-                            .ok_or_else(|| {
-                                AttemptWorkerFailure::Terminal(
-                                    QemuTerminalEvidenceExecutionRunnerError::MissingTerminalFingerprints,
-                                )
-                            })
-                            .map(<[FingerprintSample]>::to_vec)
+                    .and_then(|terminal_fingerprints| {
+                        terminal_fingerprints.ok_or_else(|| {
+                            AttemptWorkerFailure::Terminal(
+                                QemuTerminalEvidenceExecutionRunnerError::MissingTerminalFingerprints,
+                            )
+                        })
                     })
                     .and_then(|terminal_fingerprints| {
                         result.with_terminal_fingerprints(terminal_fingerprints).map_err(|error| {
@@ -613,7 +614,7 @@ where
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
         let fingerprint_nodes = self
-            .prepare_observation(source)
+            .prepare_observation(source, context)
             .map_err(map_observed_evidence_failure::<F::Error>)?;
         let lifecycle = self
             .inner

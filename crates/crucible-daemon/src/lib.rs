@@ -191,9 +191,9 @@ pub use assignment_ledger::{
 };
 pub use attempt_event_log::{
     ATTEMPT_LOG_SEGMENT_SCHEMA, ATTEMPT_LOG_SEGMENT_TARGET_BYTES, AttemptEventLogError,
-    AttemptLogManifest, AttemptLogSegmentRef, AttemptLogSegmentSource, MAX_ATTEMPT_LOG_ENTRY_BYTES,
-    MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS, MAX_ATTEMPT_LOG_SEGMENT_BYTES, MemorySegmentStore,
-    decode_segment,
+    AttemptEventLogVisitError, AttemptLogManifest, AttemptLogSegmentRef, AttemptLogSegmentSource,
+    MAX_ATTEMPT_LOG_ENTRY_BYTES, MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS, MAX_ATTEMPT_LOG_SEGMENT_BYTES,
+    MemorySegmentStore, decode_segment,
 };
 pub use automatic_finding_runner::{
     AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,
@@ -571,7 +571,6 @@ pub(crate) use qemu_baked_genesis::{
 pub(crate) use qemu_campaign_driver::QemuSavepointReplayProbe;
 pub use qemu_campaign_driver::{
     DEFAULT_MAXIMUM_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
     QemuAttemptStartReplayProof, QemuFreshModeledDriver, QemuFreshModeledDriverError,
     QemuModeledAttemptLifecycle, QemuSavepointReplayProof,
 };

@@ -320,14 +320,16 @@ fn authenticate_qemu_fuzz_campaign(
                 .iter()
                 .any(|decision| matches!(decision, crucible::Decision::Override(_))),
         );
-        let feedback = crucible::EventLogCoverageFeedback::from_event_log(
-            accepted.evidence().event_log_entries(),
-        );
+        let event_log = accepted
+            .evidence()
+            .event_log_entries()
+            .map_err(|error| artifact_error(format!("read QEMU fuzz event evidence: {error}")))?;
+        let feedback = crucible::EventLogCoverageFeedback::from_event_log(&event_log);
         let coverage_entries = feedback
             .projection()
             .entries()
             .iter()
-            .map(|entry| accepted.evidence().event_log_entries()[entry.raw_index].clone())
+            .filter_map(|entry| event_log.get(entry.raw_index).cloned())
             .collect();
         let coverage_ids = feedback
             .projection()

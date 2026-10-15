@@ -788,22 +788,27 @@ fn campaign_save_boundary_proof(
         ));
     };
     let marker = crucible::MarkerId::from_name(name);
-    let entry = evidence
-        .event_log_entries()
-        .iter()
-        .rev()
-        .find(|entry| {
-            matches!(
+    // The proof is the latest matching marker; one ordered pass over the
+    // segmented evidence keeps the last match.
+    let mut latest = None;
+    evidence
+        .try_for_each_event_log_entry(|entry| {
+            if matches!(
                 entry.payload(),
                 crucible_model::SchedulerEventLogPayload::Observable(_)
             ) && entry.event_payload().kind() == "guest_marker"
                 && entry.event_payload().string("marker") == Some(name)
+            {
+                latest = Some(entry.clone());
+            }
+            Ok::<(), std::convert::Infallible>(())
         })
-        .ok_or_else(|| {
-            campaign_run_error_message(format!(
-                "campaign marker save reached `{name}` without its scheduler event proof"
-            ))
-        })?;
+        .map_err(|error| campaign_run_error("read campaign marker evidence", error))?;
+    let entry = latest.ok_or_else(|| {
+        campaign_run_error_message(format!(
+            "campaign marker save reached `{name}` without its scheduler event proof"
+        ))
+    })?;
 
     // The campaign owner stops directly on NamedBoundary and does not register
     // a session breakpoint. Preserve the scheduler-owned marker identity so
@@ -1200,14 +1205,15 @@ fn campaign_run_report_with_state(
         evidence.execution_fingerprints(),
         evidence.terminal_fingerprints(),
     )?;
-    let streamed_events = evidence
+    let event_log = evidence
         .event_log_entries()
+        .map_err(|error| campaign_run_error("read scheduler event evidence", error))?;
+    let streamed_events = event_log
         .iter()
         .map(serde_json::to_string)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| campaign_run_error("encode scheduler event evidence", error))?;
-    let streamed_event_frames = evidence
-        .event_log_entries()
+    let streamed_event_frames = event_log
         .iter()
         .map(|entry| {
             canonical_streaming_event_frame_bytes(&campaign_output_api::StreamingEventFrame {
@@ -1255,9 +1261,7 @@ fn campaign_run_report_with_state(
             .collect(),
         streamed_events,
         streamed_event_frames,
-        coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(
-            evidence.event_log_entries(),
-        ),
+        coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&event_log),
         execution_fingerprints,
         resolved_effect_trace: evidence.resolved_effect_trace().map(ToOwned::to_owned),
         acknowledged_commands: Vec::new(),

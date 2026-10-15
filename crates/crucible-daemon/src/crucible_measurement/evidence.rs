@@ -73,8 +73,11 @@ mod guest;
 mod wire;
 
 pub(crate) use assertion_boundary::{
-    ObservationPrefixDigest, observation_event_prefix_digest, verified_assertion_transition,
-    verify_assertion_failure_boundary,
+    AssertionTransitionScan, ObservationPrefixDigest, verify_assertion_failure_boundary,
+};
+#[cfg(test)]
+pub(crate) use assertion_boundary::{
+    observation_event_prefix_digest, verified_assertion_transition,
 };
 
 pub use bundle::CrucibleMeasurementEvidenceBundle;

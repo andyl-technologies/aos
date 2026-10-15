@@ -50,7 +50,8 @@ pub(super) fn assert_campaign_save_exports_closure(
             let marker_entry = campaign
                 .evidence()
                 .event_log_entries()
-                .iter()
+                .or_panic("read retained marker evidence")
+                .into_iter()
                 .find(|entry| entry.sequence() == *sequence)
                 .or_panic("retained marker proof entry");
             assert_eq!(*content_hash, marker_entry.content_hash());
@@ -423,10 +424,11 @@ pub(super) fn assert_campaign_save_exports_closure(
         }
 
         let handle = std::fs::read_to_string(&output).or_panic("read v6 handle for tampering");
-        for (mutation, forged) in recomputed_observation_proof_forgeries(
-            source_proof,
-            campaign.evidence().event_log_entries(),
-        ) {
+        let event_log = campaign
+            .evidence()
+            .event_log_entries()
+            .or_panic("read retained observation evidence");
+        for (mutation, forged) in recomputed_observation_proof_forgeries(source_proof, &event_log) {
             let forged_handle = handle_with_observation_proof(&handle, &forged);
             let error = decode_savepoint_handle(forged_handle.as_bytes())
                 .error_or_panic("proof-only forgery must disagree with retained raw evidence");
@@ -456,13 +458,10 @@ pub(super) fn assert_campaign_save_exports_closure(
             source_boundary.scheduler_quiescent(),
         )
         .or_panic("shifted raw boundary remains structurally valid");
-        let shifted_proof = recomputed_observation_proof_forgeries(
-            source_proof,
-            campaign.evidence().event_log_entries(),
-        )
-        .into_iter()
-        .find_map(|(mutation, proof)| (mutation == "quanta").then_some(proof))
-        .or_panic("quantum-coordinate proof forgery");
+        let shifted_proof = recomputed_observation_proof_forgeries(source_proof, &event_log)
+            .into_iter()
+            .find_map(|(mutation, proof)| (mutation == "quanta").then_some(proof))
+            .or_panic("quantum-coordinate proof forgery");
         let mut source_entries = Vec::new();
         source_evidence
             .evidence()

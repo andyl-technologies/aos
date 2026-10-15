@@ -33,6 +33,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crucible::{ContentHash, SchedulerEventLogEntry};
 use crucible_cas::content_store::{ContentId, ObjectKind};
@@ -201,10 +202,11 @@ impl AttemptLogSegmentSource for DirectorySegmentStore {
 /// In-memory segment store for bounded in-process callers and tests.
 ///
 /// Segments are keyed by the identity their bytes derive, so a store never
-/// holds bytes under a foreign identity.
+/// holds bytes under a foreign identity. Sealed bytes are immutable and
+/// shared, so cloning a store copies only its index.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MemorySegmentStore {
-    segments: BTreeMap<ContentId, Vec<u8>>,
+    segments: BTreeMap<ContentId, Arc<[u8]>>,
 }
 
 impl MemorySegmentStore {
@@ -222,7 +224,7 @@ impl MemorySegmentStore {
                 reason: format!("unexpected length {}", bytes.len()),
             });
         }
-        self.segments.insert(id, bytes);
+        self.segments.insert(id, Arc::from(bytes));
         Ok(id)
     }
 
@@ -246,7 +248,7 @@ impl MemorySegmentStore {
             .segment(segment.id)
             .map_err(|source| AttemptEventLogError::Store { source })?;
         decode_segment(segment, &bytes)?;
-        self.segments.insert(segment.id, bytes);
+        self.segments.insert(segment.id, Arc::from(bytes));
         Ok(())
     }
 
@@ -273,9 +275,7 @@ impl MemorySegmentStore {
 
     /// Returns the stored segments in identity order.
     pub fn iter(&self) -> impl Iterator<Item = (ContentId, &[u8])> {
-        self.segments
-            .iter()
-            .map(|(id, bytes)| (*id, bytes.as_slice()))
+        self.segments.iter().map(|(id, bytes)| (*id, &**bytes))
     }
 
     /// Returns the number of stored segments.
@@ -322,7 +322,7 @@ impl MemorySegmentStore {
 
 impl AttemptLogSegmentStore for MemorySegmentStore {
     fn put(&mut self, id: ContentId, bytes: &[u8]) -> io::Result<()> {
-        self.segments.insert(id, bytes.to_vec());
+        self.segments.insert(id, Arc::from(bytes));
         Ok(())
     }
 }
@@ -331,13 +331,13 @@ impl AttemptLogSegmentSource for MemorySegmentStore {
     fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
         self.segments
             .get(&id)
-            .cloned()
+            .map(|bytes| bytes.to_vec())
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "attempt log segment absent"))
     }
 }
 
 /// An attempt log retained as sealed segments plus an open tail.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AttemptEventLog<S> {
     store: S,
     maximum_bytes: u64,
@@ -379,36 +379,85 @@ impl<S: AttemptLogSegmentStore> AttemptEventLog<S> {
         entries: impl IntoIterator<Item = SchedulerEventLogEntry>,
     ) -> Result<(), AttemptEventLogError> {
         for entry in entries {
-            if entry.sequence() != self.next_sequence {
-                return Err(AttemptEventLogError::NonDense {
-                    expected: self.next_sequence,
-                    actual: entry.sequence(),
-                });
-            }
-            let bytes = encoded_entry_len(&entry)?;
-            if bytes > MAX_ATTEMPT_LOG_ENTRY_BYTES {
-                return Err(AttemptEventLogError::EntryTooLarge {
-                    sequence: entry.sequence(),
-                    bytes,
-                });
-            }
-            let required = self.total_bytes().saturating_add(bytes as u64);
-            if required > self.maximum_bytes {
-                return Err(AttemptEventLogError::StorageLimit {
-                    required,
-                    limit: self.maximum_bytes,
-                });
-            }
-            if !self.tail.is_empty()
-                && self.tail_bytes.saturating_add(bytes) > ATTEMPT_LOG_SEGMENT_TARGET_BYTES
-            {
-                self.seal()?;
-            }
-
-            self.tail.push(entry);
-            self.tail_bytes += bytes;
-            self.next_sequence += 1;
+            let bytes = self.admit(&entry, self.next_sequence, self.total_bytes())?;
+            self.push_admitted(entry, bytes)?;
         }
+        Ok(())
+    }
+
+    /// Appends every entry of `entries`, or none of them.
+    ///
+    /// All entries are checked for density, size, and the storage limit
+    /// before the first is retained, so a refusal leaves the log unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::append`]. A segment-store failure
+    /// while sealing can still leave a prefix of `entries` retained.
+    pub(crate) fn append_all(
+        &mut self,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<(), AttemptEventLogError> {
+        let mut sizes = Vec::with_capacity(entries.len());
+        let mut retained = self.total_bytes();
+        for (offset, entry) in entries.iter().enumerate() {
+            let sequence = self.next_sequence.saturating_add(offset as u64);
+            let bytes = self.admit(entry, sequence, retained)?;
+            retained = retained.saturating_add(bytes as u64);
+            sizes.push(bytes);
+        }
+
+        for (entry, bytes) in entries.iter().zip(sizes) {
+            self.push_admitted(entry.clone(), bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Checks one entry against the next sequence and the storage limit.
+    fn admit(
+        &self,
+        entry: &SchedulerEventLogEntry,
+        expected: u64,
+        retained: u64,
+    ) -> Result<usize, AttemptEventLogError> {
+        if entry.sequence() != expected {
+            return Err(AttemptEventLogError::NonDense {
+                expected,
+                actual: entry.sequence(),
+            });
+        }
+        let bytes = encoded_entry_len(entry)?;
+        if bytes > MAX_ATTEMPT_LOG_ENTRY_BYTES {
+            return Err(AttemptEventLogError::EntryTooLarge {
+                sequence: entry.sequence(),
+                bytes,
+            });
+        }
+        let required = retained.saturating_add(bytes as u64);
+        if required > self.maximum_bytes {
+            return Err(AttemptEventLogError::StorageLimit {
+                required,
+                limit: self.maximum_bytes,
+            });
+        }
+        Ok(bytes)
+    }
+
+    /// Retains an admitted entry, sealing the tail first when it is full.
+    fn push_admitted(
+        &mut self,
+        entry: SchedulerEventLogEntry,
+        bytes: usize,
+    ) -> Result<(), AttemptEventLogError> {
+        if !self.tail.is_empty()
+            && self.tail_bytes.saturating_add(bytes) > ATTEMPT_LOG_SEGMENT_TARGET_BYTES
+        {
+            self.seal()?;
+        }
+
+        self.tail.push(entry);
+        self.tail_bytes += bytes;
+        self.next_sequence += 1;
         Ok(())
     }
 
@@ -514,6 +563,40 @@ impl<S: AttemptLogSegmentStore> AttemptEventLog<S> {
             visit(entry).map_err(AttemptEventLogVisitError::Visit)?;
         }
         Ok(())
+    }
+
+    /// Visits entries from sequence `start` onward, in order.
+    ///
+    /// Sealed segments that end before `start` are not read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptEventLogError`] when a needed segment is missing or
+    /// fails authentication, or the first error `visit` returns.
+    pub(crate) fn try_for_each_entry_from<E>(
+        &self,
+        start: u64,
+        mut visit: impl FnMut(&SchedulerEventLogEntry) -> Result<(), E>,
+    ) -> Result<(), AttemptEventLogVisitError<E>> {
+        for segment in &self.sealed {
+            if segment.first_sequence.saturating_add(segment.entry_count) <= start {
+                continue;
+            }
+            for entry in &read_segment(&self.store, segment)? {
+                if entry.sequence() >= start {
+                    visit(entry).map_err(AttemptEventLogVisitError::Visit)?;
+                }
+            }
+        }
+        for entry in self.tail.iter().filter(|entry| entry.sequence() >= start) {
+            visit(entry).map_err(AttemptEventLogVisitError::Visit)?;
+        }
+        Ok(())
+    }
+
+    /// Returns the sequence of the log's first entry.
+    pub(crate) const fn first_sequence(&self) -> u64 {
+        self.first_sequence
     }
 
     /// Seals the tail and returns the manifest of the complete log.
@@ -702,7 +785,7 @@ fn read_segment(
 
 /// Failure while visiting a segmented log's entries.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum AttemptEventLogVisitError<E> {
+pub enum AttemptEventLogVisitError<E> {
     /// A sealed segment could not be read back.
     #[error(transparent)]
     Log(#[from] AttemptEventLogError),

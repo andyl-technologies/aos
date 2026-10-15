@@ -698,7 +698,7 @@ fn packaged_decorators_publish_replayed_held_suffix_into_exact_evidence() -> Tes
     assert_eq!(observation.configuration, target);
     assert_eq!(
         observation.event_log.materialize()?,
-        settled.event_log_entries()
+        settled.event_log_entries()?
     );
     assert_eq!(observation.terminal_at, settled.frontier());
     assert_eq!(settled.quanta(), expected_quanta);

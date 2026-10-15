@@ -7,7 +7,7 @@
 
 use super::*;
 
-/// Incremental form of [`observation_event_prefix_digest`].
+/// Savepoint event-prefix digest computed one entry at a time.
 ///
 /// The digest commits to the entry count before any entry, so the count is
 /// fixed up front and [`Self::finish`] fails when a different number of
@@ -46,6 +46,7 @@ impl ObservationPrefixDigest {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn observation_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> CampaignHash {
     let mut digest = ObservationPrefixDigest::new(entries.len() as u64);
     for entry in entries {
@@ -112,6 +113,7 @@ impl<'property> AssertionTransitionScan<'property> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn verified_assertion_transition<'a>(
     entries: &'a [SchedulerEventLogEntry],
     quantum_start_events: u64,

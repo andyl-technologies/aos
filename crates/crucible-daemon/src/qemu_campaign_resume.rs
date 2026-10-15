@@ -215,7 +215,7 @@ where
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
         let fingerprint_nodes = self
-            .prepare_observation(basis.source)
+            .prepare_observation(basis.source, context)
             .map_err(map_observed_evidence_failure::<F::Error>)?;
         let lifecycle = self
             .inner_mut()

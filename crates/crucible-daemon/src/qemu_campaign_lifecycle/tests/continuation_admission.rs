@@ -242,7 +242,7 @@ fn terminal_evidence_runner_rejects_previous_attempt_samples_after_a_factory_res
         evidence.clone(),
     );
     resetting_factory
-        .prepare_observation(input.scenario())
+        .prepare_observation(input.scenario(), &fresh_runner_context())
         .expect("new fast-tier attempt resets per-worker evidence");
     assert_eq!(
         evidence

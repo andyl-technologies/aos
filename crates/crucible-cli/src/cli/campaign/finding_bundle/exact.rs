@@ -286,7 +286,7 @@ fn compare_side(
     if outcome != retained.outcome()
         || evidence.quanta() != retained.completed_quanta()
         || evidence.frontier() != retained.frontier()
-        || evidence.event_log_entries() != retained.event_log()
+        || !evidence_event_log_matches(evidence, retained.event_log())
         || evidence.terminal_fingerprints() != Some(retained.terminal_fingerprints())
         || evidence.resolved_effect_trace() != retained.resolved_effect_trace()
     {
@@ -295,6 +295,28 @@ fn compare_side(
         ));
     }
     Ok(())
+}
+
+/// Compares the segmented execution evidence with a retained event log.
+///
+/// An unreadable segment is a mismatch, so the comparison fails closed.
+fn evidence_event_log_matches(
+    evidence: &crucible_daemon::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+    retained: &[crucible::SchedulerEventLogEntry],
+) -> bool {
+    if evidence.event_log_len() != retained.len() as u64 {
+        return false;
+    }
+    let mut expected = retained.iter();
+    evidence
+        .try_for_each_event_log_entry(|entry| {
+            if expected.next() == Some(entry) {
+                Ok(())
+            } else {
+                Err(())
+            }
+        })
+        .is_ok()
 }
 
 impl CampaignFindingBundleRole {

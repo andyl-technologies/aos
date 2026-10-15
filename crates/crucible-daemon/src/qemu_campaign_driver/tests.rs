@@ -110,7 +110,7 @@ fn evaluate_test_measurements(
             node_icounts: BTreeMap::new(),
             scheduler_quiescent: true,
         },
-        MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+        observation_candidate::MAX_MEASUREMENT_EVIDENCE_LEAF_BYTES,
     )
     .map(|(publication, _segments)| publication)
 }

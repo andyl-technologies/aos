@@ -744,9 +744,12 @@ fn campaign_search_finding(
         configuration,
     )
     .map_err(|error| backend_error(format!("capture campaign search finding: {error}")))?;
-    let event_frames = accepted_event_frames(accepted);
-    let coverage =
-        crucible::EventLogCoverageFeedback::from_event_log(accepted.evidence().event_log_entries());
+    let event_log = accepted
+        .evidence()
+        .event_log_entries()
+        .map_err(|error| backend_error(format!("read campaign search event evidence: {error}")))?;
+    let event_frames = accepted_event_frames(&event_log);
+    let coverage = crucible::EventLogCoverageFeedback::from_event_log(&event_log);
     let evidence = if let Some(timeout) = timeout {
         let timeout = crucible::FailureTimeoutRecord::new(
             crucible::FailureTimeoutBudgetKind::ExecutionQuanta,
@@ -935,10 +938,8 @@ fn timeout_failure_material(
     )
 }
 
-fn accepted_event_frames(accepted: &GuardedDefaultCampaignObservation) -> Vec<Vec<u8>> {
-    accepted
-        .evidence()
-        .event_log_entries()
+fn accepted_event_frames(event_log: &[crucible::SchedulerEventLogEntry]) -> Vec<Vec<u8>> {
+    event_log
         .iter()
         .map(|entry| {
             canonical_streaming_event_frame_bytes(&campaign_output_api::StreamingEventFrame {

@@ -769,10 +769,11 @@ fn shared_owner_authenticates_completion_and_retains_terminal_evidence() {
     let evidence = completed.evidence();
     assert_eq!(evidence.quanta(), 1);
     assert_eq!(evidence.frontier(), VirtualTime { ticks: 7 });
-    assert_eq!(evidence.event_log_entries().len(), 2);
+    assert_eq!(evidence.event_log_len(), 2);
     assert_eq!(
         evidence
             .event_log_entries()
+            .expect("read execution evidence")
             .iter()
             .map(SchedulerEventLogEntry::sequence)
             .collect::<Vec<_>>(),

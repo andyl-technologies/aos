@@ -70,8 +70,9 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
     let snapshot = crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot::for_replay_capture_test(
         1,
         frontier,
-        vec![native.clone()],
-    );
+        std::slice::from_ref(&native),
+    )
+    .expect("replay capture snapshot");
     let record = FailureTimeoutRecord::new(
         FailureTimeoutBudgetKind::VirtualTime,
         Some(frontier.ticks),
@@ -157,8 +158,9 @@ fn ordinary_replay_capture_preserves_exact_native_snapshot_suffix() {
     let snapshot = crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot::for_replay_capture_test(
         1,
         frontier,
-        vec![native.clone()],
-    );
+        std::slice::from_ref(&native),
+    )
+    .expect("replay capture snapshot");
     let passed = crate::FindingProductionReplayTerminalOutcome::Passed;
 
     assert!(matches!(

@@ -26,9 +26,10 @@ pub use sources::{
 };
 
 pub(crate) use evidence::{
-    observation_event_prefix_digest, verified_assertion_transition,
-    verify_assertion_failure_boundary,
+    AssertionTransitionScan, ObservationPrefixDigest, verify_assertion_failure_boundary,
 };
+#[cfg(test)]
+pub(crate) use evidence::{observation_event_prefix_digest, verified_assertion_transition};
 
 pub use evidence::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,

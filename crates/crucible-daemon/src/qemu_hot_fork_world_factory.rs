@@ -478,7 +478,7 @@ where
     ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
     {
         let fingerprint_nodes = self
-            .prepare_observation(input.scenario())
+            .prepare_observation(input.scenario(), context)
             .map_err(|failure| {
                 failure.map(QemuObservedFreshAttemptLifecycleFactoryError::Evidence)
             })?;

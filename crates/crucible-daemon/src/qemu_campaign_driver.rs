@@ -100,12 +100,6 @@ use selection_projection::{
 };
 use stop_boundary::{policy_timeout_at, reached_requested_stop, requested_attempt_stop_frontier};
 
-/// Maximum scheduler entries retained by one in-memory fresh-attempt projection.
-pub const MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES: usize = 1_000_000;
-
-/// Maximum aggregate canonical event material retained by one fresh attempt.
-pub const MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES: usize = 64 * 1024 * 1024;
-
 /// Maximum property-by-event evaluations admitted by one fresh-attempt seal.
 pub const MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS: usize = 1_000_000;
 

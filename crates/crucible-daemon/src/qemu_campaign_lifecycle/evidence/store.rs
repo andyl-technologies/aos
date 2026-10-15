@@ -1,12 +1,25 @@
 //! Bounded storage for process-local QEMU execution evidence.
+//!
+//! The observer keeps its own copy of the attempt's native scheduler entries
+//! for finding replay and exact-failure retention. That copy is retained as
+//! sealed segments plus an open tail ([`AttemptEventLog`]) under the
+//! deployment's `maximum_event_log_bytes`, the same operational bound the
+//! modeled driver applies (RFC-0020 CCOMP-25 through CCOMP-28). Sealed segment
+//! bytes are shared, so a snapshot copies only the open tail.
 
+use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
 use crucible::{FingerprintSample, SchedulerError, SchedulerEventLogEntry};
 
 use super::{
-    MAX_EXECUTION_FINGERPRINT_SAMPLES, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, MAX_TERMINAL_FINGERPRINT_SAMPLES,
+    MAX_EXECUTION_FINGERPRINT_SAMPLES, MAX_RESOLVED_EFFECT_TRACE_BYTES,
+    MAX_TERMINAL_FINGERPRINT_SAMPLES,
+};
+use crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES;
+use crate::attempt_event_log::{
+    AttemptEventLog, AttemptEventLogError, AttemptEventLogVisitError, AttemptLogSegmentRef,
+    MAX_ATTEMPT_LOG_ENTRY_BYTES, MemorySegmentStore,
 };
 
 /// Scheduler progress and reproduction evidence from one QEMU attempt.
@@ -16,8 +29,7 @@ pub struct QemuAttemptExecutionEvidenceSnapshot {
     frontier: crucible::VirtualTime,
     latest_quantum_start_events: Option<u64>,
     semantic_stop_events: Option<u64>,
-    event_log_entries: Vec<SchedulerEventLogEntry>,
-    event_log_bytes: usize,
+    event_log: RecordedEventLog,
     execution_fingerprints: Vec<FingerprintSample>,
     terminal_fingerprints: Option<Vec<FingerprintSample>>,
     resolved_effect_trace: Option<Vec<u8>>,
@@ -28,20 +40,17 @@ impl QemuAttemptExecutionEvidenceSnapshot {
     pub(crate) fn for_replay_capture_test(
         quanta: u64,
         frontier: crucible::VirtualTime,
-        event_log_entries: Vec<SchedulerEventLogEntry>,
-    ) -> Self {
-        let event_log_bytes = event_log_entries
-            .iter()
-            .map(SchedulerEventLogEntry::canonical_material_len)
-            .sum();
-        Self {
+        event_log_entries: &[SchedulerEventLogEntry],
+    ) -> Result<Self, SchedulerError> {
+        let mut event_log = RecordedEventLog::default();
+        event_log.append(event_log_entries)?;
+        Ok(Self {
             quanta,
             frontier,
-            event_log_entries,
-            event_log_bytes,
+            event_log,
             terminal_fingerprints: Some(Vec::new()),
             ..Self::default()
-        }
+        })
     }
 
     /// Returns the absolute scheduler-quantum coordinate at the latest retained boundary.
@@ -68,10 +77,49 @@ impl QemuAttemptExecutionEvidenceSnapshot {
         self.semantic_stop_events
     }
 
-    /// Returns the exact bounded scheduler event log retained for the attempt.
+    /// Returns the number of scheduler entries retained for the attempt.
     #[must_use]
-    pub fn event_log_entries(&self) -> &[SchedulerEventLogEntry] {
-        &self.event_log_entries
+    pub fn event_log_len(&self) -> u64 {
+        self.event_log.len()
+    }
+
+    /// Returns the sequence of the first retained scheduler entry.
+    ///
+    /// A resumed attempt retains only its native suffix, which begins at the
+    /// restored checkpoint's event count rather than at zero.
+    #[must_use]
+    pub fn first_event_sequence(&self) -> Option<u64> {
+        self.event_log.first_sequence()
+    }
+
+    /// Visits the retained scheduler entries in order.
+    ///
+    /// Sealed segments are decoded one at a time, so the visit holds at most
+    /// one segment's entries in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptEventLogVisitError::Log`] when a sealed segment cannot
+    /// be read back, or [`AttemptEventLogVisitError::Visit`] with the first
+    /// error `visit` returns.
+    pub fn try_for_each_event_log_entry<E>(
+        &self,
+        visit: impl FnMut(&SchedulerEventLogEntry) -> Result<(), E>,
+    ) -> Result<(), AttemptEventLogVisitError<E>> {
+        self.event_log.try_for_each_from(0, visit)
+    }
+
+    /// Copies every retained scheduler entry into memory.
+    ///
+    /// Prefer [`Self::try_for_each_event_log_entry`] where a single ordered
+    /// pass suffices; this copy is proportional to the whole attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptEventLogError`] when a sealed segment cannot be read
+    /// back.
+    pub fn event_log_entries(&self) -> Result<Vec<SchedulerEventLogEntry>, AttemptEventLogError> {
+        self.event_log.entries_from(0)
     }
 
     /// Returns the bounded initial and post-first-quantum diagnostic samples.
@@ -93,6 +141,116 @@ impl QemuAttemptExecutionEvidenceSnapshot {
     }
 }
 
+/// Native scheduler entries recorded for one attempt.
+///
+/// The segmented log starts at the first recorded entry's sequence, because a
+/// resumed attempt records only the suffix after its restored checkpoint. The
+/// observer's event offsets count recorded entries from that start.
+#[derive(Clone, Debug)]
+struct RecordedEventLog {
+    maximum_bytes: u64,
+    log: Option<AttemptEventLog<MemorySegmentStore>>,
+}
+
+impl Default for RecordedEventLog {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAXIMUM_EVENT_LOG_BYTES)
+    }
+}
+
+// Two recordings are equal when they retain the same entries. The bound is
+// operational and is not part of the evidence (RFC-0020 CCOMP-28).
+impl PartialEq for RecordedEventLog {
+    fn eq(&self, other: &Self) -> bool {
+        self.retained() == other.retained()
+    }
+}
+
+impl Eq for RecordedEventLog {}
+
+impl RecordedEventLog {
+    const fn new(maximum_bytes: u64) -> Self {
+        Self {
+            maximum_bytes,
+            log: None,
+        }
+    }
+
+    /// Returns what the recording retains: its start, sealed segments, and tail.
+    fn retained(&self) -> Option<(u64, &[AttemptLogSegmentRef], &[SchedulerEventLogEntry])> {
+        self.log
+            .as_ref()
+            .map(|log| (log.first_sequence(), log.sealed_segments(), log.tail()))
+    }
+
+    fn len(&self) -> u64 {
+        self.log.as_ref().map_or(0, AttemptEventLog::len)
+    }
+
+    fn encoded_bytes(&self) -> u64 {
+        self.log.as_ref().map_or(0, AttemptEventLog::total_bytes)
+    }
+
+    fn first_sequence(&self) -> Option<u64> {
+        self.log.as_ref().map(AttemptEventLog::first_sequence)
+    }
+
+    /// Appends every entry, or none of them.
+    ///
+    /// A refused append leaves the recording unchanged, so the last complete
+    /// evidence survives for diagnosis.
+    fn append(&mut self, entries: &[SchedulerEventLogEntry]) -> Result<(), SchedulerError> {
+        let Some(first) = entries.first() else {
+            return Ok(());
+        };
+        let retained = self.encoded_bytes();
+        let appended = match &mut self.log {
+            Some(log) => log.append_all(entries),
+            None => {
+                let mut log = AttemptEventLog::new(
+                    MemorySegmentStore::default(),
+                    self.maximum_bytes,
+                    first.sequence(),
+                );
+                let appended = log.append_all(entries);
+                if appended.is_ok() {
+                    self.log = Some(log);
+                }
+                appended
+            }
+        };
+        appended.map_err(|error| recorded_event_log_error(error, retained))
+    }
+
+    /// Visits entries from recorded offset `position` onward.
+    fn try_for_each_from<E>(
+        &self,
+        position: u64,
+        visit: impl FnMut(&SchedulerEventLogEntry) -> Result<(), E>,
+    ) -> Result<(), AttemptEventLogVisitError<E>> {
+        let Some(log) = &self.log else {
+            return Ok(());
+        };
+        log.try_for_each_entry_from(log.first_sequence().saturating_add(position), visit)
+    }
+
+    fn entries_from(
+        &self,
+        position: u64,
+    ) -> Result<Vec<SchedulerEventLogEntry>, AttemptEventLogError> {
+        let mut entries = Vec::new();
+        self.try_for_each_from(position, |entry| {
+            entries.push(entry.clone());
+            Ok::<(), Infallible>(())
+        })
+        .map_err(|error| match error {
+            AttemptEventLogVisitError::Log(error) => error,
+            AttemptEventLogVisitError::Visit(never) => match never {},
+        })?;
+        Ok(entries)
+    }
+}
+
 /// Shared read-only evidence for the most recently constructed attempt.
 #[derive(Clone, Debug, Default)]
 pub struct QemuAttemptExecutionEvidence {
@@ -102,8 +260,8 @@ pub struct QemuAttemptExecutionEvidence {
 impl QemuAttemptExecutionEvidence {
     /// Reads the most recent successfully recorded attempt progress.
     ///
-    /// The clone is bounded by the same 64 MiB event-material ceiling used by
-    /// the campaign driver, plus bounded fingerprints and resolved-effect data.
+    /// The copy shares sealed event-log segments with the recorder and copies
+    /// only the open tail, bounded fingerprints, and resolved-effect data.
     ///
     /// # Errors
     ///
@@ -115,9 +273,23 @@ impl QemuAttemptExecutionEvidence {
             .map_err(|_| evidence_poisoned())
     }
 
-    pub(super) fn reset(&self) -> Result<(), SchedulerError> {
+    /// Reads the terminal fingerprint set without copying the event log.
+    pub(super) fn terminal_fingerprints(
+        &self,
+    ) -> Result<Option<Vec<FingerprintSample>>, SchedulerError> {
+        self.snapshot
+            .lock()
+            .map(|snapshot| snapshot.terminal_fingerprints.clone())
+            .map_err(|_| evidence_poisoned())
+    }
+
+    /// Clears the evidence for a new attempt bounded by `maximum_event_log_bytes`.
+    pub(super) fn reset(&self, maximum_event_log_bytes: u64) -> Result<(), SchedulerError> {
         let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
-        *snapshot = QemuAttemptExecutionEvidenceSnapshot::default();
+        *snapshot = QemuAttemptExecutionEvidenceSnapshot {
+            event_log: RecordedEventLog::new(maximum_event_log_bytes),
+            ..QemuAttemptExecutionEvidenceSnapshot::default()
+        };
         Ok(())
     }
 
@@ -127,13 +299,13 @@ impl QemuAttemptExecutionEvidence {
         frontier: crucible::VirtualTime,
         entries: &[SchedulerEventLogEntry],
     ) -> Result<(), SchedulerError> {
-        self.record_with_event_limits(
-            quanta,
-            frontier,
-            entries,
-            MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
-            MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-        )
+        let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
+        let quantum_start_events = snapshot.event_log.len();
+        snapshot.event_log.append(entries)?;
+        snapshot.quanta = quanta;
+        snapshot.frontier = frontier;
+        snapshot.latest_quantum_start_events = Some(quantum_start_events);
+        Ok(())
     }
 
     pub(super) fn record_appended_entries(
@@ -141,7 +313,7 @@ impl QemuAttemptExecutionEvidence {
         entries: &[SchedulerEventLogEntry],
     ) -> Result<(), SchedulerError> {
         let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
-        append_event_entries(&mut snapshot, entries)
+        snapshot.event_log.append(entries)
     }
 
     pub(super) fn record_preselection_settlement(
@@ -154,16 +326,20 @@ impl QemuAttemptExecutionEvidence {
                 message: String::from("preselection settlement has no recorded quantum"),
             }
         })?;
-        let start = usize::try_from(start).map_err(|_| SchedulerError::BoundaryViolation {
-            message: String::from("preselection quantum offset exceeds host address space"),
-        })?;
-        let recorded = snapshot.event_log_entries.get(start..).ok_or_else(|| {
-            SchedulerError::BoundaryViolation {
+        if start > snapshot.event_log.len() {
+            return Err(SchedulerError::BoundaryViolation {
                 message: String::from("preselection quantum offset exceeds recorded evidence"),
-            }
-        })?;
-        let suffix = entries.strip_prefix(recorded).ok_or_else(|| {
-            let (index, field) = first_preselection_evidence_difference(recorded, entries);
+            });
+        }
+
+        // Only the latest quantum's entries are read back; the settlement
+        // must repeat them exactly before its suffix extends the log.
+        let recorded = snapshot
+            .event_log
+            .entries_from(start)
+            .map_err(recorded_event_log_read_error)?;
+        let suffix = entries.strip_prefix(recorded.as_slice()).ok_or_else(|| {
+            let (index, field) = first_preselection_evidence_difference(&recorded, entries);
             SchedulerError::BoundaryViolation {
                 message: format!(
                     "preselection settlement changed recorded quantum evidence at event {index} ({field}); recorded={} settled={}",
@@ -172,8 +348,8 @@ impl QemuAttemptExecutionEvidence {
                 ),
             }
         })?;
-        append_event_entries(&mut snapshot, suffix)?;
-        Ok(snapshot.event_log_entries.len())
+        snapshot.event_log.append(suffix)?;
+        recorded_offset(&snapshot)
     }
 
     pub(super) fn record_selected_preselection_suffix(
@@ -187,14 +363,8 @@ impl QemuAttemptExecutionEvidence {
                 message: String::from("selected preselection has no recorded quantum"),
             }
         })?;
-        let quantum_start =
-            usize::try_from(quantum_start).map_err(|_| SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "selected preselection quantum offset exceeds host address space",
-                ),
-            })?;
-        if selected_prefix_end < quantum_start
-            || snapshot.event_log_entries.len() != selected_prefix_end
+        if (selected_prefix_end as u64) < quantum_start
+            || snapshot.event_log.len() != selected_prefix_end as u64
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("selected preselection evidence prefix changed"),
@@ -205,7 +375,7 @@ impl QemuAttemptExecutionEvidence {
         // its returned outcome. Its suffix must begin at the next dense log
         // sequence; otherwise it cannot extend the authenticated prefix.
         validate_contiguous_preselection_entries(selected_prefix_end, entries, "suffix")?;
-        append_event_entries(&mut snapshot, entries)
+        snapshot.event_log.append(entries)
     }
 
     pub(super) fn record_selected_preselection_selection(
@@ -221,37 +391,15 @@ impl QemuAttemptExecutionEvidence {
 
         // The wrapped scheduler authenticates the exact offered selection and
         // returns only its newly emitted append, not the preceding quantum.
-        let selected_prefix_end = snapshot.event_log_entries.len();
+        let selected_prefix_end = recorded_offset(&snapshot)?;
         validate_contiguous_preselection_entries(selected_prefix_end, entries, "selection")?;
-        append_event_entries(&mut snapshot, entries)?;
-        Ok(snapshot.event_log_entries.len())
+        snapshot.event_log.append(entries)?;
+        recorded_offset(&snapshot)
     }
 
     pub(super) fn record_semantic_stop(&self) -> Result<(), SchedulerError> {
         let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
-        snapshot.semantic_stop_events = Some(snapshot.event_log_entries.len() as u64);
-        Ok(())
-    }
-
-    fn record_with_event_limits(
-        &self,
-        quanta: u64,
-        frontier: crucible::VirtualTime,
-        entries: &[SchedulerEventLogEntry],
-        event_count_limit: usize,
-        event_byte_limit: usize,
-    ) -> Result<(), SchedulerError> {
-        let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
-        let quantum_start_events = snapshot.event_log_entries.len() as u64;
-        append_event_entries_with_limits(
-            &mut snapshot,
-            entries,
-            event_count_limit,
-            event_byte_limit,
-        )?;
-        snapshot.quanta = quanta;
-        snapshot.frontier = frontier;
-        snapshot.latest_quantum_start_events = Some(quantum_start_events);
+        snapshot.semantic_stop_events = Some(snapshot.event_log.len());
         Ok(())
     }
 
@@ -265,7 +413,7 @@ impl QemuAttemptExecutionEvidence {
             entries,
             resolved_effect_trace,
             terminal_fingerprints,
-            MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+            MAX_RESOLVED_EFFECT_TRACE_BYTES,
         )
     }
 
@@ -300,10 +448,10 @@ impl QemuAttemptExecutionEvidence {
             ));
         }
 
-        // Validate and reserve both bounded payloads before mutating the
-        // retained attempt. A rejected final drain must preserve the last
+        // Both bounded payloads were validated above and the append is
+        // all-or-nothing, so a rejected final drain preserves the last
         // complete evidence snapshot for diagnosis.
-        append_event_entries(&mut snapshot, entries)?;
+        snapshot.event_log.append(entries)?;
         snapshot.resolved_effect_trace = resolved_effect_trace;
         snapshot.terminal_fingerprints = terminal_fingerprints;
         Ok(())
@@ -399,115 +547,42 @@ fn validate_contiguous_preselection_entries(
     Ok(())
 }
 
-fn append_event_entries(
-    snapshot: &mut QemuAttemptExecutionEvidenceSnapshot,
-    entries: &[SchedulerEventLogEntry],
-) -> Result<(), SchedulerError> {
-    append_event_entries_with_limits(
-        snapshot,
-        entries,
-        MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
-        MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-    )
-}
-
-fn append_event_entries_with_limits(
-    snapshot: &mut QemuAttemptExecutionEvidenceSnapshot,
-    entries: &[SchedulerEventLogEntry],
-    event_count_limit: usize,
-    event_byte_limit: usize,
-) -> Result<(), SchedulerError> {
-    let total = snapshot
-        .event_log_entries
-        .len()
-        .checked_add(entries.len())
-        .ok_or_else(|| {
-            event_limit(
-                snapshot,
-                entries.len(),
-                0,
-                event_count_limit,
-                event_byte_limit,
-            )
-        })?;
-    if total > event_count_limit {
-        return Err(event_limit(
-            snapshot,
-            entries.len(),
-            0,
-            event_count_limit,
-            event_byte_limit,
-        ));
-    }
-    let added_bytes = entries.iter().try_fold(0usize, |total, entry| {
-        total
-            .checked_add(entry.canonical_material_len())
-            .ok_or_else(|| {
-                event_limit(
-                    snapshot,
-                    entries.len(),
-                    usize::MAX,
-                    event_count_limit,
-                    event_byte_limit,
-                )
-            })
-    })?;
-    let total_bytes = snapshot
-        .event_log_bytes
-        .checked_add(added_bytes)
-        .ok_or_else(|| {
-            event_limit(
-                snapshot,
-                entries.len(),
-                added_bytes,
-                event_count_limit,
-                event_byte_limit,
-            )
-        })?;
-    if total_bytes > event_byte_limit {
-        return Err(event_limit(
-            snapshot,
-            entries.len(),
-            added_bytes,
-            event_count_limit,
-            event_byte_limit,
-        ));
-    }
-    snapshot
-        .event_log_entries
-        .try_reserve(entries.len())
-        .map_err(|_| evidence_allocation("reserve scheduler event evidence"))?;
-    snapshot.event_log_entries.extend_from_slice(entries);
-    snapshot.event_log_bytes = total_bytes;
-    Ok(())
-}
-
-fn event_limit(
+fn recorded_offset(
     snapshot: &QemuAttemptExecutionEvidenceSnapshot,
-    added_entries: usize,
-    added_bytes: usize,
-    event_count_limit: usize,
-    event_byte_limit: usize,
-) -> SchedulerError {
-    let count_exceeded = snapshot
-        .event_log_entries
-        .len()
-        .saturating_add(added_entries)
-        > event_count_limit;
-    if count_exceeded {
-        evidence_limit(
-            "qemu-execution-event-count",
-            snapshot.event_log_entries.len() as u64,
-            added_entries as u64,
-            event_count_limit as u64,
-        )
-    } else {
-        evidence_limit(
+) -> Result<usize, SchedulerError> {
+    usize::try_from(snapshot.event_log.len()).map_err(|_| SchedulerError::BoundaryViolation {
+        message: String::from("recorded QEMU execution evidence exceeds host address space"),
+    })
+}
+
+fn recorded_event_log_error(error: AttemptEventLogError, retained: u64) -> SchedulerError {
+    match error {
+        AttemptEventLogError::StorageLimit { required, limit } => evidence_limit(
             "qemu-execution-event-bytes",
-            snapshot.event_log_bytes as u64,
-            added_bytes as u64,
-            event_byte_limit as u64,
-        )
+            retained,
+            required.saturating_sub(retained),
+            limit,
+        ),
+        AttemptEventLogError::EntryTooLarge { bytes, .. } => evidence_limit(
+            "qemu-execution-event-entry-bytes",
+            0,
+            bytes as u64,
+            MAX_ATTEMPT_LOG_ENTRY_BYTES as u64,
+        ),
+        AttemptEventLogError::NonDense { expected, actual } => SchedulerError::BoundaryViolation {
+            message: format!(
+                "recorded QEMU execution evidence expected event {expected}, got {actual}"
+            ),
+        },
+        error => SchedulerError::BoundaryViolation {
+            message: format!("retain QEMU execution evidence: {error}"),
+        },
+    }
+}
+
+fn recorded_event_log_read_error(error: AttemptEventLogError) -> SchedulerError {
+    SchedulerError::BoundaryViolation {
+        message: format!("read recorded QEMU execution evidence: {error}"),
     }
 }
 
@@ -571,7 +646,10 @@ mod tests {
         let snapshot = evidence.snapshot().expect("complete event prefix");
         assert_eq!(snapshot.quanta(), 7);
         assert_eq!(snapshot.frontier(), frontier);
-        assert_eq!(snapshot.event_log_entries(), &[quantum_entry, reply_entry]);
+        assert_eq!(
+            snapshot.event_log_entries().expect("read evidence"),
+            [quantum_entry, reply_entry]
+        );
     }
 
     #[test]
@@ -590,7 +668,10 @@ mod tests {
             .record_preselection_settlement(&[prefix.clone(), suffix.clone()])
             .expect("append settlement suffix");
         let snapshot = evidence.snapshot().expect("settled evidence");
-        assert_eq!(snapshot.event_log_entries(), &[prefix.clone(), suffix]);
+        assert_eq!(
+            snapshot.event_log_entries().expect("read evidence"),
+            [prefix.clone(), suffix]
+        );
 
         let error = evidence
             .record_preselection_settlement(&[])
@@ -600,13 +681,7 @@ mod tests {
                 .to_string()
                 .contains("at event 0 (missing-recorded-event); recorded=2 settled=0")
         );
-        assert_eq!(
-            evidence
-                .snapshot()
-                .expect("unchanged evidence")
-                .event_log_entries(),
-            snapshot.event_log_entries()
-        );
+        assert_eq!(evidence.snapshot().expect("unchanged evidence"), snapshot);
     }
 
     #[test]
@@ -678,14 +753,15 @@ mod tests {
                 .record_selected_preselection_suffix(&suffix, selected_prefix_end)
                 .expect("append exact selected suffix");
 
-            let snapshot = evidence.snapshot().expect("settled evidence");
-            assert_eq!(snapshot.event_log_entries().len(), selected_prefix_end + 2);
-            assert_eq!(snapshot.event_log_entries()[..prefix.len()], prefix);
-            assert_eq!(
-                snapshot.event_log_entries()[prefix.len()..selected_prefix_end],
-                selected
-            );
-            assert_eq!(snapshot.event_log_entries()[selected_prefix_end..], suffix);
+            let entries = evidence
+                .snapshot()
+                .expect("settled evidence")
+                .event_log_entries()
+                .expect("read evidence");
+            assert_eq!(entries.len(), selected_prefix_end + 2);
+            assert_eq!(entries[..prefix.len()], prefix);
+            assert_eq!(entries[prefix.len()..selected_prefix_end], selected);
+            assert_eq!(entries[selected_prefix_end..], suffix);
         }
     }
 
@@ -735,43 +811,124 @@ mod tests {
             evidence
                 .snapshot()
                 .expect("unchanged evidence")
-                .event_log_entries(),
-            &[prefix, selected]
+                .event_log_entries()
+                .expect("read evidence"),
+            [prefix, selected]
+        );
+    }
+
+    #[test]
+    fn resumed_suffix_counts_offsets_from_its_first_recorded_sequence() {
+        let evidence = QemuAttemptExecutionEvidence::default();
+        let frontier = VirtualTime { ticks: 19 };
+        let entry = |sequence| {
+            SchedulerEventLogEntry::execution_budget_exhausted(sequence, frontier, "resumed-suffix")
+        };
+        evidence
+            .record(4, frontier, &[entry(5), entry(6)])
+            .expect("record resumed quantum");
+
+        let settled = evidence
+            .record_preselection_settlement(&[entry(5), entry(6), entry(7)])
+            .expect("settle resumed quantum");
+        assert_eq!(settled, 3);
+        let snapshot = evidence.snapshot().expect("resumed evidence");
+        assert_eq!(snapshot.first_event_sequence(), Some(5));
+        assert_eq!(snapshot.latest_quantum_start_events(), Some(0));
+        assert_eq!(
+            snapshot.event_log_entries().expect("read evidence"),
+            [entry(5), entry(6), entry(7)]
+        );
+
+        let error = evidence
+            .record_appended_entries(&[entry(9)])
+            .expect_err("a gap cannot extend recorded evidence");
+        assert!(error.to_string().contains("expected event 8, got 9"));
+        assert_eq!(evidence.snapshot().expect("unchanged evidence"), snapshot);
+    }
+
+    #[test]
+    fn long_recordings_seal_segments_and_settle_across_them() {
+        let evidence = QemuAttemptExecutionEvidence::default();
+        let frontier = VirtualTime { ticks: 19 };
+        // Each entry is large enough that the log seals segments well before
+        // the fixture ends.
+        let reason = "segment-fixture-".repeat(4096);
+        let entries = (0..200)
+            .map(|sequence| {
+                SchedulerEventLogEntry::execution_budget_exhausted(sequence, frontier, &reason)
+            })
+            .collect::<Vec<_>>();
+        evidence
+            .record(1, frontier, &entries[..150])
+            .expect("record first quantum");
+        let early = evidence.snapshot().expect("early snapshot");
+        evidence
+            .record(2, frontier, &entries[150..199])
+            .expect("record second quantum");
+
+        let settled = evidence
+            .record_preselection_settlement(&entries[150..])
+            .expect("settle across sealed segments");
+        assert_eq!(settled, 200);
+        let snapshot = evidence.snapshot().expect("long snapshot");
+        let log = snapshot.event_log.log.as_ref().expect("recorded log");
+        assert!(!log.sealed_segments().is_empty());
+        assert_eq!(
+            snapshot.event_log_entries().expect("read evidence"),
+            entries
+        );
+        assert_eq!(
+            early.event_log_entries().expect("read early evidence"),
+            entries[..150]
         );
     }
 
     #[test]
     fn event_byte_limit_refusal_preserves_the_complete_snapshot() {
-        let evidence = QemuAttemptExecutionEvidence::default();
         let retained_entry = SchedulerEventLogEntry::execution_budget_exhausted(
             0,
             VirtualTime { ticks: 19 },
             "retained-evidence-limit-fixture",
         );
+        let probe = QemuAttemptExecutionEvidence::default();
+        probe
+            .record(
+                7,
+                VirtualTime { ticks: 19 },
+                std::slice::from_ref(&retained_entry),
+            )
+            .expect("measure retained event evidence");
+        let retained_bytes = probe
+            .snapshot()
+            .expect("measured snapshot")
+            .event_log
+            .encoded_bytes();
+
+        // The bound admits exactly the retained entry, so any further entry
+        // exceeds it.
+        let evidence = QemuAttemptExecutionEvidence::default();
+        evidence.reset(retained_bytes).expect("bound the attempt");
         evidence
             .record(7, VirtualTime { ticks: 19 }, &[retained_entry])
             .expect("seed retained event evidence");
         let before = evidence.snapshot().expect("snapshot before refusal");
-        let entry = SchedulerEventLogEntry::execution_budget_exhausted(
-            1,
-            VirtualTime { ticks: 20 },
-            "evidence-limit-fixture",
-        );
-        let byte_limit = before
-            .event_log_bytes
-            .checked_add(entry.canonical_material_len())
-            .and_then(|total| total.checked_sub(1))
-            .expect("two nonempty canonical event entries");
+        let entries = [
+            SchedulerEventLogEntry::execution_budget_exhausted(
+                1,
+                VirtualTime { ticks: 20 },
+                "evidence-limit-fixture",
+            ),
+            SchedulerEventLogEntry::execution_budget_exhausted(
+                2,
+                VirtualTime { ticks: 20 },
+                "evidence-limit-fixture",
+            ),
+        ];
 
         let error = evidence
-            .record_with_event_limits(
-                8,
-                VirtualTime { ticks: 20 },
-                &[entry],
-                MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
-                byte_limit,
-            )
-            .expect_err("the event byte ceiling must reject another entry");
+            .record(8, VirtualTime { ticks: 20 }, &entries)
+            .expect_err("the event byte bound must reject another entry");
 
         assert!(matches!(
             error,
@@ -834,7 +991,7 @@ mod tests {
                 &[],
                 Some(vec![0xa5]),
                 Some(terminal_fingerprints),
-                MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+                MAX_RESOLVED_EFFECT_TRACE_BYTES,
             )
             .expect_err("the terminal fingerprint ceiling must reject the final evidence");
 
