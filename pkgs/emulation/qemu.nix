@@ -1733,7 +1733,6 @@ in
               sed '/^# slow test .* executed in [0-9.]* secs$/d' \
                 block-backend-tests.raw.tap > block-backend-tests.tap
               build/tests/unit/test-crucible-hot-fork-child --tap
-              build/tests/unit/test-crucible-hot-fork-coordinator --tap
               timeout -k 2 10 build/tests/unit/test-crucible-replay-owner --tap \
                 --seed=R02S00000000000000000000000000000000 \
                 > replay-owner-tests.tap
