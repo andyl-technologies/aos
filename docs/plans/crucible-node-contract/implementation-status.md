@@ -132,6 +132,29 @@ policy before reaching its intended missing-preparation refusal. The current
 fixture explicitly selects the existing finite 768 MiB positive policy. Its
 refusal assertions and the separate 512 MiB negative controls are unchanged.
 
+### Native startup and retained protocol storage
+
+Commit `fbad66af98` retains original executable, content, session and transport
+owners through startup, and projects their serializer, frame and shared
+allocation storage before allocation. Its shared-allocation quote uses the same
+conservative header bound as the actual observer. The earlier exact-budget
+custody test failed because the quote omitted that padding; its assertions and
+resource ceiling remain unchanged and now pass.
+
+Five-crate, all-feature/all-target checking passes for the startup changes.
+After the quote correction, four fresh normal library-test executables pass
+112 selected component checks and all 312 earlier regression checks: 424 test
+instances covering 422 distinct tests, with no failures or ignored tests.
+The archive group completes in 87.23 seconds under its original 120-second
+limit. Independent review checks the complete 5,979-file source capture,
+executables, dependency closures, original waits and exact earlier selectors.
+The prior failed quote result remains recorded separately.
+
+These checks cover startup and protocol components. Complete production
+lifecycle routing, native Capture and restoration, the two deferred
+installed-holder controls, and final-source application qualification remain
+outstanding.
+
 ## Work in progress
 
 Packet startup/report, capture and restoration storage accounting is committed
