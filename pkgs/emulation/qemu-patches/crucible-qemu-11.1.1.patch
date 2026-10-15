@@ -1,7 +1,8 @@
-From 2c946782538467b1c98770e32988412b65c8b903 Mon Sep 17 00:00:00 2001
+From 3b602e38e51605944f3b9ed7f6c253b055090a17 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 05:00:45 -0700
-Subject: [PATCH] plugins: retain startup custody and nested writer intervals
+Date: Thu, 15 Oct 2026 06:27:26 -0700
+Subject: [PATCH] plugins: retain startup custody and complete ordinary
+ providers
 
 Capture the complete startup Source, Native callback lifecycle, nominal
 registration groups and receiving custody with their owning SDK surfaces.
@@ -22,6 +23,13 @@ the configured compiler and explicit physical operand adapters.
 
 Keep the regression operand scaffolding in readable structs, function blocks
 and primitive macros while preserving token behavior and exact test outcomes.
+
+Complete ordinary negative QMP writer allocation/observation and string
+append/prepend/erase providers without issuing selected Source custody or
+changing the generic GLib visitor and JSON writer paths.
+
+Rebind the genuine unit and preexec extraction guards to these complete
+provider inputs while preserving selected bodies and registered scenarios.
 
 The source remains inactive; complete operating and terminal joins are
 separate. Include actual generator inputs and corresponding-source notices
@@ -182361,7 +182369,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..dec28e4236f71cfaf3fbdc0dec7ba2e8ece82995
+index 0000000000000000000000000000000000000000..a160b65fc2757a54c8e0e13c5a140a549d511278
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,83 @@
@@ -182389,7 +182397,7 @@ index 0000000000000000000000000000000000000000..dec28e4236f71cfaf3fbdc0dec7ba2e8
 +    'include/plugins/qemu-plugin.h':
 +        '93573ce1d72875412dc10b68a273761af892f1ca08b1bdbfeafdab1b1a2849f2',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '29674a82f2d420e34f30a37107b17afca8f8d2e8f95315404d6ac4d549139ae3',
++        'db6838ee82310f59f93af4b66255835e131e1d3b99cc21539b64b5387fdcf782',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -182903,10 +182911,10 @@ index 36e240967b687db10115ba375da3371898b7d95c..19456e888cd183df7298fb730af91205
  ''',
 diff --git a/stubs/crucible-qmp-allocation.c b/stubs/crucible-qmp-allocation.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..3b7a8fec97b575dafea1dc04d16b70d1b9595389
+index 0000000000000000000000000000000000000000..bb34625996ad4c32a849c50b33fb698e4d8d11b9
 --- /dev/null
 +++ b/stubs/crucible-qmp-allocation.c
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,191 @@
 +/*
 + * Generic QObject tools have no selected Source allocation issuer
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -182933,6 +182941,23 @@ index 0000000000000000000000000000000000000000..3b7a8fec97b575dafea1dc04d16b70d1
 +int qemu_crucible_qmp_object_observe(const void *object, unsigned *kind,
 +                                    QemuCrucibleQmpAllocationOwner **owner)
 +{
++    return -ENOENT;
++}
++
++int qemu_crucible_qmp_json_writer_allocate(void **out)
++{
++    if (out) {
++        *out = NULL;
++    }
++    return -ENOTSUP;
++}
++
++int qemu_crucible_qmp_json_writer_observe(
++    const void *payload, QemuCrucibleQmpAllocationOwner **owner)
++{
++    if (owner) {
++        *owner = NULL;
++    }
 +    return -ENOENT;
 +}
 +
@@ -182998,12 +183023,27 @@ index 0000000000000000000000000000000000000000..3b7a8fec97b575dafea1dc04d16b70d1
 +    return -ENOTSUP;
 +}
 +
++int qemu_crucible_qmp_string_append(GString *string, const char *bytes, size_t count)
++{
++    return -ENOTSUP;
++}
++
++int qemu_crucible_qmp_string_prepend(GString *string, const char *bytes, size_t count)
++{
++    return -ENOTSUP;
++}
++
 +int qemu_crucible_qmp_string_append_c(GString *string, char byte)
 +{
 +    return -ENOTSUP;
 +}
 +
 +int qemu_crucible_qmp_string_truncate(GString *string, size_t length)
++{
++    return -ENOTSUP;
++}
++
++int qemu_crucible_qmp_string_erase(GString *string, size_t offset, gssize length)
 +{
 +    return -ENOTSUP;
 +}
@@ -222961,7 +223001,7 @@ index 0000000000000000000000000000000000000000..855cea98f5a5321a6c2b2040a96b8e54
 +    main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..30d8887b6b38fa25357e32a23c7781df2b3fc29b
+index 0000000000000000000000000000000000000000..59cc35246be158b9531454699cbc4e58ebefbb5f
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,812 @@
@@ -223097,7 +223137,7 @@ index 0000000000000000000000000000000000000000..30d8887b6b38fa25357e32a23c7781df
 +    'include/qemu/crucible-qmp-allocation.h':
 +        '5619312a96f29c90d9fded1505c99b02c65fcbf9616e318fad8f867e1e6c1889',
 +    'stubs/crucible-qmp-allocation.c':
-+        '13c0d631aa7460a30eb07801100858a7b9c34494b618c0302cb80a9eeee20b51',
++        '67d500b13e1a7ab99e050e04908f4b1269f96cce2ae7dd658aceaf0c894325be',
 +    'qapi/qapi-dealloc-visitor.c':
 +        'ca5dc4dff13a987d7bf5cdb3e3ad9962a8d515ac0ca388b97391188098ff90fe',
 +    'qapi/qobject-input-visitor.c':

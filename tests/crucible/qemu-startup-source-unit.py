@@ -155,7 +155,7 @@ def run_group(argv, cwd, environment, timeout, output, stem):
     return record
 
 
-def linked_evidence(build, output):
+def linked_evidence(build, output, target=TARGET):
     """Binds every actually built compile object, archive and retained depfile."""
     objects = {}
     for entry in json.loads((build / "compile_commands.json").read_text()):
@@ -192,7 +192,7 @@ def linked_evidence(build, output):
     }
     write_json(output / "linked-inputs.json", {
         "objects": objects, "archives": archives, "depfiles": depfiles,
-        "generated_inputs": generated, "binary_sha256": digest(build / TARGET),
+        "generated_inputs": generated, "binary_sha256": digest(build / target),
     })
 
 
