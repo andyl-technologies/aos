@@ -1,10 +1,10 @@
-From 5d47413de0bce650b5c980d9a3875ebf2c7bd95f Mon Sep 17 00:00:00 2001
+From 4c186c458d25c7b8a09142e88488c22acea33ed0 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 09:56:48 -0700
-Subject: [PATCH] plugins: retain startup ownership and checkpoint inventory
+Date: Thu, 15 Oct 2026 10:23:17 -0700
+Subject: [PATCH] plugins: retain startup ownership and current process
  controls
 
-Migrate checkpoint topology preparation to retained inventory ownership, preserve descriptor cleanup, and charge temporary root-record storage through the existing QMP allocator.
+Keep current startup ownership and checkpoint inventory controls, and align process-purpose unit fixtures with the current purpose and sealed-plan formats.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -262955,10 +262955,10 @@ index 0000000000000000000000000000000000000000..e6e26a331afba733c60474399a0bf44e
 +}
 diff --git a/tests/unit/test-crucible-process-purpose.c b/tests/unit/test-crucible-process-purpose.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..e37f2087cf03a5c3d8075d5d6c813c03e8576f43
+index 0000000000000000000000000000000000000000..027c4ba3cdee068e50e70d17a980769723819e0c
 --- /dev/null
 +++ b/tests/unit/test-crucible-process-purpose.c
-@@ -0,0 +1,369 @@
+@@ -0,0 +1,782 @@
 +/*
 + * Fixed process-purpose syntax and real borrowed descriptor controls
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -262974,52 +262974,190 @@ index 0000000000000000000000000000000000000000..e37f2087cf03a5c3d8075d5d6c813c03
 +#include "qemu/crucible-process-purpose.h"
 +
 +_Static_assert(QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLES_OFFSET +
-+               7 * QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_BYTES == 472,
-+               "canonical seven rows end before issued subdivision");
-+_Static_assert(QEMU_CRUCIBLE_PROCESS_PURPOSE_SUBDIVISION_INDEX_OFFSET + 8 ==
++               QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_COUNT *
++               QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_BYTES ==
++               QEMU_CRUCIBLE_PROCESS_PURPOSE_LOCAL_EXTENT_OFFSET,
++               "canonical rows end before local subdivision");
++_Static_assert(QEMU_CRUCIBLE_PROCESS_FAMILY_OFFSET +
++               QEMU_CRUCIBLE_PROCESS_FAMILY_BYTES == 1000,
++               "family ends before standing descriptor witnesses");
++_Static_assert(1024 + QEMU_CRUCIBLE_STANDING_PAYLOAD_BYTES ==
 +               QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES,
-+               "fixed final field closes exact record");
++               "standing payload closes exact record");
 +
-+/* Arbitrary syntax providers, never an issued purpose or effective contract. */
-+static void fixture_purpose(uint8_t wire[496])
++/* Current tail offsets without public field constants. */
++enum {
++    FAMILY_ROW_ID = 8,
++    FAMILY_ROW_EXTENT = 40,
++    FAMILY_ROW_RESERVED = 48,
++    FAMILY_ROW_MEMORY = 56,
++    FAMILY_ROW_FILE = 64,
++    FAMILY_ROW_TASK = 72,
++    FAMILY_ROW_FD = 80,
++    FAMILY_ROW_VCPU = 88,
++    STANDING_DEVICE = 1000,
++    STANDING_INODE = 1008,
++    STANDING_EXTENT = 1016,
++    STANDING_PAYLOAD = 1024,
++    PLAN_FIXED_BYTES = QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_HEADER_BYTES +
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_STARTUP_BYTES +
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES,
++    STARTUP_CAPABILITY = 16,
++    STARTUP_OPERATION = 48,
++    STARTUP_START = 56,
++    STARTUP_END = 64,
++    STARTUP_POLL = 72,
++    STARTUP_PROCESS_GENERATION = 80,
++    STARTUP_CANCELLATION_INODE = 96,
++    STARTUP_CANCELLATION_DESCRIPTOR = 104,
++    STARTUP_FLAGS = 108,
++    STARTUP_CANCELLATION_EVENT = 112,
++    STARTUP_TOTAL = 120,
++};
++
++static uint8_t *family_row(uint8_t *wire, size_t index)
 +{
-+    memset(wire, 0, 496);
-+    memcpy(wire, "CRUCPUR2", 8);
-+    stl_be_p(wire + 8, 2);
-+    stl_be_p(wire + 12, 496);
-+    stq_be_p(wire + 16, 100000);
-+    stq_be_p(wire + 24, 80000);
-+    for (size_t offset = 32; offset <= 64; offset += 8) {
++    return wire + QEMU_CRUCIBLE_PROCESS_FAMILY_OFFSET +
++        QEMU_CRUCIBLE_PROCESS_FAMILY_ROWS_OFFSET +
++        index * QEMU_CRUCIBLE_PROCESS_FAMILY_ROW_BYTES;
++}
++
++static void fixture_family(uint8_t *wire)
++{
++    static const size_t source_offsets[] = {
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_LOCAL_EXTENT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_MEMORY_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_WRITABLE_FILE_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_TASK_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_FD_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_VCPU_LIMIT_OFFSET,
++    };
++    static const size_t row_offsets[] = {
++        FAMILY_ROW_EXTENT, FAMILY_ROW_MEMORY, FAMILY_ROW_FILE,
++        FAMILY_ROW_TASK, FAMILY_ROW_FD, FAMILY_ROW_VCPU,
++    };
++    uint8_t *family = wire + QEMU_CRUCIBLE_PROCESS_FAMILY_OFFSET;
++
++    memcpy(family, QEMU_CRUCIBLE_PROCESS_FAMILY_MAGIC, 8);
++    stl_be_p(family + 8, QEMU_CRUCIBLE_PROCESS_FAMILY_SCHEMA);
++    stl_be_p(family + 12, QEMU_CRUCIBLE_PROCESS_FAMILY_BYTES);
++    memcpy(family + QEMU_CRUCIBLE_PROCESS_FAMILY_CAPABILITY_OFFSET,
++           wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_CAPABILITY_OFFSET, 32);
++    stq_be_p(family + QEMU_CRUCIBLE_PROCESS_FAMILY_ACCOUNT_OFFSET,
++             ldq_be_p(wire +
++                      QEMU_CRUCIBLE_PROCESS_PURPOSE_ACCOUNT_GENERATION_OFFSET));
++    stq_be_p(family + QEMU_CRUCIBLE_PROCESS_FAMILY_GENERATION_OFFSET, 3);
++    for (size_t index = 0; index < 2; index++) {
++        uint8_t *row = family_row(wire, index);
++
++        stl_be_p(row, index);
++        row[FAMILY_ROW_ID] = index + 1;
++        for (size_t field = 0; field < G_N_ELEMENTS(source_offsets); field++) {
++            stq_be_p(row + row_offsets[field],
++                     ldq_be_p(wire + source_offsets[field]));
++        }
++    }
++}
++
++static void fixture_standing(uint8_t *wire)
++{
++    uint8_t *standing = wire + STANDING_PAYLOAD;
++    uint8_t *roster = standing + QEMU_CRUCIBLE_STANDING_HEADER_BYTES;
++    size_t cursor = 4;
++
++    stq_be_p(wire + STANDING_DEVICE, 13);
++    stq_be_p(wire + STANDING_INODE, 17);
++    stq_be_p(wire + STANDING_EXTENT, QEMU_CRUCIBLE_STANDING_MAPPING_BYTES);
++    memcpy(standing, "CRUCSRV2", 8);
++    stl_be_p(standing + 8, 2);
++    stl_be_p(standing + 12, QEMU_CRUCIBLE_STANDING_PAYLOAD_BYTES);
++    memcpy(standing + 16,
++           wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_CAPABILITY_OFFSET, 32);
++    stq_be_p(standing + 48, 100);
++    stq_be_p(standing + 56, 1);
++    stq_be_p(standing + 72,
++             ldq_be_p(wire +
++                      QEMU_CRUCIBLE_PROCESS_PURPOSE_ACCOUNT_GENERATION_OFFSET));
++    stq_be_p(standing + 80,
++             ldq_be_p(wire +
++                      QEMU_CRUCIBLE_PROCESS_PURPOSE_PROCESS_GENERATION_OFFSET));
++    memcpy(standing + 88, standing + 16, 32);
++    memcpy(standing + 120, family_row(wire, 0) + FAMILY_ROW_ID, 32);
++    stq_be_p(standing + 152, 1);
++    stq_be_p(standing + 168, 19);
++    stq_be_p(standing + 176, 1);
++    memcpy(standing + 200,
++           wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_ARTIFACT_DIGEST_OFFSET, 32);
++    stl_be_p(roster, 11);
++    for (size_t index = 0; index < QEMU_CRUCIBLE_STANDING_CLASS_COUNT; index++) {
++        stq_be_p(roster + cursor, index + 1);
++        cursor += 10; /* Two absent optional budgets follow each poll. */
++    }
++    stl_be_p(standing + 192, cursor);
++}
++
++/* Arbitrary current syntax, never an issued purpose or effective contract. */
++static void fixture_purpose(uint8_t wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES])
++{
++    memset(wire, 0, QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES);
++    memcpy(wire, QEMU_CRUCIBLE_PROCESS_PURPOSE_MAGIC, 8);
++    stl_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_SCHEMA_OFFSET,
++             QEMU_CRUCIBLE_PROCESS_PURPOSE_SCHEMA);
++    stl_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_LENGTH_OFFSET,
++             QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_TOTAL_OFFSET, 100000);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_GROSS_PROCESS_OFFSET, 80000);
++    for (size_t offset = QEMU_CRUCIBLE_PROCESS_PURPOSE_ASSIGNED_OUTSIDE_OFFSET;
++         offset <= QEMU_CRUCIBLE_PROCESS_PURPOSE_ASSIGNED_STARTUP_OFFSET;
++         offset += 8) {
 +        stq_be_p(wire + offset, 100);
 +    }
-+    stq_be_p(wire + 72, 4000);
-+    stq_be_p(wire + 80, 1);
-+    stq_be_p(wire + 88, 7);
-+    stq_be_p(wire + 96, 9);
-+    stq_be_p(wire + 104, 80000);
-+    stq_be_p(wire + 112, 80000);
-+    stq_be_p(wire + 120, 8);
-+    stq_be_p(wire + 128, 64);
-+    stq_be_p(wire + 136, 1);
-+    wire[144] = 0x5a;
-+    stl_be_p(wire + 176, 62);
-+    stl_be_p(wire + 180, 7);
-+    wire[184] = 0xa5;
-+    stq_be_p(wire + 216, UINT64_MAX);
-+    stq_be_p(wire + 224, 100);
-+    stq_be_p(wire + 232, 1000);
-+    stq_be_p(wire + 240, UINT64_MAX);
-+    for (size_t index = 0; index < 7; index++) {
-+        uint8_t *row = wire + 248 + index * 32;
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_INCARNATION_GUEST_OFFSET, 4000);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_LIVE_INCARNATIONS_OFFSET, 1);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_ACCOUNT_GENERATION_OFFSET, 7);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_PROCESS_GENERATION_OFFSET, 9);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_MEMORY_LIMIT_OFFSET, 40000);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_WRITABLE_FILE_LIMIT_OFFSET, 80000);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_TASK_LIMIT_OFFSET, 8);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_FD_LIMIT_OFFSET, 64);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_VCPU_LIMIT_OFFSET, 1);
++    wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_ARTIFACT_DIGEST_OFFSET] = 0x5a;
++    stl_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_ARTIFACT_MACHINE_OFFSET, 62);
++    stl_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_COUNT_OFFSET,
++             QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_COUNT);
++    wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_CAPABILITY_OFFSET] = 0xa5;
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_OPERATION_OFFSET,
++             UINT64_MAX);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_START_OFFSET, 100);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_END_OFFSET, 1000);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_POLL_OFFSET,
++             UINT64_MAX);
++    for (size_t index = 0; index < QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_COUNT;
++         index++) {
++        uint8_t *row = wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLES_OFFSET +
++            index * QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_BYTES;
 +
-+        stl_be_p(row, index + 1);
-+        stq_be_p(row + 8, 64 + index * 16);
-+        stq_be_p(row + 16, 8);
-+        stq_be_p(row + 24, 1);
++        stl_be_p(row + QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_ID_OFFSET, index + 1);
++        stq_be_p(row + QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_EXTENT_OFFSET,
++                 64 + index * 16);
++        stq_be_p(row + QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_ALIGNMENT_OFFSET, 8);
++        stq_be_p(row + QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_BIRTH_COUNT_OFFSET, 1);
 +    }
-+    stq_be_p(wire + 472, 40000);
-+    stq_be_p(wire + 480, 2);
-+    stq_be_p(wire + 488, 0);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_LOCAL_EXTENT_OFFSET, 40000);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_MAX_INCARNATIONS_OFFSET,
++             QEMU_CRUCIBLE_PROCESS_PURPOSE_MAX_INCARNATIONS);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CHILD_CGROUP_DEVICE_OFFSET, 23);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CHILD_CGROUP_INODE_OFFSET, 29);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_PARENT_CGROUP_DEVICE_OFFSET, 31);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_PARENT_CGROUP_INODE_OFFSET, 37);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_PARENT_CPU_QUOTA_OFFSET, 200000);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_PARENT_CPU_PERIOD_OFFSET,
++             QEMU_CRUCIBLE_PROCESS_PURPOSE_CPU_PERIOD);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_PARENT_TASK_LIMIT_OFFSET, 16);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CHILD_UID_OFFSET, 1000);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CHILD_GID_OFFSET, 1001);
++    fixture_family(wire);
++    fixture_standing(wire);
 +}
 +
 +static void assert_refusal(const uint8_t *wire, size_t length, int expected)
@@ -263029,268 +263167,530 @@ index 0000000000000000000000000000000000000000..e37f2087cf03a5c3d8075d5d6c813c03
 +
 +    memset(&out, 0x6b, sizeof(out));
 +    memcpy(before, &out, sizeof(out));
-+    g_assert_cmpint(qemu_crucible_process_purpose_decode_v2(
++    g_assert_cmpint(qemu_crucible_process_purpose_decode_v8(
 +                       wire, length, &out), ==, expected);
 +    g_assert_cmpmem(&out, sizeof(out), before, sizeof(before));
 +}
 +
 +static void test_fields(void)
 +{
-+    uint8_t wire[496];
-+    uint8_t before[496];
++    uint8_t wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES];
++    uint8_t before[sizeof(wire)];
 +    QemuCrucibleProcessPurposeRecord out;
 +
 +    fixture_purpose(wire);
 +    memcpy(before, wire, sizeof(before));
-+    for (uint64_t index = 0; index < 2; index++) {
-+        stq_be_p(wire + 488, index);
-+        g_assert_cmpint(qemu_crucible_process_purpose_decode_v2(
-+                           wire, sizeof(wire), &out), ==, 0);
-+        g_assert_cmpuint(out.original_total, ==, 100000);
-+        g_assert_cmpuint(out.gross_process, ==, 80000);
-+        g_assert_cmpuint(out.local_extent, ==, 40000);
-+        g_assert_cmpuint(out.subdivision_index, ==, index);
-+        g_assert_cmpuint(out.live_guest, ==, 4000);
-+        g_assert_cmpuint(out.containing_operation, ==, UINT64_MAX);
-+        g_assert_cmpuint(out.containing_poll, ==, UINT64_MAX);
-+        for (size_t role = 0; role < 7; role++) {
-+            g_assert_cmpuint(out.requests[role].extent, ==, 64 + role * 16);
-+            g_assert_cmpuint(out.requests[role].alignment, ==, 8);
-+            g_assert_cmpuint(out.requests[role].count, ==, 1);
-+        }
++    g_assert_cmpint(qemu_crucible_process_purpose_decode_v8(
++                       wire, sizeof(wire), &out), ==, 0);
++    g_assert_cmpuint(out.original_total, ==, 100000);
++    g_assert_cmpuint(out.gross_process, ==, 80000);
++    g_assert_cmpuint(out.local_extent, ==, 40000);
++    g_assert_cmpuint(out.subdivision_index, ==, 0);
++    g_assert_cmpuint(out.incarnation_guest, ==, 4000);
++    g_assert_cmpuint(out.memory_limit, ==, 40000);
++    g_assert_cmpuint(out.containing_operation, ==, UINT64_MAX);
++    g_assert_cmpuint(out.containing_poll, ==, UINT64_MAX);
++    g_assert_cmpuint(out.child_cgroup_device, ==, 23);
++    g_assert_cmpuint(out.child_cgroup_inode, ==, 29);
++    g_assert_cmpuint(out.parent_cgroup_device, ==, 31);
++    g_assert_cmpuint(out.parent_cgroup_inode, ==, 37);
++    g_assert_cmpuint(out.parent_cpu_quota, ==, 200000);
++    g_assert_cmpuint(out.parent_cpu_period, ==,
++                     QEMU_CRUCIBLE_PROCESS_PURPOSE_CPU_PERIOD);
++    g_assert_cmpuint(out.parent_task_limit, ==, 16);
++    g_assert_cmpuint(out.child_uid, ==, 1000);
++    g_assert_cmpuint(out.child_gid, ==, 1001);
++    g_assert_false(out.ram_endpoint_present);
++    g_assert_cmpuint(out.family.assignment_generation, ==, 3);
++    g_assert_cmpuint(out.family.source.extent, ==, 40000);
++    g_assert_cmpuint(out.family.target.extent, ==, 40000);
++    g_assert_cmpuint(out.standing_file_extent, ==,
++                     QEMU_CRUCIBLE_STANDING_MAPPING_BYTES);
++    g_assert_cmpuint(out.standing.account_generation, ==, 7);
++    g_assert_cmpuint(out.standing.process_generation, ==, 9);
++    g_assert_false(out.standing.action.present);
++    for (size_t role = 0; role < QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_COUNT; role++) {
++        g_assert_cmpuint(out.requests[role].extent, ==, 64 + role * 16);
++        g_assert_cmpuint(out.requests[role].alignment, ==, 8);
++        g_assert_cmpuint(out.requests[role].count, ==, 1);
 +    }
-+    stq_be_p(wire + 488, 0);
++    for (size_t index = 0; index < QEMU_CRUCIBLE_STANDING_CLASS_COUNT; index++) {
++        g_assert_cmpuint(out.standing.budgets[index].poll_ns, ==, index + 1);
++        g_assert_false(out.standing.budgets[index].progress_present);
++        g_assert_false(out.standing.budgets[index].total_present);
++    }
 +    g_assert_cmpmem(wire, sizeof(wire), before, sizeof(before));
-+    stq_be_p(wire + 128, UINT64_MAX - 1);
-+    g_assert_cmpint(qemu_crucible_process_purpose_decode_v2(
++
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_FD_LIMIT_OFFSET, UINT64_MAX - 1);
++    stq_be_p(family_row(wire, 0) + FAMILY_ROW_FD, UINT64_MAX - 1);
++    g_assert_cmpint(qemu_crucible_process_purpose_decode_v8(
 +                       wire, sizeof(wire), &out), ==, 0);
 +    g_assert_cmpuint(out.fd_limit, ==, UINT64_MAX - 1);
++
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_WRITABLE_FILE_LIMIT_OFFSET, 0);
++    stq_be_p(family_row(wire, 0) + FAMILY_ROW_FILE, 0);
++    g_assert_cmpint(qemu_crucible_process_purpose_decode_v8(
++                       wire, sizeof(wire), &out), ==, 0);
++    g_assert_cmpuint(out.writable_file_limit, ==, 0);
 +}
 +
 +static void test_framing(void)
 +{
-+    uint8_t wire[497];
++    uint8_t wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES + 1];
 +
 +    fixture_purpose(wire);
-+    assert_refusal(wire, 495, -EINVAL);
-+    assert_refusal(wire, 497, -EINVAL);
-+    assert_refusal(NULL, 496, -EINVAL);
-+    memcpy(wire, "CRUCPUR1", 8);
-+    assert_refusal(wire, 496, -EPROTONOSUPPORT);
-+    fixture_purpose(wire);
-+    stl_be_p(wire + 8, 1);
-+    assert_refusal(wire, 496, -EPROTONOSUPPORT);
-+    fixture_purpose(wire);
-+    stl_be_p(wire + 12, 472);
++    assert_refusal(wire, QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES - 1, -EINVAL);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
 +    assert_refusal(wire, 496, -EINVAL);
++    assert_refusal(NULL, QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES, -EINVAL);
++    g_assert_cmpint(qemu_crucible_process_purpose_decode_v8(
++                       wire, QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES, NULL),
++                      ==, -EINVAL);
++    for (unsigned version = 1; version < QEMU_CRUCIBLE_PROCESS_PURPOSE_SCHEMA;
++         version++) {
++        fixture_purpose(wire);
++        wire[7] = '0' + version;
++        assert_refusal(wire, QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES, -EPROTONOSUPPORT);
++        fixture_purpose(wire);
++        stl_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_SCHEMA_OFFSET, version);
++        assert_refusal(wire, QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES, -EPROTONOSUPPORT);
++    }
++    fixture_purpose(wire);
++    stl_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_LENGTH_OFFSET,
++             QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES - 1);
++    assert_refusal(wire, QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES, -EINVAL);
 +}
 +
 +static void test_domains(void)
 +{
 +    static const size_t nonzero[] = {
-+        16, 24, 80, 88, 96, 120, 128, 136, 216, 224, 240, 472,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_TOTAL_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_GROSS_PROCESS_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_LIVE_INCARNATIONS_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_ACCOUNT_GENERATION_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_PROCESS_GENERATION_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_MEMORY_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_TASK_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_FD_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_VCPU_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_OPERATION_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_START_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_POLL_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_LOCAL_EXTENT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_CHILD_UID_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_CHILD_GID_OFFSET,
 +    };
-+    static const size_t finite[] = { 104, 112, 120, 128, 136 };
-+    uint8_t wire[496];
++    static const size_t finite[] = {
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_MEMORY_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_WRITABLE_FILE_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_TASK_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_FD_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_VCPU_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_PARENT_CPU_QUOTA_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_PARENT_TASK_LIMIT_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_CHILD_UID_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_CHILD_GID_OFFSET,
++    };
++    uint8_t wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES];
 +
 +    for (size_t index = 0; index < G_N_ELEMENTS(nonzero); index++) {
 +        fixture_purpose(wire);
 +        stq_be_p(wire + nonzero[index], 0);
-+        assert_refusal(wire, 496, -EINVAL);
++        fixture_family(wire);
++        assert_refusal(wire, sizeof(wire), -EINVAL);
 +    }
 +    for (size_t index = 0; index < G_N_ELEMENTS(finite); index++) {
 +        fixture_purpose(wire);
 +        stq_be_p(wire + finite[index], UINT64_MAX);
-+        assert_refusal(wire, 496, -EINVAL);
++        fixture_family(wire);
++        assert_refusal(wire, sizeof(wire), -EINVAL);
 +    }
 +    fixture_purpose(wire);
-+    memset(wire + 144, 0, 32);
-+    assert_refusal(wire, 496, -EINVAL);
++    memset(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_ARTIFACT_DIGEST_OFFSET, 0, 32);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
 +    fixture_purpose(wire);
-+    memset(wire + 184, 0, 32);
-+    assert_refusal(wire, 496, -EINVAL);
++    memset(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_CAPABILITY_OFFSET, 0, 32);
++    fixture_family(wire);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
 +    fixture_purpose(wire);
-+    stq_be_p(wire + 232, 100);
-+    assert_refusal(wire, 496, -EINVAL);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_END_OFFSET, 100);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
 +    fixture_purpose(wire);
-+    stq_be_p(wire + 480, 1);
-+    assert_refusal(wire, 496, -EINVAL);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_MAX_INCARNATIONS_OFFSET, 1);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
 +    fixture_purpose(wire);
-+    stq_be_p(wire + 488, 2);
-+    assert_refusal(wire, 496, -EINVAL);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_SUBDIVISION_INDEX_OFFSET, 1);
++    assert_refusal(wire, sizeof(wire), -ESTALE);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_SUBDIVISION_INDEX_OFFSET, 2);
++    assert_refusal(wire, sizeof(wire), -ESTALE);
 +    fixture_purpose(wire);
-+    stq_be_p(wire + 80, 3);
-+    assert_refusal(wire, 496, -EINVAL);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_LIVE_INCARNATIONS_OFFSET, 3);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
 +    fixture_purpose(wire);
-+    stl_be_p(wire + 176, 0x10000);
-+    assert_refusal(wire, 496, -EINVAL);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_PARENT_CPU_QUOTA_OFFSET, 0);
++    assert_refusal(wire, sizeof(wire), -ENOSPC);
 +    fixture_purpose(wire);
-+    stl_be_p(wire + 180, 6);
-+    assert_refusal(wire, 496, -EINVAL);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_PARENT_TASK_LIMIT_OFFSET, 0);
++    assert_refusal(wire, sizeof(wire), -ENOSPC);
++    fixture_purpose(wire);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_PARENT_CPU_PERIOD_OFFSET,
++             QEMU_CRUCIBLE_PROCESS_PURPOSE_CPU_PERIOD - 1);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
++    fixture_purpose(wire);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_PARENT_CPU_QUOTA_OFFSET, 200001);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
++    fixture_purpose(wire);
++    stl_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_ARTIFACT_MACHINE_OFFSET, 0x10000);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
++    fixture_purpose(wire);
++    stl_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_COUNT_OFFSET,
++             QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_COUNT - 1);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
 +}
 +
 +static void test_rows(void)
 +{
-+    uint8_t wire[496];
++    uint8_t wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES];
 +
-+    for (size_t index = 0; index < 7; index++) {
-+        size_t row = 248 + index * 32;
++    for (size_t index = 0; index < QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_COUNT;
++         index++) {
++        size_t row = QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLES_OFFSET +
++            index * QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_BYTES;
 +
 +        fixture_purpose(wire);
 +        stl_be_p(wire + row, index + 2);
-+        assert_refusal(wire, 496, -EINVAL);
++        assert_refusal(wire, sizeof(wire), -EINVAL);
 +        fixture_purpose(wire);
-+        stl_be_p(wire + row + 4, 1);
-+        assert_refusal(wire, 496, -EINVAL);
++        stl_be_p(wire + row + QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_RESERVED_OFFSET, 1);
++        assert_refusal(wire, sizeof(wire), -EINVAL);
 +        fixture_purpose(wire);
-+        stq_be_p(wire + row + 8, 0);
-+        assert_refusal(wire, 496, -EINVAL);
++        stq_be_p(wire + row + QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_EXTENT_OFFSET, 0);
++        assert_refusal(wire, sizeof(wire), -EINVAL);
 +        fixture_purpose(wire);
-+        stq_be_p(wire + row + 16, 3);
-+        assert_refusal(wire, 496, -EINVAL);
++        stq_be_p(wire + row +
++                 QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_ALIGNMENT_OFFSET, 3);
++        assert_refusal(wire, sizeof(wire), -EINVAL);
 +        fixture_purpose(wire);
-+        stq_be_p(wire + row + 8, 65);
-+        assert_refusal(wire, 496, -EINVAL);
++        stq_be_p(wire + row + QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_EXTENT_OFFSET, 65);
++        assert_refusal(wire, sizeof(wire), -EINVAL);
 +        fixture_purpose(wire);
-+        stq_be_p(wire + row + 24, 2);
-+        assert_refusal(wire, 496, -EINVAL);
++        stq_be_p(wire + row +
++                 QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_BIRTH_COUNT_OFFSET, 2);
++        assert_refusal(wire, sizeof(wire), -EINVAL);
 +    }
 +}
 +
 +static void test_conservation(void)
 +{
-+    uint8_t wire[496];
++    uint8_t wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES];
 +
 +    fixture_purpose(wire);
-+    stq_be_p(wire + 32, UINT64_MAX);
-+    assert_refusal(wire, 496, -EOVERFLOW);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_ASSIGNED_OUTSIDE_OFFSET,
++             UINT64_MAX);
++    assert_refusal(wire, sizeof(wire), -EOVERFLOW);
 +    fixture_purpose(wire);
-+    stq_be_p(wire + 32, 20000);
-+    assert_refusal(wire, 496, -ENOSPC);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_ASSIGNED_OUTSIDE_OFFSET, 20000);
++    assert_refusal(wire, sizeof(wire), -ENOSPC);
 +    fixture_purpose(wire);
-+    stq_be_p(wire + 472, 80001);
-+    assert_refusal(wire, 496, -ENOSPC);
++    stq_be_p(family_row(wire, 1) + FAMILY_ROW_EXTENT, 40001);
++    assert_refusal(wire, sizeof(wire), -ENOSPC);
 +    fixture_purpose(wire);
-+    stq_be_p(wire + 472, 1);
-+    assert_refusal(wire, 496, -ENOSPC);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_LOCAL_EXTENT_OFFSET, 80001);
++    fixture_family(wire);
++    assert_refusal(wire, sizeof(wire), -ENOSPC);
 +    fixture_purpose(wire);
-+    stq_be_p(wire + 256, UINT64_MAX - 7);
-+    assert_refusal(wire, 496, -EOVERFLOW);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_LOCAL_EXTENT_OFFSET, 1);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_MEMORY_LIMIT_OFFSET, 1);
++    fixture_family(wire);
++    assert_refusal(wire, sizeof(wire), -ENOSPC);
++    fixture_purpose(wire);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_LOCAL_EXTENT_OFFSET, 30000);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_MEMORY_LIMIT_OFFSET, 30000);
++    fixture_family(wire);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_INCARNATION_GUEST_OFFSET, 30000);
++    assert_refusal(wire, sizeof(wire), -ENOSPC);
++    fixture_purpose(wire);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLES_OFFSET +
++             QEMU_CRUCIBLE_PROCESS_PURPOSE_ROLE_EXTENT_OFFSET, UINT64_MAX - 7);
++    assert_refusal(wire, sizeof(wire), -EOVERFLOW);
++}
++
++static void test_family(void)
++{
++    uint8_t wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES];
++
++    fixture_purpose(wire);
++    wire[QEMU_CRUCIBLE_PROCESS_FAMILY_OFFSET] ^= 1;
++    assert_refusal(wire, sizeof(wire), -EPROTONOSUPPORT);
++    fixture_purpose(wire);
++    wire[QEMU_CRUCIBLE_PROCESS_FAMILY_OFFSET +
++         QEMU_CRUCIBLE_PROCESS_FAMILY_CAPABILITY_OFFSET] ^= 1;
++    assert_refusal(wire, sizeof(wire), -ESTALE);
++    fixture_purpose(wire);
++    stq_be_p(family_row(wire, 0) + FAMILY_ROW_RESERVED, 1);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
++    fixture_purpose(wire);
++    memcpy(family_row(wire, 1) + FAMILY_ROW_ID,
++           family_row(wire, 0) + FAMILY_ROW_ID, 32);
++    assert_refusal(wire, sizeof(wire), -ESTALE);
++    fixture_purpose(wire);
++    stq_be_p(family_row(wire, 1) + FAMILY_ROW_TASK, 17);
++    assert_refusal(wire, sizeof(wire), -ENOSPC);
++    fixture_purpose(wire);
++    stq_be_p(family_row(wire, 1) + FAMILY_ROW_VCPU, 3);
++    assert_refusal(wire, sizeof(wire), -ENOSPC);
++    fixture_purpose(wire);
++    stq_be_p(family_row(wire, 1) + FAMILY_ROW_VCPU, UINT64_MAX - 1);
++    assert_refusal(wire, sizeof(wire), -EOVERFLOW);
++    fixture_purpose(wire);
++    stq_be_p(family_row(wire, 1) + FAMILY_ROW_EXTENT, UINT64_MAX);
++    assert_refusal(wire, sizeof(wire), -EOVERFLOW);
++}
++
++static void test_standing(void)
++{
++    uint8_t wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES];
++    size_t roster = STANDING_PAYLOAD + QEMU_CRUCIBLE_STANDING_HEADER_BYTES;
++
++    fixture_purpose(wire);
++    stq_be_p(wire + STANDING_EXTENT, QEMU_CRUCIBLE_STANDING_MAPPING_BYTES - 1);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
++    fixture_purpose(wire);
++    wire[STANDING_PAYLOAD] ^= 1;
++    assert_refusal(wire, sizeof(wire), -EPROTONOSUPPORT);
++    fixture_purpose(wire);
++    stq_be_p(wire + STANDING_PAYLOAD + 80, 10);
++    assert_refusal(wire, sizeof(wire), -ESTALE);
++    fixture_purpose(wire);
++    wire[STANDING_PAYLOAD + 65] = 1;
++    assert_refusal(wire, sizeof(wire), -ESTALE);
++    fixture_purpose(wire);
++    stl_be_p(wire + STANDING_PAYLOAD + 192, 143);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
++    fixture_purpose(wire);
++    stl_be_p(wire + STANDING_PAYLOAD + 192,
++             QEMU_CRUCIBLE_STANDING_ROSTER_MAX + 1);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
++    fixture_purpose(wire);
++    stq_be_p(wire + roster + 4, 0);
++    assert_refusal(wire, sizeof(wire), -ERANGE);
++    fixture_purpose(wire);
++    wire[roster + 12] = 2;
++    assert_refusal(wire, sizeof(wire), -EPROTO);
++    fixture_purpose(wire);
++    wire[STANDING_PAYLOAD + QEMU_CRUCIBLE_ACTION_PAYLOAD_OFFSET] = 1;
++    assert_refusal(wire, sizeof(wire), -EPROTONOSUPPORT);
++}
++
++static void test_ram(void)
++{
++    uint8_t wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES];
++    QemuCrucibleProcessPurposeRecord out;
++    static const size_t nonzero[] = {
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_INODE_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_COOKIE_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_SESSION_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_DAEMON_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_OWNER_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_NODE_OFFSET,
++        QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_ARENA_GENERATION_OFFSET,
++    };
++
++    fixture_purpose(wire);
++    for (size_t index = 0; index < G_N_ELEMENTS(nonzero); index++) {
++        stq_be_p(wire + nonzero[index], index + 1);
++    }
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_OWNER_GENERATION_OFFSET, 9);
++    wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_TEMPLATE_OFFSET] = 1;
++    g_assert_cmpint(qemu_crucible_process_purpose_decode_v8(
++                       wire, sizeof(wire), &out), ==, 0);
++    g_assert_true(out.ram_endpoint_present);
++    g_assert_true(out.ram_template);
++    g_assert_cmpuint(out.ram_socket_device, ==, 0);
++    g_assert_cmpuint(out.ram_socket_inode, ==, 1);
++    g_assert_cmpuint(out.ram_owner_generation, ==, 9);
++
++    wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_TEMPLATE_OFFSET] = 2;
++    assert_refusal(wire, sizeof(wire), -EINVAL);
++    wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_TEMPLATE_OFFSET] = 1;
++    wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_RESERVED_OFFSET] = 1;
++    assert_refusal(wire, sizeof(wire), -EINVAL);
++    wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_RESERVED_OFFSET] = 0;
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_OWNER_GENERATION_OFFSET, 10);
++    assert_refusal(wire, sizeof(wire), -EINVAL);
++    stq_be_p(wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_RAM_OWNER_GENERATION_OFFSET, 9);
++    for (size_t index = 0; index < G_N_ELEMENTS(nonzero); index++) {
++        uint64_t value = ldq_be_p(wire + nonzero[index]);
++
++        stq_be_p(wire + nonzero[index], 0);
++        assert_refusal(wire, sizeof(wire), -EINVAL);
++        stq_be_p(wire + nonzero[index], value);
++    }
 +}
 +
 +#ifdef CONFIG_LINUX
-+static void fixture_startup(uint8_t wire[128])
++static void fixture_startup(uint8_t wire[QEMU_CRUCIBLE_ORIGINAL_STARTUP_WIRE_BYTES])
 +{
-+    memset(wire, 0, 128);
++    memset(wire, 0, QEMU_CRUCIBLE_ORIGINAL_STARTUP_WIRE_BYTES);
 +    memcpy(wire, "CRUCSTP1", 8);
-+    stl_be_p(wire + 8, 2);
-+    stl_be_p(wire + 12, 128);
-+    wire[16] = 0xa5;
-+    stq_be_p(wire + 48, 11); /* Distinct from containing UINT64_MAX. */
-+    stq_be_p(wire + 56, 200);
-+    stq_be_p(wire + 64, 2000);
-+    stq_be_p(wire + 72, 9999);
-+    stq_be_p(wire + 80, 9);
-+    stq_be_p(wire + 96, 1);
-+    stl_be_p(wire + 104, 12);
-+    stl_be_p(wire + 108, 1);
-+    stq_be_p(wire + 112, 1);
-+    stq_be_p(wire + 120, 100000);
++    stl_be_p(wire + 8, QEMU_CRUCIBLE_ORIGINAL_STARTUP_SCHEMA);
++    stl_be_p(wire + 12, QEMU_CRUCIBLE_ORIGINAL_STARTUP_WIRE_BYTES);
++    wire[STARTUP_CAPABILITY] = 0xa5;
++    stq_be_p(wire + STARTUP_OPERATION, 11); /* Distinct installing original. */
++    stq_be_p(wire + STARTUP_START, 200);
++    stq_be_p(wire + STARTUP_END, 2000);
++    stq_be_p(wire + STARTUP_POLL, 9999);
++    stq_be_p(wire + STARTUP_PROCESS_GENERATION, 9);
++    stq_be_p(wire + STARTUP_CANCELLATION_INODE, 1);
++    stl_be_p(wire + STARTUP_CANCELLATION_DESCRIPTOR, 12);
++    stl_be_p(wire + STARTUP_FLAGS, QEMU_CRUCIBLE_ORIGINAL_STARTUP_FLAGS);
++    stq_be_p(wire + STARTUP_CANCELLATION_EVENT, 1);
++    stq_be_p(wire + STARTUP_TOTAL, 100000);
++}
++
++static void seal_fd(int fd)
++{
++    g_assert_cmpint(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_GROW |
++                          F_SEAL_SHRINK | F_SEAL_SEAL), ==, 0);
 +}
 +
 +static int fixture_fd(uint32_t total, uint32_t app, uint32_t selectable,
 +                      bool sealed)
 +{
-+    uint8_t header[40] = { 0 };
-+    uint8_t startup[128];
-+    uint8_t purpose[496];
++    uint8_t header[QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_HEADER_BYTES] = { 0 };
++    uint8_t startup[QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_STARTUP_BYTES];
++    uint8_t purpose[QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES];
++    uint64_t offset = sizeof(header) + (uint64_t)app + selectable;
 +    int fd = memfd_create("purpose-syntax", MFD_CLOEXEC | MFD_ALLOW_SEALING);
-+    uint64_t offset = 40 + (uint64_t)app + selectable;
 +
 +    g_assert_cmpint(fd, >=, 0);
-+    memcpy(header, "CRUCSUP4", 8);
-+    stl_be_p(header + 8, 4);
-+    stl_be_p(header + 12, 40);
-+    stl_be_p(header + 16, total);
-+    stl_be_p(header + 20, app);
-+    stl_be_p(header + 24, selectable);
-+    stl_be_p(header + 32, 128);
-+    stl_be_p(header + 36, 496);
++    memcpy(header, QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_MAGIC, 8);
++    stl_be_p(header + QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_SCHEMA_OFFSET,
++             QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_SCHEMA);
++    stl_be_p(header + QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_HEADER_LENGTH_OFFSET,
++             sizeof(header));
++    stl_be_p(header + QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_TOTAL_OFFSET, total);
++    stl_be_p(header + QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_APP_LENGTH_OFFSET, app);
++    stl_be_p(header + QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_SELECTABLE_LENGTH_OFFSET,
++             selectable);
++    stl_be_p(header + QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_STARTUP_LENGTH_OFFSET,
++             sizeof(startup));
++    stl_be_p(header + QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_PURPOSE_LENGTH_OFFSET,
++             sizeof(purpose));
 +    fixture_startup(startup);
 +    fixture_purpose(purpose);
 +    g_assert_cmpint(ftruncate(fd, total), ==, 0);
-+    g_assert_cmpint(pwrite(fd, header, 40, 0), ==, 40);
-+    g_assert_cmpint(pwrite(fd, startup, 128, offset), ==, 128);
-+    g_assert_cmpint(pwrite(fd, purpose, 496, offset + 128), ==, 496);
++    g_assert_cmpint(pwrite(fd, header, sizeof(header), 0), ==, sizeof(header));
++    g_assert_cmpint(pwrite(fd, startup, sizeof(startup), offset), ==,
++                      sizeof(startup));
++    g_assert_cmpint(pwrite(fd, purpose, sizeof(purpose), offset + sizeof(startup)),
++                      ==, sizeof(purpose));
 +    if (sealed) {
-+        g_assert_cmpint(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_GROW |
-+                              F_SEAL_SHRINK | F_SEAL_SEAL), ==, 0);
++        seal_fd(fd);
 +    }
 +    return fd;
 +}
 +
-+static void assert_fd_refusal(int fd)
++static void assert_fd_refusal(int fd, int expected)
 +{
 +    QemuCrucibleProcessPurposePlan out;
 +    uint8_t before[sizeof(out)];
++    int flags = fcntl(fd, F_GETFL);
++    off_t position = lseek(fd, 0, SEEK_CUR);
 +
 +    memset(&out, 0x6b, sizeof(out));
 +    memcpy(before, &out, sizeof(before));
-+    g_assert_cmpint(qemu_crucible_process_purpose_plan_read_fd_v2(fd, &out), <, 0);
++    g_assert_cmpint(qemu_crucible_process_purpose_plan_read_fd_v3(fd, &out), ==,
++                      expected);
 +    g_assert_cmpmem(&out, sizeof(out), before, sizeof(before));
 +    g_assert_cmpint(fcntl(fd, F_GETFD), >=, 0);
++    g_assert_cmpint(fcntl(fd, F_GETFL), ==, flags);
++    g_assert_cmpint(lseek(fd, 0, SEEK_CUR), ==, position);
 +}
 +
 +static void test_descriptor(void)
 +{
 +    QemuCrucibleProcessPurposePlan out;
-+    int fd = fixture_fd(664, 0, 0, true);
++    int fd = fixture_fd(PLAN_FIXED_BYTES, 0, 0, true);
 +    int flags = fcntl(fd, F_GETFL);
 +
 +    g_assert_cmpint(lseek(fd, 7, SEEK_SET), ==, 7);
-+    g_assert_cmpint(qemu_crucible_process_purpose_plan_read_fd_v2(fd, &out), ==, 0);
-+    g_assert_cmpuint(out.purpose_offset, ==, 168);
++    g_assert_cmpint(qemu_crucible_process_purpose_plan_read_fd_v3(fd, &out), ==, 0);
++    g_assert_cmpuint(out.startup_offset, ==,
++                     QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_HEADER_BYTES);
++    g_assert_cmpuint(out.purpose_offset, ==,
++                     QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_HEADER_BYTES +
++                     QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_STARTUP_BYTES);
 +    g_assert_cmpuint(out.startup.operation_id, ==, 11);
 +    g_assert_cmpuint(out.purpose.containing_operation, ==, UINT64_MAX);
++    g_assert_cmpuint(out.workspace_bytes, ==, 0);
 +    g_assert_cmpint(fcntl(fd, F_GETFL), ==, flags);
 +    g_assert_cmpint(lseek(fd, 0, SEEK_CUR), ==, 7);
 +    g_assert_cmpint(close(fd), ==, 0);
 +
-+    fd = fixture_fd(664, 0, 0, false);
-+    assert_fd_refusal(fd);
++    fd = fixture_fd(PLAN_FIXED_BYTES, 0, 0, false);
++    assert_fd_refusal(fd, -EPERM);
 +    g_assert_cmpint(close(fd), ==, 0);
 +}
 +
 +static void test_nested_refusals(void)
 +{
-+    static const size_t startup_offsets[] = { 16, 80, 120 };
++    static const size_t startup_offsets[] = {
++        STARTUP_CAPABILITY, STARTUP_PROCESS_GENERATION, STARTUP_TOTAL,
++    };
 +    uint8_t value[8];
 +    int fd;
 +
 +    for (size_t index = 0; index < G_N_ELEMENTS(startup_offsets); index++) {
-+        fd = fixture_fd(664, 0, 0, false);
++        fd = fixture_fd(PLAN_FIXED_BYTES, 0, 0, false);
 +        stq_be_p(value, 17);
 +        g_assert_cmpint(pwrite(fd, value, sizeof(value),
-+                              40 + startup_offsets[index]), ==, sizeof(value));
-+        g_assert_cmpint(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_GROW |
-+                              F_SEAL_SHRINK | F_SEAL_SEAL), ==, 0);
-+        assert_fd_refusal(fd);
++                              QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_HEADER_BYTES +
++                              startup_offsets[index]), ==, sizeof(value));
++        seal_fd(fd);
++        assert_fd_refusal(fd, -ESTALE);
 +        g_assert_cmpint(close(fd), ==, 0);
 +    }
-+    fd = fixture_fd(664, 0, 0, false);
-+    stl_be_p(value, 472);
-+    g_assert_cmpint(pwrite(fd, value, 4, 36), ==, 4);
-+    g_assert_cmpint(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_GROW |
-+                          F_SEAL_SHRINK | F_SEAL_SEAL), ==, 0);
-+    assert_fd_refusal(fd);
++    fd = fixture_fd(PLAN_FIXED_BYTES, 0, 0, false);
++    stl_be_p(value, QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES - 1);
++    g_assert_cmpint(pwrite(fd, value, 4,
++                          QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_PURPOSE_LENGTH_OFFSET),
++                      ==, 4);
++    seal_fd(fd);
++    assert_fd_refusal(fd, -EINVAL);
 +    g_assert_cmpint(close(fd), ==, 0);
 +
-+    fd = fixture_fd(664, 0, 0, false);
-+    g_assert_cmpint(ftruncate(fd, 663), ==, 0);
-+    g_assert_cmpint(fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_GROW |
-+                          F_SEAL_SHRINK | F_SEAL_SEAL), ==, 0);
-+    assert_fd_refusal(fd);
++    fd = fixture_fd(PLAN_FIXED_BYTES, 0, 0, false);
++    g_assert_cmpint(ftruncate(fd, PLAN_FIXED_BYTES - 1), ==, 0);
++    seal_fd(fd);
++    assert_fd_refusal(fd, -EINVAL);
 +    g_assert_cmpint(close(fd), ==, 0);
++
++    fd = fixture_fd(PLAN_FIXED_BYTES + 1, 0, 0, true);
++    assert_fd_refusal(fd, -EINVAL);
++    g_assert_cmpint(close(fd), ==, 0);
++}
++
++static void test_plan_versions(void)
++{
++    uint8_t magic[8];
++    uint8_t schema[4];
++
++    for (unsigned version = 1; version < QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_SCHEMA;
++         version++) {
++        int fd = fixture_fd(PLAN_FIXED_BYTES, 0, 0, false);
++
++        memcpy(magic, QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_MAGIC, sizeof(magic));
++        magic[7] = '0' + version;
++        stl_be_p(schema, version);
++        g_assert_cmpint(pwrite(fd, magic, sizeof(magic), 0), ==, sizeof(magic));
++        g_assert_cmpint(pwrite(fd, schema, sizeof(schema),
++                              QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_SCHEMA_OFFSET),
++                          ==, sizeof(schema));
++        seal_fd(fd);
++        assert_fd_refusal(fd, -EPROTONOSUPPORT);
++        g_assert_cmpint(close(fd), ==, 0);
++    }
 +}
 +
 +static void test_aggregate(void)
@@ -263298,19 +263698,28 @@ index 0000000000000000000000000000000000000000..e37f2087cf03a5c3d8075d5d6c813c03
 +    QemuCrucibleProcessPurposePlan out;
 +    uint32_t maximum = QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_TOTAL_MAX;
 +    uint32_t selectable = QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_SELECTABLE_MAX;
-+    uint32_t app = maximum - selectable - 664;
++    uint32_t app = maximum - selectable - PLAN_FIXED_BYTES;
 +    int fd = fixture_fd(maximum, app, selectable, true);
 +
-+    g_assert_cmpint(qemu_crucible_process_purpose_plan_read_fd_v2(fd, &out), ==, 0);
++    g_assert_cmpint(qemu_crucible_process_purpose_plan_read_fd_v3(fd, &out), ==, 0);
 +    g_assert_cmpuint(out.total_bytes, ==, maximum);
++    g_assert_cmpuint(out.selectable_bytes, ==, selectable);
++    g_assert_cmpuint(out.app_bytes, ==, app);
 +    g_assert_cmpint(close(fd), ==, 0);
++
 +    fd = fixture_fd(maximum + 1, app + 1, selectable, true);
-+    assert_fd_refusal(fd);
++    assert_fd_refusal(fd, -EINVAL);
 +    g_assert_cmpint(close(fd), ==, 0);
-+    fd = fixture_fd(664 + 4194305, 4194305, 0, true);
-+    assert_fd_refusal(fd);
++    app = QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_APP_MAX + 1;
++    fd = fixture_fd(PLAN_FIXED_BYTES + app, app, 0, true);
++    assert_fd_refusal(fd, -EINVAL);
++    g_assert_cmpint(close(fd), ==, 0);
++    selectable++;
++    fd = fixture_fd(PLAN_FIXED_BYTES + selectable, 0, selectable, true);
++    assert_fd_refusal(fd, -EINVAL);
 +    g_assert_cmpint(close(fd), ==, 0);
 +}
++
 +#endif
 +
 +int main(int argc, char **argv)
@@ -263321,9 +263730,13 @@ index 0000000000000000000000000000000000000000..e37f2087cf03a5c3d8075d5d6c813c03
 +    g_test_add_func("/purpose/domains", test_domains);
 +    g_test_add_func("/purpose/rows", test_rows);
 +    g_test_add_func("/purpose/conservation", test_conservation);
++    g_test_add_func("/purpose/family", test_family);
++    g_test_add_func("/purpose/standing", test_standing);
++    g_test_add_func("/purpose/ram", test_ram);
 +#ifdef CONFIG_LINUX
 +    g_test_add_func("/purpose/descriptor", test_descriptor);
 +    g_test_add_func("/purpose/aggregate", test_aggregate);
++    g_test_add_func("/purpose/plan-versions", test_plan_versions);
 +    g_test_add_func("/purpose/nested-refusals", test_nested_refusals);
 +#endif
 +    return g_test_run();

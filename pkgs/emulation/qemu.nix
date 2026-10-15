@@ -1686,6 +1686,15 @@ in
               mkdir -p "$out/share/aos/crucible"
               cp rr-halted-neighbor.result \
                 "$out/share/aos/crucible/rr-halted-neighbor.result"
+
+              ${lib.optionalString (enablePlugins && stdenv.hostPlatform.isLinux) ''
+                (
+                  cd build
+                  ./pyvenv/bin/meson test --no-rebuild --verbose \
+                    test-crucible-process-purpose
+                )
+              ''}
+
               build/tests/unit/test-rcu-list --tap -p /rcu/hot-fork/barrier
               build/tests/unit/test-coroutine --tap -p /locking/co-sleep
               build/tests/unit/test-crucible-vfio-timer --tap
