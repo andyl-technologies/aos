@@ -1,39 +1,12 @@
-From 3b602e38e51605944f3b9ed7f6c253b055090a17 Mon Sep 17 00:00:00 2001
+From 94fa9e7092d79381bcf34c4405cf13f5a4f71ffe Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 06:27:26 -0700
-Subject: [PATCH] plugins: retain startup custody and complete ordinary
- providers
+Date: Thu, 15 Oct 2026 08:23:27 -0700
+Subject: [PATCH] plugins: retain startup ownership and restore current unit
+ controls
 
-Capture the complete startup Source, Native callback lifecycle, nominal
-registration groups and receiving custody with their owning SDK surfaces.
-Preserve physical workspace backing and mapping ownership, setup exchange
-count validation, and genuine declaration ownership across the configured
-Source and preexec producers. These physical holders do not issue operating
-digest, whole-Park, standing or action authority.
-
-Keep workspace transfer on the existing public Runtime v3 nominal alias.
-Define the absent-workspace unit provider after canonical Source storage,
-retaining its genuine prototype, output identity checks and 141 scenarios.
-
-Reuse genuine enrolled CPU and IO writer intervals for nested cached stores.
-Promote outstanding nested writes before returning their enclosing admission,
-and preserve read-only close, foreign drain, alias and copied-custody guards.
-Register 25 literal-body scenarios and ten targeted omission controls using
-the configured compiler and explicit physical operand adapters.
-
-Keep the regression operand scaffolding in readable structs, function blocks
-and primitive macros while preserving token behavior and exact test outcomes.
-
-Complete ordinary negative QMP writer allocation/observation and string
-append/prepend/erase providers without issuing selected Source custody or
-changing the generic GLib visitor and JSON writer paths.
-
-Rebind the genuine unit and preexec extraction guards to these complete
-provider inputs while preserving selected bodies and registered scenarios.
-
-The source remains inactive; complete operating and terminal joins are
-separate. Include actual generator inputs and corresponding-source notices
-without claiming runtime performance or complete payment qualification.
+Retain nominal startup, workspace and command ownership through physical
+cleanup. Bind generator controls to current Source2 interfaces and use
+the declared preexec selector without accepting obsolete selections.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -182369,7 +182342,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a160b65fc2757a54c8e0e13c5a140a549d511278
+index 0000000000000000000000000000000000000000..faf15d8394a2e38928582257f73931259cef1a05
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,83 @@
@@ -182383,7 +182356,7 @@ index 0000000000000000000000000000000000000000..a160b65fc2757a54c8e0e13c5a140a54
 +
 +SOURCE_HASHES = {
 +    'system/crucible-preexec-setup.c':
-+        '596f7fa74c125374088b1eaf3e5879fcf97ad7fe670e34e2d3b1b82924b68931',
++        'b8824abf27e1e097e8b80abc7c3540c1cd8bee358718847d0e441d81b96b85ce',
 +    'system/crucible-preexec-workspace.inc.h':
 +        '2c7e8965e8585b9ce3988f1068f7c5c68c2f447669200ee76450f998028e60ca',
 +    'plugins/crucible-process-purpose.c':
@@ -182397,7 +182370,7 @@ index 0000000000000000000000000000000000000000..a160b65fc2757a54c8e0e13c5a140a54
 +    'include/plugins/qemu-plugin.h':
 +        '93573ce1d72875412dc10b68a273761af892f1ca08b1bdbfeafdab1b1a2849f2',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'db6838ee82310f59f93af4b66255835e131e1d3b99cc21539b64b5387fdcf782',
++        '02b0d5cb3de21890aeb9088ad4fb63e8bd140d57b60fbb8c4c2a508706af3f97',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -192799,10 +192772,10 @@ index 0000000000000000000000000000000000000000..e1eda5efbd1c2db8ce485fce38f76bbe
 +}
 diff --git a/system/crucible-preexec-setup.c b/system/crucible-preexec-setup.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a7dcfd109ecdab3b506ec5179f3a71aafb004fd8
+index 0000000000000000000000000000000000000000..cadad856427c2a657cfaea0654837b345f0f0d52
 --- /dev/null
 +++ b/system/crucible-preexec-setup.c
-@@ -0,0 +1,2630 @@
+@@ -0,0 +1,2635 @@
 +/*
 + * Fixed selected executable preinit Setup custody.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -194199,6 +194172,9 @@ index 0000000000000000000000000000000000000000..a7dcfd109ecdab3b506ec5179f3a71aa
 +    static const char name[] = QEMU_CRUCIBLE_PREEXEC_SETUP_SELECTOR;
 +    bool found = false;
 +
++    _Static_assert(sizeof(QEMU_CRUCIBLE_PREEXEC_SETUP_SELECTOR_V5) == 2,
++                   "the preexec edition selector must be one byte");
++
 +    for (size_t row = 0; environment && environment[row]; row++) {
 +        const volatile char *entry = environment[row];
 +        size_t column = 0;
@@ -194209,7 +194185,9 @@ index 0000000000000000000000000000000000000000..a7dcfd109ecdab3b506ec5179f3a71aa
 +        if (column != sizeof(name) - 1 || entry[column] != '=') {
 +            continue;
 +        }
-+        if (found || entry[column + 1] != '4' || entry[column + 2] != '\0') {
++        if (found ||
++            entry[column + 1] != QEMU_CRUCIBLE_PREEXEC_SETUP_SELECTOR_V5[0] ||
++            entry[column + 2] != '\0') {
 +            return -EINVAL;
 +        }
 +        found = true;
@@ -222603,10 +222581,10 @@ index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..16430e633f97d6920bd61614f2e15c15fcf3963d
+index 0000000000000000000000000000000000000000..0d6626bed34a0e279c423d48d6d216feadf338f7
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,100 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract bounded checkpoint mailbox bodies with explicit fixture boundaries."""
 +
@@ -222617,14 +222595,22 @@ index 0000000000000000000000000000000000000000..16430e633f97d6920bd61614f2e15c15
 +
 +SOURCE_HASHES = {
 +    'system/crucible-hot-fork-coordinator.c':
-+        '3a7f481bf78afe633850988e218b7c51a7b7dae53b90d707bef22918b0e371c1',
++        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'include/system/crucible-ram-quiescence.h':
-+        'a1cc5f1ea10cad9db8aa0675a4e5d755e43b83a59fde9cebae3ef4d1f927caed',
++        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '782d62154b3504419b4a41a105fc6197201f1d9aff00114a2680af6ebf1f038d',
++        '02b0d5cb3de21890aeb9088ad4fb63e8bd140d57b60fbb8c4c2a508706af3f97',
 +}
 +
 +FUNCTIONS = (
++    "static int checkpoint_placement_fail(",
++    "static int checkpoint_placement_current(",
++    "int qemu_crucible_checkpoint_main_loop_current(",
++    "int qemu_crucible_checkpoint_placement_bind_v1(",
++    "static int checkpoint_placement_notify(",
++    "int qemu_crucible_checkpoint_placement_detach_v1(",
++    "int qemu_crucible_checkpoint_placement_observe_v1(",
++    "int qemu_crucible_checkpoint_placement_restore_v1(",
 +    "static void crucible_ram_execute_scheduled(",
 +    "int qemu_plugin_crucible_ram_child_runtime_ready_v1(",
 +    "uint64_t qemu_crucible_ram_main_loop_metadata_bytes(",
@@ -222639,6 +222625,7 @@ index 0000000000000000000000000000000000000000..16430e633f97d6920bd61614f2e15c15
 +    parser.add_argument("output", type=Path)
 +    parser.add_argument("--negative-control", choices=[
 +        "omit-held-schedule", "omit-stop-generation", "renew-restored-generation",
++        "omit-dispatch-gate",
 +    ])
 +    args = parser.parse_args()
 +
@@ -222653,8 +222640,16 @@ index 0000000000000000000000000000000000000000..16430e633f97d6920bd61614f2e15c15
 +    spec.loader.exec_module(module)
 +    source = (args.root / "system/crucible-hot-fork-coordinator.c").read_text()
 +    first = source.index("#define CRUCIBLE_HOT_FORK_MAX_RETAINED_CHILDREN")
-+    last = source.index("static void crucible_ram_execute_scheduled(")
-+    bodies = [source[first:last]]
++    coordinator_end = (
++        "static QemuCrucibleHotForkCoordinator crucible_hot_fork_coordinator;\n")
++    assert source.count(coordinator_end) == 1
++    last = source.index(coordinator_end) + len(coordinator_end)
++    mailbox_first = source.index("/* Pure host service actors cannot take")
++    mailbox_last = source.index("static int checkpoint_placement_fail(")
++    # Keep the real containing declarations and every previously selected
++    # mailbox function. Unrelated fingerprint execution owners and new,
++    # unexercised APIs are not dependencies of this physical fixture.
++    bodies = [source[first:last], source[mailbox_first:mailbox_last]]
 +    bodies.extend(module.function(source, name) for name in FUNCTIONS)
 +    text = "\n".join(bodies)
 +
@@ -222677,6 +222672,10 @@ index 0000000000000000000000000000000000000000..16430e633f97d6920bd61614f2e15c15
 +        assert text.count(cut) == 1
 +        text = text.replace(cut, "qatomic_cmpxchg(&ram_scheduled.state, held, "
 +                                "owner->saved_state + UINT64_C(8))")
++    elif args.negative_control == "omit-dispatch-gate":
++        cut = "        qemu_crucible_checkpoint_scheduled_dispatch_check() ||\n"
++        assert text.count(cut) == 1
++        text = text.replace(cut, "")
 +
 +    args.output.write_text(
 +        "/* SPDX-License-Identifier: GPL-2.0-or-later */\n"
@@ -222688,35 +222687,38 @@ index 0000000000000000000000000000000000000000..16430e633f97d6920bd61614f2e15c15
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7facf1456063c79839f632ad1aef4323d1973237
+index 0000000000000000000000000000000000000000..5de072c92cb5246f34bab6aa287c3dee84c93e24
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,241 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Bind retained registrar and mailbox bodies for conditional owner controls."""
 +
 +import argparse
 +import hashlib
 +import importlib.util
++import re
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
 +    'plugins/crucible-checkpoint-receiving.c':
-+        '763a85a8d9e451f33610c694ee4ea2e431184bbb363ef889a8d5facdb483de98',
++        '33a8127d130875f47af20da4f679aaf00a4ef200475037bea8d4b1540cdfa7d8',
 +    'plugins/crucible-checkpoint-receiving.h':
-+        '4a7ee24c0b36b4b033a3cea7af13bb3a0ba71620e287878cd3e656f047376749',
++        '51d32f9ee1b555ccf8cd050b14bc7197ebcb99005bae49a6ce1e39b9247354ba',
++    'plugins/crucible-checkpoint-finalizer.inc.h':
++        'd428812da9407d18885a22451357865946af91f35cef0e16ad7c80d6fe54f8f3',
 +    'plugins/crucible-startup-source.c':
-+        '963d8e62851952ac213d8bbd10e2b9627540f691e221680c84aa1da0d79580fb',
++        'e5c71d2e6570dac6ad21956ee095684449cbebfa424083e8edc582376efca80a',
 +    'plugins/crucible-startup-source.h':
-+        '1fe654222b0ddc0418abba556cb53e34d2dd5820beda28febc64df7a95a792fc',
++        '340c7c2a53c189405951f4276ddaa8ffa38cb993c7568d834e7924ee1fa64ebb',
 +    'include/plugins/qemu-plugin.h':
-+        '0819287a544195a98ce7422f9c4a0f8cec859db67a4aa18b28fc5294bafab13a',
++        '93573ce1d72875412dc10b68a273761af892f1ca08b1bdbfeafdab1b1a2849f2',
 +    'system/crucible-hot-fork-coordinator.c':
-+        '3a7f481bf78afe633850988e218b7c51a7b7dae53b90d707bef22918b0e371c1',
++        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'include/system/crucible-ram-quiescence.h':
-+        'a1cc5f1ea10cad9db8aa0675a4e5d755e43b83a59fde9cebae3ef4d1f927caed',
++        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '782d62154b3504419b4a41a105fc6197201f1d9aff00114a2680af6ebf1f038d',
++        '02b0d5cb3de21890aeb9088ad4fb63e8bd140d57b60fbb8c4c2a508706af3f97',
 +}
 +
 +FUNCTIONS = (
@@ -222724,10 +222726,98 @@ index 0000000000000000000000000000000000000000..7facf1456063c79839f632ad1aef4323
 +    "bool qemu_crucible_checkpoint_pager_binding_current(",
 +)
 +MAILBOX_FUNCTIONS = (
++    "static int checkpoint_placement_fail(",
++    "static int checkpoint_placement_current(",
++    "int qemu_crucible_checkpoint_main_loop_current(",
++    "int qemu_crucible_checkpoint_placement_bind_v1(",
++    "static int checkpoint_placement_notify(",
++    "int qemu_crucible_checkpoint_placement_detach_v1(",
++    "int qemu_crucible_checkpoint_placement_detach_expected_v2(",
++    "int qemu_crucible_checkpoint_placement_observe_v1(",
++    "int qemu_crucible_checkpoint_placement_restore_v1(",
++    "int qemu_crucible_checkpoint_placement_restored_current_v1(",
 +    "int qemu_plugin_crucible_ram_child_runtime_ready_v1(",
 +    "int qemu_crucible_ram_schedule_on_main_loop(",
 +    "int qemu_crucible_ram_cancel_scheduled_main_loop(",
 +)
++
++RECEIVING_FUNCTIONS = (
++    "int qemu_crucible_checkpoint_original_decode_v1(",
++    "static int checkpoint_fail(",
++    "static int checkpoint_unavailable(",
++    "static int checkpoint_identity_base(",
++    "static int checkpoint_identity(",
++    "static int checkpoint_current(",
++    "static int checkpoint_now(",
++    "static int checkpoint_event_observe(",
++    "static int checkpoint_event_identity(",
++    "static int checkpoint_cancelled(",
++    "static int checkpoint_live_raw(",
++    "static int checkpoint_live(",
++    "static int checkpoint_pending_failure(",
++    "static int checkpoint_pending_live(",
++    "int qemu_crucible_checkpoint_pending_adopt_native_v1(",
++    "int qemu_crucible_checkpoint_begin_main_v1(",
++    "int qemu_crucible_checkpoint_receive_v1(",
++    "int qemu_crucible_checkpoint_bind_stop_v1(",
++    "int qemu_crucible_checkpoint_transaction_placement_current(",
++    "static int checkpoint_invocation_current(",
++    "int qemu_crucible_checkpoint_transaction_proof_current(",
++    "static int checkpoint_proof_invocation(",
++    "static int checkpoint_proof_current(",
++    "int qemu_crucible_checkpoint_transaction_retirement_current(",
++    "int qemu_plugin_crucible_checkpoint_proof_hold_v1(",
++    "int qemu_plugin_crucible_checkpoint_proof_return_v1(",
++    "int qemu_crucible_checkpoint_original_query_slice_v1(",
++    "int qemu_crucible_checkpoint_original_check_v1(",
++    "int qemu_plugin_crucible_checkpoint_original_query_slice_v1(",
++    "int qemu_plugin_crucible_checkpoint_original_check_v1(",
++    "static int checkpoint_placement_invocation(",
++    "int qemu_plugin_crucible_checkpoint_placement_detach_v1(",
++    "int qemu_plugin_crucible_checkpoint_placement_detach_v2(",
++    "int qemu_plugin_crucible_checkpoint_placement_restore_v1(",
++    "int qemu_plugin_crucible_checkpoint_placement_restore_v2(",
++    "int qemu_crucible_checkpoint_read_begin_v1(",
++    "int qemu_crucible_checkpoint_read_end_v1(",
++    "static bool checkpoint_status_matches(",
++    "int qemu_crucible_checkpoint_invoke_v1(",
++)
++
++FINALIZER_FUNCTIONS = (
++    "static int checkpoint_provider_identity(",
++    "int qemu_crucible_checkpoint_request_actor_current_v1(",
++    "int qemu_crucible_checkpoint_provider_acquire_main_v1(",
++    "static int checkpoint_provider_check_main(",
++    "static bool checkpoint_root_end_complete(",
++    "static int checkpoint_close_event(",
++    "static int checkpoint_finalize_main(",
++    "int qemu_crucible_checkpoint_capture_request_current_v1(",
++    "static void checkpoint_capture_alias_abort(",
++    "int qemu_crucible_checkpoint_capture_alias_begin_v1(",
++    "int qemu_crucible_checkpoint_capture_alias_acquire_v1(",
++    "int qemu_crucible_checkpoint_capture_alias_move_v1(",
++    "int qemu_crucible_checkpoint_candidate_begin_v1(",
++    "void qemu_crucible_checkpoint_candidate_alias_closed_v1(",
++    "void qemu_crucible_checkpoint_candidate_io_end_v1(",
++    "int qemu_crucible_checkpoint_candidate_end_v1(",
++    "static int checkpoint_stop_receipt_current(",
++    "int qemu_crucible_checkpoint_stop_intent_main_v1(",
++    "int qemu_crucible_checkpoint_stop_admission_current_v1(",
++    "void qemu_crucible_checkpoint_stop_admitted_v1(",
++    "void qemu_crucible_checkpoint_stop_completed_v1(",
++)
++
++
++def definition(module, source, opening):
++    """Selects a definition after any same-signature forward declaration."""
++    matches = []
++    for match in re.finditer(re.escape(opening), source):
++        brace = source.index("{", match.start())
++        if ";" not in source[match.start():brace]:
++            matches.append(match.start())
++    if len(matches) != 1:
++        raise ValueError(f"function definition is not unique: {opening}")
++    return module.function(source, opening, matches[0])
 +
 +
 +def main():
@@ -222750,33 +222840,65 @@ index 0000000000000000000000000000000000000000..7facf1456063c79839f632ad1aef4323
 +    module = importlib.util.module_from_spec(spec)
 +    spec.loader.exec_module(module)
 +    source = (args.root / "plugins/crucible-startup-source.c").read_text()
-+    bodies = [module.function(source, opening) for opening in FUNCTIONS]
++    bodies = [
++        "#define qemu_crucible_checkpoint_pager_binding_borrow literal_source_binding_borrow\n"
++        "#define qemu_crucible_checkpoint_pager_binding_current literal_source_binding_current\n",
++        *(module.function(source, opening) for opening in FUNCTIONS),
++        "#undef qemu_crucible_checkpoint_pager_binding_current\n"
++        "#undef qemu_crucible_checkpoint_pager_binding_borrow\n"
++        "#define qemu_crucible_checkpoint_pager_binding_borrow fixture_external_binding_borrow\n"
++        "#define qemu_crucible_checkpoint_pager_binding_current fixture_external_binding_current\n",
++    ]
 +    source = (args.root / "system/crucible-hot-fork-coordinator.c").read_text()
 +    begin = source.index("#define CRUCIBLE_HOT_FORK_MAX_RETAINED_CHILDREN")
-+    end = source.index("static void crucible_ram_execute_scheduled(")
-+    bodies.append(source[begin:end])
++    coordinator_end = (
++        "static QemuCrucibleHotForkCoordinator crucible_hot_fork_coordinator;\n")
++    if source.count(coordinator_end) != 1:
++        raise ValueError("coordinator declaration is not unique")
++    end = source.index(coordinator_end) + len(coordinator_end)
++    mailbox_begin = source.index("/* Pure host service actors cannot take")
++    mailbox_end = source.index("static int checkpoint_placement_fail(")
++    # Keep the actual containing declarations and every old selected physical
++    # body. The current receiver also needs exact-tuple detach and restoration
++    # validation; unrelated fingerprint owners are outside this fixture.
++    bodies.extend((source[begin:end], source[mailbox_begin:mailbox_end]))
 +    bodies.extend(module.function(source, opening) for opening in MAILBOX_FUNCTIONS)
++    receiver = (args.root / "plugins/crucible-checkpoint-receiving.c").read_text()
++    finalizer = (args.root / "plugins/crucible-checkpoint-finalizer.inc.h").read_text()
++    last_declaration = (
++        "static struct QemuCrucibleCheckpointStopOwner checkpoint_stop_owner;\n")
++    if receiver.count(last_declaration) != 1:
++        raise ValueError("Receiving owner declaration is not unique")
++    declaration_end = receiver.index(last_declaration) + len(last_declaration)
++    bodies.append(receiver[:declaration_end])
++    bodies.append(
++        "static int checkpoint_provider_check_main(QemuCrucibleCheckpointRequestLoan *request);\n"
++        "static int checkpoint_stop_receipt_current(void);\n")
++    bodies.extend(module.function(receiver, opening)
++                  for opening in RECEIVING_FUNCTIONS)
++    # root_end_complete also has a forward declaration; bind definitions only.
++    bodies.extend(definition(module, finalizer, opening)
++                  for opening in FINALIZER_FUNCTIONS)
 +    text = "\n".join(bodies)
 +
-+    # All conditional Receiving bodies are included directly by the fixture.
-+    # For omissions only, copy them into this generated header and suppress
-+    # the direct include; unchanged literal positive bodies remain explicit.
++    # Every positive body is literal. Omissions change one unique current
++    # invariant; compilation and a specific assertion must classify each cut.
 +    if args.negative_control:
-+        receiver = (args.root / "plugins/crucible-checkpoint-receiving.c").read_text()
 +        cuts = {
 +            "omit-purpose": (
 +                "    if (request != &checkpoint_request ||\n"
 +                "        !qatomic_load_acquire(&checkpoint_request.published)) {",
 +                "    if (request != &checkpoint_request) {"),
 +            "omit-read-return": (
-+                "    if (status || owner->invocation.readers) {",
-+                "    if (status) {"),
++                "    if (owner->invocation.readers || owner->proof.borrowers) {",
++                "    if (owner->proof.borrowers) {"),
 +            "omit-original-post": (
 +                "        int post = checkpoint_live(owner, &slice, true);",
 +                "        int post = 0;"),
 +            "omit-native-detach": (
-+                "    status = qemu_crucible_checkpoint_placement_detach_v1(\n"
-+                "        owner->invocation.placement);",
++                "    status = qemu_crucible_checkpoint_placement_detach_expected_v2(\n"
++                "        owner->invocation.placement, owner->proof.placement_callback,\n"
++                "        owner->proof.placement_opaque);",
 +                "    status = 0;"),
 +            "omit-native-restore": (
 +                "    status = qemu_crucible_checkpoint_placement_restore_v1(\n"
@@ -222787,30 +222909,32 @@ index 0000000000000000000000000000000000000000..7facf1456063c79839f632ad1aef4323
 +                "    invocation->readers--;",
 +                "    checkpoint_now(&slice);\n    invocation->readers--;"),
 +            "omit-stop-owner": (
-+                "    if (!qatomic_load_acquire(&checkpoint_stop_owner.published) ||\n"
-+                "        checkpoint_stop_owner.process_id != getpid() ||\n"
-+                "        !qemu_thread_is_self(&checkpoint_stop_owner.thread) ||\n"
-+                "        checkpoint_stop_owner.transaction != owner) {",
-+                "    if (false) {"),
++                "    if (!stop->intent_born || !stop->allocation_retained ||\n"
++                "        !stop->ordinary_intent_owner ||\n"
++                "        (!stop->reservation && !stop->control_intent) ||",
++                "    if (!stop->allocation_retained ||\n"
++                "        !stop->ordinary_intent_owner ||\n"
++                "        (!stop->reservation && !stop->control_intent) ||"),
 +            "omit-module-binding": (
 +                "    if (!qemu_crucible_checkpoint_pager_binding_current(&owner->pager)) {",
 +                "    if (false) {"),
 +        }
 +        old, new = cuts[args.negative_control]
-+        if receiver.count(old) != 1:
++        if text.count(old) != 1:
 +            raise ValueError("causal cut is not unique")
-+        receiver = receiver.replace(old, new)
-+        text += "\n#define CHECKPOINT_RECEIVING_VARIANT\n" + receiver
++        text = text.replace(old, new)
 +    args.output.write_text(
 +        "/* SPDX-License-Identifier: GPL-2.0-or-later */\n"
-+        "/* Literal bodies; surrounding owners are explicitly modeled. */\n" + text)
++        "/* Literal bodies; external observations are conditional unit dependencies. */\n"
++        + text + "\n#undef qemu_crucible_checkpoint_pager_binding_current\n"
++        "#undef qemu_crucible_checkpoint_pager_binding_borrow\n")
 +
 +
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..6a0b3bbb38dc7d8e1adb83aa6de916651509f89a
+index 0000000000000000000000000000000000000000..6e4e68fe2003dd155f04940e7c53d12207838299
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -222826,15 +222950,15 @@ index 0000000000000000000000000000000000000000..6a0b3bbb38dc7d8e1adb83aa6de91665
 +    'monitor/fds.c':
 +        'f3d695fa7c0309a6a42ef7b4e071881b865d3e45cb73b166a0620f7e43bd80c1',
 +    'monitor/monitor-internal.h':
-+        '6c178ae55537e25bc47885fc945c00ba6cb6e37bb5ddb1b1002f7a7caf16988a',
++        'a176f21207aa1307470b2fc1785cfe09cb547aedc66a1af9de4cacee5d521967',
 +    'qom/object.c':
-+        '65b3958347a9ff405f17ed008d571a1f41b8533c8ec1871b22795566a9ffa9ee',
++        '381f0c17eb7c3c3ceb5d48346b9b964bdadf89e0a96ae4e84568bcca547da821',
 +    'include/qom/object.h':
-+        '21cfad12d326d74a269e82324a93053161b41d78309a686bf9408f3f08dac5f0',
++        'faa9179526b91ac70c3813eb273f5367bb1510a06345994d84a9a1342742f414',
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '782d62154b3504419b4a41a105fc6197201f1d9aff00114a2680af6ebf1f038d',
++        '02b0d5cb3de21890aeb9088ad4fb63e8bd140d57b60fbb8c4c2a508706af3f97',
 +}
 +
 +FUNCTIONS = (
@@ -222928,80 +223052,186 @@ index 0000000000000000000000000000000000000000..6a0b3bbb38dc7d8e1adb83aa6de91665
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..855cea98f5a5321a6c2b2040a96b8e5491843e8a
+index 0000000000000000000000000000000000000000..c049bf7ed9365786a6ff37e3bdcab5227e9d23e0
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,173 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
-+"""Bind the literal fixed preinit receiver for physical-custody utility controls."""
++"""Bind literal preinit bodies and classify their causal transport controls."""
 +
 +import argparse
 +import hashlib
++import json
 +from pathlib import Path
++import signal
++import subprocess
++import sys
 +
 +SOURCE_HASHES = {
 +    'system/crucible-preexec-setup.c':
-+        '9da526e2012c1aef6466d4d22b2cb7d4c58c5b8cc9071de145d7a8662383a623',
++        'b8824abf27e1e097e8b80abc7c3540c1cd8bee358718847d0e441d81b96b85ce',
++    'system/crucible-preexec-family.inc.h':
++        '6d055fe2604fc3d7b2977b98d4b5843d65ba5df00c7efe34770d375fe05e6d59',
++    'system/crucible-preexec-contract.inc.h':
++        '9e18ea3996c4ea812d8c1ea9174e117c3927301d5e8d96dec34774387a2af22a',
++    'system/crucible-preexec-artifact.inc.h':
++        '7cfdce99466e79f5c98c5ec869e5191ab55822d27c5f42d9e5cea5f17849108a',
++    'system/crucible-preexec-ram.inc.h':
++        'e6bc9bcb5848d849f1278f1b413294896e7db57b3aa60e1421a83b34bcef4f4e',
++    'system/crucible-preexec-workspace.inc.h':
++        '2c7e8965e8585b9ce3988f1068f7c5c68c2f447669200ee76450f998028e60ca',
 +    'include/qemu/crucible-preexec-setup.h':
-+        '3b27333df6ade02dbd26c31a9e8a075bcfdf897eb9fd9c7081a4b24f6a0d981e',
++        'de8431764837688e06e29bdd4c5c4298d6d934b03b4f24b66907a327f69b5493',
++    'include/qemu/crucible-process-purpose.h':
++        'ee8a9e4c92a0d4658a1a816bdc204021623e8aa6a58bf06e5444d62a2b99576a',
++    'include/qemu/crucible-device-workspace.h':
++        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
++    'include/plugins/qemu-plugin.h':
++        '93573ce1d72875412dc10b68a273761af892f1ca08b1bdbfeafdab1b1a2849f2',
++    'plugins/crucible-process-purpose.c':
++        'e37d3d2052c3b9f9de91359bae2e31d8ddeb8551d76d51f18bf0914e8ab6cb0c',
++    'plugins/crucible-device-workspace.c':
++        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
++    'tests/unit/extract-crucible-startup-source-controls.py':
++        '02b0d5cb3de21890aeb9088ad4fb63e8bd140d57b60fbb8c4c2a508706af3f97',
++    'scripts/extract-crucible-preexec-purpose.py':
++        '2b69c2440dfa02e7e9c8b32f289fc1f73c0dea113b529463a90d5e74817d1f1c',
 +    'meson.build':
-+        '66aa46b74313e51c051c54eddcf952362cc90eaab15c627ac8941203b610abc3',
++        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
-+        '5e1199fb129b5b8bd4c79fc6fa150d5500ba0235f9552725881c6f2c061696a2',
++        'd26871f569f6be81b3b6189a373f2937b4b2e705a5f06c93120a6a18e0416a6c',
 +    'tests/unit/meson.build':
-+        '53aee8f87ea7d7c4011d0f3aabc1357409da005784c079610679253fa575863e',
++        '6e4967c8fb44d0cd761345fec7a5f5df4228d63c7607699b609a1254c43f31e0',
 +}
++
++PRIVATE_INCLUDES = ('family', 'contract', 'artifact', 'ram', 'workspace')
++CONTROL_CASES = {
++    'recv-eintr': ('/preexec/five', 'preexec_setup_receive_once() == 0'),
++    'omit-once': ('/preexec/five', 'preexec_setup_receive_once() == -EALREADY'),
++    'mutate-ofd': ('/preexec/five',
++                   'fcntl(3 + index, F_GETFL) == fixture->original_flags[index]'),
++    'omit-retain': ('/preexec/five', 'preexec_setup_receive_once() == 0'),
++    'allow-constructors': ('/preexec/entry-selected',
++                           'WEXITSTATUS(status) == selected ? 125 : 0'),
++}
++
++
++def replace_once(source, before, after):
++    """Reject an absent or ambiguous causal cut before replacing it."""
++    if source.count(before) != 1:
++        raise ValueError(f'causal cut is not unique: {before!r}')
++    return source.replace(before, after)
++
++
++def check_control(arguments):
++    """Accept only a named assertion abort in a separately compiled control."""
++    parser = argparse.ArgumentParser(description=check_control.__doc__)
++    parser.add_argument('control', choices=CONTROL_CASES)
++    parser.add_argument('binary', type=Path)
++    parser.add_argument('--baseline', type=Path, required=True)
++    args = parser.parse_args(arguments)
++    scenario, assertion = CONTROL_CASES[args.control]
++    command = [str(args.binary.resolve()), '--causal-probe', scenario]
++    baseline_command = [str(args.baseline.resolve()), '--causal-probe', scenario]
++
++    try:
++        baseline = subprocess.run(baseline_command, capture_output=True,
++                                  text=True, timeout=5, check=False)
++        if baseline.returncode:
++            sys.stdout.write(baseline.stdout + baseline.stderr)
++            raise SystemExit('baseline scenario refused; no causal control established')
++        result = subprocess.run(command, capture_output=True, text=True,
++                                timeout=5, check=False)
++    except subprocess.TimeoutExpired as error:
++        raise SystemExit('control timed out; no causal refusal established') from error
++    output = result.stdout + result.stderr
++    # A compiler error, setup failure, unrelated abort or timeout is not a
++    # successful omission. The caller must compile each executable separately.
++    expected_assertion = f'assertion failed ({assertion}):'
++    if result.returncode != -signal.SIGABRT or expected_assertion not in output:
++        sys.stdout.write(output)
++        raise SystemExit(f'control did not reach its exact assertion: '
++                         f'{args.control}, status={result.returncode}')
++    print(json.dumps({'control': args.control, 'scenario': scenario,
++                      'baseline_returncode': baseline.returncode,
++                      'returncode': result.returncode,
++                      'assertion': assertion, 'classification': 'causal-abort',
++                      'baseline_command': baseline_command,
++                      'baseline_stdout': baseline.stdout,
++                      'baseline_stderr': baseline.stderr,
++                      'command': command, 'stdout': result.stdout,
++                      'stderr': result.stderr}))
 +
 +
 +def main():
 +    parser = argparse.ArgumentParser(description=__doc__)
-+    parser.add_argument("root", type=Path)
-+    parser.add_argument("output", type=Path)
-+    parser.add_argument("--control", choices=["recv-eintr", "omit-once",
-+                                               "mutate-ofd", "omit-retain",
-+                                               "allow-constructors"])
++    parser.add_argument('root', type=Path)
++    parser.add_argument('output', type=Path)
++    parser.add_argument('--control', choices=CONTROL_CASES)
++    parser.add_argument('--metadata', type=Path)
 +    args = parser.parse_args()
 +
 +    for name, expected in SOURCE_HASHES.items():
 +        actual = hashlib.sha256((args.root / name).read_bytes()).hexdigest()
 +        if actual != expected:
-+            raise ValueError(f"source changed: {name}")
-+    source = (args.root / "system/crucible-preexec-setup.c").read_text()
-+    if args.control == "recv-eintr":
-+        cut = """    received = preexec_setup_syscall5(
++            raise ValueError(f'source changed: {name}')
++
++    source = (args.root / 'system/crucible-preexec-setup.c').read_text()
++    # Keep the complete owning declarations and functions. Only the configured
++    # osdep include is conditional for the explicitly standalone fixture. This
++    # supplies no substitute configured ABI or accepting Source dependency.
++    source = replace_once(source, '#include "qemu/osdep.h"',
++                          '#ifndef PREEXEC_TEST_STANDALONE\n'
++                          '#include "qemu/osdep.h"\n#endif')
++    for role in PRIVATE_INCLUDES:
++        name = f'crucible-preexec-{role}.inc.h'
++        source = replace_once(source, f'#include "{name}"',
++                              (args.root / 'system' / name).read_text())
++
++    if args.control == 'recv-eintr':
++        cut = '''    received = preexec_setup_syscall5(
 +        SYS_recvmsg, QEMU_CRUCIBLE_PREEXEC_SETUP_CONTROL_FD,
-+        (long)(uintptr_t)&owner->message, MSG_DONTWAIT | MSG_CMSG_CLOEXEC, 0, 0);"""
-+        assert source.count(cut) == 1
-+        source = "#define PREEXEC_TEST_RECV_EINTR 1\n" + source.replace(
-+            cut, "    received = -EINTR;")
-+    elif args.control == "omit-once":
-+        cut = "    if (owner->attempted) {"
-+        assert source.count(cut) == 1
-+        source = source.replace(cut, "    if (false && owner->attempted) {")
-+    elif args.control == "mutate-ofd":
-+        cut = "    received = preexec_setup_syscall5("
-+        assert source.count(cut) == 1
-+        source = source.replace(cut,
-+            "    preexec_setup_syscall5(SYS_fcntl, "
-+            "QEMU_CRUCIBLE_PREEXEC_SETUP_CONTROL_FD, F_SETFL, O_NONBLOCK, 0, 0);\n"
-+            + cut)
-+    elif args.control == "omit-retain":
-+        cut = "    status = preexec_setup_retain_ancillary();"
-+        assert source.count(cut) == 1
-+        source = source.replace(cut, "    status = 0;")
-+    elif args.control == "allow-constructors":
-+        cut = "    preexec_setup_exit();\n}\n\n/* Main-executable only:"
-+        assert source.count(cut) == 1
-+        source = source.replace(cut,
-+                                "    return;\n}\n\n/* Main-executable only:")
++        (long)(uintptr_t)&owner->message, MSG_DONTWAIT | MSG_CMSG_CLOEXEC, 0, 0);'''
++        source = '#define PREEXEC_TEST_RECV_EINTR 1\n' + replace_once(
++            source, cut, '    received = -EINTR;')
++    elif args.control == 'omit-once':
++        source = replace_once(source, '    if (owner->attempted) {',
++                              '    if (false && owner->attempted) {')
++    elif args.control == 'mutate-ofd':
++        cut = '    received = preexec_setup_syscall5('
++        source = replace_once(source, cut,
++                              '    preexec_setup_syscall5(SYS_fcntl, '
++                              'QEMU_CRUCIBLE_PREEXEC_SETUP_CONTROL_FD, '
++                              'F_SETFL, O_NONBLOCK, 0, 0);\n' + cut)
++    elif args.control == 'omit-retain':
++        source = replace_once(source,
++                              '    status = preexec_setup_retain_ancillary();',
++                              '    status = 0;')
++    elif args.control == 'allow-constructors':
++        source = replace_once(source,
++                              '    preexec_setup_exit();\n}\n\n/* Main-executable only:',
++                              '    return;\n}\n\n/* Main-executable only:')
++
 +    args.output.write_text(source)
++    if args.metadata:
++        args.metadata.write_text(json.dumps({
++            'source_hashes': SOURCE_HASHES,
++            'output_sha256': hashlib.sha256(source.encode()).hexdigest(),
++            'control': args.control,
++            'expanded_private_includes': list(PRIVATE_INCLUDES),
++            'purpose_include': 'crucible-preexec-purpose.inc.h',
++            'scope': 'conditional transport unit; no Source activation proof',
++        }, indent=2) + '\n')
 +
 +
-+if __name__ == "__main__":
-+    main()
++if __name__ == '__main__':
++    if len(sys.argv) > 1 and sys.argv[1] == 'check-control':
++        check_control(sys.argv[2:])
++    else:
++        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..59cc35246be158b9531454699cbc4e58ebefbb5f
+index 0000000000000000000000000000000000000000..7abb50101df55997b78cb949653fddc4098325ce
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,812 @@
@@ -223017,7 +223247,7 @@ index 0000000000000000000000000000000000000000..59cc35246be158b9531454699cbc4e58
 +    'plugins/crucible-device-workspace.inc.h':
 +        '7895ebd3a7bb4c7c2df10377429de3cb204b9fa41dd1c242b8ce17c0cf1d2c60',
 +    'system/crucible-preexec-setup.c':
-+        '596f7fa74c125374088b1eaf3e5879fcf97ad7fe670e34e2d3b1b82924b68931',
++        'b8824abf27e1e097e8b80abc7c3540c1cd8bee358718847d0e441d81b96b85ce',
 +    'system/crucible-preexec-workspace.inc.h':
 +        '2c7e8965e8585b9ce3988f1068f7c5c68c2f447669200ee76450f998028e60ca',
 +    'plugins/crucible-control-invocation.inc.h':
@@ -223916,7 +224146,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..0fc8691ec28348bb41ae2969f792d1994f6da29d 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..9f56aa9d4e4f912662c833d18cac5782ae3487ec 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -223977,7 +224207,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..0fc8691ec28348bb41ae2969f792d199
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +244,1081 @@ foreach test_name, extra: tests
+@@ -207,3 +244,1132 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -224913,6 +225143,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..0fc8691ec28348bb41ae2969f792d199
 +              files('extract-crucible-checkpoint-receiving.py'),
 +              meson.project_source_root(), '@OUTPUT@'],
 +    depend_files: files('../../plugins/crucible-checkpoint-receiving.c',
++                        '../../plugins/crucible-checkpoint-finalizer.inc.h',
 +                        '../../plugins/crucible-checkpoint-receiving.h',
 +                        '../../plugins/crucible-startup-source.c',
 +                        '../../plugins/crucible-startup-source.h',
@@ -224965,14 +225196,32 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..0fc8691ec28348bb41ae2969f792d199
 +
 +# Literal executable preinit body; real SCM fixtures supply no issuer/profile.
 +if have_system and host_os == 'linux' and host_arch == 'x86_64'
++  preexec_setup_inputs = files(
++    '../../system/crucible-preexec-setup.c',
++    '../../system/crucible-preexec-family.inc.h',
++    '../../system/crucible-preexec-artifact.inc.h',
++    '../../system/crucible-preexec-contract.inc.h',
++    '../../system/crucible-preexec-ram.inc.h',
++    '../../system/crucible-preexec-workspace.inc.h',
++    '../../include/qemu/crucible-preexec-setup.h',
++    '../../plugins/crucible-process-purpose.c',
++    '../../include/qemu/crucible-process-purpose.h',
++    '../../plugins/crucible-device-workspace.c',
++    '../../include/qemu/crucible-device-workspace.h',
++    '../../include/plugins/qemu-plugin.h',
++    '../../scripts/extract-crucible-preexec-purpose.py',
++    'extract-crucible-startup-source-controls.py',
++    'test-crucible-preexec-setup.c',
++    'meson.build',
++    '../../meson.build',
++  )
++  preexec_setup_extractor = files('extract-crucible-preexec-setup.py')
 +  preexec_setup_slices = custom_target(
 +    'crucible-preexec-setup',
 +    output: 'crucible-preexec-setup.inc.h',
-+    command: [python, files('extract-crucible-preexec-setup.py'),
++    command: [python, preexec_setup_extractor,
 +              meson.project_source_root(), '@OUTPUT@'],
-+    depend_files: files('../../system/crucible-preexec-setup.c',
-+                        '../../include/qemu/crucible-preexec-setup.h',
-+                        '../../meson.build'),
++    depend_files: preexec_setup_inputs,
 +  )
 +  preexec_setup_test = executable(
 +    'test-crucible-preexec-setup',
@@ -224991,6 +225240,38 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..0fc8691ec28348bb41ae2969f792d199
 +    timeout: 10,
 +    suite: ['unit'],
 +  )
++
++  # Classifiers require the same normal scenario first, then a compiled
++  # omission's exact SIGABRT and causal assertion. Other failures are errors.
++  foreach control : ['recv-eintr', 'omit-once', 'mutate-ofd',
++                     'omit-retain', 'allow-constructors']
++    variant_body = 'crucible-preexec-setup-' + control + '.inc.h'
++    variant_slices = custom_target(
++      'crucible-preexec-setup-' + control,
++      output: variant_body,
++      command: [python, preexec_setup_extractor,
++                meson.project_source_root(), '@OUTPUT@', '--control', control],
++      depend_files: preexec_setup_inputs,
++    )
++    variant_test = executable(
++      'test-crucible-preexec-setup-' + control,
++      'test-crucible-preexec-setup.c',
++      variant_slices,
++      genh,
++      dependencies: [glib, threads],
++      c_args: ['-DCOMPILING_SYSTEM_VS_USER',
++               '-DCRUCIBLE_PREEXEC_SETUP_BODY="' + variant_body + '"'],
++    )
++    test(
++      'test-crucible-preexec-setup-control-' + control,
++      python,
++      env: test_env,
++      args: [preexec_setup_extractor, 'check-control', control, variant_test,
++             '--baseline', preexec_setup_test],
++      timeout: 15,
++      suite: ['unit', 'crucible-preexec-setup'],
++    )
++  endforeach
 +endif
 +
 +# Literal Linux writer/cache bodies; physical operands are explicit adapters.
@@ -233884,10 +234165,10 @@ index 0000000000000000000000000000000000000000..2f3d5024f23d2a00d35ae44fb111e2a1
 +}
 diff --git a/tests/unit/test-crucible-checkpoint-placement.c b/tests/unit/test-crucible-checkpoint-placement.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2caa79f3d897bd08894bf3496e4e37cb27944a9b
+index 0000000000000000000000000000000000000000..10a99d7abb6ffde2ae2e542783c636a4424239cd
 --- /dev/null
 +++ b/tests/unit/test-crucible-checkpoint-placement.c
-@@ -0,0 +1,517 @@
+@@ -0,0 +1,558 @@
 +/*
 + * Bounded checkpoint placement mailbox controls.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -233920,6 +234201,8 @@ index 0000000000000000000000000000000000000000..2caa79f3d897bd08894bf3496e4e37cb
 +static unsigned int fixture_callback_calls;
 +static int fixture_write_error;
 +static bool fixture_cas_loss;
++static int fixture_dispatch_status;
++static unsigned int fixture_dispatch_calls;
 +static unsigned char fixture_transaction_storage;
 +static unsigned char fixture_callback_opaque;
 +
@@ -233984,6 +234267,15 @@ index 0000000000000000000000000000000000000000..2caa79f3d897bd08894bf3496e4e37cb
 +    return false;
 +}
 +
++/* Receiving's real transaction/Root retirement is outside this mailbox
++ * fixture. Its status is an explicit nonissuing dependency: refusal must
++ * preserve the exact ready body without a CAS or callback effect. */
++static int fixture_dispatch_check(void)
++{
++    fixture_dispatch_calls++;
++    return fixture_dispatch_status;
++}
++
 +/* The CAS-loss and EINTR controls inject syscall/atomic result branches, not
 + * evidence of kernel EINTR or a genuine concurrent transaction acquisition.
 + */
@@ -233998,7 +234290,9 @@ index 0000000000000000000000000000000000000000..2caa79f3d897bd08894bf3496e4e37cb
 +#define bql_locked fixture_bql_locked
 +#define qemu_in_coroutine fixture_in_coroutine
 +#define qemu_crucible_checkpoint_transaction_placement_current fixture_transaction_current
++#define qemu_crucible_checkpoint_scheduled_dispatch_check fixture_dispatch_check
 +#include "crucible-checkpoint-placement.inc.h"
++#undef qemu_crucible_checkpoint_scheduled_dispatch_check
 +#undef qemu_crucible_checkpoint_transaction_placement_current
 +#undef qemu_in_coroutine
 +#undef bql_locked
@@ -234145,6 +234439,33 @@ index 0000000000000000000000000000000000000000..2caa79f3d897bd08894bf3496e4e37cb
 +    crucible_ram_execute_scheduled();
 +    g_assert_cmpuint(fixture_callback_calls, ==, 1);
 +    g_assert_cmpuint(ram_scheduled.state, ==, 104);
++    fixture_assert_event_untouched();
++}
++
++static void test_dispatch_gate(void)
++{
++    if (!fixture_enter_subprocess()) {
++        return;
++    }
++    fixture_prepare(2);
++    fixture_dispatch_status = -EINPROGRESS;
++
++    crucible_ram_execute_scheduled();
++    crucible_ram_execute_scheduled();
++
++    g_assert_cmpuint(fixture_dispatch_calls, ==, 2);
++    g_assert_cmpuint(fixture_cas_calls, ==, 0);
++    g_assert_cmpuint(fixture_callback_calls, ==, 0);
++    g_assert_cmpuint(ram_scheduled.state, ==, 90);
++    g_assert_true(ram_scheduled.callback == fixture_callback);
++    g_assert_true(ram_scheduled.opaque == &fixture_callback_opaque);
++
++    fixture_dispatch_status = 0;
++    crucible_ram_execute_scheduled();
++
++    g_assert_cmpuint(fixture_dispatch_calls, ==, 3);
++    g_assert_cmpuint(fixture_callback_calls, ==, 1);
++    g_assert_cmpuint(ram_scheduled.state, ==, 88);
 +    fixture_assert_event_untouched();
 +}
 +
@@ -234387,6 +234708,7 @@ index 0000000000000000000000000000000000000000..2caa79f3d897bd08894bf3496e4e37cb
 +    g_test_init(&argc, &argv, NULL);
 +    g_test_add_func("/checkpoint-placement/queued", test_queued_round_trip);
 +    g_test_add_func("/checkpoint-placement/empty", test_empty_round_trip);
++    g_test_add_func("/checkpoint-placement/dispatch-gate", test_dispatch_gate);
 +    g_test_add_func("/checkpoint-placement/pending", test_pending_phases);
 +    g_test_add_func("/checkpoint-placement/cas-loss", test_lost_cas);
 +    g_test_add_func("/checkpoint-placement/foreign",
@@ -234407,10 +234729,10 @@ index 0000000000000000000000000000000000000000..2caa79f3d897bd08894bf3496e4e37cb
 +}
 diff --git a/tests/unit/test-crucible-checkpoint-receiving.c b/tests/unit/test-crucible-checkpoint-receiving.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d2e0e6e0b
+index 0000000000000000000000000000000000000000..a51ded1d95e2d297fee0d850e50e484456b77219
 --- /dev/null
 +++ b/tests/unit/test-crucible-checkpoint-receiving.c
-@@ -0,0 +1,1133 @@
+@@ -0,0 +1,1813 @@
 +/*
 + * Conditional checkpoint Receiving controls with disclosed native providers
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -234421,6 +234743,7 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +#include "qemu/event_notifier.h"
 +#include "qemu/notify.h"
 +#include "qemu/thread.h"
++#include "monitor/monitor.h"
 +#include "plugins/crucible-startup-source.h"
 +#include "plugins/crucible-checkpoint-receiving.h"
 +#include "system/crucible-hot-fork-coordinator.h"
@@ -234446,11 +234769,10 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +                        accepted_placement_generation) == 24,
 +               "placement generation offset");
 +
-+/* No production containing issuer, attachment/preparse lease, physical proof
-+ * vector or VM is instantiated. This utility installs those modeled owners
-+ * directly in PRIVATE storage. Production cannot publish that storage. Real
-+ * module handles, native atomics, eventfd identity, cancellation/time and
-+ * literal owner/decoder/mailbox/callback/read-return bodies are exercised.
++/* Literal constructors own every Receiving/Main/Stop/proof publication.
++ * Named external observations below are conditional unit dependencies, not
++ * real Source custody, Monitor reservations, actor pause or a physical fence.
++ * No Source issuer/credit record or native physical token is constructed.
 + */
 +static QemuCrucibleStartupSourceControl startup_source;
 +static bool paused = true;
@@ -234476,10 +234798,43 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +static unsigned restore_journals;
 +static QemuMutex admission_lock;
 +static int event_fd;
-+static unsigned char model_monitor, model_attachment, model_request;
-+static unsigned char model_purpose, model_source_proof, model_page_proof;
-+static unsigned char model_execution_producer, model_userdata;
++static unsigned char model_monitor, model_request;
++static unsigned char model_purpose, model_userdata;
 +static struct qemu_plugin_ctx fixture_ctx;
++static QemuCrucibleRamControlActor fixture_actor;
++static unsigned char external_checkpoint_reservation, external_stop_reservation;
++static unsigned char external_provider, external_fence;
++static int storage_status, actor_status, reservation_status;
++static int provider_acquire_status, provider_check_status, fence_status;
++static int pause_status, fence_return_status;
++static unsigned storage_calls, actor_calls, reservation_calls;
++static unsigned provider_acquires, provider_checks, fence_acquires, fence_returns;
++static bool provider_output_on_failure;
++static bool inject_malformed, inject_cancelled, inject_expired;
++static bool inject_close_uncertain, inject_identity_mismatch;
++static uint8_t arm_digest[32] = { 1 };
++static uint64_t request_generation;
++static int64_t fixture_main_thread_id;
++static unsigned finalizer_calls, alias_gets;
++static int candidate_aliases[3] = { -1, -1, -1 };
++static bool close_after_callback;
++static qemu_plugin_crucible_checkpoint_proof_handle_v1 *fixture_proof;
++static bool check_reader_bounds, check_foreign;
++static void reader_bounds_in_callback(void);
++static void foreign_in_callback(void);
++
++static int fixture_external_binding_borrow(QemuCrucibleCheckpointPagerBinding *out);
++static bool fixture_external_binding_current(
++    const QemuCrucibleCheckpointPagerBinding *binding);
++static int literal_source_binding_borrow(QemuCrucibleCheckpointPagerBinding *binding);
++static bool literal_source_binding_current(
++    const QemuCrucibleCheckpointPagerBinding *binding);
++static Monitor *fixture_monitor_current(void);
++
++static bool fixture_main_thread(void)
++{
++    return qemu_get_thread_id() == fixture_main_thread_id;
++}
 +
 +static bool fixture_runstate_check(RunState state)
 +{
@@ -234531,10 +234886,11 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +#define qemu_plugin_crucible_vmstop_generation fixture_generation
 +#define bql_locked fixture_bql
 +#define qemu_in_coroutine fixture_coroutine
++#define qemu_in_main_thread fixture_main_thread
++#define monitor_cur fixture_monitor_current
 +#include "crucible-checkpoint-receiving.inc.h"
-+#ifndef CHECKPOINT_RECEIVING_VARIANT
-+#include "../../plugins/crucible-checkpoint-receiving.c"
-+#endif
++#undef monitor_cur
++#undef qemu_in_main_thread
 +#undef qemu_in_coroutine
 +#undef bql_locked
 +#undef qemu_plugin_crucible_vmstop_generation
@@ -234551,6 +234907,284 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    (void)argc;
 +    (void)argv;
 +    return 0;
++}
++
++/* Conditional observations never publish Source storage or a VM capability.
++ * Literal Receiving constructors consume these dependencies and retain their
++ * own state. Every dependency checks its exact borrower before returning.
++ */
++int qemu_crucible_checkpoint_storage_current_v1(void)
++{
++    storage_calls++;
++    return storage_status;
++}
++
++int qemu_crucible_ram_control_actor_current(
++    QemuCrucibleRamControlActor *actor, qemu_plugin_id_t id)
++{
++    g_assert_true(actor == &fixture_actor);
++    g_assert_cmpuint(id, ==, fixture_ctx.id);
++    actor_calls++;
++    return actor_status;
++}
++
++int qemu_crucible_ram_control_actor_contract_current(
++    QemuCrucibleRamControlActor *actor)
++{
++    g_assert_true(actor == &fixture_actor);
++    actor_calls++;
++    return actor_status;
++}
++
++int monitor_qmp_checkpoint_reservation_take(MonitorQmpCheckpointReservation **out)
++{
++    g_assert_nonnull(out);
++    g_assert_null(*out);
++    reservation_calls++;
++    if (!reservation_status) {
++        *out = (void *)&external_checkpoint_reservation;
++    }
++    return reservation_status;
++}
++
++int monitor_qmp_checkpoint_reservation_observe(
++    MonitorQmpCheckpointReservation *reservation, Monitor **monitor,
++    void **purpose, uint64_t *process_generation, uint64_t *connection_epoch)
++{
++    g_assert_true(reservation == (void *)&external_checkpoint_reservation);
++    reservation_calls++;
++    if (!reservation_status) {
++        *monitor = (void *)&model_monitor;
++        *purpose = &model_purpose;
++        *process_generation = 17;
++        *connection_epoch = 19;
++    }
++    return reservation_status;
++}
++
++int monitor_qmp_stop_reservation_take(MonitorQmpStopReservation **out)
++{
++    g_assert_nonnull(out);
++    g_assert_null(*out);
++    reservation_calls++;
++    if (!reservation_status) {
++        *out = (void *)&external_stop_reservation;
++    }
++    return reservation_status;
++}
++
++int monitor_qmp_stop_reservation_observe(
++    MonitorQmpStopReservation *reservation, Monitor **monitor,
++    void **purpose, uint64_t *process_generation)
++{
++    g_assert_true(reservation == (void *)&external_stop_reservation);
++    reservation_calls++;
++    if (!reservation_status) {
++        *monitor = (void *)&model_monitor;
++        *purpose = &model_purpose;
++        *process_generation = 17;
++    }
++    return reservation_status;
++}
++
++static Monitor *fixture_monitor_current(void)
++{
++    return (void *)&model_monitor;
++}
++
++int monitor_get_fd(Monitor *monitor, const char *name, Error **errp)
++{
++    static const char *const names[] = { "cancel", "source", "capture" };
++
++    g_assert_true(monitor == (void *)&model_monitor);
++    g_assert_cmpuint(alias_gets, <, G_N_ELEMENTS(names));
++    g_assert_cmpstr(name, ==, names[alias_gets]);
++    g_assert_null(errp);
++    alias_gets++;
++    return fcntl(event_fd, F_DUPFD_CLOEXEC, 0);
++}
++
++int qemu_plugin_crucible_ram_actor_request_pause_begin(
++    QemuCrucibleCheckpointRequestLoan *request,
++    QemuCrucibleRamControlActor *actor, QemuCrucibleRamActorPause **out)
++{
++    g_assert_true(request == &checkpoint_request);
++    g_assert_true(actor == &fixture_actor);
++    g_assert_true(out == &request->actor_pause);
++    g_assert_null(*out);
++    if (!pause_status) {
++        *out = &fixture_actor.request_pause;
++    }
++    return pause_status;
++}
++
++int qemu_plugin_crucible_ram_actor_pause_current(QemuCrucibleRamActorPause *pause)
++{
++    g_assert_true(pause == &fixture_actor.request_pause);
++    return pause_status;
++}
++
++int qemu_crucible_checkpoint_native_fence_acquire_v1(
++    QemuCrucibleCheckpointHeldTransaction *owner,
++    QemuCrucibleCheckpointNativeFence **out)
++{
++    g_assert_true(owner == &checkpoint_transaction);
++    g_assert_nonnull(out);
++    g_assert_true(owner->invocation.active);
++    fence_acquires++;
++    if (!fence_status) {
++        *out = (void *)&external_fence;
++    }
++    return fence_status;
++}
++
++int qemu_crucible_checkpoint_native_fence_check_v1(
++    QemuCrucibleCheckpointHeldTransaction *owner,
++    QemuCrucibleCheckpointNativeFence *fence)
++{
++    g_assert_true(owner == &checkpoint_transaction);
++    g_assert_true(fence == (void *)&external_fence);
++    return fence_status;
++}
++
++int qemu_crucible_checkpoint_native_fence_return_v1(
++    QemuCrucibleCheckpointHeldTransaction *owner,
++    QemuCrucibleCheckpointNativeFence *fence)
++{
++    g_assert_true(owner == &checkpoint_transaction);
++    g_assert_true(fence == (void *)&external_fence);
++    g_assert_true(owner->cleanup_invoking);
++    fence_returns++;
++    return fence_return_status;
++}
++
++/* These branches are outside the selected request/ordinary Stop graph. A
++ * surprise inventory/control-source call fails instead of issuing an owner.
++ */
++int qemu_crucible_checkpoint_inventory_current_v1(
++    QemuCrucibleCheckpointInventoryLoan *loan, uint64_t *bounded_ns)
++{
++    (void)loan;
++    (void)bounded_ns;
++    g_assert_not_reached();
++    return -ENOTSUP;
++}
++
++int qemu_plugin_crucible_source_control_stop_intent_current_v1(
++    QemuCrucibleSourceControlStopIntent *intent, bool admission)
++{
++    (void)intent;
++    (void)admission;
++    g_assert_not_reached();
++    return -ENOTSUP;
++}
++
++static int fixture_provider_acquire(
++    qemu_plugin_id_t id, QemuCrucibleCheckpointRequestLoan *request,
++    void *userdata, void **out)
++{
++    uint64_t now;
++
++    g_assert_cmpuint(id, ==, fixture_ctx.id);
++    g_assert_true(request == &checkpoint_request);
++    g_assert_true(userdata == &model_userdata);
++    g_assert_nonnull(out);
++    g_assert_null(*out);
++    g_assert_true(request->provider_invoking);
++    provider_acquires++;
++    if (!provider_acquire_status || provider_output_on_failure) {
++        *out = &external_provider;
++    }
++
++    /* Adverse mutations occur after real pending alias adoption, before the
++     * literal begin constructor calls receive. None grants an owner. */
++    if (inject_malformed) {
++        request->original_wire[0] ^= 1;
++    }
++    if (inject_expired) {
++        g_assert_cmpint(checkpoint_now(&now), ==, 0);
++        stq_be_p(request->original_wire + 56, now - 2);
++        stq_be_p(request->original_wire + 64, now - 1);
++    }
++    if (inject_identity_mismatch) {
++        request->cancellation_event_id++;
++    }
++    if (inject_cancelled) {
++        uint64_t one = 1;
++
++        g_assert_cmpint(write(event_fd, &one, sizeof(one)), ==, sizeof(one));
++    }
++    fail_reader_close = inject_close_uncertain;
++    return provider_acquire_status;
++}
++
++static int fixture_provider_check(
++    qemu_plugin_id_t id, QemuCrucibleCheckpointRequestLoan *request,
++    void *provider, void *userdata)
++{
++    g_assert_cmpuint(id, ==, fixture_ctx.id);
++    g_assert_true(request == &checkpoint_request);
++    g_assert_true(provider == &external_provider);
++    g_assert_true(userdata == &model_userdata);
++    g_assert_true(request->provider_invoking);
++    provider_checks++;
++    return provider_check_status;
++}
++
++static int fixture_provider_end(
++    qemu_plugin_id_t id, QemuCrucibleCheckpointRequestLoan *request,
++    void *provider, void *userdata)
++{
++    g_assert_cmpuint(id, ==, fixture_ctx.id);
++    g_assert_true(request == &checkpoint_request);
++    g_assert_true(provider == &external_provider);
++    g_assert_true(userdata == &model_userdata);
++    g_assert_not_reached();
++    return -ENOTSUP;
++}
++
++static int fixture_finalize(
++    qemu_plugin_id_t id, QemuCrucibleCheckpointRequestLoan *request,
++    void *provider, void *userdata)
++{
++    g_assert_cmpuint(id, ==, fixture_ctx.id);
++    g_assert_true(request == &checkpoint_request);
++    g_assert_true(provider == &external_provider);
++    g_assert_true(userdata == &model_userdata);
++    g_assert_true(request->provider_invoking);
++    g_assert_true(checkpoint_transaction.finalize_invoking);
++    finalizer_calls++;
++    return -EINPROGRESS;
++}
++
++int qemu_crucible_checkpoint_candidate_cleanup_main_v1(
++    QemuCrucibleCheckpointCandidateReadLoan *loan)
++{
++    (void)loan;
++    g_assert_not_reached();
++    return -ENOTSUP;
++}
++
++int qemu_plugin_crucible_ram_actor_request_receipt_return(
++    QemuCrucibleCheckpointRequestLoan *request, QemuCrucibleRamControlActor *actor,
++    QemuCrucibleRamActorPause *pause)
++{
++    (void)request;
++    (void)actor;
++    (void)pause;
++    g_assert_not_reached();
++    return -ENOTSUP;
++}
++
++int qemu_plugin_crucible_ram_actor_request_pause_end(
++    QemuCrucibleCheckpointRequestLoan *request, QemuCrucibleRamControlActor *actor,
++    QemuCrucibleRamActorPause *pause)
++{
++    (void)request;
++    (void)actor;
++    (void)pause;
++    g_assert_not_reached();
++    return -ENOTSUP;
 +}
 +
 +static int queued_callback(void *opaque)
@@ -234586,16 +235220,34 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    g_assert_cmpint(qemu_plugin_crucible_checkpoint_original_query_slice_v1(
 +                       id + 1, &wrong_id_output), ==, -EPERM);
 +    g_assert_cmpuint(wrong_id_output, ==, UINT64_MAX);
++    if (check_reader_bounds) {
++        reader_bounds_in_callback();
++    }
++    if (check_foreign) {
++        foreign_in_callback();
++    }
 +    if (call->action == QEMU_PLUGIN_CRUCIBLE_CHECKPOINT_PAGER_PREPARE) {
 +        /* The real fixture admission mutex stays held across native detach.
 +         * Closing this modeled policy is not a production purpose publisher.
 +         */
 +        policy_closed = true;
++        result = qemu_plugin_crucible_checkpoint_proof_hold_v1(id, &fixture_proof);
++        if (result) {
++            qemu_mutex_unlock(&admission_lock);
++            return result;
++        }
 +        g_assert_cmpint(qemu_plugin_crucible_checkpoint_placement_restore_v1(id, &observed),
 +                        ==, -EPERM);
 +        g_assert_cmpmem(&observed, sizeof(observed), &sentinel, sizeof(sentinel));
-+        result = qemu_plugin_crucible_checkpoint_placement_detach_v1(id, &observed);
-+        g_assert_true(result == 0 || result == -EINPROGRESS);
++        result = qemu_plugin_crucible_checkpoint_placement_detach_v2(
++            id, fixture_proof, empty_mailbox ? NULL : queued_callback,
++            empty_mailbox ? NULL : &model_request, &observed);
++        if (result && result != -EINPROGRESS) {
++            g_assert_cmpmem(&observed, sizeof(observed), &sentinel,
++                            sizeof(sentinel));
++            qemu_mutex_unlock(&admission_lock);
++            return result;
++        }
 +        pending |= result == -EINPROGRESS;
 +        if (!result) {
 +            g_assert_true(checkpoint_placement_owner.detached);
@@ -234652,6 +235304,9 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +
 +            g_assert_cmpint(write(event_fd, &one, sizeof(one)), ==, sizeof(one));
 +        }
++        if (close_after_callback) {
++            fail_reader_close = true;
++        }
 +        qemu_mutex_unlock(&admission_lock);
 +        return -EIO;
 +    }
@@ -234684,7 +235339,11 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +        g_assert_cmpuint(held_receipt.disposition, ==,
 +                        QEMU_PLUGIN_CRUCIBLE_CHECKPOINT_PLACEMENT_HELD);
 +        restore_journals++;
-+        policy_closed = false;
++        result = qemu_plugin_crucible_checkpoint_proof_return_v1(id, fixture_proof);
++        if (result) {
++            qemu_mutex_unlock(&admission_lock);
++            return result;
++        }
 +        sentinel = observed;
 +        g_assert_cmpint(qemu_plugin_crucible_checkpoint_placement_restore_v1(
 +                            id, &observed), ==, -EALREADY);
@@ -234702,12 +235361,9 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +        .plugin_owner_generation = 99, .process_generation = call->process_generation,
 +        .arena_generation = call->arena_generation,
 +        .topology_generation = call->topology_generation,
-+        .epoch_generation = call->epoch_generation,
-+        .source_fence_generation = call->source_fence_generation,
-+        .page_version_fence_generation = call->page_version_fence_generation,
 +    };
 +    if (corrupt_status) {
-+        status->source_fence_generation++;
++        status->topology_generation++;
 +    }
 +    if (cancel_in_callback) {
 +        uint64_t one = 1;
@@ -234718,59 +235374,81 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    return 0;
 +}
 +
++static int fixture_external_binding_borrow(QemuCrucibleCheckpointPagerBinding *out)
++{
++    if (!out) {
++        return -EINVAL;
++    }
++    *out = (QemuCrucibleCheckpointPagerBinding) {
++        .installer = {
++            .ctx = &fixture_ctx, .module = fixture_ctx.handle,
++            .install = fixture_install, .plugin_id = fixture_ctx.id,
++        },
++        .process_id = getpid(),
++        .prepare = fixture_pager, .check = fixture_pager, .release = fixture_pager,
++        .provider_acquire = fixture_provider_acquire,
++        .provider_check = fixture_provider_check,
++        .provider_end = fixture_provider_end, .finalize = fixture_finalize,
++        .userdata = &model_userdata,
++    };
++    return 0;
++}
++
++static bool fixture_external_binding_current(
++    const QemuCrucibleCheckpointPagerBinding *binding)
++{
++    QemuCrucibleCheckpointPagerBinding expected;
++
++    g_assert_cmpint(fixture_external_binding_borrow(&expected), ==, 0);
++    return binding && binding->installer.ctx == expected.installer.ctx &&
++        binding->installer.module == expected.installer.module &&
++        binding->installer.install == expected.installer.install &&
++        binding->installer.plugin_id == expected.installer.plugin_id &&
++        binding->process_id == expected.process_id &&
++        binding->prepare == expected.prepare && binding->check == expected.check &&
++        binding->release == expected.release &&
++        binding->provider_acquire == expected.provider_acquire &&
++        binding->provider_check == expected.provider_check &&
++        binding->provider_end == expected.provider_end &&
++        binding->finalize == expected.finalize &&
++        !binding->candidate_read && !binding->candidate_observe &&
++        !binding->candidate_cleanup && binding->userdata == expected.userdata;
++}
++
 +static void fixture_prepare(void)
 +{
-+    struct stat info;
++    uint8_t original[80] = { 0 };
 +    uint64_t now;
-+    GModule *module = g_module_open(NULL, G_MODULE_BIND_LAZY);
 +
-+    g_assert_nonnull(module);
-+    qemu_mutex_init(&admission_lock);
-+    fixture_ctx.handle = module;
++    fixture_ctx.handle = g_module_open(NULL, G_MODULE_BIND_LAZY);
++    g_assert_nonnull(fixture_ctx.handle);
 +    fixture_ctx.id = 37;
-+    startup_source = (QemuCrucibleStartupSourceControl) { 0 };
-+    startup_source.owner_process = getpid();
-+    startup_source.saved = (QemuCrucibleStartupInstallerBinding) {
-+        .ctx = &fixture_ctx, .module = module, .install = fixture_install,
-+        .plugin_id = fixture_ctx.id,
-+    };
-+    startup_source.checkpoint_pager_prepare = fixture_pager;
-+    startup_source.checkpoint_pager_check = fixture_pager;
-+    startup_source.checkpoint_pager_release = fixture_pager;
-+    startup_source.checkpoint_pager_userdata = &model_userdata;
-+    qatomic_store_release(&startup_source.custody_retained, true);
-+    qatomic_store_release(&startup_source.checkpoint_pager_registered, true);
-+
++    fixture_main_thread_id = qemu_get_thread_id();
++    qemu_mutex_init(&admission_lock);
 +    event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 +    g_assert_cmpint(event_fd, >=, 0);
-+    g_assert_cmpint(fstat(event_fd, &info), ==, 0);
-+    checkpoint_request = (QemuCrucibleCheckpointRequestLoan) {
-+        .process_id = getpid(), .monitor = &model_monitor,
-+        .attachment_owner = &model_attachment, .request_owner = &model_request,
-+        .containing_purpose = &model_purpose,
-+        .source_proof_owner = &model_source_proof,
-+        .page_proof_owner = &model_page_proof,
-+        .execution_producer_owner = &model_execution_producer,
-+        .cancellation_fd = event_fd,
-+        .cancellation_device = info.st_dev, .cancellation_inode = info.st_ino,
-+        .coordinates = {
-+            .native_transaction_generation = 11, .process_generation = 17,
-+            .arena_generation = 19, .topology_generation = 23,
-+            .epoch_generation = 29, .source_fence_generation = 31,
-+            .page_version_fence_generation = 41,
-+        },
-+    };
-+    qemu_thread_get_self(&checkpoint_request.thread);
-+    g_assert_cmpint(qemu_crucible_checkpoint_pager_binding_borrow(
-+                       &checkpoint_request.pager), ==, 0);
-+    checkpoint_transaction = (QemuCrucibleCheckpointHeldTransaction) {
-+        .cancellation_fd = -1, .metadata_fd = -1,
-+    };
-+    checkpoint_read = (QemuCrucibleCheckpointReadLoan) { 0 };
-+    checkpoint_stop_owner = (struct QemuCrucibleCheckpointStopOwner) { 0 };
-+    checkpoint_placement_owner = (QemuCrucibleCheckpointPlacementOwner) {
-+        .cancellation_fd = -1, .saved_cancellation_fd = -1,
-+    };
++
++    /* Only transport data is supplied to the actor dependency. In particular
++     * its Source purpose, paid charge, qualification and born fields stay zero.
++     */
++    fixture_actor.receipt.active = true;
++    fixture_actor.receipt.first_alias = true;
++    fixture_actor.receipt.alias_count = 1;
++    fixture_actor.receipt.frame_bytes = CRUCIBLE_CHECKPOINT_ARM_FRAME_BYTES;
++    fixture_actor.receipt.aliases[0] = event_fd;
++    fixture_actor.receipt.aliases[1] = -1;
++    g_assert_cmpint(checkpoint_now(&now), ==, 0);
++    memcpy(original, "CRUCPAU1", 8);
++    stl_be_p(original + 8, 1);
++    stl_be_p(original + 12, 80);
++    original[16] = 0x7a;
++    stq_be_p(original + 48, UINT64_MAX);
++    stq_be_p(original + 56, now - 1);
++    stq_be_p(original + 64, now + UINT64_C(10000000000));
++    stq_be_p(original + 72, UINT64_MAX);
++    memcpy(fixture_actor.receipt.frame + CRUCIBLE_CHECKPOINT_ARM_ORIGINAL_OFFSET,
++           original, sizeof(original));
++
 +    crucible_hot_fork_coordinator.process_id = getpid();
 +    crucible_hot_fork_coordinator.main_thread_id = qemu_get_thread_id();
 +    crucible_hot_fork_coordinator.child_runtime_pending = false;
@@ -234780,69 +235458,104 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    ram_scheduled.callback = queued_callback;
 +    ram_scheduled.opaque = &model_request;
 +
-+    /* Discover the real test event token using an explicit provider read. No
-+     * success marker substitutes for production identity validation. */
-+    char path[64], bytes[4096];
-+    int fd;
-+    ssize_t count;
-+    char *line;
++    g_assert_cmpint(qemu_crucible_checkpoint_pending_adopt_native_v1(
++        &fixture_actor, &fixture_actor.receipt, original, arm_digest,
++        &request_generation), ==, 0);
++    g_assert_true(fixture_actor.receipt.moved);
++    g_assert_cmpint(fixture_actor.receipt.aliases[0], ==, -1);
++    g_assert_cmpint(checkpoint_pending.cancellation_fd, ==, event_fd);
++    g_assert_false(checkpoint_request.published);
++}
 +
-+    snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", event_fd);
-+    fd = open(path, O_RDONLY | O_CLOEXEC);
-+    g_assert_cmpint(fd, >=, 0);
-+    count = read(fd, bytes, sizeof(bytes) - 1);
-+    g_assert_cmpint(count, >, 0);
-+    g_assert_cmpint(close(fd), ==, 0);
-+    bytes[count] = 0;
-+    line = strstr(bytes, "eventfd-id:");
-+    g_assert_nonnull(line);
-+    checkpoint_request.cancellation_event_id = g_ascii_strtoull(line + 11, NULL, 10) + 1;
-+    g_assert_cmpint(checkpoint_now(&now), ==, 0);
-+    memcpy(checkpoint_request.original_wire, "CRUCPAU1", 8);
-+    stl_be_p(checkpoint_request.original_wire + 8, 1);
-+    stl_be_p(checkpoint_request.original_wire + 12, 80);
-+    checkpoint_request.original_wire[16] = 0x7a;
-+    stq_be_p(checkpoint_request.original_wire + 48, UINT64_MAX);
-+    stq_be_p(checkpoint_request.original_wire + 56, now - 1);
-+    stq_be_p(checkpoint_request.original_wire + 64, now + UINT64_C(10000000000));
-+    stq_be_p(checkpoint_request.original_wire + 72, UINT64_MAX);
-+    qatomic_store_release(&checkpoint_request.published, true);
++static int fixture_begin(void)
++{
++    uint64_t epoch = UINT64_MAX;
++    int status = qemu_crucible_checkpoint_begin_main_v1(
++        arm_digest, request_generation, &epoch);
++
++    if (!status) {
++        g_assert_cmpuint(epoch, ==, 19);
++    } else {
++        g_assert_cmpuint(epoch, ==, UINT64_MAX);
++    }
++    return status;
 +}
 +
 +static void fixture_cleanup(void)
 +{
-+    /* Requested owner storage is modeled; real fixture aliases/module refs are
-+     * retired only at test teardown after every synchronous borrower returns. */
++    /* This child fixture ends after its assertions and synchronous borrowers.
++     * Reclaiming test descriptors is not a production provider/Root return. */
 +    qemu_mutex_destroy(&admission_lock);
 +    event_notifier_cleanup(&crucible_hot_fork_coordinator.wake);
++    for (unsigned role = 0; role < G_N_ELEMENTS(candidate_aliases); role++) {
++        if (candidate_aliases[role] >= 0) {
++            g_assert_cmpint(close(candidate_aliases[role]), ==, 0);
++        }
++    }
 +    g_assert_cmpint(close(event_fd), ==, 0);
 +    g_assert_true(g_module_close(fixture_ctx.handle));
 +}
 +
-+/* Explicit modeled stop-request/completion seam. Production has no writer
-+ * for this slot. It is published AFTER Receiving retains the actual original
-+ * and alias, and ties that exact transaction to this modeled transition.
-+ */
-+static void fixture_stop_completion(QemuCrucibleCheckpointHeldTransaction *owner)
++static void fixture_stop_completion(void)
 +{
-+    checkpoint_stop_owner.process_id = getpid();
-+    qemu_thread_get_self(&checkpoint_stop_owner.thread);
-+    checkpoint_stop_owner.transaction = owner;
-+    checkpoint_stop_owner.completed_generation = stopped_generation;
-+    qatomic_store_release(&checkpoint_stop_owner.published, true);
++    bool selected = false, already_stopped = true;
++
++    g_assert_cmpint(qemu_crucible_checkpoint_stop_intent_main_v1(
++        &selected, &already_stopped), ==, 0);
++    g_assert_true(selected);
++    g_assert_false(already_stopped);
++    g_assert_cmpint(qemu_crucible_checkpoint_stop_admission_current_v1(), ==, 0);
++    qemu_crucible_checkpoint_stop_admitted_v1();
++    qemu_crucible_checkpoint_stop_completed_v1(0);
++    g_assert_true(checkpoint_stop_owner.published);
++}
++
++static void fixture_candidate_begin(void)
++{
++    static const char *const names[] = { "cancel", "source", "capture" };
++    QemuCrucibleCheckpointHeldTransaction *out = NULL;
++
++    g_assert_cmpint(qemu_crucible_checkpoint_capture_alias_begin_v1(
++        &model_monitor), ==, 0);
++    for (unsigned role = 0; role < G_N_ELEMENTS(names); role++) {
++        g_assert_cmpint(qemu_crucible_checkpoint_capture_alias_acquire_v1(
++            role, names[role], NULL), ==, 0);
++    }
++    g_assert_cmpint(qemu_crucible_checkpoint_capture_alias_move_v1(
++        candidate_aliases), ==, 0);
++    g_assert_cmpint(qemu_crucible_checkpoint_candidate_begin_v1(
++        candidate_aliases[0], &out), ==, 0);
++    g_assert_true(out == &checkpoint_transaction);
++}
++
++static int fixture_candidate_end(void)
++{
++    for (unsigned role = 0; role < G_N_ELEMENTS(candidate_aliases); role++) {
++        int status = close(candidate_aliases[role]);
++
++        g_assert_cmpint(status, ==, 0);
++        qemu_crucible_checkpoint_candidate_alias_closed_v1(
++            &checkpoint_transaction, role, status);
++        candidate_aliases[role] = -1;
++    }
++    qemu_crucible_checkpoint_candidate_io_end_v1(&checkpoint_transaction, 0);
++    return qemu_crucible_checkpoint_candidate_end_v1(
++        &checkpoint_transaction, QEMU_PLUGIN_CRUCIBLE_CHECKPOINT_PAGER_COMMIT, 0);
 +}
 +
 +static QemuCrucibleCheckpointHeldTransaction *receive_and_stop(void)
 +{
 +    QemuCrucibleCheckpointHeldTransaction *owner = NULL;
 +
++    g_assert_cmpint(fixture_begin(), ==, 0);
 +    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
 +        &checkpoint_request, &owner), ==, 0);
 +    g_assert_true(owner == &checkpoint_transaction);
 +    g_assert_cmpint(checkpoint_request.cancellation_fd, ==, -1);
 +    g_assert_cmpint(owner->cancellation_fd, ==, event_fd);
-+    fixture_stop_completion(owner);
++    fixture_stop_completion();
 +    g_assert_cmpint(qemu_crucible_checkpoint_bind_stop_v1(owner), ==, 0);
++    fixture_candidate_begin();
 +    return owner;
 +}
 +
@@ -234854,8 +235567,8 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    uint64_t sentinel = UINT64_MAX;
 +
 +    fixture_prepare();
-+    memcpy(saved, checkpoint_request.original_wire, sizeof(saved));
 +    owner = receive_and_stop();
++    memcpy(saved, checkpoint_request.original_wire, sizeof(saved));
 +    callback_wants_read = true;
 +    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 1, 0, &status), ==, 0);
 +    g_assert_cmpuint(ram_scheduled.state, ==, 85);
@@ -234866,8 +235579,7 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    g_assert_cmpint(qemu_plugin_crucible_checkpoint_original_query_slice_v1(
 +        37, &sentinel), ==, -EPERM);
 +    g_assert_cmpuint(sentinel, ==, UINT64_MAX);
-+    qatomic_store_release(&checkpoint_request.final_disposition_published, true);
-+    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 3, 1, &status), ==, 0);
++    g_assert_cmpint(fixture_candidate_end(), ==, -EINPROGRESS);
 +    g_assert_cmpuint(ram_scheduled.state, ==, 82);
 +    g_assert_true(ram_scheduled.callback == queued_callback);
 +    g_assert_true(ram_scheduled.opaque == &model_request);
@@ -234878,7 +235590,12 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    g_assert_cmpint(fcntl(event_fd, F_GETFD), >=, 0);
 +    g_assert_cmpuint(callbacks, ==, 3);
 +    g_assert_cmpuint(restore_journals, ==, 1);
-+    g_assert_false(policy_closed);
++    g_assert_true(policy_closed);
++    g_assert_true(owner->proof.returned);
++    g_assert_false(owner->proof.native_retired);
++    g_assert_false(checkpoint_request.provider_ended);
++    g_assert_false(owner->module_finalize_complete);
++    g_assert_cmpuint(finalizer_calls, ==, 1);
 +    g_assert_cmpuint(queued_calls, ==, 0);
 +    fixture_cleanup();
 +}
@@ -234888,12 +235605,16 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    QemuCrucibleCheckpointHeldTransaction *out = (void *)1;
 +
 +    fixture_prepare();
++    g_assert_cmpint(fixture_begin(), ==, 0);
++    /* Withdraw publication from a real constructor result. Copied identity
++     * and the still-retained alias must not replace that missing authority. */
 +    qatomic_store_release(&checkpoint_request.published, false);
 +    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
 +        &checkpoint_request, &out), ==, -ENOKEY);
 +    g_assert_true(out == (void *)1);
-+    g_assert_cmpint(checkpoint_request.cancellation_fd, ==, event_fd);
-+    g_assert_false(checkpoint_transaction.published);
++    g_assert_cmpint(checkpoint_request.cancellation_fd, ==, -1);
++    g_assert_cmpint(checkpoint_transaction.cancellation_fd, ==, event_fd);
++    g_assert_true(checkpoint_transaction.published);
 +    g_assert_cmpuint(callbacks, ==, 0);
 +    g_assert_cmpuint(ram_scheduled.state, ==, 82);
 +    fixture_cleanup();
@@ -234904,9 +235625,8 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    QemuCrucibleCheckpointHeldTransaction *out = (void *)1;
 +
 +    fixture_prepare();
-+    checkpoint_request.original_wire[0] ^= 1;
-+    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
-+        &checkpoint_request, &out), ==, -EPROTONOSUPPORT);
++    inject_malformed = true;
++    g_assert_cmpint(fixture_begin(), ==, -EPROTONOSUPPORT);
 +    g_assert_true(out == (void *)1);
 +    g_assert_true(checkpoint_transaction.published);
 +    g_assert_true(checkpoint_request.moved);
@@ -234926,7 +235646,8 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    uint64_t one = 1;
 +
 +    fixture_prepare();
-+    g_assert_cmpint(write(event_fd, &one, sizeof(one)), ==, sizeof(one));
++    inject_cancelled = true;
++    g_assert_cmpint(fixture_begin(), ==, -ECANCELED);
 +    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
 +        &checkpoint_request, &out), ==, -ECANCELED);
 +    g_assert_true(out == (void *)1);
@@ -234940,12 +235661,9 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +static void scenario_expired(void)
 +{
 +    QemuCrucibleCheckpointHeldTransaction *out = (void *)1;
-+    uint64_t now;
-+
 +    fixture_prepare();
-+    g_assert_cmpint(checkpoint_now(&now), ==, 0);
-+    stq_be_p(checkpoint_request.original_wire + 56, now - 2);
-+    stq_be_p(checkpoint_request.original_wire + 64, now - 1);
++    inject_expired = true;
++    g_assert_cmpint(fixture_begin(), ==, -ETIMEDOUT);
 +    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
 +        &checkpoint_request, &out), ==, -ETIMEDOUT);
 +    g_assert_true(out == (void *)1);
@@ -235018,7 +235736,8 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    QemuCrucibleCheckpointHeldTransaction *out = (void *)1;
 +
 +    fixture_prepare();
-+    fail_reader_close = true;
++    inject_close_uncertain = true;
++    g_assert_cmpint(fixture_begin(), ==, -EINTR);
 +    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
 +        &checkpoint_request, &out), ==, -EINTR);
 +    g_assert_true(out == (void *)1);
@@ -235030,37 +235749,45 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +
 +static void scenario_first_and_post(void)
 +{
-+    QemuCrucibleCheckpointHeldTransaction *out = (void *)1;
-+
-+    fixture_prepare();
-+    checkpoint_request.cancellation_event_id++;
-+    fail_reader_close = true;
-+    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
-+        &checkpoint_request, &out), ==, -ESTALE);
-+    g_assert_true(out == (void *)1);
-+    g_assert_cmpint(checkpoint_transaction.first_status, ==, -ESTALE);
-+    g_assert_cmpint(checkpoint_transaction.post_status, ==, -EINTR);
-+    g_assert_true(checkpoint_transaction.metadata_close_uncertain);
-+    g_assert_cmpint(checkpoint_transaction.cancellation_fd, ==, event_fd);
-+    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
-+        &checkpoint_request, &out), ==, -ESTALE);
-+    g_assert_true(out == (void *)1);
-+    fixture_cleanup();
-+}
-+
-+static void scenario_reader_bounds(void)
-+{
++    struct qemu_plugin_crucible_checkpoint_pager_status out, sentinel;
 +    QemuCrucibleCheckpointHeldTransaction *owner;
-+    QemuCrucibleCheckpointReadLoan *out = (void *)1;
++    QemuCrucibleCheckpointHeldTransaction *retry = (void *)1;
++    unsigned saved_callbacks, saved_provider_acquires, saved_provider_checks;
 +
 +    fixture_prepare();
 +    owner = receive_and_stop();
-+    /* Explicit active-callback surrounding seam. The count/CAS/check/read
-+     * operations themselves remain literal production bodies. */
-+    owner->invocation.process_id = getpid();
-+    qemu_thread_get_self(&owner->invocation.thread);
-+    owner->invocation.transaction = owner;
-+    owner->invocation.active = true;
++    fail_callback = true;
++    close_after_callback = true;
++    memset(&out, 0xa5, sizeof(out));
++    sentinel = out;
++    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(
++        owner, 1, 0, &out), ==, -EIO);
++    g_assert_cmpmem(&out, sizeof(out), &sentinel, sizeof(sentinel));
++    g_assert_cmpint(owner->first_status, ==, -EIO);
++    g_assert_cmpint(owner->post_status, ==, -EINTR);
++    g_assert_true(owner->metadata_close_uncertain);
++    g_assert_cmpint(owner->cancellation_fd, ==, event_fd);
++
++    saved_callbacks = callbacks;
++    saved_provider_acquires = provider_acquires;
++    saved_provider_checks = provider_checks;
++    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
++        &checkpoint_request, &retry), ==, -EIO);
++    g_assert_true(retry == (void *)1);
++    g_assert_cmpint(owner->first_status, ==, -EIO);
++    g_assert_cmpint(owner->post_status, ==, -EINTR);
++    g_assert_cmpuint(callbacks, ==, saved_callbacks);
++    g_assert_cmpuint(provider_acquires, ==, saved_provider_acquires);
++    g_assert_cmpuint(provider_checks, ==, saved_provider_checks);
++    fixture_cleanup();
++}
++
++static void reader_bounds_in_callback(void)
++{
++    QemuCrucibleCheckpointHeldTransaction *owner = &checkpoint_transaction;
++    QemuCrucibleCheckpointReadLoan *out = (void *)1;
++
++    g_assert_true(owner->invocation.active);
 +    owner->invocation.reader_cut = 1;
 +    g_assert_cmpint(qemu_crucible_checkpoint_read_begin_v1(
 +        &owner->invocation, &out), ==, -EAGAIN);
@@ -235078,6 +235805,17 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    g_assert_cmpint(qemu_crucible_checkpoint_read_end_v1(out, 0), ==, 0);
 +    g_assert_cmpint(qemu_crucible_checkpoint_read_end_v1(out, 0), ==, -EPERM);
 +    g_assert_true(owner->original_valid);
++}
++
++static void scenario_reader_bounds(void)
++{
++    struct qemu_plugin_crucible_checkpoint_pager_status out;
++    QemuCrucibleCheckpointHeldTransaction *owner;
++
++    fixture_prepare();
++    owner = receive_and_stop();
++    check_reader_bounds = true;
++    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 1, 0, &out), ==, 0);
 +    fixture_cleanup();
 +}
 +
@@ -235101,21 +235839,25 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    return NULL;
 +}
 +
-+static void scenario_foreign(void)
++static void foreign_in_callback(void)
 +{
 +    QemuThread thread;
++
++    qemu_thread_create(&thread, "checkpoint-query", foreign_query, NULL, QEMU_THREAD_JOINABLE);
++    qemu_thread_join(&thread);
++}
++
++static void scenario_foreign(void)
++{
++    struct qemu_plugin_crucible_checkpoint_pager_status out;
 +    QemuCrucibleCheckpointHeldTransaction *owner;
 +
 +    fixture_prepare();
 +    owner = receive_and_stop();
-+    owner->invocation.process_id = getpid();
-+    qemu_thread_get_self(&owner->invocation.thread);
-+    owner->invocation.transaction = owner;
-+    owner->invocation.active = true;
-+    qemu_thread_create(&thread, "checkpoint-query", foreign_query, NULL, QEMU_THREAD_JOINABLE);
-+    qemu_thread_join(&thread);
++    check_foreign = true;
++    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 1, 0, &out), ==, 0);
 +    g_assert_cmpint(owner->first_status, ==, 0);
-+    g_assert_cmpuint(callbacks, ==, 0);
++    g_assert_cmpuint(callbacks, ==, 1);
 +    fixture_cleanup();
 +}
 +
@@ -235153,51 +235895,47 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +
 +static void scenario_release_failure(void)
 +{
-+    struct qemu_plugin_crucible_checkpoint_pager_status out, sentinel;
++    struct qemu_plugin_crucible_checkpoint_pager_status out;
 +    QemuCrucibleCheckpointHeldTransaction *owner;
 +
 +    fixture_prepare();
 +    owner = receive_and_stop();
 +    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 1, 0, &out), ==, 0);
 +    fail_callback = true;
-+    qatomic_store_release(&checkpoint_request.final_disposition_published, true);
-+    memset(&out, 0xa5, sizeof(out));
-+    sentinel = out;
-+    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 3, 1, &out), ==, -EIO);
-+    g_assert_cmpmem(&out, sizeof(out), &sentinel, sizeof(sentinel));
++    g_assert_cmpint(fixture_candidate_end(), ==, -EINPROGRESS);
++    g_assert_cmpint(owner->first_status, ==, -EIO);
++    g_assert_true(owner->release_callback_returned);
 +    g_assert_true(owner->release_started);
 +    g_assert_false(owner->mailbox_restored);
 +    g_assert_cmpuint(ram_scheduled.state, ==, 85);
 +    g_assert_cmpuint(callbacks, ==, 2);
-+    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 3, 1, &out), ==, -EIO);
++    g_assert_cmpint(qemu_crucible_checkpoint_candidate_end_v1(
++        owner, QEMU_PLUGIN_CRUCIBLE_CHECKPOINT_PAGER_COMMIT, 0), ==, -EINPROGRESS);
 +    g_assert_cmpuint(callbacks, ==, 2);
 +    fixture_cleanup();
 +}
 +
 +static void scenario_release_cancel(void)
 +{
-+    struct qemu_plugin_crucible_checkpoint_pager_status out, sentinel;
++    struct qemu_plugin_crucible_checkpoint_pager_status out;
 +    QemuCrucibleCheckpointHeldTransaction *owner;
 +
 +    fixture_prepare();
 +    owner = receive_and_stop();
 +    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 1, 0, &out), ==, 0);
 +    cancel_in_callback = true;
-+    qatomic_store_release(&checkpoint_request.final_disposition_published, true);
-+    memset(&out, 0xa5, sizeof(out));
-+    sentinel = out;
-+    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(
-+        owner, 3, 1, &out), ==, -ECANCELED);
-+    g_assert_cmpmem(&out, sizeof(out), &sentinel, sizeof(sentinel));
++    g_assert_cmpint(fixture_candidate_end(), ==, -EINPROGRESS);
++    g_assert_cmpint(owner->first_status, ==, -ECANCELED);
++    g_assert_true(owner->release_callback_returned);
 +    g_assert_true(owner->locally_disposed);
 +    g_assert_true(owner->mailbox_restored);
 +    g_assert_true(owner->restoration_attempted);
 +    g_assert_false(checkpoint_placement_owner.detached);
-+    g_assert_false(policy_closed);
++    g_assert_true(policy_closed);
 +    g_assert_cmpuint(restore_journals, ==, 1);
 +    g_assert_cmpuint(ram_scheduled.state, ==, 82);
-+    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(
-+        owner, 3, 1, &out), ==, -ECANCELED);
++    g_assert_cmpint(qemu_crucible_checkpoint_candidate_end_v1(
++        owner, QEMU_PLUGIN_CRUCIBLE_CHECKPOINT_PAGER_COMMIT, 0), ==, -EINPROGRESS);
 +    g_assert_cmpuint(restore_journals, ==, 1);
 +    g_assert_cmpuint(callbacks, ==, 2);
 +    g_assert_cmpint(owner->post_status, ==, -ECANCELED);
@@ -235210,17 +235948,18 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    QemuCrucibleCheckpointHeldTransaction *owner, *sentinel = (void *)1;
 +
 +    fixture_prepare();
++    g_assert_cmpint(fixture_begin(), ==, 0);
 +    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
 +        &checkpoint_request, &owner), ==, 0);
 +    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
-+        &checkpoint_request, &sentinel), ==, -EALREADY);
-+    g_assert_true(sentinel == (void *)1);
++        &checkpoint_request, &sentinel), ==, 0);
++    g_assert_true(sentinel == owner);
 +    g_assert_cmpuint(owner->stopped_generation, ==, 0);
-+    fixture_stop_completion(owner);
++    fixture_stop_completion();
 +    cold = true;
-+    g_assert_cmpint(qemu_crucible_checkpoint_bind_stop_v1(owner), ==, -ESTALE);
++    g_assert_cmpint(qemu_crucible_checkpoint_bind_stop_v1(owner), ==, -EPERM);
 +    cold = false;
-+    g_assert_cmpint(qemu_crucible_checkpoint_bind_stop_v1(owner), ==, -ESTALE);
++    g_assert_cmpint(qemu_crucible_checkpoint_bind_stop_v1(owner), ==, -EPERM);
 +    g_assert_cmpuint(owner->stopped_generation, ==, 0);
 +    fixture_cleanup();
 +}
@@ -235250,11 +235989,17 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +
 +static void scenario_decode(void)
 +{
-+    uint8_t wire[81];
++    uint8_t wire[81] = { 0 };
 +    QemuCrucibleCheckpointOriginal output, sentinel;
 +
-+    fixture_prepare();
-+    memcpy(wire, checkpoint_request.original_wire, 80);
++    memcpy(wire, "CRUCPAU1", 8);
++    stl_be_p(wire + 8, 1);
++    stl_be_p(wire + 12, 80);
++    wire[16] = 0x7a;
++    stq_be_p(wire + 48, UINT64_MAX);
++    stq_be_p(wire + 56, 1);
++    stq_be_p(wire + 64, 2);
++    stq_be_p(wire + 72, UINT64_MAX);
 +    memset(&output, 0xa5, sizeof(output));
 +    sentinel = output;
 +    g_assert_cmpint(qemu_crucible_checkpoint_original_decode_v1(
@@ -235276,7 +236021,6 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +        wire, 80, &output), ==, 0);
 +    g_assert_cmpuint(output.operation_id, ==, UINT64_MAX);
 +    g_assert_cmpuint(output.poll_ns, ==, UINT64_MAX);
-+    fixture_cleanup();
 +}
 +
 +static void scenario_missing_stop_owner(void)
@@ -235284,11 +236028,12 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    QemuCrucibleCheckpointHeldTransaction *owner = NULL;
 +
 +    fixture_prepare();
++    g_assert_cmpint(fixture_begin(), ==, 0);
 +    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
 +        &checkpoint_request, &owner), ==, 0);
 +    g_assert_true(paused && quiesced && !cold);
 +    g_assert_cmpuint(stopped_generation, >, 0);
-+    g_assert_cmpint(qemu_crucible_checkpoint_bind_stop_v1(owner), ==, -ENOKEY);
++    g_assert_cmpint(qemu_crucible_checkpoint_bind_stop_v1(owner), ==, -EPERM);
 +    g_assert_false(owner->stopped);
 +    g_assert_cmpuint(owner->stopped_generation, ==, 0);
 +    g_assert_cmpuint(callbacks, ==, 0);
@@ -235354,12 +236099,11 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    g_assert_cmpuint(ram_scheduled.state, ==, 86);
 +    g_assert_cmpuint(held_receipt.held_kind, ==,
 +                    QEMU_PLUGIN_CRUCIBLE_CHECKPOINT_PLACEMENT_EMPTY);
-+    qatomic_store_release(&checkpoint_request.final_disposition_published, true);
-+    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 3, 1, &out), ==, 0);
++    g_assert_cmpint(fixture_candidate_end(), ==, -EINPROGRESS);
 +    g_assert_cmpuint(ram_scheduled.state, ==, 80);
 +    g_assert_true(owner->mailbox_restored);
 +    g_assert_true(owner->locally_disposed);
-+    g_assert_false(policy_closed);
++    g_assert_true(policy_closed);
 +    g_assert_cmpuint(restore_journals, ==, 1);
 +    fixture_cleanup();
 +}
@@ -235367,7 +236111,7 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +static void scenario_journal_mismatch(void)
 +{
 +    QemuCrucibleCheckpointHeldTransaction *owner;
-+    struct qemu_plugin_crucible_checkpoint_pager_status out, sentinel;
++    struct qemu_plugin_crucible_checkpoint_pager_status out;
 +
 +    fixture_prepare();
 +    owner = receive_and_stop();
@@ -235377,16 +236121,208 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +     */
 +    ram_scheduled.opaque = &model_monitor;
 +    expect_restore_refusal = true;
-+    qatomic_store_release(&checkpoint_request.final_disposition_published, true);
-+    memset(&out, 0xa5, sizeof(out));
-+    sentinel = out;
-+    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 3, 1, &out), ==, -ESTALE);
-+    g_assert_cmpmem(&out, sizeof(out), &sentinel, sizeof(sentinel));
++    g_assert_cmpint(fixture_candidate_end(), ==, -EINPROGRESS);
++    g_assert_cmpint(owner->first_status, ==, -ESTALE);
++    g_assert_true(owner->release_callback_returned);
 +    g_assert_cmpuint(restore_journals, ==, 0);
 +    g_assert_true(policy_closed);
 +    g_assert_false(owner->mailbox_restored);
 +    g_assert_true(checkpoint_placement_owner.detached);
 +    g_assert_cmpuint(ram_scheduled.state, ==, 85);
++    fixture_cleanup();
++}
++
++static void scenario_source_unavailable(void)
++{
++    QemuCrucibleCheckpointPagerBinding out, saved;
++
++    memset(&out, 0xa5, sizeof(out));
++    saved = out;
++    g_assert_cmpint(literal_source_binding_borrow(NULL), ==, -EINVAL);
++    g_assert_cmpint(literal_source_binding_borrow(&out), ==, -EPERM);
++    g_assert_cmpmem(&out, sizeof(out), &saved, sizeof(saved));
++    g_assert_false(literal_source_binding_current(NULL));
++    out.process_id = getpid();
++    g_assert_false(literal_source_binding_current(&out));
++    g_assert_false(startup_source.module_custody_published);
++    g_assert_false(startup_source.custody_retained);
++}
++
++static void scenario_storage_refusal(void)
++{
++    fixture_prepare();
++    storage_status = -ENOKEY;
++    g_assert_cmpint(fixture_begin(), ==, -ENOKEY);
++    g_assert_false(checkpoint_request.published);
++    g_assert_false(checkpoint_pending.moved);
++    g_assert_cmpint(checkpoint_pending.cancellation_fd, ==, event_fd);
++    g_assert_cmpuint(provider_acquires, ==, 0);
++    g_assert_cmpuint(callbacks, ==, 0);
++    fixture_cleanup();
++}
++
++static void scenario_monitor_refusal(void)
++{
++    fixture_prepare();
++    reservation_status = -EIO;
++    g_assert_cmpint(fixture_begin(), ==, -EIO);
++    g_assert_false(checkpoint_request.published);
++    g_assert_false(checkpoint_pending.moved);
++    g_assert_cmpint(checkpoint_pending.cancellation_fd, ==, event_fd);
++    g_assert_cmpuint(provider_acquires, ==, 0);
++    fixture_cleanup();
++}
++
++static void scenario_pause_refusal(void)
++{
++    fixture_prepare();
++    pause_status = -EAGAIN;
++    g_assert_cmpint(fixture_begin(), ==, -EAGAIN);
++    g_assert_true(checkpoint_request.published);
++    g_assert_false(checkpoint_transaction.published);
++    g_assert_null(checkpoint_request.actor_pause);
++    g_assert_false(checkpoint_request.provider_acquire_attempted);
++    g_assert_cmpint(checkpoint_request.cancellation_fd, ==, event_fd);
++    g_assert_cmpuint(provider_acquires, ==, 0);
++    fixture_cleanup();
++}
++
++static void scenario_provider_refusal(void)
++{
++    fixture_prepare();
++    provider_acquire_status = -EIO;
++    provider_output_on_failure = true;
++    g_assert_cmpint(fixture_begin(), ==, -EIO);
++    g_assert_cmpuint(provider_acquires, ==, 1);
++    g_assert_true(checkpoint_request.provider_acquire_attempted);
++    g_assert_false(checkpoint_request.provider_acquired);
++    g_assert_true(checkpoint_request.provider_owner == &external_provider);
++    g_assert_cmpint(checkpoint_request.cancellation_fd, ==, event_fd);
++    g_assert_false(checkpoint_transaction.published);
++    g_assert_cmpint(fixture_begin(), ==, -EPERM);
++    g_assert_cmpuint(provider_acquires, ==, 1);
++    fixture_cleanup();
++}
++
++static void scenario_provider_check_refusal(void)
++{
++    struct qemu_plugin_crucible_checkpoint_pager_status out, saved;
++    QemuCrucibleCheckpointHeldTransaction *owner;
++
++    fixture_prepare();
++    owner = receive_and_stop();
++    provider_check_status = -EAGAIN;
++    memset(&out, 0xa5, sizeof(out));
++    saved = out;
++    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(
++        owner, 1, 0, &out), ==, -EAGAIN);
++    g_assert_cmpmem(&out, sizeof(out), &saved, sizeof(saved));
++    g_assert_cmpuint(callbacks, ==, 0);
++    g_assert_cmpuint(ram_scheduled.state, ==, 82);
++    g_assert_false(owner->mailbox_detached);
++    g_assert_false(checkpoint_request.provider_ended);
++    fixture_cleanup();
++}
++
++static void scenario_fence_refusal(void)
++{
++    struct qemu_plugin_crucible_checkpoint_pager_status out, saved;
++    QemuCrucibleCheckpointHeldTransaction *owner;
++
++    fixture_prepare();
++    owner = receive_and_stop();
++    fence_status = -EIO;
++    memset(&out, 0xa5, sizeof(out));
++    saved = out;
++    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(
++        owner, 1, 0, &out), ==, -EIO);
++    g_assert_cmpmem(&out, sizeof(out), &saved, sizeof(saved));
++    g_assert_cmpuint(fence_acquires, ==, 1);
++    g_assert_null(fixture_proof);
++    g_assert_false(owner->proof.retained);
++    g_assert_true(owner->prepare_called);
++    g_assert_true(owner->pager_held);
++    g_assert_cmpuint(ram_scheduled.state, ==, 82);
++    fixture_cleanup();
++}
++
++static void scenario_fence_return_refusal(void)
++{
++    struct qemu_plugin_crucible_checkpoint_pager_status out;
++    QemuCrucibleCheckpointHeldTransaction *owner;
++
++    fixture_prepare();
++    owner = receive_and_stop();
++    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 1, 0, &out), ==, 0);
++    fence_return_status = -EIO;
++    g_assert_cmpint(fixture_candidate_end(), ==, -EINPROGRESS);
++    g_assert_cmpuint(fence_returns, ==, 1);
++    g_assert_cmpint(owner->first_status, ==, -EIO);
++    g_assert_true(owner->mailbox_restored);
++    g_assert_true(owner->proof.retained);
++    g_assert_false(owner->proof.returned);
++    g_assert_false(owner->locally_disposed);
++    g_assert_false(checkpoint_request.provider_ended);
++    g_assert_true(policy_closed);
++    fixture_cleanup();
++}
++
++static void scenario_stop_intent_unpublished(void)
++{
++    QemuCrucibleCheckpointHeldTransaction *owner = NULL;
++
++    fixture_prepare();
++    g_assert_cmpint(fixture_begin(), ==, 0);
++    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
++        &checkpoint_request, &owner), ==, 0);
++    fixture_stop_completion();
++    /* An adverse mutation of an actually constructed owner tests the issuer
++     * invariant. A current paused generation does not replace that intent. */
++    checkpoint_stop_owner.intent_born = false;
++    g_assert_cmpint(qemu_crucible_checkpoint_bind_stop_v1(owner), ==, -EPERM);
++    g_assert_false(owner->stopped);
++    g_assert_cmpuint(callbacks, ==, 0);
++    fixture_cleanup();
++}
++
++static void scenario_settled_missing_disposition(void)
++{
++    struct qemu_plugin_crucible_checkpoint_pager_status out, saved;
++    QemuCrucibleCheckpointHeldTransaction *owner;
++
++    fixture_prepare();
++    owner = receive_and_stop();
++    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 1, 0, &out), ==, 0);
++    g_assert_cmpuint(out.state, ==,
++                    QEMU_PLUGIN_CRUCIBLE_CHECKPOINT_PAGER_SETTLED_HELD);
++    memset(&out, 0xa5, sizeof(out));
++    saved = out;
++    g_assert_cmpint(qemu_crucible_checkpoint_invoke_v1(owner, 3, 1, &out), ==,
++                    -EINPROGRESS);
++    g_assert_cmpmem(&out, sizeof(out), &saved, sizeof(saved));
++    g_assert_false(checkpoint_request.final_disposition_published);
++    g_assert_false(owner->release_started);
++    g_assert_cmpuint(callbacks, ==, 1);
++    g_assert_cmpint(checkpoint_finalize_main(owner), ==, -EINPROGRESS);
++    g_assert_cmpuint(finalizer_calls, ==, 0);
++    fixture_cleanup();
++}
++
++static void scenario_identity_close_uncertain(void)
++{
++    QemuCrucibleCheckpointHeldTransaction *out = (void *)1;
++
++    fixture_prepare();
++    inject_identity_mismatch = true;
++    inject_close_uncertain = true;
++    g_assert_cmpint(fixture_begin(), ==, -EINTR);
++    g_assert_cmpint(qemu_crucible_checkpoint_receive_v1(
++        &checkpoint_request, &out), ==, -EINTR);
++    g_assert_true(out == (void *)1);
++    g_assert_cmpint(checkpoint_transaction.first_status, ==, -EINTR);
++    g_assert_cmpint(checkpoint_transaction.post_status, ==, -EINTR);
++    g_assert_true(checkpoint_transaction.metadata_close_uncertain);
++    g_assert_cmpint(checkpoint_transaction.cancellation_fd, ==, event_fd);
 +    fixture_cleanup();
 +}
 +
@@ -235515,6 +236451,61 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    SCENARIO(journal_mismatch);
 +}
 +
++static void test_source_unavailable(void)
++{
++    SCENARIO(source_unavailable);
++}
++
++static void test_storage_refusal(void)
++{
++    SCENARIO(storage_refusal);
++}
++
++static void test_monitor_refusal(void)
++{
++    SCENARIO(monitor_refusal);
++}
++
++static void test_pause_refusal(void)
++{
++    SCENARIO(pause_refusal);
++}
++
++static void test_provider_refusal(void)
++{
++    SCENARIO(provider_refusal);
++}
++
++static void test_provider_check_refusal(void)
++{
++    SCENARIO(provider_check_refusal);
++}
++
++static void test_fence_refusal(void)
++{
++    SCENARIO(fence_refusal);
++}
++
++static void test_fence_return_refusal(void)
++{
++    SCENARIO(fence_return_refusal);
++}
++
++static void test_stop_intent_unpublished(void)
++{
++    SCENARIO(stop_intent_unpublished);
++}
++
++static void test_settled_missing_disposition(void)
++{
++    SCENARIO(settled_missing_disposition);
++}
++
++static void test_identity_close_uncertain(void)
++{
++    SCENARIO(identity_close_uncertain);
++}
++
 +int main(int argc, char **argv)
 +{
 +    g_test_init(&argc, &argv, NULL);
@@ -235531,7 +236522,7 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    g_test_add_func("/checkpoint-receiving/foreign", test_foreign);
 +    g_test_add_func("/checkpoint-receiving/decode", test_decode);
 +    g_test_add_func("/checkpoint-receiving/status-mismatch", test_status_mismatch);
-+    g_test_add_func("/checkpoint-receiving/module-mismatch", test_module_mismatch);
++    g_test_add_func("/checkpoint-receiving/external-module-mismatch", test_module_mismatch);
 +    g_test_add_func("/checkpoint-receiving/release-failure", test_release_failure);
 +    g_test_add_func("/checkpoint-receiving/release-cancel", test_release_cancel);
 +    g_test_add_func("/checkpoint-receiving/stop-and-repeat", test_stop_and_repeat);
@@ -235542,6 +236533,17 @@ index 0000000000000000000000000000000000000000..04ebec3cbd7e63c3026105ef264e314d
 +    g_test_add_func("/checkpoint-receiving/negative-callback-post", test_negative_callback_post);
 +    g_test_add_func("/checkpoint-receiving/empty-mailbox", test_empty_mailbox);
 +    g_test_add_func("/checkpoint-receiving/journal-mismatch", test_journal_mismatch);
++    g_test_add_func("/checkpoint-receiving/source-unavailable", test_source_unavailable);
++    g_test_add_func("/checkpoint-receiving/storage-refusal", test_storage_refusal);
++    g_test_add_func("/checkpoint-receiving/monitor-refusal", test_monitor_refusal);
++    g_test_add_func("/checkpoint-receiving/pause-refusal", test_pause_refusal);
++    g_test_add_func("/checkpoint-receiving/provider-refusal", test_provider_refusal);
++    g_test_add_func("/checkpoint-receiving/provider-check-refusal", test_provider_check_refusal);
++    g_test_add_func("/checkpoint-receiving/fence-refusal", test_fence_refusal);
++    g_test_add_func("/checkpoint-receiving/fence-return-refusal", test_fence_return_refusal);
++    g_test_add_func("/checkpoint-receiving/stop-intent-unpublished", test_stop_intent_unpublished);
++    g_test_add_func("/checkpoint-receiving/settled-missing-disposition", test_settled_missing_disposition);
++    g_test_add_func("/checkpoint-receiving/identity-close-uncertain", test_identity_close_uncertain);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-child-file-refusal.py b/tests/unit/test-crucible-child-file-refusal.py
@@ -261069,23 +262071,82 @@ index 0000000000000000000000000000000000000000..8e17de0910d8b55fb8e68357ef4fe776
 +}
 diff --git a/tests/unit/test-crucible-preexec-setup.c b/tests/unit/test-crucible-preexec-setup.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1e1399c57
+index 0000000000000000000000000000000000000000..e6e26a331afba733c60474399a0bf44e2cfe28ff
 --- /dev/null
 +++ b/tests/unit/test-crucible-preexec-setup.c
-@@ -0,0 +1,486 @@
+@@ -0,0 +1,643 @@
 +/*
 + * Physical preinit receipt controls; no namespace or original issuer fixture.
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
++/* Standalone controls use system declarations, never a fabricated QEMU config.
++ * The configured unit keeps its ordinary osdep header and actual public SDK. */
++#ifdef PREEXEC_TEST_STANDALONE
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++#include <assert.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <inttypes.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <glib.h>
++#else
 +#include "qemu/osdep.h"
++#endif
++#include <sys/auxv.h>
++#include <sys/resource.h>
 +#include <sys/eventfd.h>
 +#include <sys/mman.h>
 +#include <sys/wait.h>
 +#include <pthread.h>
 +
-+#include "crucible-preexec-setup.inc.h"
++#ifndef CRUCIBLE_PREEXEC_SETUP_BODY
++#define CRUCIBLE_PREEXEC_SETUP_BODY "crucible-preexec-setup.inc.h"
++#endif
++#include CRUCIBLE_PREEXEC_SETUP_BODY
++
++/* These boundaries deliberately cannot issue Source custody. They let this
++ * isolated executable link the literal preinit body; they are not genuine
++ * Source providers, an Original fixture, or configured activation evidence. */
++int qemu_crucible_selected_process_id;
++
++uint64_t qemu_crucible_startup_source_fixed_control_extent(void)
++{
++    return UINT64_MAX;
++}
++
++int qemu_crucible_startup_source_preexec_publish_v3(
++    QemuCruciblePreexecPurposeOwner *owner)
++{
++    (void)owner;
++    return -ENOKEY;
++}
++
++unsigned long qemu_getauxval(unsigned long type)
++{
++    return getauxval(type);
++}
 +
 +static const char *fixture_executable;
++static bool fixture_direct_probe;
++
++static bool fixture_isolated(void)
++{
++    return fixture_direct_probe || g_test_subprocess();
++}
++
++enum {
++    FIXTURE_DESCRIPTOR_COUNT = QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_FDS + 1,
++    FIXTURE_DESCRIPTOR_LIMIT = 128,
++};
 +
 +/* This test constructor is an ordering witness, not a production callback. */
 +static void __attribute__((constructor)) fixture_constructor(void)
@@ -261102,9 +262163,9 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +
 +typedef struct Fixture {
 +    int sender;
-+    int sources[5];
++    int sources[FIXTURE_DESCRIPTOR_COUNT];
 +    int original_flags[3];
-+    uint8_t frame[61];
++    uint8_t frame[QEMU_CRUCIBLE_PREEXEC_SETUP_FRAME_BYTES];
 +} Fixture;
 +
 +static int fixture_high_alias(int fd)
@@ -261132,8 +262193,17 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +
 +static void fixture_prepare(Fixture *fixture, bool workspace, int type)
 +{
++    struct rlimit limit = {
++        .rlim_cur = FIXTURE_DESCRIPTOR_LIMIT,
++        .rlim_max = FIXTURE_DESCRIPTOR_LIMIT,
++    };
 +    int pair[2];
 +
++    /* Lower the actual kernel ceiling only in the isolated fixture process.
++     * High source aliases and received aliases overlap under this finite bound.
++     * This transport ceiling supplies no issuer, Source or allocation grant. */
++    g_assert_true(fixture_isolated());
++    g_assert_cmpint(setrlimit(RLIMIT_NOFILE, &limit), ==, 0);
 +    g_assert_cmpint(socketpair(AF_UNIX, type | SOCK_CLOEXEC, 0, pair), ==, 0);
 +    pair[0] = fixture_high_alias(pair[0]);
 +    fixture->sender = fixture_high_alias(pair[1]);
@@ -261155,13 +262225,16 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +        g_assert_cmpint(fixture->original_flags[index], >=, 0);
 +    }
 +    memset(fixture->frame, 0, sizeof(fixture->frame));
-+    fixture_be32(fixture->frame, 57);
-+    fixture->frame[4] = 0x11;
++    fixture_be32(fixture->frame, QEMU_CRUCIBLE_PREEXEC_SETUP_MESSAGE_BYTES);
++    fixture->frame[QEMU_CRUCIBLE_PREEXEC_SETUP_TAG_OFFSET] =
++        QEMU_CRUCIBLE_PREEXEC_SETUP_TAG_V5;
 +    fixture_be64(fixture->frame + 5, 4096);
 +    fixture_be64(fixture->frame + 21, 7);
 +    if (workspace) {
-+        fixture_be32(fixture->frame + 13, 1);
-+        fixture_be32(fixture->frame + 17, 1);
++        fixture_be32(fixture->frame + 13,
++                     QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_PRESENT);
++        fixture_be32(fixture->frame + 17,
++                     QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_FLAG);
 +        fixture_be64(fixture->frame + 29, 9);
 +        fixture_be64(fixture->frame + 37, 11);
 +        /* Zero device/inode adds no invented nonzero binding restriction. */
@@ -261172,7 +262245,7 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +{
 +    union {
 +        struct cmsghdr alignment;
-+        uint8_t bytes[CMSG_SPACE(5 * sizeof(int))];
++        uint8_t bytes[CMSG_SPACE(FIXTURE_DESCRIPTOR_COUNT * sizeof(int))];
 +    } ancillary = { 0 };
 +    struct iovec iov = { .iov_base = fixture->frame, .iov_len = bytes };
 +    struct msghdr message = { .msg_iov = &iov, .msg_iovlen = 1 };
@@ -261240,15 +262313,28 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +
 +static void test_selection(void)
 +{
-+    char *ordinary[] = { "OTHER=1", NULL };
-+    char *selected[] = { "QEMU_CRUCIBLE_PREEXEC_SETUP=1", NULL };
-+    char *unknown[] = { "QEMU_CRUCIBLE_PREEXEC_SETUP=2", NULL };
++    char ordinary_entry[] = "OTHER=1";
++    char selected_entry[] = QEMU_CRUCIBLE_PREEXEC_SETUP_SELECTOR "="
++                            QEMU_CRUCIBLE_PREEXEC_SETUP_SELECTOR_V5;
++    char unknown_entry[] = "QEMU_CRUCIBLE_PREEXEC_SETUP=2";
++    char *ordinary[] = { ordinary_entry, NULL };
++    char *selected[] = { selected_entry, NULL };
++    char *unknown[] = { unknown_entry, NULL };
 +    char *duplicate[] = { selected[0], selected[0], NULL };
 +
 +    g_assert_cmpint(preexec_setup_selection(ordinary), ==, 0);
 +    g_assert_cmpint(preexec_setup_selection(selected), ==, 1);
 +    g_assert_cmpint(preexec_setup_selection(unknown), ==, -EINVAL);
 +    g_assert_cmpint(preexec_setup_selection(duplicate), ==, -EINVAL);
++    for (unsigned edition = 0; edition < 10; edition++) {
++        char entry[] = QEMU_CRUCIBLE_PREEXEC_SETUP_SELECTOR "=0";
++        char *environment[] = { entry, NULL };
++
++        entry[sizeof(entry) - 2] = '0' + edition;
++        g_assert_cmpint(preexec_setup_selection(environment), ==,
++                        edition == QEMU_CRUCIBLE_PREEXEC_SETUP_EDITION ?
++                        1 : -EINVAL);
++    }
 +    g_assert_false(preexec_setup_owner.attempted);
 +    fixture_assert_borrow_refused(-EPERM);
 +}
@@ -261260,9 +262346,10 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +    QemuCruciblePreexecSetupBorrow view;
 +    uint8_t second[61];
 +    uint8_t received[61];
-+    size_t count = workspace ? 4 : 3;
++    size_t count = workspace ? QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_FDS :
++                               QEMU_CRUCIBLE_PREEXEC_SETUP_BASE_FDS;
 +
-+    if (!g_test_subprocess()) {
++    if (!fixture_isolated()) {
 +        g_test_trap_subprocess(NULL, 1000000, 0);
 +        g_test_trap_assert_passed();
 +        return;
@@ -261299,10 +262386,10 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +    const char *kind = data;
 +    Fixture fixture;
 +    size_t bytes = 61;
-+    size_t count = 3;
++    size_t count = QEMU_CRUCIBLE_PREEXEC_SETUP_BASE_FDS;
 +    int expected = -EINVAL;
 +
-+    if (!g_test_subprocess()) {
++    if (!fixture_isolated()) {
 +        g_test_trap_subprocess(NULL, 1000000, 0);
 +        g_test_trap_assert_passed();
 +        return;
@@ -261323,7 +262410,7 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +    } else if (!strcmp(kind, "no-scm")) {
 +        count = 0;
 +    } else if (!strcmp(kind, "truncated-control")) {
-+        count = 5;
++        count = FIXTURE_DESCRIPTOR_COUNT;
 +        expected = -EMSGSIZE;
 +    } else if (!strcmp(kind, "process")) {
 +        fixture_be64(fixture.frame + 21, 0);
@@ -261332,14 +262419,14 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +    } else if (!strcmp(kind, "flags")) {
 +        fixture_be32(fixture.frame + 17, 1);
 +    } else if (!strcmp(kind, "unknown-flags")) {
-+        fixture_be32(fixture.frame + 17, 2);
++        fixture_be32(fixture.frame + 17, 4);
 +    } else if (!strcmp(kind, "schema")) {
 +        fixture_be32(fixture.frame + 13, 2);
 +    } else if (!strcmp(kind, "present-account")) {
-+        count = 4;
++        count = QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_FDS;
 +        fixture_be64(fixture.frame + 29, 0);
 +    } else if (!strcmp(kind, "present-generation")) {
-+        count = 4;
++        count = QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_FDS;
 +        fixture_be64(fixture.frame + 37, 0);
 +    } else if (!strcmp(kind, "type")) {
 +        expected = -EPROTOTYPE;
@@ -261359,8 +262446,9 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +    if (strcmp(kind, "empty") && strcmp(kind, "type") &&
 +        strcmp(kind, "eof")) {
 +        g_assert_cmpmem(preexec_setup_owner.frame, bytes, fixture.frame, bytes);
-+        fixture_assert_aliases(&fixture, count > 4 ? 4 : count);
-+        if (count > 4) {
++        fixture_assert_aliases(&fixture,
++            MIN(count, QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_FDS));
++        if (count > QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_FDS) {
 +            g_assert_true(preexec_setup_owner.message_flags & MSG_CTRUNC);
 +            g_assert_false(preexec_setup_owner.descriptor_roster_known);
 +        }
@@ -261368,6 +262456,49 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +        g_assert_cmpuint(preexec_setup_owner.descriptor_count, ==, 0);
 +    }
 +    g_assert_cmpint(preexec_setup_receive_once(), ==, expected);
++}
++
++static void test_nonissuing_dependencies(void)
++{
++    g_assert_cmpuint(qemu_crucible_startup_source_fixed_control_extent(), ==,
++                     UINT64_MAX);
++    g_assert_cmpint(qemu_crucible_startup_source_preexec_publish_v3(NULL), ==,
++                    -ENOKEY);
++    g_assert_cmpint(preexec_setup_provisional_native(1), ==, -EPERM);
++    g_assert_false(preexec_setup_owner.source_published);
++    g_assert_cmpuint(preexec_setup_owner.provisional_native_extent, ==, 0);
++}
++
++static void test_descriptor_limit(gconstpointer data)
++{
++    bool unequal = GPOINTER_TO_INT(data);
++    Fixture fixture;
++    struct rlimit limit;
++    uint8_t queued[QEMU_CRUCIBLE_PREEXEC_SETUP_FRAME_BYTES];
++
++    if (!fixture_isolated()) {
++        g_test_trap_subprocess(NULL, 1000000, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    fixture_prepare(&fixture, false, SOCK_STREAM);
++    fixture_send(&fixture, sizeof(fixture.frame),
++                 QEMU_CRUCIBLE_PREEXEC_SETUP_BASE_FDS);
++    limit.rlim_cur = unequal ? FIXTURE_DESCRIPTOR_LIMIT - 1 : 8;
++    limit.rlim_max = unequal ? FIXTURE_DESCRIPTOR_LIMIT : 8;
++    g_assert_cmpint(setrlimit(RLIMIT_NOFILE, &limit), ==, 0);
++
++    g_assert_cmpint(preexec_setup_receive_once(), ==, -EMFILE);
++    g_assert_cmpint(preexec_setup_owner.first_status, ==, -EMFILE);
++    g_assert_cmpuint(preexec_setup_owner.descriptor_count, ==, 0);
++    g_assert_cmpint(preexec_setup_owner.received_bytes, ==, 0);
++    fixture_assert_borrow_refused(-EMFILE);
++    g_assert_cmpint(preexec_setup_receive_once(), ==, -EMFILE);
++    /* Plain recv discards the queued SCM only after proving preinit did not
++     * consume the frame. The isolated process owns every remaining alias. */
++    g_assert_cmpint(recv(3, queued, sizeof(queued), MSG_DONTWAIT), ==,
++                    sizeof(queued));
++    g_assert_cmpmem(queued, sizeof(queued), fixture.frame, sizeof(fixture.frame));
 +}
 +
 +static void *foreign_borrow(void *opaque)
@@ -261383,18 +262514,18 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +    Fixture fixture;
 +    pthread_t worker;
 +
-+    if (!g_test_subprocess()) {
++    if (!fixture_isolated()) {
 +        g_test_trap_subprocess(NULL, 1000000, 0);
 +        g_test_trap_assert_passed();
 +        return;
 +    }
 +    fixture_prepare(&fixture, false, SOCK_STREAM);
-+    fixture_send(&fixture, 61, 3);
++    fixture_send(&fixture, 61, QEMU_CRUCIBLE_PREEXEC_SETUP_BASE_FDS);
 +    g_assert_cmpint(preexec_setup_receive_once(), ==, 0);
 +    g_assert_cmpint(pthread_create(&worker, NULL, foreign_borrow, NULL), ==, 0);
 +    g_assert_cmpint(pthread_join(worker, NULL), ==, 0);
 +    g_assert_cmpint(preexec_setup_owner.first_status, ==, 0);
-+    fixture_assert_aliases(&fixture, 3);
++    fixture_assert_aliases(&fixture, QEMU_CRUCIBLE_PREEXEC_SETUP_BASE_FDS);
 +}
 +
 +#ifdef PREEXEC_TEST_RECV_EINTR
@@ -261402,13 +262533,13 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +{
 +    Fixture fixture;
 +
-+    if (!g_test_subprocess()) {
++    if (!fixture_isolated()) {
 +        g_test_trap_subprocess(NULL, 1000000, 0);
 +        g_test_trap_assert_passed();
 +        return;
 +    }
 +    fixture_prepare(&fixture, false, SOCK_STREAM);
-+    fixture_send(&fixture, 61, 3);
++    fixture_send(&fixture, 61, QEMU_CRUCIBLE_PREEXEC_SETUP_BASE_FDS);
 +    g_assert_cmpint(preexec_setup_receive_once(), ==, -EINTR);
 +    g_assert_cmpint(preexec_setup_owner.first_status, ==, -EINTR);
 +    g_assert_cmpuint(preexec_setup_owner.descriptor_count, ==, 0);
@@ -261457,7 +262588,7 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +    pid_t child;
 +    int status;
 +
-+    if (!g_test_subprocess()) {
++    if (!fixture_isolated()) {
 +        g_test_trap_subprocess(NULL, 4000000, 0);
 +        g_test_trap_assert_passed();
 +        if (selected) {
@@ -261469,13 +262600,14 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +        return;
 +    }
 +    fixture_prepare(&fixture, false, SOCK_STREAM);
-+    fixture_send(&fixture, 61, 3);
++    fixture_send(&fixture, 61, QEMU_CRUCIBLE_PREEXEC_SETUP_BASE_FDS);
 +    child = fork();
 +    g_assert_cmpint(child, >=, 0);
 +    if (!child) {
 +        g_assert_cmpint(setenv("QEMU_CRUCIBLE_PREEXEC_TEST_PROBE", "1", 1), ==, 0);
 +        if (selected) {
-+            g_assert_cmpint(setenv(QEMU_CRUCIBLE_PREEXEC_SETUP_SELECTOR, "1", 1), ==, 0);
++            g_assert_cmpint(setenv(QEMU_CRUCIBLE_PREEXEC_SETUP_SELECTOR,
++                                   QEMU_CRUCIBLE_PREEXEC_SETUP_SELECTOR_V5, 1), ==, 0);
 +        } else {
 +            g_assert_cmpint(unsetenv(QEMU_CRUCIBLE_PREEXEC_SETUP_SELECTOR), ==, 0);
 +        }
@@ -261540,11 +262672,38 @@ index 0000000000000000000000000000000000000000..2ef3116f16b17dc7b201d2a0e1846ea1
 +        puts("MAIN");
 +        return 0;
 +    }
++    /* Direct probes run in a separate executable process, outside GLib's
++     * subprocess assertion-to-exit conversion, so causal failures are SIGABRT.
++     * They call the same test bodies as the ordinary registered suite. */
++    if (argc == 3 && !strcmp(argv[1], "--causal-probe")) {
++        fixture_direct_probe = true;
++        if (!strcmp(argv[2], "/preexec/five")) {
++            test_receipt(GINT_TO_POINTER(0));
++        } else if (!strcmp(argv[2], "/preexec/six")) {
++            test_receipt(GINT_TO_POINTER(1));
++        } else if (!strcmp(argv[2], "/preexec/entry-selected")) {
++            test_entry(GINT_TO_POINTER(1));
++#ifdef PREEXEC_TEST_RECV_EINTR
++        } else if (!strcmp(argv[2], "/preexec/injected-eintr")) {
++            test_injected_eintr();
++#endif
++        } else {
++            fprintf(stderr, "unknown causal probe: %s\n", argv[2]);
++            return 2;
++        }
++        return 0;
++    }
++
 +    g_test_init(&argc, &argv, NULL);
 +    g_test_add_func("/preexec/empty-ancillary", test_empty_ancillary);
 +    g_test_add_func("/preexec/selection", test_selection);
-+    g_test_add_data_func("/preexec/three", GINT_TO_POINTER(0), test_receipt);
-+    g_test_add_data_func("/preexec/four", GINT_TO_POINTER(1), test_receipt);
++    g_test_add_func("/preexec/nonissuing-dependencies", test_nonissuing_dependencies);
++    g_test_add_data_func("/preexec/refuse/nofile-unequal", GINT_TO_POINTER(1),
++                         test_descriptor_limit);
++    g_test_add_data_func("/preexec/refuse/nofile-low", GINT_TO_POINTER(0),
++                         test_descriptor_limit);
++    g_test_add_data_func("/preexec/five", GINT_TO_POINTER(0), test_receipt);
++    g_test_add_data_func("/preexec/six", GINT_TO_POINTER(1), test_receipt);
 +    for (size_t index = 0; index < G_N_ELEMENTS(refusals); index++) {
 +        char *path = g_strdup_printf("/preexec/refuse/%s", refusals[index]);
 +
