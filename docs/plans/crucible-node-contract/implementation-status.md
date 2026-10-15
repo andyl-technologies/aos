@@ -51,13 +51,18 @@ set. This checkpoint has no dependency on subsequent Core changes.
 
 ### Application compilation
 
-The production compiler build and installed compiler verification pass. The
-refreshed mandatory application-target gate passes for the current
-original-report, deduplication and ARM-source checkpoint, compiling 167 test targets across
-all 48 selected application roots, including 69 integration targets. Independent
+The production compiler build and installed compiler verification pass. An
+earlier mandatory application-target gate passes for the original-report,
+deduplication and ARM-source checkpoint, compiling 167 test targets across all
+48 selected application roots, including 69 integration targets. Independent
 verification checks the actual compiler messages, captured source, artifact
 roles and registered output. This gate compiles tests without executing them;
 Crucible daemon runtime checks are separate.
+
+A new gate is running against the original-owner preparation, Clock and BLAKE3
+checkpoint below. It captures all 48 application roots and their sixty local
+dependencies through the ordinary production source filter. Its result is
+pending; the earlier 167-target result does not qualify these newer sources.
 
 ### QEMU package
 
@@ -101,6 +106,29 @@ the source copies and registered outputs. Loader geometry and console controls
 pass. These results qualify the selected Linux/PID1 workload; common-node
 readiness, capture, restoration and complete device parity remain outstanding.
 
+### Original-owner preparation and Clock continuation
+
+Commit `a836c25274` observes retained host and provider storage before
+preparation, retains original query and Prepare owners, and connects Clock
+continuation to the common node interfaces. Backend-neutral capability
+accessors preserve the legacy positional encoding and compatibility diagnostics.
+Normal five-crate, all-feature/all-target checking passes.
+
+Fresh normal executables pass 312 selected controls: 104 Core, 154 provider and
+54 daemon cases, with no failures or ignored tests. The Core and provider sets
+retain all 71 and 120 earlier regression bodies respectively, alongside the new
+storage, Prepare and Clock controls. Independent review verifies the Core and
+daemon source, executable, dependency and original wait records. These are
+component checks; complete native Capture and restoration remain outstanding.
+
+The full archive-admission case now passes in 87.83 seconds under its original
+120-second limit. The earlier timeout remains a failed historical checkpoint.
+A preceding executable also passed that archive case in 83.14 seconds, but
+failed one positive fixture during setup: it selected the original 512 MiB
+policy before reaching its intended missing-preparation refusal. The current
+fixture explicitly selects the existing finite 768 MiB positive policy. Its
+refusal assertions and the separate 512 MiB negative controls are unchanged.
+
 ## Work in progress
 
 Packet startup/report, capture and restoration storage accounting is committed
@@ -108,8 +136,8 @@ in `196c68fd91`, with formatting separately in `5f2586267f`. Normal five-crate,
 all-feature/all-target checking passes. A fresh daemon executable passes 34
 selected controls, including all five corrected startup cases, two new
 fixture/policy controls, original finite-bound negatives, and alias/drift checks.
-The full archive-admission case still exceeds its original 120-second budget
-in isolation. It remains an unresolved qualification failure.
+At that checkpoint, the full archive-admission case exceeds its original
+120-second budget in isolation. The later passing result is recorded above.
 
 An earlier original-report/storage stage passes 196 selected controls: two
 campaign, 120 provider, 71 Core and three integration cases. Its five startup
@@ -126,8 +154,8 @@ A later archive run finishes with a missing immutable Host continuation definiti
 The fixture now supplies the pinned definition, checks transitive content closure,
 and explicitly accepts all four actual unqualified participants. New controls
 reject missing or mismatched definition bytes, omitted participants, extras,
-duplicates and noncanonical ordering. Complete admission remains unqualified
-because the subsequent full test times out.
+duplicates and noncanonical ordering. The later full admission test passes;
+complete native Capture and restoration are separate outstanding gates.
 
 Archive validation shares completed full hashes of exact aliases within one
 pass while retaining every descriptor/path fence and sticky refusal. The next
@@ -136,8 +164,13 @@ four alias/inode/media/drift controls pass. Full-file streams now use 256 KiB
 blocks, with the complete scratch allocation accounted at each owning boundary.
 A matched mechanics experiment measures a 23.65% mean reduction against 64 KiB
 blocks with identical framed hashes. This does not establish daemon or Linux
-boot speedup. Profiling still identifies repeated full-file authentication, and
-a separate upstream BLAKE3 backend experiment remains in progress.
+boot speedup. Commit `95297b8681` additionally selects the pinned BLAKE3
+library's runtime-detected intrinsics while retaining framed hash bytes. Thirty
+balanced three-way rounds over the same 160.8 MB file measure median hash times
+of 77.11 ms for the original 64 KiB/pure configuration, 58.01 ms for 256 KiB/pure,
+and 35.56 ms for 256 KiB/intrinsics. The combined reduction is 53.89%; all ninety
+full hashes and 55 boundary vectors match. These cache-hot hashing measurements
+do not establish an overall Linux-boot improvement or an ARM-host result.
 
 Further source work covers original allocation admission before native startup,
 full Prepare/report publication, same-owner query budgets, the ordinary Clock
@@ -175,6 +208,7 @@ including:
 | gem5 thread-list transitions | 2.55x median improvement; 500,000 allocations removed per round | Five matched list-mechanics rounds |
 | QEMU/plugin Linux boot, six matched runs | Median 29.50669 to 29.54280 seconds (+0.12%) | Frozen controller, same guest and 50 ps/instruction; effectively flat |
 | Full-file hash stream, 64 to 256 KiB blocks | 23.65% lower mean time | Thirty matched rounds over the same 160.8 MB file; identical framed hashes |
+| Full-file hash stream and runtime-selected BLAKE3 intrinsics | Median 77.11 to 35.56 ms; 53.89% lower time | Thirty balanced three-way rounds; all ninety full hashes and 55 boundary vectors match |
 | Maximum-frontier component pair | 3.37x improvement | One matched component pair |
 | Immutable-domain component pair | 47.87x wall and 55.92x child CPU improvement | One matched component pair |
 
