@@ -37,9 +37,18 @@ pub struct PacketCompleteNativeWitness<'a> {
     receipt: PacketNative5Record,
     native_bytes: &'a [u8],
     original: OriginalNativeWitness<'a>,
+    allocation: Option<super::OriginalCaptureAllocationData<'a>>,
 }
 
 impl PacketCompleteNativeWitness<'_> {
+    /// Borrows the selected original report and complete reference when present.
+    ///
+    /// The same source/kernel/original receipt guards constructed this data loan.
+    /// Allocation/current-frontier admission must still use the actual Source.
+    pub fn allocation_data(&self) -> Option<&super::OriginalCaptureAllocationData<'_>> {
+        self.allocation.as_ref()
+    }
+
     /// Borrows the exact original complete receipt identity.
     pub fn reference(&self) -> &ContentRef {
         &self.reference
@@ -216,7 +225,13 @@ impl PacketCompleteSemanticSource {
         let value =
             canonical::parse_json(bytes, self.installation().maximum_result_bytes.min(65_536))
                 .map_err(unknown)?;
-        let receipt: PacketNative5Record = serde_json::from_value(value).map_err(unknown)?;
+        let decoded = super::capture_allocation_receipt::decode_complete_receipt_data(
+            scope,
+            bytes,
+            value,
+            self.selected_capture_allocation_selection()?,
+        )?;
+        let receipt = decoded.receipt;
         if receipt.protocol_metadata_limits != self.selected_protocol_metadata_limits()?
             || receipt.complete_restore_selection != self.selected_complete_restore_selection()?
             || receipt.restore_input_emitter_selection
@@ -242,6 +257,7 @@ impl PacketCompleteSemanticSource {
             receipt,
             native_bytes,
             original,
+            allocation: decoded.allocation,
         })
     }
 

@@ -93,7 +93,7 @@ fn evidence(projection: &mut Projection, extent: usize, media: &str) -> Result<(
     byte_array(projection, extent)
 }
 
-fn unknown_capture(projection: &mut Projection) -> Result<(), ProviderError> {
+pub(super) fn unknown_capture(projection: &mut Projection) -> Result<(), ProviderError> {
     object(
         projection,
         &["status", "operation_state", "error", "extensions"],

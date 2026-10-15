@@ -176,13 +176,7 @@ impl InstalledPacketCompleteGraphPolicy {
         requirements: &HashRef,
     ) -> Result<(), QualificationError> {
         self.read_current()?;
-        if world != &self.world
-            || requirements != &self.requirements
-            || !self.roster.same_original(roster)
-            || !Rc::ptr_eq(&self.host, host)
-        {
-            return Err(refused());
-        }
+        self.authenticate_scope_roster_data(roster, host, world, requirements)?;
         self.read_current()
     }
 
@@ -477,4 +471,111 @@ fn external(error: QualificationError) -> EvidenceError {
 
 fn denied() -> EvidenceError {
     external(refused())
+}
+
+impl InstalledPacketCompleteGraphPolicy {
+    // Both callback representations retain the same complete original scope.
+    fn authenticate_scope_roster_data(
+        &self,
+        roster: &PacketCompleteRoster,
+        host: &Rc<HostSchedulingSource>,
+        world: &WorldBinding,
+        requirements: &HashRef,
+    ) -> Result<(), QualificationError> {
+        if world != &self.world
+            || requirements != &self.requirements
+            || !self.roster.same_original(roster)
+            || !Rc::ptr_eq(&self.host, host)
+        {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
+    /// Quotes the largest actual sequential complete-file currentness phase.
+    ///
+    /// # Errors
+    /// Refuses foreign or revoked origin, unsupported file ownership or count overflow.
+    pub(in crate::node_qualification::packet_collection::complete) fn original_initial_callback_currentness_storage_data(
+        &self,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        self.authenticate_retained_origin_data()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        if !self.revision.get() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.files.iter().try_fold(0usize, |maximum, files| {
+            Ok(maximum.max(files.original_native_startup_currentness_storage_data()?))
+        })
+    }
+
+    /// Brackets the unchanged complete scope with bounded original currentness checks.
+    ///
+    /// # Errors
+    /// Refuses changed source, Host, graph, process, file content or path identity.
+    pub(in crate::node_qualification::packet_collection::complete) fn authenticate_original_initial_callback_scope_data(
+        &self,
+        roster: &PacketCompleteRoster,
+        host: &Rc<HostSchedulingSource>,
+        world: &WorldBinding,
+        requirements: &HashRef,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        self.read_original_initial_callback_data()?;
+        self.authenticate_scope_roster_data(roster, host, world, requirements)
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        self.read_original_initial_callback_data()
+    }
+
+    fn read_original_initial_callback_data(
+        &self,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        self.authenticate_retained_origin_data()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        if !self.revision.get() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        // Keep every source and Host guard in the original order. Their actual
+        // concrete diagnostics are separately quoted by the Source action.
+        self.roster
+            .current_scope()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        self.host
+            .authenticate_dispatch_source()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        for (index, files) in self.files.iter().enumerate() {
+            if !self.files[..index]
+                .iter()
+                .any(|earlier| Rc::ptr_eq(earlier, files))
+            {
+                let row = files.original_native_startup_currentness_storage_data()?;
+                files.authenticate_original_native_startup_currentness(row)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl InstalledPacketCompleteGraphPolicy {
+    /// Counts retained file descriptor views without liveness callbacks or I/O.
+    ///
+    /// Shared CurrentFiles views are conservatively repeated; no matching path,
+    /// inode or content hash discounts a physical descriptor owner.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, unsupported file owners or arithmetic overflow.
+    pub(in crate::node_qualification::packet_collection::complete) fn original_initial_retained_descriptors_data(
+        &self,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        self.authenticate_retained_origin_data()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        self.files.iter().try_fold(0usize, |total, files| {
+            total
+                .checked_add(files.retained_descriptor_count_data()?)
+                .ok_or(RuntimeError::ResourceLimit)
+        })
+    }
 }

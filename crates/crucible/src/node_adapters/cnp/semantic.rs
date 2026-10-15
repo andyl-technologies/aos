@@ -12,6 +12,7 @@ mod capture;
 mod conformance;
 mod historical_protocol;
 mod implementation;
+mod initial_lifecycle_diagnostics;
 mod input;
 mod lifecycle;
 mod node;
@@ -53,16 +54,17 @@ pub use world_provider::{
 
 pub use node::{CnpSemanticAdmissionFailure, CnpSemanticNode};
 pub use packet_complete_source::{
-    PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA, PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA,
-    PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame,
-    PacketCompleteAckPeerBootMaterial, PacketCompleteArchivedOwnerData,
-    PacketCompleteArchivedSemantics, PacketCompleteCaptureBankFacts,
-    PacketCompleteCaptureBankLimits, PacketCompleteCaptureDependencyLookupData,
-    PacketCompleteCaptureDependencyStorageData, PacketCompleteEffectReceiverGroup,
-    PacketCompleteEffectReceiverReader, PacketCompleteNativeRecord,
-    PacketCompleteNativeStartupWire, PacketCompleteNativeWitness, PacketCompleteRestorePreparation,
-    PacketCompleteSemanticSource, PacketCompleteSettledJournal,
-    PacketCompleteSourceRetainedStorage, PacketCompleteSourceRole,
+    OriginalCaptureAllocationData, PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA,
+    PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA, PacketCompleteAckHostRegistrationPlan,
+    PacketCompleteAckPeerBootFrame, PacketCompleteAckPeerBootMaterial,
+    PacketCompleteArchivedOwnerData, PacketCompleteArchivedSemantics,
+    PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits,
+    PacketCompleteCaptureDependencyLookupData, PacketCompleteCaptureDependencyStorageData,
+    PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader,
+    PacketCompleteNativeRecord, PacketCompleteNativeStartupWire, PacketCompleteNativeWitness,
+    PacketCompleteOriginalHostSdk, PacketCompleteRestorePreparation, PacketCompleteSemanticSource,
+    PacketCompleteSettledJournal, PacketCompleteSourceRetainedStorage, PacketCompleteSourceRole,
+    original_capture_allocation_witness_counter_scratch_data,
 };
 pub use packet_connected_source::{
     PacketConnectedInputWitness, PacketConnectedNativeWitness, PacketConnectedSemanticSource,
@@ -85,17 +87,24 @@ pub use source::{
 
 use crate::node_contract::{EffectKnowledge, OperationFailure};
 
-fn refused(reason: impl Into<String>) -> OperationFailure {
+fn refused(reason: impl initial_lifecycle_diagnostics::InitialRefusalReason) -> OperationFailure {
     OperationFailure {
         effects: EffectKnowledge::None,
-        reason: reason.into(),
+        reason: initial_lifecycle_diagnostics::refusal_reason(reason),
     }
 }
 
 fn unknown(reason: impl std::fmt::Display) -> OperationFailure {
     OperationFailure {
         effects: EffectKnowledge::Unknown,
-        reason: reason.to_string(),
+        reason: initial_lifecycle_diagnostics::unknown_reason(reason),
+    }
+}
+
+fn refused_display(reason: impl std::fmt::Display) -> OperationFailure {
+    OperationFailure {
+        effects: EffectKnowledge::None,
+        reason: initial_lifecycle_diagnostics::refused_display_reason(reason),
     }
 }
 
@@ -139,3 +148,7 @@ mod tests {
     mod preparation_storage;
     mod process;
 }
+
+pub(crate) use packet_complete_source::{
+    PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
+};

@@ -43,7 +43,13 @@ impl InstalledNodeCatalog {
             owner: Id::new("owner/clock")?,
             kind: InstalledNodeKind::HostClock,
         };
-        let baseline = self.scenario(std::slice::from_ref(&selection))?;
+        let baseline = super::super::profile::build_world(
+            std::slice::from_ref(&selection),
+            &self.host_identity,
+            &self.device_identity,
+            &self.artifacts,
+        )?
+        .scenario;
         let scenario = build(&baseline)?;
         Ok(InstalledNormalClockProfile {
             baseline,
@@ -137,16 +143,32 @@ impl InstalledNodeCatalog {
 pub(in crate::node_observed_executor::factory) fn build(
     baseline: &NodeScenario,
 ) -> Result<NodeScenario, NodeObservedError> {
-    if baseline.descriptors.len() != 1
-        || baseline.compatibility.len() != 1
-        || baseline.owners.len() != 1
-        || baseline.descriptors[0].id.as_str() != "clock"
-        || !baseline.descriptors[0].ports.is_empty()
-        || baseline.compatibility[0]
-            .implementation
-            .implementation_id
-            .as_str()
-            != "crucible-host-clock"
+    build_selected(baseline, &[("clock", "owner/clock")])
+}
+
+// Only these two closed source-built populations select this implementation.
+// There is no caller-supplied native node, qualification label or ready record.
+fn build_selected(
+    baseline: &NodeScenario,
+    expected: &[(&str, &str)],
+) -> Result<NodeScenario, NodeObservedError> {
+    if baseline.descriptors.len() != expected.len()
+        || baseline.compatibility.len() != expected.len()
+        || baseline.owners.len() != expected.len()
+        || baseline
+            .descriptors
+            .iter()
+            .zip(expected)
+            .any(|(node, (id, _))| node.id.as_str() != *id || !node.ports.is_empty())
+        || baseline
+            .compatibility
+            .iter()
+            .zip(expected)
+            .any(|(binding, (node, owner))| {
+                binding.node_id.as_str() != *node
+                    || binding.execution_owner.id.as_str() != *owner
+                    || binding.implementation.implementation_id.as_str() != "crucible-host-clock"
+            })
         || !baseline.world.connections.is_empty()
         || !baseline.world.extensions.is_empty()
     {
@@ -160,14 +182,22 @@ pub(in crate::node_observed_executor::factory) fn build(
         .into_iter()
         .map(|object| (object.reference.hash.digest.clone(), object))
         .collect::<BTreeMap<String, ScenarioContent>>();
-    let binding = &mut scenario.compatibility[0];
-    super::super::native_state::profile::select_public_preparation(
-        &mut scenario.descriptors[0],
-        binding,
-        &mut contents,
-        true,
-        false,
-    )?;
+    for (descriptor, binding) in scenario
+        .descriptors
+        .iter_mut()
+        .zip(&mut scenario.compatibility)
+    {
+        // This closed source family already authenticated the actual Clock
+        // implementation above. Participant IDs do not select a backend codec.
+        super::super::native_state::profile::select_public_preparation_selected(
+            descriptor,
+            binding,
+            &mut contents,
+            true,
+            false,
+            true,
+        )?;
+    }
     let definition = super::super::profile::put_json(
         &mut contents,
         &serde_json::json!({
@@ -180,17 +210,33 @@ pub(in crate::node_observed_executor::factory) fn build(
             "unsupported":["ports","alarms","autonomous worker","external input","fork","conditional replay"],
         }),
     )?;
-    binding.qualification_refs.push(definition.clone());
-    binding.qualification_refs.sort_by(|left, right| {
-        (&left.hash.domain, &left.hash.digest).cmp(&(&right.hash.domain, &right.hash.digest))
-    });
-    let node_binding = NodeBindingRef {
-        node_id: binding.node_id.clone(),
-        binding_hash: binding.identity()?,
-        extensions: Extensions::new(),
-    };
-    scenario.world.node_bindings = vec![node_binding.clone()];
-    scenario.owners[0].node_bindings = vec![node_binding];
+    for binding in &mut scenario.compatibility {
+        binding.qualification_refs.push(definition.clone());
+        binding.qualification_refs.sort_by(|left, right| {
+            (&left.hash.domain, &left.hash.digest).cmp(&(&right.hash.domain, &right.hash.digest))
+        });
+    }
+    scenario.world.node_bindings = scenario
+        .compatibility
+        .iter()
+        .map(|binding| {
+            Ok(NodeBindingRef {
+                node_id: binding.node_id.clone(),
+                binding_hash: binding.identity()?,
+                extensions: Extensions::new(),
+            })
+        })
+        .collect::<Result<Vec<_>, NodeObservedError>>()?;
+    for owner in &mut scenario.owners {
+        for participant in &mut owner.node_bindings {
+            participant.binding_hash = scenario
+                .compatibility
+                .iter()
+                .find(|binding| binding.node_id == participant.node_id)
+                .ok_or_else(|| refused("Clock owner participant absent"))?
+                .identity()?;
+        }
+    }
     scenario.world.scenario_ref = super::super::profile::put_json(
         &mut contents,
         &serde_json::json!({
@@ -206,4 +252,211 @@ pub(in crate::node_observed_executor::factory) fn build(
     });
     drop(scenario.canonical_bytes()?);
     Ok(scenario)
+}
+
+pub(super) const ACTIVATION_CLOCKS: [(&str, &str); 2] =
+    [("clock-a", "owner/clock-a"), ("clock-b", "owner/clock-b")];
+
+impl InstalledNodeCatalog {
+    pub(super) fn prepare_original_clock_activation_world(
+        &mut self,
+        execution: ExecutionId,
+    ) -> Result<InstalledPreparedWorld, NodeObservedError> {
+        if measure_executable(&self.host_executable)? != self.host_identity {
+            return Err(refused("Clock activation fixture source changed"));
+        }
+        let selections = ACTIVATION_CLOCKS
+            .iter()
+            .map(|(node, owner)| {
+                Ok(InstalledNodeSelection {
+                    node: Id::new(*node)?,
+                    owner: Id::new(*owner)?,
+                    kind: InstalledNodeKind::HostClock,
+                })
+            })
+            .collect::<Result<Vec<_>, NodeObservedError>>()?;
+        let baseline = super::super::profile::build_world(
+            &selections,
+            &self.host_identity,
+            &self.device_identity,
+            &self.artifacts,
+        )?
+        .scenario;
+        let scenario = build_selected(&baseline, &ACTIVATION_CLOCKS)?;
+        let profile = InstalledNormalClockProfile {
+            baseline,
+            scenario: scenario.clone(),
+            selection: selections[0].clone(),
+        };
+        let artifacts = self.artifacts.clone();
+        self.prepare_world_with_selected_label(
+            &selections,
+            scenario,
+            execution,
+            &artifacts,
+            None,
+            super::super::SelectedPreparation {
+                source: Default::default(),
+                label: None,
+                capabilities: None,
+                normal_clock: Some(&profile),
+            },
+        )
+        .map(|(world, _)| world)
+    }
+}
+
+pub(in crate::node_observed_executor::factory) fn regenerate_selected(
+    baseline: &NodeScenario,
+) -> Result<NodeScenario, NodeObservedError> {
+    if baseline.descriptors.len() == 1 {
+        build(baseline)
+    } else {
+        build_selected(baseline, &ACTIVATION_CLOCKS)
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn baseline() -> Result<NodeScenario, NodeObservedError> {
+        let host = canonical::content_ref(
+            b"source-data-only-clock-profile",
+            "application/octet-stream",
+        )?;
+        let selections = ACTIVATION_CLOCKS
+            .iter()
+            .map(|(node, owner)| {
+                Ok(InstalledNodeSelection {
+                    node: Id::new(*node)?,
+                    owner: Id::new(*owner)?,
+                    kind: InstalledNodeKind::HostClock,
+                })
+            })
+            .collect::<Result<Vec<_>, NodeObservedError>>()?;
+        Ok(
+            super::super::super::profile::build_world(&selections, &host, &host, &BTreeMap::new())?
+                .scenario,
+        )
+    }
+
+    #[test]
+    fn two_original_clocks_keep_independent_owners_and_complete_public_preparation_bindings()
+    -> TestResult {
+        let original = baseline()?;
+        let before = original.canonical_bytes()?;
+        let selected = build_selected(&original, &ACTIVATION_CLOCKS)?;
+        assert_eq!(original.canonical_bytes()?, before);
+        assert_eq!(
+            selected.canonical_bytes()?,
+            regenerate_selected(&original)?.canonical_bytes()?
+        );
+        assert_eq!(selected.descriptors.len(), 2);
+        assert_eq!(selected.owners.len(), 2);
+        assert_ne!(selected.owners[0].owner.id, selected.owners[1].owner.id);
+        assert!(
+            selected.owners[0]
+                .owner
+                .state_domain_ids
+                .iter()
+                .all(|id| !selected.owners[1].owner.state_domain_ids.contains(id))
+        );
+        for (index, (old, new)) in original
+            .compatibility
+            .iter()
+            .zip(&selected.compatibility)
+            .enumerate()
+        {
+            assert_eq!(old.execution_owner, new.execution_owner);
+            assert_eq!(old.capture_owner, new.capture_owner);
+            assert_eq!(old.guarantees_ref, new.guarantees_ref);
+            assert_eq!(old.implementation.artifacts, new.implementation.artifacts);
+            assert!(
+                new.implementation.formats.contains(
+                    &crucible::node_adapters::host_public_clock_preparation_schema()
+                        .map_err(|error| error.reason)?
+                )
+            );
+            assert!(
+                new.implementation.formats.contains(
+                    &crucible::node_adapters::host_public_clock_continuation_schema()
+                        .map_err(|error| error.reason)?
+                )
+            );
+            assert!(
+                !new.implementation.formats.contains(
+                    &crucible::node_adapters::gem5::gem5_public_preparation_schema()
+                        .map_err(|error| error.reason)?
+                )
+            );
+            assert!(
+                !new.implementation.formats.contains(
+                    &crucible::node_adapters::gem5::gem5_public_continuation_schema()
+                        .map_err(|error| error.reason)?
+                )
+            );
+            let configuration = selected
+                .content
+                .iter()
+                .find(|object| object.reference == selected.descriptors[index].configuration_ref)
+                .ok_or("selected original Clock configuration absent")?;
+            let configuration: serde_json::Value = serde_json::from_slice(&configuration.bytes)?;
+            assert_eq!(
+                configuration["public_preparation_schema"],
+                serde_json::to_value(
+                    crucible::node_adapters::host_public_clock_preparation_schema()
+                        .map_err(|error| error.reason)?
+                )?
+            );
+            assert_eq!(
+                configuration["public_continuation_schema"],
+                serde_json::to_value(
+                    crucible::node_adapters::host_public_clock_continuation_schema()
+                        .map_err(|error| error.reason)?
+                )?
+            );
+            assert_eq!(
+                selected.world.node_bindings[index].binding_hash,
+                new.identity()?
+            );
+            assert_eq!(
+                selected.owners[index].node_bindings[0].binding_hash,
+                new.identity()?
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn two_clock_source_refuses_aliased_owner_or_a_substituted_participant() -> TestResult {
+        let mut original = baseline()?;
+        original.compatibility[1].execution_owner =
+            original.compatibility[0].execution_owner.clone();
+        assert!(build_selected(&original, &ACTIVATION_CLOCKS).is_err());
+        let mut original = baseline()?;
+        original.descriptors[1].id = Id::new("clock-c")?;
+        assert!(build_selected(&original, &ACTIVATION_CLOCKS).is_err());
+        let original = baseline()?;
+        assert!(build(&original).is_err());
+        Ok(())
+    }
+}
+
+impl crate::node_qualification::RetainedMetadataOwned for InstalledNormalClockProfile {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            baseline,
+            scenario,
+            selection,
+        } = self;
+        counter.charge(baseline)?;
+        counter.charge(scenario)?;
+        counter.charge(selection)
+    }
 }

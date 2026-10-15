@@ -720,6 +720,13 @@ impl DurabilityRequirement {
 pub struct RefName(String);
 
 impl RefName {
+    /// Observes the retained name's allocation capacity without encoding it.
+    #[must_use]
+    pub fn retained_requested_storage_data(&self) -> usize {
+        let Self(name) = self;
+        name.capacity()
+    }
+
     /// Validates a slash-separated reference name.
     ///
     /// Segments may contain ASCII letters, digits, `.`, `_`, and `-`. Empty,

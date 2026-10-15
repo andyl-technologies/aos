@@ -180,3 +180,34 @@ impl<S: ProviderStream> Connection<S> {
 fn refused() -> ProviderError {
     ProviderError::Correlation("original fresh restoration allocation codec differs")
 }
+
+impl<S: ProviderStream> Connection<S> {
+    /// Selects closed additional Prepare syntax from the actual installed codec.
+    ///
+    /// The parsed binding remains DATA; the real completed-query owner and
+    /// Source MAC must authenticate it independently. Commit and receipt syntax
+    /// keeps its original two-request/one-response extension roster.
+    pub(crate) fn original_selected_restore_transfer_projection_data<'a>(
+        &self,
+        envelope: &'a Envelope,
+    ) -> Result<CompleteRestoreTransferProjection<'a>, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        let selected = self
+            .native5_codec
+            .as_ref()
+            .ok_or_else(refused)?
+            .fresh_restore_selection_data(&self.authority)?;
+        let binding = envelope
+            .extensions
+            .contains_key(PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING);
+        if binding {
+            if selected != Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13) {
+                return Err(refused());
+            }
+            CompleteRestoreTransferProjection::from_envelope_with_fresh_binding_data(envelope)
+        } else {
+            CompleteRestoreTransferProjection::from_envelope(envelope)
+        }
+    }
+}

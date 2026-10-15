@@ -69,6 +69,7 @@ pub struct PacketConnectedSemanticSource {
     >,
     pub(super) complete_capture_profile:
         Option<crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile>,
+    pub(super) complete_capture_allocation_selection: Option<crucible_node_provider::reference_packet::service::capture_allocation::PacketNative5CaptureAllocationSelection>,
     complete_storage:
         Option<crucible_node_provider::reference_packet::control::PacketNative5StorageSelection>,
 }
@@ -383,6 +384,7 @@ impl PacketConnectedSemanticSource {
             complete_storage: None,
             complete_capture_profile: None,
             complete_confirmation_selection: None,
+            complete_capture_allocation_selection: None,
         })
     }
 

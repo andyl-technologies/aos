@@ -541,3 +541,39 @@ impl Write for EncodingBudget {
 
 #[cfg(test)]
 mod tests;
+
+impl crate::node_qualification::RetainedMetadataOwned for IssuedQualification {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            claim,
+            bytes,
+            objects,
+        } = self;
+        counter.charge(claim)?;
+        counter.charge(bytes)?;
+        counter.charge(objects)
+    }
+}
+
+impl crate::node_qualification::RetainedMetadataOwned for WitnessPopulation {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            plan,
+            plan_reference,
+            plan_bytes,
+            recorded,
+            limits: _,
+            recorded_bytes: _,
+        } = self;
+        counter.charge(plan)?;
+        counter.charge(plan_reference)?;
+        counter.charge(plan_bytes)?;
+        counter.charge(recorded)
+    }
+}

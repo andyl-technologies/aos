@@ -220,6 +220,13 @@ impl OriginalClockQualificationRun {
         }
         runtime.acknowledge_exact_boundary_pause(&self.graph, activation, &recovered)?;
         self.pause.acknowledged = true;
+        self.admission_cases.inspect_closed_frontier(
+            runtime,
+            &self.graph,
+            activation,
+            &self.node,
+            &self.cases,
+        )?;
         self.current()?;
         self.failed = false;
         Ok(())
@@ -229,3 +236,30 @@ impl OriginalClockQualificationRun {
 #[cfg(test)]
 #[path = "pause_tests.rs"]
 mod tests;
+
+impl crate::node_qualification::RetainedMetadataOwned for OriginalClockPause {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            operation,
+            expected,
+            proof,
+            token,
+            actual,
+            attempted: _,
+            unexpected,
+            busy_refused: _,
+            duplicate_refused: _,
+            wrong_ack_refused: _,
+            acknowledged: _,
+        } = self;
+        counter.charge(operation)?;
+        counter.charge(expected)?;
+        counter.charge(proof)?;
+        counter.charge(token)?;
+        counter.charge(actual)?;
+        counter.charge(unexpected)
+    }
+}

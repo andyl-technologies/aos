@@ -14,6 +14,10 @@
 
 mod admitted_graph_references;
 mod borrowed_tree_storage;
+pub use borrowed_tree_storage::{
+    borrowed_btree_map_requested_storage_precredit_data,
+    borrowed_btree_set_requested_storage_precredit_data,
+};
 mod closure;
 mod evidence;
 mod host;

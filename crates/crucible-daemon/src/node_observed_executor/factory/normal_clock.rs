@@ -6,10 +6,15 @@
 //! the separate complete installed witness population; constructing this owner
 //! alone issues no Accepted report or provider registration.
 
+mod admission_cases;
+mod adverse;
+pub use admission_cases::ClockAdmissionObservationData;
+pub use adverse::OriginalClockAdverseWitness;
 mod oracle;
 mod pause;
 pub(super) mod profile;
 pub use profile::InstalledNormalClockProfile;
+mod source;
 mod state;
 mod state_programme;
 mod state_witness;
@@ -90,9 +95,11 @@ pub struct OriginalClockQualificationRun {
     activation: Option<WorldActivation>,
     proposal: crucible::node_contract::ActivationRecord,
     origin: ClockOrigin,
+    source_lifetime: std::rc::Rc<()>,
     node: Id,
     cases: Vec<ClockCase>,
     pause: pause::OriginalClockPause,
+    admission_cases: admission_cases::OriginalClockAdmissionCases,
     next: usize,
     failed: bool,
     arm_attempted: bool,
@@ -206,8 +213,10 @@ impl InstalledNodeCatalog {
                 process: std::process::id(),
                 thread: std::thread::current().id(),
             },
+            source_lifetime: std::rc::Rc::new(()),
             node,
             pause,
+            admission_cases: admission_cases::OriginalClockAdmissionCases::new()?,
             cases,
             next: 0,
             failed: false,
@@ -245,6 +254,12 @@ impl OriginalClockQualificationRun {
                 .as_mut()
                 .ok_or_else(|| refused("original Clock retired"))?;
             runtime.arm_all()?;
+            self.admission_cases.inspect_prepublication(
+                runtime,
+                &self.graph,
+                &self.node,
+                &self.proposal,
+            )?;
             let preparations = runtime.prepared_node_records()?.to_vec();
             let coordinator = runtime
                 .initial_coordinator_snapshot(&self.graph, MAXIMUM_ACTIVATION_COORDINATOR_BYTES)?;
@@ -390,6 +405,17 @@ fn execute_clock_case(
     node: &Id,
     case: &mut ClockCase,
 ) -> Result<(), NodeObservedError> {
+    execute_clock_case_selected(runtime, graph, activation, node, case, true)
+}
+
+fn execute_clock_case_selected(
+    runtime: &mut NodeRuntime,
+    graph: &AdmittedGraph,
+    activation: &WorldActivation,
+    node: &Id,
+    case: &mut ClockCase,
+    acknowledge: bool,
+) -> Result<(), NodeObservedError> {
     if case.attempted {
         return Err(refused("original Clock case already attempted"));
     }
@@ -473,6 +499,9 @@ fn execute_clock_case(
             .as_deref()
             .ok_or_else(|| refused("Clock original body custody absent"))?,
     )?;
+    if !acknowledge {
+        return Ok(());
+    }
     let receipt = runtime.scheduling_receipt(token)?;
     let commit = runtime.commit_scheduling_receipt(receipt)?;
     runtime.acknowledge_scheduled(token, &commit)?;
@@ -487,3 +516,89 @@ mod resources;
 pub use resources::{OriginalClockAggregateResources, OriginalClockProcessBootstrap};
 
 mod publications;
+
+impl crate::node_qualification::RetainedMetadataOwned for ClockOrigin {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            source,
+            source_path,
+            process,
+            thread,
+        } = self;
+        if *process != std::process::id() || *thread != std::thread::current().id() {
+            return Err(QualificationError::Refused(
+                "foreign Clock requested storage origin",
+            ));
+        }
+        counter.charge(source)?;
+        counter.charge(source_path)
+    }
+}
+
+impl crate::node_qualification::RetainedMetadataOwned for ClockCase {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            name: _,
+            operation,
+            expected,
+            oracle,
+            attempted: _,
+            token,
+            objects,
+            acknowledged: _,
+            collected: _,
+        } = self;
+        counter.charge(operation)?;
+        counter.charge(expected)?;
+        counter.charge(oracle)?;
+        counter.charge(token)?;
+        counter.charge(objects)
+    }
+}
+
+impl crate::node_qualification::RetainedMetadataOwned for OriginalClockQualificationRun {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            graph,
+            scenario,
+            runtime,
+            retired,
+            captured,
+            capture_attempted: _,
+            retirement_attempted: _,
+            activation,
+            proposal,
+            origin,
+            source_lifetime,
+            node,
+            cases,
+            pause,
+            admission_cases,
+            next: _,
+            failed: _,
+            arm_attempted: _,
+        } = self;
+        counter.charge(origin)?;
+        counter.charge(graph)?;
+        counter.charge(scenario)?;
+        counter.charge(runtime)?;
+        counter.charge(retired)?;
+        counter.charge(captured)?;
+        counter.charge(activation)?;
+        counter.charge(proposal)?;
+        counter.rc(source_lifetime)?;
+        counter.charge(node)?;
+        counter.charge(cases)?;
+        counter.charge(pause)?;
+        counter.charge(admission_cases)
+    }
+}

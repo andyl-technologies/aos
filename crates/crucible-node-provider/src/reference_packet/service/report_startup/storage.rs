@@ -79,12 +79,21 @@ pub fn original_report_startup_storage_data(
             original(launch, &shapes, receive.requested_bytes()?)?
         }
         PacketNativeReportStartupPurpose::FreshCompletedAdmit13 => {
-            // The dedicated fresh handler must supply its real partial-owner
-            // layout before this purpose can issue a construction allowance.
-            // The original active report cannot stand in for inactive owners.
-            return Err(ProviderError::Correlation(
-                "fresh report startup owner layout pending",
-            ));
+            let fresh =
+                crate::reference_packet::endpoint::original_fresh_report_startup_publication_data(
+                    launch, maximum,
+                )?;
+            if fresh.declared_counter_scratch_bytes > original_report_startup_counter_scratch_data()
+            {
+                return Err(exhausted());
+            }
+            PacketNativeReportStartupStorageData {
+                retained_growth_bytes: fresh.retained_growth_bytes,
+                maximum_simultaneous_transient_bytes: fresh.maximum_simultaneous_transient_bytes,
+                // Core admits this static window before either the full schema
+                // comparisons or the concrete Fresh publisher counter runs.
+                declared_counter_scratch_bytes: original_report_startup_counter_scratch_data(),
+            }
         }
     };
     if sum(&[
@@ -322,6 +331,7 @@ pub fn original_report_startup_counter_scratch_data() -> usize {
         schemas,
         crate::reference_packet::control::original_observe_dispatch_scratch_data(),
         crate::reference_packet::endpoint::original_capture_report_quote_layout_data(),
+        crate::reference_packet::endpoint::original_fresh_report_startup_publication_counter_scratch_data(),
         size_of::<PacketNativeReportStartupStorageData>(),
         size_of::<observe::OriginalObserveStartupShapes>(),
         size_of::<OriginalSerializationStorageProjection>(),
@@ -357,4 +367,9 @@ fn exhausted() -> ProviderError {
 }
 fn refused() -> ProviderError {
     ProviderError::Correlation("compiled native report startup tuple")
+}
+
+/// Returns the finite compiled Fresh definition-generation and comparison phase.
+pub(crate) fn original_fresh_schema_generation_storage_data() -> Result<usize, ProviderError> {
+    schema_generation::fresh_requested_data()
 }

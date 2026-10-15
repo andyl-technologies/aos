@@ -19,7 +19,10 @@ use super::{
 };
 
 mod attempts;
+mod clock_adverse;
 mod clock_state;
+mod requested_storage;
+pub use clock_adverse::OriginalClockAdverseObservation;
 mod enrollment;
 mod exact;
 pub use clock_state::OriginalClockStateObservation;
@@ -182,6 +185,28 @@ pub trait InstalledConformanceAuthority:
         ))
     }
 
+    /// Authenticates actual same-source two-owner Clock loss observations.
+    ///
+    /// This narrowly scoped callback cannot stand in for publication-failure,
+    /// recovery or damaged-restoration suites. The first report is runner-owned
+    /// before the callback, and the actor retains all original native custody.
+    ///
+    /// # Errors
+    /// Defaults to refusal without an installed original owning oracle.
+    fn retain_original_clock_adverse_witness(
+        &self,
+        _population: &WitnessPlan,
+        _case: &str,
+        _oracle: &ContentRef,
+        _original: &crate::node_observed_executor::OriginalClockAdverseWitness<'_>,
+        _reference: &ContentRef,
+        _bytes: &[u8],
+    ) -> Result<CaseVerdict, QualificationError> {
+        Err(QualificationError::Refused(
+            "no installed original Clock adverse oracle",
+        ))
+    }
+
     /// Authenticates a fixed realized-case template before its original Begin.
     ///
     /// This callback binds the predeclared semantic programme, case/oracle and
@@ -280,6 +305,7 @@ pub struct ProductionConformanceRunner<'a> {
     observations: BTreeMap<String, ProtocolObservation>,
     source_inspections: BTreeMap<String, OriginalSourceInspection>,
     clock_state_observations: BTreeMap<String, OriginalClockStateObservation>,
+    clock_adverse_observations: BTreeMap<String, OriginalClockAdverseObservation>,
     exact_observations: BTreeMap<String, ExactCompletionObservation>,
     quantized_observations: BTreeMap<String, QuantizedCompletionObservation>,
     limits: QualificationLimits,
@@ -298,6 +324,8 @@ pub struct CollectedConformance {
     pub source_inspections: BTreeMap<String, OriginalSourceInspection>,
     /// Retains actual state reports across failed or unissued qualification.
     pub clock_state_observations: BTreeMap<String, OriginalClockStateObservation>,
+    /// Retains the first actual two-owner loss report across oracle failures.
+    pub clock_adverse_observations: BTreeMap<String, OriginalClockAdverseObservation>,
     /// Retains actual completed runtime witnesses without promoting their kind.
     pub exact_observations: BTreeMap<String, ExactCompletionObservation>,
     /// Retains complete original quantized closure and staged producer witnesses.
@@ -345,6 +373,7 @@ impl<'a> ProductionConformanceRunner<'a> {
             observations: BTreeMap::new(),
             source_inspections: BTreeMap::new(),
             clock_state_observations: BTreeMap::new(),
+            clock_adverse_observations: BTreeMap::new(),
             exact_observations: BTreeMap::new(),
             quantized_observations: BTreeMap::new(),
             limits,
@@ -802,6 +831,7 @@ impl<'a> ProductionConformanceRunner<'a> {
             observations: self.observations,
             source_inspections: self.source_inspections,
             clock_state_observations: self.clock_state_observations,
+            clock_adverse_observations: self.clock_adverse_observations,
             exact_observations: self.exact_observations,
             quantized_observations: self.quantized_observations,
         }

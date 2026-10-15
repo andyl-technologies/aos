@@ -17,10 +17,12 @@ pub use execution::{
     PacketCompleteRuntimeAttachmentFailure,
 };
 mod graph;
+mod installed;
 mod population;
 mod records;
-pub(super) mod retained;
+pub(crate) mod retained;
 mod roster;
+pub use installed::{InstalledCompleteScene, InstalledCompleteSceneManifest};
 
 pub use graph::{
     InstalledPacketCompleteGraphPolicy, PacketCompleteGraphOwner, PacketCompleteGraphRequest,
@@ -41,8 +43,8 @@ mod tests;
 
 pub use authority::{
     InstalledPacketCompleteCollectionAuthority, PacketCompleteCollectionRequest,
-    PacketCompleteNativeLaunchInputs, PacketCompletePreparationConnection,
-    PacketCompleteReportStartupHolder,
+    PacketCompleteNativeLaunchInputs, PacketCompleteOriginalSceneInputs,
+    PacketCompletePreparationConnection, PacketCompleteReportStartupHolder,
 };
 pub use population::{PacketCompletePopulationRequest, PacketCompleteWitnessPopulation};
 

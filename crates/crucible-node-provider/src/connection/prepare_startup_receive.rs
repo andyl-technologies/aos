@@ -102,7 +102,11 @@ pub(crate) fn authenticate_original_native_prepare_header_data(
         .ok_or_else(invalid)?;
     crate::connection::serialized_credit(request, MAXIMUM_COMPLETE_RESTORE_TRANSFER_REQUEST_BYTES)?;
     crate::connection::serialized_credit(proof, MAXIMUM_COMPLETE_RESTORE_TRANSFER_PROOF_BYTES)?;
-    let projection = CompleteRestoreTransferProjection::from_envelope(original)?;
+    let projection = if fresh_selected {
+        CompleteRestoreTransferProjection::from_envelope_with_fresh_binding_data(original)?
+    } else {
+        CompleteRestoreTransferProjection::from_envelope(original)?
+    };
     if !matches!(
         projection,
         CompleteRestoreTransferProjection::Request {
@@ -122,6 +126,23 @@ impl<S: ProviderStream> Connection<S> {
         &mut self,
         startup: &mut OriginalNativePrepareStartupAllocation,
     ) -> Result<Option<ReceivedFrame>, ProviderError> {
+        self.receive_original_native_prepare_with_header(startup, None)
+    }
+
+    pub(crate) fn receive_original_native_prepare_after_fresh(
+        &mut self,
+        startup: &mut OriginalNativePrepareStartupAllocation,
+        completed: &crate::reference_packet::endpoint::OriginalNativeFreshPrepareHeader<'_>,
+    ) -> Result<Option<ReceivedFrame>, ProviderError> {
+        completed.authenticate_current(self)?;
+        self.receive_original_native_prepare_with_header(startup, Some(completed))
+    }
+
+    fn receive_original_native_prepare_with_header(
+        &mut self,
+        startup: &mut OriginalNativePrepareStartupAllocation,
+        completed: Option<&crate::reference_packet::endpoint::OriginalNativeFreshPrepareHeader<'_>>,
+    ) -> Result<Option<ReceivedFrame>, ProviderError> {
         startup.begin(self)?;
         self.ensure_no_pending_native_restore_response()?;
         self.check_authority()?;
@@ -130,7 +151,7 @@ impl<S: ProviderStream> Connection<S> {
         }
         self.guard
             .protocol_cut(crate::protocol_snapshot::ProtocolCaptureCut::HostSettled)?;
-        let result = self.receive_original_native_prepare_startup_inner(startup);
+        let result = self.receive_original_native_prepare_startup_inner(startup, completed);
         match &result {
             Ok(None) => self.contain(ConnectionFailure::Read),
             Err(_) => self.contain(ConnectionFailure::Protocol),
@@ -142,6 +163,7 @@ impl<S: ProviderStream> Connection<S> {
     fn receive_original_native_prepare_startup_inner(
         &mut self,
         startup: &OriginalNativePrepareStartupAllocation,
+        completed: Option<&crate::reference_packet::endpoint::OriginalNativeFreshPrepareHeader<'_>>,
     ) -> Result<Option<ReceivedFrame>, ProviderError> {
         let Some(value) = self.reader.read()? else {
             return Ok(None);
@@ -149,10 +171,16 @@ impl<S: ProviderStream> Connection<S> {
         let envelope: Envelope =
             serde_json::from_value(value).map_err(crucible_node_contract::ContractError::from)?;
         startup.authenticate_header(self, &envelope)?;
+        if let Some(completed) = completed {
+            completed.authenticate_header(self, &envelope)?;
+        }
         let body = self.validate_body(&envelope, true)?;
         self.retain_original_request_id(&envelope, self.reader.original_slot())?;
         self.authority.with_live(|| self.guard.receive(&envelope))?;
         startup.authenticate_active(self)?;
+        if let Some(completed) = completed {
+            completed.authenticate_current(self)?;
+        }
         Ok(Some(ReceivedFrame { envelope, body }))
     }
 }

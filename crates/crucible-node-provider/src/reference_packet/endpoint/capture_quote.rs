@@ -85,6 +85,7 @@ impl PacketEndpoint<DeadlineStream> {
             complete,
             capture,
             capture_allocation_attempt,
+            fresh_restore_attempt,
             pending_capture,
             after_confirmation,
             canonical_ack_boot,
@@ -97,6 +98,7 @@ impl PacketEndpoint<DeadlineStream> {
             || request.message != MessageKind::Request
             || request.method != Method::Observe
             || capture_allocation_attempt.is_some()
+            || fresh_restore_attempt.is_some()
             || capture.is_some()
             || pending_capture.is_some()
             || after_confirmation.is_some()
@@ -335,8 +337,18 @@ impl PacketEndpoint<DeadlineStream> {
             },
             before_suffix,
         )?;
+        // The actual live boot selects the new DATA grammar only after the
+        // concrete installer authenticates its full outer13 schema.
+        let startup_codec = context.requires_original_native_startup_codec(connection, uploads)?;
+        let outer_edition = if startup_codec {
+            policy.authenticate_startup_capture_snapshot_definition()?;
+            super::capture_outer_projection::NativeCaptureOuterEdition::Startup13
+        } else {
+            super::capture_outer_projection::NativeCaptureOuterEdition::Allocation12
+        };
         let outer_encoding = super::capture_outer_projection::quote_original_outer12_projection(
             super::capture_outer_projection::NativeCaptureOuterProjectionInput {
+                edition: outer_edition,
                 state: complete,
                 records,
                 record_capacity: records.capacity(),
@@ -514,6 +526,11 @@ fn exhausted() -> ProviderError {
 }
 
 /// Names the real transient quote's inline fields, including numeric subplans.
-pub(crate) const fn original_capture_report_quote_layout_data() -> usize {
-    std::mem::size_of::<NativeEndpointCaptureStateData<'static>>()
+pub(crate) fn original_capture_report_quote_layout_data() -> usize {
+    [
+        std::mem::size_of::<NativeEndpointCaptureStateData<'static>>(),
+        super::capture_startup::original_startup_capture_endpoint_counter_scratch_data(),
+        crate::reference_packet::control::original_startup_capture_counter_scratch_data(),
+        crate::reference_packet::service::native_snapshot::native_owned13_snapshot_schema_counter_scratch_data(),
+    ].into_iter().try_fold(0usize, usize::checked_add).unwrap_or(usize::MAX)
 }

@@ -554,3 +554,24 @@ impl<R: OriginalEmptyExtensionRegistry> OriginalExtensionNegotiationOwned11<'_, 
         Ok(())
     }
 }
+
+impl ExtensionHandshake {
+    pub(crate) fn original_empty_registry_allocation_layout_data() -> Result<usize, ProviderError> {
+        let root = std::mem::size_of::<OriginalSdkEmptyRegistry>()
+            .checked_add(std::mem::size_of::<
+                crate::protocol_snapshot::ProtocolCaptureOwner,
+            >())
+            .ok_or_else(registry_refused)?;
+        // Metadata retains two verified registry views and one origin view.
+        // Handshake/Session/Connection expose three views of the selected empty
+        // Arc slice. Count every view under the owning observer convention.
+        root.checked_add(
+            crate::retained_metadata::requested_storage::shared_header_storage_data(
+                6,
+                std::mem::align_of::<crate::protocol_snapshot::ProtocolCaptureOwner>()
+                    .max(std::mem::align_of::<ExtensionSelection>()),
+            )?,
+        )
+        .ok_or_else(registry_refused)
+    }
+}

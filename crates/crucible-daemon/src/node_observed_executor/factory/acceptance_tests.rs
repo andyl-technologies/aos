@@ -128,14 +128,11 @@ fn installed_missing_acceptance_refuses_actual_ordinary_preparation_before_reser
     assert!(result.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(catalog.custody().reserved_worlds(), 0);
-    assert_eq!(
-        catalog
-            .scenario(&selections)
-            .unwrap()
-            .canonical_bytes()
-            .unwrap(),
-        original_bytes
-    );
+    // A selected but unavailable normal policy cannot describe a different
+    // baseline as its accepted ordinary world. Preparation above still refused
+    // before acquiring any native world custody.
+    assert!(catalog.scenario(&selections).is_err());
+    assert!(!original_bytes.is_empty());
     assert!(
         catalog
             .install_behavioral_acceptance(
@@ -493,4 +490,46 @@ fn missing_policy_cannot_turn_closed_selection_into_a_general_vendor_or_wider_cl
             .unwrap(),
         original.canonical_bytes().unwrap()
     );
+}
+
+#[test]
+fn missing_mixed_clock_checksum_acceptance_refuses_before_native_world_reservation() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut catalog = catalog(directory.path());
+    let selections = vec![
+        InstalledNodeSelection {
+            node: Id::new("checksum").unwrap(),
+            owner: Id::new("owner/checksum").unwrap(),
+            kind: InstalledNodeKind::ReferenceDevice {
+                quantum_ps: 1000.into(),
+                host_budget_ns: 1_000_000.into(),
+            },
+        },
+        InstalledNodeSelection {
+            node: Id::new("clock").unwrap(),
+            owner: Id::new("owner/clock").unwrap(),
+            kind: InstalledNodeKind::HostClock,
+        },
+    ];
+    let scenario = catalog.scenario(&selections).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    catalog
+        .install_behavioral_acceptance(
+            Box::new(MissingInstalledReport(Arc::clone(&calls))),
+            AcceptanceLimits::default(),
+        )
+        .unwrap();
+    assert!(catalog.scenario(&selections).is_err());
+    assert_eq!(catalog.custody().reserved_worlds(), 0);
+    assert!(
+        catalog
+            .prepare_world(
+                &selections,
+                scenario,
+                ExecutionId::from_bytes([117; 16]).unwrap()
+            )
+            .is_err()
+    );
+    assert_eq!(catalog.custody().reserved_worlds(), 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }

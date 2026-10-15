@@ -128,3 +128,19 @@ impl ExpectedClockCase {
         Ok(())
     }
 }
+
+impl crate::node_qualification::RetainedMetadataOwned for ExpectedClockCase {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            request,
+            outcome,
+            objects,
+        } = self;
+        counter.charge(request)?;
+        counter.charge(outcome)?;
+        counter.charge(objects)
+    }
+}

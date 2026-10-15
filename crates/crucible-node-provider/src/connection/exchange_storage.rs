@@ -705,3 +705,9 @@ impl<S: ProviderStream> Connection<S> {
         acknowledgements::open_ack_storage(crate::reference_packet::service::fresh_restore_allocation::MAXIMUM_FRESH_RESTORE_ALLOCATION_REPORT_BYTES)
     }
 }
+
+pub(crate) fn original_host_initial_raw_receive_storage_data(
+    bytes: usize,
+) -> Result<usize, ProviderError> {
+    acknowledgements::open_ack_storage(bytes)
+}

@@ -22,6 +22,48 @@ pub struct QuarantinedRuntime {
 }
 
 impl QuarantinedRuntime {
+    /// Observes the same complete retained runtime after physical retirement.
+    ///
+    /// Released native resources do not refund the still-owned model, histories,
+    /// original activation or shutdown refusal. The enclosing inline slot is
+    /// excluded. This read does not poll cleanup or serialize a snapshot.
+    ///
+    /// # Errors
+    /// Refuses unknown native owners, busy custody, overflow or the bound.
+    pub fn original_retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, super::RuntimeError> {
+        use super::runtime::RuntimeOwnedStorage;
+        let Self {
+            runtime,
+            cursor,
+            shutdown_failure,
+            retirement_transferred: _,
+        } = self;
+        let independent = cursor
+            .owned_storage()?
+            .checked_add(shutdown_failure.owned_storage()?)
+            .filter(|bytes| *bytes <= maximum)
+            .ok_or(super::RuntimeError::ResourceLimit)?;
+        let runtime =
+            runtime.original_retained_requested_storage_precredit_data(maximum - independent)?;
+        independent
+            .checked_add(runtime)
+            .ok_or(super::RuntimeError::ResourceLimit)
+    }
+
+    /// Observes the fixed counter window of the same retained runtime walk.
+    ///
+    /// # Errors
+    /// Refuses unsupported native scratch or foreign/busy retained owners.
+    pub fn original_retained_requested_storage_precredit_scratch_data(
+        &self,
+    ) -> Result<usize, super::RuntimeError> {
+        self.runtime
+            .original_retained_requested_storage_precredit_scratch_data()
+    }
+
     /// Borrows the first original graceful-retirement refusal without rerunning it.
     pub fn shutdown_failure(&self) -> Option<&super::OperationFailure> {
         self.shutdown_failure.as_ref()

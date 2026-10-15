@@ -145,6 +145,15 @@ impl WorldActivation {
         Rc::ptr_eq(&self.authority, &other.authority) && self.record == other.record
     }
 
+    /// Borrows the original full publication retained by this activation.
+    ///
+    /// This is historical publication data. It neither revalidates the backing
+    /// store nor authorizes another world; the concrete publisher must verify
+    /// the exact same record and complete bodies for current durability.
+    pub fn prepared_publication_data(&self) -> Option<&PreparedWorldPublication> {
+        self.preparation.as_deref()
+    }
+
     /// Returns the complete committed world generation record.
     pub fn record(&self) -> &ActivationRecord {
         &self.record

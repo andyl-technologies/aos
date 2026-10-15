@@ -320,3 +320,18 @@ mod tests {
         assert!(owner.supervisor.incidents.borrow().is_empty());
     }
 }
+
+impl OriginalRetainedSupervisor {
+    pub(crate) fn authenticate_original_handle_data(
+        &self,
+        operational: &Rc<dyn ConnectionSupervisor>,
+    ) -> Result<(), ProviderError> {
+        self.supervisor.check_idle()?;
+        if !std::ptr::addr_eq(Rc::as_ptr(&self.supervisor), Rc::as_ptr(operational)) {
+            return Err(ProviderError::Correlation(
+                "original host startup supervisor differs",
+            ));
+        }
+        Ok(())
+    }
+}

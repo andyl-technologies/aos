@@ -30,6 +30,8 @@ pub struct ClockStateObservationData<'a> {
     pub schema: &'static str,
     /// Binds the unchanged complete source-selected world.
     pub source_world: &'a crucible_node_contract::WorldBinding,
+    /// Retains actual native admission refusals under the same original owners.
+    pub admission: super::admission_cases::ClockAdmissionObservationData<'a>,
     /// Binds the actual typed archive read after original retirement.
     pub source_artifact: &'a ContentRef,
     /// Retains the complete original signed runtime and ACK ledger.
@@ -59,6 +61,7 @@ impl OriginalClockStateWitness<'_> {
             || !state.reopened
             || !self.original.failed
             || !self.original.retirement_attempted
+            || !self.original.admission_cases.complete()
             || self.original.runtime.is_some()
         {
             return Err(refused("original Clock state owners no longer current"));
@@ -176,7 +179,8 @@ impl OriginalClockStateWitness<'_> {
             .as_ref()
             .ok_or_else(|| refused("right native source absent"))?;
         Ok(ClockStateObservationData {
-            schema: "crucible.original-clock-state/1",
+            schema: "crucible.original-clock-state/2",
+            admission: self.original.admission_cases.observation()?,
             source_world: &state.profile.scenario.world,
             source_artifact: artifact,
             original,

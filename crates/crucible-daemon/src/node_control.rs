@@ -13,6 +13,7 @@
 //! operator. Requests cannot install implementations or mint qualification.
 //! Compilation and dispatch belong to the actual daemon's installed catalog.
 
+mod complete_scene;
 mod debug;
 mod debug_preserving;
 pub use debug::decode_debug_record;
@@ -95,6 +96,8 @@ pub struct NodeControlRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlCommand {
+    /// Consumes the locally installed collecting scene, without ordinary qualification.
+    CompleteScenePrepare {},
     /// Prepares an inactive original-lineage world under explicit edition eleven.
     OriginalLineagePrepare {
         /// Retains only original source commitments and unchanged configuration.
@@ -228,6 +231,8 @@ pub struct NodeControlReply {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlResult {
+    /// Reports only initial inactive preparation of the installed collecting scene.
+    CompleteScenePrepared {},
     /// Reports inactive preparation; common Ready and publication remain required.
     OriginalLineagePrepared {
         /// Names the original operational nonce held by the owning actor.
@@ -393,6 +398,7 @@ impl NodeControlRequest {
 
     fn validate(&self) -> Result<(), NodeControlError> {
         let expected_version = match self.command {
+            NodeControlCommand::CompleteScenePrepare { .. } => 12,
             NodeControlCommand::OriginalLineagePrepare { .. } => 11,
             NodeControlCommand::PreservingDebugPrepare { .. }
             | NodeControlCommand::PreservingDebugResume { .. }
@@ -417,6 +423,7 @@ impl NodeControlRequest {
             return Err(refused("unsupported local node control edition"));
         }
         match &self.command {
+            NodeControlCommand::CompleteScenePrepare { .. } => Ok(()),
             NodeControlCommand::OriginalLineagePrepare { request } => request.validate(),
             NodeControlCommand::PreservingDebugPrepare { request } => {
                 request.validate().map_err(refused)
@@ -544,6 +551,9 @@ pub fn decode_node_state(
     reply: &NodeControlReply,
 ) -> Result<ObservedAttemptState, NodeControlError> {
     match &reply.result {
+        NodeControlResult::CompleteScenePrepared {} => Err(refused(
+            "collecting preparation is not observed execution state",
+        )),
         NodeControlResult::OriginalLineagePrepared { .. } => Err(refused(
             "inactive original-lineage preparation is not observed execution state",
         )),

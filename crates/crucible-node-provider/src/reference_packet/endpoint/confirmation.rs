@@ -38,20 +38,31 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 Some(super::super::service::PacketNative5CaptureProfile::OwnedProtocol11 { .. })
             )
         }) {
-            let capacity =
-                flight
-                    .owned11_after_capacity
-                    .as_ref()
-                    .ok_or(ProviderError::Correlation(
-                        "after confirmation owned11 original admission absent",
-                    ))?;
-            if after.bytes().len() > capacity.maximum_after_encoded_bytes
-                || capacity.maximum_after_encoded_bytes > capacity.reserved_after_encoded_bytes
-                || actual_after.maximum_encoded_bytes != capacity.reserved_after_encoded_bytes
-            {
-                return Err(ProviderError::Correlation(
-                    "after confirmation owned11 actual bank differs",
-                ));
+            if let Some(capacity) = flight.startup14_after_capacity.as_ref() {
+                if after.bytes().len() > capacity.maximum_after_encoded_bytes
+                    || capacity.maximum_after_encoded_bytes > capacity.reserved_after_encoded_bytes
+                    || actual_after.maximum_encoded_bytes != capacity.reserved_after_encoded_bytes
+                {
+                    return Err(ProviderError::Correlation(
+                        "startup after confirmation actual bank differs",
+                    ));
+                }
+            } else {
+                let capacity =
+                    flight
+                        .owned11_after_capacity
+                        .as_ref()
+                        .ok_or(ProviderError::Correlation(
+                            "after confirmation owned11 original admission absent",
+                        ))?;
+                if after.bytes().len() > capacity.maximum_after_encoded_bytes
+                    || capacity.maximum_after_encoded_bytes > capacity.reserved_after_encoded_bytes
+                    || actual_after.maximum_encoded_bytes != capacity.reserved_after_encoded_bytes
+                {
+                    return Err(ProviderError::Correlation(
+                        "after confirmation owned11 actual bank differs",
+                    ));
+                }
             }
         }
         let capture = flight.reservation.request();
@@ -81,7 +92,17 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                     .ok_or(ProviderError::Correlation(
                         "after original Capture operation absent",
                     ))?
-            || context.capture_request_hash != capture.request_hash(RequestOrigin::Controller)?
+            || context.capture_request_hash
+                != if let Some(attempt) = self.capture_allocation_attempt.as_deref() {
+                    let owner = attempt.published()?;
+                    self.native.startup_capture_request_hash_data(
+                        capture,
+                        &owner.currency,
+                        &owner.report,
+                    )?
+                } else {
+                    capture.request_hash(RequestOrigin::Controller)?
+                }
             || context.native_snapshot_ref != flight.snapshot.0
             || context.native_control_ref != *flight.component.snapshot().reference()
             || context.native_anchor_ref != *flight.component.anchor().0
@@ -169,6 +190,12 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             ));
         };
         connection.authenticate_native5_confirmation_poll(original)?;
+        let quoted_storage = if self.capture_allocation_attempt.is_some() {
+            Some(self.quote_startup_confirmation_publication(original)?)
+        } else {
+            None
+        };
+
         let context = original
             .extensions
             .get(PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION)
@@ -336,13 +363,23 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             .prefix
             .as_mut()
             .ok_or(ProviderError::Conflict("after original prefix absent"))?;
-        prefix.prepare(
-            &original.request,
-            response,
-            receipt,
-            (&receipt.native_after_ref, after.bytes()),
-            facts.maximum_encoded_bytes,
-        )?;
+        if let Some(storage) = quoted_storage.as_ref() {
+            prefix.prepare_with_storage_data(
+                &original.request,
+                response,
+                receipt,
+                (&receipt.native_after_ref, after.bytes()),
+                storage,
+            )?;
+        } else {
+            prefix.prepare(
+                &original.request,
+                response,
+                receipt,
+                (&receipt.native_after_ref, after.bytes()),
+                facts.maximum_encoded_bytes,
+            )?;
+        }
         let charged = self
             .transport_credit
             .checked_add(prefix.charged_bytes())
@@ -350,7 +387,11 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             .ok_or(ProviderError::ResourceExhausted(
                 "after whole retained transport credit",
             ))?;
-        prefix.publish()?;
+        if let Some(storage) = quoted_storage.as_ref() {
+            prefix.publish_with_storage_data(storage)?;
+        } else {
+            prefix.publish()?;
+        }
         self.next_sequence = prefix.next_sequence();
         self.transport_credit = charged;
         self.transport = Some(Transport::Connected(prefix.take_completed_connection()?));

@@ -12,6 +12,25 @@ use std::io::Write;
 
 const MAXIMUM_COMPARISON_WORK: usize = 64 * 1024 * 1024;
 
+/// Names the explicit borrowed comparison views and scalar writer workspace.
+///
+/// The closed walker permits at most64 nested values. Each level is charged
+/// conservatively for both container alternatives and scalar comparison views;
+/// the byte span scanner and numeric formatter work are also charged at every
+/// level even though those particular work buffers are sequential. This is
+/// requested explicit Rust data, not a compiler-frame or allocator claim.
+pub(crate) const fn envelope_comparison_scratch_data() -> usize {
+    64 * (std::mem::size_of::<Fields<'static>>()
+        + std::mem::size_of::<serde_json::map::Iter<'static>>()
+        + std::mem::size_of::<std::slice::Iter<'static, Value>>()
+        + std::mem::size_of::<ComparisonSink<'static>>()
+        + std::mem::size_of::<[u8;128]>()
+        // Pinned ryu-js1.0.3 Buffer; only Number leaves enter canonical writing.
+        + std::mem::size_of::<[u8;132]>()
+        + std::mem::size_of::<(&'static [u8], &'static Value, Option<&'static str>)>()
+        + 4 * std::mem::size_of::<usize>())
+}
+
 // Names only the explicit borrowed parser/writer layouts used by envelope().
 // Recursive compiler frames and caller-owned raw/typed banks remain separate.
 pub(crate) fn envelope_counter_scratch_data() -> usize {

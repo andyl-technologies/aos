@@ -63,12 +63,15 @@ impl PacketCompleteReportStartupHolder {
         Ok(requested_peak)
     }
 
-    fn authenticate_native_origin_data(&self) -> Result<(), RuntimeError> {
+    pub(super) fn authenticate_native_origin_data(&self) -> Result<(), RuntimeError> {
         if self.process != std::process::id() {
             return Err(RuntimeError::ForeignAuthority);
         }
         if self.thread != std::thread::current().id() {
             return Err(RuntimeError::ThreadAffinity);
+        }
+        if self.original_scene_retired.get() {
+            return Err(RuntimeError::OutstandingObligations);
         }
         Ok(())
     }

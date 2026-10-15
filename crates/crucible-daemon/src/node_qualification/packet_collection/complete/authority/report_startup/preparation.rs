@@ -5,6 +5,7 @@
 //! original slots through refusals; typed observations never mint native rights.
 
 mod connection;
+mod scene;
 pub use connection::PacketCompletePreparationConnection;
 
 use super::*;
@@ -17,6 +18,16 @@ use crucible_node_provider::{
     connection::{ConnectionSupervisor, OriginalRetainedSupervisor},
     handshake::OriginalExtensionRegistryOwner,
 };
+
+// Each actual caller selects one closed owning phase. Query independently
+// counts its selected preparation in Core; initial lifecycle retains the live
+// guard/preparation union, and prebirth refuses any such live owner.
+#[derive(Clone, Copy)]
+enum HolderStoragePhase {
+    HostQuery,
+    NativeStartup,
+    InitialLifecycle,
+}
 
 pub(super) struct PreparationOwners {
     attempted: bool,
@@ -527,7 +538,13 @@ impl PacketCompleteReportStartupHolder {
         selected: Option<usize>,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
-        Self::holder_storage_data(original, held, selected, maximum, true)
+        Self::holder_storage_data(
+            original,
+            held,
+            selected,
+            maximum,
+            HolderStoragePhase::HostQuery,
+        )
     }
 
     pub(super) fn native_holder_storage_data(
@@ -535,7 +552,31 @@ impl PacketCompleteReportStartupHolder {
         held: &Self,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
-        Self::holder_storage_data(original, held, None, maximum, false)
+        Self::holder_storage_data(
+            original,
+            held,
+            None,
+            maximum,
+            HolderStoragePhase::NativeStartup,
+        )
+    }
+
+    /// Counts the actual complete initial-lifecycle holder through its typed live owners.
+    ///
+    /// # Errors
+    /// Refuses foreign, busy, unsupported or incomplete owners or exhausted byte credit.
+    pub(super) fn original_initial_holder_storage_data(
+        original: &Rc<RefCell<Self>>,
+        held: &Self,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        Self::holder_storage_data(
+            original,
+            held,
+            None,
+            maximum,
+            HolderStoragePhase::InitialLifecycle,
+        )
     }
 
     fn holder_storage_data(
@@ -543,8 +584,10 @@ impl PacketCompleteReportStartupHolder {
         held: &Self,
         selected: Option<usize>,
         maximum: usize,
-        require_complete_preparations: bool,
+        phase: HolderStoragePhase,
     ) -> Result<usize, RuntimeError> {
+        let require_complete_preparations = matches!(phase, HolderStoragePhase::HostQuery);
+        let live_original_scene = matches!(phase, HolderStoragePhase::InitialLifecycle);
         held.authenticate_origin()
             .map_err(|_| RuntimeError::ForeignAuthority)?;
         let mut counter = Counter::new(maximum);
@@ -580,7 +623,13 @@ impl PacketCompleteReportStartupHolder {
                 )
                 .map_err(storage_failure)?;
         }
-        held.charge_native_launch_storage_precredit_data(&mut counter)?;
+        held.charge_original_scene_storage_precredit_data(&mut counter)?;
+        if live_original_scene {
+            held.charge_original_live_launch_storage_precredit_data(&mut counter)?;
+        } else {
+            held.charge_native_launch_storage_precredit_data(&mut counter)?;
+        }
+        held.charge_host_sdk_storage_precredit_data(&mut counter)?;
         let owners = held
             .preparations
             .try_borrow()
@@ -596,12 +645,14 @@ impl PacketCompleteReportStartupHolder {
             }
             if let Some(slot) = &peer.hello_slot {
                 counter.rc(slot).map_err(storage_failure)?;
-                if slot
-                    .try_borrow()
-                    .map_err(|_| RuntimeError::OwnerBusy)?
-                    .is_some()
-                {
-                    return Err(RuntimeError::UnsupportedFacet);
+                let journal = slot.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+                if let Some(journal) = journal.as_ref() {
+                    let facts = journal
+                        .original_retained_metadata_facts()
+                        .map_err(|_| RuntimeError::UnsupportedFacet)?;
+                    counter.add(PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
+                        &facts, counter.remaining(),
+                    )?).map_err(storage_failure)?;
                 }
             }
             if let Some(response) = &peer.admit_response {
@@ -758,3 +809,54 @@ impl InstalledPacketCompleteCollectionAuthority {
 
 #[cfg(test)]
 mod tests;
+
+impl PacketCompleteReportStartupHolder {
+    pub(super) fn charge_original_host_sdk_output_data(
+        &self,
+        member: usize,
+        output: &crucible::node_adapters::cnp::PacketCompleteOriginalHostSdk,
+        counter: &mut Counter,
+    ) -> Result<(), RuntimeError> {
+        let owners = self
+            .preparations
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let peer = owners
+            .peers
+            .get(member)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        counter
+            .add(output.retained_requested_storage_precredit_data(
+                peer.supervisor.as_ref(),
+                counter.remaining(),
+            )?)
+            .map_err(|_| RuntimeError::ResourceLimit)
+    }
+
+    pub(super) fn connect_original_host_sdk_peer_data(
+        &self,
+        member: usize,
+        output: &mut crucible::node_adapters::cnp::PacketCompleteOriginalHostSdk,
+        guard: &crucible::node_adapters::cnp::CnpSemanticLaunchGuard,
+        stream: &mut Option<std::os::unix::net::UnixStream>,
+    ) -> Result<(), RuntimeError> {
+        let owners = self
+            .preparations
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let peer = owners
+            .peers
+            .get(member)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        output.connect_original_into(
+            guard,
+            stream,
+            peer.operational
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
+            peer.supervisor
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?,
+        )
+    }
+}

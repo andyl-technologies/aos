@@ -282,3 +282,79 @@ impl ProviderPreparationAuthorization {
         }
     }
 }
+
+impl ProviderAuthorizationScope {
+    /// Observes this retained scope's children without revalidating or cloning it.
+    ///
+    /// # Errors
+    /// Refuses unsupported fields, checked overflow or the requested bound.
+    pub fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, super::RuntimeError> {
+        use super::runtime::RuntimeOwnedStorage;
+        let Self {
+            profile,
+            configuration,
+            bindings,
+            resources,
+        } = self;
+        let ResourceLimits {
+            cpu_budget_ns: _,
+            memory_bytes: _,
+            writable_bytes: _,
+            processes: _,
+            descriptors: _,
+            pending_events: _,
+            content_bytes: _,
+            maximum_operations: _,
+            extensions,
+        } = resources;
+        let bytes = [
+            profile.owned_storage()?,
+            configuration.owned_storage()?,
+            bindings.owned_storage()?,
+            extensions.owned_storage()?,
+        ]
+        .into_iter()
+        .try_fold(0usize, |total, next| {
+            total
+                .checked_add(next)
+                .ok_or(super::RuntimeError::ResourceLimit)
+        })?;
+        if bytes > maximum {
+            return Err(super::RuntimeError::ResourceLimit);
+        }
+        Ok(bytes)
+    }
+}
+
+impl InstalledProviderRevision {
+    /// Observes actual retained scope and monotonic fence allocations without callbacks.
+    ///
+    /// Enclosing inline layout is separate. Conservatively repeated owning
+    /// views do not infer allocation sharing from equal scope bytes.
+    ///
+    /// # Errors
+    /// Refuses unsupported scope fields, checked overflow or the requested bound.
+    pub fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, super::RuntimeError> {
+        let Self {
+            scope,
+            kind: _,
+            current: _,
+        } = self;
+        let header =
+            super::NodeRuntime::capture_shared_allocation_storage::<ProviderAuthorizationScope>()
+                .checked_add(super::NodeRuntime::capture_shared_allocation_storage::<
+                    AtomicBool,
+                >())
+                .filter(|bytes| *bytes <= maximum)
+                .ok_or(super::RuntimeError::ResourceLimit)?;
+        header
+            .checked_add(scope.retained_requested_storage_precredit_data(maximum - header)?)
+            .ok_or(super::RuntimeError::ResourceLimit)
+    }
+}

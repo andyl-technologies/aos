@@ -270,6 +270,80 @@ impl PacketWorldHostSupervisor {
         Ok(Poll::Pending)
     }
 
+    /// Counts actual local mailbox, queue and result observation headers.
+    ///
+    /// The caller admits this fixed window before walking the same supervisor.
+    /// It excludes this owner's inline root, allocator residency, compiler
+    /// frames and kernel descriptors.
+    ///
+    /// # Errors
+    /// Refuses checked layout arithmetic overflow.
+    pub fn retained_requested_storage_counter_scratch_data()
+    -> Result<usize, crucible::node_contract::RuntimeError> {
+        let queue = RuntimeCustodyQueue::retained_requested_storage_counter_scratch_data()?;
+        std::mem::size_of::<super::super::complete::retained::Counter>()
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(queue))
+            .and_then(|bytes| {
+                bytes.checked_add(std::mem::size_of::<
+                    Result<Option<usize>, crucible::node_contract::RuntimeError>,
+                >())
+            })
+            .ok_or(crucible::node_contract::RuntimeError::ResourceLimit)
+    }
+
+    /// Observes the same selected supervisor before credit without owned diagnostics.
+    ///
+    /// Native slots whose original guard remains held outside the mailbox are
+    /// supported. Returned custody, busy mailboxes and unknown wake or runtime
+    /// backing refuse. Queue/notifier aliases are conservatively counted per
+    /// view; this method neither polls cleanup nor releases reservations.
+    ///
+    /// # Errors
+    /// Refuses unselected or foreign origin, conflicting loans, returned or
+    /// unsupported custody, checked overflow or a requested-storage excess.
+    pub fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        let Some((process, thread)) = self.complete_origin else {
+            return Err(RuntimeError::UnsupportedFacet);
+        };
+        if process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if thread != std::thread::current().id() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        let wake = self
+            .complete_wake
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        let mut counter = super::super::complete::retained::Counter::new(maximum);
+        for mailbox in &self.mailboxes {
+            let bytes = super::requested_storage::retained_mailbox_storage_precredit_data(
+                mailbox,
+                counter.remaining(),
+            )?
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+            counter
+                .add(bytes)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        }
+        counter
+            .add(
+                self.runtime
+                    .retained_requested_storage_data(counter.remaining())?
+                    .ok_or(RuntimeError::UnsupportedFacet)?,
+            )
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        counter
+            .add(wake.retained_requested_storage_data(counter.remaining())?)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        Ok(counter.bytes())
+    }
+
     /// Reports backing of this actual selected supervisor, excluding its inline root.
     ///
     /// Shared queue/mailbox/notifier allocations may conservatively repeat another
@@ -397,6 +471,22 @@ struct WorldNativeSlot {
 }
 
 impl CnpSemanticProcessSlot for WorldNativeSlot {
+    fn retained_descriptor_views_precredit_data(
+        &self,
+    ) -> Result<Option<usize>, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        if self.original.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.original.thread != std::thread::current().id() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        if self.original.transferred {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        original_mailbox_descriptor_count_data(&self.original.mailbox).map(Some)
+    }
+
     fn retained_requested_storage_precredit_data(
         &self,
         maximum: usize,
@@ -428,3 +518,154 @@ mod tests;
 #[cfg(test)]
 #[path = "world/bounded_wake_tests.rs"]
 mod bounded_wake_tests;
+
+impl PacketWorldHostSupervisor {
+    /// Counts the genuine fresh selected supervisor before its one reservation.
+    ///
+    /// Each actual mailbox must still be wholly unreserved and unentered. This
+    /// does not reinterpret a returned or busy reserved owner as an empty bank.
+    /// The real queue and notifier are walked through their raw typed observers;
+    /// the caller admits their fixed scratch before entering. The inline root,
+    /// kernel descriptors and allocator physical overhead remain separate.
+    ///
+    /// # Errors
+    /// Refuses generic or foreign supervisors, entered mailboxes, unknown actual
+    /// queue backing or requested storage above the supplied ceiling.
+    pub fn unreserved_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        match self.complete_origin {
+            Some((process, _)) if process != std::process::id() => {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+            Some((_, thread)) if thread != std::thread::current().id() => {
+                return Err(RuntimeError::ThreadAffinity);
+            }
+            None => return Err(RuntimeError::UnsupportedFacet),
+            Some(_) => {}
+        }
+        let wake = self
+            .complete_wake
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        let mut counter = super::super::complete::retained::Counter::new(maximum);
+        for mailbox in &self.mailboxes {
+            if mailbox.reserved.get()
+                || mailbox.expected.get()
+                || mailbox.returned.get()
+                || mailbox.reaped.get()
+                || mailbox.journal_retained.get()
+                || mailbox.polling.get()
+                || mailbox.invalid.get()
+            {
+                return Err(RuntimeError::OutstandingObligations);
+            }
+            counter
+                .rc(mailbox)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        }
+        counter
+            .add(
+                self.runtime
+                    .retained_requested_storage_data(counter.remaining())?
+                    .ok_or(RuntimeError::UnsupportedFacet)?,
+            )
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        counter
+            .add(wake.retained_requested_storage_data(counter.remaining())?)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        Ok(counter.bytes())
+    }
+
+    /// Quotes the fixed three-peer and one-world reservation before allocation.
+    ///
+    /// Only the real concrete WorldNativeSlot, JournalSlot and Core QueueSlot
+    /// constructors contribute. Rc clones create no new backing. The original
+    /// supervisor and proposal remain independently counted current owners.
+    /// Forthcoming native-slot observers conservatively repeat their mailbox
+    /// backing; the quote explicitly includes those same retained views.
+    /// This is a data quote, with no native or runtime execution permission.
+    ///
+    /// # Errors
+    /// Refuses foreign creator custody, overflow or a row above maximum.
+    pub fn quote_original_scene_reservation_requested_storage_data(
+        &self,
+        activation: &ActivationRecord,
+        maximum: usize,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        // The selected queue's raw quote authenticates the same creator before
+        // walking activation capacities. No closure or virtual callback runs.
+        let runtime = self
+            .runtime
+            .quote_original_reservation_requested_storage_data(activation, maximum)?;
+        let mut repeated = super::super::complete::retained::Counter::new(maximum);
+        for mailbox in &self.mailboxes {
+            repeated
+                .rc(mailbox)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        }
+        std::mem::size_of::<WorldNativeSlot>()
+            .checked_add(std::mem::size_of::<JournalSlot>())
+            .and_then(|bytes| bytes.checked_mul(3))
+            .and_then(|bytes| bytes.checked_add(runtime))
+            .and_then(|bytes| bytes.checked_add(repeated.bytes()))
+            .filter(|bytes| *bytes <= maximum)
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+}
+
+fn original_mailbox_descriptor_count_data(
+    mailbox: &Mailbox,
+) -> Result<usize, crucible::node_contract::RuntimeError> {
+    use crucible::node_contract::RuntimeError;
+    // Only retain()/journal retain can populate the private Cell owners; they
+    // set the corresponding flags before custody enters those original banks.
+    // Do not take or temporarily remove a non-Copy owner merely to observe it.
+    if mailbox.returned.get()
+        || mailbox.journal_retained.get()
+        || mailbox.polling.get()
+        || mailbox.invalid.get()
+    {
+        return Err(RuntimeError::UnsupportedFacet);
+    }
+    Ok(0)
+}
+
+impl PacketWorldHostSupervisor {
+    /// Counts actual selected supervision descriptors without cleanup effects.
+    ///
+    /// The same bounded runtime queue and wake reader own exactly their
+    /// eventfd/dup pair. Empty native/journal mailboxes own no descriptors;
+    /// returned custody remains unknown until its actual typed census exists.
+    ///
+    /// # Errors
+    /// Refuses foreign/unselected origin, retained unknown custody or conflicting
+    /// original loans. Revocation never discards a retained descriptor owner.
+    pub fn retained_descriptor_count_data(
+        &self,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        match self.complete_origin {
+            Some((process, thread))
+                if process == std::process::id() && thread == std::thread::current().id() => {}
+            Some(_) => return Err(RuntimeError::ForeignAuthority),
+            None => return Err(RuntimeError::UnsupportedFacet),
+        }
+        let wake = self
+            .complete_wake
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        let mut total = self
+            .runtime
+            .retained_descriptor_count_with_original_reader_data(wake)?;
+        for mailbox in &self.mailboxes {
+            total = total
+                .checked_add(original_mailbox_descriptor_count_data(mailbox)?)
+                .ok_or(RuntimeError::ResourceLimit)?;
+        }
+        Ok(total)
+    }
+}

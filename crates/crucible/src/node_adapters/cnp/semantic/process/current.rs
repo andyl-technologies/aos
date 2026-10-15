@@ -313,3 +313,32 @@ mod tests {
         assert!(ReadCall::begin(Rc::clone(&owner)).is_err());
     }
 }
+
+impl ReadOwner {
+    pub(in crate::node_adapters::cnp::semantic) fn authenticate_original_host_startup_data(
+        &self,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        self.ensure_current()
+            .map_err(|_| crate::node_contract::RuntimeError::OwnerUnavailable)
+    }
+}
+
+impl KernelIdentity {
+    pub(super) fn original_host_uid_data(&self) -> u32 {
+        self.uid
+    }
+}
+
+impl CnpSemanticSourceRead {
+    pub(in crate::node_adapters::cnp::semantic) fn retained_descriptor_views_precredit_data(
+        &self,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        if self.process != std::process::id() {
+            return Err(crate::node_contract::RuntimeError::ForeignAuthority);
+        }
+        // ReadOwner and registrar are inert shared data, with no descriptor.
+        // The actual executable field owns its retained File independently of
+        // these handles. Aliased views are conservatively charged per caller.
+        self.executable.retained_descriptor_views_precredit_data()
+    }
+}

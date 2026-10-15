@@ -250,3 +250,5 @@ mod tests {
         Ok(())
     }
 }
+
+pub(crate) use storage::original_fresh_schema_generation_storage_data;

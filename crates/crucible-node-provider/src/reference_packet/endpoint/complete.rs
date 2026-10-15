@@ -78,6 +78,53 @@ impl CompleteEndpointState {
         Ok(())
     }
 
+    /// Checks both actual unused banks at the inactive Fresh query boundary.
+    pub(super) fn original_fresh_report_bank_data(
+        &self,
+    ) -> Result<[crate::protocol_snapshot::ProtocolSnapshotAllocationFacts; 2], ProviderError> {
+        self.ensure_origin()?;
+        let Self {
+            creator: _,
+            thread: _,
+            storage: _,
+            profile,
+            hello: _,
+            metadata_limits,
+            metadata_birth_facts,
+            before,
+            after,
+            poisoned,
+            unwind_payload,
+        } = self;
+        if *poisoned
+            || unwind_payload.is_some()
+            || !matches!(
+                profile,
+                Some(PacketNative5CaptureProfile::OwnedProtocol11 { .. })
+            )
+            || self.original_metadata_birth_facts(*metadata_limits)? != *metadata_birth_facts
+        {
+            return Err(ProviderError::Correlation(
+                "fresh endpoint banks unresolved",
+            ));
+        }
+        let before = before
+            .as_ref()
+            .ok_or(ProviderError::Correlation("fresh before bank absent"))?;
+        let after = after
+            .as_ref()
+            .ok_or(ProviderError::Correlation("fresh after bank absent"))?;
+        if !before.unused_for_after_preflight() || !after.unused_for_after_preflight() {
+            return Err(ProviderError::Correlation(
+                "fresh endpoint bank already used",
+            ));
+        }
+        Ok([
+            before.original_allocation_facts()?,
+            after.original_allocation_facts()?,
+        ])
+    }
+
     pub(super) fn ensure_origin(&self) -> Result<(), ProviderError> {
         if self.creator != std::process::id() {
             return Err(ProviderError::Correlation(
@@ -549,6 +596,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             complete: Some(state),
             capture: None,
             capture_allocation_attempt: None,
+            fresh_restore_attempt: None,
             pending_capture: None,
             after_confirmation: None,
             canonical_ack_boot: None,

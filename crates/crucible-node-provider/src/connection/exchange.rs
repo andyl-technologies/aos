@@ -27,7 +27,7 @@ pub(crate) use storage::{
     OriginalContinuationPrefixStorageData, OriginalContinuationPrefixStorageInput,
     OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData,
     OriginalPacketPrefixStorageData, OriginalReportQueryReceiveStorageData,
-    authenticate_original_report_query_header_data,
+    authenticate_original_report_query_header_data, original_host_initial_raw_receive_storage_data,
     original_packet_prefix_startup_counter_scratch_data,
     original_report_query_receive_counter_scratch_data, original_report_query_receive_storage_data,
     quote_original_packet_baseline_prefix_startup_storage_data,
@@ -731,3 +731,6 @@ impl PreparedExchange<crate::client::DeadlineStream> {
             )
     }
 }
+
+#[path = "exchange/native_startup_after.rs"]
+mod native_startup_after;

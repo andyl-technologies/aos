@@ -364,7 +364,14 @@ pub(super) fn verify_selected_transfer(
             "restore transfer source node differs",
         ));
     }
-    super::super::CompleteRestoreTransferProjection::from_envelope(envelope)?;
+    if envelope.extensions.contains_key(crate::reference_packet::service::fresh_restore_allocation::PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING) {
+        if policy.fresh_restore_allocation_selection != Some(crate::reference_packet::service::fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13) {
+            return Err(ProviderError::Correlation("unselected fresh Prepare binding"));
+        }
+        super::super::CompleteRestoreTransferProjection::from_envelope_with_fresh_binding_data(envelope)?;
+    } else {
+        super::super::CompleteRestoreTransferProjection::from_envelope(envelope)?;
+    }
     match (envelope.message, body) {
         (MessageKind::Request, ReceivedBody::Request(request))
             if matches!(request.as_ref(), RequestBody::Begin(begin)

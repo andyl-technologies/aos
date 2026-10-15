@@ -495,3 +495,6 @@ impl OriginalNativeServiceOwned11<'_> {
         self.ensure_origin_and_cut()
     }
 }
+
+#[path = "restore_allocation.rs"]
+mod restore_allocation;

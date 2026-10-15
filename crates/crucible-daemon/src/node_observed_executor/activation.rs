@@ -12,6 +12,7 @@ use crucible_cas::content_store::{
 use crucible_node_contract::canonical;
 
 mod complete;
+mod requested_storage;
 
 /// Publishes an activation event into durable content and an immutable ref slot.
 ///

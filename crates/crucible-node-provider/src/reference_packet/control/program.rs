@@ -314,3 +314,73 @@ impl NativeProgram {
         }
     }
 }
+
+impl NativeProgram {
+    pub(super) fn authenticate_original_capture_cut(
+        &self,
+        cut: Position,
+    ) -> Result<Position, ProviderError> {
+        match self {
+            Self::OutputOnly(program) => program.authenticate_original_capture_cut(cut),
+            Self::Connected(program) => program.authenticate_original_capture_cut(cut),
+            Self::RestorationInProgress => {
+                Err(ProviderError::Conflict("original Capture model incomplete"))
+            }
+        }
+    }
+
+    pub(super) fn quote_original_capture_inventory(
+        &self,
+        maximum: usize,
+    ) -> Result<
+        crate::reference_packet::serialization_storage::NativeSerializationStorageData,
+        ProviderError,
+    > {
+        use crate::reference_packet::serialization_storage::actual_serialization_storage_data;
+        use crate::retained_metadata::MetadataObserver;
+        let mut observer = MetadataObserver::new();
+        match self {
+            Self::OutputOnly(program) => {
+                let view = program.borrow_original_capture_inventory(&mut observer)?;
+                let mut formatter = MetadataObserver::new();
+                view.observe_serialized_formatter_fields(&mut formatter)?;
+                actual_serialization_storage_data(&view, formatter.finish(), maximum)
+            }
+            Self::Connected(program) => {
+                let view = program.borrow_original_capture_inventory(&mut observer)?;
+                let mut formatter = MetadataObserver::new();
+                view.observe_serialized_formatter_fields(&mut formatter)?;
+                actual_serialization_storage_data(&view, formatter.finish(), maximum)
+            }
+            Self::RestorationInProgress => {
+                Err(ProviderError::Conflict("original Capture model incomplete"))
+            }
+        }
+    }
+
+    pub(super) fn original_capture_inventory_hash(
+        &self,
+        maximum: usize,
+    ) -> Result<HashRef, ProviderError> {
+        use crate::retained_metadata::MetadataObserver;
+        // Recount the same actual borrowed serializer before the canonical/hash
+        // helper allocates. The caller admits this whole independent phase.
+        self.quote_original_capture_inventory(maximum)?;
+        let mut observer = MetadataObserver::new();
+        match self {
+            Self::OutputOnly(program) => canonical::json_hash(
+                "source-owned.packet-inventory.v1",
+                &program.borrow_original_capture_inventory(&mut observer)?,
+            )
+            .map_err(Into::into),
+            Self::Connected(program) => canonical::json_hash(
+                "source-owned.packet-connected-inventory/4",
+                &program.borrow_original_capture_inventory(&mut observer)?,
+            )
+            .map_err(Into::into),
+            Self::RestorationInProgress => {
+                Err(ProviderError::Conflict("original Capture model incomplete"))
+            }
+        }
+    }
+}

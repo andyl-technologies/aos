@@ -63,6 +63,7 @@ struct NativeLaunchPeer {
     reservation: Option<CnpSemanticLaunchReservation>,
     guard: Option<CnpSemanticLaunchGuard>,
     command: Option<Command>,
+    command_stdin_owned: bool,
     attempted: bool,
     written: bool,
 }
@@ -79,6 +80,7 @@ impl NativeLaunchOwners {
                 reservation: None,
                 guard: None,
                 command: None,
+                command_stdin_owned: false,
                 attempted: false,
                 written: false,
             }),
@@ -106,11 +108,19 @@ impl PacketCompleteReportStartupHolder {
         if !held.completed.get() {
             return Err(RuntimeError::OwnerUnavailable);
         }
-        let mut owners = held
+        held.stage_original_native_launch_inputs_data(incoming)
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn stage_original_native_launch_inputs_data(
+        &self,
+        incoming: &mut [Option<PacketCompleteNativeLaunchInputs>; 3],
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_native_origin_data()?;
+        let mut owners = self
             .native_launches
             .try_borrow_mut()
             .map_err(|_| RuntimeError::OwnerBusy)?;
-        if held.native_attempted.get()
+        if self.native_attempted.get()
             || owners.installed
             || incoming.iter().any(Option::is_none)
             || owners.peers.iter().any(|peer| peer.inputs.is_some())
@@ -122,7 +132,7 @@ impl PacketCompleteReportStartupHolder {
             peer.inputs = incoming.take();
         }
         for (member, peer) in owners.peers.iter().enumerate() {
-            held.authenticate_native_launch_input_data(
+            self.authenticate_native_launch_input_data(
                 member,
                 peer.inputs.as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
             )?;
@@ -244,6 +254,21 @@ impl PacketCompleteReportStartupHolder {
         &self,
         counter: &mut Counter,
     ) -> Result<(), RuntimeError> {
+        self.charge_original_launch_storage_data(counter, false)
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn charge_original_live_launch_storage_precredit_data(
+        &self,
+        counter: &mut Counter,
+    ) -> Result<(), RuntimeError> {
+        self.charge_original_launch_storage_data(counter, true)
+    }
+
+    fn charge_original_launch_storage_data(
+        &self,
+        counter: &mut Counter,
+        live_scene: bool,
+    ) -> Result<(), RuntimeError> {
         self.authenticate_native_origin_data()?;
         let owners = self
             .native_launches
@@ -253,25 +278,7 @@ impl PacketCompleteReportStartupHolder {
             let Some(inputs) = &peer.inputs else {
                 continue;
             };
-            for path in [&inputs.directory, &inputs.executable_path, &inputs.socket] {
-                counter
-                    .charge(path)
-                    .map_err(|_| RuntimeError::ResourceLimit)?;
-            }
-            counter
-                .charge(&inputs.executable)
-                .map_err(|_| RuntimeError::ResourceLimit)?;
-            if let Some(slot) = &inputs.slot {
-                counter
-                    .add(std::mem::size_of_val(slot.as_ref()))
-                    .map_err(|_| RuntimeError::ResourceLimit)?;
-                counter
-                    .add(
-                        slot.retained_requested_storage_precredit_data(counter.remaining())?
-                            .ok_or(RuntimeError::UnsupportedFacet)?,
-                    )
-                    .map_err(|_| RuntimeError::ResourceLimit)?;
-            }
+            Self::charge_original_native_launch_input_storage_data(inputs, counter)?;
             if let Some(wire) = &peer.wire {
                 counter
                     .add(wire.retained_requested_storage_precredit_data(counter.remaining())?)
@@ -293,11 +300,55 @@ impl PacketCompleteReportStartupHolder {
                     .add(closed_command_requested_storage_data(inputs)?)
                     .map_err(|_| RuntimeError::ResourceLimit)?;
             }
-            // Unknown live custody is never replaced by zero. A later HOST
-            // SDK construction action needs its own genuine producer/owner join.
-            if peer.guard.is_some() {
-                return Err(RuntimeError::UnsupportedFacet);
+            // The selected live scene requires the genuine typed guard row.
+            // Other callers still refuse live or partial custody as unknown.
+            if let Some(guard) = &peer.guard {
+                if !live_scene {
+                    return Err(RuntimeError::UnsupportedFacet);
+                }
+                // These guards have not entered the opaque SDK continuation.
+                // Attached/partial protocol custody moves into that retained
+                // owner and is counted there with its actual known witnesses.
+                counter
+                    .add(
+                        guard.original_initial_lifecycle_retained_storage_precredit_data(
+                            None,
+                            None,
+                            counter.remaining(),
+                        )?,
+                    )
+                    .map_err(|_| RuntimeError::ResourceLimit)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Charges actual retained launch paths, full content identity and concrete slot backing.
+    ///
+    /// # Errors
+    /// Refuses unknown slot ownership or exhausted requested byte credit.
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn charge_original_native_launch_input_storage_data(
+        inputs: &PacketCompleteNativeLaunchInputs,
+        counter: &mut Counter,
+    ) -> Result<(), RuntimeError> {
+        for path in [&inputs.directory, &inputs.executable_path, &inputs.socket] {
+            counter
+                .charge(path)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        }
+        counter
+            .charge(&inputs.executable)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        if let Some(slot) = &inputs.slot {
+            counter
+                .add(std::mem::size_of_val(slot.as_ref()))
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+            counter
+                .add(
+                    slot.retained_requested_storage_precredit_data(counter.remaining())?
+                        .ok_or(RuntimeError::UnsupportedFacet)?,
+                )
+                .map_err(|_| RuntimeError::ResourceLimit)?;
         }
         Ok(())
     }
@@ -308,8 +359,9 @@ impl PacketCompleteReportStartupHolder {
     /// Child. The same reservation receives the Child before authentication;
     /// failed guard transfer restores that reservation in its fixed slot.
     /// Error and unwind keep all original owners and partial write cursors.
-    /// This is not HOST SDK construction or completed once-Admit; the separate
-    /// prospective HOST connection producer remains unavailable.
+    /// The distinct installed HOST SDK action constructs its original owners
+    /// after native finalization and before boot-material or Child loans.
+    /// Initial protocol methods and completed once-Admit remain separate.
     ///
     /// # Errors
     /// Refuses missing inputs/admission, a changed owner/capacity, unsupported
@@ -318,6 +370,7 @@ impl PacketCompleteReportStartupHolder {
         original: &Rc<RefCell<Self>>,
     ) -> Result<(), RuntimeError> {
         Self::finalize_original_native_startup(original)?;
+        Self::prepare_original_native_host_sdk(original)?;
         let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
         held.authenticate_native_origin_data()?;
         let mut owners = held
@@ -385,6 +438,9 @@ impl PacketCompleteReportStartupHolder {
                 .take()
                 .ok_or(RuntimeError::OwnerUnavailable)?;
             command.stdin(Stdio::from(OwnedFd::from(reader)));
+            // Command retains the original stdin fd after spawn as well. This
+            // assignment immediately follows its nonfallible ownership move.
+            peer.command_stdin_owned = true;
         }
         for (member, peer) in owners.peers.iter_mut().enumerate() {
             if peer.attempted {
@@ -439,6 +495,69 @@ impl PacketCompleteReportStartupHolder {
             *written = true;
         }
         held.authenticate_native_origin_data()
+    }
+}
+
+impl PacketCompleteReportStartupHolder {
+    /// Retains and connects an existing original control stream after wire delivery.
+    ///
+    /// Socket acquisition is a separately admitted caller input. This consumer
+    /// creates no socket and extracts no controller. The same retained launch
+    /// guard, SDK attempt and known supervisor authenticate Hello; uncertainty
+    /// keeps the original stream in either this holder or the partial SDK root.
+    ///
+    /// # Errors
+    /// Refuses an incomplete or foreign launch, occupied stream, repeated SDK
+    /// connection, unavailable known supervisor or failed original Hello.
+    pub fn connect_original_native_host_stream_into(
+        original: &Rc<RefCell<Self>>,
+        member: usize,
+        incoming: &mut Option<UnixStream>,
+    ) -> Result<(), RuntimeError> {
+        let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        held.authenticate_native_origin_data()?;
+        if !held.host_sdk_completed.get() || held.host_sdk_in_flight.get() {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        let owners = held
+            .native_launches
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let peer = owners
+            .peers
+            .get(member)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if !peer.written {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        let guard = peer.guard.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        let mut streams = held
+            .host_sdk_streams
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let stream = streams
+            .get_mut(member)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if stream.is_some() || incoming.is_none() {
+            return Err(RuntimeError::DuplicateOperation);
+        }
+        let mut outputs = held
+            .host_sdk_outputs
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let output = outputs
+            .get_mut(member)
+            .and_then(Option::as_mut)
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let attempted = held
+            .host_sdk_connect_attempted
+            .get(member)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if attempted.replace(true) {
+            return Err(RuntimeError::DuplicateOperation);
+        }
+        *stream = incoming.take();
+        held.connect_original_host_sdk_peer_data(member, output, guard, stream)
     }
 }
 
@@ -499,5 +618,153 @@ impl Write for NativeDeadlineWriter<'_> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.stream.flush()
+    }
+}
+
+impl NativeLaunchOwners {
+    /// Lends the same written original guard and its retained control path.
+    ///
+    /// # Errors
+    /// Refuses an invalid peer, incomplete launch or absent original owners.
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn original_guard_and_socket_data(
+        &self,
+        selected: usize,
+    ) -> Result<(&CnpSemanticLaunchGuard, &std::path::Path), RuntimeError> {
+        let peer = self
+            .peers
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if !peer.attempted || !peer.written {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        Ok((
+            peer.guard.as_ref().ok_or(RuntimeError::OwnerUnavailable)?,
+            peer.inputs
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?
+                .socket
+                .as_path(),
+        ))
+    }
+}
+
+impl NativeLaunchOwners {
+    /// Lends the retained control path after its original guard moves into preparation.
+    ///
+    /// # Errors
+    /// Refuses an invalid peer, incomplete launch or absent original inputs.
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn original_socket_data(
+        &self,
+        selected: usize,
+    ) -> Result<&std::path::Path, RuntimeError> {
+        let peer = self
+            .peers
+            .get(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if !peer.attempted || !peer.written {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        Ok(peer
+            .inputs
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .socket
+            .as_path())
+    }
+
+    /// Lends the actual guard output slot to the closed Source lifecycle consumer.
+    ///
+    /// # Errors
+    /// Refuses an invalid peer, incomplete launch or already transferred guard.
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn original_guard_slot_for_initial_lifecycle(
+        &mut self,
+        selected: usize,
+    ) -> Result<&mut Option<CnpSemanticLaunchGuard>, RuntimeError> {
+        let peer = self
+            .peers
+            .get_mut(selected)
+            .ok_or(RuntimeError::ForeignAuthority)?;
+        if !peer.attempted || !peer.written || peer.guard.is_none() {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        Ok(&mut peer.guard)
+    }
+}
+
+impl PacketCompleteReportStartupHolder {
+    /// Retires the same original native guards into their reserved supervision slots.
+    ///
+    /// # Errors
+    /// Refuses a conflicting native bank loan; untransferred owners stay retained.
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn retire_original_scene_native_guards(
+        &self,
+    ) -> Result<(), RuntimeError> {
+        let mut owners = self
+            .native_launches
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        for peer in &mut owners.peers {
+            if let Some(guard) = &mut peer.guard {
+                guard.retire_original();
+            }
+            if !peer.attempted
+                && peer.reservation.is_none()
+                && peer.guard.is_none()
+                && peer.command.is_none()
+            {
+                if let Some(inputs) = &mut peer.inputs {
+                    // This concrete slot has never received native custody.
+                    // Releasing only that unused reservation clears expected;
+                    // all bootstrap, source and partial-action owners remain.
+                    drop(inputs.slot.take());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl NativeLaunchOwners {
+    /// Counts actual bootstrap, closed Command and selected native custody descriptors.
+    ///
+    /// # Errors
+    /// Refuses unknown slot, reservation or guard backing or checked count overflow.
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn retained_descriptor_views_precredit_data(
+        &self,
+    ) -> Result<usize, RuntimeError> {
+        let mut total = 0usize;
+        for peer in &self.peers {
+            if let Some(inputs) = &peer.inputs {
+                total = total
+                    .checked_add(usize::from(inputs.bootstrap_reader.is_some()))
+                    .and_then(|sum| sum.checked_add(usize::from(inputs.bootstrap_writer.is_some())))
+                    .ok_or(RuntimeError::ResourceLimit)?;
+                if let Some(slot) = &inputs.slot {
+                    total = total
+                        .checked_add(
+                            slot.retained_descriptor_views_precredit_data()?
+                                .ok_or(RuntimeError::UnsupportedFacet)?,
+                        )
+                        .ok_or(RuntimeError::ResourceLimit)?;
+                }
+            }
+            if peer.command_stdin_owned {
+                if peer.command.is_none() {
+                    return Err(RuntimeError::ForeignAuthority);
+                }
+                total = total.checked_add(1).ok_or(RuntimeError::ResourceLimit)?;
+            }
+            if let Some(reservation) = &peer.reservation {
+                total = total
+                    .checked_add(reservation.retained_descriptor_views_precredit_data()?)
+                    .ok_or(RuntimeError::ResourceLimit)?;
+            }
+            if let Some(guard) = &peer.guard {
+                total = total
+                    .checked_add(guard.retained_descriptor_views_precredit_data()?)
+                    .ok_or(RuntimeError::ResourceLimit)?;
+            }
+        }
+        Ok(total)
     }
 }

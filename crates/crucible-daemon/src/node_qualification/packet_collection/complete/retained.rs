@@ -12,7 +12,8 @@ use std::{
 };
 
 use crucible::node_state::{
-    borrowed_btree_map_requested_storage, borrowed_btree_set_requested_storage,
+    borrowed_btree_map_requested_storage_precredit_data as borrowed_btree_map_requested_storage,
+    borrowed_btree_set_requested_storage_precredit_data as borrowed_btree_set_requested_storage,
 };
 use crucible_node_contract::{
     Bytes, ConnectionDescriptor, ContentRef, Endpoint, HashRef, Id, NodeBindingRef, SchemaRef,
@@ -30,7 +31,7 @@ use crucible_node_provider::retained_metadata::RetainedProtocolMetadataFacts;
 
 const SHARED_OWNERS: usize = 128;
 
-pub(in crate::node_qualification::packet_collection) struct Counter {
+pub(crate) struct Counter {
     bytes: usize,
     maximum: usize,
     shared: [Option<*const ()>; SHARED_OWNERS],
@@ -38,7 +39,7 @@ pub(in crate::node_qualification::packet_collection) struct Counter {
 }
 
 impl Counter {
-    pub(in crate::node_qualification::packet_collection) fn new(maximum: usize) -> Self {
+    pub(crate) fn new(maximum: usize) -> Self {
         Self {
             bytes: 0,
             maximum,
@@ -47,18 +48,15 @@ impl Counter {
         }
     }
 
-    pub(in crate::node_qualification::packet_collection) fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         self.bytes
     }
 
-    pub(in crate::node_qualification::packet_collection) fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         self.maximum - self.bytes
     }
 
-    pub(in crate::node_qualification::packet_collection) fn add(
-        &mut self,
-        bytes: usize,
-    ) -> Result<(), QualificationError> {
+    pub(crate) fn add(&mut self, bytes: usize) -> Result<(), QualificationError> {
         self.bytes = self
             .bytes
             .checked_add(bytes)
@@ -67,14 +65,35 @@ impl Counter {
         Ok(())
     }
 
-    pub(in crate::node_qualification::packet_collection) fn charge(
-        &mut self,
-        value: &impl Owned,
-    ) -> Result<(), QualificationError> {
+    pub(crate) fn charge(&mut self, value: &impl Owned) -> Result<(), QualificationError> {
         value.charge(self)
     }
 
-    pub(in crate::node_qualification::packet_collection) fn metadata(
+    /// Consumes only existing borrowed Core owner facts; no virtual callback runs.
+    pub(crate) fn core(
+        &mut self,
+        facts: &crucible::node_contract::RetainedCoreOwnerStorage<'_>,
+    ) -> Result<(), QualificationError> {
+        self.add(facts.independent_bytes())?;
+        for root in facts.shared_allocations() {
+            let identity = root.identity();
+            if identity.is_null() {
+                return Err(exhausted());
+            }
+            if self.shared[..self.shared_used].contains(&Some(identity)) {
+                continue;
+            }
+            if self.shared_used == self.shared.len() {
+                return Err(exhausted());
+            }
+            self.add(root.requested_bytes())?;
+            self.shared[self.shared_used] = Some(identity);
+            self.shared_used += 1;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn metadata(
         &mut self,
         facts: &RetainedProtocolMetadataFacts,
     ) -> Result<(), QualificationError> {
@@ -88,22 +107,16 @@ impl Counter {
     }
 
     /// Admits an actual shared allocation once; callers then walk its fields.
-    pub(in crate::node_qualification::packet_collection) fn rc<T>(
-        &mut self,
-        owner: &Rc<T>,
-    ) -> Result<bool, QualificationError> {
+    pub(crate) fn rc<T>(&mut self, owner: &Rc<T>) -> Result<bool, QualificationError> {
         self.shared_header(Rc::as_ptr(owner).cast(), size_of::<T>(), align_of::<T>())
     }
 
     /// Charges a retained Weak without marking any strong payload as walked.
-    pub(in crate::node_qualification::packet_collection) fn weak<T>(
-        &mut self,
-        _owner: &Weak<T>,
-    ) -> Result<(), QualificationError> {
+    pub(crate) fn weak<T>(&mut self, _owner: &Weak<T>) -> Result<(), QualificationError> {
         self.add(shared_requested_storage(size_of::<T>(), align_of::<T>())?)
     }
 
-    pub(in crate::node_qualification::packet_collection) fn shared_header(
+    pub(crate) fn shared_header(
         &mut self,
         identity: *const (),
         inline: usize,
@@ -124,7 +137,7 @@ impl Counter {
 }
 
 // Uses the same checked requested layout for strong and conservative Weak views.
-pub(in crate::node_qualification::packet_collection) fn shared_requested_storage(
+pub(crate) fn shared_requested_storage(
     inline: usize,
     alignment: usize,
 ) -> Result<usize, QualificationError> {
@@ -139,7 +152,7 @@ pub(in crate::node_qualification::packet_collection) fn shared_requested_storage
         .ok_or_else(exhausted)
 }
 
-pub(in crate::node_qualification::packet_collection) trait Owned {
+pub(crate) trait Owned {
     fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError>;
 }
 
@@ -404,6 +417,239 @@ mod tests {
         assert_eq!(counter.bytes(), one);
         assert!(counter.rc(&independent)?);
         assert_eq!(counter.bytes(), 2 * one);
+        Ok(())
+    }
+}
+
+impl Owned for crucible_node_contract::NodeDescriptor {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let bytes =
+            crucible::node_contract::NodeRuntime::original_descriptor_requested_storage_data(
+                self,
+                counter.remaining(),
+            )
+            .map_err(|_| exhausted())?;
+        counter.add(bytes)
+    }
+}
+
+impl Owned for crucible_node_contract::BindingCompatibility {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let bytes = crucible::node_contract::NodeRuntime::original_binding_requested_storage_data(
+            self,
+            counter.remaining(),
+        )
+        .map_err(|_| exhausted())?;
+        counter.add(bytes)
+    }
+}
+
+impl Owned for crucible_node_contract::OwnerBinding {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let bytes =
+            crucible::node_contract::NodeRuntime::original_owner_binding_requested_storage_data(
+                self,
+                counter.remaining(),
+            )
+            .map_err(|_| exhausted())?;
+        counter.add(bytes)
+    }
+}
+
+impl Owned for crucible::node_contract::OperationOutcome {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let bytes = crucible::node_contract::NodeRuntime::original_outcome_requested_storage_data(
+            self,
+            counter.remaining(),
+        )
+        .map_err(|_| exhausted())?;
+        counter.add(bytes)
+    }
+}
+
+fields!(crucible::node_scheduling::InputPayload; reference, bytes);
+fields!(crucible_node_contract::ResourceLimits; cpu_budget_ns, memory_bytes, writable_bytes, processes, descriptors, pending_events, content_bytes, maximum_operations, extensions);
+fields!(crate::node_scenario::NodeScenario; format, version, world, descriptors, compatibility, owners, requirements, content);
+fields!(crate::node_scenario::ScenarioContent; reference, bytes);
+fields!(crucible::node_admission::ScenarioRequirements; deterministic, exact_capture, exact_continuation, durable_restart, isolated_fork, accepted_quantized_nodes, accepted_nondeterministic_nodes, accepted_limited_state_nodes, accepted_visibility_conversions);
+scalar!(bool);
+
+impl Owned for crate::node_qualification::QualificationError {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        match self {
+            Self::Contract(error) => match error {
+                crucible_node_contract::ContractError::Invalid { field: _, reason } => {
+                    counter.charge(reason)
+                }
+                crucible_node_contract::ContractError::Overflow => Ok(()),
+                crucible_node_contract::ContractError::Json(_) => Err(QualificationError::Refused(
+                    "opaque Clock JSON error storage",
+                )),
+            },
+            Self::Refused(_) => Ok(()),
+            Self::Evidence(reason) => counter.charge(reason),
+        }
+    }
+}
+
+impl Owned for crucible::node_contract::WorldActivation {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let facts = self
+            .retained_requested_storage_data(counter.remaining())
+            .map_err(|_| exhausted())?;
+        counter.core(&facts)
+    }
+}
+
+impl Owned for crucible::node_contract::OperationToken {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let facts = self
+            .retained_requested_storage_data(counter.remaining())
+            .map_err(|_| exhausted())?;
+        counter.core(&facts)
+    }
+}
+
+fields!(crucible::node_contract::NativeRuntimeContinuationEvidence; proof, input_acknowledgements);
+fields!(crucible::node_state::RestoredOwnerAttestation; identity, state_domain_ids, binding_hashes, cut, event_ordinal, state_inventory, ready_receipt);
+
+impl Owned for crucible::node_scheduling::NativeInputAcknowledgement {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let bytes =
+            crucible::node_contract::NodeRuntime::original_input_ack_requested_storage_data(
+                self,
+                counter.remaining(),
+            )
+            .map_err(|_| exhausted())?;
+        counter.add(bytes)
+    }
+}
+
+impl Owned for crucible::node_contract::RuntimeError {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        use crucible::node_contract::RuntimeError::*;
+        match self {
+            SchedulerRefused(reason) => counter.charge(reason),
+            ResourceLimit
+            | ThreadAffinity
+            | UnknownNode
+            | InvalidRoute
+            | DuplicateOperation
+            | OwnerBusy
+            | OwnerUnavailable
+            | NotActivated
+            | ForeignAuthority
+            | UnsupportedFacet
+            | InvalidTiming
+            | InvalidReceipt
+            | OutstandingObligations
+            | PublicationFailed => Ok(()),
+        }
+    }
+}
+
+impl Owned for crucible::node_contract::OperationFailure {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let Self { reason, effects: _ } = self;
+        counter.charge(reason)
+    }
+}
+
+impl Owned for crucible::node_contract::RuntimePollFailure {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        match self {
+            Self::Admission(error) => counter.charge(error),
+            Self::Native(error) => counter.charge(error),
+        }
+    }
+}
+
+impl Owned for crucible::node_admission::AdmittedGraph {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let bytes = self
+            .original_retained_requested_storage_precredit_data(counter.remaining())
+            .map_err(|_| exhausted())?;
+        counter.add(bytes)
+    }
+}
+
+impl Owned for crucible::node_contract::NodeRuntime {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let bytes = self
+            .original_retained_requested_storage_precredit_data(counter.remaining())
+            .map_err(|_| exhausted())?;
+        counter.add(bytes)
+    }
+}
+
+impl Owned for crucible::node_contract::QuarantinedRuntime {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let bytes = self
+            .original_retained_requested_storage_precredit_data(counter.remaining())
+            .map_err(|_| exhausted())?;
+        counter.add(bytes)
+    }
+}
+
+impl Owned for crucible::node_state::NativeArchiveRecord {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let bytes = self
+            .retained_record_requested_storage_data()
+            .map_err(|_| exhausted())?
+            .checked_sub(size_of::<Self>())
+            .ok_or_else(exhausted)?;
+        counter.add(bytes)
+    }
+}
+
+impl Owned for crucible_campaign::ExecutionId {
+    fn charge(&self, _: &mut Counter) -> Result<(), QualificationError> {
+        Ok(())
+    }
+}
+
+fields!(crucible::node_contract::ProviderPreparationPlan; descriptors, bindings);
+
+impl Owned for crucible::node_contract::RuntimeSnapshot {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        let bytes = crucible::node_contract::NodeRuntime::original_snapshot_requested_storage_data(
+            self,
+            counter.remaining(),
+        )
+        .map_err(|_| exhausted())?;
+        counter.add(bytes)
+    }
+}
+
+impl Owned for crucible_node_contract::ContractError {
+    fn charge(&self, counter: &mut Counter) -> Result<(), QualificationError> {
+        match self {
+            Self::Invalid { field: _, reason } => counter.charge(reason),
+            Self::Overflow => Ok(()),
+            Self::Json(_) => Err(QualificationError::Refused(
+                "opaque retained JSON error storage",
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod clock_root_tests {
+    use super::*;
+
+    #[test]
+    fn shared_roster_exhaustion_keeps_all_actual_owners_and_refuses_new_root()
+    -> Result<(), QualificationError> {
+        let originals: Vec<_> = (0..=SHARED_OWNERS).map(|value| Rc::new(value)).collect();
+        let mut counter = Counter::new(usize::MAX);
+        for original in &originals[..SHARED_OWNERS] {
+            assert!(counter.rc(original)?);
+        }
+        let before = counter.bytes();
+        assert!(counter.rc(&originals[SHARED_OWNERS]).is_err());
+        assert_eq!(counter.bytes(), before);
+        assert_eq!(originals.len(), SHARED_OWNERS + 1);
+        assert!(!counter.rc(&originals[0])?);
         Ok(())
     }
 }

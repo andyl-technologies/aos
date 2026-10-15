@@ -798,3 +798,30 @@ fn no_effect(error: impl std::fmt::Display) -> OperationFailure {
         reason: error.to_string(),
     }
 }
+
+impl crate::node_qualification::RetainedMetadataOwned for InstalledHostStateFactory {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), crate::node_qualification::QualificationError> {
+        use crate::node_qualification::QualificationError;
+        let Self {
+            scenario,
+            host_identity,
+            host_executable,
+            objects,
+            selections,
+            capability_resolution,
+        } = self;
+        if capability_resolution.is_some() {
+            return Err(QualificationError::Refused(
+                "unsupported Clock capability source owner",
+            ));
+        }
+        counter.charge(scenario)?;
+        counter.charge(host_identity)?;
+        counter.charge(host_executable)?;
+        counter.charge(objects)?;
+        counter.charge(selections)
+    }
+}

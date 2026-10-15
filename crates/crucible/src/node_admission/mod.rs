@@ -462,3 +462,16 @@ pub use conformance::{
 pub(crate) use conformance::{
     NativeStartupRows, OriginalNativeStartupMember, OriginalNativeStartupQuote,
 };
+
+pub use conformance::{
+    CompleteOriginalNativeHostStartupAdmission, OriginalNativeHostStartupMemberScope,
+    OriginalNativeHostStartupPolicy, OriginalNativeHostStartupScope,
+    OriginalNativeHostStartupStorage,
+};
+pub(crate) use conformance::{OriginalNativeHostStartupMember, OriginalNativeHostStartupQuote};
+
+pub use conformance::{
+    CompleteOriginalHostInitialLifecycleWindow, OriginalHostInitialLifecycleMemberScope,
+    OriginalHostInitialLifecyclePolicy, OriginalHostInitialLifecycleScope,
+    OriginalHostInitialLifecycleStorage,
+};

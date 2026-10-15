@@ -440,3 +440,167 @@ impl PacketCompleteSemanticSource {
 #[cfg(test)]
 #[path = "retained_storage/prebirth_precredit_tests.rs"]
 mod prebirth_precredit_tests;
+
+impl PacketCompleteSemanticSource {
+    /// Counts actual Source backing during the closed initial protocol phase.
+    ///
+    /// This data observer permits only an actually absent registry/static-input
+    /// allocation before that phase constructs it. Every present owner is walked
+    /// through the same typed component observers, including unresolved native
+    /// reads. It neither clears Unknowns nor grants preparation or native rights.
+    ///
+    /// # Errors
+    /// Refuses foreign/failed original custody, busy or unsupported concrete
+    /// owners and a checked complete sum above the supplied ceiling.
+    pub(crate) fn original_initial_lifecycle_source_storage_data(
+        self: &Rc<Self>,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        self.storage_origin_with_error::<RuntimeError>()?;
+        let holders =
+            self.original_complete_holder_storage_data_with_error::<RuntimeError>(maximum)?;
+        let installation =
+            self.original_complete_installation_storage_data_with_error::<RuntimeError>(maximum)?;
+        let boot = self
+            .original_complete_boot_association_storage_data_with_error::<RuntimeError>(maximum)?;
+        let lineage = match &self.original {
+            CompletePacketOriginal::Producer(_) => 0,
+            CompletePacketOriginal::Reactive(source) => retained_values::sum_with_error::<
+                RuntimeError,
+                _,
+            >(
+                [
+                    source.complete_initial_lifecycle_input_static_storage_data(maximum)?,
+                    source.complete_retained_lineage_storage_with_error::<RuntimeError>(maximum)?,
+                ],
+                maximum,
+            )?,
+        };
+        let capture =
+            self.original_complete_capture_bank_storage_data_with_error::<RuntimeError>(maximum)?;
+        let execution =
+            self.original_complete_execution_storage_data_with_error::<RuntimeError>(maximum)?;
+        let registry_slot = self
+            .original_extension_registry
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let registry = match registry_slot.as_ref() {
+            Some(owner) => Self::complete_retained_metadata_storage_precredit_data(
+                &owner
+                    .original_retained_metadata_facts()
+                    .map_err(|_| RuntimeError::ForeignAuthority)?,
+                maximum,
+            )?,
+            None if !self.registry_retention_attempted.get()
+                && !self.registry_retention_failed.get() =>
+            {
+                0
+            }
+            None => return Err(RuntimeError::OwnerUnavailable),
+        };
+        let registry_capture =
+            self.original_registry_capture_storage_data_with_error::<RuntimeError>(maximum)?;
+        let underlying = match &self.original {
+            CompletePacketOriginal::Producer(source) => source
+                .complete_retained_native_read_storage_data_with_error::<RuntimeError>(maximum)?,
+            CompletePacketOriginal::Reactive(source) => source
+                .complete_retained_native_read_storage_data_with_error::<RuntimeError>(maximum)?,
+        };
+        let preconstruction = self
+            .preconstruction
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let preconstruction_read = preconstruction
+            .as_ref()
+            .map(|original| {
+                original.retained_native_read_storage_data_with_error::<RuntimeError>(maximum)
+            })
+            .transpose()?;
+        let mut total = retained_values::sum_with_error::<RuntimeError, _>(
+            [
+                holders,
+                installation,
+                boot,
+                lineage,
+                capture,
+                execution,
+                registry,
+                registry_capture,
+            ],
+            maximum,
+        )?;
+        for read in [underlying, preconstruction_read].into_iter().flatten() {
+            total = retained_values::sum_with_error::<RuntimeError, _>(
+                [total, read.complete_requested_bytes_precredit_data()?],
+                maximum,
+            )?;
+        }
+        self.storage_origin_with_error::<RuntimeError>()?;
+        Ok(total)
+    }
+}
+
+impl PacketCompleteSemanticSource {
+    /// Counts actual private-birth and retained native-read File views.
+    ///
+    /// The externally retained effect receiver group and real process/SDK roots
+    /// are independent holder rows. The Source's snapshots and registry/emitter
+    /// aliases own bytes/typed metadata, with no new descriptor. Shared native
+    /// executable views are conservatively repeated; no PID/path lookup runs.
+    ///
+    /// # Errors
+    /// Refuses foreign origins, incomplete private birth, busy/unknown reads,
+    /// unsupported notification workers or checked descriptor-count overflow.
+    pub fn original_initial_lifecycle_descriptor_views_precredit_data(
+        &self,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        self.storage_origin_with_error::<RuntimeError>()?;
+        let birth = self
+            .ack_peer_birth
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let birth = birth.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        birth.authenticate_original_initial_lifecycle_data()?;
+        // OriginalAckPeerBirth owns exactly its one retained host_file.
+        let mut total = 1usize;
+        let underlying = match &self.original {
+            CompletePacketOriginal::Producer(source) => source
+                .complete_retained_native_read_storage_data_with_error::<RuntimeError>(
+                    usize::MAX,
+                )?,
+            CompletePacketOriginal::Reactive(source) => source
+                .complete_retained_native_read_storage_data_with_error::<RuntimeError>(
+                    usize::MAX,
+                )?,
+        };
+        let preconstruction = self
+            .preconstruction
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let preconstruction_read = preconstruction
+            .as_ref()
+            .map(|original| {
+                original.retained_native_read_storage_data_with_error::<RuntimeError>(usize::MAX)
+            })
+            .transpose()?;
+        for read in [underlying, preconstruction_read].into_iter().flatten() {
+            read.complete_requested_bytes_precredit_data()?;
+            // The concrete retained-read producer owns one OriginalExecutable
+            // File. Lease workers remain Unknown and refuse above.
+            total = total.checked_add(1).ok_or(RuntimeError::ResourceLimit)?;
+        }
+        let association = self
+            .ack_peer_association
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if let Some(association) = association.as_ref() {
+            total = total
+                .checked_add(association.initial_lifecycle_descriptor_views_data()?)
+                .ok_or(RuntimeError::ResourceLimit)?;
+        }
+        self.storage_origin_with_error::<RuntimeError>()?;
+        Ok(total)
+    }
+}

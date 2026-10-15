@@ -23,6 +23,7 @@ pub(super) struct Branch {
     pub(super) execution: ExecutionId,
     pub(super) catalog: InstalledNodeCatalog,
     pub(super) graph: Option<std::rc::Rc<AdmittedGraph>>,
+    pub(super) factory: Option<Rc<state::InstalledNormalClockStateFactory>>,
     pub(super) world: Option<Box<RestoredWorld>>,
     pub(super) expected: Option<ClockCase>,
     pub(super) future: Option<NativeArchiveRecord>,
@@ -195,6 +196,7 @@ impl OriginalClockStateProgramme {
                     2,
                 )?,
                 graph: None,
+                factory: None,
                 world: None,
                 expected: None,
                 future: None,
@@ -341,6 +343,9 @@ impl OriginalClockStateProgramme {
         let factory = branch
             .catalog
             .installed_normal_clock_state_factory(&self.profile)?;
+        // Preserve the concrete origin before staging or any factory callback.
+        // Later storage reads authenticate this same allocation, never a label.
+        branch.factory = Some(Rc::clone(&factory));
         let (graph, target) = branch.catalog.prepare_normal_clock_restore_graph(
             &self.profile,
             record,
@@ -653,5 +658,124 @@ impl OriginalClockStateProgramme {
                 .map_err(super::super::native)?;
         }
         self.origin.current()
+    }
+}
+
+impl crate::node_qualification::RetainedMetadataOwned for Branch {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        use std::mem::size_of;
+        let Self {
+            execution: _,
+            catalog,
+            graph,
+            factory,
+            world,
+            expected,
+            future,
+            attempted: _,
+            failure,
+        } = self;
+        if failure.is_some() {
+            // Opaque panic payloads/failed native ownership stay retained. No
+            // later construction receives zero credit for these unknown banks.
+            return Err(QualificationError::Refused(
+                "unsupported retained Clock restore failure storage",
+            ));
+        }
+        counter.charge(catalog)?;
+        if let Some(graph) = graph {
+            if counter.rc(graph)? {
+                counter.charge(graph.as_ref())?;
+            }
+        }
+        if let Some(factory) = factory {
+            if counter.rc(factory)? {
+                counter.charge(factory.as_ref())?;
+            }
+        }
+        if let Some(world) = world {
+            let typed = factory.as_ref().ok_or(QualificationError::Refused(
+                "Clock restored factory owner absent",
+            ))?;
+            // This retained concrete allocation came from the same branch's
+            // original catalog before the real driver callback. No arbitrary
+            // factory/enum label is accepted as a readonly staging promise.
+            let original: Rc<dyn crucible::node_state::NativeWorldFactory> = typed.clone();
+            counter.add(size_of::<RestoredWorld>())?;
+            let bytes = world
+                .original_closed_requested_storage_precredit_data(&original, counter.remaining())
+                .map_err(|_| {
+                    QualificationError::Refused("Clock restored world storage unavailable")
+                })?;
+            counter.add(bytes)?;
+        }
+        counter.charge(expected)?;
+        counter.charge(future)
+    }
+}
+
+impl crate::node_qualification::RetainedMetadataOwned for OriginalClockStateProgramme {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            origin,
+            profile,
+            archive,
+            artifact,
+            record,
+            original,
+            branches,
+            capture_attempted: _,
+            reopened: _,
+            compared: _,
+            failed: _,
+        } = self;
+        counter.charge(origin)?;
+        counter.charge(profile)?;
+        counter.add(archive.retained_requested_storage_precredit_data())?;
+        counter.charge(artifact)?;
+        counter.charge(record)?;
+        counter.charge(original)?;
+        counter.charge(branches)
+    }
+}
+
+impl OriginalClockStateProgramme {
+    pub(super) fn original_storage_scratch_data(&self) -> Result<usize, QualificationError> {
+        let mut scratch =
+            AdmittedGraph::original_retained_requested_storage_precredit_scratch_data();
+        for branch in &self.branches {
+            if branch.failure.is_some() {
+                return Err(QualificationError::Refused(
+                    "opaque Clock restoration scratch",
+                ));
+            }
+            if let Some(world) = &branch.world {
+                let factory = branch
+                    .factory
+                    .as_ref()
+                    .ok_or(QualificationError::Refused("Clock restored factory absent"))?;
+                let original: Rc<dyn crucible::node_state::NativeWorldFactory> = factory.clone();
+                scratch = scratch.max(
+                    world
+                        .original_closed_requested_storage_precredit_scratch_data(&original)
+                        .map_err(|_| {
+                            QualificationError::Refused("Clock restored owning scratch unavailable")
+                        })?,
+                );
+            }
+        }
+        scratch
+            .checked_add(std::mem::size_of::<
+                Rc<dyn crucible::node_state::NativeWorldFactory>,
+            >())
+            .ok_or(QualificationError::Refused(
+                "Clock restoration scratch overflow",
+            ))
     }
 }

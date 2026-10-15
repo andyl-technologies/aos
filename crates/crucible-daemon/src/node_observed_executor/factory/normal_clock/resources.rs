@@ -92,6 +92,35 @@ pub struct OriginalClockAggregateResources {
 }
 
 impl OriginalClockAggregateResources {
+    pub(super) fn charge_origin_storage_data(
+        &self,
+    ) -> Result<(), crate::node_qualification::QualificationError> {
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(crate::node_qualification::QualificationError::Refused(
+                "foreign Clock aggregate storage owner",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Lends the actual original writable environment, without a host pathname.
+    pub(super) fn environment_data(&self) -> Result<(u64, u64, u32, u64), RuntimeError> {
+        use std::os::unix::fs::MetadataExt;
+        self.authenticate_current()?;
+        let metadata = self
+            .root_file
+            .as_ref()
+            .ok_or(RuntimeError::OutstandingObligations)?
+            .metadata()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        Ok((
+            metadata.dev(),
+            metadata.ino(),
+            self.project_id,
+            self.maximum_inodes,
+        ))
+    }
+
     /// Retains the actual owner before acquiring its original quota descriptor.
     ///
     /// The process must already have finite hard CPU/address-space/descriptor
@@ -422,3 +451,39 @@ impl OriginalClockAggregateResources {
 #[cfg(test)]
 #[path = "resources/tests.rs"]
 mod tests;
+
+impl crate::node_qualification::RetainedMetadataOwned for OriginalClockAggregateResources {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), crate::node_qualification::QualificationError> {
+        use crate::node_qualification::QualificationError;
+        let Self {
+            process,
+            thread,
+            limits,
+            ceilings: _,
+            root,
+            quota,
+            root_file: _,
+            project_id: _,
+            maximum_inodes: _,
+            state_attempted: _,
+            state_directories: _,
+            failed: _,
+        } = self;
+        if *process != std::process::id() || *thread != std::thread::current().id() {
+            return Err(QualificationError::Refused(
+                "foreign Clock aggregate storage owner",
+            ));
+        }
+        // Kernel enforcement/currentness remains a separate permission check.
+        // File/OwnedFd slots are inline; this observes requested userspace data.
+        counter.charge(limits)?;
+        counter.charge(root)?;
+        if let Some(quota) = quota {
+            counter.add(quota.retained_requested_storage_data())?;
+        }
+        Ok(())
+    }
+}

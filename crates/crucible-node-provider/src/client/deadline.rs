@@ -332,3 +332,19 @@ impl DeadlineStream {
         deadline.observe_unique_capture_metadata(roots, observer)
     }
 }
+
+impl ExchangeDeadline {
+    pub(crate) fn original_host_startup_allocation_layout_data()
+    -> Result<usize, crate::ProviderError> {
+        std::mem::size_of::<Cell<OperationalDeadline>>()
+            .checked_add(
+                crate::retained_metadata::requested_storage::shared_header_storage_data(
+                    1,
+                    std::mem::align_of::<Cell<OperationalDeadline>>(),
+                )?,
+            )
+            .ok_or(crate::ProviderError::ResourceExhausted(
+                "original host deadline layout",
+            ))
+    }
+}

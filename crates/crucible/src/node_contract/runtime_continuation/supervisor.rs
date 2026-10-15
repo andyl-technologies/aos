@@ -417,6 +417,34 @@ impl QueueSlot {
 }
 
 impl RuntimeCustodyQueue {
+    /// Counts the queue observer's compiled counter and overlapping borrow headers.
+    ///
+    /// This fixed local data window grants no cleanup or allocation authority.
+    /// Compiler-generated frames, allocator residency and kernel resources are
+    /// outside this requested-storage observation.
+    ///
+    /// # Errors
+    /// Refuses checked layout arithmetic overflow.
+    pub fn retained_requested_storage_counter_scratch_data() -> Result<usize, RuntimeError> {
+        use crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter;
+        std::mem::size_of::<RetainedRuntimeCounter>()
+            .checked_add(std::mem::size_of::<std::cell::Ref<'_, Option<Waker>>>())
+            .and_then(|bytes| {
+                bytes.checked_add(std::mem::size_of::<
+                    std::cell::Ref<'_, Option<Rc<QueueInner>>>,
+                >())
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(std::mem::size_of::<
+                    std::cell::Ref<'_, Option<WholeRuntimeCustody>>,
+                >())
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(std::mem::size_of::<Result<Option<usize>, RuntimeError>>())
+            })
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+
     /// Reports actual retained queue backing without cleanup or native callbacks.
     ///
     /// # Errors
@@ -519,5 +547,38 @@ impl RuntimeCustodyQueue {
             return Err(RuntimeError::ForeignAuthority);
         }
         Ok(())
+    }
+}
+
+impl RuntimeCustodyQueue {
+    /// Quotes the requested storage of one original concrete queue reservation.
+    ///
+    /// This is data for an installed caller's preallocation check. It counts the
+    /// actual QueueSlot Box and conservatively uses each retained activation
+    /// capacity for its forthcoming derived Clone request. The actual queue,
+    /// notifier are conservatively repeated by the forthcoming slot's own data
+    /// observer. The original activation and fixed observation bank are separate.
+    /// No runtime, activation or reclamation permission follows from this row.
+    ///
+    /// # Errors
+    /// Refuses foreign creator custody, checked overflow or a row above maximum.
+    pub fn quote_original_reservation_requested_storage_data(
+        &self,
+        activation: &ActivationRecord,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        use crate::node_contract::runtime::RuntimeOwnedStorage;
+        if self.inner.process != std::process::id()
+            || self.inner.thread != std::thread::current().id()
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let backing = queue_storage(&self.inner, maximum)?.ok_or(RuntimeError::UnsupportedFacet)?;
+        let activation_bytes = activation.owned_storage()?;
+        std::mem::size_of::<QueueSlot>()
+            .checked_add(backing)
+            .and_then(|bytes| bytes.checked_add(activation_bytes))
+            .filter(|bytes| *bytes <= maximum)
+            .ok_or(RuntimeError::ResourceLimit)
     }
 }

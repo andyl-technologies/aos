@@ -42,6 +42,10 @@ impl PacketOriginalCaptureComponent {
         &self.snapshot
     }
 
+    pub(crate) fn retained_anchor_capacity_data(&self) -> usize {
+        self.anchor.1.capacity()
+    }
+
     /// Borrows the independently hashed unchanged-cut anchor.
     pub fn anchor(&self) -> (&ContentRef, &[u8]) {
         (&self.anchor.0, &self.anchor.1)
@@ -503,3 +507,10 @@ impl PacketControl {
         Ok(())
     }
 }
+
+#[path = "capture_startup.rs"]
+mod startup;
+pub(crate) use startup::{
+    NativeStartupCaptureRegistrationData, NativeStartupCaptureReply,
+    original_startup_capture_counter_scratch_data, startup_capture_terminal_cache_storage_data,
+};

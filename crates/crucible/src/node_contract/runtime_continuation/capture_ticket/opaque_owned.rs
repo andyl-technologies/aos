@@ -21,19 +21,19 @@ const SHARED_ROOTS: usize = 12;
 
 /// Describes one actual shared allocation, excluding any nested shared roots.
 #[derive(Clone, Copy)]
-pub(crate) struct RetainedCoreSharedAllocation {
+pub struct RetainedCoreSharedAllocation {
     identity: *const (),
     requested_bytes: usize,
 }
 
 impl RetainedCoreSharedAllocation {
     /// Returns the actual live allocation's data address for local deduplication.
-    pub(crate) fn identity(&self) -> *const () {
+    pub fn identity(&self) -> *const () {
         self.identity
     }
 
     /// Returns its requested root/header and independently owned nested heaps.
-    pub(crate) fn requested_bytes(&self) -> usize {
+    pub fn requested_bytes(&self) -> usize {
         self.requested_bytes
     }
 }
@@ -44,7 +44,7 @@ impl RetainedCoreSharedAllocation {
 /// currentness, token, readiness or native allocation permit. The returned
 /// lifetime retains the original borrowed owner while its descriptors are used;
 /// raw identities must not be cached across a released owner or capture cut.
-pub(crate) struct RetainedCoreOwnerStorage<'a> {
+pub struct RetainedCoreOwnerStorage<'a> {
     independent: usize,
     shared: [Option<RetainedCoreSharedAllocation>; SHARED_ROOTS],
     used: usize,
@@ -64,12 +64,12 @@ impl RetainedCoreOwnerStorage<'_> {
     }
 
     /// Returns independently owned heap capacities, excluding enclosing inline layout.
-    pub(crate) fn independent_bytes(&self) -> usize {
+    pub fn independent_bytes(&self) -> usize {
         self.independent
     }
 
     /// Borrows actual shared roots; equal data in different allocations stays distinct.
-    pub(crate) fn shared_allocations(&self) -> impl Iterator<Item = &RetainedCoreSharedAllocation> {
+    pub fn shared_allocations(&self) -> impl Iterator<Item = &RetainedCoreSharedAllocation> {
         self.shared[..self.used].iter().flatten()
     }
 
@@ -263,7 +263,7 @@ impl OperationToken {
     ///
     /// # Errors
     /// Refuses unsupported shapes, arithmetic overflow or the requested bound.
-    pub(crate) fn retained_requested_storage_data(
+    pub fn retained_requested_storage_data(
         &self,
         maximum: usize,
     ) -> Result<RetainedCoreOwnerStorage<'_>, RuntimeError> {
@@ -278,7 +278,7 @@ impl WorldActivation {
     ///
     /// # Errors
     /// Refuses unsupported shapes, arithmetic overflow or the requested bound.
-    pub(crate) fn retained_requested_storage_data(
+    pub fn retained_requested_storage_data(
         &self,
         maximum: usize,
     ) -> Result<RetainedCoreOwnerStorage<'_>, RuntimeError> {
@@ -566,11 +566,136 @@ mod tests {
 }
 
 impl NodeRuntime {
+    /// Observes independent preparation backing without serializing readiness.
+    ///
+    /// The enclosing inline slot is excluded; this creates no native permission.
+    ///
+    /// # Errors
+    /// Refuses unsupported fields, checked overflow or the supplied bound.
+    pub fn original_prepared_node_requested_storage_data(
+        value: &ValidatedNodePreparation,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        let bytes = value.owned_storage()?;
+        if bytes > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        Ok(bytes)
+    }
+
+    /// Observes an actual outcome's independent retained fields without callbacks.
+    ///
+    /// # Errors
+    /// Refuses unsupported fields, checked overflow or the supplied bound.
+    pub fn original_outcome_requested_storage_data(
+        value: &crate::node_contract::OperationOutcome,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        let bytes = value.owned_storage()?;
+        if bytes > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        Ok(bytes)
+    }
+}
+
+impl NodeRuntime {
+    /// Observes actual retained descriptor backing without serialization or callbacks.
+    ///
+    /// The enclosing inline slot is excluded. No source or native right is issued.
+    ///
+    /// # Errors
+    /// Refuses unsupported fields, overflow or requested storage above the bound.
+    pub fn original_descriptor_requested_storage_data(
+        value: &crucible_node_contract::NodeDescriptor,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        let bytes = value.owned_storage()?;
+        if bytes > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        Ok(bytes)
+    }
+}
+
+impl NodeRuntime {
+    /// Observes actual retained binding backing without serialization or callbacks.
+    ///
+    /// The enclosing inline slot is excluded. No source or native right is issued.
+    ///
+    /// # Errors
+    /// Refuses unsupported fields, overflow or requested storage above the bound.
+    pub fn original_binding_requested_storage_data(
+        value: &crucible_node_contract::BindingCompatibility,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        let bytes = value.owned_storage()?;
+        if bytes > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        Ok(bytes)
+    }
+}
+
+impl NodeRuntime {
+    /// Observes actual retained owner binding backing without serialization or callbacks.
+    ///
+    /// The enclosing inline slot is excluded. No source or native right is issued.
+    ///
+    /// # Errors
+    /// Refuses unsupported fields, overflow or requested storage above the bound.
+    pub fn original_owner_binding_requested_storage_data(
+        value: &crucible_node_contract::OwnerBinding,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        let bytes = value.owned_storage()?;
+        if bytes > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        Ok(bytes)
+    }
+}
+
+impl NodeRuntime {
+    /// Observes actual native input acknowledgement backing without execution.
+    ///
+    /// # Errors
+    /// Refuses unsupported fields, overflow or the supplied bound.
+    pub fn original_input_ack_requested_storage_data(
+        value: &crate::node_scheduling::NativeInputAcknowledgement,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        let bytes = value.owned_storage()?;
+        if bytes > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        Ok(bytes)
+    }
+}
+
+impl NodeRuntime {
     /// Quotes the concrete fixed opaque-owner observation bank and descriptor.
     ///
     /// This includes the twelve original shared slots before deduplication. It
     /// does not certify compiler/recursive frames or physical allocator peaks.
-    pub(crate) fn capture_opaque_owner_observer_scratch_data() -> usize {
+    pub fn capture_opaque_owner_observer_scratch_data() -> usize {
         size_of::<RetainedCoreOwnerStorage<'_>>() + size_of::<RetainedCoreSharedAllocation>()
+    }
+}
+
+impl NodeRuntime {
+    /// Observes a retained snapshot's real capacities without creating another snapshot.
+    ///
+    /// # Errors
+    /// Refuses unsupported input families, checked overflow or the requested bound.
+    pub fn original_snapshot_requested_storage_data(
+        value: &crate::node_contract::RuntimeSnapshot,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        let bytes = value.owned_storage()?;
+        if bytes > maximum {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        Ok(bytes)
     }
 }

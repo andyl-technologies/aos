@@ -487,6 +487,16 @@ impl NativeAckBoot {
         } else {
             self.authenticate_owned11_state()?;
         }
+        self.observe_unique_boot_children(roots, observer)
+    }
+
+    // Child-only: the caller records this actual RefCell<NativeAckBoot> edge.
+    // The unique caller must separately record/walk every admitted transfer.
+    fn observe_unique_boot_children(
+        &self,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
         let Self {
             creator,
             thread: _,
@@ -587,6 +597,45 @@ impl NativeAckBoot {
             startup_codec::observe_owner(startup, observer)?;
         }
         Ok(())
+    }
+}
+
+impl NativeAckBoot {
+    /// Walks only this genuine admitted boot's children during verified Prepare.
+    /// The caller owns and walks the same actual transfer Rc once; its second
+    /// edge from boot is recorded here. No transferSome or numeric data alone
+    /// satisfies the full current baseline, source allocation and verified Rc.
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn observe_verified_startup_prepare_metadata(
+        &self,
+        expected: &Rc<RefCell<restore_prepare::NativeCompleteRestorePrepareAttempt>>,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_base_admitted_boot_state()?;
+        self.authenticate_original_native_baseline_data()?;
+        let startup = self.startup.as_ref().ok_or(ProviderError::Correlation(
+            "startup Prepare boot owner absent",
+        ))?;
+        startup
+            .allocation
+            .authenticate_owned_codec_source_data(&self.data.source_birth)?;
+        let transfer = self.transfer.as_ref().ok_or(ProviderError::Correlation(
+            "startup Prepare transfer absent",
+        ))?;
+        if self.restoration.is_some() || !Rc::ptr_eq(transfer, expected)
+            || self.policy.as_ref().is_none_or(|policy| policy.complete_restore_selection()
+                != Some(crate::reference_packet::service::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12))
+        { return Err(ProviderError::Correlation("startup Prepare actual transfer differs")); }
+        let flight = transfer
+            .try_borrow()
+            .map_err(|_| ProviderError::Conflict("startup Prepare transfer borrowed"))?;
+        flight.authenticate_verified_metadata_data()?;
+        roots.observe_shared_edge(
+            observer,
+            MetadataSharedKind::NativeRestorePrepareAttempt,
+            transfer.as_ref(),
+        )?;
+        self.observe_unique_boot_children(roots, observer)
     }
 }
 

@@ -48,6 +48,10 @@ impl PacketOriginalControlSnapshot {
         &self.bytes
     }
 
+    pub(crate) fn retained_encoded_capacity_data(&self) -> usize {
+        self.bytes.capacity()
+    }
+
     /// Returns the complete administrative cut independently of the local cursor.
     pub fn administrative_cut(&self) -> Position {
         self.administrative_cut
@@ -858,3 +862,6 @@ pub fn packet_control_snapshot_validation_layouts() -> PacketControlSnapshotVali
         maximum_capture_request_bytes: 65536,
     }
 }
+
+#[path = "continuation_startup.rs"]
+mod startup;

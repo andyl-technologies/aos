@@ -304,3 +304,18 @@ fn native(error: crucible_node_provider::ProviderError) -> QualificationError {
 fn io(error: std::io::Error) -> QualificationError {
     QualificationError::Evidence(error.to_string())
 }
+
+/// Counts the selected fixed kernel comparison bank without allocating it.
+pub(super) fn original_kernel_validation_counter_scratch_data() -> usize {
+    measurement::original_kernel_validation_counter_scratch_data()
+}
+
+/// Compares the complete original kernel release through a bounded fixed bank.
+///
+/// # Errors
+/// Refuses unavailable, empty, oversized, invalid UTF-8 or changed kernel data.
+pub(super) fn authenticate_original_kernel_data(
+    expected: &str,
+) -> Result<(), crucible::node_contract::RuntimeError> {
+    measurement::authenticate_original_kernel_data(expected)
+}

@@ -1390,3 +1390,48 @@ fn validate_ack_emitter_selection(
     }
     authority.ensure_live()
 }
+
+impl Native5CodecOwner {
+    pub(crate) fn original_host_initial_selection_data(
+        &self,
+        authority: &ConnectionAuthority,
+    ) -> Result<&PacketControlSelection, ProviderError> {
+        let Self::ControllerPacket(policy) = self else {
+            return Err(ProviderError::Correlation(
+                "initial host codec is not a controller",
+            ));
+        };
+        policy.validate_current_negotiation(authority)?;
+        if policy.ack_emitter_selection.is_none() {
+            return Err(ProviderError::Correlation(
+                "initial host codec has no original ACK grammar",
+            ));
+        }
+        Ok(&policy.selection)
+    }
+}
+
+pub(crate) fn original_host_initial_codec_layout_data() -> Result<usize, ProviderError> {
+    use crate::retained_metadata::requested_storage::shared_header_storage_data;
+    use std::mem::{align_of, size_of};
+    let mut total = size_of::<ControllerNative5Policy>();
+    for bytes in [
+        size_of::<Native5CodecOwner>(),
+        shared_header_storage_data(1, align_of::<Native5CodecOwner>())?,
+        size_of::<std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>>(
+        ),
+        shared_header_storage_data(
+            1,
+            align_of::<
+                std::cell::RefCell<crate::transport::original_frames::OriginalFrameReservation>,
+            >(),
+        )?,
+    ] {
+        total = total
+            .checked_add(bytes)
+            .ok_or(ProviderError::ResourceExhausted(
+                "initial host codec header",
+            ))?;
+    }
+    Ok(total)
+}

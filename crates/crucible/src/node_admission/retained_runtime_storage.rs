@@ -7,6 +7,27 @@ use super::*;
 use crate::node_contract::{RuntimeError, runtime_owned_counter::RetainedRuntimeCounter};
 
 impl AdmittedGraph {
+    /// Observes complete actual graph backing without serializing its policies.
+    ///
+    /// The enclosing inline slot is separate; referenced content banks are
+    /// independent owners. This data walk grants no admission or execution.
+    ///
+    /// # Errors
+    /// Refuses unsupported fields, checked overflow or the requested bound.
+    pub fn original_retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        let mut counter = RetainedRuntimeCounter::new(maximum);
+        self.charge_original_retained_storage(&mut counter)?;
+        Ok(counter.bytes())
+    }
+
+    /// Names the actual fixed graph counter, excluding compiler recursion frames.
+    pub fn original_retained_requested_storage_precredit_scratch_data() -> usize {
+        std::mem::size_of::<RetainedRuntimeCounter>()
+    }
+
     pub(crate) fn charge_original_retained_storage(
         &self,
         counter: &mut RetainedRuntimeCounter,

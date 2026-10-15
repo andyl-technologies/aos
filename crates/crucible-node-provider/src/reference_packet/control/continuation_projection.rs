@@ -140,6 +140,60 @@ impl PacketControl {
         maximum: usize,
     ) -> Result<NativeContinuationTerminalProjectionData, ProviderError> {
         currency.authenticate_before_observe(self)?;
+        let result = self.quote_continuation_terminal_shapes_data(
+            observed,
+            currency,
+            capture_request,
+            maximum,
+        )?;
+        currency.authenticate_before_observe(self)?;
+        Ok(result)
+    }
+
+    pub(crate) fn quote_startup_capture_terminal_shapes(
+        &self,
+        observed: &Envelope,
+        currency: &restore_fresh::PacketLiveCaptureControlCurrency,
+        capture_request: &NativeProjectedCaptureRequestData,
+        maximum: usize,
+    ) -> Result<NativeContinuationTerminalProjectionData, ProviderError> {
+        currency.authenticate_capture_boundary(self, None)?;
+        let result = self.quote_continuation_terminal_shapes_data(
+            observed,
+            currency,
+            capture_request,
+            maximum,
+        )?;
+        currency.authenticate_capture_boundary(self, None)?;
+        Ok(result)
+    }
+
+    pub(crate) fn quote_startup_confirmation_terminal_shapes(
+        &self,
+        observed: &Envelope,
+        capture: &Envelope,
+        currency: &restore_fresh::PacketLiveCaptureControlCurrency,
+        capture_request: &NativeProjectedCaptureRequestData,
+        maximum: usize,
+    ) -> Result<NativeContinuationTerminalProjectionData, ProviderError> {
+        currency.authenticate_capture_boundary(self, Some(capture))?;
+        let result = self.quote_continuation_terminal_shapes_data(
+            observed,
+            currency,
+            capture_request,
+            maximum,
+        )?;
+        currency.authenticate_capture_boundary(self, Some(capture))?;
+        Ok(result)
+    }
+
+    fn quote_continuation_terminal_shapes_data(
+        &self,
+        observed: &Envelope,
+        currency: &restore_fresh::PacketLiveCaptureControlCurrency,
+        capture_request: &NativeProjectedCaptureRequestData,
+        maximum: usize,
+    ) -> Result<NativeContinuationTerminalProjectionData, ProviderError> {
         let [binding] = self.selection.realization.bindings.as_slice() else {
             return Err(ProviderError::Correlation(
                 "native continuation projection binding roster",
@@ -254,7 +308,6 @@ impl PacketControl {
                 "native continuation projection sum",
             ));
         }
-        currency.authenticate_before_observe(self)?;
         Ok(NativeContinuationTerminalProjectionData {
             capture_terminal,
             capture_anchor,

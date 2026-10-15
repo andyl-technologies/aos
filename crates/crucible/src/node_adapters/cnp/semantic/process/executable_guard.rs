@@ -291,3 +291,18 @@ impl OriginalExecutable {
         self.ensure_origin().map_err(super::super::unknown)
     }
 }
+
+impl OriginalExecutable {
+    pub(in crate::node_adapters::cnp::semantic) fn retained_descriptor_views_precredit_data(
+        &self,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        self.storage_origin_precredit_data()?;
+        // An opaque notification worker is unsupported by the selected typed
+        // owner walk as well. Never reinterpret that worker as zero resources.
+        if self.original.lease().is_some() {
+            return Err(crate::node_contract::RuntimeError::UnsupportedFacet);
+        }
+        let _original = self.original.file();
+        Ok(1)
+    }
+}

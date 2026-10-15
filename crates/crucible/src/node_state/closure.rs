@@ -683,3 +683,28 @@ mod complete_capacity_controls {
         assert_eq!(content.get(&reference), Some(b"body".as_slice()));
     }
 }
+
+impl VerifiedStateContent {
+    pub(super) fn charge_original_storage_data(
+        &self,
+        counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        let Self {
+            objects,
+            total_bytes: _,
+            references,
+            edition: _,
+        } = self;
+        counter.map(objects)?;
+        for (hash, (reference, bytes)) in objects {
+            counter.owned(hash)?;
+            counter.owned(reference)?;
+            counter.owned(bytes)?;
+        }
+        counter.set(references)?;
+        for reference in references {
+            counter.owned(reference)?;
+        }
+        Ok(())
+    }
+}

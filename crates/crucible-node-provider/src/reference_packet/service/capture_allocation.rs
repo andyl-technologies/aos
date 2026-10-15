@@ -633,3 +633,11 @@ pub(crate) fn capture_allocation_contract_storage_data(
         maximum,
     )
 }
+
+mod borrowed_report;
+pub use borrowed_report::{
+    PacketNativeCaptureAllocationReportView, original_capture_allocation_native_bytes_data,
+    original_capture_allocation_report_counter_scratch_data,
+};
+
+pub(crate) use borrowed_report::original_capture_allocation_reference_matches_data;

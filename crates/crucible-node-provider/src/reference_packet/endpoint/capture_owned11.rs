@@ -20,7 +20,14 @@ impl PacketEndpoint<DeadlineStream> {
         deadline: &ExchangeDeadline,
     ) -> Result<(), ProviderError> {
         self.ensure_complete_origin()?;
-        if self.restore_protocol_attempted || self.restore_prepare_admission.is_some() {
+        if self.capture_allocation_attempt.is_some() {
+            return self.capture_original_startup14(request, service, deadline);
+        }
+
+        if self.restore_protocol_attempted
+            || self.restore_prepare_admission.is_some()
+            || self.fresh_restore_attempt.is_some()
+        {
             return Err(ProviderError::Correlation(
                 "native capture restore attempt roots unresolved",
             ));
@@ -262,6 +269,7 @@ impl PacketEndpoint<DeadlineStream> {
             protocol_before,
             after_capacity: None,
             owned11_after_capacity: None,
+            startup14_after_capacity: None,
             protocol_after: None,
             prefix: None,
             snapshot: (reference, bytes),

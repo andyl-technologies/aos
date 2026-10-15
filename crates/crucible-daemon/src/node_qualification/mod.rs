@@ -46,12 +46,13 @@ pub use admission::{AcceptanceScope, BehavioralAdmissionEvidence, InstalledAccep
 pub use production_conformance::{
     CollectedConformance, ExactCompletionCase, ExactCompletionObservation,
     InstalledConformanceAuthority, InstalledOriginalConformanceAcceptance,
-    InstalledRuntimeWitnessOracle, OriginalClockStateObservation, OriginalCollectionAttempts,
-    OriginalCompletionObservation, OriginalCompletionWitness, OriginalConformanceEnrollment,
-    OriginalConformanceEnrollmentFailure, OriginalProtocolWitness, OriginalRealizedCaseReservation,
-    OriginalRuntimeReportStore, OriginalSourceInspection, OriginalSourceInspectionSlot,
-    PlannedFixtureAudit, ProductionConformanceRunner, ProtocolCase, ProtocolObservation,
-    QuantizedCompletionCase, QuantizedCompletionObservation, SourceInspectionOutcome,
+    InstalledRuntimeWitnessOracle, OriginalClockAdverseObservation, OriginalClockStateObservation,
+    OriginalCollectionAttempts, OriginalCompletionObservation, OriginalCompletionWitness,
+    OriginalConformanceEnrollment, OriginalConformanceEnrollmentFailure, OriginalProtocolWitness,
+    OriginalRealizedCaseReservation, OriginalRuntimeReportStore, OriginalSourceInspection,
+    OriginalSourceInspectionSlot, PlannedFixtureAudit, ProductionConformanceRunner, ProtocolCase,
+    ProtocolObservation, QuantizedCompletionCase, QuantizedCompletionObservation,
+    SourceInspectionOutcome,
 };
 pub use record::{
     AcceptanceDecision, AcceptanceLimits, AcceptanceRecord, EvaluatedAcceptance,
@@ -112,9 +113,16 @@ pub use packet_collection::{
 
 /// Structural complete-source declarations retain no capture qualification.
 pub use packet_collection::{
+    InstalledCompleteScene, InstalledCompleteSceneManifest,
     InstalledPacketCompleteCollectionAuthority, InstalledPacketCompleteGraphPolicy,
     PacketCompleteCollectionRequest, PacketCompleteGraphOwner, PacketCompleteGraphRequest,
     PacketCompleteNativeOracle, PacketCompleteOracleRequest, PacketCompletePopulationRequest,
     PacketCompleteRoster, PacketCompleteWitnessPopulation,
     packet_complete_independent_graph_contract, packet_complete_measured_graph_proof,
+};
+
+// The same actual-capacity walker serves known actor-local Clock owners.
+// This crate-private data observation grants no qualification or allocation.
+pub(crate) use packet_collection::complete::retained::{
+    Counter as RetainedMetadataCounter, Owned as RetainedMetadataOwned,
 };

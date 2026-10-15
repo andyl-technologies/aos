@@ -5,8 +5,12 @@
 //! array before any observation. No callback follows a raw pointer or accepts
 //! a caller-computed byte total, and no report admits its own construction.
 
+mod host_startup;
 mod native_startup;
 pub use native_startup::PacketCompleteNativeLaunchInputs;
+mod installed_source;
+mod scene;
+pub use scene::PacketCompleteOriginalSceneInputs;
 mod preparation;
 pub use preparation::PacketCompletePreparationConnection;
 
@@ -47,7 +51,19 @@ pub struct PacketCompleteReportStartupHolder {
     native_in_flight: Cell<bool>,
     native_completed: Cell<bool>,
     native_launches: RefCell<native_startup::NativeLaunchOwners>,
+    host_sdk_content:
+        OnceCell<[Rc<std::collections::BTreeMap<crucible_node_contract::ContentRef, Vec<u8>>>; 3]>,
+    host_sdk_outputs:
+        RefCell<[Option<crucible::node_adapters::cnp::PacketCompleteOriginalHostSdk>; 3]>,
+    host_sdk_streams: RefCell<[Option<std::os::unix::net::UnixStream>; 3]>,
+    host_sdk_connect_attempted: [Cell<bool>; 3],
+    host_sdk_attempted: Cell<bool>,
+    host_sdk_in_flight: Cell<bool>,
+    host_sdk_completed: Cell<bool>,
     preparations: RefCell<preparation::PreparationOwners>,
+    original_scene: OnceCell<RefCell<scene::OriginalSceneOwners>>,
+    installed_host_owner: OnceCell<crucible::node_contract::HostSchedulingOwner>,
+    original_scene_retired: Cell<bool>,
 }
 
 enum StartupHolderPurpose {
@@ -209,7 +225,17 @@ impl PacketCompleteReportStartupHolder {
             native_in_flight: Cell::new(false),
             native_completed: Cell::new(false),
             native_launches: RefCell::new(native_startup::NativeLaunchOwners::new()),
+            host_sdk_content: OnceCell::new(),
+            host_sdk_outputs: RefCell::new([None, None, None]),
+            host_sdk_streams: RefCell::new([None, None, None]),
+            host_sdk_connect_attempted: std::array::from_fn(|_| Cell::new(false)),
+            host_sdk_attempted: Cell::new(false),
+            host_sdk_in_flight: Cell::new(false),
+            host_sdk_completed: Cell::new(false),
             preparations: RefCell::new(preparation::PreparationOwners::new()),
+            original_scene: OnceCell::new(),
+            installed_host_owner: OnceCell::new(),
+            original_scene_retired: Cell::new(false),
         }));
         authority
             .report_startup_holder
@@ -309,7 +335,8 @@ impl PacketCompleteReportStartupHolder {
         scope: &OriginalReportStartupScope<'_>,
     ) -> Result<(), QualificationError> {
         self.authenticate_origin()?;
-        if !self.in_flight.get()
+        if self.original_scene_retired.get()
+            || !self.in_flight.get()
             || self.completed.get()
             || !std::ptr::eq(self.authority.as_ref(), authority)
             || !scope.is_original_authority(authority)
@@ -358,6 +385,12 @@ impl PacketCompleteReportStartupHolder {
             .and_then(|bytes| bytes.checked_add(crucible_node_provider::retained_metadata::original_metadata_observer_layout_bytes()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crucible_node_provider::retained_metadata::RetainedProtocolMetadataFacts>()))
             .ok_or_else(refused)?;
+        let scratch = scratch
+            .checked_add(
+                self.original_scene_counter_scratch_data()
+                    .map_err(|_| refused())?,
+            )
+            .ok_or_else(refused)?;
         Ok(OriginalReportStartupPolicy {
             maximum_requested_bytes: maximum,
             declared_observer_scratch_bytes: scratch,
@@ -402,6 +435,12 @@ impl PacketCompleteReportStartupHolder {
                     .map_err(|_| refused())?,
             )?;
         }
+        held.charge_original_scene_storage_precredit_data(&mut counter)
+            .map_err(|_| refused())?;
+        held.charge_native_launch_storage_precredit_data(&mut counter)
+            .map_err(|_| refused())?;
+        held.charge_host_sdk_storage_precredit_data(&mut counter)
+            .map_err(|_| refused())?;
         held.preparations
             .try_borrow()
             .map_err(|_| refused())?
@@ -462,7 +501,8 @@ impl InstalledPacketCompleteCollectionAuthority {
             .try_borrow()
             .map_err(|_| evidence_error(refused()))?;
         held.authenticate_origin().map_err(evidence_error)?;
-        if !std::ptr::eq(held.authority.as_ref(), self)
+        if held.original_scene_retired.get()
+            || !std::ptr::eq(held.authority.as_ref(), self)
             || !scope.is_original_authority(self)
             || !scope.is_original_plan(&held.plan)
             || (!held.in_flight.get() && !held.completed.get())

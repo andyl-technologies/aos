@@ -20,11 +20,13 @@ pub(super) struct ActorInstallations {
 
 /// Constructs operator-installed vendor authority on the ordinary owning actor.
 ///
-/// Implementations retain independently installed source and complete normal
-/// behavioral acceptance. Calling `ReferenceVendorInstallation::new` and then
-/// `install` is the concrete closed reference route. This factory has no public
-/// wire representation and cannot turn configuration or collecting results
-/// into qualification. Installation must perform no native effects.
+/// Ordinary provider installation requires independently installed source and
+/// complete normal behavioral acceptance. The closed reference route uses
+/// `ReferenceVendorInstallation::new` and `install`. A collecting source factory
+/// instead occupies the separate unqualified scene slot and cannot register an
+/// ordinary selectable class. This factory has no public wire representation;
+/// installation performs no native lifecycle and cannot promote decoded data
+/// or collecting results into qualification.
 pub trait InstalledVendorServiceFactory: Send {
     /// Installs the original registry and normal policy without allocating a Child.
     ///

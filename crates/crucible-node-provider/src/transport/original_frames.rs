@@ -769,3 +769,69 @@ mod selected_initialized_encoding_tests {
         Ok(())
     }
 }
+
+impl OriginalFrameReservation {
+    pub(crate) fn original_outgoing_request_frame_data(
+        &self,
+        id: &crucible_node_contract::Id,
+    ) -> Result<OriginalFrame<'_>, ProviderError> {
+        let mut slots = self.slots.iter().enumerate().filter(|(_, slot)| {
+            slot.direction == FrameDirection::Outgoing
+                && slot
+                    .request
+                    .as_ref()
+                    .is_some_and(|(bytes, length)| &bytes[..*length] == id.as_str().as_bytes())
+        });
+        let (index, _) = slots.next().ok_or(ProviderError::Frame(
+            "original outgoing request literal absent",
+        ))?;
+        if slots.next().is_some() {
+            return Err(ProviderError::Frame(
+                "original outgoing request literal repeats",
+            ));
+        }
+        self.frame(index).ok_or(ProviderError::Frame(
+            "original outgoing request slot absent",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod allocation_literal_tests {
+    //! Literal-bank DATA custody; no connection or Source rights are modeled.
+    use super::*;
+    use crucible_node_contract::Id;
+
+    #[test]
+    fn original_observe_literal_missing_partial_and_complete_preserve_bank() {
+        let id = Id::new("observe-data").unwrap();
+        let mut bank = OriginalFrameReservation::reserve(4096, 4).unwrap();
+        assert!(bank.original_outgoing_request_frame_data(&id).is_err());
+        let slot = bank.begin(FrameDirection::Outgoing, 64).unwrap();
+        bank.retain_request(slot, &id).unwrap();
+        let body = b"{}";
+        bank.append(slot, &2u32.to_be_bytes()).unwrap();
+        bank.append(slot, body).unwrap();
+        let partial = bank.original_outgoing_request_frame_data(&id).unwrap();
+        assert!(!partial.complete);
+        assert_eq!(partial.transferred, 0);
+        let pointer = partial.bytes.as_ptr();
+        assert!(
+            bank.original_outgoing_request_frame_data(&Id::new("missing").unwrap())
+                .is_err()
+        );
+        assert_eq!(
+            bank.original_outgoing_request_frame_data(&id)
+                .unwrap()
+                .bytes
+                .as_ptr(),
+            pointer
+        );
+        bank.advance(slot, body.len() + 4).unwrap();
+        bank.finish(slot).unwrap();
+        let completed = bank.original_outgoing_request_frame_data(&id).unwrap();
+        assert!(completed.complete);
+        assert_eq!(completed.transferred, completed.bytes.len());
+        assert_eq!(completed.bytes.as_ptr(), pointer);
+    }
+}

@@ -26,7 +26,47 @@ pub(super) struct NativeCaptureOuterProjectionData {
     pub(super) native_before: NativeSerializationStorageData,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum NativeCaptureOuterEdition {
+    Allocation12,
+    Startup13,
+}
+
+impl NativeCaptureOuterEdition {
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::Allocation12 => "source-owned.packet-native-endpoint-state/12",
+            Self::Startup13 => "source-owned.packet-native-endpoint-state/13",
+        }
+    }
+    fn context(self) -> &'static str {
+        match self {
+            Self::Allocation12 => "same-original-native-protocol-service-context/11",
+            Self::Startup13 => "same-original-native-protocol-service-context/14",
+        }
+    }
+    fn owner(self) -> &'static str {
+        match self {
+            Self::Allocation12 => "source-private.native-capture-allocation-owner-reference/12",
+            Self::Startup13 => "source-private.native-capture-allocation-owner-reference/13",
+        }
+    }
+    fn before(self) -> &'static str {
+        match self {
+            Self::Allocation12 => "source-private.native-before-protocol/12",
+            Self::Startup13 => "source-private.native-before-protocol/13",
+        }
+    }
+    fn snapshot(self) -> &'static str {
+        match self {
+            Self::Allocation12 => "source-owned.packet-native-continuation/12",
+            Self::Startup13 => "source-owned.packet-native-continuation/13",
+        }
+    }
+}
+
 pub(super) struct NativeCaptureOuterProjectionInput<'a> {
+    pub(super) edition: NativeCaptureOuterEdition,
     pub(super) state: &'a complete::CompleteEndpointState,
     pub(super) records: &'a [ExchangeRecord],
     pub(super) record_capacity: usize,
@@ -41,9 +81,9 @@ pub(super) struct NativeCaptureOuterProjectionInput<'a> {
     pub(super) maximum_requested_bytes: usize,
 }
 
-struct BorrowedOriginalPins<'a> {
-    pins: &'a [OperationContentPin],
-    uploads: &'a BlobReceiver,
+pub(super) struct BorrowedOriginalPins<'a> {
+    pub(super) pins: &'a [OperationContentPin],
+    pub(super) uploads: &'a BlobReceiver,
 }
 
 impl Serialize for BorrowedOriginalPins<'_> {
@@ -105,6 +145,7 @@ pub(super) fn quote_original_outer12_projection(
     input: NativeCaptureOuterProjectionInput<'_>,
 ) -> Result<NativeCaptureOuterProjectionData, ProviderError> {
     let NativeCaptureOuterProjectionInput {
+        edition,
         state,
         records,
         record_capacity,
@@ -135,13 +176,13 @@ pub(super) fn quote_original_outer12_projection(
     // newly retained by the completed Observe record appended below.
     let current_endpoint = actual_serialization_storage_data(
         &(
-            "source-owned.packet-native-endpoint-state/12",
+            edition.endpoint(),
             &state.storage,
             &state.profile,
             state.metadata_limits,
             state.metadata_birth_facts,
             state.hello.protocol_view(),
-            "same-original-native-protocol-service-context/11",
+            edition.context(),
             crate::protocol_snapshot::Sequence(|| {
                 records.iter().map(ExchangeRecord::original_protocol_view)
             }),
@@ -164,7 +205,7 @@ pub(super) fn quote_original_outer12_projection(
     )?;
     let mut marker = Projection::new(maximum)?;
     marker.add_array_extent(2)?;
-    marker.add_string("source-private.native-capture-allocation-owner-reference/12")?;
+    marker.add_string(edition.owner())?;
     reference(&mut marker,
         crate::reference_packet::service::capture_allocation::PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA)?;
     let marker = marker.finish(maximum)?;
@@ -179,7 +220,7 @@ pub(super) fn quote_original_outer12_projection(
 
     let mut protocol = Projection::new(maximum)?;
     protocol.add_array_extent(4)?;
-    protocol.add_string("source-private.native-before-protocol/12")?;
+    protocol.add_string(edition.before())?;
     reference(&mut protocol, "application/json")?;
     // This is the physical preborn encoded bank, distinct from the prospective
     // initialized byte extent which drives compact serialization.
@@ -207,7 +248,7 @@ pub(super) fn quote_original_outer12_projection(
         root.add_field(key)?;
     }
     reference(&mut root, "application/json")?;
-    root.add_string("source-owned.packet-native-continuation/12")?;
+    root.add_string(edition.snapshot())?;
     let root = root.finish(maximum)?;
     let snapshot = sum_serialization_storage_data(
         &[

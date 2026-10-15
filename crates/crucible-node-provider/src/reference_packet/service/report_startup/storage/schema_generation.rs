@@ -50,6 +50,13 @@ pub(super) fn requested_data() -> Result<usize, ProviderError> {
     sum(&[mul(2, one(&ORIGINAL)?)?, mul(5, one(&FRESH)?)?])
 }
 
+pub(super) fn fresh_requested_data() -> Result<usize, ProviderError> {
+    // Actual constructor: generate five stored definitions, compare all five
+    // full schemas, and validate the resulting installed policy. Summing these
+    // sequential phases also retains every independent returned reference.
+    mul(3, mul(5, one(&FRESH)?)?)
+}
+
 fn one(facts: &LiteralFacts) -> Result<usize, ProviderError> {
     let mut observer = MetadataObserver::new();
     // One aggregate typed tree is conservative for the same set of actual

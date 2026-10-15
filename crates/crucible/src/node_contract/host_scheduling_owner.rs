@@ -316,7 +316,10 @@ impl HostSchedulingOwner {
 
     /// Borrows a view of the same original source revision without renewing it.
     pub fn source(&self) -> Rc<HostSchedulingSource> {
-        Rc::clone(&self.source)
+        // Installed callers may retain this owner beside an independently
+        // counted view of the same source. New owned fields need a new census.
+        let Self { source } = self;
+        Rc::clone(source)
     }
 
     /// Permanently revokes all views while original runtime queues remain retained.

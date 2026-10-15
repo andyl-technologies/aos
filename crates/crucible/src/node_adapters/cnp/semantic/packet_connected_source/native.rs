@@ -377,8 +377,17 @@ impl PacketConnectedSemanticSource {
             return self.object(scope, root);
         }
         self.guard(scope)?;
-        let wrapper: crucible_node_provider::reference_packet::control::PacketNative5Record =
-            self.object(scope, root)?;
+        let decoded = if self.complete_capture_allocation_selection.is_some() {
+            super::super::packet_complete_source::capture_allocation_receipt::decode_complete_receipt_data(
+                scope, scope.controller.content(root).map_err(unknown)?, self.object(scope, root)?, self.complete_capture_allocation_selection,
+            )?
+        } else {
+            super::super::packet_complete_source::capture_allocation_receipt::CompleteReceiptData {
+                receipt: self.object(scope, root)?,
+                allocation: None,
+            }
+        };
+        let wrapper = decoded.receipt;
         let request_id = wrapper
             .original
             .request_id
@@ -423,7 +432,10 @@ impl PacketConnectedSemanticSource {
             .map_err(unknown)?;
         self.guard(scope)?;
         match record {
-            crucible_node_provider::reference_packet::control::PacketNative5UnderlyingRecord::Reactive(record)=>Ok(*record),
+            crucible_node_provider::reference_packet::control::PacketNative5UnderlyingRecord::Reactive(record) => {
+                super::super::packet_complete_source::capture_allocation_receipt::authenticate_allocation_cursor(decoded.allocation.as_ref(), record.inventory.reached)?;
+                Ok(*record)
+            },
             _=>Err(refused("complete reactive source cannot read a producer record")),
         }
     }
@@ -438,8 +450,9 @@ impl PacketConnectedSemanticSource {
         }
         self.guard(scope)?;
         let value: serde_json::Value = self.object(scope, reference)?;
-        if value.get("schema").and_then(serde_json::Value::as_str)
-            == Some("source-owned.packet-receipt/5")
+        if value.get("schema").and_then(serde_json::Value::as_str) == Some("source-owned.packet-receipt/5")
+            || (self.complete_capture_allocation_selection.is_some()
+                && value.get("schema").and_then(serde_json::Value::as_str) == Some(crucible_node_provider::reference_packet::service::capture_allocation::PACKET_NATIVE_CAPTURE_ALLOCATION_RECORD))
         {
             return self.native_record(scope, reference).map(|_| ());
         }
@@ -447,8 +460,13 @@ impl PacketConnectedSemanticSource {
         let root = self
             .completed_root(scope, &record.original)?
             .ok_or_else(|| refused("complete underlying record original response absent"))?;
-        let wrapper: crucible_node_provider::reference_packet::control::PacketNative5Record =
-            self.object(scope, &root)?;
+        let wrapper = if self.complete_capture_allocation_selection.is_some() {
+            super::super::packet_complete_source::capture_allocation_receipt::decode_complete_receipt_data(
+                scope, scope.controller.content(&root).map_err(unknown)?, self.object(scope, &root)?, self.complete_capture_allocation_selection,
+            )?.receipt
+        } else {
+            self.object(scope, &root)?
+        };
         if wrapper.native_record != *reference || self.native_record(scope, &root)? != record {
             return Err(refused(
                 "complete underlying record differs from original wrapper",

@@ -435,3 +435,5 @@ impl AdmissionEvidence for PreallocationCheck {
 #[cfg(test)]
 #[path = "acceptance_tests.rs"]
 mod tests;
+
+mod ordinary_projection;

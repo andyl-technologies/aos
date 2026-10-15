@@ -600,3 +600,6 @@ fn observe_prefix_owners<S: ProviderStream>(
 
 #[cfg(test)]
 mod storage_tests;
+
+#[path = "continuation_transport/native_startup_after.rs"]
+mod native_startup_after;

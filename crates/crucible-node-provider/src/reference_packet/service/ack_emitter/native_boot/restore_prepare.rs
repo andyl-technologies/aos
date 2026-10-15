@@ -193,7 +193,7 @@ impl NativeAckBoot {
         // This SDK projection is syntax-only; identity below authenticates its
         // actual latest incoming literal after the independently derived MAC.
         let _projection =
-            crate::connection::CompleteRestoreTransferProjection::from_envelope(original)?;
+            connection.original_selected_restore_transfer_projection_data(original)?;
         let request = original
             .extensions
             .get(PACKET_COMPLETE_RESTORE_PREPARE_EXTENSION)
@@ -380,6 +380,21 @@ impl VerifiedCompleteRestorePrepare {
             .authenticate_installation(connection, flight.original.as_ref().ok_or_else(refused)?)
     }
 
+    /// Compares the actual verified issuer original without decoding a label.
+    pub(crate) fn authenticate_handoff_original_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        original: &Envelope,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_current(connection)?;
+        let flight = self.attempt.try_borrow().map_err(|_| borrowed())?;
+        flight.authenticate_verified_metadata_data()?;
+        if flight.original.as_ref() != Some(original) {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
     pub(crate) fn request<'a, S: ProviderStream>(
         &'a self,
         connection: &Connection<S>,
@@ -416,24 +431,70 @@ impl VerifiedCompleteRestorePrepare {
         let mut observer = MetadataObserver::new();
         self.identity.observe_retained_metadata(&mut observer)?;
         self.authority.observe_retained_metadata(&mut observer)?;
-        observer.shared_value(self.attempt.as_ref())?;
-        flight.observe_actual_retained_metadata(&mut observer)?;
-        observer.shared_original(
-            crate::retained_metadata::aliases::MetadataSharedKind::NativeBoot,
-            self.boot.as_ref(),
-        )?;
-        self.boot
+        let startup = self
+            .boot
             .try_borrow()
             .map_err(|_| borrowed())?
-            .observe_admitted_boot_metadata(&mut observer)?;
-        observer.shared_original(
-            crate::retained_metadata::aliases::MetadataSharedKind::NativePolicy,
-            self.policy.as_ref(),
-        )?;
-        self.policy.observe_owned11_metadata(&mut observer)?;
+            .requires_startup_codec_data()?;
+        if startup {
+            let mut roots = crate::retained_metadata::NativeCaptureMetadataRoots::new();
+            if !roots.observe_shared(
+                &mut observer,
+                crate::retained_metadata::aliases::MetadataSharedKind::NativeRestorePrepareAttempt,
+                self.attempt.as_ref(),
+            )? {
+                return Err(refused());
+            }
+            flight.observe_actual_retained_metadata(&mut observer)?;
+            if roots.observe_shared(
+                &mut observer,
+                crate::retained_metadata::aliases::MetadataSharedKind::NativeBoot,
+                self.boot.as_ref(),
+            )? {
+                self.boot
+                    .try_borrow()
+                    .map_err(|_| borrowed())?
+                    .observe_verified_startup_prepare_metadata(
+                        &self.attempt,
+                        &mut roots,
+                        &mut observer,
+                    )?;
+            }
+            if roots.observe_shared(
+                &mut observer,
+                crate::retained_metadata::aliases::MetadataSharedKind::NativePolicy,
+                self.policy.as_ref(),
+            )? {
+                self.policy
+                    .observe_unique_capture_metadata(&mut roots, &mut observer)?;
+            }
+            roots.finish()?;
+        } else {
+            observer.shared_value(self.attempt.as_ref())?;
+            flight.observe_actual_retained_metadata(&mut observer)?;
+            observer.shared_original(
+                crate::retained_metadata::aliases::MetadataSharedKind::NativeBoot,
+                self.boot.as_ref(),
+            )?;
+            self.boot
+                .try_borrow()
+                .map_err(|_| borrowed())?
+                .observe_admitted_boot_metadata(&mut observer)?;
+            observer.shared_original(
+                crate::retained_metadata::aliases::MetadataSharedKind::NativePolicy,
+                self.policy.as_ref(),
+            )?;
+            self.policy.observe_owned11_metadata(&mut observer)?;
+        }
         let control_quote = flight.control_quote.as_ref().ok_or_else(refused)?;
         control_quote.authenticate_original(&self.policy)?;
-        let endpoint_backing = known_backing_bytes(control_quote.endpoint_facts())?;
+        let endpoint_backing = if startup {
+            known_backing_bytes(control_quote.endpoint_facts())?
+                .checked_add(control_quote.startup_endpoint_reserved_bytes_data()?)
+                .ok_or_else(refused)?
+        } else {
+            known_backing_bytes(control_quote.endpoint_facts())?
+        };
         let control_backing = known_backing_bytes(control_quote.facts())?;
         let dynamic = known_backing_bytes(observer.finish())?
             .checked_add(known_backing_bytes(quote_owner.retained_facts())?)
@@ -499,6 +560,19 @@ impl VerifiedCompleteRestorePrepare {
 impl NativeCompleteRestorePrepareAttempt {
     fn ensure_origin(&self) -> Result<(), ProviderError> {
         if self.creator != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
+    pub(super) fn authenticate_verified_metadata_data(&self) -> Result<(), ProviderError> {
+        self.ensure_origin()?;
+        if !self.verified
+            || self.request.is_none()
+            || self.proof.is_none()
+            || self.context.is_none()
+            || self.transfer_token.is_none()
+        {
             return Err(refused());
         }
         Ok(())

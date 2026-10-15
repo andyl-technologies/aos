@@ -448,7 +448,15 @@ pub(in crate::node_observed_executor::factory) fn select_public_preparation(
     )
 }
 
-fn select_public_preparation_selected(
+/// Regenerates preparation codecs from the caller's actual selected model family.
+///
+/// The explicit Clock selection comes from the closed source-owned roster,
+/// independently of participant spelling. Generated format data grant no native
+/// preparation, restoration or qualification permission.
+///
+/// # Errors
+/// Refuses missing source objects, invalid schema identities or codec contents.
+pub(in crate::node_observed_executor::factory) fn select_public_preparation_selected(
     descriptor: &mut NodeDescriptor,
     binding: &mut BindingCompatibility,
     contents: &mut BTreeMap<String, ScenarioContent>,

@@ -718,3 +718,25 @@ mod original_live_host_metadata_tests {
         Ok(())
     }
 }
+
+impl FrameReader<crate::client::DeadlineStream> {
+    pub(crate) fn observe_original_host_startup_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            stream,
+            maximum_bytes,
+            maximum_nesting,
+            failed,
+            originals,
+            last_original_slot,
+        } = self;
+        if *failed || originals.is_some() || last_original_slot.is_some() {
+            return Err(ProviderError::Frame("original host startup reader changed"));
+        }
+        stream.observe_original_host_live_metadata(observer)?;
+        observer.observe(maximum_bytes)?;
+        observer.observe(maximum_nesting)
+    }
+}

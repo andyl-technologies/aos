@@ -287,3 +287,5 @@ pub(super) fn installation_identity(
     super::budget::serialized_size(&projection, selected.maximum_semantic_bytes)?;
     canonical::json_hash("crucible.cnp-installed-semantic.v1", &projection).map_err(unknown)
 }
+
+mod initial_lifecycle_storage;

@@ -51,6 +51,10 @@ pub enum MetadataSharedKind {
     ArchivedMapping,
     /// Names the actual native Control capture identity allocation.
     NativeControlIdentity,
+    /// Names the actual private retained fresh-query/Prepare attempt cell.
+    NativeFreshReportAttempt,
+    /// Names the real verified native Prepare attempt during input admission.
+    NativeRestorePrepareAttempt,
 }
 
 impl MetadataSharedKind {
@@ -84,6 +88,8 @@ impl MetadataSharedKind {
             Self::OperationalDeadline => "operational-deadline",
             Self::ArchivedMapping => "archived-mapping",
             Self::NativeControlIdentity => "native-control-identity",
+            Self::NativeFreshReportAttempt => "native-fresh-report-attempt",
+            Self::NativeRestorePrepareAttempt => "native-restore-prepare-attempt",
         }
     }
 }

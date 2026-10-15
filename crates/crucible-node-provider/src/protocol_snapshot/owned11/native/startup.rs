@@ -296,6 +296,14 @@ impl HistoricalNativeStartupBoot {
         {
             return Err(invalid());
         }
+        let fresh = match boot.policy.fresh_restore_allocation_selection {
+            None => source.get("fresh_restore_allocation_selection") == Some(&serde_json::Value::Null),
+            Some(crate::reference_packet::service::fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13) =>
+                source.get("fresh_restore_allocation_selection").and_then(serde_json::Value::as_str) == Some("completed_admit13"),
+        };
+        if !fresh {
+            return Err(invalid());
+        }
         self.allocation
             .authenticate_owned_codec_source_data(&boot.data.source_birth)?;
         super::super::correspondence::json_value(&boot.data.source_birth, &boot.source_body)?;

@@ -49,3 +49,26 @@ pub use session::{
 pub use content::compact_cursor;
 /// Exposes the explicit data-only content-eight metadata capacity grammar.
 pub use content::compact_metadata8;
+
+pub(crate) mod host_startup;
+pub use host_startup::{
+    OriginalPacketHostStartup, PacketNativeHostStartupInputs, PacketNativeHostStartupStorageData,
+    original_packet_host_startup_counter_scratch_data, original_packet_host_startup_storage_data,
+};
+
+pub use controller::OriginalPacketHostInitialResponse;
+
+pub use host_startup::{
+    OriginalPacketHostInitialAttachmentScope, OriginalPacketHostInitialAttachmentSink,
+    PacketNativeHostInitialLifecycleStorageData,
+    original_packet_host_initial_lifecycle_counter_scratch_data,
+    original_packet_host_initial_socket_counter_scratch_data,
+};
+
+/// Counts fixed typed SDK descriptor-observer headers without opening handles.
+pub use host_startup::original_packet_host_descriptor_counter_scratch_data;
+
+pub use host_startup::{
+    original_host_source_json_counter_scratch_data, original_host_source_json_extent_storage_data,
+    original_host_source_json_occurrence_storage_data,
+};

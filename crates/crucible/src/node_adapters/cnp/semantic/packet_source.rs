@@ -54,6 +54,7 @@ pub struct PacketSemanticSource {
     >,
     pub(super) complete_capture_profile:
         Option<crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile>,
+    pub(super) complete_capture_allocation_selection: Option<crucible_node_provider::reference_packet::service::capture_allocation::PacketNative5CaptureAllocationSelection>,
     complete_storage:
         Option<crucible_node_provider::reference_packet::control::PacketNative5StorageSelection>,
 }
@@ -362,6 +363,7 @@ impl PacketSemanticSource {
             complete_storage: None,
             complete_capture_profile: None,
             complete_confirmation_selection: None,
+            complete_capture_allocation_selection: None,
         })
     }
 
@@ -760,7 +762,7 @@ impl CnpSemanticSource for PacketSemanticSource {
         if self.complete_storage.is_some() {
             controller
                 .authenticate_native5_source_codec()
-                .map_err(|error| refused(error.to_string()))?;
+                .map_err(crate::node_adapters::cnp::semantic::refused_display)?;
         }
 
         if !self

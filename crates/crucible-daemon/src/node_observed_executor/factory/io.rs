@@ -430,3 +430,17 @@ pub(super) fn validate_native_storage(
     }
     Ok(())
 }
+
+impl crate::node_qualification::RetainedMetadataOwned for InstalledIoArtifact {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), crate::node_qualification::QualificationError> {
+        let Self { source, expected } = self;
+        match source {
+            InstalledIoArtifactSource::Path(path) => counter.charge(path)?,
+            InstalledIoArtifactSource::ArchiveOnly => {}
+        }
+        counter.charge(expected)
+    }
+}

@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod whole_storage;
+
 /// Owns the source-selected Clock programme before its first model construction.
 ///
 /// The actor retains this owner before calling preparation or any installed
@@ -16,12 +18,24 @@ pub struct NormalClockProgramme {
     original: Option<OriginalClockQualificationRun>,
     state: Option<OriginalClockStateProgramme>,
     state_attempted: bool,
-    aggregate_resources: Option<OriginalClockAggregateResources>,
+    aggregate_resources: Option<std::rc::Rc<OriginalClockAggregateResources>>,
     bounded_attempted: bool,
     bounded_valid: bool,
     bounded_publications: Option<publications::ClockPublications>,
     bounded_case_publication: bool,
     bounded_state_publication: bool,
+    normal_source: Option<std::rc::Rc<super::source::OriginalNormalClockSource>>,
+    normal_attempted: bool,
+    normal_acceptance:
+        Option<std::rc::Rc<crate::node_qualification::InstalledOriginalConformanceAcceptance>>,
+    normal_enrollment_failure:
+        Option<crate::node_qualification::OriginalConformanceEnrollmentFailure>,
+    normal_collection: Option<crate::node_qualification::CollectedConformance>,
+    normal_source_failure: Option<QualificationError>,
+    normal_operation_failure: Option<NodeObservedError>,
+    normal_panic: Option<Box<dyn std::any::Any + Send>>,
+    adverse: Option<super::adverse::OriginalClockAdverseProgramme>,
+    adverse_observation: Option<InputPayload>,
 }
 
 impl NormalClockProgramme {
@@ -47,6 +61,16 @@ impl NormalClockProgramme {
             bounded_publications: None,
             bounded_case_publication: false,
             bounded_state_publication: false,
+            normal_source: None,
+            normal_attempted: false,
+            normal_acceptance: None,
+            normal_enrollment_failure: None,
+            normal_collection: None,
+            normal_source_failure: None,
+            normal_operation_failure: None,
+            normal_panic: None,
+            adverse: None,
+            adverse_observation: None,
         })
     }
 
@@ -69,7 +93,7 @@ impl NormalClockProgramme {
             return Err(refused("Clock aggregate preparation already attempted"));
         }
         self.bounded_attempted = true;
-        self.aggregate_resources = Some(aggregate);
+        self.aggregate_resources = Some(std::rc::Rc::new(aggregate));
         if catalog.runtime_wake.is_none() {
             return Err(refused(
                 "Clock bounded preparation requires original concrete runtime wake owner",
@@ -80,10 +104,11 @@ impl NormalClockProgramme {
             .aggregate_resources
             .as_mut()
             .ok_or_else(|| refused("Clock aggregate owner absent"))?;
-        aggregate
+        std::rc::Rc::get_mut(aggregate)
+            .ok_or_else(|| refused("Clock initial aggregate guard already aliased"))?
             .prepare_state_directories_once()
             .map_err(super::super::native)?;
-        self.bounded_publications = Some(publications::ClockPublications::new(aggregate)?);
+        self.bounded_publications = Some(publications::ClockPublications::new(aggregate.as_ref())?);
         // The unchanged catalog currently fixes this actual runtime tombstone
         // ceiling. Reject a smaller supplied policy; do not silently enlarge it.
         if self
@@ -128,7 +153,7 @@ impl NormalClockProgramme {
     /// Absence means legacy collection only. This loan cannot grant classes or
     /// replace normal source/behavioral enrollment and exact resource planning.
     pub fn aggregate_resources_data(&self) -> Option<&OriginalClockAggregateResources> {
-        self.aggregate_resources.as_ref()
+        self.aggregate_resources.as_deref()
     }
 
     /// Retains the actual same-source runtime before Arm or collection callbacks.
@@ -240,6 +265,11 @@ impl NormalClockProgramme {
             .ok_or_else(|| refused("Clock original publications absent"))?
             .original;
         original.activate(publisher)?;
+        if let Some(source) = &self.normal_source {
+            source
+                .retain_original_activation(original)
+                .map_err(super::super::native)?;
+        }
         for (name, _, _) in CASES {
             aggregate
                 .authenticate_current()
@@ -502,3 +532,6 @@ impl NormalClockProgramme {
         self.original.as_ref()
     }
 }
+
+#[path = "source_programme.rs"]
+mod source_programme;

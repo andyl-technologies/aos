@@ -70,6 +70,68 @@ impl AdmissionEvidence for InstalledPacketCompleteCollectionAuthority {
 }
 
 impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthority {
+    fn original_host_initial_lifecycle_policy(
+        &self,
+        _evidence: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalHostInitialLifecycleScope<'_>,
+    ) -> Result<
+        crucible::node_admission::OriginalHostInitialLifecyclePolicy,
+        crucible::node_contract::RuntimeError,
+    > {
+        self.original_host_initial_lifecycle_policy_data(scope)
+    }
+
+    fn authenticate_original_host_initial_lifecycle(
+        &self,
+        _evidence: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalHostInitialLifecycleScope<'_>,
+        policy: &crucible::node_admission::OriginalHostInitialLifecyclePolicy,
+    ) -> Result<
+        crucible::node_admission::OriginalHostInitialLifecycleStorage,
+        crucible::node_contract::RuntimeError,
+    > {
+        self.authenticate_original_host_initial_lifecycle_data(scope, policy)
+    }
+
+    fn authenticate_original_host_initial_lifecycle_member(
+        &self,
+        _evidence: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalHostInitialLifecycleMemberScope<'_>,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        self.authenticate_original_host_initial_lifecycle_member_data(scope)
+    }
+
+    fn original_native_host_startup_policy(
+        &self,
+        _plan: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalNativeHostStartupScope<'_>,
+    ) -> Result<
+        crucible::node_admission::OriginalNativeHostStartupPolicy,
+        crucible::node_contract::RuntimeError,
+    > {
+        self.original_native_host_startup_policy_data(scope)
+    }
+
+    fn authenticate_original_native_host_startup(
+        &self,
+        _plan: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalNativeHostStartupScope<'_>,
+        policy: &crucible::node_admission::OriginalNativeHostStartupPolicy,
+    ) -> Result<
+        crucible::node_admission::OriginalNativeHostStartupStorage,
+        crucible::node_contract::RuntimeError,
+    > {
+        self.authenticate_original_native_host_startup_data(scope, policy)
+    }
+
+    fn authenticate_original_native_host_startup_member(
+        &self,
+        _plan: &ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalNativeHostStartupMemberScope<'_>,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        self.authenticate_original_native_host_startup_member_data(scope)
+    }
+
     fn original_native_startup_policy(
         &self,
         _plan: &ConformancePlanEvidence<'_>,
@@ -331,9 +393,11 @@ impl CnpSemanticRegistrationPolicy for InstalledPacketCompleteCollectionAuthorit
     }
 
     fn authenticate(&self, selected: &CnpSemanticInstallation) -> Result<(), OperationFailure> {
-        self.current().map_err(operation_error)?;
+        self.current_for_original_initial_callback()
+            .map_err(operation_error)?;
         self.index(selected).map_err(operation_error)?;
-        self.current().map_err(operation_error)
+        self.current_for_original_initial_callback()
+            .map_err(operation_error)
     }
 }
 
@@ -362,7 +426,8 @@ impl CnpSemanticConformanceAuthority for InstalledPacketCompleteCollectionAuthor
         scope: CnpSemanticRealizationScope<'_>,
         graph: &crucible::node_admission::ConformanceGraph,
     ) -> Result<(), OperationFailure> {
-        self.current().map_err(operation_error)?;
+        self.current_for_original_initial_callback()
+            .map_err(operation_error)?;
         let member = self.index(scope.installation).map_err(operation_error)?;
         graph
             .plan()
@@ -385,7 +450,8 @@ impl CnpSemanticConformanceAuthority for InstalledPacketCompleteCollectionAuthor
         scope: CnpSemanticRealizationScope<'_>,
         plan: &InstalledConformancePlan,
     ) -> Result<(), OperationFailure> {
-        self.current().map_err(operation_error)?;
+        self.current_for_original_initial_callback()
+            .map_err(operation_error)?;
         let member = self.index(scope.installation).map_err(operation_error)?;
         plan.authenticate_authority(self)
             .map_err(|error| operation_error(QualificationError::Evidence(error.to_string())))?;
@@ -395,23 +461,27 @@ impl CnpSemanticConformanceAuthority for InstalledPacketCompleteCollectionAuthor
             .map_err(operation_error)?;
         self.host.authenticate_dispatch_source()?;
         self.roster.current_native()?;
-        self.current().map_err(operation_error)
+        self.current_for_original_initial_callback()
+            .map_err(operation_error)
     }
 
     fn authenticate_installation(
         &self,
         selected: &CnpSemanticInstallation,
     ) -> Result<(), OperationFailure> {
-        self.current().map_err(operation_error)?;
+        self.current_for_original_initial_callback()
+            .map_err(operation_error)?;
         self.index(selected).map_err(operation_error)?;
-        self.current().map_err(operation_error)
+        self.current_for_original_initial_callback()
+            .map_err(operation_error)
     }
 
     fn authenticate_realization(
         &self,
         scope: CnpSemanticRealizationScope<'_>,
     ) -> Result<(), OperationFailure> {
-        self.current().map_err(operation_error)?;
+        self.current_for_original_initial_callback()
+            .map_err(operation_error)?;
         let index = self.index(scope.installation).map_err(operation_error)?;
         let source = &self.roster.sources[index];
         source.authenticate_provider(scope.native)?;
@@ -432,6 +502,7 @@ impl CnpSemanticConformanceAuthority for InstalledPacketCompleteCollectionAuthor
                 .map_err(|_| operation_error(refused()))?;
             source.retain_original_canonical_ack_peer_association(&scope, &mut original)?;
         }
-        self.current().map_err(operation_error)
+        self.current_for_original_initial_callback()
+            .map_err(operation_error)
     }
 }

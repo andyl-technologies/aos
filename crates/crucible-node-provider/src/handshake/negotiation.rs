@@ -887,3 +887,18 @@ impl ConnectionAuthority {
         Ok(())
     }
 }
+
+impl Handshake {
+    pub(crate) fn original_initial_host_allocation_layout_data() -> Result<usize, ProviderError> {
+        let headers = crate::retained_metadata::requested_storage::shared_header_storage_data(
+            2,
+            std::mem::align_of::<Mutex<()>>().max(std::mem::align_of::<AtomicU64>()),
+        )?;
+        headers
+            .checked_add(std::mem::size_of::<AtomicU64>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Mutex<()>>()))
+            .ok_or(ProviderError::ResourceExhausted(
+                "original host registrar layouts",
+            ))
+    }
+}

@@ -291,3 +291,66 @@ pub(super) fn io(error: std::io::Error) -> QualificationError {
 #[cfg(test)]
 #[path = "measurement/tests.rs"]
 mod tests;
+
+/// Counts the selected fixed kernel comparison phase, excluding compiler frames.
+pub(in super::super) fn original_kernel_validation_counter_scratch_data() -> usize {
+    std::mem::size_of::<[u8; 4097]>()
+        + std::mem::size_of::<File>()
+        + std::mem::size_of::<std::io::Error>()
+        + std::mem::size_of::<std::str::Utf8Error>()
+        + std::mem::size_of::<[usize; 2]>()
+        + 384
+}
+
+/// Compares the same complete kernel release using a fixed bank and raw errors.
+///
+/// Ordinary kernel measurement retains its original allocating implementation.
+///
+/// # Errors
+/// Refuses unavailable, empty, oversized, invalid UTF-8 or changed kernel data.
+pub(in super::super) fn authenticate_original_kernel_data(
+    expected: &str,
+) -> Result<(), crucible::node_contract::RuntimeError> {
+    use crucible::node_contract::RuntimeError;
+    let mut file =
+        File::open("/proc/sys/kernel/osrelease").map_err(|_| RuntimeError::OwnerUnavailable)?;
+    let mut bank = [0u8; 4097];
+    let mut used = 0;
+    loop {
+        let received = match file.read(&mut bank[used..]) {
+            Ok(received) => received,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(RuntimeError::OwnerUnavailable),
+        };
+        if received == 0 {
+            break;
+        }
+        used = used
+            .checked_add(received)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        if used == bank.len() {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+    }
+    if used == 0
+        || std::str::from_utf8(&bank[..used]).map_err(|_| RuntimeError::InvalidReceipt)? != expected
+    {
+        return Err(RuntimeError::InvalidReceipt);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod original_kernel_validation_tests {
+    use super::*;
+
+    #[test]
+    fn selected_fixed_kernel_comparison_preserves_complete_release_check() {
+        let actual = kernel().unwrap();
+        authenticate_original_kernel_data(&actual).unwrap();
+        assert!(authenticate_original_kernel_data("").is_err());
+        let mut changed = actual;
+        changed.push('x');
+        assert!(authenticate_original_kernel_data(&changed).is_err());
+    }
+}

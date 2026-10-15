@@ -33,6 +33,11 @@ impl PacketFreshRestoreControlAllocation {
     pub(crate) fn endpoint_facts(&self) -> RetainedProtocolMetadataFacts {
         self.endpoint.facts()
     }
+    pub(crate) fn startup_endpoint_reserved_bytes_data(&self) -> Result<usize, ProviderError> {
+        self.endpoint.authenticate_original(&self.policy)?;
+        self.endpoint.startup_reserved_bytes_data()
+    }
+
     pub(crate) fn endpoint_header_bytes(&self) -> usize {
         self.endpoint.owner_header_bytes()
     }
@@ -648,6 +653,52 @@ impl PacketLiveCaptureControlCurrency {
         observer.observe(&self.creator)?;
         observer.observe(&self.originals_before)?;
         observer.observe(&self.cursor)
+    }
+}
+
+impl PacketControl {
+    pub(crate) fn quote_original_startup_fresh_restore_control(
+        &self,
+        policy: &Rc<super::super::Native5Policy>,
+        endpoint: super::super::endpoint::PacketEndpointRestoreAllocation,
+    ) -> Result<PacketFreshRestoreControlAllocation, ProviderError> {
+        policy.authenticate_original_control_selection(&self.selection)?;
+        endpoint.authenticate_original(policy)?;
+        let view = self.borrow_original_fresh_report_data(policy)?;
+        // The separate fixed Prepare action precedes this constructor. Clone
+        // only the actual retained gate reference, never a model/inventory DTO.
+        let gate = view.gate_receipt_data().clone();
+        let mut roots = crate::retained_metadata::NativeCaptureMetadataRoots::new();
+        let mut observer = MetadataObserver::new();
+        self.observe_original_fresh_report_metadata(policy, &mut roots, &mut observer)?;
+        observer.observe(&gate)?;
+        roots.observe_shared_edge(
+            &mut observer,
+            crate::retained_metadata::aliases::MetadataSharedKind::NativeControlIdentity,
+            self.capture_identity.as_ref(),
+        )?;
+        if roots.observe_shared(
+            &mut observer,
+            crate::retained_metadata::aliases::MetadataSharedKind::NativePolicy,
+            policy.as_ref(),
+        )? {
+            policy.observe_unique_capture_metadata(&mut roots, &mut observer)?;
+        }
+        roots.finish()?;
+        policy.authenticate_original_control_selection(&self.selection)?;
+        if !self.original_fresh_report_window_data()? {
+            return Err(ProviderError::Correlation(
+                "startup restore Control changed",
+            ));
+        }
+        Ok(PacketFreshRestoreControlAllocation {
+            creator: self.capture_creator,
+            identity: Rc::clone(&self.capture_identity),
+            policy: Rc::clone(policy),
+            facts: observer.finish(),
+            endpoint,
+            gate,
+        })
     }
 }
 

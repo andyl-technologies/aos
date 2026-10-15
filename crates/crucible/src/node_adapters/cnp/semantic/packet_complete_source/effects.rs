@@ -557,3 +557,31 @@ impl OriginalCompleteEffectReceiver {
         self.path.capacity()
     }
 }
+
+impl PacketCompleteEffectReceiverGroup {
+    /// Counts the same three retained effect receiver descriptors as data.
+    ///
+    /// Rc inspection aliases and the sole consuming reader share these actual
+    /// sockets. This reads ownership only; it performs no kernel operation and
+    /// grants no socket acquisition, emission, frontier or capture permission.
+    ///
+    /// # Errors
+    /// Refuses another creator process or thread before reading the owner row.
+    pub fn retained_descriptor_views_precredit_data(
+        &self,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        if self.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        let Self {
+            process: _,
+            thread: _,
+            receivers,
+        } = self;
+        Ok(receivers.len())
+    }
+}

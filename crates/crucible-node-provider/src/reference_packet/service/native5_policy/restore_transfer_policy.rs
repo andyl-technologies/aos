@@ -140,8 +140,13 @@ impl Native5Policy {
             ));
         }
         self.validate_complete_restore_transfer_negotiation(authority)?;
-        let _projection =
-            crate::connection::CompleteRestoreTransferProjection::from_envelope(envelope)?;
+        let _projection = if self.fresh_restore_allocation_selection.is_some()
+            && envelope.extensions.contains_key(super::super::fresh_restore_allocation::PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING)
+        {
+            crate::connection::CompleteRestoreTransferProjection::from_envelope_with_fresh_binding_data(envelope)?
+        } else {
+            crate::connection::CompleteRestoreTransferProjection::from_envelope(envelope)?
+        };
         match (envelope.message, received) {
             (MessageKind::Request, ReceivedBody::Request(request))
                 if matches!(request.as_ref(), RequestBody::Begin(begin)

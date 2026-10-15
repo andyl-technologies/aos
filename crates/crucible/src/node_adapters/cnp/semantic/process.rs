@@ -35,6 +35,19 @@ pub use reservation::{CnpSemanticLaunchReservation, CnpSemanticReservationFailur
 /// must remain alive independently of runtime borrowers and retain this entire
 /// capsule on transport failure, unwind, quarantine or caller drop.
 pub trait CnpSemanticProcessSlot {
+    /// Counts actual descriptors retained by this same concrete slot as data.
+    ///
+    /// Unknown erased backing returns None. Implementations perform no I/O,
+    /// formatting, descriptor duplication or currentness callback.
+    ///
+    /// # Errors
+    /// Refuses foreign, busy or unsupported original ownership as a raw enum.
+    fn retained_descriptor_views_precredit_data(
+        &self,
+    ) -> Result<Option<usize>, crate::node_contract::RuntimeError> {
+        Ok(None)
+    }
+
     /// Identifies the actual finite reservation without granting native authority.
     ///
     /// The pre-Child reservation reads this callback before spawning. Its result
@@ -702,3 +715,11 @@ impl CnpSemanticAttachmentFailure {
         self.guard.custody()
     }
 }
+
+#[path = "process/host_startup.rs"]
+mod host_startup;
+pub(in crate::node_adapters::cnp::semantic) use host_startup::OriginalHostLaunchIdentity;
+
+#[path = "process/initial_lifecycle_storage.rs"]
+mod initial_lifecycle_storage;
+pub(in crate::node_adapters::cnp::semantic) use host_startup::OriginalHostInitialLifecycleGuardIdentity;

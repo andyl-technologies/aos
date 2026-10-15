@@ -22,16 +22,24 @@ impl PacketSemanticSource {
         let value =
             canonical::parse_json(bytes, self.installation.maximum_result_bytes.min(65_536))
                 .map_err(unknown)?;
+        let mut allocation = None;
         let record = if let Some(world) = self
             .world_scope
             .as_ref()
             .filter(|world| world.is_complete())
         {
-            let wrapper: crucible_node_provider::reference_packet::control::PacketNative5Record =
-                serde_json::from_value(value).map_err(unknown)?;
+            let decoded = super::super::packet_complete_source::capture_allocation_receipt::decode_complete_receipt_data(
+                scope, bytes, value, self.complete_capture_allocation_selection,
+            )?;
+            allocation = decoded.allocation;
+            let wrapper = decoded.receipt;
+            let native_bytes = match allocation.as_ref() {
+                Some(allocation) => crucible_node_provider::reference_packet::service::capture_allocation::original_capture_allocation_native_bytes_data(bytes, allocation.reference()).map_err(unknown)?,
+                None => bytes,
+            };
             if canonical::canonical_json(&serde_json::to_value(&wrapper).map_err(unknown)?)
                 .map_err(unknown)?
-                != bytes
+                != native_bytes
             {
                 return Err(refused("complete producer wrapper noncanonical"));
             }
@@ -148,6 +156,12 @@ impl PacketSemanticSource {
             ));
         }
         self.inventory(&record)?;
+        if allocation.is_some() {
+            super::super::packet_complete_source::capture_allocation_receipt::authenticate_allocation_cursor(
+                allocation.as_ref(), record.inventory.reached,
+            )?;
+            self.authenticate_provider(scope.native)?;
+        }
         Ok(record)
     }
 
@@ -167,8 +181,9 @@ impl PacketSemanticSource {
         let bytes = scope.controller.content(reference).map_err(unknown)?;
         reference.verify(bytes).map_err(unknown)?;
         let value = canonical::parse_json(bytes, 65_536).map_err(unknown)?;
-        if value.get("schema").and_then(serde_json::Value::as_str)
-            == Some("source-owned.packet-receipt/5")
+        if value.get("schema").and_then(serde_json::Value::as_str) == Some("source-owned.packet-receipt/5")
+            || (self.complete_capture_allocation_selection.is_some()
+                && value.get("schema").and_then(serde_json::Value::as_str) == Some(crucible_node_provider::reference_packet::service::capture_allocation::PACKET_NATIVE_CAPTURE_ALLOCATION_RECORD))
         {
             return self.native_record(scope, reference).map(|_| ());
         }
@@ -196,12 +211,10 @@ impl PacketSemanticSource {
                 .as_ref(),
         )?
         .ok_or_else(|| refused("complete producer raw original root absent"))?;
-        let wrapper: crucible_node_provider::reference_packet::control::PacketNative5Record =
-            serde_json::from_value(
-                canonical::parse_json(scope.controller.content(&root).map_err(unknown)?, 65_536)
-                    .map_err(unknown)?,
-            )
-            .map_err(unknown)?;
+        let wrapper_bytes = scope.controller.content(&root).map_err(unknown)?;
+        let wrapper = super::super::packet_complete_source::capture_allocation_receipt::decode_complete_receipt_data(
+            scope, wrapper_bytes, canonical::parse_json(wrapper_bytes, 65_536).map_err(unknown)?, self.complete_capture_allocation_selection,
+        )?.receipt;
         if wrapper.native_record != *reference || self.native_record(scope, &root)? != record {
             return Err(refused(
                 "complete producer raw differs from original wrapper",
@@ -341,7 +354,7 @@ impl PacketSemanticSource {
         Ok(root)
     }
 
-    pub(super) fn observation(
+    pub(in crate::node_adapters::cnp::semantic) fn observation(
         &self,
         activation: &WorldActivation,
         root: &ContentRef,

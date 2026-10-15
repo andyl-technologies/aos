@@ -362,3 +362,22 @@ impl CaptureEvidence for InstalledNormalClockStateFactory {
         ))
     }
 }
+
+impl crate::node_qualification::RetainedMetadataOwned for InstalledNormalClockStateFactory {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            profile,
+            baseline,
+            origin,
+        } = self;
+        counter.charge(origin)?;
+        counter.charge(profile)?;
+        if counter.rc(baseline)? {
+            counter.charge(baseline.as_ref())?;
+        }
+        Ok(())
+    }
+}

@@ -4,6 +4,9 @@
 //! and native cleanup. These commands transport authored bytes and render original
 //! durable state without implementing scheduling or claiming deterministic replay.
 
+#[path = "node_complete_scene.rs"]
+mod complete_scene;
+
 #[path = "node_debug.rs"]
 mod debug;
 
@@ -60,6 +63,8 @@ pub(super) struct NodeArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum NodeCommand {
+    #[command(flatten)]
+    CompleteScene(complete_scene::CompleteSceneCommand),
     #[command(flatten)]
     OriginalLineage(original_lineage::NodeOriginalLineageCommand),
     #[command(flatten)]
@@ -153,6 +158,7 @@ pub(super) fn run_node_invocation(cli: &Cli, args: &NodeArgs) -> Result<(), CliE
         ));
     }
     match &args.command {
+        NodeCommand::CompleteScene(command) => complete_scene::run(command),
         NodeCommand::Debug(command) => debug::run(command),
         NodeCommand::PreservingDebug(command) => debug_preserving::run(command),
         NodeCommand::Root(command) => root::run(command),
@@ -234,6 +240,14 @@ fn serve(
     policy: &std::path::Path,
     transcript_archive: Option<&std::path::Path>,
 ) -> Result<(), CliError> {
+    serve_installed(policy, transcript_archive, None)
+}
+
+fn serve_installed(
+    policy: &std::path::Path,
+    transcript_archive: Option<&std::path::Path>,
+    complete_scene: Option<crucible_daemon::node_qualification::InstalledCompleteSceneManifest>,
+) -> Result<(), CliError> {
     let policy =
         NodeDaemonPolicy::from_json(&bounded_file(policy, 64 * 1024)?).map_err(node_error)?;
     let stopping = Arc::new(AtomicBool::new(false));
@@ -252,7 +266,20 @@ fn serve(
             ))
         })
         .map_err(CliError::Io)?;
-    let mut daemon = if let Some(path) = transcript_archive {
+    let mut daemon = if let Some(manifest) = complete_scene {
+        if transcript_archive.is_some() {
+            return Err(node_error(
+                "collecting installation and transcript archive are distinct modes",
+            ));
+        }
+        NodeControlDaemon::start_with_vendor_installation(
+            policy,
+            Box::new(
+                crucible_daemon::node_observed_executor::CompleteSceneServiceFactory::new(manifest),
+            ),
+        )
+        .map_err(node_error)?
+    } else if let Some(path) = transcript_archive {
         NodeControlDaemon::start_with_conditional_directory(policy, path.to_owned())
             .map_err(node_error)?
     } else {

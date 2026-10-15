@@ -242,25 +242,40 @@ impl OriginalSerializationStorageData {
     }
 }
 
-pub(crate) fn actual_serialization_storage_data(
-    value: &impl Serialize,
-    actual_fields: RetainedProtocolMetadataFacts,
-    maximum: usize,
-) -> Result<OriginalSerializationStorageData, ProviderError> {
-    let refused = || ProviderError::ResourceExhausted("closed serialization storage");
-    // Bytes uses URL_SAFE_NO_PAD.encode on its own Vec. Every such field is
-    // among the actual typed vector banks. Summing ceil(length/3)*4 by an
-    // upper bound over ALL actual vector capacities is conservative; it is not
-    // a multiplier inferred from input/output JSON length. Other closed custom
-    // string serialization is the closed decimal_integer formatter (20 bytes).
-    let temporary = actual_fields
+/// Names the actual fixed visitor and result headers before Serialize runs.
+/// Compiler/recursive serializer frames and allocator overhead are separate.
+pub(crate) fn original_serialization_counter_scratch_data() -> usize {
+    size_of::<Credit>()
+        .checked_add(size_of::<OriginalSerializationStorageData>())
+        .unwrap_or(usize::MAX)
+}
+
+/// Counts the existing Bytes/decimal formatter bank before invoking Serialize.
+/// No visitor, DOM, callback or producer is invoked by this closed data helper.
+pub(crate) fn original_serialization_formatter_temporary_storage_data(
+    actual_fields: &RetainedProtocolMetadataFacts,
+) -> Result<usize, ProviderError> {
+    actual_fields
         .vector_banks
         .checked_mul(2)
         .and_then(|padding| actual_fields.vector_capacity_bytes.checked_add(padding))
         .and_then(|bytes| bytes.checked_div(3))
         .and_then(|groups| groups.checked_mul(4))
         .and_then(|bytes| bytes.checked_add(20))
-        .ok_or_else(refused)?;
+        .ok_or(ProviderError::ResourceExhausted(
+            "closed serialization storage",
+        ))
+}
+
+pub(crate) fn actual_serialization_storage_data(
+    value: &impl Serialize,
+    actual_fields: RetainedProtocolMetadataFacts,
+    maximum: usize,
+) -> Result<OriginalSerializationStorageData, ProviderError> {
+    let refused = || ProviderError::ResourceExhausted("closed serialization storage");
+    // Every Bytes field belongs to these actual typed vector banks. Admit its
+    // independently allocated formatter String before invoking Serialize.
+    let temporary = original_serialization_formatter_temporary_storage_data(&actual_fields)?;
     let scratch = size_of::<Credit>()
         .checked_add(size_of::<OriginalSerializationStorageData>())
         .ok_or_else(refused)?;

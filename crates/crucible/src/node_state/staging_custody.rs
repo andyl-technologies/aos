@@ -1,7 +1,7 @@
 //! Preallocated owning native staging guards and complete source retention.
 
 use std::{
-    rc::Rc,
+    rc::{Rc, Weak},
     task::{Context, Poll},
 };
 
@@ -27,6 +27,8 @@ use crucible_node_contract::{CapturedOwner, ContentRef};
 pub struct PreparedRestoreAllocation {
     slot: Option<Box<dyn RuntimeCustodySlot>>,
     native: Option<Box<dyn NativeRestoreStaging>>,
+    factory_origin: Option<Weak<dyn super::NativeWorldFactory>>,
+    queue_origin: Option<crate::node_contract::RuntimeCustodyQueue>,
     capture: Rc<VerifiedCapture>,
     activation: ActivationRecord,
     limits: RuntimeLimits,
@@ -42,10 +44,28 @@ impl PreparedRestoreAllocation {
         Self {
             slot: Some(slot),
             native: None,
+            factory_origin: None,
+            queue_origin: None,
             capture,
             activation,
             limits,
         }
+    }
+
+    pub(super) fn bind_original_native_factory_data(
+        &mut self,
+        factory: &Rc<dyn super::NativeWorldFactory>,
+        queue: &crate::node_contract::RuntimeCustodyQueue,
+    ) -> Result<(), StateError> {
+        if self.native.is_some() || self.factory_origin.is_some() || self.queue_origin.is_some() {
+            return Err(incomplete(
+                "native storage provenance",
+                "original factory already bound",
+            ));
+        }
+        self.factory_origin = Some(Rc::downgrade(factory));
+        self.queue_origin = Some(queue.clone());
+        Ok(())
     }
 
     /// Installs an empty native capsule before allocating any external resource.
@@ -92,6 +112,8 @@ impl PreparedRestoreAllocation {
             .ok_or_else(|| incomplete("native allocation", "reserved owning slot is absent"))?;
         Ok(PreparedNativeCustody {
             native: Some(native),
+            factory_origin: self.factory_origin.take(),
+            queue_origin: self.queue_origin.take(),
             slot: Some(slot),
             capture: Rc::clone(&self.capture),
             activation: self.activation.clone(),
@@ -119,6 +141,8 @@ impl Drop for PreparedRestoreAllocation {
 /// Retains a complete native capsule and preservation source until authenticated cleanup.
 pub struct PreparedNativeCustody {
     native: Option<Box<dyn NativeRestoreStaging>>,
+    factory_origin: Option<Weak<dyn super::NativeWorldFactory>>,
+    queue_origin: Option<crate::node_contract::RuntimeCustodyQueue>,
     slot: Option<Box<dyn RuntimeCustodySlot>>,
     capture: Rc<VerifiedCapture>,
     activation: ActivationRecord,
@@ -127,6 +151,100 @@ pub struct PreparedNativeCustody {
 }
 
 impl PreparedNativeCustody {
+    pub(super) fn original_closed_storage_data(
+        &self,
+        original_factory: &Rc<dyn super::NativeWorldFactory>,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        use crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter;
+        use std::mem::size_of_val;
+        let Self {
+            native,
+            factory_origin,
+            queue_origin,
+            slot,
+            capture,
+            activation,
+            publication: _,
+            limits: _,
+        } = self;
+        let origin = factory_origin
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        if !std::ptr::addr_eq(origin.as_ptr(), Rc::as_ptr(original_factory))
+            || origin.strong_count() == 0
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        // Actual native driver installed this queue/factory pair. The external
+        // retaining Source authenticates its concrete factory before this call.
+        let queue = queue_origin
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        let slot = slot.as_deref().ok_or(RuntimeError::UnsupportedFacet)?;
+        queue.authenticate_original_slot(slot)?;
+        let native = native.as_deref().ok_or(RuntimeError::UnsupportedFacet)?;
+        let mut counter = RetainedRuntimeCounter::new(maximum);
+        counter.owned(activation)?;
+        if counter.rc(capture)? {
+            capture.charge_original_storage_data(&mut counter)?;
+        }
+        counter.add(size_of_val(slot))?;
+        counter.add(
+            slot.retained_requested_storage_data(counter.remaining())?
+                .ok_or(RuntimeError::UnsupportedFacet)?,
+        )?;
+        // The factory's complete allocation is charged by the retaining typed
+        // branch. This Weak adds no new allocation and is inline in custody.
+        counter.add(
+            queue
+                .retained_requested_storage_data(counter.remaining())?
+                .ok_or(RuntimeError::UnsupportedFacet)?,
+        )?;
+        counter.add(size_of_val(native))?;
+        counter.add(
+            native
+                .retained_requested_storage_precredit_data(counter.remaining())?
+                .ok_or(RuntimeError::UnsupportedFacet)?,
+        )?;
+        Ok(counter.bytes())
+    }
+
+    pub(super) fn original_closed_storage_scratch_data(
+        &self,
+        original_factory: &Rc<dyn super::NativeWorldFactory>,
+    ) -> Result<usize, RuntimeError> {
+        use crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter;
+        let origin = self
+            .factory_origin
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        if !std::ptr::addr_eq(origin.as_ptr(), Rc::as_ptr(original_factory))
+            || origin.strong_count() == 0
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let native = self
+            .native
+            .as_deref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        let slot = self.slot.as_deref().ok_or(RuntimeError::UnsupportedFacet)?;
+        let queue = self
+            .queue_origin
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        queue.authenticate_original_slot(slot)?;
+        let native = native
+            .retained_requested_storage_precredit_scratch_data()?
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        let slot = slot
+            .retained_requested_storage_precredit_scratch_data()?
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        std::mem::size_of::<RetainedRuntimeCounter>()
+            .checked_add(native.max(slot))
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+
     fn native(&self) -> Result<&dyn NativeRestoreStaging, StateError> {
         self.native
             .as_deref()

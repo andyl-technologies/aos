@@ -30,6 +30,28 @@ pub(crate) enum CompleteRestoreTransferProjection<'a> {
 
 impl<'a> CompleteRestoreTransferProjection<'a> {
     pub(crate) fn from_envelope(envelope: &'a Envelope) -> Result<Self, ProviderError> {
+        Self::from_envelope_inner(envelope, false)
+    }
+
+    /// Adds the separately selected Fresh binding to the unchanged transfer proof.
+    pub(crate) fn from_envelope_with_fresh_binding_data(
+        envelope: &'a Envelope,
+    ) -> Result<Self, ProviderError> {
+        use crate::reference_packet::service::fresh_restore_allocation::{
+            PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING, policy,
+        };
+        let binding = envelope
+            .extensions
+            .get(PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING)
+            .ok_or_else(invalid)?;
+        policy::validate_prepare_binding_value(binding)?;
+        Self::from_envelope_inner(envelope, true)
+    }
+
+    fn from_envelope_inner(
+        envelope: &'a Envelope,
+        fresh_binding: bool,
+    ) -> Result<Self, ProviderError> {
         if envelope.method != Method::Begin
             || envelope.node_id.0.is_none()
             || envelope.request_id.0.is_none()
@@ -47,7 +69,9 @@ impl<'a> CompleteRestoreTransferProjection<'a> {
         ] {
             match envelope.message {
                 MessageKind::Request
-                    if envelope.extensions.len() == 2
+                    if envelope.extensions.len() == 2 + usize::from(fresh_binding)
+                        && (!fresh_binding
+                            || phase == PacketCompleteRestoreTransferPhase::Prepare)
                         && envelope.extensions.contains_key(phase.request_extension()) =>
                 {
                     let data = envelope
@@ -74,7 +98,8 @@ impl<'a> CompleteRestoreTransferProjection<'a> {
                     });
                 }
                 MessageKind::Response
-                    if envelope.extensions.len() == 1
+                    if !fresh_binding
+                        && envelope.extensions.len() == 1
                         && envelope.extensions.contains_key(phase.receipt_extension()) =>
                 {
                     let receipt = envelope
@@ -356,4 +381,130 @@ fn receipt_data(
     }
     super::serialized_credit(value, MAXIMUM_COMPLETE_RESTORE_TRANSFER_RECEIPT_BYTES)?;
     Ok(())
+}
+
+// crucible-lint: allow panic-shortcut -- closed parser conjunctions are tested without any live issuer or grant.
+#[cfg(test)]
+mod fresh_binding_tests {
+    use super::*;
+    use crate::envelope::Nullable;
+    use crate::reference_packet::service::{
+        complete_restore::PACKET_COMPLETE_RESTORE_FEATURE, fresh_restore_allocation::*,
+    };
+    use crucible_node_contract::{Bytes, Id, U64, canonical};
+
+    #[test]
+    fn explicit_fresh_prepare_keeps_full_transfer_proof_and_legacy_parser_exact()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // These full reference/hash values identify inert test DATA. No native
+        // boot, installed policy, source action or completed query is created.
+        let content = canonical::content_ref(b"transfer syntax data", "application/json")?;
+        let allocation =
+            canonical::content_ref(b"report syntax data", PACKET_FRESH_RESTORE_ALLOCATION_MEDIA)?;
+        let digest = Bytes::new(vec![0; 32]);
+        let world = canonical::hash("cnp.world-binding.v1", b"world data")?;
+        let mut limits = serde_json::Map::new();
+        for key in [
+            "maximum_known_requested_bytes",
+            "maximum_input_bytes",
+            "maximum_nodes",
+            "maximum_depth",
+            "maximum_owned_backing_bytes",
+            "maximum_tree_entries",
+            "maximum_metadata_rows",
+            "maximum_literal_backing_bytes",
+            "maximum_content_transfers",
+            "maximum_content_objects",
+            "maximum_content_groups",
+            "maximum_content_bytes",
+            "maximum_content_metadata_bytes",
+            "maximum_model_bytes",
+        ] {
+            limits.insert(
+                key.into(),
+                serde_json::to_value(U64::new(if key == "maximum_known_requested_bytes" {
+                    1024
+                } else {
+                    1
+                }))?,
+            );
+        }
+        let restoration = serde_json::json!({
+            "schema":PACKET_COMPLETE_RESTORE_FEATURE,
+            "archive_index":&content, "capture_manifest":&content, "owner_state":&content,
+            "journal":&content, "source_runtime":&content, "backend_implementation":&content,
+            "backend_schema":{"id":"schema-data","version":1,"definition":&content,"extensions":{}},
+            "archived_cut":{"time_ps":"1","microstep":"0","phase":0}, "archived_ordinal":"1",
+            "target_world":&world, "target_owner":"owner-data", "target_owner_binding":&world,
+            "target_activation":"activation-data", "target_generation":"1", "target_owner_generation":"1",
+            "mapping":&content, "nonce":&digest,
+        });
+        let request = serde_json::json!({
+            "schema":PACKET_COMPLETE_RESTORE_PREPARE_EXTENSION, "restoration":restoration,
+            "host_protocol":&content,"native_protocol":&content,"native_control":&content,"native_anchor":&content,
+            "transaction_id":"transaction-data","generation":"1","allocation":limits,
+        });
+        let proof = serde_json::json!({"schema":PACKET_COMPLETE_RESTORE_PREPARE_PROOF_EXTENSION,"algorithm":PACKET_COMPLETE_RESTORE_ALGORITHM,"context_digest":&digest,"mac":&digest});
+        let binding = serde_json::json!({"schema":PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING,"assigned_query":&digest,"completed_query_response":&digest,"allocation":&allocation});
+        let mut envelope = Envelope {
+            protocol: "CNP/1".into(),
+            message: MessageKind::Request,
+            session_id: Nullable(Some(Id::new("session-data")?)),
+            incarnation_id: Nullable(Some(Id::new("incarnation-data")?)),
+            node_id: Nullable(Some(Id::new("node-data")?)),
+            execution_owner_id: Nullable(None),
+            capture_owner_id: Nullable(None),
+            request_id: Nullable(Some(Id::new("request-data")?)),
+            operation_id: Nullable(None),
+            sequence: U64::new(1),
+            method: Method::Begin,
+            body: serde_json::json!({"kind":"prepare_restore","extensions":{}})
+                .as_object()
+                .ok_or("body object")?
+                .clone(),
+            extensions: [
+                (PACKET_COMPLETE_RESTORE_PREPARE_EXTENSION.into(), request),
+                (
+                    PACKET_COMPLETE_RESTORE_PREPARE_PROOF_EXTENSION.into(),
+                    proof,
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        CompleteRestoreTransferProjection::from_envelope(&envelope)?;
+        assert!(
+            CompleteRestoreTransferProjection::from_envelope_with_fresh_binding_data(&envelope)
+                .is_err()
+        );
+        envelope.extensions.insert(
+            PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING.into(),
+            binding,
+        );
+        assert!(CompleteRestoreTransferProjection::from_envelope(&envelope).is_err());
+        assert_eq!(
+            CompleteRestoreTransferProjection::from_envelope_with_fresh_binding_data(&envelope)?
+                .phase(),
+            PacketCompleteRestoreTransferPhase::Prepare
+        );
+        let mut changed = envelope.clone();
+        changed
+            .extensions
+            .get_mut(PACKET_COMPLETE_RESTORE_PREPARE_PROOF_EXTENSION)
+            .and_then(Value::as_object_mut)
+            .ok_or("proof object")?
+            .insert("mac".into(), "changed".into());
+        assert!(
+            CompleteRestoreTransferProjection::from_envelope_with_fresh_binding_data(&changed)
+                .is_err()
+        );
+        envelope
+            .extensions
+            .insert("foreign-extra".into(), Value::Null);
+        assert!(
+            CompleteRestoreTransferProjection::from_envelope_with_fresh_binding_data(&envelope)
+                .is_err()
+        );
+        Ok(())
+    }
 }

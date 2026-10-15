@@ -122,6 +122,83 @@ impl NativeRuntimeContinuationVerifier for NormalClockStaging {
 }
 
 impl NativeRestoreStaging for NormalClockStaging {
+    fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, RuntimeError> {
+        use crate::node_qualification::{
+            RetainedMetadataCounter as Counter, RetainedMetadataOwned,
+        };
+        use std::mem::size_of;
+        let Self {
+            graph,
+            archive,
+            target,
+            reservations: _,
+            installed,
+            node,
+            proof,
+            ready,
+            coordinator,
+            quarantined: _,
+            transferred: _,
+        } = self;
+        let mut counter = Counter::new(maximum);
+        installed
+            .charge(&mut counter)
+            .map_err(|_| RuntimeError::UnsupportedFacet)?;
+        if counter.rc(graph).map_err(|_| RuntimeError::ResourceLimit)? {
+            let bytes =
+                graph.original_retained_requested_storage_precredit_data(counter.remaining())?;
+            counter
+                .add(bytes)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        }
+        let archive_bytes = archive
+            .retained_record_requested_storage_data()?
+            .checked_sub(size_of::<NativeArchiveRecord>())
+            .ok_or(RuntimeError::ResourceLimit)?;
+        counter
+            .add(archive_bytes)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        counter
+            .charge(target)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        if let Some(node) = node {
+            counter
+                .add(size_of::<HostModelNode>())
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+            let bytes = node.original_clock_requested_backing_data(counter.remaining())?;
+            counter
+                .add(bytes)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        }
+        counter
+            .charge(proof)
+            .map_err(|_| RuntimeError::UnsupportedFacet)?;
+        counter
+            .charge(ready)
+            .map_err(|_| RuntimeError::UnsupportedFacet)?;
+        counter
+            .charge(coordinator)
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        Ok(Some(counter.bytes()))
+    }
+
+    fn retained_requested_storage_precredit_scratch_data(
+        &self,
+    ) -> Result<Option<usize>, RuntimeError> {
+        let graph = AdmittedGraph::original_retained_requested_storage_precredit_scratch_data();
+        let node = HostModelNode::original_clock_requested_backing_scratch_data();
+        let core =
+            crucible::node_contract::NodeRuntime::capture_opaque_owner_observer_scratch_data();
+        let local = std::mem::size_of::<crate::node_qualification::RetainedMetadataCounter>();
+        local
+            .checked_add(graph.max(node).max(core))
+            .map(Some)
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+
     fn reservations(&self) -> RestoreReservations {
         self.reservations
     }

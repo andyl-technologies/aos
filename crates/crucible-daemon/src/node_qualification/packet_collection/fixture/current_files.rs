@@ -451,3 +451,40 @@ mod tests;
 #[cfg(test)]
 #[path = "current_files/batch_tests.rs"]
 mod batch_tests;
+
+impl CurrentFiles {
+    /// Counts the actual retained complete-byte file descriptors as data.
+    ///
+    /// Every Original owns one descriptor even when several paths select the
+    /// same inode. A lease-backed view can additionally own a notification
+    /// worker, so it refuses this closed complete-byte census.
+    ///
+    /// # Errors
+    /// Refuses another creator process or unsupported leased descriptor owners.
+    pub(in super::super) fn retained_descriptor_count_data(
+        &self,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        use crucible::node_contract::RuntimeError;
+        if self.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let Self {
+            originals,
+            process: _,
+            revoked: _,
+        } = self;
+        originals.iter().try_fold(0usize, |count, original| {
+            let Original {
+                path: _,
+                file,
+                facts: _,
+                content: _,
+            } = original;
+            if file.lease().is_some() {
+                return Err(RuntimeError::UnsupportedFacet);
+            }
+            // Revocation prevents effects but does not erase this retained File.
+            count.checked_add(1).ok_or(RuntimeError::ResourceLimit)
+        })
+    }
+}

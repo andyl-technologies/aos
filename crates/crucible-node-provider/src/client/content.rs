@@ -561,3 +561,162 @@ impl ClientContent {
         })
     }
 }
+
+impl ClientContent {
+    // Selected construction retains the independent original body in its
+    // caller's slot until all fallible verification/accounting has passed.
+    pub(in crate::client) fn install_original_host_startup_from_slot(
+        &mut self,
+        pending: &mut Option<(ContentRef, Vec<u8>)>,
+    ) -> Result<(), ProviderError> {
+        let (reference, bytes) = pending.as_ref().ok_or(ProviderError::Correlation(
+            "original host content slot absent",
+        ))?;
+        reference.verify(bytes)?;
+        if let Some((original, original_bytes)) = self.objects.get(&reference.hash.digest) {
+            if original != reference || original_bytes.as_ref() != bytes {
+                return Err(ProviderError::Conflict("installed content changed"));
+            }
+            // Keep the redundant original in the caller until it explicitly
+            // installs its next slot; no fallible step follows this comparison.
+            return Ok(());
+        }
+        self.reserve(bytes.len())?;
+        let (reference, bytes) = pending.take().ok_or(ProviderError::Correlation(
+            "original host content slot disappeared",
+        ))?;
+        self.objects
+            .insert(reference.hash.digest.clone(), (reference, Rc::new(bytes)));
+        Ok(())
+    }
+}
+
+#[path = "content/host_initial.rs"]
+mod host_initial;
+
+impl ClientContent {
+    pub(in crate::client) fn original_capture_allocation_body_data(
+        &self,
+        reference: &ContentRef,
+    ) -> Result<&[u8], ProviderError> {
+        let refused = || ProviderError::Correlation("original allocation report content differs");
+        let (actual, bytes) = self
+            .objects
+            .get(&reference.hash.digest)
+            .ok_or_else(refused)?;
+        if actual != reference
+            || reference.hash.algorithm != "blake3-256"
+            || reference.hash.domain != "cnp.blob.v1"
+            || reference.hash.digest.len() != 64
+            || !reference
+                .hash
+                .digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || u64::try_from(bytes.len()).ok() != Some(reference.length.get())
+        {
+            return Err(refused());
+        }
+        // Matches canonical::hash framing exactly while keeping the full digest
+        // and input bank borrowed. No temporary HashRef/String/Vec is built.
+        let domain = b"cnp.blob.v1";
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"CNP/1\0");
+        hasher.update(
+            &u32::try_from(domain.len())
+                .map_err(|_| refused())?
+                .to_be_bytes(),
+        );
+        hasher.update(domain);
+        hasher.update(&reference.length.get().to_be_bytes());
+        hasher.update(bytes);
+        let digest = hasher.finalize();
+        for (hex, byte) in reference
+            .hash
+            .digest
+            .as_bytes()
+            .chunks_exact(2)
+            .zip(digest.as_bytes())
+        {
+            let digit = |value: u8| {
+                if value.is_ascii_digit() {
+                    value - b'0'
+                } else {
+                    value - b'a' + 10
+                }
+            };
+            if digit(hex[0]) * 16 + digit(hex[1]) != *byte {
+                return Err(refused());
+            }
+        }
+        Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod allocation_report_tests {
+    //! Actual immutable content ownership; this does not construct Source rights.
+    use super::*;
+    use crucible_node_contract::canonical;
+
+    #[test]
+    fn allocation_report_full_reference_hash_and_missing_body_preserve_custody() {
+        let bytes = b"original report DATA".to_vec();
+        let media = crate::reference_packet::service::capture_allocation::PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA;
+        let reference = canonical::content_ref(&bytes, media).unwrap();
+        let mut content = ClientContent::new(65536, 8, 4096).unwrap();
+        assert!(
+            content
+                .original_capture_allocation_body_data(&reference)
+                .is_err()
+        );
+        let mut pending = Some((reference.clone(), bytes));
+        content
+            .install_original_host_startup_from_slot(&mut pending)
+            .unwrap();
+        assert!(pending.is_none());
+        let original = content
+            .original_capture_allocation_body_data(&reference)
+            .unwrap()
+            .as_ptr();
+        let mut wrong = reference.clone();
+        wrong.media_type = "application/json".into();
+        assert!(
+            content
+                .original_capture_allocation_body_data(&wrong)
+                .is_err()
+        );
+        wrong = reference.clone();
+        wrong.length = U64::new(reference.length.get() + 1);
+        assert!(
+            content
+                .original_capture_allocation_body_data(&wrong)
+                .is_err()
+        );
+        assert_eq!(
+            content
+                .original_capture_allocation_body_data(&reference)
+                .unwrap()
+                .as_ptr(),
+            original
+        );
+        // A changed retained bank cannot pass merely because its map identity is
+        // unchanged. Refusal retains that same allocation for custody inspection.
+        let (_, body) = content.objects.get_mut(&reference.hash.digest).unwrap();
+        Rc::get_mut(body).unwrap()[0] ^= 1;
+        assert!(
+            content
+                .original_capture_allocation_body_data(&reference)
+                .is_err()
+        );
+        assert_eq!(
+            content
+                .objects
+                .get(&reference.hash.digest)
+                .unwrap()
+                .1
+                .as_ptr(),
+            original
+        );
+    }
+}

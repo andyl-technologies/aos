@@ -179,6 +179,14 @@ pub fn original_native_prepare_startup_storage_data(
     )?;
     let retained = sum(&[
         attempt_shared,
+        // The selected Fresh endpoint retains the actual incoming frame beside
+        // the independent guard/issuer clones through successful Prepare handoff.
+        // Counting its inline header again is conservative if already reserved
+        // in the enclosing Rc attempt. No literal-bank capacity is added here.
+        original.value_dom_requested_bytes,
+        body.value_dom_requested_bytes,
+        size_of::<crate::connection::ReceivedFrame>(),
+        size_of::<crate::bodies::RequestBody>(),
         // VerifiedPrepare's inline Option is already in the actual endpoint
         // header. The temporary scope/header lives in the counter window.
         MAXIMUM_COMPLETE_RESTORE_TRANSFER_RECEIPT_BYTES,
@@ -298,47 +306,63 @@ pub fn original_native_prepare_startup_storage_data(
 }
 
 /// Names explicit fixed counters, scanners, comparison and streamed work banks.
-pub const fn original_native_prepare_startup_counter_scratch_data() -> usize {
-    selected_issuer_decode_counter_scratch_data()
-        + original_json_value_storage_extent_counter_scratch_data()
-        + original_prepare_executable_measurement_counter_scratch_data()
-        + super::prepare_bindings::declared_counter_scratch_data()
-        + ConnectionAuthority::independent_clone_counter_scratch_data()
-        + 8 * size_of::<OriginalJsonValueStorageExtentData>()
-        + size_of::<shapes::PrepareStartupShapes>()
-        + size_of::<
+pub fn original_native_prepare_startup_counter_scratch_data() -> usize {
+    let terms = [
+        crate::reference_packet::service::OriginalNativeCaptureContext::startup_protocol_counter_scratch_data(),
+        3 * size_of::<crate::retained_metadata::NativeCaptureMetadataRoots>(),
+        size_of::<[crate::protocol_snapshot::ProtocolSnapshotAllocationFacts; 2]>(),
+        crate::reference_packet::control::PacketControl::original_fresh_report_view_counter_scratch_data(),
+        crate::reference_packet::endpoint::OriginalNativeFreshPrepareHeader::counter_scratch_data(),
+        Connection::<crate::client::DeadlineStream>::original_fresh_prepare_handoff_counter_scratch_data(),
+        selected_issuer_decode_counter_scratch_data(),
+        original_json_value_storage_extent_counter_scratch_data(),
+        original_prepare_executable_measurement_counter_scratch_data(),
+        super::prepare_bindings::declared_counter_scratch_data(),
+        ConnectionAuthority::independent_clone_counter_scratch_data(),
+        8 * size_of::<OriginalJsonValueStorageExtentData>(),
+        size_of::<shapes::PrepareStartupShapes>(),
+        size_of::<
             crate::retained_metadata::serialization_storage::OriginalSerializationStorageProjection,
-        >()
-        + size_of::<crate::retained_metadata::serialization_storage::OriginalSerializationStorageData>(
-        )
-        + size_of::<[(u64, u64); 5]>()
-        + size_of::<[&str; 7]>()
-        + size_of::<[&str; 5]>()
-        + size_of::<[&str; 22]>()
-        + 2 * size_of::<std::cell::Ref<'static, NativeAckBoot>>()
-        + size_of::<std::cell::RefMut<'static, NativeAckBoot>>()
-        + size_of::<std::cell::RefMut<'static, NativeCompleteRestorePrepareAttempt>>()
-        + size_of::<crate::connection::ReceivedFrame>()
-        + size_of::<crate::connection::ConnectionIncident>()
-        + size_of::<[&ConnectionAuthority; 2]>()
-        + size_of::<VerifiedCompleteRestorePrepare>()
-        + size_of::<NativeRestoreServiceAllocationQuote>()
-        + size_of::<crate::reference_packet::endpoint::PacketEndpointRestoreAllocation>()
-        + size_of::<crate::reference_packet::control::PacketFreshRestoreControlAllocation>()
-        + size_of::<crate::reference_packet::service::owned11::OriginalNativeServiceOwned11<'static>>(
-        )
-        + size_of::<crate::reference_packet::service::OriginalNativeCaptureContext<'static>>()
-        + 3 * size_of::<MetadataObserver<'static>>()
-        + 4 * size_of::<RetainedProtocolMetadataFacts>()
-        + size_of::<blake3::Hasher>()
-        + 4 * size_of::<blake3::Hash>()
-        + 2 * size_of::<PacketNativePrepareStartupStorageData>()
-        + size_of::<OriginalNativePrepareStartupAllocation>()
-        + size_of::<PacketNativeStartupAllocationRow>()
-        + 24 * size_of::<usize>()
-        + size_of::<[usize; 28]>()
-        + size_of::<[usize; 8]>()
-        + size_of::<std::slice::Iter<'static, usize>>()
+        >(),
+        size_of::<crate::retained_metadata::serialization_storage::OriginalSerializationStorageData>(
+        ),
+        size_of::<[(u64, u64); 5]>(),
+        size_of::<[&str; 7]>(),
+        size_of::<[&str; 5]>(),
+        size_of::<[&str; 22]>(),
+        2 * size_of::<std::cell::Ref<'static, NativeAckBoot>>(),
+        size_of::<std::cell::RefMut<'static, NativeAckBoot>>(),
+        size_of::<std::cell::RefMut<'static, NativeCompleteRestorePrepareAttempt>>(),
+        size_of::<crate::connection::ReceivedFrame>(),
+        size_of::<crate::connection::ConnectionIncident>(),
+        size_of::<[&ConnectionAuthority; 2]>(),
+        size_of::<VerifiedCompleteRestorePrepare>(),
+        size_of::<NativeRestoreServiceAllocationQuote>(),
+        size_of::<crate::reference_packet::endpoint::PacketEndpointRestoreAllocation>(),
+        size_of::<crate::reference_packet::control::PacketFreshRestoreControlAllocation>(),
+        size_of::<crate::reference_packet::service::owned11::OriginalNativeServiceOwned11<'static>>(
+        ),
+        size_of::<crate::reference_packet::service::OriginalNativeCaptureContext<'static>>(),
+        3 * size_of::<MetadataObserver<'static>>(),
+        4 * size_of::<RetainedProtocolMetadataFacts>(),
+        size_of::<blake3::Hasher>(),
+        4 * size_of::<blake3::Hash>(),
+        2 * size_of::<PacketNativePrepareStartupStorageData>(),
+        size_of::<OriginalNativePrepareStartupAllocation>(),
+        size_of::<PacketNativeStartupAllocationRow>(),
+        24 * size_of::<usize>(),
+        size_of::<[usize; 28]>(),
+        size_of::<[usize; 8]>(),
+        size_of::<std::slice::Iter<'static, usize>>(),
+    ];
+    // This actual aggregation bank is explicit work storage, separate from
+    // compiler frames and the fixed banks already named by the nested helpers.
+    terms
+        .iter()
+        .try_fold(std::mem::size_of_val(&terms), |bytes, term| {
+            bytes.checked_add(*term)
+        })
+        .unwrap_or(usize::MAX)
 }
 
 /// Retains only the uniquely claimed native construction occurrence.
@@ -478,6 +502,42 @@ impl OriginalNativePrepareStartupAllocation {
             .observe_owned11_metadata(observer)?;
         observer.shared_original(MetadataSharedKind::NativePolicy, policy.as_ref())?;
         policy.observe_owned11_metadata(observer)?;
+        observer.observe(&row.retained_requested_bytes)?;
+        observer.observe(&row.maximum_simultaneous_transient_bytes)?;
+        observer.observe(&row.declared_counter_scratch_bytes)?;
+        observer.observe(&source_digest.as_bytes().len())?;
+        observer.observe(&launch_digest.as_bytes().len())?;
+        observer.observe(started)?;
+        storage.observe_metadata_data(observer)?;
+        self.authenticate_current(connection)
+    }
+
+    /// Walks actual retained scope fields on the same startup shared-root roster.
+    pub(crate) fn observe_unique_startup_metadata<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        roots: &mut crate::retained_metadata::NativeCaptureMetadataRoots,
+        observer: &mut MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_current(connection)?;
+        let Self {
+            boot,
+            policy,
+            row,
+            source_digest,
+            launch_digest,
+            started,
+            storage,
+        } = self;
+        use crate::retained_metadata::aliases::MetadataSharedKind;
+        if roots.observe_shared(observer, MetadataSharedKind::NativeBoot, boot.as_ref())? {
+            boot.try_borrow()
+                .map_err(|_| borrowed())?
+                .observe_unique_capture_metadata(roots, observer)?;
+        }
+        if roots.observe_shared(observer, MetadataSharedKind::NativePolicy, policy.as_ref())? {
+            policy.observe_unique_capture_metadata(roots, observer)?;
+        }
         observer.observe(&row.retained_requested_bytes)?;
         observer.observe(&row.maximum_simultaneous_transient_bytes)?;
         observer.observe(&row.declared_counter_scratch_bytes)?;

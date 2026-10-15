@@ -222,3 +222,36 @@ impl StoredWorldActivationPublisher {
         self.reconcile_complete_record(record, prepared)
     }
 }
+
+impl PreparedCoordinator {
+    pub(super) fn charge_original_storage_data(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), crate::node_qualification::QualificationError> {
+        use crate::node_qualification::QualificationError;
+        use std::mem::size_of;
+        let Self {
+            activation,
+            nodes,
+            coordinator,
+            reference,
+        } = self;
+        counter.charge(activation)?;
+        counter.add(
+            nodes
+                .capacity()
+                .checked_mul(size_of::<ValidatedNodePreparation>())
+                .ok_or(QualificationError::Refused(
+                    "Clock prepared node capacity overflow",
+                ))?,
+        )?;
+        for node in nodes {
+            let bytes = crucible::node_contract::NodeRuntime::original_prepared_node_requested_storage_data(
+                node, counter.remaining(),
+            ).map_err(|_| QualificationError::Refused("unsupported Clock prepared node storage"))?;
+            counter.add(bytes)?;
+        }
+        counter.charge(coordinator)?;
+        counter.add(reference.retained_requested_storage_data())
+    }
+}

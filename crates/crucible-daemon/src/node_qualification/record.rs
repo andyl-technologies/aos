@@ -85,7 +85,7 @@ impl EvaluatedAcceptance<'_> {
         self.original_bytes
     }
 
-    pub(super) fn into_record(self) -> AcceptanceRecord {
+    pub(crate) fn into_record(self) -> AcceptanceRecord {
         self.record
     }
 

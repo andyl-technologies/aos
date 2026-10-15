@@ -46,6 +46,7 @@ mod capture_quote;
 pub(crate) use capture_projection::NativeProjectedCaptureRequestData;
 mod continuation;
 pub use capture::{PacketOriginalCaptureComponent, PacketOriginalCaptureReservation};
+mod fresh_report;
 mod input;
 mod native5;
 
@@ -1759,4 +1760,9 @@ pub(crate) use restore_model::{PacketCompleteRestorePhysicalHold, PacketPrepared
 mod restore_fresh;
 pub(crate) use restore_fresh::{
     PacketFreshRestoreControlAllocation, PacketLiveCaptureControlCurrency,
+};
+
+pub(crate) use capture::{
+    NativeStartupCaptureRegistrationData, NativeStartupCaptureReply,
+    original_startup_capture_counter_scratch_data, startup_capture_terminal_cache_storage_data,
 };

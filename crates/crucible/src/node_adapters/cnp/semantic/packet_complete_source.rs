@@ -74,7 +74,7 @@ mod world_admission;
 pub use ack_peer::{
     PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame,
     PacketCompleteAckPeerBootMaterial, PacketCompleteNativeStartupWire,
-    PacketCompleteRestorePreparation,
+    PacketCompleteOriginalHostSdk, PacketCompleteRestorePreparation,
 };
 pub(super) use world_admission::OriginalCompletedCanonicalAckWorldAdmission;
 
@@ -888,6 +888,16 @@ impl CnpSemanticSource for PacketCompleteSemanticSource {
         response: &ObserveResult,
     ) -> Result<NativeSchedulingObservation, OperationFailure> {
         self.ensure_origin()?;
+        if self.selected_capture_allocation_selection()?.is_some() {
+            if !response.complete || response.observations.len() != 1 {
+                return Err(refused("selected allocation observation is incomplete"));
+            }
+            return self.selected_allocation_observation(
+                &scope,
+                activation,
+                &response.observations[0].measurement_ref,
+            );
+        }
         self.source().scheduling(scope, activation, response)
     }
 
@@ -898,6 +908,15 @@ impl CnpSemanticSource for PacketCompleteSemanticSource {
         observation: &NativeSchedulingObservation,
     ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
+        if self.selected_capture_allocation_selection()?.is_some() {
+            let actual =
+                self.selected_allocation_observation(&scope, activation, &observation.proof_ref)?;
+            return if &actual == observation {
+                Ok(())
+            } else {
+                Err(refused("selected original scheduling data changed"))
+            };
+        }
         self.source()
             .validate_scheduling(scope, activation, observation)
     }
@@ -1267,3 +1286,13 @@ pub use retained_storage::PacketCompleteSourceRetainedStorage;
 
 #[path = "packet_complete_source/complete_launch.rs"]
 mod complete_launch;
+
+pub(in crate::node_adapters::cnp::semantic) mod capture_allocation_receipt;
+
+pub use capture_allocation_receipt::{
+    OriginalCaptureAllocationData, original_capture_allocation_witness_counter_scratch_data,
+};
+
+pub(crate) use ack_peer::{
+    PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
+};

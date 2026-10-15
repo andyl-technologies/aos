@@ -509,6 +509,10 @@ impl NodeControlDaemon {
             .as_ref()
             .ok_or_else(|| refused("node actor admission stopped"))?;
         match command {
+            NodeControlCommand::CompleteScenePrepare {} => {
+                service.prepare_complete_scene().map_err(refused)?;
+                Ok(NodeControlResult::CompleteScenePrepared {})
+            }
             NodeControlCommand::OriginalLineagePrepare { request } => {
                 let execution = request.execution.clone();
                 service

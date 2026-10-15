@@ -68,3 +68,17 @@ impl OriginalCollectionAttempts {
 
 #[cfg(test)]
 mod tests;
+
+impl crate::node_qualification::RetainedMetadataOwned for OriginalCollectionAttempts {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            attempted,
+            authenticated,
+        } = self;
+        counter.charge(attempted)?;
+        counter.charge(authenticated)
+    }
+}

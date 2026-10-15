@@ -59,6 +59,15 @@ impl NativeCaptureAllocationAttempt {
         }
     }
 
+    pub(super) fn published_mut(
+        &mut self,
+    ) -> Result<&mut NativeCaptureAllocationOwner, ProviderError> {
+        match self {
+            Self::Published(owner) => Ok(owner),
+            _ => Err(refused()),
+        }
+    }
+
     fn complete_publication(&mut self) -> Result<(), ProviderError> {
         let Self::Preparing(prepared) = self else {
             return Err(refused());

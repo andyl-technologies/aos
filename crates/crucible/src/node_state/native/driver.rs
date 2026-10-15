@@ -121,6 +121,7 @@ impl WorldRestoreDriver for NativeWorldRestoreDriver {
             &capture.scheduler,
             capture.content(),
         )?;
+        allocation.bind_original_native_factory_data(&self.factory, &self.custody)?;
         let empty = self.factory.empty_staging(
             Rc::clone(&self.graph),
             self.archive.clone(),

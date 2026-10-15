@@ -428,3 +428,27 @@ mod tests {
         assert!(validate_policy_data(&policy, U64::new(2)).is_err());
     }
 }
+
+impl PacketConnectedSemanticSource {
+    pub(in crate::node_adapters::cnp::semantic) fn complete_initial_lifecycle_input_static_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        self.local_owner_with_error::<RuntimeError>()?;
+        if !self.world.is_complete() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let slot = self
+            .complete_input_static
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        match slot.as_ref() {
+            None => Ok(0),
+            Some(original) if original.complete && !original.failed => {
+                original.storage_with_error::<RuntimeError>(maximum)
+            }
+            Some(_) => Err(RuntimeError::OwnerUnavailable),
+        }
+    }
+}

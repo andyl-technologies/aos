@@ -403,6 +403,73 @@ impl<S: ProviderStream> Connection<S> {
         })
     }
 
+    /// Counts the same planner at its actual sole Capture/Poll boundary.
+    ///
+    /// The original is already retained by this actual guard. Unlike the
+    /// prospective Observe entry, this derives containment from that current
+    /// original and creates no saved future-original or authority surrogate.
+    pub(crate) fn quote_original_current_continuation_prefix_storage_data(
+        &self,
+        actual_original: &Envelope,
+        input: OriginalContinuationPrefixStorageInput<'_>,
+    ) -> Result<OriginalContinuationPrefixStorageData, ProviderError> {
+        authenticate_connection(self)?;
+        let mut originals = self.guard.incoming_requests();
+        if originals.next() != Some(actual_original)
+            || originals.next().is_some()
+            || actual_original.message != MessageKind::Request
+            || match input.kind {
+                OriginalContinuationPrefixKind::Capture => {
+                    actual_original.method != Method::Begin
+                        || actual_original.body.get("kind").and_then(Value::as_str)
+                            != Some("capture")
+                }
+                OriginalContinuationPrefixKind::AfterConfirmation => {
+                    actual_original.method != Method::Poll
+                }
+            }
+        {
+            return Err(refused());
+        }
+        let expected = match input.kind {
+            OriginalContinuationPrefixKind::Capture => 3,
+            OriginalContinuationPrefixKind::AfterConfirmation => 1,
+        };
+        if input.objects.len() != expected {
+            return Err(credit());
+        }
+        let actual = actual_serialization_storage_data(
+            actual_original,
+            Default::default(),
+            input.maximum_requested_bytes,
+        )?;
+        within_clone(&actual, input.original)?;
+        let mut objects = [None; 3];
+        for (index, object) in input.objects.iter().enumerate() {
+            if object.media_type.is_empty()
+                || object.media_type.len() > 128
+                || !object
+                    .media_type
+                    .bytes()
+                    .all(|byte| (0x20..=0x7e).contains(&byte))
+            {
+                return Err(credit());
+            }
+            objects[index] = Some(ContentExtent {
+                payload: object.maximum_payload_bytes,
+                media: object.media_type.len(),
+            });
+        }
+        self.quote_continuation_shape_data(ContinuationShape {
+            kind: input.kind,
+            terminal: input.terminal,
+            original: input.original,
+            objects: &objects,
+            maximum_requested_bytes: input.maximum_requested_bytes,
+            containment_base_requested_bytes: current_containment(self)?,
+        })
+    }
+
     fn quote_continuation_shape_data(
         &self,
         input: ContinuationShape<'_>,

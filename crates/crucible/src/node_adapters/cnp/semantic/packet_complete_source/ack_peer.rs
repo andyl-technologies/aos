@@ -25,7 +25,10 @@ mod frame;
 pub(super) use association::OriginalAckPeerAssociation;
 pub use association::PacketCompleteRestorePreparation;
 pub(super) use birth::OriginalAckPeerBirth;
-pub use birth::{PacketCompleteAckPeerBootMaterial, PacketCompleteNativeStartupWire};
+pub use birth::{
+    PacketCompleteAckPeerBootMaterial, PacketCompleteNativeStartupWire,
+    PacketCompleteOriginalHostSdk,
+};
 pub use frame::PacketCompleteAckPeerBootFrame;
 
 /// Selects one full planned controller registration for preparation only.
@@ -707,3 +710,7 @@ impl std::io::Write for BirthBankWriter<'_> {
         Ok(())
     }
 }
+
+pub(crate) use birth::{
+    PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
+};

@@ -11,7 +11,8 @@ use crate::node_admission::AdmittedGraph;
 use crate::node_contract::{
     ActivationPublisher, ActivationRecord, NativeRuntimeContinuationVerifier, NodeRuntime,
     OwnerIdentity, PreparedRuntimeRestore, PreparedWorldPublication, PublicationStatus,
-    QuarantinedRuntime, RuntimeCustodySupervisor, RuntimeLimits, SimulationNode, WorldActivation,
+    QuarantinedRuntime, RuntimeCustodySupervisor, RuntimeError, RuntimeLimits, SimulationNode,
+    WorldActivation,
 };
 use crate::node_scheduling::PreparedSchedulingRestore;
 
@@ -103,6 +104,33 @@ pub struct RestoredOwnerAttestation {
 /// fetch through the final native use; borrowed admission buffers or a digest
 /// alone do not retain an available preservation source.
 pub trait NativeRestoreStaging: NativeRuntimeContinuationVerifier {
+    /// Observes requested backing of an independently authenticated concrete staging owner.
+    ///
+    /// This DATA callback is not a general purity promise for arbitrary trait
+    /// implementations. The caller must authenticate the closed original
+    /// constructor before invoking it; labels or public fields do not suffice.
+    /// The enclosing Box layout is charged separately. Unknown families return
+    /// `None`; no lifecycle, restoration or execution right is created.
+    ///
+    /// # Errors
+    /// Refuses busy/foreign owners, unsupported fields, overflow or the bound.
+    fn retained_requested_storage_precredit_data(
+        &self,
+        _maximum: usize,
+    ) -> Result<Option<usize>, RuntimeError> {
+        Ok(None)
+    }
+
+    /// Names explicit fixed scratch of the authenticated closed DATA walk.
+    ///
+    /// # Errors
+    /// Refuses unsupported families, foreign creator or arithmetic overflow.
+    fn retained_requested_storage_precredit_scratch_data(
+        &self,
+    ) -> Result<Option<usize>, RuntimeError> {
+        Ok(None)
+    }
+
     /// Reports the complete actual native resource reservation.
     fn reservations(&self) -> RestoreReservations;
 
@@ -406,6 +434,68 @@ pub struct RestoredWorld {
 }
 
 impl RestoredWorld {
+    /// Observes the original restored runtime and its authenticated closed staging.
+    ///
+    /// The caller must retain and authenticate the concrete installed factory
+    /// before lending its same erased Rc. This data read neither publishes nor
+    /// polls native work. The enclosing world Box is charged separately.
+    ///
+    /// # Errors
+    /// Refuses missing original factory correspondence, unknown/busy custody,
+    /// unsupported fields or the requested bound.
+    pub fn original_closed_requested_storage_precredit_data(
+        &self,
+        original_factory: &Rc<dyn super::NativeWorldFactory>,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        use crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter;
+        let Self {
+            runtime,
+            activation,
+            staging,
+            artifact,
+            original: _,
+            repeatability: _,
+        } = self;
+        let mut counter = RetainedRuntimeCounter::new(maximum);
+        counter.add(
+            runtime.original_retained_requested_storage_precredit_data(counter.remaining())?,
+        )?;
+        let facts = activation.retained_requested_storage_data(counter.remaining())?;
+        counter.views(
+            facts.independent_bytes(),
+            facts
+                .shared_allocations()
+                .map(|root| (root.identity(), root.requested_bytes())),
+        )?;
+        counter.owned(artifact)?;
+        counter
+            .add(staging.original_closed_storage_data(original_factory, counter.remaining())?)?;
+        Ok(counter.bytes())
+    }
+
+    /// Names simultaneous counters and the maximum sequential native data scratch.
+    ///
+    /// # Errors
+    /// Refuses missing original factory correspondence or unsupported scratch.
+    pub fn original_closed_requested_storage_precredit_scratch_data(
+        &self,
+        original_factory: &Rc<dyn super::NativeWorldFactory>,
+    ) -> Result<usize, RuntimeError> {
+        let runtime = self
+            .runtime
+            .original_retained_requested_storage_precredit_scratch_data()?;
+        let staging = self
+            .staging
+            .original_closed_storage_scratch_data(original_factory)?;
+        std::mem::size_of::<crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter>()
+            .checked_add(runtime.max(staging))
+            .and_then(|bytes| {
+                bytes.checked_add(NodeRuntime::capture_opaque_owner_observer_scratch_data())
+            })
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+
     /// Returns fresh authority minted by the runtime's complete publication barrier.
     pub fn activation(&self) -> &WorldActivation {
         &self.activation

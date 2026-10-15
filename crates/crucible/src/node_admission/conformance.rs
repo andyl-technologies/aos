@@ -16,8 +16,15 @@ use super::*;
 mod archive_code;
 mod extensions;
 mod fresh_restore_host;
+mod host_startup;
 mod native_startup;
 mod report_startup;
+pub use host_startup::{
+    CompleteOriginalNativeHostStartupAdmission, OriginalNativeHostStartupMemberScope,
+    OriginalNativeHostStartupPolicy, OriginalNativeHostStartupScope,
+    OriginalNativeHostStartupStorage,
+};
+pub(crate) use host_startup::{OriginalNativeHostStartupMember, OriginalNativeHostStartupQuote};
 pub(crate) use native_startup::{
     NativeStartupRows, OriginalNativeStartupMember, OriginalNativeStartupQuote,
 };
@@ -70,6 +77,90 @@ pub struct ConformancePlanEvidence<'a> {
 /// [`AdmissionEvidence`]. Collection authorization must never issue an accepted
 /// class or use vendor-selected omissions as a normative witness population.
 pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
+    /// Supplies the same installed policy before initial host lifecycle observers.
+    ///
+    /// This callback checks raw original identity only, with no allocation,
+    /// serialization, currentness, kernel or owning-data observation.
+    ///
+    /// # Errors
+    /// Refuses unsupported or foreign originals with a raw failure enum.
+    fn original_host_initial_lifecycle_policy(
+        &self,
+        _evidence: &ConformancePlanEvidence<'_>,
+        _scope: &OriginalHostInitialLifecycleScope<'_>,
+    ) -> Result<OriginalHostInitialLifecyclePolicy, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Observes the same concrete holder under its precredited observer window.
+    ///
+    /// This follows only typed raw owning-data leaves. Source3 storage is counted
+    /// independently by Core. Unknown backing or kernel-resource views refuse.
+    ///
+    /// # Errors
+    /// Refuses unsupported/changed originals, busy owners or incomplete census.
+    fn authenticate_original_host_initial_lifecycle(
+        &self,
+        _evidence: &ConformancePlanEvidence<'_>,
+        _scope: &OriginalHostInitialLifecycleScope<'_>,
+        _policy: &OriginalHostInitialLifecyclePolicy,
+    ) -> Result<OriginalHostInitialLifecycleStorage, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Rechecks the actual registered member without borrowing mutable SDK banks.
+    ///
+    /// This callback checks retained identity/revision only. It performs no I/O,
+    /// allocation, serializer, kernel read, owner walk or registrar callback.
+    /// Core privately checks original SDK/read-owner identity around this call.
+    ///
+    /// # Errors
+    /// Refuses unsupported, revoked or changed original membership.
+    fn authenticate_original_host_initial_lifecycle_member(
+        &self,
+        _evidence: &ConformancePlanEvidence<'_>,
+        _scope: &OriginalHostInitialLifecycleMemberScope<'_>,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Reads the same installed original HOST SDK construction resource action.
+    ///
+    /// # Errors
+    /// Defaults to refusal before any constructor or owning observer runs.
+    fn original_native_host_startup_policy(
+        &self,
+        _: &ConformancePlanEvidence<'_>,
+        _: &OriginalNativeHostStartupScope<'_>,
+    ) -> Result<OriginalNativeHostStartupPolicy, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Observes the actual registered constructor holder after fixed precredit.
+    ///
+    /// # Errors
+    /// Refuses unknown, foreign, busy, revoked or unpriced original owners.
+    fn authenticate_original_native_host_startup(
+        &self,
+        _: &ConformancePlanEvidence<'_>,
+        _: &OriginalNativeHostStartupScope<'_>,
+        _: &OriginalNativeHostStartupPolicy,
+    ) -> Result<OriginalNativeHostStartupStorage, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Authenticates a private constructor member without borrowing SDK slots.
+    ///
+    /// # Errors
+    /// Refuses a foreign, expired, revoked or unsupported original member.
+    fn authenticate_original_native_host_startup_member(
+        &self,
+        _: &ConformancePlanEvidence<'_>,
+        _: &OriginalNativeHostStartupMemberScope<'_>,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
     /// Selects the installed resource action for the same pre-Child native roster.
     ///
     /// # Errors
@@ -1051,3 +1142,11 @@ fn failure(message: impl Into<String>) -> EvidenceError {
         message: message.into(),
     }
 }
+
+#[path = "conformance/host_initial_lifecycle.rs"]
+mod host_initial_lifecycle;
+pub use host_initial_lifecycle::{
+    CompleteOriginalHostInitialLifecycleWindow, OriginalHostInitialLifecycleMemberScope,
+    OriginalHostInitialLifecyclePolicy, OriginalHostInitialLifecycleScope,
+    OriginalHostInitialLifecycleStorage,
+};

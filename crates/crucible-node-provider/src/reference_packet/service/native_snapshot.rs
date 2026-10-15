@@ -465,3 +465,8 @@ pub use startup_capture_allocation::{
     PacketNativeOwned13SnapshotPlan, native_owned13_snapshot_contract,
     native_owned13_snapshot_schema, packet_native_owned13_snapshot_validation_layouts,
 };
+
+pub(crate) use startup_capture_allocation::{
+    authenticate_native_owned13_snapshot_schema_data,
+    native_owned13_snapshot_schema_counter_scratch_data,
+};

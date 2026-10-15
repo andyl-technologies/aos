@@ -92,7 +92,16 @@ impl Scene {
             selected_storage.limits.frame_bytes = crucible_node_contract::U64::new(frame_bytes);
             selected_storage.validate().unwrap();
         }
-        let directory = tempfile::tempdir().unwrap();
+        let directory = if report_startup {
+            // Unix socket paths must fit sun_path even when TMPDIR is deeply
+            // nested. Scene owns this root and removes it when the fixture drops.
+            tempfile::Builder::new()
+                .prefix("crucible-packet-")
+                .tempdir_in("/tmp")
+                .unwrap()
+        } else {
+            tempfile::tempdir().unwrap()
+        };
         let executable = std::env::current_exe().unwrap();
         let host = canonical::content_ref(
             &std::fs::read(&executable).unwrap(),
@@ -289,6 +298,11 @@ impl Scene {
             coordinator: &self.world.coordinator,
         }
     }
+}
+
+/// Borrows the same controlled scene's real immutable source content for SDK controls.
+pub(super) fn report_startup_content_data(scene: &Scene) -> &BTreeMap<ContentRef, Vec<u8>> {
+    &scene.world.content
 }
 
 /// Builds actual ready private births without constructing a Child or native session.
@@ -489,3 +503,50 @@ mod selected;
 
 #[path = "tests/report_frame_fit.rs"]
 mod report_frame_fit;
+
+/// Supplies only source declarations to the production installer controls.
+/// No report verdict, native owner, readiness or permission is serialized.
+pub(super) fn installed_scene_declaration() -> (Scene, serde_json::Value) {
+    use crucible_node_contract::{Extensions, ResourceLimits, U64};
+    let scene = Scene::report_startup(16 * 1024);
+    let participant = |member: usize| {
+        let source = &scene.roster.sources[member];
+        let one = source.installation();
+        serde_json::json!({
+            "installation": {
+                "provider":one.provider, "profile":one.profile, "descriptor":one.descriptor,
+                "binding":one.binding, "capabilities":one.capabilities, "exact_facet":one.exact_facet,
+                "guarantees":one.guarantees, "owner":one.owner, "realize":one.realize,
+                "admission":one.admission, "transaction":one.transaction, "gate":one.gate,
+                "admission_receipt":one.admission_receipt, "world_binding_hash":one.world_binding_hash,
+                "receipt_schema":one.receipt_schema, "maximum_operations":one.maximum_operations,
+                "maximum_result_bytes":one.maximum_result_bytes,
+                "maximum_authorization_bytes":one.maximum_authorization_bytes,
+                "maximum_semantic_bytes":one.maximum_semantic_bytes,
+            },
+            "program":scene.world.programmes[member],
+            "storage":source.selected_storage_selection().unwrap(),
+            "capture_profile":source.selected_capture_profile().unwrap(),
+            "protocol_metadata":source.selected_protocol_metadata_limits().unwrap().unwrap(),
+        })
+    };
+    let content: Vec<_> = scene.world.content.iter().map(|(reference,bytes)| {
+        serde_json::json!({"reference":reference,"bytes":crucible_node_contract::Bytes::new(bytes.clone())})
+    }).collect();
+    let declaration = serde_json::json!({
+        "schema":"crucible.complete-scene.installation/1",
+        "measurements":[scene.measurements,scene.measurements,scene.measurements],
+        "participants":[participant(0),participant(1),participant(2)],
+        "host":scene.world.host_source.selection(), "world":scene.world.world,
+        "requirements":scene.world.requirements, "coordinator":scene.world.coordinator,
+        "content":content,
+        "resources":ResourceLimits {
+            cpu_budget_ns:U64::new(3_000_000_000),memory_bytes:U64::new(512*1024*1024),
+            writable_bytes:U64::new(1024*1024),processes:U64::new(3),descriptors:U64::new(128),
+            pending_events:U64::new(16),content_bytes:U64::new(512*1024*1024),maximum_operations:U64::new(64),extensions:Extensions::new(),
+        },
+        "maximum_initial_bytes":64*1024*1024,"maximum_native_rows":8192,
+        "maximum_operations":64,"maximum_retained_outputs":64,"write_watchdog_ms":1000,
+    });
+    (scene, declaration)
+}

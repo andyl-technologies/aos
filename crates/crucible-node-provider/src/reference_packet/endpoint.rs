@@ -30,7 +30,17 @@ mod capture_quote;
 mod capture_report_obligations;
 mod complete;
 mod confirmation;
+mod fresh_prepare;
+mod fresh_publication;
+mod fresh_restore;
 pub use complete::{PacketCompleteEndpointRecovery, PacketCompleteEndpointRefusal};
+pub(crate) use fresh_prepare::OriginalNativeFreshPrepareHeader;
+pub(crate) use fresh_publication::{
+    original_fresh_report_publication_counter_scratch_data,
+    original_fresh_report_startup_publication_counter_scratch_data,
+    original_fresh_report_startup_publication_data,
+};
+pub(crate) use fresh_restore::original_fresh_report_owner_layout_data;
 mod prefix;
 mod restore;
 mod restore_commit;
@@ -71,6 +81,16 @@ pub trait PacketEndpointPolicy: BlobSchemaVerifier {
         ))
     }
 
+    /// Authenticates the explicitly installed boot6 four-owner snapshot edition.
+    ///
+    /// # Errors
+    /// Refuses unless the concrete installer supplies the complete outer13 schema.
+    fn authenticate_startup_capture_snapshot_definition(&self) -> Result<(), ProviderError> {
+        Err(ProviderError::Correlation(
+            "native startup Capture snapshot definition not installed",
+        ))
+    }
+
     /// Selects the independently installed consuming schema for an exact upload.
     ///
     /// # Errors
@@ -108,6 +128,7 @@ pub struct PacketEndpoint<S: ProviderStream> {
     complete: Option<complete::CompleteEndpointState>,
     capture: Option<capture::CaptureFlight<S>>,
     capture_allocation_attempt: Option<Box<capture_publication::NativeCaptureAllocationAttempt>>,
+    fresh_restore_attempt: Option<Rc<std::cell::RefCell<fresh_restore::NativeFreshRestoreAttempt>>>,
     pending_capture: Option<capture::PendingCapture>,
     after_confirmation: Option<confirmation::AfterConfirmation<S>>,
     canonical_ack_boot: Option<Rc<std::cell::RefCell<super::service::ack_emitter::NativeAckBoot>>>,
@@ -158,6 +179,11 @@ type OriginalSelectedNext<S> = fn(
     &mut PacketEndpoint<S>,
     &super::service::OriginalNativeServiceCaptureContext<'_>,
 ) -> Result<Option<ReceivedFrame>, ProviderError>;
+
+type OriginalSelectedFreshData<S> = fn(
+    &mut PacketEndpoint<S>,
+    &super::service::OriginalNativeServiceCaptureContext<'_>,
+) -> Result<(), ProviderError>;
 
 type OriginalSelectedRestore<S> = fn(
     &mut PacketEndpoint<S>,
@@ -233,6 +259,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             complete: None,
             capture: None,
             capture_allocation_attempt: None,
+            fresh_restore_attempt: None,
             pending_capture: None,
             after_confirmation: None,
             canonical_ack_boot: None,
@@ -297,7 +324,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             &crate::client::ExchangeDeadline,
         )>,
     ) -> Result<(), ProviderError> {
-        self.step_with_original_context(context, None, None, None, None, None, None)
+        self.step_with_original_context(context, None, None, None, None, None, None, None)
     }
 
     pub(crate) fn step_with_selected_context(
@@ -307,7 +334,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
     ) -> Result<(), ProviderError> {
         self.authenticate_selected_registration(handshake)?;
         deadline.remaining()?;
-        self.step_with_original_context(None, Some(deadline), None, None, None, None, None)
+        self.step_with_original_context(None, Some(deadline), None, None, None, None, None, None)
     }
 
     fn step_with_original_context(
@@ -322,6 +349,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         selected_restore: Option<OriginalSelectedRestore<S>>,
         selected_report: Option<OriginalSelectedReport<S>>,
         selected_next: Option<OriginalSelectedNext<S>>,
+        selected_fresh_data: Option<OriginalSelectedFreshData<S>>,
     ) -> Result<(), ProviderError> {
         self.ensure_complete_origin()?;
         if self.held {
@@ -338,6 +366,47 @@ impl<S: ProviderStream> PacketEndpoint<S> {
                 .remaining()?;
         }
         self.reserve()?;
+        if self.requires_original_fresh_prepare()? {
+            if !self.receive_original_fresh_prepare()? {
+                return Err(ProviderError::Frame("fresh Prepare peer closed"));
+            }
+            // The actual frame remains in the endpoint slot while the concrete
+            // service verifier borrows Endpoint mutably. This temporary handle
+            // owns the same Rc allocation, never a cloned Envelope or token.
+            let original_owner = Rc::clone(self.fresh_restore_attempt.as_ref().ok_or(
+                ProviderError::Correlation("fresh Prepare original owner absent"),
+            )?);
+            let original_loan = original_owner
+                .try_borrow()
+                .map_err(|_| ProviderError::Conflict("fresh Prepare owner borrowed"))?;
+            let frame = original_loan
+                .prepare_input
+                .as_ref()
+                .ok_or(ProviderError::Correlation("fresh Prepare input absent"))?;
+            let ReceivedBody::Request(body) = &frame.body else {
+                return Err(ProviderError::Correlation(
+                    "fresh Prepare requires original request",
+                ));
+            };
+            let restore = selected_restore.ok_or(ProviderError::Correlation(
+                "fresh Prepare concrete service verifier absent",
+            ))?;
+            if !restore(
+                self,
+                &frame.envelope,
+                body.as_ref(),
+                service_context
+                    .ok_or(ProviderError::Correlation("fresh Prepare service absent"))?,
+                selected_deadline
+                    .ok_or(ProviderError::Correlation("fresh Prepare deadline absent"))?,
+            )? {
+                return Err(ProviderError::Correlation(
+                    "fresh Prepare original was not handled",
+                ));
+            }
+            return Ok(());
+        }
+        let fresh_query = self.prepare_original_fresh_query_receive()?;
         let original_report_query = if self.capture_allocation_attempt.is_none()
             && self.native.requires_original_capture_report_query()?
         {
@@ -354,40 +423,55 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         } else {
             None
         };
-        let frame =
-            if self.capture_allocation_attempt.is_some() {
-                let receive = selected_next.ok_or(ProviderError::Correlation(
-                    "native Report next original receiver absent",
-                ))?;
-                receive(
-                    self,
-                    service_context.ok_or(ProviderError::Correlation(
-                        "native Report next original service absent",
-                    ))?,
-                )?
-            } else {
-                match self.transport.as_mut() {
-                    Some(Transport::Connected(connection)) => {
-                        let birth_read = self.canonical_ack_boot.as_ref().map(|boot|
-                        super::service::ack_emitter::NativeAckBoot::original_birth_read_scope(
-                            boot,self.native.endpoint_scope()?,self.records.len(),
-                        )).transpose()?.flatten();
-                        if let Some(scope) = birth_read.as_ref() {
-                            connection.receive_original_native_birth_request(scope)?
-                        } else if let Some(scope) = original_report_query.as_ref() {
-                            connection.receive_original_native_report_query(scope)?
-                        } else {
-                            connection.receive()?
-                        }
-                    }
-                    _ => {
-                        return Err(ProviderError::Conflict(
-                            "packet original exchange unavailable",
-                        ));
+        let frame = if fresh_query {
+            self.receive_original_fresh_query()?
+        } else if self.capture_allocation_attempt.is_some() {
+            let receive = selected_next.ok_or(ProviderError::Correlation(
+                "native Report next original receiver absent",
+            ))?;
+            receive(
+                self,
+                service_context.ok_or(ProviderError::Correlation(
+                    "native Report next original service absent",
+                ))?,
+            )?
+        } else {
+            match self.transport.as_mut() {
+                Some(Transport::Connected(connection)) => {
+                    let birth_read = self.canonical_ack_boot.as_ref().map(|boot|
+                    super::service::ack_emitter::NativeAckBoot::original_birth_read_scope(
+                        boot,self.native.endpoint_scope()?,self.records.len(),
+                    )).transpose()?.flatten();
+                    if let Some(scope) = birth_read.as_ref() {
+                        connection.receive_original_native_birth_request(scope)?
+                    } else if let Some(scope) = original_report_query.as_ref() {
+                        connection.receive_original_native_report_query(scope)?
+                    } else {
+                        connection.receive()?
                     }
                 }
+                _ => {
+                    return Err(ProviderError::Conflict(
+                        "packet original exchange unavailable",
+                    ));
+                }
             }
-            .ok_or(ProviderError::Frame("packet endpoint original peer closed"))?;
+        }
+        .ok_or(ProviderError::Frame("packet endpoint original peer closed"))?;
+        if fresh_query {
+            // The endpoint retains the complete actual result before any
+            // frontier/hash/currentness check or report transformation.
+            self.retain_original_fresh_query_frontier(frame)?;
+            let census = selected_fresh_data.ok_or(ProviderError::Correlation(
+                "fresh report concrete service census absent",
+            ))?;
+            return census(
+                self,
+                service_context.ok_or(ProviderError::Correlation(
+                    "fresh report actual service absent",
+                ))?,
+            );
+        }
         let ReceivedBody::Request(body) = frame.body else {
             return Err(ProviderError::Correlation(
                 "packet endpoint requires original request",
@@ -771,6 +855,11 @@ impl PacketEndpoint<crate::client::DeadlineStream> {
             Some(Self::restore_original_transfer),
             Some(Self::publish_original_capture_allocation_observe),
             Some(Self::receive_original_capture_allocation_next),
+            Some(Self::retain_original_fresh_current_census),
         )
     }
 }
+
+mod capture_startup;
+
+mod confirmation_startup;

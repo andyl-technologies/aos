@@ -115,3 +115,45 @@ mod tests {
         Ok(())
     }
 }
+
+/// Counts the actual borrowed map without constructing a formatted error.
+///
+/// This uses the same pinned node geometry as the ordinary observer. It grants
+/// no source, allocation or runtime rights; child heaps remain separate terms.
+///
+/// # Errors
+/// Refuses layout overflow or a requested term above the supplied remaining bound.
+pub fn borrowed_btree_map_requested_storage_precredit_data<K, V>(
+    tree: &BTreeMap<K, V>,
+    maximum_bytes: usize,
+) -> Result<usize, crate::node_contract::RuntimeError> {
+    let entry = size_of::<K>()
+        .checked_add(size_of::<V>())
+        .ok_or(crate::node_contract::RuntimeError::ResourceLimit)?;
+    NodeRuntime::capture_protocol_tree_storage(
+        1,
+        tree.len(),
+        entry,
+        align_of::<K>().max(align_of::<V>()),
+        maximum_bytes,
+    )
+}
+
+/// Counts the actual borrowed set without constructing a formatted error.
+///
+/// The same compiler-specific node bound and separate child terms apply.
+///
+/// # Errors
+/// Refuses checked layout overflow or an exhausted remaining requested bound.
+pub fn borrowed_btree_set_requested_storage_precredit_data<T>(
+    tree: &BTreeSet<T>,
+    maximum_bytes: usize,
+) -> Result<usize, crate::node_contract::RuntimeError> {
+    NodeRuntime::capture_protocol_tree_storage(
+        1,
+        tree.len(),
+        size_of::<T>(),
+        align_of::<T>(),
+        maximum_bytes,
+    )
+}

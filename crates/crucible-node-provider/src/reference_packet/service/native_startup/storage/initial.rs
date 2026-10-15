@@ -501,3 +501,46 @@ pub(super) fn project(
         scratch,
     })
 }
+
+/// Borrows only the common initial wire grammar, independently of native rows.
+pub(crate) struct OriginalHostInitialLifecycleShapes {
+    pub(crate) requests: [OriginalSerializationStorageData; 3],
+    pub(crate) responses: [OriginalSerializationStorageData; 3],
+}
+
+pub(crate) fn original_host_initial_lifecycle_shapes_data(
+    launch: &PacketNative5SourceLaunch,
+    maximum: usize,
+) -> Result<OriginalHostInitialLifecycleShapes, ProviderError> {
+    let mut requests = [
+        request(launch, Kind::Discover, maximum)?,
+        request(launch, Kind::Realize, maximum)?,
+        request(launch, Kind::Admit, maximum)?,
+    ];
+    let mut responses = [
+        terminal(launch, Kind::Discover, maximum)?,
+        terminal(launch, Kind::Realize, maximum)?,
+        terminal(launch, Kind::Admit, maximum)?,
+    ];
+    // The common native projector spells node/owner scope as actual Id values.
+    // Core's initial Discover/Realize may use null instead. An Id's shortest
+    // JSON string is three bytes; each of seven nullable fields can therefore
+    // need at most one extra byte. Null adds no heap child or serde event.
+    for data in requests.iter_mut().chain(responses.iter_mut()) {
+        data.maximum_encoded_bytes = data
+            .maximum_encoded_bytes
+            .checked_add(7)
+            .ok_or_else(refused)?;
+        data.canonical_output_requested_bytes = data
+            .canonical_output_requested_bytes
+            .checked_add(14)
+            .ok_or_else(refused)?;
+        if data.requested_total()? > maximum {
+            return Err(refused());
+        }
+    }
+    Ok(OriginalHostInitialLifecycleShapes {
+        requests,
+        responses,
+    })
+}

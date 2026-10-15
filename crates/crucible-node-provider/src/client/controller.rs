@@ -1782,3 +1782,176 @@ impl CnpController {
         Ok(observer.finish())
     }
 }
+
+impl CnpController {
+    pub(in crate::client) fn observe_original_host_startup_metadata(
+        &self,
+        schemas: &std::rc::Rc<super::host_startup::hello::InitialHelloSchema>,
+        supervisor: &crate::connection::OriginalRetainedSupervisor,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            session,
+            custody,
+            route,
+            budget: _,
+            fenced,
+            protocol_owner,
+            original_ack_admit,
+            original_complete_restore,
+            original_complete_restore_prepare,
+            original_complete_restore_commit,
+            installed_complete_restore,
+        } = self;
+        protocol_owner.ensure_current()?;
+        if *fenced
+            || original_ack_admit.is_some()
+            || original_complete_restore.is_some()
+            || original_complete_restore_prepare.is_some()
+            || original_complete_restore_commit.is_some()
+            || installed_complete_restore.is_some()
+            || custody.originals().next().is_some()
+        {
+            return Err(ProviderError::Correlation(
+                "original host startup controller already used",
+            ));
+        }
+        session.observe_original_host_startup_metadata(schemas, supervisor, observer)?;
+        custody.observe_owned_metadata(observer)?;
+        observer.observe(&route.node)?;
+        observer.observe(&route.execution_owner)?;
+        observer.shared_value(protocol_owner.as_ref())
+    }
+}
+
+#[path = "controller/host_initial_lifecycle.rs"]
+mod host_initial_lifecycle;
+pub use host_initial_lifecycle::OriginalPacketHostInitialResponse;
+
+impl CnpController {
+    /// Counts the actual concrete controller stream without opening any handle.
+    ///
+    /// This raw-origin data walk remains valid for expired or fenced controllers;
+    /// it does not authenticate a live connection or installed resource action.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator or actual connection origin.
+    pub fn retained_descriptor_count_data(&self) -> Result<usize, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.session.original_host_retained_descriptor_count_data()
+    }
+}
+
+impl CnpController {
+    /// Hashes the same completed original Observe's actual retained sent literal.
+    ///
+    /// No Envelope is serialized or cloned. The same actual controller cache,
+    /// frame-bank slot and complete canonical correspondence are required. This
+    /// readonly digest is correlation data, never allocation or Capture authority.
+    ///
+    /// # Errors
+    /// Refuses foreign/current actor or codec, absent/uncompleted original,
+    /// changed complete request, partial/repeated literal or expired registration.
+    pub fn original_capture_allocation_observe_hash_data(
+        &self,
+        original: &Envelope,
+    ) -> Result<[u8; 32], ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        if self.fenced {
+            return Err(ProviderError::Correlation("Observe controller is fenced"));
+        }
+        let id = original
+            .request_id
+            .0
+            .as_ref()
+            .ok_or(ProviderError::Correlation("Observe original id absent"))?;
+        let retained = self
+            .original(id)
+            .ok_or(ProviderError::Correlation("Observe original cache absent"))?;
+        if retained.request != *original || retained.response.is_none() {
+            return Err(ProviderError::Correlation("Observe original cache changed"));
+        }
+        self.session
+            .original_capture_allocation_observe_hash_data(&retained.request)
+    }
+}
+
+impl CnpController {
+    /// Returns the actual first proof request sequence for one full raw reference.
+    ///
+    /// This readonly data walk uses the same provider namespace and exact full
+    /// ContentRef fields. Native and Source semantic/currentness guards remain
+    /// independent; matching references grant no authority.
+    ///
+    /// # Errors
+    /// Refuses changed actor/codec, missing or repeated original proof begin,
+    /// incomplete responses or a different full content reference.
+    pub fn original_capture_allocation_first_proof_sequence_data(
+        &self,
+        reference: &ContentRef,
+    ) -> Result<U64, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        if self.fenced {
+            return Err(ProviderError::Correlation(
+                "allocation proof controller is fenced",
+            ));
+        }
+        let mut requests = self.originals_by_origin(RequestOrigin::Provider).filter(|original| {
+            if original.request.method != Method::BlobBegin { return false; }
+            original.request.body.get("content").is_some_and(|value| {
+                crate::reference_packet::service::capture_allocation::original_capture_allocation_reference_matches_data(value, reference)
+            })
+        });
+        let original = requests.next().ok_or(ProviderError::Correlation(
+            "original allocation proof absent",
+        ))?;
+        if original.response.is_none() || requests.next().is_some() {
+            return Err(ProviderError::Correlation(
+                "original allocation proof repeats or is incomplete",
+            ));
+        }
+        self.authority().ensure_live()?;
+        self.protocol_owner.ensure_current()?;
+        Ok(original.request.sequence)
+    }
+}
+
+impl CnpController {
+    /// Borrows and fully hashes the same retained allocation-report content.
+    ///
+    /// This purpose-scoped loan compares the complete original ContentRef and
+    /// normative CNP blob digest without another owned HashRef or report DOM.
+    /// The Source independently authenticates selection, receipt and currentness.
+    ///
+    /// # Errors
+    /// Refuses changed/fenced actor or codec, absent/full-reference mismatch,
+    /// wrong report media/length, changed bytes or expired registration.
+    pub fn original_capture_allocation_body_data(
+        &self,
+        reference: &ContentRef,
+    ) -> Result<&[u8], ProviderError> {
+        use crate::reference_packet::service::capture_allocation::{
+            MAXIMUM_NATIVE_CAPTURE_ALLOCATION_REPORT_BYTES, PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA,
+        };
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        if self.fenced
+            || reference.media_type != PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA
+            || reference.length.get() == 0
+            || reference.length.get() > MAXIMUM_NATIVE_CAPTURE_ALLOCATION_REPORT_BYTES as u64
+        {
+            return Err(ProviderError::Correlation(
+                "original allocation content scope",
+            ));
+        }
+        let body = self
+            .custody
+            .content()
+            .original_capture_allocation_body_data(reference)?;
+        self.authority().ensure_live()?;
+        self.protocol_owner.ensure_current()?;
+        Ok(body)
+    }
+}

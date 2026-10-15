@@ -241,3 +241,33 @@ impl ProductionConformanceRunner<'_> {
 fn refused(message: &'static str) -> QualificationError {
     QualificationError::Refused(message)
 }
+
+impl crate::node_qualification::RetainedMetadataOwned for OriginalSourceInspectionSlot {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            maximum: _,
+            attempted: _,
+            bytes,
+        } = self;
+        counter.charge(bytes)
+    }
+}
+
+impl crate::node_qualification::RetainedMetadataOwned for OriginalSourceInspection {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            output,
+            outcome: _,
+            verdict: _,
+            reference,
+        } = self;
+        counter.charge(output)?;
+        counter.charge(reference)
+    }
+}

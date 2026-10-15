@@ -195,9 +195,21 @@ impl ProductionConformanceRunner<'_> {
             QualificationClass::CaptureModeledLive,
             QualificationClass::CaptureModeledDurable,
         ]);
+        let complete_classes = std::collections::BTreeSet::from([
+            QualificationClass::BaseProvider,
+            QualificationClass::ExactTiming,
+            QualificationClass::RoleProfile,
+            QualificationClass::Repeatable,
+            QualificationClass::CaptureModeledLive,
+            QualificationClass::CaptureModeledDurable,
+        ]);
+        // The real witness authenticates complete same-owner admission guards
+        // and original timing/role history as well as fresh state continuations.
+        // The installed source must independently authenticate whichever exact
+        // fixed class roster it declared; no arbitrary class subset is accepted.
         if planned.kind != CaseKind::RealizedProvider
             || &planned.oracle != oracle
-            || planned.classes != classes
+            || (planned.classes != classes && planned.classes != complete_classes)
         {
             return Err(refused("original Clock state kind/classes/oracle differs"));
         }
@@ -207,4 +219,21 @@ impl ProductionConformanceRunner<'_> {
 
 fn refused(reason: &'static str) -> QualificationError {
     QualificationError::Refused(reason)
+}
+
+impl crate::node_qualification::RetainedMetadataOwned for OriginalClockStateObservation {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            case,
+            reference,
+            bytes,
+            verdict: _,
+        } = self;
+        counter.charge(case)?;
+        counter.charge(reference)?;
+        counter.charge(bytes)
+    }
 }

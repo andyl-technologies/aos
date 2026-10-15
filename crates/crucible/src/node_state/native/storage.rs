@@ -121,6 +121,19 @@ pub struct NativeArchiveRecord {
 }
 
 impl NativeArchive {
+    /// Observes the signer's retained directory allocation without accessing it.
+    ///
+    /// The key and limits are inline. Filesystem/native storage is separate;
+    /// this data observation grants no signing or restoration permission.
+    pub fn retained_requested_storage_precredit_data(&self) -> usize {
+        let Self {
+            directory: _,
+            key: _,
+            limits: _,
+        } = self;
+        crate::node_contract::NodeRuntime::capture_shared_allocation_storage::<File>()
+    }
+
     /// Opens a private native archive and initializes its separate persistent key.
     ///
     /// # Errors
@@ -950,3 +963,6 @@ fn index_owned_storage(index: &Index) -> Result<usize, crate::node_contract::Run
     }
     Ok(bytes)
 }
+
+#[path = "original_evidence.rs"]
+mod original_evidence;

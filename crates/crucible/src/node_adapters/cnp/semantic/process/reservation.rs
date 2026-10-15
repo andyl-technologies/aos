@@ -291,3 +291,13 @@ mod tests;
 
 #[cfg(test)]
 mod origin_tests;
+
+impl CnpSemanticLaunchReservation {
+    pub(super) fn original_host_startup_unlaunched_data(&self) -> bool {
+        self.native_startup && !self.attempted && !self.authenticated
+    }
+
+    pub(super) fn original_host_startup_guard_data(&self) -> &CnpSemanticLaunchGuard {
+        &self.guard
+    }
+}

@@ -406,3 +406,15 @@ pub fn original_native_private_boot_fields_storage_data(
 #[cfg(test)]
 #[path = "storage/schema_parity_tests.rs"]
 mod schema_parity_tests;
+
+pub(crate) use initial::{
+    OriginalHostInitialLifecycleShapes, original_host_initial_lifecycle_shapes_data,
+};
+
+pub(crate) fn original_host_initial_codec_schema_storage_data(
+    launch: &PacketNative5SourceLaunch,
+    maximum: usize,
+) -> Result<(usize, usize), ProviderError> {
+    let data = schemas::project(launch, maximum)?;
+    Ok((data.transient, data.retained_reference_children))
+}

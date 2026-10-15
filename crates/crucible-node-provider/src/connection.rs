@@ -33,7 +33,9 @@ mod restore_proof_quote;
 pub(crate) use restore_proof_quote::OriginalRestoreHeldProofAllocationQuote;
 mod restore_inputs;
 mod restore_response;
-pub(crate) use ack_admission::OriginalNativeAckConnectionIdentity;
+pub(crate) use ack_admission::{
+    OriginalNativeAckConnectionIdentity, OriginalNativeFreshFrontierData,
+};
 pub(crate) use restore_identity::{
     OriginalNativeRestorationConnectionIdentity, authenticate_original_native_prepare_header_data,
 };
@@ -890,3 +892,146 @@ pub(crate) use native_capture_quote::{
     NativeCaptureSdkSnapshotBankQuote, NativeCaptureSdkStateData,
 };
 pub(crate) use native_capture_receive::NativeCaptureFutureReceiveQuote;
+
+impl Connection<crate::client::DeadlineStream> {
+    pub(crate) fn observe_original_host_startup_metadata(
+        &self,
+        schemas: &Rc<crate::client::host_startup::hello::InitialHelloSchema>,
+        supervisor: &OriginalRetainedSupervisor,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.authority.ensure_live()?;
+        let Self {
+            reader,
+            authority,
+            guard,
+            supervisor: operational,
+            schemas: actual_schemas,
+            protocol_owner,
+            native5_blobs,
+            native5_codec,
+            original_canonical_ack_admission,
+            original_restore_inputs,
+            original_restore_responses,
+            original_complete_restoration,
+            packet_schema,
+            original_frames,
+            connected_packet_schema,
+            fenced,
+            role,
+        } = self;
+        if *role != EndpointRole::Controller
+            || *fenced
+            || *packet_schema
+            || *connected_packet_schema
+            || !guard.unused()
+            || native5_blobs.is_some()
+            || native5_codec.is_some()
+            || original_canonical_ack_admission.is_some()
+            || original_restore_inputs.is_some()
+            || original_restore_responses.iter().any(Option::is_some)
+            || original_complete_restoration.is_some()
+            || original_frames.is_some()
+            || !std::ptr::addr_eq(Rc::as_ptr(actual_schemas), Rc::as_ptr(schemas))
+        {
+            return Err(ProviderError::Correlation(
+                "original host constructor owner changed",
+            ));
+        }
+        supervisor.authenticate_original_handle_data(operational)?;
+        authority.observe_retained_metadata(observer)?;
+        guard.observe_owned_metadata(observer)?;
+        observer.shared_value(protocol_owner.as_ref())?;
+        observer.shared_value(schemas.as_ref())?;
+        // The enclosing installed holder independently owns and counts the
+        // SAME supervisor. The checked Rc edge here allocates no new backing.
+        reader.observe_original_host_startup_metadata(observer)?;
+        self.protocol_owner.ensure_current()
+    }
+}
+
+impl Connection<crate::client::DeadlineStream> {
+    // The caller retains its original writer and all negotiated inputs until
+    // preflight succeeds. No virtual supervisor callback enters construction.
+    pub(crate) fn new_original_host_startup_into(
+        stream: &mut Option<crate::client::DeadlineStream>,
+        authority: &ConnectionAuthority,
+        supervisor: Rc<dyn ConnectionSupervisor>,
+        schemas: Rc<crate::client::host_startup::hello::InitialHelloSchema>,
+        completed: &mut Option<Self>,
+    ) -> Result<(), ProviderError> {
+        if completed.is_some() || stream.is_none() {
+            return Err(ProviderError::Conflict("original host connection occupied"));
+        }
+        let (guard, maximum_bytes, maximum_nesting) = authority.with_live(|| {
+            let limits = authority.limits();
+            limits.validate()?;
+            Ok((
+                CorrelationGuard::new(
+                    authority.session_id().clone(),
+                    authority.incarnation_id().clone(),
+                    allowance(limits.requests.get())?,
+                    authority.envelope_extensions().clone(),
+                )?,
+                allowance(limits.frame_bytes.get())?,
+                allowance(limits.nesting.get())?,
+            ))
+        })?;
+        let original = stream
+            .take()
+            .ok_or(ProviderError::Correlation("original host writer absent"))?;
+        let reader = match FrameReader::with_limits_owned(original, maximum_bytes, maximum_nesting)
+        {
+            Ok(reader) => reader,
+            Err((original, error)) => {
+                *stream = Some(original);
+                return Err(error);
+            }
+        };
+        *completed = Some(Self {
+            reader,
+            authority: authority.clone(),
+            guard,
+            supervisor,
+            schemas,
+            protocol_owner: Rc::new(crate::protocol_snapshot::ProtocolCaptureOwner::new()),
+            native5_blobs: None,
+            native5_codec: None,
+            original_restore_inputs: None,
+            original_restore_responses: [None, None],
+            original_complete_restoration: None,
+            original_canonical_ack_admission: None,
+            packet_schema: false,
+            original_frames: None,
+            connected_packet_schema: false,
+            fenced: false,
+            role: EndpointRole::Controller,
+        });
+        authority.ensure_live()
+    }
+}
+
+#[path = "connection/host_initial_receive.rs"]
+mod host_initial_receive;
+
+pub(crate) use native5_codec::original_host_initial_codec_layout_data;
+
+pub(crate) use exchange::original_host_initial_raw_receive_storage_data;
+
+impl Connection<crate::client::DeadlineStream> {
+    // A concrete DeadlineStream owns one UnixStream in this actual FrameReader.
+    // Raw origin is independent of expiry or protocol failure: dead owners
+    // still retain descriptors and must remain visible to the resource census.
+    pub(crate) fn original_host_retained_descriptor_count_data(
+        &self,
+    ) -> Result<usize, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        Ok(1)
+    }
+}
+
+#[path = "connection/capture_allocation_original.rs"]
+mod capture_allocation_original;
+
+pub(crate) use native_owned14::NativeOwned14AfterProtocolCapacityFacts;

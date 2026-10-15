@@ -139,37 +139,7 @@ impl PacketControl {
                 return Err(ProviderError::Conflict("native Control model incomplete"));
             }
         };
-        let control = BorrowedControlView {
-            selection: &self.selection,
-            originals: OriginalRows(&self.originals),
-            begins: &self.begins,
-            begin_requests: &self.begin_requests,
-            content: ContentRows(&self.content),
-            content_bytes: self.content_bytes,
-            realized: self.realized,
-            admitted: self.admitted,
-            staged: &self.staged,
-            active: &self.active,
-            fenced: self.fenced,
-            native_effect_attempted: self.native_effect_attempted,
-            immediate: self.immediate,
-            current_operation: &self.current_operation,
-            terminals: &self.terminals,
-            common_coordinator: &self.common_coordinator,
-            world_coordinator: &self.world_coordinator,
-            connected_coordinator: &self.connected_coordinator,
-            complete_coordinator: &self.complete_coordinator,
-            complete_storage: &self.complete_storage,
-            complete_capture_profile: &self.complete_capture_profile,
-            complete_confirmation_selection: &self.complete_confirmation_selection,
-            complete_ack_emitter_selection: &self.complete_ack_emitter_selection,
-            complete_protocol_metadata_limits: &self.complete_protocol_metadata_limits,
-            complete_protocol_metadata_birth_facts: &self.complete_protocol_metadata_birth_facts,
-            complete_restore_selection: &self.complete_restore_selection,
-            complete_restore_input_emitter_selection: &self
-                .complete_restore_input_emitter_selection,
-            complete_capture_allocation_selection: &self.complete_capture_allocation_selection,
-        };
+        let control = self.borrowed_capture_control();
         let shape = SnapshotShape {
             schema: if self.complete_capture_allocation_selection.is_some() {
                 "source-owned.packet-native-control-state/6"
@@ -209,5 +179,47 @@ impl PacketControl {
             self.content.len(),
             maximum,
         )
+    }
+}
+
+impl PacketControl {
+    fn borrowed_capture_control(&self) -> BorrowedControlView<'_> {
+        BorrowedControlView {
+            selection: &self.selection,
+            originals: OriginalRows(&self.originals),
+            begins: &self.begins,
+            begin_requests: &self.begin_requests,
+            content: ContentRows(&self.content),
+            content_bytes: self.content_bytes,
+            realized: self.realized,
+            admitted: self.admitted,
+            staged: &self.staged,
+            active: &self.active,
+            fenced: self.fenced,
+            native_effect_attempted: self.native_effect_attempted,
+            immediate: self.immediate,
+            current_operation: &self.current_operation,
+            terminals: &self.terminals,
+            common_coordinator: &self.common_coordinator,
+            world_coordinator: &self.world_coordinator,
+            connected_coordinator: &self.connected_coordinator,
+            complete_coordinator: &self.complete_coordinator,
+            complete_storage: &self.complete_storage,
+            complete_capture_profile: &self.complete_capture_profile,
+            complete_confirmation_selection: &self.complete_confirmation_selection,
+            complete_ack_emitter_selection: &self.complete_ack_emitter_selection,
+            complete_protocol_metadata_limits: &self.complete_protocol_metadata_limits,
+            complete_protocol_metadata_birth_facts: &self.complete_protocol_metadata_birth_facts,
+            complete_restore_selection: &self.complete_restore_selection,
+            complete_restore_input_emitter_selection: &self
+                .complete_restore_input_emitter_selection,
+            complete_capture_allocation_selection: &self.complete_capture_allocation_selection,
+        }
+    }
+
+    // The actual selected producer uses the same row ordering and skipped
+    // fields as the prospective counter, without collecting row-reference Vecs.
+    pub(super) fn borrowed_capture_control_data(&self) -> impl Serialize + '_ {
+        self.borrowed_capture_control()
     }
 }

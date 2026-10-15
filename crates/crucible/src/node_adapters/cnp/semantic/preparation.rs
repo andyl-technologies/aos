@@ -92,8 +92,28 @@ impl CnpSemanticPreparation {
     }
 
     fn prepare_installed(
+        guard: CnpSemanticLaunchGuard,
+        installed: InstalledCnpSemanticRole,
+    ) -> Result<Self, CnpSemanticPreparationFailure> {
+        Self::prepare_installed_selected(guard, installed, None)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn prepare_original_initial_selected(
+        guard: CnpSemanticLaunchGuard,
+        installed: super::InstalledCnpConformanceRole,
+        discovery: &mut Option<crucible_node_provider::client::OriginalPacketHostInitialResponse>,
+        realization: &mut Option<crucible_node_provider::client::OriginalPacketHostInitialResponse>,
+    ) -> Result<Self, CnpSemanticPreparationFailure> {
+        Self::prepare_installed_selected(guard, installed.0, Some((discovery, realization)))
+    }
+
+    fn prepare_installed_selected(
         mut guard: CnpSemanticLaunchGuard,
         installed: InstalledCnpSemanticRole,
+        mut initial: Option<(
+            &mut Option<crucible_node_provider::client::OriginalPacketHostInitialResponse>,
+            &mut Option<crucible_node_provider::client::OriginalPacketHostInitialResponse>,
+        )>,
     ) -> Result<Self, CnpSemanticPreparationFailure> {
         let InstalledCnpSemanticRole {
             kind,
@@ -105,23 +125,25 @@ impl CnpSemanticPreparation {
             collection_plan,
         } = installed;
         let result = (|| {
-            kind.authenticate(source.installation())?;
-            policy.authenticate(source.installation())?;
-            if super::registry::installation_identity(source.installation())? != identity {
-                return Err(refused(
-                    "generic source changed after original registration",
-                ));
-            }
-            match (&acceptance, &conformance, &collection_plan) {
-                (Some(_), None, None) => {}
-                (None, Some(authority), Some(plan)) => {
-                    authenticate_collection_selection(
-                        plan,
-                        authority.as_ref(),
-                        source.installation(),
-                    )?;
+            if initial.is_none() {
+                kind.authenticate(source.installation())?;
+                policy.authenticate(source.installation())?;
+                if super::registry::installation_identity(source.installation())? != identity {
+                    return Err(refused(
+                        "generic source changed after original registration",
+                    ));
                 }
-                _ => return Err(refused("generic qualification mode is absent or ambiguous")),
+                match (&acceptance, &conformance, &collection_plan) {
+                    (Some(_), None, None) => {}
+                    (None, Some(authority), Some(plan)) => {
+                        authenticate_collection_selection(
+                            plan,
+                            authority.as_ref(),
+                            source.installation(),
+                        )?;
+                    }
+                    _ => return Err(refused("generic qualification mode is absent or ambiguous")),
+                }
             }
             let custody = guard
                 .custody
@@ -140,6 +162,41 @@ impl CnpSemanticPreparation {
             custody.acceptance = acceptance;
             custody.conformance = conformance;
             custody.collection_plan = collection_plan;
+            if initial.is_some() {
+                // The actual original role is already held by custody before
+                // any selected installed-policy or Source callback can fail.
+                let source = custody
+                    .source
+                    .as_ref()
+                    .ok_or_else(|| refused("original initial installed Source absent"))?;
+                custody
+                    .installation_kind
+                    .ok_or_else(|| refused("original initial registration kind absent"))?
+                    .authenticate(source.installation())?;
+                custody
+                    .registration
+                    .as_ref()
+                    .ok_or_else(|| refused("original initial policy absent"))?
+                    .authenticate(source.installation())?;
+                if Some(&super::registry::installation_identity(
+                    source.installation(),
+                )?) != custody.installed_identity.as_ref()
+                {
+                    return Err(refused("original initial installed identity changed"));
+                }
+                match (
+                    &custody.acceptance,
+                    &custody.conformance,
+                    &custody.collection_plan,
+                ) {
+                    (None, Some(authority), Some(plan)) => authenticate_collection_selection(
+                        plan,
+                        authority.as_ref(),
+                        source.installation(),
+                    )?,
+                    _ => return Err(refused("original initial collecting role changed")),
+                }
+            }
             let source = custody
                 .source
                 .as_ref()
@@ -169,19 +226,36 @@ impl CnpSemanticPreparation {
                 custody.conformance.as_deref(),
                 install,
             )?;
-            let response = controller
-                .call(
-                    request_id("discover", &install.realize.realization_id)?,
-                    None,
-                    Method::Discover,
-                    false,
-                    DiscoverRequest {
-                        profile_ids: vec![install.profile.profile_id.clone()],
-                        cursor: None,
-                        extensions: Extensions::new(),
-                    },
-                )
-                .map_err(unknown)?;
+            let response = if let Some((original, _)) = initial.as_mut() {
+                controller
+                    .call_original_host_initial_lifecycle_into(
+                        request_id("discover", &install.realize.realization_id)?,
+                        Method::Discover,
+                        original,
+                    )
+                    .map_err(unknown)?;
+                let owner = original
+                    .as_ref()
+                    .ok_or_else(|| refused("original initial Discover owner absent"))?;
+                owner
+                    .authenticate_original_controller_data(controller)
+                    .map_err(unknown)?;
+                owner.response_data().map_err(unknown)?.clone()
+            } else {
+                controller
+                    .call(
+                        request_id("discover", &install.realize.realization_id)?,
+                        None,
+                        Method::Discover,
+                        false,
+                        DiscoverRequest {
+                            profile_ids: vec![install.profile.profile_id.clone()],
+                            cursor: None,
+                            extensions: Extensions::new(),
+                        },
+                    )
+                    .map_err(unknown)?
+            };
             let Some(MethodResult::Discover(discovery)) = response.result else {
                 return Err(unknown("generic original discovery did not complete"));
             };
@@ -200,15 +274,32 @@ impl CnpSemanticPreparation {
                 custody.conformance.as_deref(),
                 install,
             )?;
-            let response = controller
-                .call(
-                    request_id("realize", &install.realize.realization_id)?,
-                    None,
-                    Method::Realize,
-                    false,
-                    &install.realize,
-                )
-                .map_err(unknown)?;
+            let response = if let Some((_, original)) = initial.as_mut() {
+                controller
+                    .call_original_host_initial_lifecycle_into(
+                        request_id("realize", &install.realize.realization_id)?,
+                        Method::Realize,
+                        original,
+                    )
+                    .map_err(unknown)?;
+                let owner = original
+                    .as_ref()
+                    .ok_or_else(|| refused("original initial Realize owner absent"))?;
+                owner
+                    .authenticate_original_controller_data(controller)
+                    .map_err(unknown)?;
+                owner.response_data().map_err(unknown)?.clone()
+            } else {
+                controller
+                    .call(
+                        request_id("realize", &install.realize.realization_id)?,
+                        None,
+                        Method::Realize,
+                        false,
+                        &install.realize,
+                    )
+                    .map_err(unknown)?
+            };
             let Some(MethodResult::Realize(realization)) = response.result else {
                 return Err(unknown("generic original realization did not complete"));
             };
@@ -242,6 +333,12 @@ impl CnpSemanticPreparation {
                     discovery,
                     realization,
                 };
+                if initial.is_some() {
+                    // The selected caller installs this same preparation in its
+                    // original output slot before invoking terminal callbacks.
+                    // Both original response owners already remain in the SDK.
+                    return Ok(preparation);
+                }
                 match preparation.reauthenticate() {
                     Ok(()) => Ok(preparation),
                     Err(error) => Err(CnpSemanticPreparationFailure {
@@ -376,7 +473,7 @@ pub(super) fn authenticate_collection_selection(
     install: &CnpSemanticInstallation,
 ) -> Result<(), OperationFailure> {
     plan.reauthenticate()
-        .map_err(|error| refused(error.to_string()))?;
+        .map_err(crate::node_adapters::cnp::semantic::refused_display)?;
     if !plan.has_authority(authority) || plan.evidence().world != &install.world_binding_hash {
         return Err(refused(
             "collection source differs from original installed plan authority",
@@ -572,5 +669,6 @@ fn selected_facets_changed(install: &CnpSemanticInstallation, complete_packet: b
 }
 
 pub(super) fn request_id(prefix: &str, original: &Id) -> Result<Id, OperationFailure> {
-    Id::new(format!("cnp-{prefix}-{original}")).map_err(|error| refused(error.to_string()))
+    Id::new(format!("cnp-{prefix}-{original}"))
+        .map_err(crate::node_adapters::cnp::semantic::refused_display)
 }

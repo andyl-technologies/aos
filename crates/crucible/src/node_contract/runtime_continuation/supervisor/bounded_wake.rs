@@ -494,3 +494,99 @@ mod tests {
         Ok(())
     }
 }
+
+impl RuntimeCustodyQueue {
+    /// Counts the two descriptors of this queue's exact bounded wake transport.
+    ///
+    /// This authenticates the same original queue/notifier/reader association.
+    /// A reserved empty slot owns no further descriptors; retained runtime
+    /// custody is unsupported here and cannot be interpreted as empty.
+    ///
+    /// # Errors
+    /// Refuses foreign or unrelated transport, busy/retained runtime custody,
+    /// an unsupported waker or changed shared queue ownership.
+    pub fn retained_descriptor_count_with_original_reader_data(
+        &self,
+        reader: &RuntimeCustodyWakeReader,
+    ) -> Result<usize, RuntimeError> {
+        reader.original()?;
+        if self.inner.process != std::process::id()
+            || self.inner.thread != std::thread::current().id()
+            || !self
+                .inner
+                .notifier
+                .as_ref()
+                .is_some_and(|notifier| Arc::ptr_eq(notifier, &reader.notifier))
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let waker = self
+            .inner
+            .waker
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if waker
+            .as_ref()
+            .is_some_and(|waker| !waker.will_wake(&reader.waker))
+        {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let keepalive = self
+            .inner
+            .keepalive
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if keepalive
+            .as_ref()
+            .is_some_and(|owner| !Rc::ptr_eq(owner, &self.inner))
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        for mailbox in &self.inner.mailboxes {
+            if mailbox.polling.get()
+                || mailbox
+                    .custody
+                    .try_borrow()
+                    .map_err(|_| RuntimeError::OwnerBusy)?
+                    .is_some()
+            {
+                return Err(RuntimeError::UnsupportedFacet);
+            }
+        }
+        // CustodyNotifier owns its eventfd; this same reader owns its dup.
+        // Arc and Waker aliases retain the first fd without creating more fds.
+        Ok(2)
+    }
+}
+
+#[cfg(test)]
+mod descriptor_count_tests {
+    use super::*;
+
+    #[test]
+    fn descriptor_count_requires_the_same_real_queue_and_reader() {
+        let (queue, reader) = RuntimeCustodyQueue::new_with_bounded_wake(1).unwrap();
+        let (other, other_reader) = RuntimeCustodyQueue::new_with_bounded_wake(1).unwrap();
+
+        assert_eq!(
+            queue.retained_descriptor_count_with_original_reader_data(&reader),
+            Ok(2)
+        );
+        assert_eq!(
+            other.retained_descriptor_count_with_original_reader_data(&other_reader),
+            Ok(2)
+        );
+        assert!(
+            queue
+                .retained_descriptor_count_with_original_reader_data(&other_reader)
+                .is_err()
+        );
+        assert!(
+            other
+                .retained_descriptor_count_with_original_reader_data(&reader)
+                .is_err()
+        );
+        assert_eq!(queue.reserved_worlds(), 0);
+        assert_eq!(other.reserved_worlds(), 0);
+    }
+}

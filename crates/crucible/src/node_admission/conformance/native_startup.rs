@@ -156,6 +156,7 @@ impl NativeStartupRows {
 pub(crate) struct OriginalNativeStartupQuote {
     pub(crate) rows: NativeStartupRows,
     pub(crate) finalization_bytes: usize,
+    pub(crate) wire_requested_bytes: usize,
     pub(crate) publication_bytes: usize,
     pub(crate) launch_digest: [u8; 32],
     pub(crate) maximum_boot_bytes: usize,
@@ -355,6 +356,7 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
         if actual.launch_digest != quote.launch_digest
             || actual.maximum_boot_bytes > quote.maximum_boot_bytes
             || actual.finalization_bytes > quote.finalization_bytes
+            || actual.wire_requested_bytes > quote.wire_requested_bytes
             || actual.publication_bytes > quote.publication_bytes
         {
             return Err(RuntimeError::ResourceLimit);
@@ -367,6 +369,7 @@ impl CompleteOriginalNativeStartupAdmission<'_> {
             plan: self.scope.plan.downgrade(),
             rows: quote.rows,
             finalization_bytes: quote.finalization_bytes,
+            wire_requested_bytes: quote.wire_requested_bytes,
             host_launch_requested_bytes: self.storage.prospective_host_launch_requested_bytes
                 [index],
             launch_digest: quote.launch_digest,
@@ -438,6 +441,7 @@ pub(crate) struct OriginalNativeStartupMember {
     plan: WeakInstalledConformancePlan,
     pub(crate) rows: NativeStartupRows,
     pub(crate) finalization_bytes: usize,
+    pub(crate) wire_requested_bytes: usize,
     pub(crate) host_launch_requested_bytes: usize,
     pub(crate) launch_digest: [u8; 32],
     pub(crate) maximum_boot_bytes: usize,

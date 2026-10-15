@@ -342,6 +342,13 @@ impl PacketCompleteAckPeerBootMaterial<'_> {
                 original_slot,
             ),
         );
+        self.original
+            .bind_original_host_sdk_launch_data(
+                completed
+                    .as_ref()
+                    .ok_or_else(|| refused("native startup custody absent"))?,
+            )
+            .map_err(|_| refused("original host SDK launch identity refused"))?;
         let actual = completed
             .as_ref()
             .ok_or_else(|| refused("native startup custody absent"))?

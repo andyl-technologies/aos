@@ -28,12 +28,17 @@ impl HostModelNode {
     ///
     /// The containing runtime's own counter remains a separate live term. This
     /// does not estimate recursive/compiler frames or physical allocation peaks.
-    pub(super) fn original_clock_requested_backing_scratch_data() -> usize {
+    pub fn original_clock_requested_backing_scratch_data() -> usize {
         size_of::<RetainedRuntimeCounter>() + opaque_owner_counter_scratch_data()
     }
 
     /// Walks the closed Clock owner's actual backing, excluding its inline Box.
-    pub(super) fn original_clock_requested_backing_data(
+    ///
+    /// This data read does not issue permission or invoke an erased adapter.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, busy/unsupported retained fields or the bound.
+    pub fn original_clock_requested_backing_data(
         &self,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {

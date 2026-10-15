@@ -7,8 +7,8 @@
 mod report_startup;
 mod retained;
 pub use report_startup::{
-    PacketCompleteNativeLaunchInputs, PacketCompletePreparationConnection,
-    PacketCompleteReportStartupHolder,
+    PacketCompleteNativeLaunchInputs, PacketCompleteOriginalSceneInputs,
+    PacketCompletePreparationConnection, PacketCompleteReportStartupHolder,
 };
 
 use super::super::scope;
@@ -91,6 +91,8 @@ pub struct InstalledPacketCompleteCollectionAuthority {
     directories: [PathBuf; 3],
     original_ack_hello: RefCell<[Option<OriginalAckHelloSlot>; 3]>,
     original_ack_callback_started: Cell<bool>,
+    // Only an issued initial-lifecycle window selects the bounded callback path.
+    original_initial_callback_active: Cell<bool>,
     capture_factory: OnceCell<std::rc::Weak<super::capture_factory::PacketCompleteCaptureFactory>>,
     execution_scene: OnceCell<std::rc::Weak<super::execution::PacketCompleteExecutionScene>>,
 }
@@ -197,6 +199,7 @@ impl InstalledPacketCompleteCollectionAuthority {
         let original = Rc::new(Self {
             original_ack_hello: RefCell::new(std::array::from_fn(|_| None)),
             original_ack_callback_started: Cell::new(false),
+            original_initial_callback_active: Cell::new(false),
             capture_factory: OnceCell::new(),
             execution_scene: OnceCell::new(),
             report_startup_holder: OnceCell::new(),
@@ -440,7 +443,8 @@ impl InstalledPacketCompleteCollectionAuthority {
         &self,
         plan: ConformancePlanEvidence<'_>,
     ) -> Result<(), EvidenceError> {
-        self.current().map_err(evidence_error)?;
+        self.current_for_original_initial_callback()
+            .map_err(evidence_error)?;
         let original = self.plan_evidence();
         if plan.plan_ref != original.plan_ref
             || plan.plan_bytes != original.plan_bytes
@@ -451,7 +455,8 @@ impl InstalledPacketCompleteCollectionAuthority {
         {
             return Err(evidence_error(refused()));
         }
-        self.current().map_err(evidence_error)
+        self.current_for_original_initial_callback()
+            .map_err(evidence_error)
     }
 }
 
@@ -462,15 +467,34 @@ fn encoded(value: &impl serde::Serialize) -> Result<Vec<u8>, QualificationError>
     )?)
 }
 
-fn evidence_error(error: QualificationError) -> EvidenceError {
-    EvidenceError {
-        message: error.to_string(),
+// This matches QualificationError's public Display text. A closed refusal
+// writes into one exact requested bank instead of hidden formatter growth;
+// other error families preserve their original formatting behavior.
+const QUALIFICATION_REFUSAL_PREFIX: &str = "qualification refused: ";
+
+fn qualification_reason(error: QualificationError) -> String {
+    match error {
+        QualificationError::Refused(message) => {
+            let mut reason =
+                String::with_capacity(QUALIFICATION_REFUSAL_PREFIX.len() + message.len());
+            reason.push_str(QUALIFICATION_REFUSAL_PREFIX);
+            reason.push_str(message);
+            reason
+        }
+        error => error.to_string(),
     }
 }
+
+fn evidence_error(error: QualificationError) -> EvidenceError {
+    EvidenceError {
+        message: qualification_reason(error),
+    }
+}
+
 fn operation_error(error: QualificationError) -> OperationFailure {
     OperationFailure {
         effects: crucible::node_contract::EffectKnowledge::None,
-        reason: error.to_string(),
+        reason: qualification_reason(error),
     }
 }
 

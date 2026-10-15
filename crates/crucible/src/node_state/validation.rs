@@ -573,3 +573,36 @@ pub(super) fn incompatible(component: &str, reason: &str) -> StateError {
 pub(super) fn incomplete(component: &str, reason: &str) -> StateError {
     StateError::new(StateErrorCode::IncompleteClosure, component, reason)
 }
+
+impl VerifiedCapture {
+    pub(super) fn charge_original_storage_data(
+        &self,
+        counter: &mut crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        let Self {
+            manifest,
+            artifact,
+            content,
+            source_owners,
+            scheduler,
+            runtime,
+            requirements,
+            repeatability: _,
+            pending_native_acknowledgements,
+        } = self;
+        let StateRequirements {
+            preservation_contract,
+            exact_model_continuation: _,
+            deterministic: _,
+            restore_mode: _,
+        } = requirements;
+        counter.owned(manifest)?;
+        counter.owned(artifact)?;
+        content.charge_original_storage_data(counter)?;
+        counter.owned(source_owners)?;
+        counter.owned(scheduler)?;
+        counter.owned(runtime)?;
+        counter.owned(preservation_contract)?;
+        counter.owned(pending_native_acknowledgements)
+    }
+}

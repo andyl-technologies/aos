@@ -23,6 +23,11 @@ mod conformance_dispatch;
 
 use conformance_dispatch::final_collection_scope;
 
+#[path = "runtime/original_activation_fault.rs"]
+mod original_activation_fault;
+
+pub use original_activation_fault::{OriginalCompletionLoss, OriginalReadinessLoss};
+
 #[path = "runtime_pause.rs"]
 mod pause;
 
@@ -33,6 +38,9 @@ pub(crate) use retained_storage::OriginalRuntimeStorageIdentity;
 
 pub(crate) use continuation::capture_ticket::owned::OwnedStorage as RuntimeOwnedStorage;
 pub(crate) use continuation::capture_ticket::owned::opaque_owner_counter_scratch_data;
+pub use continuation::capture_ticket::owned::{
+    RetainedCoreOwnerStorage, RetainedCoreSharedAllocation,
+};
 
 #[path = "runtime/scheduling_state.rs"]
 pub(super) mod scheduling_state;
@@ -432,6 +440,13 @@ impl NodeRuntime {
     /// Returns a native staging failure or invalid attestation. No execution
     /// permission is issued, and all handles remain under runtime custody.
     pub fn arm_all(&mut self) -> Result<(), RuntimeError> {
+        self.arm_all_selected(None)
+    }
+
+    fn arm_all_selected(
+        &mut self,
+        mut lost_readiness: Option<(&Id, &mut Option<OriginalReadinessLoss>)>,
+    ) -> Result<(), RuntimeError> {
         self.scheduling_origin()?;
         if self.activated
             || !self.barrier.can_arm()
@@ -483,7 +498,21 @@ impl NodeRuntime {
                 &bindings,
                 collecting,
             ) {
-                Ok(preparation) => ready.push(preparation),
+                Ok(preparation) => {
+                    if let Some((selected, retained)) = lost_readiness.as_mut()
+                        && *selected == node_id
+                    {
+                        // The actual native preparation has already passed the
+                        // ordinary validation. Only its delivery to the barrier
+                        // is lost; the caller retains that same original record.
+                        **retained =
+                            Some(OriginalReadinessLoss::retain(&record, ready, preparation));
+                        self.barrier.abandon(Vec::new());
+                        self.contain_roster(&original_route);
+                        return Err(RuntimeError::InvalidReceipt);
+                    }
+                    ready.push(preparation);
+                }
                 Err(error) => {
                     self.barrier.abandon(ready);
                     self.contain_roster(&original_route);

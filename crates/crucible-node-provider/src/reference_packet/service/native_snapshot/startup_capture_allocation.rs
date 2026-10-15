@@ -22,27 +22,68 @@ const BEFORE_TAG: &str = "source-private.native-before-protocol/13";
 const ENDPOINT_TAG: &str = "source-owned.packet-native-endpoint-state/13";
 const OWNER_MARKER: &str = "source-private.native-capture-allocation-owner-reference/13";
 
+// A single canonical closed definition is used by both the owning declaration
+// producer and the allocation-free installed-schema comparison. It contains no
+// process-private layout, pointer, clock or original issuer material.
+const CONTRACT_BYTES: &[u8] = include_bytes!("startup_capture_contract13.json");
+
+/// Checks the entire installed schema against the actual compiled definition.
+///
+/// This is a DATA comparison. The caller separately authenticates the original
+/// policy/source roots and startup admission before using an installed schema.
+///
+/// # Errors
+/// Refuses any changed identity, revision, extension, full reference or bytes.
+pub(crate) fn authenticate_native_owned13_snapshot_schema_data(
+    schema: &SchemaRef,
+) -> Result<(), ProviderError> {
+    let reference = &schema.definition;
+    if schema.id.as_str() != SCHEMA
+        || schema.version != 13
+        || !schema.extensions.is_empty()
+        || reference.media_type != "application/json"
+        || reference.length.get() != CONTRACT_BYTES.len() as u64
+        || reference.hash.algorithm != "blake3-256"
+        || reference.hash.domain != "cnp.blob.v1"
+    {
+        return Err(invalid());
+    }
+    let mut hasher = blob_hasher(CONTRACT_BYTES.len())?;
+    hasher.update(CONTRACT_BYTES);
+    let hash = hasher.finalize();
+    let digest = reference.hash.digest.as_bytes();
+    if digest.len() != 64 {
+        return Err(invalid());
+    }
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (byte, pair) in hash.as_bytes().iter().zip(digest.chunks_exact(2)) {
+        if pair[0] != HEX[usize::from(byte >> 4)] || pair[1] != HEX[usize::from(byte & 15)] {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
+/// Reports only fixed stack objects used by the schema DATA comparator.
+pub(crate) const fn native_owned13_snapshot_schema_counter_scratch_data() -> usize {
+    std::mem::size_of::<blake3::Hasher>()
+        + std::mem::size_of::<blake3::Hash>()
+        + std::mem::size_of::<&SchemaRef>()
+        + std::mem::size_of::<&[u8]>()
+        + std::mem::size_of::<(&u8, &[u8])>()
+}
+
 /// Returns the complete definition for the selected allocation-owning snapshot.
 ///
 /// # Errors
 /// Reports canonical definition encoding failure.
 pub fn native_owned13_snapshot_contract() -> Result<Vec<u8>, ProviderError> {
-    Ok(canonical::canonical_json(&serde_json::json!({
-        "schema":"source-owned.packet-native-continuation-contract/13",
-        "snapshot":SCHEMA,
-        "fields":["capture","capture_request","control","control_reference","endpoint","protocol","schema"],
-        "protocol":[BEFORE_TAG,"full application/json reference of exact original inner native-state14 bytes","actual original encoded Vec capacity","complete compact-bytes/7 literal bytes"],
-        "endpoint":[ENDPOINT_TAG,"the same13 independently validated original endpoint fields of endpoint11",[OWNER_MARKER,"full original Observe allocation Report reference"]],
-        "endpoint_fields":["tag13","storage","profile","metadata_limits","metadata_birth_facts","full original Hello","same-original-native-protocol-service-context/14","full original records","records capacity","full original pins","pins capacity","next provider sequence","retained transport credit","held=true","allocation owner reference marker"],
-        "endpoint_context":"same-original-native-protocol-service-context/14 remains the exact actual service root marker",
-        "control":"full source-owned.packet-native-control-state/6; selected original_observe12 field and exact original Capture",
-        "inner":"full source-private.native-state/14 four-leaf codec; actual boot6/sourceBinding14/full fixed startup Bootstrap and policy17 and Some same Capture; same actor/codec/frame/Control currency alias groups",
-        "report":{"media":PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA,"maximum_bytes":MAXIMUM_NATIVE_CAPTURE_ALLOCATION_REPORT_BYTES,"body":"exact canonical original Observe Report, never recreated from counters"},
-        "direct_dependencies":["exact separately returned complete Control","exact original Observe allocation Report"],
-        "identity":"retain original raw before bytes/fullref/spare capacity; never parse and canonicalize to a replacement identity",
-        "validation":"full four-leaf cold decoder, actual endpoint histories/pins/Hello, Control/model transition, Report typed/raw/fullref and same original Observe/Capture conjunction, terminal and fourth-Poll correspondence remain mandatory",
-        "authority":"historical data only; no Source ticket, fresh allocation record, registrar, restored gate or Arm/Capture permission"
-    }))?)
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(CONTRACT_BYTES.len()).map_err(|_| {
+        ProviderError::ResourceExhausted("native startup snapshot definition storage")
+    })?;
+    bytes.extend_from_slice(CONTRACT_BYTES);
+    Ok(bytes)
 }
 
 /// Returns the exact schema reference of the complete allocation-owning edition.
@@ -407,6 +448,33 @@ mod tests {
             PacketNativeOwned13SnapshotPlan::validate(&encoded, encoded.len(), old.len() + 17)
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_snapshot_schema_gate_matches_actual_canonical_producer_and_rejects_every_fullref_axis()
+    -> Result<(), ProviderError> {
+        let bytes = native_owned13_snapshot_contract()?;
+        let parsed = canonical::parse_json(&bytes, bytes.len())?;
+        assert_eq!(canonical::canonical_json(&parsed)?, bytes);
+        let original = native_owned13_snapshot_schema()?;
+        authenticate_native_owned13_snapshot_schema_data(&original)?;
+        for axis in 0..7 {
+            let mut changed = original.clone();
+            match axis {
+                0 => changed.version = 12,
+                1 => changed.id = Id::new("changed-native-schema")?,
+                2 => {
+                    changed.definition.length =
+                        crucible_node_contract::U64::new(changed.definition.length.get() + 1)
+                }
+                3 => changed.definition.media_type.push('x'),
+                4 => changed.definition.hash.algorithm.push('x'),
+                5 => changed.definition.hash.domain.push('x'),
+                _ => changed.definition.hash.digest.push('0'),
+            }
+            assert!(authenticate_native_owned13_snapshot_schema_data(&changed).is_err());
+        }
         Ok(())
     }
 

@@ -126,7 +126,8 @@ impl<S: ProviderStream> Connection<S> {
                 CompleteRestoreProjection::from_envelope(original)?;
             }
             Some(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12) => {
-                let projection = CompleteRestoreTransferProjection::from_envelope(original)?;
+                let projection =
+                    self.original_selected_restore_transfer_projection_data(original)?;
                 if !matches!(
                     projection,
                     CompleteRestoreTransferProjection::Request { .. }

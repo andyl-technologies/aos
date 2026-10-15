@@ -1814,3 +1814,70 @@ impl ClientSession {
         Ok(())
     }
 }
+
+#[path = "session/host_startup.rs"]
+mod host_startup;
+pub(in crate::client) use host_startup::OriginalHostHelloAttempt;
+
+impl ClientSession {
+    pub(in crate::client) fn observe_original_host_startup_metadata(
+        &self,
+        schemas: &Rc<super::host_startup::hello::InitialHelloSchema>,
+        supervisor: &crate::connection::OriginalRetainedSupervisor,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            connection,
+            authority,
+            deadline,
+            sequence,
+            peer_pid,
+            peer_executable,
+            original_ack_hello,
+            original_response_loss,
+        } = self;
+        if sequence.get() != 2 || original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "original host startup session changed",
+            ));
+        }
+        connection.observe_original_host_startup_metadata(schemas, supervisor, observer)?;
+        authority.observe_retained_metadata(observer)?;
+        deadline.observe_owned11_metadata(observer)?;
+        observer.observe(sequence)?;
+        observer.observe(peer_pid)?;
+        observer.observe(peer_executable)?;
+        let bank = original_ack_hello
+            .as_ref()
+            .ok_or(ProviderError::Correlation(
+                "original host startup Hello absent",
+            ))?;
+        observer.shared_value(bank.as_ref())?;
+        bank.try_borrow()
+            .map_err(|_| ProviderError::Conflict("original host startup Hello borrowed"))?
+            .observe_owned11_metadata(observer)
+    }
+}
+
+#[path = "session/host_initial_lifecycle.rs"]
+mod host_initial_lifecycle;
+
+impl ClientSession {
+    pub(in crate::client) fn original_host_retained_descriptor_count_data(
+        &self,
+    ) -> Result<usize, ProviderError> {
+        self.connection
+            .original_host_retained_descriptor_count_data()
+    }
+}
+
+impl ClientSession {
+    pub(in crate::client) fn original_capture_allocation_observe_hash_data(
+        &self,
+        original: &Envelope,
+    ) -> Result<[u8; 32], ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        self.connection
+            .original_capture_allocation_observe_hash_data(original)
+    }
+}

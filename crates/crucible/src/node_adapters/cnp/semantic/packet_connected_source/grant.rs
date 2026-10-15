@@ -427,7 +427,7 @@ impl PacketConnectedSemanticSource {
         })
     }
 
-    pub(super) fn observation(
+    pub(in crate::node_adapters::cnp::semantic) fn observation(
         &self,
         activation: &WorldActivation,
         root: &ContentRef,

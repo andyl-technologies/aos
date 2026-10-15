@@ -116,6 +116,14 @@ impl NativeLedger<'_, '_, '_, '_, '_> {
         input: &[u8],
         build: bool,
     ) -> Result<Option<Rc<HistoricalNativePolicy>>, ProviderError> {
+        // Refuse a new retained policy class before payload credit, alias rows
+        // or any historical allocation is consumed. Inert policy18 fields do
+        // not promote legacy native-state11/12 into startup-owning classes.
+        if super::policy::requires_fresh_startup_class_data(input)?
+            && !self.requires_startup_class()?
+        {
+            return Err(invalid());
+        }
         self.payload::<HistoricalNativePolicy>()?;
         let layout = std::mem::size_of::<crate::reference_packet::Native5Policy>();
         let (start, group) = self.begin(MetadataSharedKind::NativePolicy, layout)?;
@@ -274,5 +282,49 @@ impl NativeLedger<'_, '_, '_, '_, '_> {
             .ok_or_else(invalid)?
             .blobs = Some(Rc::clone(&state));
         Ok(Some(state))
+    }
+}
+
+#[cfg(test)]
+mod fresh_policy_class_tests {
+    use super::*;
+    use crate::protocol_snapshot::owned11::json_value::HistoricalJsonLimits;
+    use crate::retained_metadata::records::ValidatedMetadataRecords;
+
+    #[test]
+    fn fresh_policy_refuses_legacy_classes_before_payload_or_capacity_consumption()
+    -> Result<(), ProviderError> {
+        let rows = ValidatedMetadataRecords::validate(b"[]", 0, 0)?;
+        for class in [NativeArchiveClass::Legacy11, NativeArchiveClass::Capture12] {
+            let mut ledger = Ledger::new(
+                rows.rows(),
+                HistoricalJsonLimits {
+                    maximum_input_bytes: 1024,
+                    maximum_nodes: 16,
+                    maximum_depth: 8,
+                    maximum_owned_backing_bytes: 0,
+                    maximum_tree_entries: 0,
+                },
+            );
+            let mut native = NativeLedger {
+                class: Some(class),
+                ledger: &mut ledger,
+                groups: None,
+                historical_payload_layout_bytes: 0,
+                correlation_capacity_span: None,
+            };
+
+            assert!(
+                native
+                    .policy(
+                        br#"["source-private.native5-policy-owned-fresh-restore-allocation/18"]"#,
+                        false,
+                    )
+                    .is_err()
+            );
+            assert_eq!(native.historical_payload_layout_bytes, 0);
+            assert!(native.ledger.rows.next().is_none());
+        }
+        Ok(())
     }
 }

@@ -118,7 +118,7 @@ impl<S: ProviderStream> Connection<S> {
         }
         self.guard
             .authenticate_incoming_complete_restore(original)?;
-        let projection = CompleteRestoreTransferProjection::from_envelope(original)?;
+        let projection = self.original_selected_restore_transfer_projection_data(original)?;
         if projection.phase() != crate::reference_packet::service::complete_restore::transfer::PacketCompleteRestoreTransferPhase::Prepare {
             return Err(refused());
         }

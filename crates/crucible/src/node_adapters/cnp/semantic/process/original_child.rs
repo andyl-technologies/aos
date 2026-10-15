@@ -279,3 +279,18 @@ impl Drop for OriginalChild {
 
 #[cfg(test)]
 mod tests;
+
+impl OriginalChild {
+    pub(super) fn retained_descriptor_views_precredit_data(
+        &self,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        if self.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        Ok(usize::from(self.descriptor.is_some()))
+    }
+}

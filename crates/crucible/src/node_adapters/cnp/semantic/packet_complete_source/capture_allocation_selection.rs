@@ -86,6 +86,17 @@ impl PacketCompleteSemanticSource {
                 return Err(refused("capture allocation producer feature is absent"));
             }
         }
+        // Both inner semantic validators receive this same original choice
+        // before any banks/birth/native association can be installed. Schema
+        // advertisement alone never enables reading an outer record12.
+        match &mut self.original {
+            CompletePacketOriginal::Producer(source) => {
+                source.complete_capture_allocation_selection = selection
+            }
+            CompletePacketOriginal::Reactive(source) => {
+                source.complete_capture_allocation_selection = selection
+            }
+        }
         self.capture_allocation_selection = Some(selection);
         Ok(())
     }

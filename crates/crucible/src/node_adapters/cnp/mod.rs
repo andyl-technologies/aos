@@ -56,20 +56,22 @@ pub use semantic::{
     CnpSemanticRegistrationPolicy, CnpSemanticRegistry, CnpSemanticReservationFailure,
     CnpSemanticSnapshotReservation, CnpSemanticSource, CnpSemanticSourceRead,
     CnpSemanticTransition, CnpSemanticWorldPreparationFailure, CnpSemanticWorldReservationFailure,
-    InstalledCnpConformanceRole, InstalledCnpSemanticRole, PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA,
-    PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA, PacketCompleteAckHostRegistrationPlan,
-    PacketCompleteAckPeerBootFrame, PacketCompleteAckPeerBootMaterial,
-    PacketCompleteArchivedOwnerData, PacketCompleteArchivedSemantics,
-    PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits,
-    PacketCompleteCaptureDependencyLookupData, PacketCompleteCaptureDependencyStorageData,
-    PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader,
-    PacketCompleteHistoricalAllocationFacts, PacketCompleteHistoricalNativeGroup,
-    PacketCompleteHistoricalProtocolData, PacketCompleteHistoricalProtocolDataBudget,
-    PacketCompleteNativeRecord, PacketCompleteNativeStartupWire, PacketCompleteNativeWitness,
+    InstalledCnpConformanceRole, InstalledCnpSemanticRole, OriginalCaptureAllocationData,
+    PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA, PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA,
+    PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame,
+    PacketCompleteAckPeerBootMaterial, PacketCompleteArchivedOwnerData,
+    PacketCompleteArchivedSemantics, PacketCompleteCaptureBankFacts,
+    PacketCompleteCaptureBankLimits, PacketCompleteCaptureDependencyLookupData,
+    PacketCompleteCaptureDependencyStorageData, PacketCompleteEffectReceiverGroup,
+    PacketCompleteEffectReceiverReader, PacketCompleteHistoricalAllocationFacts,
+    PacketCompleteHistoricalNativeGroup, PacketCompleteHistoricalProtocolData,
+    PacketCompleteHistoricalProtocolDataBudget, PacketCompleteNativeRecord,
+    PacketCompleteNativeStartupWire, PacketCompleteNativeWitness, PacketCompleteOriginalHostSdk,
     PacketCompleteRestorePreparation, PacketCompleteSemanticSource, PacketCompleteSettledJournal,
     PacketCompleteSourceRetainedStorage, PacketCompleteSourceRole, PacketConnectedInputWitness,
     PacketConnectedNativeWitness, PacketConnectedSemanticSource, PacketNativeWitness,
-    PacketSemanticSource, packet_common_grant_authorization,
+    PacketSemanticSource, original_capture_allocation_witness_counter_scratch_data,
+    packet_common_grant_authorization,
 };
 
 /// Runs an actual installed public checksum node under the common quantized runtime.
@@ -98,3 +100,7 @@ pub use lineage_reader::{
 
 /// Adapts independently installed vendor profiles with original CNP custody.
 pub mod vendor;
+
+pub(crate) use semantic::{
+    PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
+};

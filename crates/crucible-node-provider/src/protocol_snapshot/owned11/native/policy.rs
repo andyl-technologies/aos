@@ -15,6 +15,7 @@ use crate::{ProviderError, client::CanonicalAckCodecMetadataExtent};
 use crucible_node_contract::ContentRef;
 
 mod capture;
+mod fresh;
 
 /// Owns all immutable native policy fields as inert historical data.
 pub struct HistoricalNativePolicy {
@@ -56,6 +57,10 @@ pub struct HistoricalNativePolicy {
     pub capture_allocation_selection: Option<crate::reference_packet::service::capture_allocation::PacketNative5CaptureAllocationSelection>,
     /// Retains both full report and record definitions, in that order.
     pub capture_allocation_definitions: Option<[ContentRef; 2]>,
+    /// Retains the completed-Admit fresh report selection as inert data only.
+    pub fresh_restore_allocation_selection: Option<crate::reference_packet::service::fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection>,
+    /// Retains full Query, Report, Proof, Receipt and PrepareBinding definitions.
+    pub fresh_restore_allocation_definitions: Option<[ContentRef; 5]>,
     /// Retains independent selected row allowances without installation rights.
     pub protocol_metadata_limits:
         Option<crate::reference_packet::service::PacketNative5ProtocolMetadataLimits>,
@@ -70,6 +75,9 @@ impl HistoricalNativePolicy {
     ) -> Result<Option<Self>, ProviderError> {
         let mut fields = Fields::array(input)?;
         let policy_tag = super::super::typed::plain_string(next(&mut fields)?)?;
+        if policy_tag == fresh::FRESH_POLICY_FORMAT {
+            return fresh::read_selected(fields, ledger, build, allow_transfer);
+        }
         if policy_tag == capture::CAPTURE_POLICY_FORMAT {
             return capture::read_selected(fields, ledger, build, allow_transfer);
         }
@@ -296,6 +304,8 @@ impl HistoricalNativePolicy {
             restore_input_emitter_definition: None,
             capture_allocation_selection: None,
             capture_allocation_definitions: None,
+            fresh_restore_allocation_selection: None,
+            fresh_restore_allocation_definitions: None,
         }))
     }
 }
@@ -331,4 +341,10 @@ impl HistoricalType for HistoricalNativePolicy {
     ) -> Result<Option<Self>, ProviderError> {
         Self::read_selected(input, ledger, build, false)
     }
+}
+
+/// Detects the explicit fresh wrapper without consuming rows or creating data.
+pub(super) fn requires_fresh_startup_class_data(input: &[u8]) -> Result<bool, ProviderError> {
+    let mut fields = Fields::array(input)?;
+    Ok(super::super::typed::plain_string(next(&mut fields)?)? == fresh::FRESH_POLICY_FORMAT)
 }

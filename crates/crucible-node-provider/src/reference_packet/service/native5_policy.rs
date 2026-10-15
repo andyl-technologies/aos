@@ -69,11 +69,18 @@ pub(crate) struct Native5Policy {
         Option<super::capture_allocation::PacketNative5CaptureAllocationSelection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     capture_allocation_definitions: Option<[ContentRef; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fresh_restore_allocation_selection:
+        Option<super::fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fresh_restore_allocation_definitions: Option<[ContentRef; 5]>,
 }
 
 impl Native5Policy {
     pub(crate) fn authenticate_owned11_snapshot_definition(&self) -> Result<(), ProviderError> {
-        if self.capture_allocation_selection.is_some() {
+        if self.capture_allocation_selection.is_some()
+            || self.fresh_restore_allocation_selection.is_some()
+        {
             // The selected quote owner cannot be omitted from the old full
             // snapshot11 class. A separate full owning codec must replace this
             // refusal before selected Capture can be promoted.
@@ -102,7 +109,7 @@ impl Native5Policy {
     // A distinct exhaustive leaf preserves all selected fields and actual
     // coordinator backing capacity without changing earlier codec editions.
     pub(crate) fn borrowed_owned11_protocol_view(&self) -> impl Serialize + '_ {
-        capture_metadata::CaptureOwnedPolicyView(self)
+        fresh_restore_policy::FreshOwnedPolicyView(self)
     }
 
     fn original_owned11_protocol_view(&self) -> impl Serialize + '_ {
@@ -125,6 +132,8 @@ impl Native5Policy {
             restore_input_emitter_definition: _,
             capture_allocation_selection: _,
             capture_allocation_definitions: _,
+            fresh_restore_allocation_selection: _,
+            fresh_restore_allocation_definitions: _,
         } = self;
         (
             "source-private.native5-policy-owned/11",
@@ -177,6 +186,8 @@ impl Native5Policy {
             restore_input_emitter_definition,
             capture_allocation_selection,
             capture_allocation_definitions,
+            fresh_restore_allocation_selection,
+            fresh_restore_allocation_definitions,
         } = self;
         observer.observe(selection)?;
         observer.observe(coordinator)?;
@@ -201,6 +212,12 @@ impl Native5Policy {
         if capture_allocation_selection.is_some() || capture_allocation_definitions.is_some() {
             observer.observe(capture_allocation_selection)?;
             observer.observe(capture_allocation_definitions)?;
+        }
+        if fresh_restore_allocation_selection.is_some()
+            || fresh_restore_allocation_definitions.is_some()
+        {
+            observer.observe(fresh_restore_allocation_selection)?;
+            observer.observe(fresh_restore_allocation_definitions)?;
         }
         Ok(())
     }
@@ -265,6 +282,8 @@ impl Native5Policy {
             restore_input_emitter_definition: None,
             capture_allocation_selection: None,
             capture_allocation_definitions: None,
+            fresh_restore_allocation_selection: None,
+            fresh_restore_allocation_definitions: None,
         };
         Ok(policy)
     }
@@ -450,11 +469,11 @@ impl Native5Policy {
     }
 
     pub(crate) fn protocol_view(&self) -> impl Serialize + '_ {
-        capture_metadata::CapturePolicyView(self)
+        fresh_restore_policy::FreshPolicyView(self)
     }
 
     pub(crate) fn compact_protocol_view(&self) -> impl Serialize + '_ {
-        capture_metadata::CaptureCompactPolicyView(self)
+        fresh_restore_policy::FreshCompactPolicyView(self)
     }
 
     fn original_compact_protocol_view(&self) -> impl Serialize + '_ {
@@ -485,6 +504,7 @@ impl Native5Policy {
     // No callback, decoder or mutable accessor changes them after publication.
     fn validate_immutable_content(&self) -> Result<(), ProviderError> {
         self.validate_capture_allocation_content()?;
+        self.validate_fresh_restore_allocation_content()?;
         self.validate_complete_restore_content()?;
         if let Some(metadata) = self.protocol_metadata_limits {
             metadata.validate_data()?;
@@ -566,6 +586,7 @@ impl Native5Policy {
         authority: &ConnectionAuthority,
     ) -> Result<(), ProviderError> {
         self.validate_capture_allocation_negotiation(authority)?;
+        self.validate_fresh_restore_allocation_negotiation(authority)?;
         self.validate_complete_restore_negotiation(authority)?;
         authority.ensure_live()?;
         if self.ack_emitter_selection.is_some()
@@ -700,6 +721,9 @@ impl BodySchemaVerifier for Native5Policy {
         received: &ReceivedBody,
     ) -> Result<(), ProviderError> {
         self.validate_current_negotiation(authority)?;
+        if self.verify_fresh_restore_allocation_envelope(authority, envelope, received)? {
+            return authority.ensure_live();
+        }
         if envelope
             .body
             .get("extensions")
@@ -859,6 +883,10 @@ impl BodySchemaVerifier for Native5Policy {
 }
 
 impl crate::reference_packet::endpoint::PacketEndpointPolicy for Native5Policy {
+    fn authenticate_startup_capture_snapshot_definition(&self) -> Result<(), ProviderError> {
+        Native5Policy::authenticate_startup_capture_snapshot_definition(self)
+    }
+
     fn authenticate_owned11_snapshot_definition(&self) -> Result<(), ProviderError> {
         Native5Policy::authenticate_owned11_snapshot_definition(self)
     }
@@ -1017,5 +1045,47 @@ impl Serialize for NativeOwnedMetadataPolicyView<'_> {
             )
                 .serialize(serializer),
         }
+    }
+}
+
+impl Native5Policy {
+    pub(crate) fn authenticate_startup_capture_snapshot_definition(
+        &self,
+    ) -> Result<(), ProviderError> {
+        use super::native_snapshot::authenticate_native_owned13_snapshot_schema_data;
+        if self.capture_allocation_selection != Some(super::capture_allocation::PacketNative5CaptureAllocationSelection::OriginalObserve12)
+            || self.fresh_restore_allocation_selection().is_some()
+            || !matches!(self.capture_profile, super::PacketNative5CaptureProfile::OwnedProtocol11 { .. })
+            || self.selection.realization.bindings.len() != 1
+        {
+            return Err(ProviderError::Correlation("native startup Capture schema selection differs"));
+        }
+        let select = |formats: &[SchemaRef]| -> Result<(), ProviderError> {
+            let mut found = false;
+            for schema in formats {
+                if schema.id.as_str() == "source-owned.packet-native-continuation/13" {
+                    if found {
+                        return Err(ProviderError::Correlation(
+                            "duplicate startup Capture schema",
+                        ));
+                    }
+                    authenticate_native_owned13_snapshot_schema_data(schema)?;
+                    found = true;
+                }
+            }
+            if !found {
+                return Err(ProviderError::Correlation(
+                    "startup Capture full schema absent",
+                ));
+            }
+            Ok(())
+        };
+        select(&self.selection.provider.implementation.formats)?;
+        select(
+            &self.selection.realization.bindings[0]
+                .compatibility
+                .implementation
+                .formats,
+        )
     }
 }

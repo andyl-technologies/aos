@@ -67,12 +67,20 @@ pub(super) fn project(
         references = references.checked_add(2).ok_or_else(refused)?;
     }
     if launch.fresh_restore_allocation_selection.is_some() {
-        // The actual selected native policy18 constructor is a separate current
-        // dependency. Do not fabricate its future schema-generation phase.
-        return Err(ProviderError::Correlation(
-            "native fresh policy schema roster pending",
-        ));
+        // NativePolicy18 creates the same five exact definitions and compares
+        // them in both immutable provider/binding rosters. The static publisher
+        // schema counter is admitted before these owning helpers can run.
+        phase = sum(
+            &[
+                phase,
+                super::super::super::report_startup::original_fresh_schema_generation_storage_data(
+                )?,
+            ],
+            maximum,
+        )?;
+        references = references.checked_add(5).ok_or_else(refused)?;
     }
+
     let admission = decode(
         include_bytes!("../../ack_emitter/admission-contract.json"),
         size_of::<serde_json::Value>(),

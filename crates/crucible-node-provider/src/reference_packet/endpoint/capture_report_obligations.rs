@@ -47,6 +47,12 @@ impl NativeEndpointCaptureStateData<'_> {
         ])?;
         let capture_publication = sum(&[
             self.control_growth.registration_retained_bytes,
+            // The selected producer retains the extra original in its fourth
+            // owner, plus both actual completed cache bodies/tree/header owners.
+            size_of::<Envelope>(),
+            crate::reference_packet::control::startup_capture_terminal_cache_storage_data(
+                &self.continuation_terminal_shapes.capture_terminal,
+            )?,
             self.capture_prefix_storage.requested_bytes()?,
             self.outer_encoding
                 .snapshot
@@ -159,6 +165,9 @@ impl NativeEndpointCaptureStateData<'_> {
             size_of::<Self>(),
             crate::reference_packet::control::original_observe_dispatch_scratch_data(),
             size_of::<NativeCaptureReportObligationsData>(),
+            super::capture_startup::original_startup_capture_endpoint_counter_scratch_data(),
+            crate::reference_packet::control::original_startup_capture_counter_scratch_data(),
+            crate::reference_packet::service::native_snapshot::native_owned13_snapshot_schema_counter_scratch_data(),
             self.compact_serializer_scratch_bytes,
             crate::connection::NativeCaptureSdkStateQuote::requested_scratch_bytes(),
             self.candidate_owner.declared_counter_scratch_bytes,

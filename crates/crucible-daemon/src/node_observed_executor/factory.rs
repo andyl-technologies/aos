@@ -6,6 +6,7 @@ mod arm_root;
 mod cached_artifacts;
 mod capabilities;
 mod clock_label;
+mod complete_scene;
 mod gem5_profile;
 mod host_state;
 mod io;
@@ -35,9 +36,10 @@ mod trust;
 mod typed_reader;
 
 pub use normal_clock::{
-    ClockStateObservationData, InstalledNormalClockProfile, InstalledNormalClockStateFactory,
-    NormalClockProgramme, OriginalClockAggregateResources, OriginalClockProcessBootstrap,
-    OriginalClockQualificationRun, OriginalClockStateProgramme, OriginalClockStateWitness,
+    ClockAdmissionObservationData, ClockStateObservationData, InstalledNormalClockProfile,
+    InstalledNormalClockStateFactory, NormalClockProgramme, OriginalClockAdverseWitness,
+    OriginalClockAggregateResources, OriginalClockProcessBootstrap, OriginalClockQualificationRun,
+    OriginalClockStateProgramme, OriginalClockStateWitness,
 };
 
 pub use typed_reader::{
@@ -551,6 +553,7 @@ pub struct InstalledNodeCatalog {
     vendor_worlds: BTreeMap<Id, vendor_selection::InstalledVendorWorld>,
     mixed_vendor_worlds: BTreeMap<Vec<u8>, Rc<mixed_vendor_selection::InstalledMixedVendorWorld>>,
     original_lineage: transcript::original_lineage::selection::Installation,
+    complete_scene: Option<crate::node_qualification::InstalledCompleteScene>,
 }
 
 impl InstalledNodeCatalog {
@@ -654,6 +657,7 @@ impl InstalledNodeCatalog {
             vendor_worlds: BTreeMap::new(),
             mixed_vendor_worlds: BTreeMap::new(),
             original_lineage: transcript::original_lineage::selection::Installation::new(),
+            complete_scene: None,
         })
     }
 
@@ -752,13 +756,15 @@ impl InstalledNodeCatalog {
         }) {
             return native_state::public_catalog::scenario(self, selections);
         }
-        Ok(profile::build_world(
+        let original = profile::build_world(
             selections,
             &self.host_identity,
             &self.device_identity,
             &self.artifacts,
         )?
-        .scenario)
+        .scenario;
+        self.project_ordinary_accepted_world(selections, original, &self.artifacts)
+            .map(|(scenario, _)| scenario)
     }
 
     /// Prepares actual inactive resources and seals their complete mixed graph.
@@ -1079,7 +1085,7 @@ impl InstalledNodeCatalog {
                     "normal Clock source has foreign or composed preparation scope",
                 ));
             }
-            resolved.scenario = normal_clock::profile::build(&resolved.scenario)?;
+            resolved.scenario = normal_clock::profile::regenerate_selected(&resolved.scenario)?;
             if source.activation.is_some() != source.preserved_cut.is_some() {
                 return Err(refused("normal Clock restore source/cut scope differs"));
             }
@@ -1114,6 +1120,9 @@ impl InstalledNodeCatalog {
                 &capabilities.requirements_bytes,
             )?;
         }
+        let (accepted, public_clock_nodes) =
+            self.project_ordinary_accepted_world(selections, resolved.scenario, artifacts)?;
+        resolved.scenario = accepted;
         if scenario.canonical_bytes()? != resolved.scenario.canonical_bytes()? {
             return Err(refused(
                 "authored world differs from complete installed profile selection",
@@ -1377,7 +1386,7 @@ impl InstalledNodeCatalog {
                     )
                     .map_err(native)?;
                     let mut actual = actual;
-                    if normal_clock.is_some() {
+                    if normal_clock.is_some() || public_clock_nodes.contains(&selection.node) {
                         actual
                             .qualify_public_preserving_initial_clock(&graph, &evidence)
                             .map_err(native)?;
@@ -1561,4 +1570,97 @@ fn execution_text(execution: ExecutionId) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+impl crate::node_qualification::RetainedMetadataOwned for InstalledNodeSelection {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), crate::node_qualification::QualificationError> {
+        let Self { node, owner, kind } = self;
+        if !matches!(kind, InstalledNodeKind::HostClock) {
+            return Err(crate::node_qualification::QualificationError::Refused(
+                "unsupported Clock selection storage",
+            ));
+        }
+        counter.charge(node)?;
+        counter.charge(owner)
+    }
+}
+
+impl crate::node_qualification::RetainedMetadataOwned for InstalledNodeCatalog {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), crate::node_qualification::QualificationError> {
+        use crate::node_qualification::QualificationError;
+        use crucible::node_state::borrowed_btree_map_requested_storage_precredit_data;
+        let Self {
+            host_executable,
+            host_identity,
+            device_executable,
+            device_identity,
+            socket_parent,
+            control_timeout: _,
+            custody,
+            runtime_wake,
+            artifacts,
+            behavioral_acceptance,
+            vendor_providers,
+            vendor_worlds,
+            mixed_vendor_worlds,
+            original_lineage,
+            complete_scene,
+        } = self;
+        // Fresh Clock catalogues do not install another erased provider family.
+        // Preserve those actual owners and refuse instead of counting them zero.
+        if behavioral_acceptance.is_some()
+            || vendor_providers.is_some()
+            || !vendor_worlds.is_empty()
+            || !mixed_vendor_worlds.is_empty()
+            || original_lineage.authority.is_some()
+            || !original_lineage.preparations.is_empty()
+            || complete_scene.is_some()
+        {
+            return Err(QualificationError::Refused(
+                "unsupported non-Clock catalog owner",
+            ));
+        }
+        counter.charge(host_executable)?;
+        counter.charge(host_identity)?;
+        counter.charge(device_executable)?;
+        counter.charge(device_identity)?;
+        counter.charge(socket_parent)?;
+        counter.charge(artifacts)?;
+        let queue = custody
+            .retained_requested_storage_data(counter.remaining())
+            .map_err(|_| QualificationError::Refused("Clock custody storage unavailable"))?
+            .ok_or(QualificationError::Refused(
+                "Clock custody owns unknown transferred world",
+            ))?;
+        counter.add(queue)?;
+        if let Some(wake) = runtime_wake {
+            counter.add(
+                wake.retained_requested_storage_data(counter.remaining())
+                    .map_err(|_| QualificationError::Refused("Clock wake storage unavailable"))?,
+            )?;
+        }
+        counter.charge(&original_lineage.used)?;
+        for bytes in [
+            borrowed_btree_map_requested_storage_precredit_data(vendor_worlds, counter.remaining()),
+            borrowed_btree_map_requested_storage_precredit_data(
+                mixed_vendor_worlds,
+                counter.remaining(),
+            ),
+            borrowed_btree_map_requested_storage_precredit_data(
+                &original_lineage.preparations,
+                counter.remaining(),
+            ),
+        ] {
+            counter.add(bytes.map_err(|_| {
+                QualificationError::Refused("Clock catalog map storage overflow")
+            })?)?;
+        }
+        Ok(())
+    }
 }

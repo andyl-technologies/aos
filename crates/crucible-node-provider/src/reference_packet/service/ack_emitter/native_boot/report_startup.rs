@@ -73,6 +73,71 @@ impl OriginalNativeReportStartupAllocation {
             .authenticate_original_report_query_header_data(self.purpose, original)
     }
 
+    pub(crate) fn fresh_restore_nonce_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+    ) -> Result<[u8; 32], ProviderError> {
+        self.authenticate_fresh_purpose(connection)?;
+        let boot = self.boot.try_borrow().map_err(|_| refused())?;
+        boot.ensure_origin()?;
+        let key: &[u8; 32] = boot
+            .data
+            .private_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| refused())?;
+        let nonce = crate::reference_packet::service::fresh_restore_allocation::fresh_restore_allocation_nonce_data(key);
+        drop(boot);
+        self.authenticate_fresh_purpose(connection)?;
+        Ok(nonce)
+    }
+
+    pub(crate) fn fresh_restore_ack_context_digest_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+    ) -> Result<[u8; 32], ProviderError> {
+        self.authenticate_fresh_purpose(connection)?;
+        let boot = self.boot.try_borrow().map_err(|_| refused())?;
+        boot.ensure_origin()?;
+        let digest = boot
+            .proof
+            .as_ref()
+            .ok_or_else(refused)?
+            .context_digest
+            .as_slice()
+            .try_into()
+            .map_err(|_| refused())?;
+        drop(boot);
+        self.authenticate_fresh_purpose(connection)?;
+        Ok(digest)
+    }
+
+    pub(crate) fn fresh_restore_report_proof_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        data: &crate::reference_packet::service::fresh_restore_allocation::PacketNativeFreshRestoreAllocationData,
+    ) -> Result<crate::reference_packet::service::fresh_restore_allocation::PacketNativeFreshRestoreAllocationProof, ProviderError>{
+        self.authenticate_fresh_purpose(connection)?;
+        if data.scope.ack_context.as_slice()
+            != self.fresh_restore_ack_context_digest_data(connection)?
+            || data.scope.nonce.as_slice() != self.fresh_restore_nonce_data(connection)?
+        {
+            return Err(refused());
+        }
+        let boot = self.boot.try_borrow().map_err(|_| refused())?;
+        boot.ensure_origin()?;
+        let key: &[u8; 32] = boot
+            .data
+            .private_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| refused())?;
+        let proof = crate::reference_packet::service::fresh_restore_allocation::fresh_restore_allocation_proof_data(key, data)?;
+        drop(boot);
+        self.authenticate_fresh_purpose(connection)?;
+        Ok(proof)
+    }
+
     fn authenticate_fresh_purpose<S: ProviderStream>(
         &self,
         connection: &Connection<S>,
@@ -105,23 +170,23 @@ impl OriginalNativeReportStartupAllocation {
         Ok(())
     }
 
-    /// Requires the distinct complete native baseline construction owner.
+    /// Requires the same genuine complete native baseline construction owner.
     ///
-    /// Report binding13 admits added publication only. The baseline189 owner
-    /// and resource-admitted boot6 consumer are absent from this partial cut;
-    /// no report row, selector or installed ACK substitutes for that owner.
+    /// Portable report rows/selection cannot substitute for the actual private
+    /// boot6 owner. The legacy boot5 constructor initializes None and continues
+    /// to refuse here. Only Source189's independent admitted bootstrap/lifecycle
+    /// can eventually satisfy the complete baseline guard.
     ///
     /// # Errors
-    /// Refuses a changed report origin and the currently unavailable complete
-    /// baseline admission before report/cache/proof materialization.
+    /// Refuses changed origin, missing baseline owner or an unfinished/changed
+    /// private startup lifecycle before report/cache/proof materialization.
     pub(crate) fn authenticate_complete_native_baseline<S: ProviderStream>(
         &self,
         connection: &Connection<S>,
     ) -> Result<(), ProviderError> {
         self.authenticate_current(connection)?;
-        Err(ProviderError::Correlation(
-            "native report complete baseline allocation admission unavailable",
-        ))
+        let boot = self.boot.try_borrow().map_err(|_| refused())?;
+        boot.authenticate_original_native_baseline_data()
     }
 
     pub(crate) fn maximum_requested_bytes(&self) -> Result<usize, ProviderError> {
@@ -205,12 +270,45 @@ impl NativeAckBoot {
         purpose: PacketNativeReportStartupPurpose,
     ) -> Result<PacketNativeReportStartupAllocationRow, ProviderError> {
         self.ensure_origin()?;
-        if !self.ready
-            || !self.verified
-            || self.data.source_birth.get("schema").and_then(Value::as_str)
-                != Some("source-owned.packet-canonical-ack-source-binding/13")
-        {
+        if !self.ready || !self.verified {
             return Err(refused());
+        }
+        match self.data.source_birth.get("schema").and_then(Value::as_str) {
+            Some("source-owned.packet-canonical-ack-source-binding/13") => {
+                // Existing publication rows remain DATA under the old origin;
+                // authenticate_complete_native_baseline still refuses None.
+            }
+            Some("source-owned.packet-canonical-ack-source-binding/14") => {
+                // Do not accept a new schema label as evidence. This checks
+                // real boot6 issuance/completion and unchanged source, launch
+                // and private birth before reading a purpose's existing row.
+                self.authenticate_original_native_baseline_data()?;
+                let source = self.data.source_birth.as_object().ok_or_else(refused)?;
+                exact_keys(
+                    source,
+                    &[
+                        "schema",
+                        "selection",
+                        "program",
+                        "coordinator",
+                        "limits",
+                        "storage",
+                        "capture_profile",
+                        "confirmation_selection",
+                        "ack_emitter_selection",
+                        "codec_metadata_extent",
+                        "native_codec_metadata_extent",
+                        "protocol_metadata_limits",
+                        "complete_restore_selection",
+                        "restore_input_emitter_selection",
+                        "capture_allocation_selection",
+                        "fresh_restore_allocation_selection",
+                        "report_startup_allocation",
+                        "native_startup_allocation",
+                    ],
+                )?;
+            }
+            _ => return Err(refused()),
         }
         let grant = self
             .data
@@ -412,3 +510,7 @@ mod tests {
         assert!(authenticate_binding_data(&oversized, original, None).is_err());
     }
 }
+
+#[path = "fresh_query_frontier.rs"]
+mod fresh_query_frontier;
+pub(crate) use fresh_query_frontier::OriginalNativeFreshQueryFrontierData;

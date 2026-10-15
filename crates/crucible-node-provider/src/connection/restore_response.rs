@@ -93,7 +93,7 @@ impl<S: ProviderStream> Connection<S> {
     ) -> Result<(), ProviderError> {
         self.protocol_owner.ensure_current()?;
         self.authenticate_native5_source_codec()?;
-        let projection = CompleteRestoreTransferProjection::from_envelope(request)?;
+        let projection = self.original_selected_restore_transfer_projection_data(request)?;
         if projection.phase() != phase || self.role != EndpointRole::Provider {
             return Err(refused());
         }
@@ -230,7 +230,7 @@ impl Connection<DeadlineStream> {
         // from input custody into that installed mapping; reacknowledging the
         // old input slot would require ownership that was deliberately moved.
 
-        let projection = CompleteRestoreTransferProjection::from_envelope(request)?;
+        let projection = self.original_selected_restore_transfer_projection_data(request)?;
         if projection.phase() != phase
             || !matches!(
                 projection,
@@ -680,5 +680,63 @@ impl<S: ProviderStream> Connection<S> {
         }
         drop(bank);
         Ok(std::cell::Ref::map(state, |state| &state.original))
+    }
+}
+
+impl<S: ProviderStream> Connection<S> {
+    /// Authenticates the real verified issuer and complete physical Prepare reply.
+    /// This data predicate grants no reconstruction or ephemeral-owner retirement;
+    /// the selected endpoint calls it only after its actual publication returns.
+    pub(crate) fn authenticate_original_fresh_prepare_handoff_data(
+        &self,
+        original: &Envelope,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.authenticate_native5_source_codec()?;
+        self.authority.ensure_live()?;
+        if self.role != EndpointRole::Provider || self.fenced {
+            return Err(refused());
+        }
+        let installed = self.original_restore_inputs.as_ref().ok_or_else(refused)?;
+        installed
+            .token
+            .authenticate_handoff_original_data(self, original)?;
+        // This is the exact preallocated six-input custody retained by that
+        // issuer. Its real reservations and receiving phase remain mandatory.
+        let _custody = self.acknowledge_original_complete_restore_input_custody()?;
+        let state = self.original_restore_responses
+            [index(PacketCompleteRestoreTransferPhase::Prepare)]
+        .as_ref()
+        .ok_or_else(refused)?
+        .try_borrow()
+        .map_err(|_| borrowed())?;
+        if state.phase != Phase::Complete
+            || state.request_sequence != original.sequence
+            || state.deadline.original_cut() != state.cut
+            || state.cut.remaining().is_none()
+        {
+            return Err(refused());
+        }
+        original.matches_response(&state.original)?;
+        let bank = self
+            .original_frames
+            .as_ref()
+            .ok_or_else(refused)?
+            .try_borrow()
+            .map_err(|_| borrowed())?;
+        bank.authenticate_completed_send(
+            state.literal_slot.ok_or_else(refused)?,
+            &state.canonical,
+        )?;
+        installed.token.authenticate_current(self)
+    }
+
+    /// Names the actual explicit borrowed/temporary handoff headers.
+    pub(crate) const fn original_fresh_prepare_handoff_counter_scratch_data() -> usize {
+        std::mem::size_of::<std::cell::Ref<'static, AssignedNativeRestoreResponse>>()
+            + std::mem::size_of::<std::cell::Ref<'static, crate::transport::original_frames::OriginalFrameReservation>>()
+            + std::mem::size_of::<Rc<RefCell<OriginalCompleteRestoreInputCustody>>>()
+            + std::mem::size_of::<std::cell::Ref<'static, OriginalCompleteRestoreInputCustody>>()
+            + std::mem::size_of::<std::cell::Ref<'static, crate::reference_packet::service::complete_restore::transfer::PacketCompleteRestorePrepareRequest>>()
     }
 }

@@ -455,4 +455,9 @@ pub(crate) use service::Native5Policy;
 
 mod restore_fresh;
 
+pub(crate) mod fresh_inventory;
+
 mod serialization_storage;
+
+#[path = "reference_packet/capture_inventory.rs"]
+mod capture_inventory;

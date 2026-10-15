@@ -19,7 +19,9 @@ pub use debug_preserving::{
     NodePreservingDebugAction, NodePreservingDebugCapture, NodePreservingDebugRecord,
     NodePreservingDebugRequest, NodePreservingDebugResumeRequest, NodePreservingDebugState,
 };
+mod complete_scene;
 mod original_claim;
+pub use complete_scene::CompleteSceneServiceFactory;
 mod vendor_installation;
 pub use vendor_installation::{InstalledVendorServiceFactory, ReferenceVendorServiceFactory};
 mod root_preparation;
@@ -101,6 +103,9 @@ pub use conditional_preparation::{
 type Reply = SyncSender<Result<ObservedAttemptState, NodeObservationServiceError>>;
 
 enum Command {
+    CompleteScenePrepare {
+        reply: SyncSender<Result<(), NodeObservationServiceError>>,
+    },
     OriginalLineagePrepare {
         request: crate::node_control::NodeOriginalLineageRequest,
         reply: SyncSender<Result<(), NodeObservationServiceError>>,
@@ -782,13 +787,20 @@ fn run_actor(
             }
             let _ = catalog.custody().poll_reclamation(&mut context);
             let _ = catalog.poll_vendor_reclamation();
+            if catalog
+                .poll_complete_scene_reclamation(stopping.load(Ordering::Acquire))
+                .is_err()
+            {
+                stopping.store(true, Ordering::Release);
+            }
         }))
         .is_err()
         {
             stopping.store(true, Ordering::Release);
         }
-        let reclaimed =
-            catalog.custody().reserved_worlds() == 0 && catalog.retained_vendor_peers() == 0;
+        let reclaimed = catalog.custody().reserved_worlds() == 0
+            && catalog.retained_vendor_peers() == 0
+            && catalog.complete_scene_world_count() == 0;
         if gc.is_ok() {
             if reclaimed {
                 retired_roots.clear();
@@ -868,7 +880,9 @@ pub(in crate::node_observed_executor) fn original_lineage_available_worlds(
     catalog: &InstalledNodeCatalog,
     maximum_worlds: usize,
 ) -> usize {
-    maximum_worlds.saturating_sub(catalog.original_lineage_preparation_count())
+    maximum_worlds
+        .saturating_sub(catalog.original_lineage_preparation_count())
+        .saturating_sub(catalog.complete_scene_world_count())
 }
 
 /// Checks retained original ownership and shared capacity before a grouped lane.
@@ -924,7 +938,9 @@ fn handle_command(
         }
         Command::Submit { execution, .. } => Some(*execution),
         Command::ConditionalReplay { request, .. } => Some(request.execution),
-        Command::CacheReuse { .. } | Command::Compile { .. } => None,
+        Command::CacheReuse { .. }
+        | Command::Compile { .. }
+        | Command::CompleteScenePrepare { .. } => None,
     };
     if let Some(execution) = original_execution
         && let Err(error) = require_unowned_original_lineage_execution(catalog, execution)
@@ -1183,6 +1199,12 @@ fn handle_other_command(
             // replacement nonce or source request can acquire its dispatch.
             let _ = ledger.complete(&reservation, outcome);
         }
+        Command::CompleteScenePrepare { reply } => {
+            // The separately installed scene already debits one complete actor
+            // world credit; portable requests cannot add or replace it.
+            let result = catalog.prepare_complete_scene().map_err(refused);
+            let _ = reply.send(result);
+        }
         Command::OriginalLineagePrepare { request, reply } => {
             let result = (|| {
                 // Both independently installed authorities are mandatory before any archive body read.
@@ -1430,6 +1452,9 @@ fn reply_refusal(command: Command, error: NodeObservationServiceError) {
                     reason: error.to_string(),
                 },
             );
+        }
+        Command::CompleteScenePrepare { reply } => {
+            let _ = reply.send(Err(error));
         }
         Command::OriginalLineagePrepare { reply, .. } => {
             let _ = reply.send(Err(error));

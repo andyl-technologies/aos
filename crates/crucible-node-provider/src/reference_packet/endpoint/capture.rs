@@ -26,6 +26,8 @@ pub(super) struct CaptureFlight<S: ProviderStream> {
     pub(super) after_capacity: Option<crate::protocol_snapshot::Native5AfterProtocolCapacityFacts>,
     pub(super) owned11_after_capacity:
         Option<crate::connection::NativeOwned11AfterProtocolCapacityFacts>,
+    pub(super) startup14_after_capacity:
+        Option<crate::connection::NativeOwned14AfterProtocolCapacityFacts>,
     pub(super) protocol_after: Option<OriginalProtocolSnapshot>,
     pub(super) prefix: Option<PacketCapturePrefix<S>>,
     pub(super) snapshot: (ContentRef, Vec<u8>),
@@ -235,6 +237,7 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             protocol_before,
             after_capacity: None,
             owned11_after_capacity: None,
+            startup14_after_capacity: None,
             protocol_after: None,
             prefix: None,
             snapshot: (reference, bytes),

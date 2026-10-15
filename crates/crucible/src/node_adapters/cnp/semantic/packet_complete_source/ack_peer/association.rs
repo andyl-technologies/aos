@@ -35,6 +35,9 @@ mod fresh_restore_host;
 mod restore_transfer_banks;
 pub use complete_restore::PacketCompleteRestorePreparation;
 
+#[path = "association/initial_lifecycle_storage.rs"]
+pub(in crate::node_adapters::cnp::semantic) mod initial_lifecycle_storage;
+
 const CONTEXT_BANK_LIMITS: [usize; 4] = [512 * 1024, 4 * 1024, 416 * 1024, 16 * 1024];
 
 pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct OriginalAckPeerAssociation
@@ -407,6 +410,25 @@ impl PacketCompleteSemanticSource {
         controller: &'a mut CnpController,
         request_id: Id,
     ) -> Result<PreparedOriginalCanonicalAckAdmit<'a>, OperationFailure> {
+        self.prepare_original_canonical_ack_admit_selected(controller, request_id, false)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn prepare_original_initial_canonical_ack_admit<
+        'a,
+    >(
+        &self,
+        controller: &'a mut CnpController,
+        request_id: Id,
+    ) -> Result<PreparedOriginalCanonicalAckAdmit<'a>, OperationFailure> {
+        self.prepare_original_canonical_ack_admit_selected(controller, request_id, true)
+    }
+
+    fn prepare_original_canonical_ack_admit_selected<'a>(
+        &self,
+        controller: &'a mut CnpController,
+        request_id: Id,
+        initial: bool,
+    ) -> Result<PreparedOriginalCanonicalAckAdmit<'a>, OperationFailure> {
         self.ensure_origin()?;
         let slot = self
             .ack_peer_association
@@ -435,9 +457,20 @@ impl PacketCompleteSemanticSource {
             admission_receipt: installation.admission_receipt.clone(),
             extensions: Default::default(),
         };
-        controller
-            .prepare_original_canonical_ack_admit(original.emitter()?, request_id, request)
-            .map_err(unknown)
+        if initial {
+            controller.prepare_original_initial_canonical_ack_admit(
+                original.emitter()?,
+                request_id,
+                request,
+            )
+        } else {
+            controller.prepare_original_canonical_ack_admit(
+                original.emitter()?,
+                request_id,
+                request,
+            )
+        }
+        .map_err(unknown)
     }
 
     /// Seals one source-generated proof into the SDK's exact assigned original Admit.
@@ -654,6 +687,15 @@ impl PacketCompleteSemanticSource {
         prepared: &mut PreparedOriginalCanonicalAckAdmit<'_>,
         completed: &mut Option<ResponseBody>,
     ) -> Result<(), OperationFailure> {
+        self.publish_original_canonical_ack_admit_selected(prepared, completed, false)
+    }
+
+    fn publish_original_canonical_ack_admit_selected(
+        &self,
+        prepared: &mut PreparedOriginalCanonicalAckAdmit<'_>,
+        completed: &mut Option<ResponseBody>,
+        initial: bool,
+    ) -> Result<(), OperationFailure> {
         self.ensure_origin()?;
         let mut slot = self
             .ack_peer_association
@@ -678,9 +720,12 @@ impl PacketCompleteSemanticSource {
                 .as_ref()
                 .ok_or_else(|| refused("ACK private birth absent"))?
                 .authenticate_original()?;
-            prepared
-                .publish_into(original.emitter()?, completed)
-                .map_err(unknown)?;
+            if initial {
+                prepared.publish_initial_into(original.emitter()?, completed)
+            } else {
+                prepared.publish_into(original.emitter()?, completed)
+            }
+            .map_err(unknown)?;
             original.native()?.ensure_current().map_err(unknown)?;
             let birth = self
                 .ack_peer_birth
@@ -721,6 +766,25 @@ impl CnpSemanticPreparation {
         source: &PacketCompleteSemanticSource,
         request_id: Id,
         completed: &mut Option<ResponseBody>,
+    ) -> Result<(), OperationFailure> {
+        self.call_original_canonical_ack_admit_selected(source, request_id, completed, false)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn call_original_initial_canonical_ack_admit_into(
+        &mut self,
+        source: &PacketCompleteSemanticSource,
+        request_id: Id,
+        completed: &mut Option<ResponseBody>,
+    ) -> Result<(), OperationFailure> {
+        self.call_original_canonical_ack_admit_selected(source, request_id, completed, true)
+    }
+
+    fn call_original_canonical_ack_admit_selected(
+        &mut self,
+        source: &PacketCompleteSemanticSource,
+        request_id: Id,
+        completed: &mut Option<ResponseBody>,
+        initial: bool,
     ) -> Result<(), OperationFailure> {
         source.ensure_origin()?;
         if completed.is_some() {
@@ -763,10 +827,13 @@ impl CnpSemanticPreparation {
                 .controller
                 .as_mut()
                 .ok_or_else(|| refused("original protocol ACK controller absent"))?;
-            let mut prepared =
-                source.prepare_original_canonical_ack_admit(controller, request_id)?;
+            let mut prepared = if initial {
+                source.prepare_original_initial_canonical_ack_admit(controller, request_id)?
+            } else {
+                source.prepare_original_canonical_ack_admit(controller, request_id)?
+            };
             source.seal_original_canonical_ack_admit(&mut prepared)?;
-            source.publish_original_canonical_ack_admit_into(&mut prepared, completed)
+            source.publish_original_canonical_ack_admit_selected(&mut prepared, completed, initial)
         })();
         if let Err(error) = result {
             // Assignment, signing or publication may already have retained an

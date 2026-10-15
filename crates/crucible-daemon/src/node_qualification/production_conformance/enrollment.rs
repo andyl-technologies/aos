@@ -101,6 +101,7 @@ impl ProductionConformanceRunner<'_> {
             observations,
             source_inspections,
             clock_state_observations,
+            clock_adverse_observations,
             exact_observations,
             quantized_observations,
             ..
@@ -123,6 +124,7 @@ impl ProductionConformanceRunner<'_> {
             observations,
             source_inspections,
             clock_state_observations,
+            clock_adverse_observations,
             exact_observations,
             quantized_observations,
         };
@@ -571,4 +573,95 @@ fn authenticate_future_binding(
         ));
     }
     Ok(())
+}
+
+impl OriginalConformanceEnrollment {
+    pub(crate) fn charge_original_clock_storage_data(
+        &self,
+        expected_source: &dyn InstalledConformanceAuthority,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            source,
+            process,
+            thread,
+            same_source,
+            node,
+            binding,
+            plan,
+            originals,
+            record,
+            unissued,
+        } = self;
+        if *process != std::process::id()
+            || *thread != std::thread::current().id()
+            || !*same_source
+            || !std::ptr::addr_eq(source.as_ref(), expected_source)
+        {
+            return Err(refused("foreign Clock original enrollment storage owner"));
+        }
+        // The enclosing actual programme already charged this same Source Rc.
+        // This handle's inline slot is in Self, not another source allocation.
+        counter.charge(node)?;
+        counter.charge(binding)?;
+        counter.charge(plan)?;
+        counter.charge(originals)?;
+        counter.charge(record)?;
+        counter.charge(unissued)
+    }
+}
+
+impl OriginalConformanceEnrollmentFailure {
+    pub(crate) fn charge_original_clock_storage_data(
+        &self,
+        expected_source: &dyn InstalledConformanceAuthority,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self { error, original } = self;
+        counter.charge(error)?;
+        counter.add(std::mem::size_of::<OriginalConformanceEnrollment>())?;
+        original.charge_original_clock_storage_data(expected_source, counter)
+    }
+}
+
+impl InstalledOriginalConformanceAcceptance {
+    pub(crate) fn charge_original_clock_storage_data(
+        &self,
+        expected_source: &dyn InstalledConformanceAuthority,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self {
+            original,
+            binding,
+            scope,
+            revision,
+            limits: _,
+            local,
+        } = self;
+        original.charge_original_clock_storage_data(expected_source, counter)?;
+        counter.charge(binding)?;
+        counter.add(
+            scope
+                .retained_requested_storage_precredit_data(counter.remaining())
+                .map_err(|_| refused("Clock accepted scope storage unavailable"))?,
+        )?;
+        counter.add(
+            revision
+                .retained_requested_storage_precredit_data(counter.remaining())
+                .map_err(|_| refused("Clock accepted revision storage unavailable"))?,
+        )?;
+        let OriginalProviderPlan {
+            profile,
+            configuration,
+            nodes,
+            resources,
+            plan,
+            limits: _,
+        } = local;
+        counter.charge(profile)?;
+        counter.charge(configuration)?;
+        counter.charge(nodes)?;
+        counter.charge(resources)?;
+        counter.charge(plan)
+    }
 }

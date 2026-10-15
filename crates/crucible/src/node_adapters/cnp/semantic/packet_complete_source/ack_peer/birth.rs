@@ -17,6 +17,10 @@ use crucible_node_contract::{ContentRef, Id, Validate};
 
 use super::{OperationFailure, refused};
 
+#[path = "host_startup.rs"]
+mod host_startup;
+pub use host_startup::PacketCompleteOriginalHostSdk;
+
 #[path = "native_startup.rs"]
 mod native_startup;
 #[path = "native_wire.rs"]
@@ -53,6 +57,7 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Origi
     report_startup_required: bool,
     report_startup: Option<report_startup::OriginalReportStartupFinalization>,
     native_startup: Option<native_startup::OriginalNativeStartupFinalization>,
+    host_startup: std::cell::RefCell<Option<host_startup::OriginalHostStartupMarker>>,
 }
 
 pub(super) struct OriginalAckPeerInputs<'a> {
@@ -171,6 +176,7 @@ impl OriginalAckPeerBirth {
             report_startup_required,
             report_startup: None,
             native_startup: None,
+            host_startup: std::cell::RefCell::new(None),
         });
         let original = completed
             .as_mut()
@@ -415,6 +421,13 @@ impl OriginalAckPeerBirth {
         super::super::retained_values::sum_with_error::<E, _>(
             [
                 reference,
+                self.host_startup
+                    .try_borrow()
+                    .map_err(|_| E::refused("original host constructor marker busy"))?
+                    .as_ref()
+                    .map(|state| state.retained_storage_data().map_err(E::runtime))
+                    .transpose()?
+                    .unwrap_or(0),
                 self.private_launch.allocated_capacity(),
                 self.source_birth.capacity(),
                 self.expected_host_registration.capacity(),
@@ -433,3 +446,46 @@ impl OriginalAckPeerBirth {
         )
     }
 }
+
+impl OriginalAckPeerBirth {
+    /// Checks the original birth phase without exposing its borrowed inputs.
+    ///
+    /// The descriptor observer needs only this authentication result. The
+    /// original input bundle remains within the ACK peer module and its children.
+    ///
+    /// # Errors
+    /// Refuses the same foreign process/thread, unready, failed or unstarted
+    /// original birth rejected by the underlying input validator.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_original_initial_lifecycle_data(
+        &self,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        self.original_initial_lifecycle_inputs_data().map(|_| ())
+    }
+
+    pub(super) fn original_initial_lifecycle_inputs_data(
+        &self,
+    ) -> Result<OriginalAckPeerInputs<'_>, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        if self.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        if !self.ready || self.failed || !self.boot_started.get() {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        Ok(OriginalAckPeerInputs {
+            key: &self.key,
+            birth_id: &self.birth_id,
+            host_executable: &self.host_executable,
+            private_launch: &self.private_launch,
+            source_birth: &self.source_birth,
+            host_registration: &self.expected_host_registration,
+        })
+    }
+}
+
+pub(crate) use host_startup::{
+    PacketCompleteInitialLifecycleIdentity, PacketCompleteInitialLifecycleQuote,
+};

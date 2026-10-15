@@ -439,4 +439,9 @@ fn validate_connected_program_definition(
 
 mod restore_fresh;
 
+pub(crate) mod fresh_inventory;
+
 mod stopped_inventory;
+
+#[path = "connected/capture_inventory.rs"]
+mod capture_inventory;

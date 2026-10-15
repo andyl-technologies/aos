@@ -1,7 +1,7 @@
 //! Compares closed installed binding data before another owning decode exists.
 //!
-//! Only the concrete baseline guard calls this visitor with the original
-//! NodeBinding/Realize data. Those serializers contain primitive/Value children,
+//! The concrete baseline and initial host guards use this visitor with original
+//! NodeBinding/Realize or complete ProviderManifest data. Those serializers contain primitive/Value children,
 //! not Bytes formatters or erased callbacks. It constructs no temporary DOM and
 //! never hashes/canonicalizes an untrusted numeric subtree. The known quoted
 //! integer serializers may allocate one decimal String (at most 20 bytes) before
@@ -33,7 +33,7 @@ impl ser::Error for Unsupported {
     }
 }
 
-pub(super) fn counter_scratch_data() -> usize {
+pub(crate) fn counter_scratch_data() -> usize {
     std::mem::size_of::<Compare<'static>>()
         + std::mem::size_of::<Sequence<'static>>()
         + std::mem::size_of::<Object<'static>>()

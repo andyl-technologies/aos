@@ -139,7 +139,38 @@ impl CnpController {
         request_id: Id,
         request: AdmitRequest,
     ) -> Result<PreparedOriginalCanonicalAckAdmit<'a>, ProviderError> {
+        self.prepare_original_canonical_ack_admit_inner(emitter, request_id, request, false)
+    }
+
+    /// Prepares the selected initial Admit beneath the existing physical cut.
+    ///
+    /// The private Source action authenticates the same initial lifecycle before
+    /// calling this method. The keyed issuer, literal slot and original proof
+    /// validations remain identical to ordinary assigned Admit.
+    ///
+    /// # Errors
+    /// Refuses invalid/used originals, expired cuts or exhausted finite custody.
+    pub fn prepare_original_initial_canonical_ack_admit<'a>(
+        &'a mut self,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+        request_id: Id,
+        request: AdmitRequest,
+    ) -> Result<PreparedOriginalCanonicalAckAdmit<'a>, ProviderError> {
+        self.prepare_original_canonical_ack_admit_inner(emitter, request_id, request, true)
+    }
+
+    fn prepare_original_canonical_ack_admit_inner<'a>(
+        &'a mut self,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+        request_id: Id,
+        request: AdmitRequest,
+        initial: bool,
+    ) -> Result<PreparedOriginalCanonicalAckAdmit<'a>, ProviderError> {
         emitter.authenticate_original(self)?;
+        if initial {
+            self.custody
+                .authenticate_original_host_initial_admit_order()?;
+        }
         if self.original_ack_admit.is_some() || self.original(&request_id).is_some() {
             return Err(ProviderError::Conflict(
                 "assigned original Admit already reserved",
@@ -163,7 +194,11 @@ impl CnpController {
         let Value::Object(body) = body else {
             return Err(ProviderError::Frame("assigned Admit body not object"));
         };
-        let (sequence, cut) = self.session.begin_original_ack_admit(self.budget)?;
+        let (sequence, cut) = if initial {
+            self.session.begin_original_initial_ack_admit(self.budget)?
+        } else {
+            self.session.begin_original_ack_admit(self.budget)?
+        };
         let original = Envelope {
             protocol: "CNP/1".into(),
             message: MessageKind::Request,
@@ -378,6 +413,32 @@ impl PreparedOriginalCanonicalAckAdmit<'_> {
         emitter: &OriginalCanonicalBlobAckEmitter,
         completed: &mut Option<ResponseBody>,
     ) -> Result<(), ProviderError> {
+        self.publish_into_inner(emitter, completed, false)
+    }
+
+    /// Publishes the selected initial Admit with its closed pretyped reply guard.
+    ///
+    /// The actual typed reply and raw original reach the Source and assigned
+    /// owning slots before any post-receive check or containment callback.
+    /// The Source's full binding/MAC/currentness checks remain mandatory.
+    ///
+    /// # Errors
+    /// Refuses changed original state, expired cuts, occupied output, malformed
+    /// replies or transport uncertainty, retaining every surviving owner.
+    pub fn publish_initial_into(
+        &mut self,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+        completed: &mut Option<ResponseBody>,
+    ) -> Result<(), ProviderError> {
+        self.publish_into_inner(emitter, completed, true)
+    }
+
+    fn publish_into_inner(
+        &mut self,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+        completed: &mut Option<ResponseBody>,
+        initial: bool,
+    ) -> Result<(), ProviderError> {
         self.authenticate_original_emitter(emitter)?;
         if completed.is_some() {
             return Err(ProviderError::Conflict(
@@ -395,6 +456,21 @@ impl PreparedOriginalCanonicalAckAdmit<'_> {
             ));
         }
         state.phase = Phase::Publishing;
+        if initial {
+            self.controller
+                .session
+                .publish_original_initial_ack_admit_into(
+                    &mut self.controller.custody,
+                    &state.original,
+                    &state.bytes,
+                    state.literal_slot,
+                    state.cut,
+                    &mut state.response,
+                    completed,
+                )?;
+            state.phase = Phase::Complete;
+            return Ok(());
+        }
         let reply = self.controller.session.publish_original_ack_admit(
             &mut self.controller.custody,
             &state.original,

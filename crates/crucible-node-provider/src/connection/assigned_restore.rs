@@ -165,7 +165,7 @@ impl<S: ProviderStream> Connection<S> {
         self.check_authority()?;
         if self.role != EndpointRole::Controller
             || !matches!(
-                CompleteRestoreTransferProjection::from_envelope(original)?,
+                self.original_selected_restore_transfer_projection_data(original)?,
                 CompleteRestoreTransferProjection::Request { .. }
             )
         {

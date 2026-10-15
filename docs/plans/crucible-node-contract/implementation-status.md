@@ -155,6 +155,40 @@ lifecycle routing, native Capture and restoration, the two deferred
 installed-holder controls, and final-source application qualification remain
 outstanding.
 
+### Installed collecting scenes and lifecycle routing
+
+The installed collecting-scene route reads a local manifest and its independent
+ContentRef pin before endpoint admission. The `serve-complete-scene` command
+retains the original Source, Host, content and coordinator owners in the installed
+catalog. The version-twelve preparation request carries no manifest, resource
+allowance or class grant. Preparation uses the existing owning actor and retains
+original custody through refusal, failure and retirement; a collecting scene
+does not become qualified by being installed or prepared.
+
+The same stage connects original Host SDK startup, retained operation budgets,
+complete Observe allocation records and the ordinary Clock qualification route.
+Clock storage observation explicitly refuses catalogs containing an unsupported
+complete-scene owner. The installed-scene holder accounts for its own retained
+owners separately.
+
+Normal all-feature/all-target checking passes for the contract, provider,
+campaign, Core, daemon and CLI crates. Independent review verifies the complete
+6,063-file source capture and actual compiler/dependency correspondence,
+including reused unchanged metadata. This is compilation evidence; the 46 new
+controls and one changed ignored native control remain unrun. The complete
+application test-target gate and runtime qualification remain outstanding.
+
+Two Host SDK constructor controls fail during fixture preparation, before their
+constructor assertions. A separate diagnostic executable reproduces both
+failures under the unchanged finite 768 MiB policy. Its first Source's native
+quote refuses while adding the second coordinator-decode allowance:
+742,759,697 + 268,290,528 exceeds 805,306,368 requested bytes. The coordinator's
+encoded body is 113,202 bytes. The native quote currently reuses the broader
+restore-owner typed-layout bounds; a native-specific refinement is in progress.
+These are quoted allowances, not measured physical allocations. The diagnostic
+does not establish a successful constructor, native readiness or exact Capture.
+Its instrumentation and raw evidence are excluded from the repository.
+
 ## Work in progress
 
 Packet startup/report, capture and restoration storage accounting is committed
@@ -198,12 +232,12 @@ and 35.56 ms for 256 KiB/intrinsics. The combined reduction is 53.89%; all ninet
 full hashes and 55 boundary vectors match. These cache-hot hashing measurements
 do not establish an overall Linux-boot improvement or an ARM-host result.
 
-Further source work covers original allocation admission before native startup,
-full Prepare/report publication, same-owner query budgets, the ordinary Clock
-qualification route and mixed-world service integration. Source review of those
-changes does not establish execution or native qualification. Missing original
-owners, unknown storage and unavailable baseline/native prerequisites continue
-to refuse.
+The installed collecting-scene stage adds original allocation admission before
+native startup, Prepare/report publication, same-owner query budgets, the
+ordinary Clock qualification route and mixed-world service wiring. Compilation
+and source review do not establish execution or native qualification. Missing
+original owners, unknown storage and unavailable baseline/native prerequisites
+continue to refuse.
 
 ## Known gaps and exit criteria
 
@@ -219,10 +253,10 @@ including:
 - Paced KVM qualification. Its selected CREATE still refuses before allocation,
   with only one of eleven required coverage bits implemented. Complete
   DMTCP/kernel qualification also remains outstanding.
-- A clean final strict Clippy run. The current run stops at 59 provider errors,
-  mostly unused methods and fields awaiting their production callers; deeper
-  crates remain unchecked. The four-vCPU ABI timer-deadline divergence also
-  remains unresolved.
+- A clean final strict Clippy run. An earlier checkpoint stopped at 59 provider
+  errors, mostly unused methods and fields awaiting their production callers;
+  the current source still needs strict qualification. The four-vCPU ABI
+  timer-deadline divergence also remains unresolved.
 - Quiet final Linux comparisons against fresh origin/master, plus same-binary
   TCG+icount versus SIM with both set to 50 ps/instruction.
 

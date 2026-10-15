@@ -295,6 +295,7 @@ impl PacketCompleteSemanticSource {
         Ok(OriginalNativeStartupQuote {
             rows,
             finalization_bytes,
+            wire_requested_bytes: wire_bytes,
             publication_bytes,
             launch_digest: *blake3::hash(encoded_launch).as_bytes(),
             maximum_boot_bytes: native.maximum_private_boot_body_bytes(),

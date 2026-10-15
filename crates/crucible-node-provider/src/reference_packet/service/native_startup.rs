@@ -245,3 +245,8 @@ pub(crate) fn original_native_private_invocation_backing_data() -> Result<usize,
         .and_then(|bytes| bytes.checked_add(slots))
         .ok_or_else(invalid)
 }
+
+pub(crate) use storage::{
+    OriginalHostInitialLifecycleShapes, original_host_initial_codec_schema_storage_data,
+    original_host_initial_lifecycle_shapes_data,
+};

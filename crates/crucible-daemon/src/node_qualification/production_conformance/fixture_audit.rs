@@ -186,3 +186,14 @@ fn refused() -> QualificationError {
 #[cfg(test)]
 #[path = "fixture_audit/tests.rs"]
 mod tests;
+
+impl crate::node_qualification::RetainedMetadataOwned for PlannedFixtureAudit {
+    fn charge(
+        &self,
+        counter: &mut crate::node_qualification::RetainedMetadataCounter,
+    ) -> Result<(), QualificationError> {
+        let Self { issued, record } = self;
+        counter.charge(issued)?;
+        counter.charge(record)
+    }
+}

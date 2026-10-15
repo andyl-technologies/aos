@@ -16,6 +16,7 @@ mod host_node_owned;
 mod lineage_owned;
 #[path = "opaque_owned.rs"]
 mod opaque_owned;
+pub use opaque_owned::{RetainedCoreOwnerStorage, RetainedCoreSharedAllocation};
 
 pub(crate) trait OwnedStorage {
     fn owned_storage(&self) -> Result<usize, RuntimeError>;
@@ -636,4 +637,39 @@ impl NodeRuntime {
 /// Names the actual fixed descriptor bank used while the owning walk borrows it.
 pub(crate) fn opaque_owner_counter_scratch_data() -> usize {
     size_of::<opaque_owned::RetainedCoreOwnerStorage<'_>>()
+}
+
+impl OwnedStorage for crate::node_contract::RuntimeSnapshot {
+    fn owned_storage(&self) -> Result<usize, RuntimeError> {
+        let Self {
+            schema_version: _,
+            source_activation,
+            capture_cut: _,
+            capture_ordinal: _,
+            owners,
+            operations,
+            inputs,
+            terminal,
+            condition_stop,
+        } = self;
+        // The closed portless Clock family has no native input restorations.
+        // Keep capacity of an empty original bank; unknown nonempty rows refuse.
+        if !inputs.is_empty() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let slots = inputs
+            .capacity()
+            .checked_mul(size_of::<crate::node_contract::SavedRuntimeInput>())
+            .ok_or(RuntimeError::ResourceLimit)?;
+        [
+            source_activation.owned_storage()?,
+            owners.owned_storage()?,
+            operations.owned_storage()?,
+            slots,
+            terminal.owned_storage()?,
+            condition_stop.owned_storage()?,
+        ]
+        .into_iter()
+        .try_fold(0, storage::add)
+    }
 }

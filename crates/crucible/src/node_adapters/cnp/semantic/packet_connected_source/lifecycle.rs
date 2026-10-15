@@ -138,7 +138,7 @@ impl CnpSemanticSource for PacketConnectedSemanticSource {
         if self.complete_storage.is_some() {
             controller
                 .authenticate_native5_source_codec()
-                .map_err(|error| refused(error.to_string()))?;
+                .map_err(crate::node_adapters::cnp::semantic::refused_display)?;
         }
 
         if !self
