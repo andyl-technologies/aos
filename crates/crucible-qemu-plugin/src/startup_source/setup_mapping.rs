@@ -12,8 +12,9 @@ use crucible_shmem::{MappedSetupView, SetupRegionBackingIdentity};
 
 use super::{InstallerStartupSource, StartupSourceError, runtime_purpose::RuntimePurpose};
 
+/// Names the genuine Source-owned VMA, without nominating address geometry.
 #[repr(C)]
-struct NativeMapping {
+pub(super) struct NativeMapping {
     _private: [u8; 0],
 }
 
@@ -117,6 +118,10 @@ impl InstallerStartupSource {
                 reason: "native setup mapping returned inconsistent retained outputs",
             }));
         }
+        // Slot creation retains this genuine Source projection, not the wire
+        // view's address or a caller-selected ordinal. Neither owner has moved.
+        self.create_setup_slot(mapping.projection)
+            .map_err(source_error)?;
         // SAFETY: the authentic constructor retains this complete writable VMA
         // in Source independently of the movable projection. The installer
         // keeps Source and then its pinned Runtime while every view is used.
@@ -182,7 +187,9 @@ impl InstallerStartupSource {
                 reason: "native setup mapping did not complete canonical transfer",
             });
         }
-        Ok(())
+        drop(mapping);
+        // SAFETY: the same caller pinning contract covers both inline destinations.
+        unsafe { self.transfer_setup_exchange() }
     }
 
     /// Corroborates retained Native DONTFORK custody without changing the VMA.
@@ -223,6 +230,11 @@ impl InstallerStartupSource {
     /// No view, callback, worker or detached wire handle may be accessed again if
     /// this returns true. The pinned Runtime field remains live on refusal.
     pub(crate) unsafe fn return_setup_mapping(&self) -> bool {
+        // SAFETY: the caller's complete last-use contract applies to the slot
+        // and its retained exchange before the VMA parent can retire.
+        if !unsafe { self.return_setup_exchange() } {
+            return false;
+        }
         let Ok(mut mapping) = self.setup_mapping.try_lock() else {
             return false;
         };

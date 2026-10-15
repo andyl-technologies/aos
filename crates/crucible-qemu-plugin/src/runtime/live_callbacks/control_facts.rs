@@ -28,6 +28,87 @@ pub(in crate::runtime) struct ControlIntentFacts {
     pub(in crate::runtime) sample_present: u32,
 }
 
+/// Carries copied ready facts independently of the actual physical receiving result.
+pub(in crate::runtime) struct ReadyObservation {
+    pub(in crate::runtime) facts: Option<ControlIntentFacts>,
+    pub(in crate::runtime) status: i32,
+}
+
+/// Matches Source's distinct local-reader progress record.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::runtime) struct ReceiveProgress {
+    pub(in crate::runtime) first_status: i32,
+    pub(in crate::runtime) post_status: i32,
+    pub(in crate::runtime) read_attempted: u32,
+    pub(in crate::runtime) request_received: u32,
+    pub(in crate::runtime) reader_released: u32,
+}
+
+impl From<ReadOutcome> for ReceiveProgress {
+    fn from(outcome: ReadOutcome) -> Self {
+        Self {
+            first_status: outcome.first,
+            post_status: outcome.post,
+            read_attempted: u32::from(outcome.read_attempted),
+            request_received: u32::from(outcome.facts.is_some()),
+            reader_released: u32::from(outcome.reader_released),
+        }
+    }
+}
+
+/// Reads only the nominal member's genuinely retained child and mapped request.
+///
+/// Source binds this exact function at first member birth, retains the child
+/// through invocation, and provides disjoint live outputs. Captured zero-valued
+/// facts remain a request; local release supplies no peer or action terminal.
+pub(in crate::runtime) extern "C" fn protected_request_snapshot(
+    output: *mut ControlIntentFacts,
+    progress: *mut ReceiveProgress,
+    userdata: *mut std::ffi::c_void,
+) -> i32 {
+    if progress.is_null() {
+        return -libc::EINVAL;
+    }
+    let Some(state) = std::ptr::NonNull::new(userdata.cast::<super::LiveVcpuTimeCallbackState>())
+    else {
+        // SAFETY: Source supplies an aligned, writable, disjoint progress output.
+        unsafe {
+            progress.write(ReceiveProgress {
+                first_status: -libc::EINVAL,
+                ..ReceiveProgress::default()
+            });
+        }
+        return -libc::EINVAL;
+    };
+    if output.is_null() {
+        // SAFETY: the checked progress output remains writable on before-entry refusal.
+        unsafe {
+            progress.write(ReceiveProgress {
+                first_status: -libc::EINVAL,
+                ..ReceiveProgress::default()
+            });
+        }
+        return -libc::EINVAL;
+    }
+    // SAFETY: first nominal member construction binds this actual retained
+    // child; Source pins it across the callback. No typed mutation is entered.
+    let received = unsafe { state.as_ref() }.control_intent_facts();
+    if let Some(facts) = received.facts {
+        // SAFETY: actual Source-owned outputs are distinct from the retained child.
+        unsafe {
+            output.write(facts);
+        }
+    }
+    // The bounded read has ended before its release phase is emitted. Save all
+    // progress before the signed return, independently of request coordinates.
+    // SAFETY: the same genuine progress output remains exclusively writable.
+    unsafe {
+        progress.write(received.into());
+    }
+    received.status()
+}
+
 /// Reports factual metadata through Native's paid observation output.
 ///
 /// The creating enrollment supplies this actual retained callback child; the
@@ -46,7 +127,7 @@ pub(super) extern "C" fn factual_snapshot(
     // SAFETY: genuine enrollment retains this independently pinned child and
     // its mapping through Native's actual snapshot/return lifetime. This read
     // calls no semantic callback and takes only its inline bounded reader lock.
-    let received = unsafe { state.as_ref() }.control_intent_facts();
+    let received = unsafe { state.as_ref() }.ready_intent_facts();
     if let Some(facts) = received.facts {
         // SAFETY: the matched Native observer supplies its live, aligned,
         // writable factual record. The checked nonnull output is distinct
@@ -55,7 +136,7 @@ pub(super) extern "C" fn factual_snapshot(
         // continuation and remain retained by the observer on that negative.
         unsafe { output.write(facts) };
     }
-    received.status()
+    received.status
 }
 
 /// Copies one unchanged pending request and independent configured sample state.

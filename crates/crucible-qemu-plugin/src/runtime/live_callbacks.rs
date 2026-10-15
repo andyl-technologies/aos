@@ -59,7 +59,9 @@ mod control_facts;
 #[cfg(not(test))]
 mod registration;
 pub(super) use control_callback_witness::ControlCallbackWitness;
-pub(super) use control_facts::ControlIntentFacts;
+pub(super) use control_facts::{
+    ControlIntentFacts, ReadyObservation, ReceiveProgress, protected_request_snapshot,
+};
 mod devices;
 mod error;
 pub(super) mod fingerprint_worker;
@@ -1518,6 +1520,47 @@ impl LiveVcpuTimeCallbackState {
             self.slot.get(),
             self.fingerprint.as_ref().map(|sampler| sampler.slot.get()),
         )
+    }
+
+    /// Reports ready facts through the separate Runtime physical receive keeper.
+    fn ready_intent_facts(&self) -> control_facts::ReadyObservation {
+        #[cfg(test)]
+        if self.slot.request_reader.receiver_is_absent() {
+            let local = self.control_intent_facts();
+            return control_facts::ReadyObservation {
+                facts: local.facts,
+                status: local.status(),
+            };
+        }
+        let mut observation = self.slot.request_reader.ready_facts();
+        if let Some(facts) = observation.facts {
+            if u64::from(self.slot.get().control_boundary_token()) != facts.control_sequence
+                && observation.status == 0
+            {
+                // Current physical custody cannot refresh captured request
+                // bytes. Keep their identity and refuse the changed epoch.
+                observation.status = -libc::EAGAIN;
+            }
+        }
+        observation
+    }
+
+    /// Installs a borrower during genuine complete-child typed preparation.
+    ///
+    /// # Safety
+    /// The actual same pinned Runtime retains this paid inline keeper until all
+    /// callback/Source membership and received-request children physically return.
+    pub(super) unsafe fn bind_command_receiver(
+        &mut self,
+        receiver: std::ptr::NonNull<Mutex<crate::runtime::command_receive::CommandReceive>>,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        // SAFETY: the caller forwards the same genuine typed-child loan and
+        // complete parent retention. This pointer routes no semantic permission.
+        unsafe { self.slot.request_reader.bind_receiver(receiver) }.map_err(|status| {
+            LiveVcpuTimeCallbackError::CallbackRegistrationOwner {
+                source: crate::StartupSourceError::NativeStatus { status },
+            }
+        })
     }
 
     fn callback_guard(&self) -> Option<LiveCallbackInFlight<'_>> {

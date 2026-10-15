@@ -346,6 +346,56 @@ impl<S> ControlLifecycleStream<S> {
         }
     }
 
+    /// Records a complete `Hello` already written on the retained endpoint.
+    ///
+    /// This advances protocol bookkeeping only. The caller retains the actual
+    /// complete-write disposition; this method performs no I/O or owner admission.
+    ///
+    /// # Errors
+    /// Refuses a lifecycle outside its initial connected phase.
+    pub fn plugin_commit_written_hello(&mut self) -> Result<(), ControlLifecycleIoError> {
+        self.lifecycle.observe(ControlLifecycleEvent::PluginHello)?;
+        Ok(())
+    }
+
+    /// Records a complete validated acknowledgement already read on this endpoint.
+    ///
+    /// The decoded record supplies protocol facts only. It cannot issue socket,
+    /// mapping, slot or operation custody, and this method cannot replay a frame.
+    ///
+    /// # Errors
+    /// Refuses incompatible versions, malformed slot bounds or lifecycle order.
+    pub fn plugin_commit_read_hello_ack(
+        &mut self,
+        negotiated: NegotiatedHandshake,
+        config: PluginHandshakeConfig,
+    ) -> Result<(), ControlLifecycleIoError> {
+        plugin_validate_handshake_ack(
+            HostMsg::HelloAck {
+                proto_version: negotiated.proto_version,
+                abi_version: negotiated.abi_version,
+                slot_index: negotiated.slot_index,
+                node_count: negotiated.node_count,
+            },
+            config,
+        )?;
+        self.lifecycle
+            .observe(ControlLifecycleEvent::HostHelloAck)?;
+        Ok(())
+    }
+
+    /// Records an already-consumed setup transaction after the initial exchange.
+    ///
+    /// This commits lifecycle bookkeeping only and performs no second frame or
+    /// descriptor receive. The caller retains the actual completed transaction.
+    ///
+    /// # Errors
+    /// Refuses an incomplete handshake or a repeated setup commit.
+    pub fn plugin_commit_preexec_setup(&mut self) -> Result<(), ControlLifecycleIoError> {
+        self.lifecycle.observe(ControlLifecycleEvent::HostSetup)?;
+        Ok(())
+    }
+
     /// Records a ready `SetupAck` already written by plugin setup code.
     ///
     /// This is the lifecycle counterpart to [`Self::plugin_setup_io_mut`] for

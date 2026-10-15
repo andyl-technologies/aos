@@ -198,6 +198,49 @@ impl PluginRegistrationSequence {
         Ok(handshake)
     }
 
+    /// Joins the genuine Source-owned exchange to protocol and registration progress.
+    ///
+    /// # Errors
+    /// Retains consumed byte phases before signed refusal and refuses incomplete
+    /// replies or launch disagreement. Neither validator creates a nominal slot.
+    #[cfg(all(unix, not(test)))]
+    pub(crate) fn perform_source_control_handshake<S>(
+        &mut self,
+        control: &mut ControlLifecycleStream<S>,
+        args: &PluginArgs,
+        original: &crate::startup_source::InstallerStartupSource,
+    ) -> Result<PluginControlHandshake, PluginRegistrationSequenceError> {
+        self.ensure_next_step(PluginRegistrationStep::ControlHandshake)?;
+        let outcome = original.exchange_setup();
+        // Record actual complete effects even if the later admission refused.
+        // A partial phase stays in Source and can never be retried here.
+        let commit = (|| {
+            if outcome.write_completed {
+                control.plugin_commit_written_hello()?;
+            }
+            if let Some(reply) = outcome.reply {
+                control.plugin_commit_read_hello_ack(reply, plugin_handshake_config())?;
+            }
+            Ok::<(), crucible_protocol::ControlLifecycleIoError>(())
+        })();
+        outcome.result.map_err(|source| {
+            self.fail_step(PluginRegistrationStep::ControlHandshake, source.to_string())
+        })?;
+        commit.map_err(|source| {
+            self.fail_step(PluginRegistrationStep::ControlHandshake, source.to_string())
+        })?;
+        let reply = outcome.reply.ok_or_else(|| {
+            self.fail_step(
+                PluginRegistrationStep::ControlHandshake,
+                "authentic reply incomplete".to_owned(),
+            )
+        })?;
+        let handshake = validate_plugin_handshake(args, reply)
+            .map_err(|source| self.fail_control_handshake(source))?;
+        self.record_step_unchecked(PluginRegistrationStep::ControlHandshake)?;
+        Ok(handshake)
+    }
+
     /// Receives and records the host `Setup` frame and its three descriptors.
     ///
     /// The sequence must already have acquired QEMU time control. The method

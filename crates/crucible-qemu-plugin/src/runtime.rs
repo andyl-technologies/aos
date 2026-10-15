@@ -11,6 +11,7 @@
 mod callback_child;
 pub(crate) mod callback_quiescence;
 mod checkpoint;
+mod command_receive;
 mod command_storage;
 mod control_component;
 mod fingerprint;
@@ -370,6 +371,7 @@ pub(crate) struct OwnedCallbackRuntimeState {
     original_owner: Option<crate::ram_fingerprint::NativeOriginalOwner>,
     control_component: control_component::ControlComponent,
     command_storage: command_storage::CommandStorage,
+    command_receive: Mutex<command_receive::CommandReceive>,
     callback_child: callback_child::CallbackChild,
     registration_owner: registration_owner::RegistrationOwner,
     registration_groups: registration_groups::RegistrationGroups,
@@ -429,6 +431,7 @@ impl OwnedCallbackRuntimeState {
             original_owner: None,
             control_component: control_component::ControlComponent::new(),
             command_storage: command_storage::CommandStorage::new(),
+            command_receive: Mutex::new(command_receive::CommandReceive::new()),
             callback_child: callback_child::CallbackChild::new(),
             registration_owner: registration_owner::RegistrationOwner::new(),
             registration_groups: registration_groups::RegistrationGroups::new(),
@@ -857,8 +860,12 @@ impl OwnedCallbackRuntimeState {
             // SAFETY: the only typed address is obtained in the genuine entered
             // span. Source independently retains its owner dependency before the
             // component output/post; no borrowed Rust reference escapes.
+            let receiver = std::ptr::NonNull::from(&state.command_receive);
             let enrollment = unsafe {
                 state.callback_child.prepare_publication(|child| {
+                    // SAFETY: this genuine complete typed child and paid pinned
+                    // Runtime remain retained through every member/ready loan.
+                    child.bind_command_receiver(receiver)?;
                     state
                         .control_component
                         .enroll(
@@ -877,6 +884,38 @@ impl OwnedCallbackRuntimeState {
                 .map_err(|source| LiveVcpuTimeCallbackError::CallbackRegistrationOwner { source });
             enrollment?;
             enrollment_post?;
+
+            let component = state
+                .control_component
+                .nominal_projection()
+                .map_err(|source| LiveVcpuTimeCallbackError::ControlComponent { source })?;
+            state.setup.check_runtime_installation().map_err(|source| {
+                LiveVcpuTimeCallbackError::CallbackRegistrationOwner { source }
+            })?;
+            let mut receiver = state.command_receive.try_lock().map_err(|_| {
+                LiveVcpuTimeCallbackError::CallbackRegistrationOwner {
+                    source: crate::StartupSourceError::Ownership {
+                        reason: "command receive keeper is busy or poisoned",
+                    },
+                }
+            })?;
+            // SAFETY: actual pinned Runtime owns this prepaid inline field; the
+            // protected Source projection binds its true child/Bridge/slot tree.
+            let membership = unsafe {
+                receiver.enroll(
+                    plugin_id,
+                    component,
+                    live_callbacks::protected_request_snapshot,
+                )
+            };
+            drop(receiver);
+            let membership_post = state.setup.check_runtime_installation();
+            membership.map_err(
+                |source| LiveVcpuTimeCallbackError::CallbackRegistrationOwner { source },
+            )?;
+            membership_post.map_err(|source| {
+                LiveVcpuTimeCallbackError::CallbackRegistrationOwner { source }
+            })?;
 
             // The worker's creator and complete auxiliary backing are separate
             // from physical callback registration. Refuse that exact birth cut.
@@ -1195,6 +1234,13 @@ impl Drop for RequiredOwnedCallbacksRegistered {
         if state.registration_groups.close_spans().is_err() {
             return;
         }
+        let Ok(mut receiver) = state.command_receive.try_lock() else {
+            return;
+        };
+        if receiver.identity_return().is_err() {
+            return;
+        }
+        drop(receiver);
         let _component_return = state.control_component.identity_return();
         if !state
             .checkpoint_registration_retained
@@ -2292,7 +2338,11 @@ where
     let mut control_stream = ControlLifecycleStream::connected_unix_stream(control_stream)
         .map_err(|source| PluginRuntimeInstallError::ControlLifecycle { source })?;
     reservation.mark_irreversible();
+    #[cfg(test)]
     let handshake_result = sequence.perform_control_handshake_lifecycle(&mut control_stream, &args);
+    #[cfg(not(test))]
+    let handshake_result =
+        sequence.perform_source_control_handshake(&mut control_stream, &args, original);
     // Observe the postcut even on primary I/O failure; it cannot replace the
     // first handshake cause. Native retains any original refusal independently.
     let handshake_post = reservation

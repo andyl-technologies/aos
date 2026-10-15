@@ -12,8 +12,9 @@ use crate::ram_error::RamError;
 
 use super::live_callbacks::ControlIntentFacts;
 
+/// Names the genuine Source-owned enrolled control component.
 #[repr(C)]
-struct NativeComponent {
+pub(super) struct NativeComponent {
     _private: [u8; 0],
 }
 
@@ -158,6 +159,35 @@ impl ControlComponent {
             ));
         }
         Ok(())
+    }
+
+    /// Obtains this same Source-owned component into a disjoint local projection.
+    ///
+    /// # Errors
+    /// Refuses absent custody or genuine observation failure. The output lends
+    /// no typed child body, callback activation or action Original.
+    pub(super) fn nominal_projection(&self) -> Result<*mut NativeComponent, RamError> {
+        let api = self
+            .api
+            .ok_or(RamError::Invariant("control component API absent"))?;
+        let callback = self
+            .callback
+            .ok_or(RamError::Invariant("control callback absent"))?;
+        if self.returned || self.owner_process != std::process::id() {
+            return Err(RamError::Invariant("control component custody absent"));
+        }
+        let mut projection = std::ptr::null_mut();
+        let observed = (api.observe)(
+            self.holder.get(),
+            callback,
+            self.child_userdata,
+            &mut projection,
+        );
+        status(observed, "control component projection")?;
+        if projection.is_null() {
+            return Err(RamError::Invariant("control component projection absent"));
+        }
+        Ok(projection)
     }
 
     /// Verifies actual publication after the void Native callback registrar.

@@ -15,6 +15,8 @@ pub(in crate::runtime) struct ReadOutcome {
     pub(in crate::runtime) facts: Option<ControlIntentFacts>,
     pub(in crate::runtime) first: i32,
     pub(in crate::runtime) post: i32,
+    pub(in crate::runtime) read_attempted: bool,
+    pub(in crate::runtime) reader_released: bool,
 }
 
 impl ReadOutcome {
@@ -23,6 +25,8 @@ impl ReadOutcome {
             facts: None,
             first: status,
             post: 0,
+            read_attempted: false,
+            reader_released: false,
         }
     }
 
@@ -47,11 +51,15 @@ struct ReadJournal {
 /// Lives inside the complete child Layout before its actual Source allocation.
 pub(in crate::runtime) struct ProtectedReader {
     journal: Mutex<ReadJournal>,
+    // This borrower is installed only while Source lends the complete typed
+    // child. Runtime pinning and nominal member parents retain its backing.
+    receiver: Option<std::ptr::NonNull<Mutex<crate::runtime::command_receive::CommandReceive>>>,
 }
 
 impl ProtectedReader {
     pub(in crate::runtime) const fn new() -> Self {
         Self {
+            receiver: None,
             journal: Mutex::new(ReadJournal {
                 sequence: 0,
                 active: false,
@@ -60,8 +68,55 @@ impl ProtectedReader {
                     facts: None,
                     first: 0,
                     post: 0,
+                    read_attempted: false,
+                    reader_released: false,
                 },
             }),
+        }
+    }
+
+    /// Binds the actual stable receiver borrower before callback publication.
+    ///
+    /// # Safety
+    /// The receiver belongs to the same prepaid pinned Runtime and remains live
+    /// through all genuine child/member/callback/received-request last uses.
+    pub(in crate::runtime) unsafe fn bind_receiver(
+        &mut self,
+        receiver: std::ptr::NonNull<Mutex<crate::runtime::command_receive::CommandReceive>>,
+    ) -> Result<(), i32> {
+        if self.receiver.is_some() {
+            return Err(-libc::EALREADY);
+        }
+        self.receiver = Some(receiver);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime) fn receiver_is_absent(&self) -> bool {
+        self.receiver.is_none()
+    }
+
+    pub(in crate::runtime) fn ready_facts(&self) -> super::ReadyObservation {
+        let Some(receiver) = self.receiver else {
+            return super::ReadyObservation {
+                facts: None,
+                status: -libc::ENOKEY,
+            };
+        };
+        // SAFETY: actual prepublication typed binding retains the same pinned
+        // Runtime. The real ready callback does no typed Bridge mutation and
+        // Source independently checks creating-thread/outside-BQL/lender state.
+        let receiver = unsafe { receiver.as_ref() };
+        match receiver.try_lock() {
+            Ok(mut receiver) => receiver.ready_facts(),
+            Err(TryLockError::WouldBlock) => super::ReadyObservation {
+                facts: None,
+                status: -libc::EBUSY,
+            },
+            Err(TryLockError::Poisoned(_)) => super::ReadyObservation {
+                facts: None,
+                status: -libc::EOWNERDEAD,
+            },
         }
     }
 
@@ -95,6 +150,7 @@ impl ProtectedReader {
         journal.active = true;
         journal.local_reader_released = false;
         journal.outcome = ReadOutcome::refused(0);
+        journal.outcome.read_attempted = true;
         let mut entered = LocalRead { journal };
         let opening_token = slot.control_boundary_token();
 
@@ -113,12 +169,23 @@ impl ProtectedReader {
         if u64::from(slot.control_boundary_token()) != received_token {
             entered.journal.outcome.post = -libc::EAGAIN;
         }
-        entered.journal.outcome
+        entered.finish()
     }
 }
 
 struct LocalRead<'a> {
     journal: MutexGuard<'a, ReadJournal>,
+}
+
+impl LocalRead<'_> {
+    fn finish(mut self) -> ReadOutcome {
+        self.journal.outcome.reader_released = true;
+        let outcome = self.journal.outcome;
+        // Finish actual local custody and unlock before emitting a released
+        // output. Unwinding never emits this completion flag to Source.
+        drop(self);
+        outcome
+    }
 }
 
 impl Drop for LocalRead<'_> {
@@ -148,6 +215,15 @@ mod tests {
 
         assert_eq!(observed.first, 0);
         assert_eq!(observed.post, -libc::EAGAIN);
+        let progress = super::super::ReceiveProgress::from(observed);
+        assert_eq!(
+            (
+                progress.read_attempted,
+                progress.request_received,
+                progress.reader_released
+            ),
+            (1, 1, 1)
+        );
         let facts = observed
             .facts
             .unwrap_or_else(|| panic!("received tuple must survive post refusal"));

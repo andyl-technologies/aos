@@ -21,6 +21,7 @@ mod native_setup;
 pub(crate) use descriptor::SetupDescriptor;
 pub(crate) use native_setup::{NativeSetupBorrow, selected as native_setup_selected};
 pub(crate) mod runtime_purpose;
+mod setup_exchange;
 mod setup_mapping;
 
 #[cfg(test)]
@@ -66,6 +67,7 @@ pub(crate) struct InstallerStartupSource {
     control_reservation: control_purpose::ControlReservation,
     runtime_reservation: runtime_purpose::RuntimeReservation,
     setup_mapping: std::sync::Mutex<setup_mapping::SetupMapping>,
+    setup_exchange: std::sync::Mutex<setup_exchange::SetupExchange>,
     plan: Option<SetupDescriptor>,
     native_setup: Option<NativeSetupBorrow>,
     plugin_id: u64,
@@ -90,6 +92,7 @@ impl InstallerStartupSource {
             control_reservation: control_purpose::ControlReservation::default(),
             runtime_reservation: runtime_purpose::RuntimeReservation::default(),
             setup_mapping: Default::default(),
+            setup_exchange: Default::default(),
             plan: Some(plan.into()),
             native_setup: None,
             plugin_id,
