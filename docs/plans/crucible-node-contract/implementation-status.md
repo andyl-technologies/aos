@@ -204,12 +204,28 @@ retirement. Formatting is separate in `3d69f2f9b0`.
 
 Normal six-crate, all-feature/all-target checking passes for these changes.
 Independent review verifies the complete 6,065-file source, all sixteen changed
-roles, compiler metadata and dependency coverage. Twelve new controls cover
-owned decode storage, exact and one-byte-short budgets, unchanged contract
-bytes, duplicate custody, partial staging and changed source files. They remain
-unrun, along with the original two constructor assertions at this source
-revision. The earlier failures remain recorded; successful compilation does
-not establish that the complete constructor fits its finite policy.
+roles, compiler metadata and dependency coverage. Five fresh normal test
+executables also compile for Core, provider, daemon, campaign and CLI. This is
+compilation evidence, separate from runtime results.
+
+Twelve new controls cover owned decode storage, exact and one-byte-short
+budgets, unchanged contract bytes, duplicate custody, partial staging and
+changed source files. A separate run passes eight provider controls and fails
+one: the Value-only quote does not cover the conservative tree-root allowance
+recorded by the owner observer for an empty object. A separate daemon run passes
+the source-file drift control and fails both custody controls during scene
+installation, before their custody assertions. The installer returns its
+generic refusal; its cause remains under investigation. These failed phases
+remain recorded. The missing object-root term needs a correction and fresh
+qualification.
+
+The original two constructor tests still fail with `ResourceLimit` during
+fixture preparation at this revision, before reaching their constructor
+assertions. Both complete in a combined 6.14 seconds without exceeding their
+execution limits. Their test phase stops at that failure before dispatching the
+twelve new controls. The remaining constructor refusal is under investigation;
+the earlier diagnostic does not identify its cause. Application compilation
+remains held while this constructor failure is unresolved.
 
 ## Work in progress
 
