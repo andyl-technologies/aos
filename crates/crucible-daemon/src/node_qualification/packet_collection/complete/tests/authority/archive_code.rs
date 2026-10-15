@@ -187,7 +187,11 @@ fn archive_fixture_content_closure_detects_missing_and_mismatched_schema_bytes()
 fn collecting_policy_requires_actual_host_and_every_native_acceptance() {
     let scene = Scene::new();
     let rows = Rows::new(&scene);
-    let nodes: Vec<_> = rows.descriptors.iter().map(|node| node.id.clone()).collect();
+    let nodes: Vec<_> = rows
+        .descriptors
+        .iter()
+        .map(|node| node.id.clone())
+        .collect();
     let actual_host = &scene.world.host_source.selection().descriptor.id;
     let accepted = &scene.world.requirements.accepted_nondeterministic_nodes;
     let policy = super::super::super::records::exact_collecting_nondeterminism_roster;
@@ -196,11 +200,19 @@ fn collecting_policy_requires_actual_host_and_every_native_acceptance() {
     // before CurrentFiles installation. Scene setup creates controlled files;
     // no graph owner, file measurement callback or native permission is installed.
     assert!(policy(&nodes, accepted));
-    let without_host: Vec<_> = accepted.iter().filter(|node| *node != actual_host).cloned().collect();
+    let without_host: Vec<_> = accepted
+        .iter()
+        .filter(|node| *node != actual_host)
+        .cloned()
+        .collect();
     assert_eq!(without_host.len(), 3);
     assert!(!policy(&nodes, &without_host));
     for native in &without_host {
-        let omitted: Vec<_> = accepted.iter().filter(|node| *node != native).cloned().collect();
+        let omitted: Vec<_> = accepted
+            .iter()
+            .filter(|node| *node != native)
+            .cloned()
+            .collect();
         assert!(!policy(&nodes, &omitted));
     }
 
