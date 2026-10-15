@@ -76,23 +76,73 @@ impl TrustedHandshakeVerifier for Verifier {
     }
 }
 
-pub(super) struct Incidents(RefCell<Vec<ConnectionIncident>>);
+pub(super) struct Incidents {
+    incidents: RefCell<Vec<ConnectionIncident>>,
+    state: crucible_node_provider::connection::OriginalSupervisorState,
+    pending: RefCell<Option<ConnectionIncident>>,
+}
 
 impl Incidents {
     pub(super) fn new() -> Rc<Self> {
-        Rc::new(Self(RefCell::new(Vec::with_capacity(1024))))
+        Rc::new(Self {
+            incidents: RefCell::new(Vec::with_capacity(1024)),
+            state: crucible_node_provider::connection::OriginalSupervisorState::new(),
+            pending: RefCell::new(None),
+        })
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.0.borrow().is_empty()
+        self.pending.borrow().is_none() && self.incidents.borrow().is_empty()
     }
 }
 
 impl ConnectionSupervisor for Incidents {
     fn quarantine(&self, incident: ConnectionIncident) {
-        let mut originals = self.0.borrow_mut();
+        // Each fixture member owns its own actual Connection supervisor. Retain
+        // its incoming incident before the fallible phase or incident-bank gate.
+        let mut pending = self.pending.borrow_mut();
+        assert!(pending.is_none(), "original incident callback cannot renew");
+        *pending = Some(incident);
+        let _callback = self.state.begin_quarantine_callback().unwrap();
+        let mut originals = self.incidents.borrow_mut();
         assert!(originals.len() < 1024, "fixed original incident credit");
-        originals.push(incident);
+        originals.push(pending.take().unwrap());
+    }
+
+    fn with_original_protocol_state(
+        &self,
+        inspect: &mut dyn FnMut(
+            crucible_node_provider::connection::OriginalSupervisorProtocolView<'_>,
+        ) -> Result<(), ProviderError>,
+    ) -> Result<(), ProviderError> {
+        let pending = self
+            .pending
+            .try_borrow()
+            .map_err(|_| ProviderError::Conflict("original incident callback borrowed"))?;
+        if pending.is_some() {
+            return Err(ProviderError::Conflict(
+                "original incident callback incomplete",
+            ));
+        }
+        drop(pending);
+        self.state
+            .with_original_incidents(&self.incidents, &mut |view| {
+                let result = inspect(view);
+                // A callback attempted during inspection must first retain its
+                // incoming incident. Even a visitor that catches that refusal
+                // cannot turn the partial callback into complete coverage.
+                if self
+                    .pending
+                    .try_borrow()
+                    .map_err(|_| ProviderError::Conflict("original incident callback borrowed"))?
+                    .is_some()
+                {
+                    return Err(ProviderError::Conflict(
+                        "original incident callback incomplete",
+                    ));
+                }
+                result
+            })
     }
 }
 
@@ -210,26 +260,91 @@ pub(super) fn handshake(
     )
 }
 
-pub(super) struct EmptySelectedExtensions;
-
-impl InstalledExtensionNegotiationVerifier for EmptySelectedExtensions {
-    fn supported(&self) -> &[ExtensionSelection] {
-        &[]
-    }
-    fn required(&self) -> &[ExtensionSelection] {
-        &[]
-    }
-    fn verify_selection(
-        &self,
-        selected: &[ExtensionSelection],
-        _: &IdSet,
-    ) -> Result<(), ProviderError> {
-        if selected.is_empty() {
+#[test]
+fn actual_supervisor_loan_borrows_same_incident_bank_and_rejects_callback_reentry() {
+    let supervisor = Incidents::new();
+    let capacity = supervisor.incidents.borrow().capacity();
+    let mut calls = 0;
+    supervisor
+        .with_original_protocol_state(&mut |view| {
+            calls += 1;
+            assert!(supervisor.incidents.try_borrow_mut().is_err());
+            assert!(supervisor.state.begin_quarantine_callback().is_err());
+            let value = serde_json::to_value(view).unwrap();
+            assert_eq!(value[5][0], capacity);
+            assert_eq!(value[5][1], serde_json::json!([]));
             Ok(())
-        } else {
-            Err(ProviderError::Correlation(
-                "selected fixture supports exact empty installed roster",
-            ))
-        }
-    }
+        })
+        .unwrap();
+    assert_eq!(calls, 1);
+    assert!(supervisor.is_empty());
+}
+
+#[test]
+fn actual_supervisor_failed_callback_keeps_incident_and_refuses_complete_loan() {
+    let supervisor = Incidents::new();
+    let incident = ConnectionIncident {
+        session: id("actual-supervisor-session"),
+        incarnation: id("actual-supervisor-incarnation"),
+        connection: id("actual-supervisor-connection"),
+        failure: crucible_node_provider::connection::ConnectionFailure::Protocol,
+        transport_fenced: true,
+        outgoing: Vec::new(),
+        incoming: Vec::new(),
+    };
+    *supervisor.pending.borrow_mut() = Some(incident);
+    let mut calls = 0;
+    assert!(
+        supervisor
+            .with_original_protocol_state(&mut |_| {
+                calls += 1;
+                Ok(())
+            })
+            .is_err()
+    );
+    assert_eq!(calls, 0);
+    assert!(
+        supervisor
+            .pending
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .transport_fenced
+    );
+    assert!(!supervisor.is_empty());
+}
+
+#[test]
+fn actual_supervisor_inspection_failure_retains_reentrant_incident() {
+    let supervisor = Incidents::new();
+    let result = supervisor.with_original_protocol_state(&mut |_| {
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            supervisor.quarantine(ConnectionIncident {
+                session: id("actual-supervisor-session"),
+                incarnation: id("actual-supervisor-incarnation"),
+                connection: id("actual-supervisor-connection"),
+                failure: crucible_node_provider::connection::ConnectionFailure::Protocol,
+                transport_fenced: true,
+                outgoing: Vec::new(),
+                incoming: Vec::new(),
+            });
+        }));
+        assert!(refused.is_err());
+        Ok(())
+    });
+    assert!(result.is_err());
+    assert!(
+        supervisor
+            .pending
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .transport_fenced
+    );
+    assert!(supervisor.incidents.borrow().is_empty());
+    assert!(
+        supervisor
+            .with_original_protocol_state(&mut |_| Ok(()))
+            .is_err()
+    );
 }

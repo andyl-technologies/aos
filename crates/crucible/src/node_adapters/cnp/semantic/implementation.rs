@@ -68,6 +68,40 @@ impl SimulationNode for CnpSemanticNode {
             .map_or(&[], |source| source.installation().facets.as_slice())
     }
 
+    fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, OperationFailure> {
+        // This is retained data observation, including after retirement. The
+        // actual known registry alias needs only its original creator and Rc
+        // association; no retired process or registrar authority is renewed.
+        self.preparation.guard.storage_origin_data()?;
+        let native = self
+            .preparation
+            .guard
+            .custody
+            .as_ref()
+            .ok_or_else(|| refused("original node storage capsule is absent"))?;
+        let registry = native
+            .extension_handshake
+            .as_ref()
+            .map(|extension| extension.retain_original_registry_metadata_owner())
+            .transpose()
+            .map_err(unknown)?;
+        let report = match registry.as_ref() {
+            Some(registry) => {
+                self.retained_requested_storage_with_registry_data(registry, maximum)?
+            }
+            None => CnpSemanticNode::retained_requested_storage_data(self, maximum)?,
+        };
+        let bytes = report.complete_requested_bytes()?;
+        let nested = bytes
+            .checked_sub(std::mem::size_of_val(self))
+            .ok_or_else(|| refused("original node owning row omitted its concrete root"))?;
+        self.preparation.guard.storage_origin_data()?;
+        Ok(Some(nested))
+    }
+
     fn preflight_complete_original_lineage_capture(
         &self,
         activation: &WorldActivation,
@@ -77,6 +111,16 @@ impl SimulationNode for CnpSemanticNode {
     ) -> Result<crate::node_state::CompleteOriginalOwnerCapturePreflight, OperationFailure> {
         // Refuse a copied process capsule before reading any inherited owner.
         self.preparation.guard.custody().map_err(unknown)?;
+        self.current()?;
+        // Observe the actual owning node/process/SDK loan before the Source
+        // callback takes any mutable bank. Unknown owning roots refuse here;
+        // a complete semantic serializer cannot replace those live owners.
+        let maximum = limits
+            .state
+            .maximum_total_content_bytes
+            .min(limits.native.maximum_total_record_bytes);
+        <Self as SimulationNode>::retained_requested_storage_data(self, maximum)?
+            .ok_or_else(|| refused("actual complete node owning row is unavailable"))?;
         self.current()?;
         let source = self.source()?;
         let active = self
@@ -111,6 +155,25 @@ impl SimulationNode for CnpSemanticNode {
         limits: NativeCaptureLimits,
     ) -> Result<InstalledOriginalLineageCapture, OperationFailure> {
         self.capture_with_original_ticket(ticket, activation, record, runtime_object, limits)
+    }
+
+    fn capture_original_lineage_continuation_with_ticket_into(
+        &mut self,
+        ticket: &OriginalLineageOwnerCaptureTicket<'_>,
+        activation: &WorldActivation,
+        record: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
+        limits: NativeCaptureLimits,
+        completed: &mut Option<InstalledOriginalLineageCapture>,
+    ) -> Result<(), OperationFailure> {
+        self.capture_with_original_ticket_into(
+            ticket,
+            activation,
+            record,
+            runtime_object,
+            limits,
+            completed,
+        )
     }
 
     fn status(&mut self) -> Result<NodeStatus, OperationFailure> {

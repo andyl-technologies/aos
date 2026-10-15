@@ -100,6 +100,7 @@ pub struct PacketCompleteSemanticSource {
     restore_input_emitter_selection: Option<Option<crucible_node_provider::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection>>,
     protocol_metadata_limits: Option<crucible_node_provider::reference_packet::service::PacketNative5ProtocolMetadataLimits>,
     original_extension_registry: std::cell::RefCell<Option<crucible_node_provider::handshake::OriginalExtensionRegistryOwner>>,
+    registry_capture: std::cell::RefCell<Option<registry_capture::OriginalCompleteRegistryCapture>>,
     registry_retention_attempted: std::cell::Cell<bool>,
     registry_retention_failed: std::cell::Cell<bool>,
     complete_bytes_launch_reserved: std::cell::Cell<bool>,
@@ -139,6 +140,7 @@ impl PacketCompleteSemanticSource {
             ack_birth_input_banks: None,
             protocol_metadata_limits: None,
             original_extension_registry: std::cell::RefCell::new(None),
+            registry_capture: std::cell::RefCell::new(None),
             registry_retention_attempted: std::cell::Cell::new(false),
             registry_retention_failed: std::cell::Cell::new(false),
             complete_bytes_launch_reserved: std::cell::Cell::new(false),
@@ -180,6 +182,7 @@ impl PacketCompleteSemanticSource {
             ack_birth_input_banks: None,
             protocol_metadata_limits: None,
             original_extension_registry: std::cell::RefCell::new(None),
+            registry_capture: std::cell::RefCell::new(None),
             registry_retention_attempted: std::cell::Cell::new(false),
             registry_retention_failed: std::cell::Cell::new(false),
             complete_bytes_launch_reserved: std::cell::Cell::new(false),
@@ -360,6 +363,15 @@ impl PacketCompleteSemanticSource {
 }
 
 impl CnpSemanticSource for PacketCompleteSemanticSource {
+    fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, OperationFailure> {
+        self.original_complete_retained_nested_storage_data(maximum)?
+            .complete_requested_bytes()
+            .map(Some)
+    }
+
     fn preflight_complete_original_lineage_capture(
         &self,
         scope: CnpSemanticRealizationScope<'_>,
@@ -406,6 +418,48 @@ impl CnpSemanticSource for PacketCompleteSemanticSource {
                 .retain_original_complete_protocol_supervisor()
                 .map_err(unknown)?;
             self.authenticate_witness_scope(&scope)?;
+            let call =
+                super::process::ReadCall::begin(std::rc::Rc::clone(&scope.native.read_owner))
+                    .map_err(unknown)?;
+            let quoted = (|| {
+                let witness = scope
+                    .native
+                    .protocol_supervisor
+                    .try_borrow()
+                    .map_err(|_| refused("complete quote supervisor is borrowed"))?;
+                let witness = witness
+                    .as_ref()
+                    .ok_or_else(|| refused("complete quote supervisor is absent"))?;
+                let mut banks = self
+                    .capture_banks
+                    .try_borrow_mut()
+                    .map_err(|_| refused("complete quote banks are borrowed"))?;
+                let banks = banks
+                    .as_mut()
+                    .ok_or_else(|| refused("complete quote banks are absent"))?;
+                let reservation = banks.protocol.as_mut().ok_or_else(|| {
+                    refused("complete quote original protocol reservation is absent")
+                })?;
+                // The SDK walks and counts the SAME current complete tuple used
+                // by capture into these actual banks. This is no prediction of
+                // the later three-body/fourth-Poll suffix or native state.
+                scope
+                    .controller
+                    .quote_original_owned11_state_with_supervisor(reservation, witness)
+                    .map_err(unknown)
+            })();
+            call.finish(quoted.is_ok());
+            let quote = quoted?;
+            self.authenticate_witness_scope(&scope)?;
+            if quote.encoded_extent > quote.snapshot_allocation.encoded_capacity
+                || quote.required_record_rows > quote.metadata_allocation.capacity_rows
+                || quote.required_alias_rows > quote.alias_allocation.row_capacity
+                || quote.required_alias_rows > quote.alias_allocation.lookup_capacity
+            {
+                return Err(refused(
+                    "complete current host view exceeds its actual banks",
+                ));
+            }
         }
         let storage = scope
             .controller
@@ -491,12 +545,13 @@ impl CnpSemanticSource for PacketCompleteSemanticSource {
         }
         self.authenticate_witness_scope(&scope)?;
 
-        // Current protocol facts and a complete semantic count are necessary,
-        // but do not stand for allocated local settlement/ancestry banks or the
-        // authenticated native suffix. No geometry row is issued before those
-        // source-owned components are installed and fully charged.
+        // Local banks, the current host quote and semantic counts are actual,
+        // but the remote native model/Control/service retained and transient
+        // owners still need their authentic current Observe allocation report.
+        // Its selection or P capacity cannot supply that owning row. Until the
+        // same whole aggregation includes it, no geometry or ticket is issued.
         Err(refused(
-            "complete local settlement and ancestry codecs are not installed",
+            "complete native owning allocation report and whole peak are unavailable",
         ))
     }
 
@@ -980,7 +1035,10 @@ mod complete_restore_selection;
 
 #[path = "packet_complete_source/archive_journal.rs"]
 mod archive_journal;
-pub use archive_journal::{PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA, PacketCompleteSettledJournal};
+pub use archive_journal::{
+    PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA, PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA,
+    PacketCompleteSettledJournal,
+};
 
 #[path = "packet_complete_source/archive_owner.rs"]
 mod archive_owner;
@@ -1097,6 +1155,9 @@ impl PacketCompleteSemanticSource {
 
 #[path = "packet_complete_source/retained_holders.rs"]
 mod retained_holders;
+
+#[path = "packet_complete_source/registry_capture.rs"]
+mod registry_capture;
 
 #[path = "packet_complete_source/retained_registry.rs"]
 mod retained_registry;

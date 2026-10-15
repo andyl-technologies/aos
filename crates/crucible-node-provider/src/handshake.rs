@@ -29,7 +29,10 @@ mod extension_handshake;
 mod negotiation;
 
 pub use extension_contract::*;
-pub use extension_handshake::{ExtensionHandshake, OriginalExtensionRegistryOwner};
+pub use extension_handshake::{
+    ExtensionHandshake, ORIGINAL_HOST_EXTENSION_REGISTRY_FORMAT, OriginalExtensionRegistryOwner,
+    OriginalExtensionRegistryView,
+};
 pub use negotiation::*;
 
 fn optional_nonnull<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>

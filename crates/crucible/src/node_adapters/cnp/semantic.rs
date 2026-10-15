@@ -51,13 +51,13 @@ pub use world_provider::{
 
 pub use node::{CnpSemanticAdmissionFailure, CnpSemanticNode};
 pub use packet_complete_source::{
-    PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA, PacketCompleteAckHostRegistrationPlan,
-    PacketCompleteAckPeerBootFrame, PacketCompleteAckPeerBootMaterial,
-    PacketCompleteArchivedOwnerData, PacketCompleteArchivedSemantics,
-    PacketCompleteCaptureBankFacts, PacketCompleteCaptureBankLimits,
-    PacketCompleteEffectReceiverGroup, PacketCompleteEffectReceiverReader,
-    PacketCompleteNativeRecord, PacketCompleteNativeWitness, PacketCompleteRestorePreparation,
-    PacketCompleteSemanticSource, PacketCompleteSettledJournal,
+    PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA, PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA,
+    PacketCompleteAckHostRegistrationPlan, PacketCompleteAckPeerBootFrame,
+    PacketCompleteAckPeerBootMaterial, PacketCompleteArchivedOwnerData,
+    PacketCompleteArchivedSemantics, PacketCompleteCaptureBankFacts,
+    PacketCompleteCaptureBankLimits, PacketCompleteEffectReceiverGroup,
+    PacketCompleteEffectReceiverReader, PacketCompleteNativeRecord, PacketCompleteNativeWitness,
+    PacketCompleteRestorePreparation, PacketCompleteSemanticSource, PacketCompleteSettledJournal,
     PacketCompleteSourceRetainedStorage, PacketCompleteSourceRole,
 };
 pub use packet_connected_source::{

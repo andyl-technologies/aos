@@ -26,6 +26,10 @@ use std::{mem::size_of, thread::ThreadId};
 
 const MAXIMUM_WHOLE_BYTES: usize = 512 * 1024 * 1024;
 
+#[path = "archive_owner/registry.rs"]
+mod registry;
+use crucible_node_provider::protocol_snapshot::owned11::host_registry::SealedHistoricalHostExtensionRegistry;
+
 /// Retains one bounded owner linked to the actual immutable archive closure.
 ///
 /// Preparation does not construct a historical protocol graph. The fixed-three
@@ -43,17 +47,21 @@ pub struct PacketCompleteArchivedOwnerData<'a> {
     host_limits: OwnedProtocol11DataLimits,
     native_limits: OwnedProtocol11DataLimits,
     before_limits: OwnedProtocol11DataLimits,
+    registry_limits: OwnedProtocol11DataLimits,
     maximum: usize,
     journal_storage: usize,
     host_aliases: Vec<HistoricalAliasSummary>,
     native_aliases: Vec<HistoricalAliasSummary>,
     before_aliases: Vec<HistoricalAliasSummary>,
+    registry_aliases: Vec<HistoricalAliasSummary>,
     before_reference: Option<ContentRef>,
     before_raw: Vec<u8>,
     before_encoded: Option<Vec<u8>>,
     before: Option<SealedHistoricalNativeState>,
     host_encoded: Option<Vec<u8>>,
     native_encoded: Option<Vec<u8>>,
+    registry_encoded: Option<Vec<u8>>,
+    registry: Option<SealedHistoricalHostExtensionRegistry>,
     host: Option<SealedHistoricalControllerState>,
     native: Option<SealedHistoricalNativeState>,
     known_requested: Option<usize>,
@@ -156,6 +164,13 @@ impl PacketCompleteSemanticSource {
             limits,
             maximum,
         )?;
+        let (registry_maximum, registry_rows) = self.original_registry_decoder_selection_data()?;
+        let registry_limits = decoder_limits(
+            U64::new(u64::try_from(registry_maximum).map_err(unknown)?),
+            registry_rows,
+            limits,
+            maximum,
+        )?;
         let journal_bytes = content
             .get(journal_reference)
             .ok_or_else(|| refused("cold signed journal body absent"))?;
@@ -201,17 +216,21 @@ impl PacketCompleteSemanticSource {
             host_limits,
             native_limits,
             before_limits,
+            registry_limits,
             maximum,
             journal_storage,
             host_aliases: Vec::new(),
             native_aliases: Vec::new(),
             before_aliases: Vec::new(),
+            registry_aliases: Vec::new(),
             before_reference: None,
             before_raw: Vec::new(),
             before_encoded: Some(Vec::new()),
             before: None,
             host_encoded: Some(Vec::new()),
             native_encoded: Some(Vec::new()),
+            registry_encoded: Some(Vec::new()),
+            registry: None,
             host: None,
             native: None,
             known_requested: None,
@@ -243,6 +262,16 @@ impl PacketCompleteSemanticSource {
                         .map_err(unknown)?,
                 )
                 .ok_or_else(|| refused("cold journal typed extent overflow"))?;
+            let registry_reference = journal.require_complete_registry_data()?;
+            let registry_bytes = content
+                .get(registry_reference)
+                .ok_or_else(|| refused("cold registry protocol absent"))?;
+            registry_reference.verify(registry_bytes).map_err(unknown)?;
+            if registry_bytes.len() > registry_limits.json.maximum_input_bytes {
+                return Err(refused(
+                    "cold registry exceeds original selected encoded bound",
+                ));
+            }
             let host_bytes = content
                 .get(&journal.host_protocol)
                 .ok_or_else(|| refused("cold host protocol absent"))?;
@@ -296,6 +325,7 @@ impl PacketCompleteSemanticSource {
                 .maximum_metadata_rows
                 .checked_add(native_limits.maximum_metadata_rows)
                 .and_then(|n| n.checked_add(before_limits.maximum_metadata_rows))
+                .and_then(|n| n.checked_add(registry_limits.maximum_metadata_rows))
                 .and_then(|n| n.checked_mul(size_of::<HistoricalAliasSummary>()))
                 .ok_or_else(|| refused("cold alias initial extent overflow"))?;
             checked_sum(
@@ -307,6 +337,7 @@ impl PacketCompleteSemanticSource {
                     aliases,
                     host_bytes.len(),
                     native_bytes.len(),
+                    registry_bytes.len(),
                     before.original_capacity(),
                     before.encoded_length(),
                 ],
@@ -327,6 +358,16 @@ impl PacketCompleteSemanticSource {
                 .as_mut()
                 .ok_or_else(|| refused("cold sealed before bank lost"))?
                 .try_reserve_exact(before.encoded_length())
+                .map_err(unknown)?;
+            state
+                .registry_aliases
+                .try_reserve_exact(registry_limits.maximum_metadata_rows)
+                .map_err(unknown)?;
+            state
+                .registry_encoded
+                .as_mut()
+                .ok_or_else(|| refused("cold registry bank lost"))?
+                .try_reserve_exact(registry_bytes.len())
                 .map_err(unknown)?;
             state
                 .host_aliases
@@ -371,6 +412,10 @@ impl PacketCompleteSemanticSource {
                 native_limits.maximum_metadata_rows,
                 HistoricalAliasSummary::default(),
             );
+            state.registry_aliases.resize(
+                registry_limits.maximum_metadata_rows,
+                HistoricalAliasSummary::default(),
+            );
             state.ensure_origin()
         })();
         if result.is_err() {
@@ -406,6 +451,7 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 || owner.host.is_some()
                 || owner.native.is_some()
                 || owner.before.is_some()
+                || owner.registry.is_some()
             {
                 return Err(refused("cold owner reconstruction spent"));
             }
@@ -646,26 +692,31 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 self.maximum,
             )?;
         }
-        let native = ValidatedNativeOwnedProtocol11::validate(
-            self.content
-                .get(&journal.native_after_protocol)
-                .ok_or_else(|| refused("cold native input absent"))?,
-            self.native_limits,
-            &mut self.native_aliases,
-        )
-        .map_err(unknown)?;
-        native.complete_schema_identity().map_err(unknown)?;
-        let demand = native.allocation_demand();
-        total = checked_sum(
-            [
-                total,
-                protocol_demand(&demand.recorded, self.maximum)?,
-                demand.native_group_lookup_bytes,
-                demand.historical_payload_layout_bytes,
-                demand.semantic_validation_stack_bytes,
-            ],
-            self.maximum,
-        )?;
+        {
+            let native = ValidatedNativeOwnedProtocol11::validate(
+                self.content
+                    .get(&journal.native_after_protocol)
+                    .ok_or_else(|| refused("cold native input absent"))?,
+                self.native_limits,
+                &mut self.native_aliases,
+            )
+            .map_err(unknown)?;
+            native.complete_schema_identity().map_err(unknown)?;
+            let demand = native.allocation_demand();
+            total = checked_sum(
+                [
+                    total,
+                    protocol_demand(&demand.recorded, self.maximum)?,
+                    demand.native_group_lookup_bytes,
+                    demand.historical_payload_layout_bytes,
+                    demand.semantic_validation_stack_bytes,
+                ],
+                self.maximum,
+            )?;
+        }
+        // All four class demands join the fixed-three source aggregate before
+        // reconstruct_group permits the first historical owner allocation.
+        total = checked_sum([total, self.registry_demand_data()?], self.maximum)?;
         self.known_requested = Some(total);
         Ok(total)
     }
@@ -675,54 +726,61 @@ impl PacketCompleteArchivedOwnerData<'_> {
         if self.known_requested.is_none() || self.failed {
             return Err(refused("cold demand not admitted"));
         }
+        {
+            let journal = self
+                .journal
+                .as_ref()
+                .ok_or_else(|| refused("cold journal absent"))?;
+            let mut before = ValidatedNativeOwnedProtocol11::validate(
+                &self.before_raw,
+                self.before_limits,
+                &mut self.before_aliases,
+            )
+            .map_err(unknown)?;
+            before
+                .reconstruct_sealed_into(
+                    self.before_reference
+                        .as_ref()
+                        .ok_or_else(|| refused("cold before reference lost"))?,
+                    &mut self.before_encoded,
+                    &mut self.before,
+                )
+                .map_err(unknown)?;
+            let mut host = ValidatedOwnedProtocol11::validate(
+                self.content
+                    .get(&journal.host_protocol)
+                    .ok_or_else(|| refused("cold host input absent"))?,
+                self.host_limits,
+                &mut self.host_aliases,
+            )
+            .map_err(unknown)?;
+            host.reconstruct_sealed_into(
+                &journal.host_protocol,
+                &mut self.host_encoded,
+                &mut self.host,
+            )
+            .map_err(unknown)?;
+            let mut native = ValidatedNativeOwnedProtocol11::validate(
+                self.content
+                    .get(&journal.native_after_protocol)
+                    .ok_or_else(|| refused("cold native input absent"))?,
+                self.native_limits,
+                &mut self.native_aliases,
+            )
+            .map_err(unknown)?;
+            native
+                .reconstruct_sealed_into(
+                    &journal.native_after_protocol,
+                    &mut self.native_encoded,
+                    &mut self.native,
+                )
+                .map_err(unknown)?;
+        }
+        self.reconstruct_registry_data()?;
         let journal = self
             .journal
             .as_ref()
-            .ok_or_else(|| refused("cold journal absent"))?;
-        let mut before = ValidatedNativeOwnedProtocol11::validate(
-            &self.before_raw,
-            self.before_limits,
-            &mut self.before_aliases,
-        )
-        .map_err(unknown)?;
-        before
-            .reconstruct_sealed_into(
-                self.before_reference
-                    .as_ref()
-                    .ok_or_else(|| refused("cold before reference lost"))?,
-                &mut self.before_encoded,
-                &mut self.before,
-            )
-            .map_err(unknown)?;
-        let mut host = ValidatedOwnedProtocol11::validate(
-            self.content
-                .get(&journal.host_protocol)
-                .ok_or_else(|| refused("cold host input absent"))?,
-            self.host_limits,
-            &mut self.host_aliases,
-        )
-        .map_err(unknown)?;
-        host.reconstruct_sealed_into(
-            &journal.host_protocol,
-            &mut self.host_encoded,
-            &mut self.host,
-        )
-        .map_err(unknown)?;
-        let mut native = ValidatedNativeOwnedProtocol11::validate(
-            self.content
-                .get(&journal.native_after_protocol)
-                .ok_or_else(|| refused("cold native input absent"))?,
-            self.native_limits,
-            &mut self.native_aliases,
-        )
-        .map_err(unknown)?;
-        native
-            .reconstruct_sealed_into(
-                &journal.native_after_protocol,
-                &mut self.native_encoded,
-                &mut self.native,
-            )
-            .map_err(unknown)?;
+            .ok_or_else(|| refused("cold registry journal lost"))?;
         let host = self
             .host
             .as_ref()
@@ -770,6 +828,7 @@ impl PacketCompleteArchivedOwnerData<'_> {
             .capacity()
             .checked_add(self.native_aliases.capacity())
             .and_then(|n| n.checked_add(self.before_aliases.capacity()))
+            .and_then(|n| n.checked_add(self.registry_aliases.capacity()))
             .and_then(|n| n.checked_mul(size_of::<HistoricalAliasSummary>()))
             .ok_or_else(|| refused("cold actual aliases overflow"))?;
         checked_sum(
@@ -778,9 +837,22 @@ impl PacketCompleteArchivedOwnerData<'_> {
                 self.journal_storage,
                 aliases,
                 self.host_encoded.as_ref().map_or(0, Vec::capacity),
+                self.host
+                    .as_ref()
+                    .map_or(0, SealedHistoricalControllerState::encoded_capacity),
                 self.native_encoded.as_ref().map_or(0, Vec::capacity),
+                self.native
+                    .as_ref()
+                    .map_or(0, SealedHistoricalNativeState::encoded_capacity),
+                self.registry_encoded.as_ref().map_or(0, Vec::capacity),
+                self.registry
+                    .as_ref()
+                    .map_or(0, SealedHistoricalHostExtensionRegistry::encoded_capacity),
                 self.before_raw.capacity(),
                 self.before_encoded.as_ref().map_or(0, Vec::capacity),
+                self.before
+                    .as_ref()
+                    .map_or(0, SealedHistoricalNativeState::encoded_capacity),
                 self.before_reference
                     .as_ref()
                     .map(NodeRuntime::capture_reference_storage)
@@ -806,6 +878,7 @@ impl PacketCompleteArchivedOwnerData<'_> {
             || self.host.is_none()
             || self.native.is_none()
             || self.before.is_none()
+            || self.registry.is_none()
         {
             return Err(refused("cold archive owner incomplete"));
         }

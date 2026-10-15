@@ -78,6 +78,9 @@ pub fn complete_restore_owner_validation_storage_data(
     let typed_slot = layouts
         .maximum_typed_slot_bytes
         .max(size_of::<NativeSnapshotData>())
+        // This is the actual edition12 DTO, including its independent full
+        // registry reference. The raw scan below counts every added key/value
+        // occurrence in all three DOM and both canonical comparison phases.
         .max(size_of::<SettledJournalData>())
         .max(size_of::<PacketCompleteRestoreOwnerProjection>());
     let typed_node = map_node(

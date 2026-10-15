@@ -37,3 +37,5 @@ pub(crate) use typed::{
     Fields as OriginalOwned11Fields, invalid as original_owned11_invalid,
     plain_string as original_owned11_plain_string, unsigned as original_owned11_unsigned,
 };
+
+pub mod host_registry;

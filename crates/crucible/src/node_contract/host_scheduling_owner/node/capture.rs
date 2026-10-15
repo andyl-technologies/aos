@@ -17,7 +17,31 @@ impl PreparedHostSchedulingNode {
         runtime_object: &InputPayload,
         limits: NativeCaptureLimits,
     ) -> Result<InstalledOriginalLineageCapture, OperationFailure> {
+        let mut completed = None;
+        self.capture_original_common_state_into(
+            ticket,
+            activation,
+            source,
+            runtime_object,
+            limits,
+            &mut completed,
+        )?;
+        completed.ok_or_else(|| failure("original Host2 capture result absent"))
+    }
+
+    pub(super) fn capture_original_common_state_into(
+        &mut self,
+        ticket: &OriginalLineageOwnerCaptureTicket<'_>,
+        activation: &WorldActivation,
+        source: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
+        limits: NativeCaptureLimits,
+        completed: &mut Option<InstalledOriginalLineageCapture>,
+    ) -> Result<(), OperationFailure> {
         self.current()?;
+        if completed.is_some() {
+            return Err(failure("original Host2 capture destination is occupied"));
+        }
         if self.source.edition != preservation::Edition::CompleteOriginalLineage
             || self.ready.is_none()
             || activation.record() != &self.activation
@@ -92,16 +116,21 @@ impl PreparedHostSchedulingNode {
             .map_err(failure)?,
             bytes,
         };
+        // Allocate metadata while the complete original producer is still
+        // retained. Moving its once-owned state into the destination follows
+        // only infallible field construction.
+        let owner_id = owner.owner.clone();
+        let participants = self.source.selection.owner.owner.participant_ids.clone();
         self.current()?;
         let snapshot = self
             .capture_preparation
             .take()
             .ok_or_else(|| failure("host capture producer transferred twice"))?;
         let state = snapshot.into_encoded();
-        Ok(InstalledOriginalLineageCapture {
+        *completed = Some(InstalledOriginalLineageCapture {
             native: InstalledNativeCapture {
-                owner: owner.owner.clone(),
-                participants: self.source.selection.owner.owner.participant_ids.clone(),
+                owner: owner_id,
+                participants,
                 key,
                 cut: ticket.cut(),
                 state,
@@ -109,6 +138,7 @@ impl PreparedHostSchedulingNode {
                 artifacts: Vec::new(),
             },
             journal,
-        })
+        });
+        self.current()
     }
 }

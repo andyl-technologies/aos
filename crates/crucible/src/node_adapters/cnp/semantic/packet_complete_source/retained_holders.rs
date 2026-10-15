@@ -28,18 +28,25 @@ impl PacketCompleteSemanticSource {
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
         self.ensure_origin()?;
+        let nested = self.original_complete_nested_holder_storage_data(maximum)?;
+        let root_header =
+            NodeRuntime::capture_protocol_shared_header_storage(1, align_of::<Self>(), maximum)
+                .map_err(unknown)?;
+        retained_values::sum([size_of::<Self>(), root_header, nested], maximum)
+    }
+
+    pub(super) fn original_complete_nested_holder_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, OperationFailure> {
+        self.ensure_origin()?;
         let underlying = match &self.original {
             CompletePacketOriginal::Producer(source) => size_of_val(source.as_ref()),
             CompletePacketOriginal::Reactive(source) => size_of_val(source.as_ref()),
         };
-        let root_header =
-            NodeRuntime::capture_protocol_shared_header_storage(1, align_of::<Self>(), maximum)
-                .map_err(unknown)?;
         retained_values::sum(
             [
-                size_of::<Self>(),
                 underlying,
-                root_header,
                 self.effect_receiver
                     .as_ref()
                     .map_or(0, |receiver| receiver.retained_path_storage_data()),

@@ -113,6 +113,56 @@ impl PacketCompleteSemanticSource {
         self.authenticate_witness_scope(&realized)
     }
 
+    /// Retains the fourth native body selected by its actual completed Poll.
+    ///
+    /// The original whole ticket, Capture/fourth-Poll transcript and canonical
+    /// ACK windows must all match before the same preallocated bank is copied.
+    /// The copy enters Source custody before the final currentness fence.
+    ///
+    /// # Errors
+    /// Refuses another original transcript, an absent/incomplete body or used
+    /// bank. Failure retains every partially attempted bank and completed copy.
+    pub fn record_original_native_after_object(
+        &self,
+        scope: &CnpSemanticCaptureScope<'_>,
+        ticket: &OriginalLineageOwnerCaptureTicket<'_>,
+        runtime: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
+        confirmation_request: &Id,
+        receipt: &crucible_node_provider::reference_packet::service::confirmation::PacketNativeAfterConfirmationReceipt,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_original_capture_settlement_transcript(
+            scope,
+            ticket,
+            runtime,
+            runtime_object,
+            confirmation_request,
+            receipt,
+        )?;
+        let realized = scope.realization()?;
+        let bytes = realized
+            .controller
+            .content(&receipt.native_after_ref)
+            .map_err(unknown)?;
+        let mut banks = self
+            .capture_banks
+            .try_borrow_mut()
+            .map_err(|_| refused("original native-after return bank is busy"))?;
+        let banks = banks
+            .as_mut()
+            .ok_or_else(|| refused("original native-after return bank is absent"))?;
+        if banks.native_after_object.is_some() {
+            return Err(refused("original native-after return was already retained"));
+        }
+        let object = record_original_bytes(
+            &mut banks.native_after_bank,
+            &receipt.native_after_ref,
+            bytes,
+        )?;
+        banks.native_after_object = Some(object);
+        self.authenticate_witness_scope(&realized)
+    }
+
     /// Borrows the original whole snapshot, Control object and unchanged-cut anchor.
     ///
     /// This data view is not a capture seal. All three copies must still match

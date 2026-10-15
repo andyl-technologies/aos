@@ -110,6 +110,24 @@ impl CnpSemanticRealizationScope<'_> {
 /// harness and fixtures. Decoding a report or historical Passed rows cannot
 /// satisfy this boundary. There is no absent-policy or default-success route.
 pub trait CnpSemanticAcceptance {
+    /// Observes this same installed owner's nested requested storage as data.
+    ///
+    /// The caller charges the actual Rc header and inline payload separately.
+    /// Supported concrete implementations walk their actual retained capacities
+    /// and shared roots under original process/thread guards. None preserves an
+    /// unresolved owner; neither a configured maximum nor encoded length is a
+    /// backing observation. This grants no native, source or Capture authority.
+    ///
+    /// # Errors
+    /// Refuses a foreign origin, unsupported mutable loan, arithmetic overflow
+    /// or actual nested storage above the supplied bound.
+    fn retained_requested_storage_data(
+        &self,
+        _maximum: usize,
+    ) -> Result<Option<usize>, OperationFailure> {
+        Ok(None)
+    }
+
     /// Reauthenticates exact current realized-unit acceptance before admission.
     ///
     /// # Errors
@@ -149,6 +167,24 @@ pub enum CnpSemanticTransition {
 /// A generic frontend cannot infer a Clock, Compute or other role from labels.
 /// Unsupported facets must remain absent from the exact installation.
 pub trait CnpSemanticSource {
+    /// Observes this same installed owner's nested requested storage as data.
+    ///
+    /// The caller charges the actual Rc header and inline payload separately.
+    /// Supported concrete implementations walk their actual retained capacities
+    /// and shared roots under original process/thread guards. None preserves an
+    /// unresolved owner; neither a configured maximum nor encoded length is a
+    /// backing observation. This grants no native, source or Capture authority.
+    ///
+    /// # Errors
+    /// Refuses a foreign origin, unsupported mutable loan, arithmetic overflow
+    /// or actual nested storage above the supplied bound.
+    fn retained_requested_storage_data(
+        &self,
+        _maximum: usize,
+    ) -> Result<Option<usize>, OperationFailure> {
+        Ok(None)
+    }
+
     /// Borrows the immutable independently installed whole role selection.
     fn installation(&self) -> &CnpSemanticInstallation;
 
@@ -518,6 +554,34 @@ pub trait CnpSemanticSource {
     ) -> Result<crate::node_contract::InstalledOriginalLineageCapture, OperationFailure> {
         Err(super::refused(
             "generic source ticketed native capture is unsupported",
+        ))
+    }
+
+    /// Fills the same runtime-owned capture slot before final source fences.
+    ///
+    /// Only a source with authentic into-slot custody implements this selected
+    /// path. The default refuses before the legacy return-valued callback, whose
+    /// result could otherwise be discarded during a later failure or unwind.
+    ///
+    /// # Errors
+    /// Refuses unsupported custody, foreign original scope, an occupied result,
+    /// unsettled native history, or an unadmitted complete allocation window.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "borrows the distinct original scope, ticket, runtime and preowned result"
+    )]
+    fn capture_original_lineage_continuation_with_ticket_into(
+        &self,
+        _scope: super::CnpSemanticCaptureScope<'_>,
+        _ticket: &crate::node_contract::OriginalLineageOwnerCaptureTicket<'_>,
+        _activation: &crate::node_contract::WorldActivation,
+        _record: &crate::node_contract::OriginalLineageRuntimeRecord,
+        _runtime_object: &InputPayload,
+        _limits: crate::node_contract::NativeCaptureLimits,
+        _completed: &mut Option<crate::node_contract::InstalledOriginalLineageCapture>,
+    ) -> Result<(), OperationFailure> {
+        Err(super::refused(
+            "generic source into-slot native capture is unsupported",
         ))
     }
 

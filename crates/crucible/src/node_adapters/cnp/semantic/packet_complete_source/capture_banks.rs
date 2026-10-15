@@ -8,11 +8,12 @@ use super::*;
 
 #[path = "capture_banks/retained.rs"]
 mod retained;
-use crate::node_adapters::cnp::CnpSemanticSnapshotReservation;
+use crate::node_adapters::cnp::{CnpOriginalSemanticSnapshot, CnpSemanticSnapshotReservation};
 use crucible_node_provider::protocol_snapshot::{
     OriginalProtocolPayloadOwner, OriginalProtocolSnapshot, ProtocolSnapshotReservation,
 };
 use crucible_node_provider::reference_packet::service::PacketNative5CaptureProfile;
+use crucible_node_provider::reference_packet::service::confirmation::PacketNativeAfterConfirmationReceipt;
 
 /// Selects finite source-side banks before registration of an actual native child.
 ///
@@ -55,10 +56,14 @@ pub struct PacketCompleteCaptureBankFacts {
 }
 
 pub(super) struct PacketCompleteCaptureBanks {
-    semantic: CnpSemanticSnapshotReservation,
+    pub(super) semantic: Option<CnpSemanticSnapshotReservation>,
+    pub(super) semantic_snapshot: Option<CnpOriginalSemanticSnapshot>,
     pub(super) ancestry: Option<CnpSemanticSnapshotReservation>,
     pub(super) ancestry_record: Option<InputPayload>,
-    journal: CnpSemanticSnapshotReservation,
+    pub(super) journal: Option<CnpSemanticSnapshotReservation>,
+    pub(super) journal_record: Option<InputPayload>,
+    pub(super) capture_response: Option<ResponseBody>,
+    pub(super) confirmation_response: Option<(ResponseBody, PacketNativeAfterConfirmationReceipt)>,
     pub(super) protocol: Option<ProtocolSnapshotReservation>,
     pub(super) settled_protocol: Option<OriginalProtocolSnapshot>,
     pub(super) protocol_payload: Option<(OriginalProtocolPayloadOwner, Vec<u8>)>,
@@ -146,10 +151,14 @@ impl PacketCompleteCaptureBanks {
             )?),
         ];
         let original = Self {
-            semantic,
+            semantic: Some(semantic),
+            semantic_snapshot: None,
             ancestry: Some(ancestry),
             ancestry_record: None,
-            journal,
+            journal: Some(journal),
+            journal_record: None,
+            capture_response: None,
+            confirmation_response: None,
             protocol: Some(protocol),
             settled_protocol: None,
             protocol_payload: None,
@@ -167,13 +176,21 @@ impl PacketCompleteCaptureBanks {
     }
 
     pub(super) fn facts(&self) -> Result<PacketCompleteCaptureBankFacts, OperationFailure> {
-        let semantic_bytes = self.semantic.allocated_bytes();
+        let semantic_bytes = match (&self.semantic, &self.semantic_snapshot) {
+            (Some(bank), None) => bank.allocated_bytes(),
+            (None, Some(snapshot)) => snapshot.payload().bytes.capacity(),
+            _ => return Err(refused("original semantic bank association is incomplete")),
+        };
         let ancestry_bytes = match (&self.ancestry, &self.ancestry_record) {
             (Some(bank), None) => bank.allocated_bytes(),
             (None, Some(record)) => record.bytes.capacity(),
             _ => return Err(refused("original ancestry bank association is incomplete")),
         };
-        let journal_bytes = self.journal.allocated_bytes();
+        let journal_bytes = match (&self.journal, &self.journal_record) {
+            (Some(bank), None) => bank.allocated_bytes(),
+            (None, Some(record)) => record.bytes.capacity(),
+            _ => return Err(refused("original journal bank association is incomplete")),
+        };
         let protocol_bytes = match (
             &self.protocol,
             &self.settled_protocol,
@@ -421,6 +438,7 @@ impl PacketCompleteSemanticSource {
                 &mut banks.protocol,
                 &mut banks.settled_protocol,
             )?;
+            self.record_original_complete_registry(scope)?;
         } else {
             scope.take_settled_original_protocol_snapshot_into(
                 &mut banks.protocol,

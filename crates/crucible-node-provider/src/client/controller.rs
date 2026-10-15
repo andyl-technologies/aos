@@ -33,6 +33,7 @@ mod assigned_restore;
 mod assigned_transfer;
 #[path = "controller/input_emitter.rs"]
 mod input_emitter;
+mod owned11_quote;
 pub use ack_emitter::OriginalCanonicalBlobAckEmitter;
 pub use assigned_admit::{CompletedOriginalCanonicalAckAdmit, PreparedOriginalCanonicalAckAdmit};
 pub use assigned_restore::{CompletedOriginalCompleteRestore, PreparedOriginalCompleteRestore};
@@ -498,24 +499,7 @@ impl CnpController {
                     .as_ref()
                     .map(assigned_restore::AssignedOriginalCompleteRestore::original_cut),
             );
-            let data = (
-                crate::protocol_snapshot::owned11::outer::COMPLETE_CONTROLLER_FORMAT,
-                &self.route.node,
-                &self.route.execution_owner,
-                crucible_node_contract::U64::new(self.budget.as_secs()),
-                self.budget.subsec_nanos(),
-                self.fenced,
-                self.session.original_native5_capture_profile()?,
-                self.session.owned_protocol_view(),
-                self.custody.owned_protocol_view(),
-                self.original_ack_admit
-                    .as_ref()
-                    .map(assigned_admit::AssignedOriginalCanonicalAckAdmit::owned_protocol_view),
-                supervisor,
-                self.original_complete_restore
-                    .as_ref()
-                    .map(assigned_restore::AssignedOriginalCompleteRestore::owned_protocol_view),
-            );
+            let data = self.complete_owned11_protocol_data(supervisor)?;
             reservation.encode_owned11(&data)?;
             return self.session.retain_frozen_protocol_frames(reservation);
         }

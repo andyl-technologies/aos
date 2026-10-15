@@ -1002,16 +1002,15 @@ impl crate::node_contract::NodeRuntime {
                 .nodes
                 .get_mut(&owner.participants[0])
                 .ok_or(RuntimePollFailure::Admission(RuntimeError::UnknownNode))?;
-            *slot = Some(
-                node.capture_original_lineage_continuation_with_ticket(
-                    &ticket,
-                    activation,
-                    source,
-                    runtime_object,
-                    owner_limits,
-                )
-                .map_err(RuntimePollFailure::Native)?,
-            );
+            node.capture_original_lineage_continuation_with_ticket_into(
+                &ticket,
+                activation,
+                source,
+                runtime_object,
+                owner_limits,
+                slot,
+            )
+            .map_err(RuntimePollFailure::Native)?;
             let captured = slot
                 .as_ref()
                 .ok_or(RuntimePollFailure::Admission(RuntimeError::InvalidReceipt))?;
@@ -1127,6 +1126,7 @@ fn charge_attempt_metadata(
 mod tests {
     // Opaque core activation and custody are actual; native peers, capture
     // registration and physical readiness are explicitly modeled here.
+    // crucible-lint: allow panic-shortcut -- modeled test fixtures use panics as assertion failures.
     #![allow(clippy::unwrap_used)]
 
     use super::*;
@@ -1187,6 +1187,52 @@ mod tests {
             persisted: OnceCell::new(),
         };
         (runtime, source, attempt)
+    }
+
+    #[test]
+    fn unsupported_into_slot_capture_keeps_preowned_result_and_attempt_unchanged() {
+        let (mut runtime, source, attempt) = fixture();
+        let mut completed = Some(modeled_capture(&runtime));
+        let original_reference = completed.as_ref().unwrap().native.state.reference.clone();
+        let owner = &attempt.owners[0];
+        let ticket = OriginalLineageOwnerCaptureTicket {
+            attempt: &attempt,
+            owner,
+        };
+        let node = runtime.nodes.values_mut().next().unwrap();
+
+        let error = node
+            .capture_original_lineage_continuation_with_ticket_into(
+                &ticket,
+                &attempt.activation,
+                &source,
+                &attempt.runtime_object,
+                attempt.limits,
+                &mut completed,
+            )
+            .unwrap_err();
+        assert_eq!(error.effects, super::super::EffectKnowledge::None);
+        assert_eq!(
+            completed.as_ref().unwrap().native.state.reference,
+            original_reference
+        );
+        assert!(owner.submitted.get());
+        assert!(!owner.uncertain.get());
+        assert!(attempt.active.get());
+
+        let mut empty = None;
+        let error = node
+            .capture_original_lineage_continuation_with_ticket_into(
+                &ticket,
+                &attempt.activation,
+                &source,
+                &attempt.runtime_object,
+                attempt.limits,
+                &mut empty,
+            )
+            .unwrap_err();
+        assert_eq!(error.effects, super::super::EffectKnowledge::None);
+        assert!(empty.is_none());
     }
 
     #[test]

@@ -152,7 +152,7 @@ impl Fixture {
     fn launch_guard(&self) -> CnpSemanticLaunchGuard {
         let bootstrap = Bootstrap::new(&self.definition);
         let socket = self.directory.join("native.sock");
-        let child = Command::new(std::env::current_exe().unwrap())
+        let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--ignored",
                 "--exact",
@@ -168,7 +168,10 @@ impl Fixture {
             .spawn()
             .unwrap();
         let pid = child.id();
-        let mut guard = CnpSemanticLaunchGuard::new(
+        // Taking the pipe cannot fail. Transfer the child immediately, then let
+        // the original guard retain custody during all fallible bootstrap work.
+        let input = child.stdin.take();
+        let guard = CnpSemanticLaunchGuard::new(
             child,
             self.directory.clone(),
             bootstrap.executable.clone(),
@@ -176,8 +179,7 @@ impl Fixture {
         )
         .ok()
         .unwrap();
-        let child = guard.custody.as_mut().unwrap().child.as_mut().unwrap();
-        let mut input = child.stdin.take().unwrap();
+        let mut input = input.unwrap();
         write_frame(
             &mut input,
             &serde_json::to_value(&bootstrap).unwrap(),
@@ -185,7 +187,7 @@ impl Fixture {
         )
         .unwrap();
         drop(input);
-        let stream = connect_original_peer(child, &socket);
+        let stream = connect_guarded_original_peer(&guard, &socket);
         let mut handshake = bootstrap.handshake();
         let session = ClientSession::negotiate(
             stream,

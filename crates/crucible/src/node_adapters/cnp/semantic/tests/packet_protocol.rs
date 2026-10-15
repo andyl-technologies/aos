@@ -231,8 +231,27 @@ pub(super) fn connect_original_peer(
     child: &mut std::process::Child,
     socket: &std::path::Path,
 ) -> std::os::unix::net::UnixStream {
-    super::operational_poll::original_poll(|| {
+    connect_original_peer_while(socket, || {
         assert!(child.try_wait().unwrap().is_none());
+    })
+}
+
+/// Connects through the actual retained launch guard without exposing its child.
+pub(super) fn connect_guarded_original_peer(
+    guard: &super::super::CnpSemanticLaunchGuard,
+    socket: &std::path::Path,
+) -> std::os::unix::net::UnixStream {
+    connect_original_peer_while(socket, || {
+        guard.custody().unwrap().authenticate_process().unwrap();
+    })
+}
+
+fn connect_original_peer_while(
+    socket: &std::path::Path,
+    mut authenticate_original: impl FnMut(),
+) -> std::os::unix::net::UnixStream {
+    super::operational_poll::original_poll(|| {
+        authenticate_original();
         match std::os::unix::net::UnixStream::connect(socket) {
             Ok(stream) => Some(stream),
             Err(error)

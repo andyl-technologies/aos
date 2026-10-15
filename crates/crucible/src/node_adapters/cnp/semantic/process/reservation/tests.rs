@@ -256,3 +256,57 @@ fn complete_byte_reservation_is_fixed_before_child_and_retained_on_refusal() {
     assert_eq!(identities.get(), 1);
     assert!(retained.borrow().is_none());
 }
+
+#[test]
+fn selected_original_child_mode_is_fixed_before_spawn_and_preserves_legacy_modes() {
+    let identities = std::array::from_fn::<_, 3, _>(|_| Rc::new(Cell::new(0)));
+    let retained = Rc::new(RefCell::new(None));
+    let slot = |identity: &Rc<Cell<usize>>| {
+        Box::new(Slot {
+            identities: Rc::clone(identity),
+            panic_first: false,
+            retained: Rc::clone(&retained),
+        }) as Box<dyn CnpSemanticProcessSlot>
+    };
+    let legacy = CnpSemanticLaunchReservation::reserve(
+        "unlaunched-legacy-child".into(),
+        reference(),
+        slot(&identities[0]),
+    );
+    let bytes = CnpSemanticLaunchReservation::reserve_complete_bytes(
+        "unlaunched-complete-byte-child".into(),
+        reference(),
+        slot(&identities[1]),
+    );
+    let original = CnpSemanticLaunchReservation::reserve_complete_original_child(
+        "unlaunched-original-descriptor-child".into(),
+        reference(),
+        slot(&identities[2]),
+    );
+
+    assert!(!legacy.complete_bytes && !legacy.original_pidfd);
+    assert!(bytes.complete_bytes && !bytes.original_pidfd);
+    assert!(original.complete_bytes && original.original_pidfd);
+    assert!(!original.attempted);
+    assert!(original.guard.custody.as_ref().unwrap().child.is_none());
+    assert!(
+        original
+            .guard
+            .custody
+            .as_ref()
+            .unwrap()
+            .original_child
+            .is_none()
+    );
+    assert_eq!(identities.each_ref().map(|calls| calls.get()), [1, 1, 1]);
+    assert!(retained.borrow().is_none());
+
+    let failure = match original.into_guard() {
+        Ok(_) => panic!("unlaunched original descriptor cannot become a guard"),
+        Err(failure) => failure,
+    };
+    assert!(failure.original.original_pidfd);
+    assert!(failure.original.complete_bytes);
+    assert_eq!(identities.each_ref().map(|calls| calls.get()), [1, 1, 1]);
+    assert!(retained.borrow().is_none());
+}

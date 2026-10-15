@@ -56,8 +56,16 @@ fn installed(deny: bool) -> Rc<Installed> {
 }
 
 fn configured() -> Handshake {
+    configured_with_schema_spare_capacity(0).0
+}
+
+fn configured_with_schema_spare_capacity(spare_capacity: usize) -> (Handshake, usize) {
+    let mut required_schemas = Vec::new();
+    required_schemas.reserve_exact(spare_capacity);
+    let schema_capacity = required_schemas.capacity();
     let feature = id(EXTENSION_NEGOTIATION_V1);
-    Handshake::new(
+
+    let handshake = Handshake::new(
         TrustedInstallation {
             session_id: id("session"),
             incarnation_id: id("incarnation"),
@@ -69,7 +77,7 @@ fn configured() -> Handshake {
             supported_features: vec![id("cnp.core/1"), feature.clone(), id("cnp.resume/1")],
             required_features: vec![id("cnp.core/1"), feature.clone()],
             provider_limits: limits(),
-            required_schemas: vec![],
+            required_schemas,
             required_guarantees: reference(),
             envelope_extension_features: std::collections::BTreeMap::from([(
                 EXTENSION_NEGOTIATION_V1.into(),
@@ -77,7 +85,9 @@ fn configured() -> Handshake {
             )]),
         },
     )
-    .unwrap()
+    .unwrap();
+
+    (handshake, schema_capacity)
 }
 
 fn pair(resume: bool, request_id: &str) -> (crate::envelope::Envelope, crate::envelope::Envelope) {
@@ -548,3 +558,6 @@ fn registrar_refuses_superseded_epoch_while_preserving_exact_resumed_selection()
     assert!(original.verify_authority(&current).is_ok());
     assert_eq!(old.selected_extensions(), current.selected_extensions());
 }
+
+#[path = "registry_archive_tests.rs"]
+mod registry_archive_tests;

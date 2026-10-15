@@ -10,9 +10,11 @@ use super::*;
 impl PacketCompleteCaptureBanks {
     fn retained_requested_storage_data(&self, maximum: usize) -> Result<usize, OperationFailure> {
         let mut bytes = sum([self.facts()?.total_bytes], maximum)?;
-        for reservation in std::iter::once(&self.semantic)
+        for reservation in self
+            .semantic
+            .iter()
             .chain(self.ancestry.iter())
-            .chain(std::iter::once(&self.journal))
+            .chain(self.journal.iter())
             .chain(self.native_banks.iter().flatten())
             .chain(self.native_after_bank.iter())
         {
@@ -30,6 +32,7 @@ impl PacketCompleteCaptureBanks {
         for object in self
             .ancestry_record
             .iter()
+            .chain(self.journal_record.iter())
             .chain(self.native_objects.iter().flatten())
             .chain(self.native_after_object.iter())
         {
@@ -37,6 +40,44 @@ impl PacketCompleteCaptureBanks {
                 [
                     bytes,
                     NodeRuntime::capture_reference_storage(&object.reference).map_err(unknown)?,
+                ],
+                maximum,
+            )?;
+        }
+
+        if let Some(snapshot) = &self.semantic_snapshot {
+            let report = snapshot.retained_metadata_requested_storage_data(maximum)?;
+            bytes = sum([bytes, report.complete_requested_bytes()?], maximum)?;
+        }
+        use crucible_node_provider::retained_metadata::RetainedCaptureProtocolData;
+        for response in self.capture_response.iter().chain(
+            self.confirmation_response
+                .iter()
+                .map(|(response, _)| response),
+        ) {
+            let metadata = RetainedCaptureProtocolData::Response(response)
+                .observe_retained_metadata()
+                .map_err(unknown)?;
+            bytes = sum(
+                [
+                    bytes,
+                    PacketCompleteSemanticSource::complete_retained_metadata_storage_data(
+                        &metadata, maximum,
+                    )?,
+                ],
+                maximum,
+            )?;
+        }
+        if let Some((_, receipt)) = &self.confirmation_response {
+            let metadata = RetainedCaptureProtocolData::AfterConfirmation(receipt)
+                .observe_retained_metadata()
+                .map_err(unknown)?;
+            bytes = sum(
+                [
+                    bytes,
+                    PacketCompleteSemanticSource::complete_retained_metadata_storage_data(
+                        &metadata, maximum,
+                    )?,
                 ],
                 maximum,
             )?;
@@ -109,7 +150,12 @@ impl PacketCompleteSemanticSource {
     }
 }
 
+// crucible-lint: allow panic-shortcut -- Bank ownership controls panic only on broken test invariants.
 #[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "checks actual retained bank ownership and exact admission boundaries"
+)]
 mod tests {
     use super::*;
 
@@ -118,10 +164,14 @@ mod tests {
             CnpSemanticSnapshotReservation::reserve(1024, 65536).unwrap()
         }
         PacketCompleteCaptureBanks {
-            semantic: bank(),
+            semantic: Some(bank()),
+            semantic_snapshot: None,
             ancestry: Some(bank()),
             ancestry_record: None,
-            journal: bank(),
+            journal: Some(bank()),
+            journal_record: None,
+            capture_response: None,
+            confirmation_response: None,
             protocol: Some(ProtocolSnapshotReservation::reserve_complete(4096, 4096, 4).unwrap()),
             settled_protocol: None,
             protocol_payload: None,
@@ -160,6 +210,67 @@ mod tests {
             actual
         );
         assert!(banks.retained_requested_storage_data(actual - 1).is_err());
+    }
+
+    #[test]
+    fn moved_journal_retains_same_bank_and_reference_until_final_validation() {
+        let mut banks = original_banks();
+        let before = banks.retained_requested_storage_data(usize::MAX).unwrap();
+        let original_capacity = banks.journal.as_ref().unwrap().allocated_bytes();
+        crate::node_adapters::cnp::semantic::semantic_snapshot::record_component(
+            &mut banks.journal,
+            &"actual original journal",
+        )
+        .unwrap();
+        let record = crate::node_adapters::cnp::semantic::semantic_snapshot::take_component(
+            &mut banks.journal,
+            "application/vnd.source-owned.packet-native-settled-journal.v12+json",
+        )
+        .unwrap();
+        banks.journal_record = Some(record);
+
+        let record = banks.journal_record.as_ref().unwrap();
+        assert!(banks.journal.is_none());
+        assert_eq!(record.bytes.capacity(), original_capacity);
+        let expected = before + NodeRuntime::capture_reference_storage(&record.reference).unwrap();
+        assert_eq!(
+            banks.retained_requested_storage_data(expected).unwrap(),
+            expected
+        );
+        assert!(banks.retained_requested_storage_data(expected - 1).is_err());
+        assert_eq!(
+            banks.journal_record.as_ref().unwrap().bytes.capacity(),
+            original_capacity
+        );
+    }
+
+    #[test]
+    fn retained_capture_error_counts_actual_spare_backing_on_refusal() {
+        let mut banks = original_banks();
+        let before = banks.retained_requested_storage_data(usize::MAX).unwrap();
+        let mut message = String::with_capacity(113);
+        message.push_str("actual original uncertain response");
+        let capacity = message.capacity();
+        banks.capture_response = Some(ResponseBody {
+            shape: ResponseShape::Error {
+                operation_state: crucible_node_provider::bodies::OperationState::Unknown,
+                error: crucible_node_provider::bodies::ErrorRecord {
+                    code: "OUTCOME_UNKNOWN".into(),
+                    message,
+                    effect: crucible_node_provider::bodies::EffectCertainty::Unknown,
+                    retryable: false,
+                    details: Default::default(),
+                },
+                extensions: Default::default(),
+            },
+            result: None,
+        });
+
+        let after = banks.retained_requested_storage_data(usize::MAX).unwrap();
+        assert!(after >= before + capacity);
+        assert_eq!(banks.retained_requested_storage_data(after).unwrap(), after);
+        assert!(banks.retained_requested_storage_data(after - 1).is_err());
+        assert!(banks.capture_response.is_some());
     }
 
     #[test]

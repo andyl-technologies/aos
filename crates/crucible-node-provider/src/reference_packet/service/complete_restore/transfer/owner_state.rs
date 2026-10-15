@@ -104,8 +104,52 @@ struct SettledJournalData {
     native_anchor: ContentRef,
     native_after_protocol: ContentRef,
     host_protocol: ContentRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_extension_registry: Option<ContentRef>,
     confirmation_request: Id,
     confirmation: PacketNativeAfterConfirmationReceipt,
+}
+
+const SETTLED_JOURNAL_11: &str = "source-owned.packet-native-settled-journal/11";
+const SETTLED_JOURNAL_12: &str = "source-owned.packet-native-settled-journal/12";
+const SETTLED_REGISTRY_MEDIA: &str =
+    "application/vnd.source-owned.packet-host-extension-registry.v12+json";
+
+// Edition discrimination precedes typed ownership. In particular, serde's
+// Option representation must never make an explicit null equivalent to an
+// omitted historical field, or let edition11 carry a registry attachment.
+fn decode_settled_journal_data(value: &Value) -> Result<SettledJournalData, ProviderError> {
+    match (
+        value.get("schema").and_then(Value::as_str),
+        value.get("host_extension_registry"),
+    ) {
+        (Some(SETTLED_JOURNAL_11), None) => {}
+        (Some(SETTLED_JOURNAL_12), Some(reference)) if !reference.is_null() => {}
+        _ => return Err(refused()),
+    }
+    let journal: SettledJournalData = serde::Deserialize::deserialize(value)
+        .map_err(crucible_node_contract::ContractError::from)?;
+    if let Some(reference) = &journal.host_extension_registry {
+        reference.validate()?;
+        if reference.media_type != SETTLED_REGISTRY_MEDIA {
+            return Err(refused());
+        }
+    }
+    Ok(journal)
+}
+
+impl SettledJournalData {
+    fn require_complete_registry_data(&self) -> Result<&ContentRef, ProviderError> {
+        if self.schema != SETTLED_JOURNAL_12 {
+            return Err(refused());
+        }
+        let reference = self.host_extension_registry.as_ref().ok_or_else(refused)?;
+        reference.validate()?;
+        if reference.media_type != SETTLED_REGISTRY_MEDIA {
+            return Err(refused());
+        }
+        Ok(reference)
+    }
 }
 
 /// Checks full snapshot/journal/control/anchor identities and captured transition.
@@ -158,8 +202,11 @@ pub fn authenticate_complete_restore_owner_state_data(
     prepare.native_anchor.verify(data.anchor_bytes)?;
     let snapshot: NativeSnapshotData = serde::Deserialize::deserialize(&snapshot_value)
         .map_err(crucible_node_contract::ContractError::from)?;
-    let journal: SettledJournalData = serde::Deserialize::deserialize(&journal_value)
-        .map_err(crucible_node_contract::ContractError::from)?;
+    let journal = decode_settled_journal_data(&journal_value)?;
+    // Only the selected complete edition closes the fourth historical owner.
+    // Its full reference is MAC/index-bound; native model restoration never
+    // recreates or invokes the historical host registrar behind that reference.
+    journal.require_complete_registry_data()?;
     if serde_json::to_value(&snapshot).map_err(crucible_node_contract::ContractError::from)?
         != snapshot_value
         || serde_json::to_value(&journal).map_err(crucible_node_contract::ContractError::from)?
@@ -176,7 +223,6 @@ pub fn authenticate_complete_restore_owner_state_data(
     request.matches_response(&data.request.capture_terminal)?;
 
     if snapshot.schema != "source-owned.packet-native-continuation/11"
-        || journal.schema != "source-owned.packet-native-settled-journal/11"
         || journal.owner != restoration.target_owner
         || journal.runtime != restoration.source_runtime
         || journal.backend_implementation != restoration.backend_implementation
@@ -269,3 +315,7 @@ fn exact_json(
 fn refused() -> ProviderError {
     ProviderError::Correlation("complete restore owner state provenance")
 }
+
+#[cfg(test)]
+#[path = "owner_journal_tests.rs"]
+mod journal_tests;

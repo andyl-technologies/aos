@@ -363,6 +363,25 @@ impl SimulationNode for PreparedHostSchedulingNode {
         self.capture_original_common_state(ticket, activation, source, runtime_object, limits)
     }
 
+    fn capture_original_lineage_continuation_with_ticket_into(
+        &mut self,
+        ticket: &crate::node_contract::OriginalLineageOwnerCaptureTicket<'_>,
+        activation: &crate::node_contract::WorldActivation,
+        source: &crate::node_contract::OriginalLineageRuntimeRecord,
+        runtime_object: &crate::node_scheduling::InputPayload,
+        limits: crate::node_contract::NativeCaptureLimits,
+        completed: &mut Option<crate::node_contract::InstalledOriginalLineageCapture>,
+    ) -> Result<(), OperationFailure> {
+        self.capture_original_common_state_into(
+            ticket,
+            activation,
+            source,
+            runtime_object,
+            limits,
+            completed,
+        )
+    }
+
     fn begin_operation(&mut self, _: &OperationAdmission) -> Submission {
         Submission::Refused(Self::refuse())
     }

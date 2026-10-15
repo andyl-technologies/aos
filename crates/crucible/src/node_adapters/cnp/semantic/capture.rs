@@ -253,7 +253,40 @@ impl CnpSemanticCaptureScope<'_> {
         request_id: crucible_node_contract::Id,
         request: BeginRequest,
     ) -> Result<ResponseBody, OperationFailure> {
+        let mut completed = None;
+        self.call_original_capture_into(
+            ticket,
+            record,
+            runtime_object,
+            request_id,
+            request,
+            &mut completed,
+        )?;
+        completed.ok_or_else(|| refused("original Capture result was not retained"))
+    }
+
+    /// Retains the actual Capture reply before final original source checks.
+    ///
+    /// This uses the same ticket and controller path as `call_original_capture`.
+    /// Failure or unwind after dispatch leaves the caller's completed result and
+    /// original SDK journal intact; a new request or deadline is never inferred.
+    ///
+    /// # Errors
+    /// Refuses an occupied result or every changed-ticket, currentness, budget
+    /// and transport condition enforced by the original capture call.
+    pub fn call_original_capture_into(
+        &mut self,
+        ticket: &OriginalLineageOwnerCaptureTicket<'_>,
+        record: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
+        request_id: crucible_node_contract::Id,
+        request: BeginRequest,
+        completed: &mut Option<ResponseBody>,
+    ) -> Result<(), OperationFailure> {
         self.realization()?;
+        if completed.is_some() {
+            return Err(refused("original Capture result slot is occupied"));
+        }
         let active = self
             .native
             .runtime
@@ -320,9 +353,10 @@ impl CnpSemanticCaptureScope<'_> {
                 ticket.owner().owner.clone(),
                 request,
             )
-            .map_err(unknown);
+            .map_err(unknown)
+            .map(|response| *completed = Some(response));
         call.finish(result.is_ok());
-        let response = result?;
+        result?;
         if let Err(error) = self.realization() {
             // Dispatch already crossed the actual original channel. An exit
             // refusal cannot relabel that effect as never attempted. Foreign
@@ -331,7 +365,7 @@ impl CnpSemanticCaptureScope<'_> {
             self.native.read_owner.revoke();
             return Err(super::after_effect(error));
         }
-        Ok(response)
+        Ok(())
     }
 }
 
@@ -344,9 +378,33 @@ impl CnpSemanticNode {
         runtime_object: &InputPayload,
         limits: NativeCaptureLimits,
     ) -> Result<InstalledOriginalLineageCapture, OperationFailure> {
+        let mut completed = None;
+        self.capture_with_original_ticket_into(
+            ticket,
+            activation,
+            record,
+            runtime_object,
+            limits,
+            &mut completed,
+        )?;
+        completed.ok_or_else(|| refused("original owning capture result absent"))
+    }
+
+    pub(super) fn capture_with_original_ticket_into(
+        &mut self,
+        ticket: &OriginalLineageOwnerCaptureTicket<'_>,
+        activation: &WorldActivation,
+        record: &OriginalLineageRuntimeRecord,
+        runtime_object: &InputPayload,
+        limits: NativeCaptureLimits,
+        completed: &mut Option<InstalledOriginalLineageCapture>,
+    ) -> Result<(), OperationFailure> {
         // Raw creator PID precedes thread-local affinity and any inherited cell.
         self.preparation.guard.custody().map_err(unknown)?;
         self.current()?;
+        if completed.is_some() {
+            return Err(refused("original owning capture destination is occupied"));
+        }
         let source = self.source()?;
         let install = source.installation();
         if install.guarantees.capture_scope != crucible_node_contract::CaptureScope::CompleteModel
@@ -392,7 +450,7 @@ impl CnpSemanticNode {
             )
             .map_err(|error| refused(error.to_string()))?;
 
-        let result = source.capture_original_lineage_continuation_with_ticket(
+        let result = source.capture_original_lineage_continuation_with_ticket_into(
             CnpSemanticCaptureScope {
                 source: source.as_ref(),
                 native,
@@ -405,6 +463,7 @@ impl CnpSemanticNode {
             record,
             runtime_object,
             limits,
+            completed,
         );
         // An arbitrary source callback may not publish a copied parent result
         // or touch inherited node state after returning in another process.
@@ -415,9 +474,9 @@ impl CnpSemanticNode {
         {
             self.state_mut()?.quarantined = true;
         }
-        let result = result?;
+        result?;
         self.current()?;
-        Ok(result)
+        Ok(())
     }
 }
 

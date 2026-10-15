@@ -4909,6 +4909,40 @@ in one 9.79-second invocation. Both actual dependency files consume the selected
 all-target run. Repository test optimization, debug assertions and overflow
 checks remain unchanged. Earlier failed invocations retain their own outcomes.
 
+The subsequent capture-result and registry-custody batch selects 329 source and
+Cargo roles. It adds retained capture slots, original registry ownership and
+storage observations, and fixes the choice of descriptor-based child custody
+before launch. Unsupported child acquisition retains the original standard
+child; successful transfer keeps the same process descriptor through repeated
+waits and typed exit-status observation. Legacy launch modes remain separate.
+
+Normal four-crate checking with every feature and test target passes in 66.98
+seconds. Earlier compiler failures exposed a production borrow lifetime and
+private fixture-field assumptions; reviewed corrections preserve the actual
+owner and capacity checks. Fresh repository-profile Core and provider test
+executables build in 898.77 and 142.05 seconds. Their actual dependency files
+consume all 108 selected Core and 183 selected provider Rust roles.
+
+One hundred focused controls pass: seventeen Core data controls, seventy-three
+provider controls, nine original-child controls and a separate real packet
+startup regression. Five of the child controls and the packet regression create
+real helpers; the controls require original-child reaping and empty process
+groups. Six child controls use explicit ignored-test selection. Actual test
+inventories precede dispatch. The first Core inventory has three inaccurate
+anticipated module paths; its postvalidation failure is retained, and corrected
+selectors resolve against the same executable. The packet regression first
+refuses its directory-scan preflight before creating a child. A separately
+reviewed runner raises the finite entry limit, retains the two-second
+scan deadline and charges both retained and new scratch roots; the unchanged
+regression then passes.
+
+These results cover the selected capture and custody mechanics. The three new
+daemon integration controls remain unrun, and the preceding five daemon passes
+retain their earlier source identity. Complete Capture execution, whole-world
+budget admission, source removal and two fresh-world restorations still need
+their actual producer and consumer joins. Strict checking and the required
+application and ABI/license gates remain separate outstanding checks.
+
 Fresh strict Clippy still stops with 20 provider findings, including missing
 restore consumers and ordinary lint issues. No strict or full Capture pass
 is inferred from normal typing or focused controls. Required application

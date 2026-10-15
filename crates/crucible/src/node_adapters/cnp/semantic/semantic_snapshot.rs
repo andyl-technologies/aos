@@ -130,7 +130,30 @@ impl CnpSemanticCaptureScope<'_> {
         &self,
         reservation: &mut Option<CnpSemanticSnapshotReservation>,
     ) -> Result<CnpOriginalSemanticSnapshot, OperationFailure> {
+        let mut completed = None;
+        self.take_original_semantic_snapshot_into(reservation, &mut completed)?;
+        completed.ok_or_else(|| refused("original semantic snapshot was not retained"))
+    }
+
+    /// Retains the original semantic producer before the final custody fence.
+    ///
+    /// The same preallocated bank and opaque activation move into the supplied
+    /// destination. A later refusal or unwind leaves that owner in the caller.
+    ///
+    /// # Errors
+    /// Refuses occupied custody and the same foreign, changed, used or excessive
+    /// source conditions as the original semantic snapshot operation.
+    pub fn take_original_semantic_snapshot_into(
+        &self,
+        reservation: &mut Option<CnpSemanticSnapshotReservation>,
+        completed: &mut Option<CnpOriginalSemanticSnapshot>,
+    ) -> Result<(), OperationFailure> {
         self.realization()?;
+        if completed.is_some() {
+            return Err(refused(
+                "original semantic snapshot destination is occupied",
+            ));
+        }
         let runtime = self
             .native
             .runtime
@@ -155,14 +178,16 @@ impl CnpSemanticCaptureScope<'_> {
         let bank = reservation
             .take()
             .ok_or_else(|| refused("original semantic reservation disappeared"))?;
-        Ok(CnpOriginalSemanticSnapshot {
+        *completed = Some(CnpOriginalSemanticSnapshot {
             storage_origin: super::retained_storage::StorageOrigin::current(),
             payload: InputPayload {
                 reference,
                 bytes: bank.bytes,
             },
             active,
-        })
+        });
+        self.realization()?;
+        Ok(())
     }
 }
 

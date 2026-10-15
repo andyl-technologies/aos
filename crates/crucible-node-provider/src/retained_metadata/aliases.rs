@@ -118,12 +118,7 @@ impl MetadataAliasBank {
     /// # Errors
     /// Refuses zero or more than131072 rows, overflow or failed reservation.
     pub fn reserve(maximum: usize) -> Result<Self, ProviderError> {
-        if maximum == 0 || maximum > 131072 {
-            return Err(credit());
-        }
-        maximum
-            .checked_mul(std::mem::size_of::<AliasRow>() + std::mem::size_of::<AliasKey>())
-            .ok_or_else(credit)?;
+        Self::reservation_requested_bytes(maximum)?;
         let mut rows = Vec::new();
         let mut keys = Vec::new();
         rows.try_reserve_exact(maximum).map_err(|_| credit())?;
@@ -134,6 +129,25 @@ impl MetadataAliasBank {
             maximum,
             comparisons: 0,
         })
+    }
+
+    /// Quotes both requested vector backings before any alias-bank allocation.
+    ///
+    /// The selected row count is data only. The installed source separately
+    /// admits this term with its simultaneous owners before calling reserve,
+    /// then checks the actual retained capacities. Allocator rounding, container
+    /// headers and traversal stack are independent terms.
+    ///
+    /// # Errors
+    /// Refuses zero, more than 131072 rows or checked typed-layout overflow.
+    pub fn reservation_requested_bytes(maximum_rows: usize) -> Result<usize, ProviderError> {
+        if maximum_rows == 0 || maximum_rows > 131072 {
+            return Err(credit());
+        }
+        let per_row = std::mem::size_of::<AliasRow>()
+            .checked_add(std::mem::size_of::<AliasKey>())
+            .ok_or_else(credit)?;
+        maximum_rows.checked_mul(per_row).ok_or_else(credit)
     }
 
     /// Reports actual requested storage of both precharged vectors.

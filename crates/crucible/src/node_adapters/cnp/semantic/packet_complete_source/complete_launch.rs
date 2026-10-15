@@ -79,8 +79,10 @@ impl PacketCompleteSemanticSource {
                 "complete-byte Source launch reservation was already spent",
             ));
         }
-        Ok(CnpSemanticLaunchReservation::reserve_complete_bytes(
-            directory, executable, slot,
-        ))
+        Ok(
+            CnpSemanticLaunchReservation::reserve_complete_original_child(
+                directory, executable, slot,
+            ),
+        )
     }
 }

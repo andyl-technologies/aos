@@ -20,7 +20,9 @@ mod current;
 pub use current::CnpSemanticSourceRead;
 pub(super) use current::ReadCall;
 
+mod complete_registry;
 mod executable_guard;
+mod original_child;
 mod retained_storage;
 
 mod reservation;
@@ -71,7 +73,8 @@ pub trait CnpSemanticProcessSlot {
 /// before the supervisor may discharge its actual native obligations.
 pub struct CnpSemanticProcessCustody {
     creator_process: u32,
-    pub(super) child: Option<Child>,
+    child: Option<Child>,
+    original_child: Option<original_child::OriginalChild>,
     provider_pid: u32,
     pub(super) directory: PathBuf,
     pub(super) controller: Option<CnpController>,
@@ -102,6 +105,21 @@ pub struct CnpSemanticProcessCustody {
 }
 
 impl CnpSemanticProcessCustody {
+    fn has_original_child(&self) -> bool {
+        self.child.is_some() || self.original_child.is_some()
+    }
+
+    fn try_wait_original_child(&mut self) -> Result<Option<ExitStatus>, ProviderError> {
+        self.ensure_origin()?;
+        match (&mut self.child, &mut self.original_child) {
+            (Some(child), None) => child.try_wait().map_err(ProviderError::from),
+            (None, Some(child)) => child.try_wait(),
+            _ => Err(ProviderError::Correlation(
+                "generic original child custody is absent or conflicting",
+            )),
+        }
+    }
+
     pub(super) fn ensure_origin(&self) -> Result<(), ProviderError> {
         if self.creator_process != std::process::id() {
             return Err(ProviderError::Correlation(
@@ -160,6 +178,9 @@ impl CnpSemanticProcessCustody {
     /// session or different measured actual executable.
     pub fn authenticate_process(&self) -> Result<(), ProviderError> {
         self.ensure_origin()?;
+        if let Some(child) = &self.original_child {
+            child.ensure_unreaped()?;
+        }
         let executable = self
             .executable_guard
             .as_ref()
@@ -246,11 +267,7 @@ impl CnpSemanticProcessCustody {
             handshake.contain();
         }
         if self.reaped.is_none() {
-            self.reaped = self
-                .child
-                .as_mut()
-                .ok_or(ProviderError::Correlation("generic original Child absent"))?
-                .try_wait()?;
+            self.reaped = self.try_wait_original_child()?;
         }
         if self.reaped.is_some() {
             return group_empty(self.provider_pid);
@@ -267,11 +284,7 @@ impl CnpSemanticProcessCustody {
             kill_process_group(group, Signal::KILL).map_err(std::io::Error::from)?;
             self.killed = true;
         }
-        self.reaped = self
-            .child
-            .as_mut()
-            .ok_or(ProviderError::Correlation("generic original Child absent"))?
-            .try_wait()?;
+        self.reaped = self.try_wait_original_child()?;
         Ok(self.reaped.is_some() && group_empty(self.provider_pid)?)
     }
 }
@@ -285,6 +298,7 @@ impl Drop for CnpSemanticProcessCustody {
         // policy destructors, or discharge the parent's actual Child. Only the
         // duplicate allocations are retained until that foreign process exits.
         std::mem::forget(self.child.take());
+        std::mem::forget(self.original_child.take());
         std::mem::forget(self.controller.take());
         std::mem::forget(self.protocol_supervisor.get_mut().take());
         std::mem::forget(self.handshake.take());
@@ -356,6 +370,7 @@ impl CnpSemanticLaunchGuard {
             custody: Some(Box::new(CnpSemanticProcessCustody {
                 creator_process,
                 child: Some(child),
+                original_child: None,
                 provider_pid,
                 directory,
                 controller: None,
@@ -541,7 +556,7 @@ impl CnpSemanticLaunchGuard {
         self.ensure_origin()?;
         self.custody
             .as_deref()
-            .filter(|custody| custody.child.is_some())
+            .filter(|custody| custody.has_original_child())
             .ok_or(ProviderError::Correlation(
                 "generic custody unavailable or not launched",
             ))
@@ -568,7 +583,7 @@ impl CnpSemanticLaunchGuard {
         }
         if let Some(custody) = self.custody.take() {
             custody.read_owner.revoke();
-            if custody.child.is_some() {
+            if custody.has_original_child() {
                 if let Some(slot) = self.slot.as_mut() {
                     slot.retain(*custody);
                 } else {

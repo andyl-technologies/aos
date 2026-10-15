@@ -617,7 +617,7 @@ impl ProtocolSnapshotReservation {
         Ok(())
     }
 
-    fn encode_buffer(
+    pub(crate) fn encode_buffer(
         bytes: &mut Vec<u8>,
         maximum: usize,
         state: &impl Serialize,
@@ -1611,3 +1611,9 @@ fn original_association_metadata(
     }
     Ok(observer.finish())
 }
+
+mod original_creator;
+pub(crate) use original_creator::OriginalProtocolCreatorView;
+
+mod host_metadata_quote;
+pub use host_metadata_quote::OriginalOwned11StateQuote;

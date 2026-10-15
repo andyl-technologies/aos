@@ -71,6 +71,7 @@ impl CnpSemanticProcessCustody {
         let Self {
             creator_process: _,
             child,
+            original_child,
             provider_pid: _,
             directory,
             controller,
@@ -101,6 +102,16 @@ impl CnpSemanticProcessCustody {
         counter.charge(installed_identity)?;
         counter.rc(read_owner)?;
 
+        if child.is_some() && original_child.is_some() {
+            return Err(super::super::refused(
+                "original process has conflicting std and descriptor child owners",
+            ));
+        }
+        if let Some(original) = original_child {
+            // OwnedFd, creator identity and typed exit cache are concrete inline
+            // fields already counted with Self. Kernel descriptor state is separate.
+            original.retained_metadata_data().map_err(unknown)?;
+        }
         if let Some(child) = child {
             // Child's root is inline in Self. Kernel PID/FD tables are separate;
             // no private std process/pipe heap is inferred from size_of<Child>.
@@ -171,21 +182,45 @@ impl CnpSemanticProcessCustody {
             )?;
             counter.metadata(&handshake.retained_metadata_facts_data().map_err(unknown)?)?;
         }
-        if let Some(value) = registration {
-            counter.rc(value)?;
-            counter.unknowns.installed_source_owners = true;
+        if let Some(value) = registration
+            && counter.rc(value)?
+        {
+            let nested = value.retained_requested_storage_data(counter.remaining())?;
+            self.storage_origin_data()?;
+            match nested {
+                Some(bytes) => counter.add(bytes)?,
+                None => counter.unknowns.installed_source_owners = true,
+            }
         }
-        if let Some(value) = source {
-            counter.rc(value)?;
-            counter.unknowns.installed_source_owners = true;
+        if let Some(value) = source
+            && counter.rc(value)?
+        {
+            let nested = value.retained_requested_storage_data(counter.remaining())?;
+            self.storage_origin_data()?;
+            match nested {
+                Some(bytes) => counter.add(bytes)?,
+                None => counter.unknowns.installed_source_owners = true,
+            }
         }
-        if let Some(value) = acceptance {
-            counter.rc(value)?;
-            counter.unknowns.installed_source_owners = true;
+        if let Some(value) = acceptance
+            && counter.rc(value)?
+        {
+            let nested = value.retained_requested_storage_data(counter.remaining())?;
+            self.storage_origin_data()?;
+            match nested {
+                Some(bytes) => counter.add(bytes)?,
+                None => counter.unknowns.installed_source_owners = true,
+            }
         }
-        if let Some(value) = conformance {
-            counter.rc(value)?;
-            counter.unknowns.installed_source_owners = true;
+        if let Some(value) = conformance
+            && counter.rc(value)?
+        {
+            let nested = value.retained_requested_storage_data(counter.remaining())?;
+            self.storage_origin_data()?;
+            match nested {
+                Some(bytes) => counter.add(bytes)?,
+                None => counter.unknowns.installed_source_owners = true,
+            }
         }
         if let Some(plan) = collection_plan {
             // The original private Plan walker conservatively charges its

@@ -10,6 +10,7 @@
 //!  cut,ordinal,runtime,backend_implementation,semantic,ancestry,
 //!  native_snapshot,native_control,native_anchor,native_after_protocol,
 //!  host_protocol,confirmation_request,confirmation}
+//! journal/12 additionally requires host_extension_registry; journal/11 forbids it.
 //! ```
 
 use super::*;
@@ -37,6 +38,10 @@ use crucible_node_provider::{
 /// Names the explicit local native settled-journal edition.
 pub const PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA: &str =
     "source-owned.packet-native-settled-journal/11";
+
+/// Names the explicit complete registry-bearing local journal edition.
+pub const PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA: &str =
+    "source-owned.packet-native-settled-journal/12";
 
 /// Retains the complete reference-bearing local Capture/confirmation association.
 ///
@@ -73,6 +78,10 @@ pub struct PacketCompleteSettledJournal {
     pub native_after_protocol: ContentRef,
     /// Names the actual full host complete state after the fourth Poll settles.
     pub host_protocol: ContentRef,
+    /// Names the separately encoded full host registry and capacity/alias rosters.
+    /// Old edition11 omits this field; edition12 requires a nonnullable reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_extension_registry: Option<ContentRef>,
     /// Names the distinct original confirmation Poll.
     pub confirmation_request: Id,
     /// Retains the exact original confirmation receipt and all four full refs.
@@ -86,6 +95,18 @@ impl PacketCompleteSettledJournal {
     /// Refuses malformed/oversized JSON, unknown fields or incomplete references.
     pub fn decode_data(bytes: &[u8], maximum_bytes: usize) -> Result<Self, OperationFailure> {
         let value = canonical::parse_json(bytes, maximum_bytes).map_err(unknown)?;
+        let schema = value.get("schema").and_then(serde_json::Value::as_str);
+        let registry = value.get("host_extension_registry");
+        match (schema, registry) {
+            (Some(PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA), None) => {}
+            (Some(PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA), Some(reference))
+                if !reference.is_null() => {}
+            _ => {
+                return Err(refused(
+                    "complete journal registry edition or required field differs",
+                ));
+            }
+        }
         let journal: Self = serde_json::from_value(value).map_err(unknown)?;
         journal.validate_data()?;
         Ok(journal)
@@ -99,7 +120,17 @@ impl PacketCompleteSettledJournal {
         self.confirmation.validate_data().map_err(unknown)?;
         self.participants.validate().map_err(unknown)?;
         self.cut.validate().map_err(unknown)?;
-        if self.schema != PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA
+        let registry_class = match self.schema.as_str() {
+            PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA => self.host_extension_registry.is_none(),
+            PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA => self
+                .host_extension_registry
+                .as_ref()
+                .is_some_and(|reference| {
+                    reference.media_type == registry_capture::HOST_REGISTRY_MEDIA
+                }),
+            _ => false,
+        };
+        if !registry_class
             || self.participants.is_empty()
             || self.confirmation_request == self.confirmation.capture.capture_request_id
             || self.native_snapshot != self.confirmation.capture.native_snapshot_ref
@@ -116,7 +147,7 @@ impl PacketCompleteSettledJournal {
     }
 
     /// Borrows every fixed dependency occurrence without allocating a roster.
-    pub fn dependencies(&self) -> [&ContentRef; 9] {
+    pub fn dependencies(&self) -> impl Iterator<Item = &ContentRef> {
         [
             &self.runtime,
             &self.backend_implementation,
@@ -128,6 +159,8 @@ impl PacketCompleteSettledJournal {
             &self.native_after_protocol,
             &self.host_protocol,
         ]
+        .into_iter()
+        .chain(self.host_extension_registry.iter())
     }
 
     /// Authenticates exact signed owner membership and unchanged Runtime7 scope.
@@ -192,7 +225,11 @@ impl PacketCompleteSettledJournal {
         key: &NativeStateKey,
         content: &VerifiedStateContent,
     ) -> Result<(), OperationFailure> {
-        let value = Self::backend_identity_data(installed, key);
+        let value = if self.schema == PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA {
+            Self::backend_registry_identity_data(installed, key)
+        } else {
+            Self::backend_identity_data(installed, key)
+        };
         let bytes = canonical::canonical_json(&value).map_err(unknown)?;
         self.backend_implementation
             .verify(&bytes)
@@ -217,6 +254,44 @@ impl PacketCompleteSettledJournal {
             "capacity_records":METADATA_CAPACITY_RECORD_FORMAT,
             "controller_class":COMPLETE_CONTROLLER_FORMAT,
             "connection_class":COMPLETE_CONNECTION_FORMAT,
+            "native_connection_class":COMPLETE_NATIVE_CONNECTION_FORMAT,
+            "native_service_class":COMPLETE_NATIVE_SERVICE_FORMAT,
+        })
+    }
+
+    /// Requires the full registry-bearing class for complete archive enrollment.
+    ///
+    /// Edition11 remains historical data but cannot supply a complete target.
+    ///
+    /// # Errors
+    /// Refuses old/unknown editions, absent registry data or another full media role.
+    pub fn require_complete_registry_data(&self) -> Result<&ContentRef, OperationFailure> {
+        self.validate_data()?;
+        if self.schema != PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA {
+            return Err(refused(
+                "complete archive requires registry-bearing journal12",
+            ));
+        }
+        self.host_extension_registry
+            .as_ref()
+            .ok_or_else(|| refused("complete journal registry reference absent"))
+    }
+
+    /// Builds the explicitly registry-bearing measured backend data tuple.
+    pub fn backend_registry_identity_data(
+        installed: &ImplementationIdentity,
+        key: &NativeStateKey,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "schema":"source-owned.packet-complete-archive-backend-before/15",
+            "native_snapshot_class":"source-owned.packet-native-continuation/11",
+            "implementation":installed,"native_key":key,
+            "journal":PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA,
+            "ancestry_class":PacketCompleteSemanticSource::REFERENCE_ANCESTRY_SCHEMA,
+            "capacity_records":METADATA_CAPACITY_RECORD_FORMAT,
+            "controller_class":COMPLETE_CONTROLLER_FORMAT,
+            "connection_class":COMPLETE_CONNECTION_FORMAT,
+            "host_extension_registry_class":crucible_node_provider::handshake::ORIGINAL_HOST_EXTENSION_REGISTRY_FORMAT,
             "native_connection_class":COMPLETE_NATIVE_CONNECTION_FORMAT,
             "native_service_class":COMPLETE_NATIVE_SERVICE_FORMAT,
         })
@@ -344,3 +419,108 @@ struct BoundaryHeader<'a> {
     #[serde(borrow)]
     sequence: &'a str,
 }
+
+impl PacketCompleteSemanticSource {
+    /// Binds the actual retained registry body into a complete local journal.
+    ///
+    /// This component step preserves every other journal field. Its backend
+    /// reference must separately name `backend_registry_identity_data`, and the
+    /// actual factory still verifies the full semantic, literal and signed Core
+    /// closure. It does not complete Capture or issue restoration permission.
+    /// The new reference remains in the caller's journal on a final fence failure.
+    ///
+    /// # Errors
+    /// Refuses another actual capture scope, repeated binding, changed original
+    /// host/native payloads, absent registry custody or insufficient simultaneous
+    /// reference-copy storage. The caller supplies its other retained bytes.
+    pub fn bind_original_complete_registry_journal_data(
+        &self,
+        scope: &CnpSemanticCaptureScope<'_>,
+        journal: &mut PacketCompleteSettledJournal,
+        additional_retained_bytes: usize,
+        maximum_bytes: usize,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_witness_scope(&scope.realization()?)?;
+        journal.validate_data()?;
+        if journal.schema != PACKET_COMPLETE_SETTLED_JOURNAL_SCHEMA
+            || journal.host_extension_registry.is_some()
+            || journal.schema.capacity() < PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA.len()
+        {
+            return Err(refused(
+                "complete registry journal binding unavailable or repeated",
+            ));
+        }
+        {
+            let registry = self.original_complete_registry_payload_data()?;
+            registry
+                .reference
+                .verify(&registry.bytes)
+                .map_err(unknown)?;
+            if registry.reference.media_type != registry_capture::HOST_REGISTRY_MEDIA {
+                return Err(refused("original registry body has another media role"));
+            }
+            let banks = self
+                .capture_banks
+                .try_borrow()
+                .map_err(|_| refused("journal original capture banks are borrowed"))?;
+            let banks = banks
+                .as_ref()
+                .ok_or_else(|| refused("journal original banks absent"))?;
+            let (host, host_bytes) = banks
+                .protocol_payload
+                .as_ref()
+                .ok_or_else(|| refused("journal original host payload absent"))?;
+            host.validate_original_payload(host_bytes)
+                .map_err(unknown)?;
+            journal.host_protocol.verify(host_bytes).map_err(unknown)?;
+            for (object, expected) in banks.native_objects.iter().zip([
+                &journal.native_snapshot,
+                &journal.native_control,
+                &journal.native_anchor,
+            ]) {
+                let object = object
+                    .as_ref()
+                    .ok_or_else(|| refused("journal native object absent"))?;
+                if &object.reference != expected {
+                    return Err(refused(
+                        "journal native object differs from original custody",
+                    ));
+                }
+                expected.verify(&object.bytes).map_err(unknown)?;
+            }
+            let after = banks
+                .native_after_object
+                .as_ref()
+                .ok_or_else(|| refused("journal original native after body absent"))?;
+            if after.reference != journal.native_after_protocol {
+                return Err(refused(
+                    "journal after reference differs from original custody",
+                ));
+            }
+            after.reference.verify(&after.bytes).map_err(unknown)?;
+            retained_values::sum(
+                [
+                    additional_retained_bytes,
+                    NodeRuntime::capture_reference_storage(&registry.reference).map_err(unknown)?,
+                ],
+                maximum_bytes,
+            )?;
+
+            journal.host_extension_registry = Some(registry.reference.clone());
+            // The two explicit edition strings have the same extent. This
+            // update uses the admitted original String allocation without growth.
+            journal.schema.clear();
+            journal
+                .schema
+                .push_str(PACKET_COMPLETE_SETTLED_REGISTRY_JOURNAL_SCHEMA);
+        }
+        journal.validate_data()?;
+        self.authenticate_witness_scope(&scope.realization()?)
+    }
+}
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- Closed journal data controls fail on any unexpected decode or fixture error.
+#[allow(clippy::unwrap_used)]
+#[path = "archive_journal/registry_tests.rs"]
+mod registry_tests;

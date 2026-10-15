@@ -138,6 +138,8 @@ pub(super) fn run() {
     // The same holders survive every original peer or trusted callback failure.
     let mut original_writers: [Option<DeadlineStream>; 3] = std::array::from_fn(|_| None);
     let mut original_controllers: [Option<CnpController>; 3] = std::array::from_fn(|_| None);
+    let mut original_plain_handshakes: [Option<crucible_node_provider::handshake::Handshake>; 3] =
+        std::array::from_fn(|_| None);
     let mut original_typed_handshakes: [Option<
         crucible_node_provider::handshake::ExtensionHandshake,
     >; 3] = std::array::from_fn(|_| None);
@@ -218,10 +220,10 @@ pub(super) fn run() {
                 }
             };
             let (handshake, mut verifier, hello) = handshakes[member].take().unwrap();
+            original_plain_handshakes[member] = Some(handshake);
             original_typed_handshakes[member] = Some(
-                crucible_node_provider::handshake::ExtensionHandshake::new(
-                    handshake,
-                    Rc::new(transport::EmptySelectedExtensions),
+                crucible_node_provider::handshake::ExtensionHandshake::from_original_empty_registry_retained(
+                    &mut original_plain_handshakes[member],
                 )
                 .unwrap(),
             );

@@ -21,6 +21,24 @@ use super::{
 pub trait CnpSemanticConformanceAuthority:
     crate::node_admission::ConformanceAdmissionAuthority
 {
+    /// Observes this same installed owner's nested requested storage as data.
+    ///
+    /// The caller charges the actual Rc header and inline payload separately.
+    /// Supported concrete implementations walk their actual retained capacities
+    /// and shared roots under original process/thread guards. None preserves an
+    /// unresolved owner; neither a configured maximum nor encoded length is a
+    /// backing observation. This grants no native, source or Capture authority.
+    ///
+    /// # Errors
+    /// Refuses a foreign origin, unsupported mutable loan, arithmetic overflow
+    /// or actual nested storage above the supplied bound.
+    fn retained_requested_storage_data(
+        &self,
+        _maximum: usize,
+    ) -> Result<Option<usize>, OperationFailure> {
+        Ok(None)
+    }
+
     /// Authenticates the complete original plan and source selection before realization.
     ///
     /// Callers that launch a process must also make this check before allocation.

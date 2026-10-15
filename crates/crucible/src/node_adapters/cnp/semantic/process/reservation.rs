@@ -22,6 +22,7 @@ use super::{CnpSemanticLaunchGuard, CnpSemanticProcessCustody, CnpSemanticProces
 pub struct CnpSemanticLaunchReservation {
     guard: CnpSemanticLaunchGuard,
     complete_bytes: bool,
+    original_pidfd: bool,
     attempted: bool,
     authenticated: bool,
 }
@@ -47,7 +48,7 @@ impl CnpSemanticLaunchReservation {
         executable: ContentRef,
         slot: Box<dyn CnpSemanticProcessSlot>,
     ) -> Self {
-        Self::reserve_selected(directory, executable, slot, false)
+        Self::reserve_selected(directory, executable, slot, false, false)
     }
 
     /// Reserves complete-only executable custody without creating a lease worker.
@@ -65,7 +66,23 @@ impl CnpSemanticLaunchReservation {
         executable: ContentRef,
         slot: Box<dyn CnpSemanticProcessSlot>,
     ) -> Self {
-        Self::reserve_selected(directory, executable, slot, true)
+        Self::reserve_selected(directory, executable, slot, true, false)
+    }
+
+    /// Fixes complete-byte custody and concrete original-child ownership before birth.
+    ///
+    /// This selected Source entry retains the actual std child through every
+    /// descriptor and identity check. Unsupported acquisition refuses with that
+    /// child still owned; no legacy handle or PID fallback is substituted.
+    ///
+    /// # Panics
+    /// Propagates a trusted slot identity callback panic before any child exists.
+    pub(in crate::node_adapters::cnp::semantic) fn reserve_complete_original_child(
+        directory: PathBuf,
+        executable: ContentRef,
+        slot: Box<dyn CnpSemanticProcessSlot>,
+    ) -> Self {
+        Self::reserve_selected(directory, executable, slot, true, true)
     }
 
     fn reserve_selected(
@@ -73,6 +90,7 @@ impl CnpSemanticLaunchReservation {
         executable: ContentRef,
         slot: Box<dyn CnpSemanticProcessSlot>,
         complete_bytes: bool,
+        original_pidfd: bool,
     ) -> Self {
         let creator_process = std::process::id();
         let supervision_id = slot.identity();
@@ -80,6 +98,7 @@ impl CnpSemanticLaunchReservation {
         let custody = Box::new(CnpSemanticProcessCustody {
             creator_process,
             child: None,
+            original_child: None,
             provider_pid: 0,
             directory,
             controller: None,
@@ -114,6 +133,7 @@ impl CnpSemanticLaunchReservation {
                 supervision_id,
             },
             complete_bytes,
+            original_pidfd,
             attempted: false,
             authenticated: false,
         }
@@ -169,6 +189,35 @@ impl CnpSemanticLaunchReservation {
         };
         custody.executable_guard = Some(Rc::new(executable));
         custody.authenticate_process()?;
+        if self.original_pidfd {
+            if custody.original_child.is_some() {
+                return Err(ProviderError::Correlation(
+                    "selected original descriptor was already retained",
+                ));
+            }
+            // The original std Child is still in this same private holder. No
+            // callback or competing reaper receives it during birth transfer.
+            let child = custody.child.as_ref().ok_or(ProviderError::Correlation(
+                "selected birth child is absent before descriptor transfer",
+            ))?;
+            let executable =
+                custody
+                    .executable_guard
+                    .as_ref()
+                    .ok_or(ProviderError::Correlation(
+                        "selected birth executable guard is absent",
+                    ))?;
+            let original = super::original_child::OriginalChild::capture(
+                child,
+                custody.provider_pid,
+                &identity,
+                executable,
+            )?;
+            // All fallible checks finished. Retain the concrete owner before
+            // dropping std Child, whose drop never reaps. Parent streams are None.
+            custody.original_child = Some(original);
+            drop(custody.child.take());
+        }
         self.authenticated = true;
         Ok(())
     }

@@ -26,7 +26,7 @@ pub struct PacketCompleteSourceRetainedStorage {
     pub static_lineage: usize,
     /// Counts actual capture/return banks, fullrefs and SDK snapshot metadata.
     pub capture_banks: usize,
-    /// Counts the retained same-process typed registry metadata owner.
+    /// Counts the retained typed registry owner and its separate complete archive banks.
     pub registry: usize,
     native_reads: [Option<CnpRetainedStorageReport>; 2],
     known_requested_bytes: usize,
@@ -88,11 +88,44 @@ impl PacketCompleteSemanticSource {
     ) -> Result<PacketCompleteSourceRetainedStorage, OperationFailure> {
         self.ensure_origin()?;
         let holders = self.original_complete_holder_storage_data(maximum)?;
+        self.original_complete_storage_with_holders_data(holders, maximum)
+    }
+
+    /// Observes nested backing beneath a separately observed actual Source Rc.
+    ///
+    /// The owning process counter charges this exact Rc's data/header using its
+    /// real allocation identity. This walk excludes only that root allocation;
+    /// it retains every existing component and unresolved read-owner obligation.
+    /// A borrowed stack instance cannot claim a reconstructed Rc allocation.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator, missing/borrowed or unsupported original owner,
+    /// arithmetic overflow, or combined requested storage beyond `maximum`.
+    pub(in crate::node_adapters::cnp::semantic) fn original_complete_retained_nested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<PacketCompleteSourceRetainedStorage, OperationFailure> {
+        self.ensure_origin()?;
+        let holders = self.original_complete_nested_holder_storage_data(maximum)?;
+        self.original_complete_storage_with_holders_data(holders, maximum)
+    }
+
+    fn original_complete_storage_with_holders_data(
+        &self,
+        holders: usize,
+        maximum: usize,
+    ) -> Result<PacketCompleteSourceRetainedStorage, OperationFailure> {
         let installation = self.original_complete_installation_storage_data(maximum)?;
         let boot_association = self.original_complete_boot_association_storage_data(maximum)?;
         let static_lineage = self.original_complete_static_lineage_storage_data(maximum)?;
         let capture_banks = self.original_complete_capture_bank_storage_data(maximum)?;
-        let registry = self.original_extension_registry_storage_data(maximum)?;
+        let registry = retained_values::sum(
+            [
+                self.original_extension_registry_storage_data(maximum)?,
+                self.original_registry_capture_storage_data(maximum)?,
+            ],
+            maximum,
+        )?;
         let underlying_read = match &self.original {
             CompletePacketOriginal::Producer(source) => {
                 source.complete_retained_native_read_storage_data(maximum)?

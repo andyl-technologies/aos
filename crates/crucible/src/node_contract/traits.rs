@@ -41,6 +41,24 @@ pub struct RetainedRetirementHistory {
 /// descriptions do not provide alternate mutation paths. Implementations need
 /// not be `Send` or `Sync`; a worker requires explicit custody transfer.
 pub trait SimulationNode {
+    /// Observes this original node's independently retained requested backing.
+    ///
+    /// The runtime separately charges the actual concrete Box data layout. A
+    /// supported result excludes that root inline value and includes all owned
+    /// child allocations. Equal serialized records do not establish aliases.
+    /// This data-only observation grants no execution, currentness or capture
+    /// permission. Unknown implementations return `None` rather than zero.
+    ///
+    /// # Errors
+    /// Refuses unsupported ownership phases, conflicting loans, foreign origin,
+    /// arithmetic overflow or a requested extent above `maximum`.
+    fn retained_requested_storage_data(
+        &self,
+        _maximum: usize,
+    ) -> Result<Option<usize>, OperationFailure> {
+        Ok(None)
+    }
+
     /// Borrows an opaque original host scheduling node witness when selected.
     ///
     /// Ordinary providers return None. Source metadata cannot create this token;
@@ -517,6 +535,31 @@ pub trait SimulationNode {
         Err(OperationFailure {
             effects: super::EffectKnowledge::None,
             reason: "original ticketed lineage capture is unsupported".into(),
+        })
+    }
+
+    /// Retains a complete original capture in the runtime's already owned slot.
+    ///
+    /// Implementations fill the same destination before final fences and retain
+    /// it on errors or unwind. The default refuses without invoking the older
+    /// return-valued hook: that hook cannot guarantee this custody invariant.
+    /// Ordinary capture APIs and unsupported profiles remain unchanged.
+    ///
+    /// # Errors
+    /// Refuses unsupported into-slot custody, an occupied destination, changed
+    /// original ticket/activation, incomplete settlement, or finite excess.
+    fn capture_original_lineage_continuation_with_ticket_into(
+        &mut self,
+        _ticket: &super::OriginalLineageOwnerCaptureTicket<'_>,
+        _activation: &super::WorldActivation,
+        _source: &super::OriginalLineageRuntimeRecord,
+        _runtime_object: &crate::node_scheduling::InputPayload,
+        _limits: super::NativeCaptureLimits,
+        _completed: &mut Option<super::InstalledOriginalLineageCapture>,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original into-slot ticketed capture is unsupported".into(),
         })
     }
 

@@ -506,3 +506,9 @@ impl OriginalExtensionRegistryOwner {
 fn registry_refused() -> ProviderError {
     ProviderError::Correlation("original closed SDK extension registry differs")
 }
+
+#[path = "original_registry_snapshot.rs"]
+mod original_registry_snapshot;
+pub use original_registry_snapshot::{
+    ORIGINAL_HOST_EXTENSION_REGISTRY_FORMAT, OriginalExtensionRegistryView,
+};
