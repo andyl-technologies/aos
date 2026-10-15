@@ -52,6 +52,8 @@ impl RuntimeAllocationRequests {
         let initialized_vcpus = Layout::array::<AtomicBool>(count).map_err(|_| geometry_error())?;
         let halted_vcpus = Layout::array::<bool>(count).map_err(|_| geometry_error())?;
         let layouts = [
+            // Includes every inline canonical keeper, including Source's
+            // workspace owner; adding one changes this actual containing row.
             Layout::new::<OwnedCallbackRuntimeState>(),
             shared_layout::<LiveCallbackQuiescence>()?,
             shared_layout::<LiveWorkerQuiescence>()?,

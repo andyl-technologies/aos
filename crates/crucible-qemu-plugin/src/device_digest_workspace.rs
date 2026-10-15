@@ -1,21 +1,21 @@
-//! Retains one admitted writable device-digest mapping until joined cleanup.
+//! Keeps digest-worker ownership separate from Source's physical mapping.
 //!
-//! This private GPL owner accepts only the matching native broker's compulsory
-//! attestation of an already admitted purpose. Descriptor metadata and setup
-//! generations identify that purpose; they cannot issue it. The worker borrows
-//! the mapping, while its parent control retains the actual allocation.
+//! Production mapping creation and canonical custody live in the pinned Runtime.
+//! The physical SDK lends no mutable workspace or worker Original, so this
+//! worker-facing type has no production constructor yet. Its existing mapping
+//! and terminal methods retain their worker behavior. Only explicit lifecycle
+//! fixtures currently construct this holder; operating cutover remains deferred.
 
 // SPDX-License-Identifier: GPL-2.0-only
 
+use std::os::fd::AsRawFd;
+use std::os::fd::IntoRawFd;
 #[cfg(test)]
 use std::os::fd::OwnedFd;
-use std::os::fd::{AsRawFd, IntoRawFd};
 use std::ptr::NonNull;
 
-use crucible_protocol::{DEVICE_DIGEST_WORKSPACE_BYTES, DeviceDigestWorkspaceBinding};
-
-/// Exact private native attestation; no amount or returned allowance is present.
-type NativeWorkspaceClaim = extern "C" fn(u64, u64, u64, u64, u64, u64, u64, i32, i32) -> i32;
+use crucible_protocol::DEVICE_DIGEST_WORKSPACE_BYTES;
+use crucible_protocol::DeviceDigestWorkspaceBinding;
 
 /// Fixed failures that require no diagnostic allocation after refusal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -26,11 +26,8 @@ pub enum DeviceDigestWorkspaceError {
         /// Exact fixed native refusal retained by the original Source owner.
         source: crate::StartupSourceError,
     },
-    /// The running native implementation lacks the compulsory attestation.
-    #[error("the required device workspace admission export is absent")]
-    MissingAdmission,
-    /// The concrete installing native owner refused the fixed purpose.
-    #[error("native device workspace admission refused ({status})")]
+    /// The genuine Source mapping method returned this signed status.
+    #[error("Source workspace mapping refused ({status})")]
     Admission {
         /// Unmodified status from the matched native attestation.
         status: i32,
@@ -57,10 +54,8 @@ pub enum DeviceDigestWorkspaceError {
     },
 }
 
-/// A refused claim retains the exact descriptor even if native acceptance was uncertain.
-///
-/// The caller moves this inline owner into its already retained setup/runtime
-/// holder. A nonzero status cannot prove that a native borrower never accepted.
+/// A local fixture refuses while retaining its exact descriptor.
+#[cfg(test)]
 pub(crate) struct DeviceDigestWorkspacePreparationFailure {
     pub(crate) workspace: DeviceDigestWorkspace,
     pub(crate) source: DeviceDigestWorkspaceError,
@@ -72,7 +67,7 @@ pub(crate) struct DeviceDigestWorkspaceCloseFailure {
     pub(crate) source: DeviceDigestWorkspaceError,
 }
 
-/// Private mapping owner; only a joined parent may close a running worker's view.
+/// Worker-facing holder; production awaits a genuine exclusive Source lease.
 pub(crate) struct DeviceDigestWorkspace {
     descriptor: Option<crate::startup_source::SetupDescriptor>,
     mapping: Option<*mut libc::c_void>,
@@ -87,58 +82,30 @@ pub(crate) struct DeviceDigestWorkspace {
 unsafe impl Send for DeviceDigestWorkspace {}
 
 impl DeviceDigestWorkspace {
-    /// Attests the compulsory original purpose before any worker control birth.
-    ///
-    /// The native export must validate the actual installing plugin, original
-    /// slot and retained resource. Missing/unmatched native source refuses; an
-    /// fd, generation or budget scalar never substitutes for that attestation.
-    pub(crate) fn prepare(
-        plugin_id: u64,
-        process_generation: u64,
+    /// Constructs only the explicit local worker fixture, without a native claim.
+    #[cfg(test)]
+    pub(crate) fn prepare_fixture(
         binding: DeviceDigestWorkspaceBinding,
         descriptor: crate::startup_source::SetupDescriptor,
-        purpose_plan_fd: i32,
     ) -> Result<Self, DeviceDigestWorkspacePreparationFailure> {
-        let mut workspace = Self {
+        let workspace = Self {
             descriptor: Some(descriptor),
             mapping: None,
             owner_process: std::process::id(),
             binding,
             terminal_failure: None,
         };
-        let claim = (|| {
-            let descriptor =
-                workspace
-                    .descriptor
-                    .as_ref()
-                    .ok_or(DeviceDigestWorkspaceError::Ownership {
-                        reason: "preparation descriptor is absent",
-                    })?;
-            validate_descriptor(descriptor, binding)?;
-            let claim = resolve_native_claim()?;
-            let status = claim(
-                plugin_id,
-                process_generation,
-                binding.account_generation,
-                binding.workspace_generation,
-                binding.device,
-                binding.inode,
-                DEVICE_DIGEST_WORKSPACE_BYTES,
-                descriptor.as_raw_fd(),
-                purpose_plan_fd,
-            );
-            if status != 0 {
-                return Err(DeviceDigestWorkspaceError::Admission { status });
-            }
-            Ok(())
-        })();
-        if let Err(source) = claim {
-            // No later retry can clear this uncertainty. The existing holder
-            // keeps the actual owner through matching native containment.
-            workspace.terminal_failure = Some(source);
-            return Err(DeviceDigestWorkspacePreparationFailure { workspace, source });
+        let validation = workspace
+            .descriptor
+            .as_ref()
+            .ok_or(DeviceDigestWorkspaceError::Ownership {
+                reason: "local fixture descriptor is absent",
+            })
+            .and_then(|descriptor| validate_descriptor(descriptor, binding));
+        match validation {
+            Ok(()) => Ok(workspace),
+            Err(source) => Err(DeviceDigestWorkspacePreparationFailure { workspace, source }),
         }
-        Ok(workspace)
     }
 
     /// Installs the mapping inside its already retained worker control.
@@ -161,8 +128,8 @@ impl DeviceDigestWorkspace {
                 reason: "descriptor is absent",
             })?;
 
-        // SAFETY: the descriptor has fixed sealed sizing and writable access;
-        // its actual original purpose was attested before this mapping effect.
+        // SAFETY: this local fixture validated fixed sealed sizing and writable
+        // access. It claims no deployed Source role or operating Original.
         let address = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -320,6 +287,7 @@ impl Drop for DeviceDigestWorkspace {
     }
 }
 
+#[cfg(test)]
 fn validate_descriptor(
     descriptor: &crate::startup_source::SetupDescriptor,
     binding: DeviceDigestWorkspaceBinding,
@@ -362,23 +330,6 @@ fn validate_descriptor(
     Ok(())
 }
 
-fn resolve_native_claim() -> Result<NativeWorkspaceClaim, DeviceDigestWorkspaceError> {
-    // SAFETY: the literal is NUL-terminated and selects only the matching GPL
-    // native runtime. The actual export must authenticate the closed purpose;
-    // resolving its address never supplies funding or returns an allowance.
-    let symbol = unsafe {
-        libc::dlsym(
-            libc::RTLD_DEFAULT,
-            c"qemu_plugin_crucible_device_digest_workspace_claim_v1".as_ptr(),
-        )
-    };
-    if symbol.is_null() {
-        return Err(DeviceDigestWorkspaceError::MissingAdmission);
-    }
-    // SAFETY: the matched native declaration uses this exact scalar signature.
-    Ok(unsafe { std::mem::transmute::<*mut libc::c_void, NativeWorkspaceClaim>(symbol) })
-}
-
 fn system_error(operation: &'static str) -> DeviceDigestWorkspaceError {
     DeviceDigestWorkspaceError::System {
         operation,
@@ -390,7 +341,7 @@ fn system_error(operation: &'static str) -> DeviceDigestWorkspaceError {
 
 #[cfg(test)]
 impl DeviceDigestWorkspace {
-    // A local descriptor/mapping fixture supplies no deployed native claim.
+    // A local descriptor/mapping fixture supplies no deployed Source owner.
     pub(crate) fn test_owner() -> Self {
         use std::os::fd::FromRawFd;
 

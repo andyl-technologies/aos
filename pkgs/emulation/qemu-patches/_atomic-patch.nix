@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "9f8eba359dd2f984bc3b91f1ae2e25cc09f0b4f60be34879b7ea696c7799dcc2";
-  subject = "plugins: accept authenticated configured setup node counts";
-  body = "Accept positive node counts through the supported protocol capacity in the\ninitial reply and acquired mapping. Corroborate slot creation and current\nagainst the exact same authenticated reply count and acquired VMA header,\nwhile preserving canonical parent identity and selected-index bounds.\n\nPreserve version 8 and ABI 32 framing, descriptor and mapping custody,\ninitiating and independent post failures, the complete receiver and eleven\nregistration owners, and all 139 existing scenarios. Bind the actual unit\nand preinit generators to these final whole-file validators.";
-  commit = "ef52a03c6d9bd03ffece0bc27e0b432aeb7a43f9";
-  tree = "4dff309060d322601dc4eb6c4746cde6fc627bf0";
+  sha256 = "ce6fc3af0da264f7f927dedd7b9d87b0707c35d5aeed341578c3b2f8cdec1815";
+  subject = "plugins: retain startup custody and physical workspace ownership";
+  body = "Capture the complete startup Source, Native callback lifecycle, nominal\nregistration groups and receiving custody with their owning SDK surfaces.\nPreserve physical workspace backing and mapping ownership, setup exchange\ncount validation, and genuine declaration ownership across the configured\nSource and preexec producers. These physical holders do not issue operating\ndigest, whole-Park, standing or action authority.\n\nKeep the workspace transfer on the existing public Runtime v3 nominal alias.\nDefine the absent-workspace unit provider after the generated canonical\nSource storage, retaining its genuine earlier prototype and output identity\nchecks. Preserve all 141 scenarios and rebind the owning extractor inputs.\n\nThe source remains inactive; complete operating and terminal joins are\nseparate. Include the actual generator inputs and corresponding-source\nnotices without claiming runtime or complete payment qualification.";
+  commit = "230fd5b6740d793b21d4708c5e7ff4ca1ed228ea";
+  tree = "f349af153c42be10816227eef190388eb6313f67";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-setup-count-cumulative";
+  branchRef = "dplecki/native-workspace-fixture-cumulative";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "9761875d91fc176a11e9405d6129991daf92f2128df5b9c352a5a31a2613eca8";
+  bundleSha256 = "7bab2934af4e4d33a133ec44bcfa0f3a781a4a4b683ce18fe733544f4e62c4f0";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-14T18:07:47-07:00";
+  deterministicPatchDate = "2026-10-15T02:17:44-07:00";
 
   additionalCapabilities = [
     {

@@ -1,17 +1,24 @@
-From ef52a03c6d9bd03ffece0bc27e0b432aeb7a43f9 Mon Sep 17 00:00:00 2001
+From 230fd5b6740d793b21d4708c5e7ff4ca1ed228ea Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 14 Oct 2026 18:07:47 -0700
-Subject: [PATCH] plugins: accept authenticated configured setup node counts
+Date: Thu, 15 Oct 2026 02:17:44 -0700
+Subject: [PATCH] plugins: retain startup custody and physical workspace
+ ownership
 
-Accept positive node counts through the supported protocol capacity in the
-initial reply and acquired mapping. Corroborate slot creation and current
-against the exact same authenticated reply count and acquired VMA header,
-while preserving canonical parent identity and selected-index bounds.
+Capture the complete startup Source, Native callback lifecycle, nominal
+registration groups and receiving custody with their owning SDK surfaces.
+Preserve physical workspace backing and mapping ownership, setup exchange
+count validation, and genuine declaration ownership across the configured
+Source and preexec producers. These physical holders do not issue operating
+digest, whole-Park, standing or action authority.
 
-Preserve version 8 and ABI 32 framing, descriptor and mapping custody,
-initiating and independent post failures, the complete receiver and eleven
-registration owners, and all 139 existing scenarios. Bind the actual unit
-and preinit generators to these final whole-file validators.
+Keep the workspace transfer on the existing public Runtime v3 nominal alias.
+Define the absent-workspace unit provider after the generated canonical
+Source storage, retaining its genuine earlier prototype and output identity
+checks. Preserve all 141 scenarios and rebind the owning extractor inputs.
+
+The source remains inactive; complete operating and terminal joins are
+separate. Include the actual generator inputs and corresponding-source
+notices without claiming runtime or complete payment qualification.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -64041,7 +64048,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5a4c04bc7f69976c6f292aa76e82e733
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..1f2e0967cd5df1cb873de40652d1a4d7b3e680da 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..a807f9279b845fe1a74a124a24b46f80ef20d869 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -66808,7 +66815,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..1f2e0967cd5df1cb873de40652d1a4d7
  
  /**
   * qemu_plugin_u64_set() - set value of a qemu_plugin_u64 for a given vcpu
-@@ -1353,15 +3225,3062 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
+@@ -1353,15 +3225,3116 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
   * @val: new value
   */
  QEMU_PLUGIN_API
@@ -69834,6 +69841,60 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..1f2e0967cd5df1cb873de40652d1a4d7
 +int qemu_plugin_crucible_startup_source_command_receive_identity_return_v1(
 +    qemu_plugin_id_t id, QemuCrucibleCommandReceiveOwner **holder, uint64_t serial);
 +
++/* Physical mapping custody for the separately issued once-carrier workspace
++ * role. The private layout stays Source-owned; this tag is not a wire object.
++ * These methods issue no digest buffer loan or operating Original. */
++typedef struct QemuCrucibleDeviceWorkspaceMapping QemuCrucibleDeviceWorkspaceMapping;
++
++/* Creates under the genuine installing Source owner/thread from its retained
++ * workspace role and recorded fixed-floor reservation. Empty outputs must be
++ * mutually disjoint and exclude Source storage. An absent optional role refuses
++ * ENOENT. Source retains canonical creation custody and publishes out before
++ * precheck, mmap and independent post; an actual VMA/address/extent is saved
++ * before DONTFORK or post can fail. Preserve every born output on a negative
++ * result. The initiating error stays primary, and transition custody prevents
++ * return through outside-lock checks. Address/extent convey physical constructor
++ * output only, not exclusive mutable digest access, worker or Park permission.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_workspace_mapping_create_v1(
++    qemu_plugin_id_t id, QemuCrucibleDeviceWorkspaceMapping **out,
++    void **address, size_t *bytes);
++
++/* Moves the exact creation projection to an empty distinct canonical field
++ * inside the genuine child's already-paid pinned Runtime. Source retains the
++ * child's workspace dependency, writes runtime_field and clears projection
++ * before independent post. Negative post preserves that moved field and all
++ * child/Runtime/role/mapping custody; preeffect refusal preserves creation
++ * custody. A Runtime range or pointer tuple alone cannot supply the parent.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_workspace_mapping_transfer_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_runtime_purpose_v3 *runtime,
++    QemuCrucibleDeviceWorkspaceMapping **projection,
++    QemuCrucibleDeviceWorkspaceMapping **runtime_field);
++
++/* Checks canonical physical mapping/role identity, saved disposition and
++ * successful map/DONTFORK, plus the exact child/Runtime field after transfer.
++ * Active, closing, failed or unmapped custody refuses. No mutable buffer access,
++ * operating Original, action, time or terminal proof is lent by this check.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_workspace_mapping_current_v1(
++    qemu_plugin_id_t id, QemuCrucibleDeviceWorkspaceMapping *mapping);
++
++/* Returns pretransfer creation custody by exact identity on its original Source
++ * owner thread without a new clock, including after expiry. Active transition
++ * refuses EBUSY; transferred custody remains ENOKEY until genuine worker/digest/
++ * material terminal producers exist. Source journals actual unmap and the exact
++ * role-alias close; unknown outcomes retain custody and must not be replayed.
++ * Successful alias return does not refund the parent's protected backing share.
++ * Neither local cleanup nor current supplies an operating or terminal grant.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_workspace_mapping_identity_return_v1(
++    qemu_plugin_id_t id, QemuCrucibleDeviceWorkspaceMapping **holder);
++
 +typedef struct QemuCrucibleFingerprintMainReadyFrame QemuCrucibleFingerprintMainReadyFrame;
 +typedef struct QemuCrucibleFingerprintMainExecution QemuCrucibleFingerprintMainExecution;
 +typedef struct QemuCrucibleFingerprintWakeWatcher QemuCrucibleFingerprintWakeWatcher;
@@ -72620,10 +72681,10 @@ index 0000000000000000000000000000000000000000..e76645e14775afbf8e157120472599b0
 +#endif
 diff --git a/include/qemu/crucible-paged-ram.h b/include/qemu/crucible-paged-ram.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..df99803b65d38288e2ff2b76de890ce44d3471af
+index 0000000000000000000000000000000000000000..e3cec9d4f0ae62f2f4e7d79a4fea5800a428abfd
 --- /dev/null
 +++ b/include/qemu/crucible-paged-ram.h
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,114 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#ifndef QEMU_CRUCIBLE_PAGED_RAM_H
 +#define QEMU_CRUCIBLE_PAGED_RAM_H
@@ -72681,6 +72742,8 @@ index 0000000000000000000000000000000000000000..df99803b65d38288e2ff2b76de890ce4
 +/* Raw logical discard cannot replace an original managed page source. */
 +bool qemu_crucible_ram_discard_conflicts(RAMBlock *block, uint64_t offset,
 +                                        size_t length);
++/* Lifetime-only check of retained logical capture/deferred-publication debt. */
++int qemu_crucible_ram_logical_debt_retirement_gate_v1(RAMBlock *block);
 +void qemu_crucible_ram_native_metadata_allocated(uint64_t bytes);
 +void qemu_crucible_ram_native_metadata_released(uint64_t bytes);
 +int qemu_crucible_ram_native_metadata_admit(
@@ -72880,10 +72943,10 @@ index 0000000000000000000000000000000000000000..b6c7f0e3a60c692b46fb0e0239fea48a
 +#endif /* QEMU_CRUCIBLE_PREEXEC_SETUP_H */
 diff --git a/include/qemu/crucible-process-purpose.h b/include/qemu/crucible-process-purpose.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..9f32c3ae3e52b4771a728effcfe966f6543713e9
+index 0000000000000000000000000000000000000000..0d6d29a59656604739328b5d18ac7195fb69744a
 --- /dev/null
 +++ b/include/qemu/crucible-process-purpose.h
-@@ -0,0 +1,631 @@
+@@ -0,0 +1,657 @@
 +/*
 + * Fixed process-purpose carrier syntax and selected Setup edition
 + *
@@ -73500,6 +73563,32 @@ index 0000000000000000000000000000000000000000..9f32c3ae3e52b4771a728effcfe966f6
 +int qemu_crucible_preexec_ram_endpoint_check_v1(
 +    QemuCruciblePreexecPurposeOwner *issuer,
 +    QemuCrucibleRamEndpointPurposeOwner *endpoint, int *descriptor);
++
++/* The actual once-carrier creates this distinct prepaid role before Source
++ * publication. Observation does not create a digest, Park or worker Original. */
++typedef struct QemuCrucibleWorkspacePurposeOwner QemuCrucibleWorkspacePurposeOwner;
++
++typedef struct QemuCrucibleWorkspacePurposeObservation {
++    QemuCrucibleProcessContractOwner *contract;
++    QemuCrucibleIncarnationPurposeOwner *incarnation;
++    QemuCrucibleSourceAssignmentOwner *assignment;
++    int descriptor;
++    uint64_t allocation_extent;
++    uint64_t device;
++    uint64_t inode;
++    uint64_t workspace_generation;
++    uint64_t process_generation;
++    uint64_t account_generation;
++} QemuCrucibleWorkspacePurposeObservation;
++
++int qemu_crucible_preexec_workspace_borrow_v1(
++    QemuCruciblePreexecPurposeOwner *issuer,
++    QemuCrucibleWorkspacePurposeOwner **out);
++int qemu_crucible_preexec_workspace_current_v1(
++    QemuCrucibleWorkspacePurposeOwner *role,
++    QemuCrucibleWorkspacePurposeObservation *out);
++int qemu_crucible_preexec_workspace_identity_return_v1(
++    QemuCrucibleWorkspacePurposeOwner **holder);
 +
 +uint64_t qemu_crucible_startup_source_fixed_control_extent(void);
 +int qemu_crucible_startup_source_preexec_publish_v3(
@@ -77948,16 +78037,18 @@ index 0000000000000000000000000000000000000000..8cefd2bfce1b29e27cef233632cefc0c
 +#endif
 diff --git a/include/system/crucible-observation-writer.h b/include/system/crucible-observation-writer.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b87378a766138d64b38d6fd76f983095b3c00ce0
+index 0000000000000000000000000000000000000000..8dae0edebf46bdd0a5e5acbeb7521882b02c85c1
 --- /dev/null
 +++ b/include/system/crucible-observation-writer.h
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,84 @@
 +/*
 + * Native logical-observation writer loan
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
 +#ifndef SYSTEM_CRUCIBLE_OBSERVATION_WRITER_H
 +#define SYSTEM_CRUCIBLE_OBSERVATION_WRITER_H
++
++#include "plugins/qemu-plugin.h"
 +
 +/* Stack custody belongs to the actual existing native CPU thread. Only the
 + * USED before/after-TB and exceptional-unwind call sites publish this address. */
@@ -78026,29 +78117,10 @@ index 0000000000000000000000000000000000000000..b87378a766138d64b38d6fd76f983095
 +size_t qemu_crucible_observation_root_execution_body_bytes_v1(void);
 +size_t qemu_crucible_observation_root_execution_body_alignment_v1(void);
 +
-+typedef struct QemuCrucibleFingerprintCleanupExecution
-+    QemuCrucibleFingerprintCleanupExecution;
-+typedef struct QemuCrucibleObservationCleanupCpuClosure
-+    QemuCrucibleObservationCleanupCpuClosure;
-+
-+/* Actual old-Root Main candidate and genuine execution-end witness are facts.
-+ * This issuer independently closes CPU entry with no own-CPU exemption. Any
-+ * nonnull output owns physical return, including a refused/pending admission.
-+ * It grants no RAM writer exclusion, Original time, dirty clear or rearm. */
-+int qemu_crucible_observation_cleanup_cpu_acquire_v1(
-+    QemuCrucibleFingerprintCleanupExecution *candidate, uint64_t id,
-+    QemuCrucibleObservationCleanupCpuClosure **out);
-+/* Retry only the exact retained candidate/paid wrapper after a journaled
-+ * no-effect core admission refusal. An active gate only checks its true drain;
-+ * no old epoch, owner, Original or debit is replaced. */
-+int qemu_crucible_observation_cleanup_cpu_retry_v1(
-+    QemuCrucibleFingerprintCleanupExecution *candidate, uint64_t id,
-+    QemuCrucibleObservationCleanupCpuClosure *owner);
-+int qemu_crucible_observation_cleanup_cpu_current_v1(
-+    QemuCrucibleObservationCleanupCpuClosure *owner);
-+/* Creator-only identity return after Source cleanup, without semantic checks. */
-+int qemu_crucible_observation_cleanup_cpu_identity_return_v1(
-+    QemuCrucibleObservationCleanupCpuClosure **owner);
++/* Cleanup CPU entry points and nominal types belong to the plugin SDK above.
++ * Their retained candidate and execution-end witness grant no RAM exclusion,
++ * Original time, dirty clear or rearm. These getters describe the actual body;
++ * they do not replace its existing paid wrapper or physical return. */
 +size_t qemu_crucible_observation_cleanup_cpu_body_bytes_v1(void);
 +size_t qemu_crucible_observation_cleanup_cpu_body_alignment_v1(void);
 +
@@ -79417,10 +79489,10 @@ index e7479084726c661e75447fd1330ee7cdba888e88..db6fbd5c8a924de2dfe36f8033694076
  }
  
 diff --git a/meson.build b/meson.build
-index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..ac7a6a979b4a4f0f1a38d3e9d420b473d6ea9eda 100644
+index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..e24396833a74da76ea22a898b7c1c0769f289213 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -3434,6 +3434,21 @@ foreach target: target_dirs
+@@ -3434,6 +3434,23 @@ foreach target: target_dirs
    target_configs_h += config_target_h[target]
    target_configs_h += config_devices_h.get(target, [])
  endforeach
@@ -79429,6 +79501,8 @@ index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..ac7a6a979b4a4f0f1a38d3e9d420b473
 +if have_system and host_os == 'linux' and host_arch == 'x86_64'
 +  genh += custom_target('crucible-preexec-purpose',
 +    input: files('plugins/crucible-process-purpose.c',
++                 'system/crucible-preexec-setup.c',
++                 'system/crucible-preexec-workspace.inc.h',
 +                 'include/qemu/crucible-process-purpose.h',
 +                 'plugins/crucible-device-workspace.c',
 +                 'include/qemu/crucible-device-workspace.h',
@@ -79442,7 +79516,7 @@ index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..ac7a6a979b4a4f0f1a38d3e9d420b473
  genh += custom_target('config-poison.h',
                        input: [target_configs_h],
                        output: 'config-poison.h',
-@@ -4410,10 +4425,14 @@ foreach target : target_dirs
+@@ -4410,10 +4427,14 @@ foreach target : target_dirs
                   build_by_default: false)
  
    if target.endswith('-softmmu')
@@ -97211,10 +97285,10 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..eb12a5ad364bffd650058728d46c1f51
      QLIST_INIT(&plugin.scoreboards);
 diff --git a/plugins/crucible-callback-child.inc.h b/plugins/crucible-callback-child.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..615e88fa289aa987fa8fb0ad8dd40046f19b2363
+index 0000000000000000000000000000000000000000..3b49063c2aa15253c4ae3275041adb8ac1c51e10
 --- /dev/null
 +++ b/plugins/crucible-callback-child.inc.h
-@@ -0,0 +1,823 @@
+@@ -0,0 +1,824 @@
 +/*
 + * Source-owned callback-child allocation and physical custody
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -97274,6 +97348,7 @@ index 0000000000000000000000000000000000000000..615e88fa289aa987fa8fb0ad8dd40046
 +        startup_source.command_member.runtime_holder,
 +        startup_source.command_receive.holder,
 +        startup_source.command_receive.runtime_holder,
++        startup_source.workspace_mapping.holder,
 +        startup_source.fingerprint_completion.module_view_holder,
 +        startup_source.fingerprint_completion.publication_holder,
 +    };
@@ -99058,7 +99133,7 @@ index 0000000000000000000000000000000000000000..f616d42f7206886415f069c9328f0102
 +}
 diff --git a/plugins/crucible-callback-owner.inc.h b/plugins/crucible-callback-owner.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ce9b13cd0e956b57b79b25d9848a4783d02ce1b7
+index 0000000000000000000000000000000000000000..c23998166c597a01fc03a12c72ac40a8ebc61ba9
 --- /dev/null
 +++ b/plugins/crucible-callback-owner.inc.h
 @@ -0,0 +1,297 @@
@@ -99334,7 +99409,7 @@ index 0000000000000000000000000000000000000000..ce9b13cd0e956b57b79b25d9848a4783
 +    } else {
 +        status = callback_child_owner_identity_locked(owner);
 +    }
-+    if (!status && (*holder != owner || owner->component_users ||
++    if (!status && (*holder != owner || owner->component_users || owner->workspace_users ||
 +                    callbacks->publication.held || callbacks->registrar.held ||
 +                    !owner->child->publication_users)) {
 +        status = -EBUSY;
@@ -102119,10 +102194,10 @@ index 0000000000000000000000000000000000000000..a7ebe01081adc714ebe81c5cf746317e
 +}
 diff --git a/plugins/crucible-checkpoint-receiving.c b/plugins/crucible-checkpoint-receiving.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a4ad4e8a6c619f823bb6278b5ae61d94f8dd0ee6
+index 0000000000000000000000000000000000000000..da8c50ddb2d65ea9999c6842c20b0a0dcf0c8c10
 --- /dev/null
 +++ b/plugins/crucible-checkpoint-receiving.c
-@@ -0,0 +1,3104 @@
+@@ -0,0 +1,3105 @@
 +/*
 + * Retained checkpoint Receiving and same-original invocation loans
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -102131,6 +102206,7 @@ index 0000000000000000000000000000000000000000..a4ad4e8a6c619f823bb6278b5ae61d94
 +#include "qemu/atomic.h"
 +#include "qemu/bswap.h"
 +#include "qemu/coroutine.h"
++#include "qemu/crucible-paged-ram.h"
 +#include "qemu/thread.h"
 +#include "qemu/plugin.h"
 +#include "monitor/monitor.h"
@@ -108103,6 +108179,386 @@ index 0000000000000000000000000000000000000000..c5d72e44f3e70eb0308a023cac30c14a
 +        status->workspace_device == 0 && status->workspace_inode == 0 &&
 +        status->workspace_length == 0 && status->workspace_fd == -1 &&
 +        status->workspace_reserved == 0;
++}
+diff --git a/plugins/crucible-device-workspace.inc.h b/plugins/crucible-device-workspace.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..24042c17d8e82badd9b58c7eb076628f979454e2
+--- /dev/null
++++ b/plugins/crucible-device-workspace.inc.h
+@@ -0,0 +1,374 @@
++/*
++ * Source-owned mapping of the distinct prepaid workspace role
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ *
++ * These methods govern physical constructor custody only. They lend no digest
++ * buffer, worker membership, Park epoch or operating Original.
++ */
++
++#ifdef CONFIG_LINUX
++static int workspace_mapping_identity(QemuCrucibleDeviceWorkspaceMapping *mapping)
++{
++    if (!qatomic_load_acquire(&startup_source.module_custody_published) ||
++        mapping != &startup_source.workspace_mapping || !startup_owner()) {
++        return -EPERM;
++    }
++    if (!mapping->attempted || !mapping->held ||
++        mapping->role != startup_source.workspace_role ||
++        mapping->process != startup_source.owner_process ||
++        mapping->installer.ctx != startup_source.saved.ctx ||
++        mapping->installer.module != startup_source.saved.module ||
++        mapping->installer.install != startup_source.saved.install ||
++        mapping->fixed_native_extent != startup_source.metadata_partition.fixed_native_extent ||
++        mapping->fixed_storage_bytes != sizeof(startup_source.workspace_mapping) ||
++        !startup_source.checkpoint_storage.fixed_charge.held) {
++        return -ESTALE;
++    }
++    return 0;
++}
++#endif
++
++int qemu_plugin_crucible_startup_workspace_mapping_create_v1(
++    qemu_plugin_id_t id, QemuCrucibleDeviceWorkspaceMapping **out,
++    void **address, size_t *bytes)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleDeviceWorkspaceMapping *mapping = &startup_source.workspace_mapping;
++    QemuCrucibleWorkspacePurposeObservation role;
++    void *mapped;
++    int status;
++
++    if (!startup_invocation(id)) {
++        return -EPERM;
++    }
++    if (!out || !address || !bytes ||
++        callback_child_output_overlap(out, sizeof(*out), address, sizeof(*address)) ||
++        callback_child_output_overlap(out, sizeof(*out), bytes, sizeof(*bytes)) ||
++        callback_child_output_overlap(address, sizeof(*address), bytes, sizeof(*bytes)) ||
++        callback_child_output_overlap(out, sizeof(*out), &startup_source, sizeof(startup_source)) ||
++        callback_child_output_overlap(address, sizeof(*address), &startup_source, sizeof(startup_source)) ||
++        callback_child_output_overlap(bytes, sizeof(*bytes), &startup_source, sizeof(startup_source)) ||
++        *out || *address || *bytes) {
++        return -EINVAL;
++    }
++    if (mapping->attempted) {
++        return -EALREADY;
++    }
++    if (!startup_source.workspace_role) {
++        return -ENOENT;
++    }
++    status = startup_active(id);
++    if (!status && (!startup_source.checkpoint_storage.fixed_charge.held ||
++                   startup_source.metadata_partition.fixed_native_extent !=
++                       qemu_crucible_startup_source_fixed_control_extent())) {
++        status = -ENOKEY;
++    }
++    if (!status) {
++        status = qemu_crucible_preexec_workspace_current_v1(
++            startup_source.workspace_role, &role);
++    }
++    if (status) {
++        return status;
++    }
++    if (role.contract != startup_source.process_contract_owner ||
++        role.incarnation != startup_source.incarnation_purpose_owner ||
++        role.process_generation != startup_source.original.process_generation ||
++        role.account_generation != startup_source.standing.initial.account_generation ||
++        role.allocation_extent != QEMU_CRUCIBLE_PROCESS_WORKSPACE_ALLOCATION_BYTES ||
++        role.allocation_extent > SIZE_MAX) {
++        return -ESTALE;
++    }
++    /* Both the complete inline metadata and this distinct backing share were
++     * protected before their births. No second native debit copies the share. */
++    *mapping = (QemuCrucibleDeviceWorkspaceMapping) {
++        .role = startup_source.workspace_role,
++        .installer = startup_source.saved,
++        .holder = &mapping->creation_owner,
++        .descriptor = role.descriptor,
++        .request_bytes = role.allocation_extent,
++        .fixed_storage_bytes = sizeof(startup_source.workspace_mapping),
++        .fixed_native_extent = startup_source.metadata_partition.fixed_native_extent,
++        .process = startup_source.owner_process,
++        .attempted = true,
++        .held = true,
++        .transition_active = true,
++    };
++    qemu_mutex_init(&mapping->mutex);
++    mapping->creation_owner = mapping;
++    *out = mapping;
++
++    status = startup_process_purpose_live();
++    if (!status) {
++        mapping->mmap_attempted = true;
++        mapped = mmap(NULL, mapping->request_bytes, PROT_READ | PROT_WRITE,
++                      MAP_SHARED, mapping->descriptor, 0);
++        mapping->mmap_returned = true;
++        if (mapped == MAP_FAILED) {
++            status = -errno;
++        } else {
++            /* Retain the actual VMA and output before DONTFORK or post. */
++            mapping->address = mapped;
++            mapping->mapped = true;
++            *address = mapped;
++            *bytes = mapping->request_bytes;
++            if (!mapped) {
++                status = -EFAULT;
++            } else if (madvise(mapped, mapping->request_bytes, MADV_DONTFORK) < 0) {
++                status = -errno;
++            } else {
++                mapping->dontfork = true;
++            }
++        }
++    }
++    qemu_mutex_lock(&mapping->mutex);
++    mapping->first_status = status;
++    qemu_mutex_unlock(&mapping->mutex);
++    /* No ledger/mapping mutex covers the independent Original query. */
++    status = startup_process_purpose_live();
++    qemu_mutex_lock(&mapping->mutex);
++    mapping->post_status = status;
++    if (mapping->held && mapping->creation_owner == mapping &&
++        mapping->holder == &mapping->creation_owner) {
++        mapping->transition_active = false;
++    }
++    status = mapping->first_status ? mapping->first_status : mapping->post_status;
++    qemu_mutex_unlock(&mapping->mutex);
++    if (status) {
++        startup_failure(status);
++    }
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_startup_workspace_mapping_current_v1(
++    qemu_plugin_id_t id, QemuCrucibleDeviceWorkspaceMapping *mapping)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleWorkspacePurposeObservation role;
++    bool commands_locked;
++    int status = workspace_mapping_identity(mapping);
++
++    if (status || id != startup_source.saved.plugin_id) {
++        return status ? status : -EPERM;
++    }
++    commands_locked = qatomic_load_acquire(&startup_source.commands.initialized);
++    if (commands_locked) {
++        qemu_mutex_lock(&startup_source.commands.mutex);
++    }
++    qemu_mutex_lock(&mapping->mutex);
++    if (mapping->transferred) {
++        QemuCrucibleCallbackChildOwner *parent = &startup_source.callbacks.owner;
++        uintptr_t field = (uintptr_t)mapping->holder;
++
++        status = callback_child_owner_identity_locked(parent);
++        if (!status && (mapping->child_owner != parent || !parent->workspace_users ||
++                        mapping->runtime != parent->runtime ||
++                        mapping->runtime_base != parent->runtime_base ||
++                        mapping->runtime_extent != parent->runtime_extent ||
++                        !mapping->runtime_base || mapping->runtime_extent < sizeof(*mapping->holder) ||
++                        mapping->runtime_extent > UINTPTR_MAX - mapping->runtime_base ||
++                        field < mapping->runtime_base ||
++                        field % _Alignof(QemuCrucibleDeviceWorkspaceMapping *) ||
++                        field - mapping->runtime_base > mapping->runtime_extent - sizeof(*mapping->holder) ||
++                        *mapping->holder != mapping)) {
++            status = -ESTALE;
++        }
++    } else if (mapping->holder != &mapping->creation_owner ||
++               mapping->creation_owner != mapping) {
++        status = -ESTALE;
++    }
++    if (!status && (mapping->transition_active || mapping->closing || !mapping->mapped ||
++        !mapping->dontfork || mapping->unmap_attempted ||
++        mapping->first_status || mapping->post_status)) {
++        status = -ESTALE;
++    }
++    qemu_mutex_unlock(&mapping->mutex);
++    if (commands_locked) {
++        qemu_mutex_unlock(&startup_source.commands.mutex);
++    }
++    if (!status) {
++        status = qemu_crucible_preexec_workspace_current_v1(mapping->role, &role);
++    }
++    if (!status && (role.descriptor != mapping->descriptor ||
++                    role.allocation_extent != mapping->request_bytes)) {
++        status = -ESTALE;
++    }
++    /* Physical metadata current only; no mutable workspace borrower is issued. */
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_startup_workspace_mapping_identity_return_v1(
++    qemu_plugin_id_t id, QemuCrucibleDeviceWorkspaceMapping **holder)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleDeviceWorkspaceMapping *mapping = &startup_source.workspace_mapping;
++    bool unmap = false;
++    int status = workspace_mapping_identity(mapping);
++
++    if (status || id != startup_source.saved.plugin_id || !holder) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&mapping->mutex);
++    if (mapping->transition_active) {
++        status = -EBUSY;
++    } else if (mapping->transferred) {
++        /* Actual worker/material and exclusive digest borrowers are not yet
++         * issued. A transferred Runtime field needs their real terminal join. */
++        status = -ENOKEY;
++    } else if (mapping->holder != &mapping->creation_owner ||
++               mapping->creation_owner != mapping || *holder != mapping) {
++        status = -ESTALE;
++    } else if (mapping->unmap_uncertain) {
++        status = mapping->unmap_status ? mapping->unmap_status : -EIO;
++    } else if (mapping->mmap_attempted && !mapping->mmap_returned) {
++        status = -EBUSY;
++    } else {
++        mapping->transition_active = true;
++        mapping->closing = true;
++        if (mapping->mapped && !mapping->unmap_attempted) {
++            mapping->unmap_attempted = true;
++            unmap = true;
++        }
++    }
++    qemu_mutex_unlock(&mapping->mutex);
++    if (status) {
++        return status;
++    }
++    if (unmap) {
++        int result = munmap(mapping->address, mapping->request_bytes);
++        int saved_errno = result < 0 ? errno : 0;
++
++        qemu_mutex_lock(&mapping->mutex);
++        mapping->unmap_status = result < 0 ? -saved_errno : 0;
++        mapping->unmap_uncertain = result < 0;
++        mapping->physical_returned = result == 0;
++        qemu_mutex_unlock(&mapping->mutex);
++    } else {
++        mapping->physical_returned = !mapping->mapped || mapping->physical_returned;
++    }
++    status = mapping->unmap_status;
++    if (!status && mapping->physical_returned) {
++        status = qemu_crucible_preexec_workspace_identity_return_v1(
++            &startup_source.workspace_role);
++    }
++    qemu_mutex_lock(&mapping->mutex);
++    mapping->return_status = status;
++    if (!status && mapping->physical_returned && !startup_source.workspace_role &&
++        mapping->holder == &mapping->creation_owner &&
++        mapping->creation_owner == mapping && *holder == mapping) {
++        *holder = NULL;
++        mapping->creation_owner = NULL;
++        mapping->holder = NULL;
++        mapping->held = false;
++    }
++    mapping->transition_active = false;
++    qemu_mutex_unlock(&mapping->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_startup_workspace_mapping_transfer_v1(
++    qemu_plugin_id_t id, QemuCrucibleStartupRuntimePurpose *runtime,
++    QemuCrucibleDeviceWorkspaceMapping **projection,
++    QemuCrucibleDeviceWorkspaceMapping **runtime_field)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleDeviceWorkspaceMapping *mapping = &startup_source.workspace_mapping;
++    QemuCrucibleCallbackChildOwner *parent = &startup_source.callbacks.owner;
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    uintptr_t field = (uintptr_t)runtime_field;
++    int status = command_registry_identity(id);
++    int post = 0;
++
++    if (!status) {
++        status = workspace_mapping_identity(mapping);
++    }
++
++    if (status || !startup_invocation(id) || !projection || !runtime_field ||
++        projection == runtime_field) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&mapping->mutex);
++    if (mapping->transition_active || mapping->transferred || mapping->closing ||
++        mapping->first_status || mapping->post_status ||
++        mapping->holder != &mapping->creation_owner || mapping->creation_owner != mapping) {
++        status = -EBUSY;
++    } else {
++        mapping->transition_active = true;
++    }
++    qemu_mutex_unlock(&mapping->mutex);
++    if (status) {
++        return status;
++    }
++    status = startup_runtime_admission(id, runtime);
++    if (!status) {
++        qemu_mutex_lock(&commands->mutex);
++        status = callback_registration_owner_live_locked(parent);
++        if (!status && (parent->runtime != runtime ||
++                        parent->workspace_users == UINT64_MAX ||
++                        !parent->runtime_base || parent->runtime_extent < sizeof(*runtime_field) ||
++                        parent->runtime_extent > UINTPTR_MAX - parent->runtime_base ||
++                        field < parent->runtime_base ||
++                        field % _Alignof(QemuCrucibleDeviceWorkspaceMapping *) ||
++                        field - parent->runtime_base > parent->runtime_extent - sizeof(*runtime_field) ||
++                        callback_child_output_conflicts_locked(projection, sizeof(*projection)) ||
++                        callback_child_output_conflicts_locked(runtime_field, sizeof(*runtime_field)) ||
++                        callback_child_output_overlap(projection, sizeof(*projection),
++                                                      runtime_field, sizeof(*runtime_field)))) {
++            status = -EINVAL;
++        }
++        qemu_mutex_lock(&mapping->mutex);
++        if (!status && (!mapping->held || !mapping->transition_active ||
++                        mapping->holder != &mapping->creation_owner ||
++                        mapping->creation_owner != mapping || *projection != mapping ||
++                        *runtime_field)) {
++            status = -ESTALE;
++        }
++        if (!status) {
++            /* The genuine child authenticates the prepaid Runtime. Move its
++             * stable field and retain the actual parent before the post. */
++            parent->workspace_users++;
++            *runtime_field = mapping;
++            *projection = NULL;
++            mapping->creation_owner = NULL;
++            mapping->holder = runtime_field;
++            mapping->runtime = runtime;
++            mapping->child_owner = parent;
++            mapping->runtime_base = parent->runtime_base;
++            mapping->runtime_extent = parent->runtime_extent;
++            mapping->transferred = true;
++        }
++        qemu_mutex_unlock(&mapping->mutex);
++        qemu_mutex_unlock(&commands->mutex);
++    }
++    if (!status) {
++        post = startup_runtime_admission(id, runtime);
++    }
++    qemu_mutex_lock(&mapping->mutex);
++    if (status && !mapping->first_status) {
++        mapping->first_status = status;
++    }
++    if (post && !mapping->post_status) {
++        mapping->post_status = post;
++    }
++    /* A mismatch retains the transition hold and both parents. */
++    if (mapping->held &&
++        ((mapping->transferred && mapping->holder == runtime_field &&
++          mapping->runtime == runtime && *runtime_field == mapping) ||
++         (!mapping->transferred && mapping->holder == &mapping->creation_owner &&
++          mapping->creation_owner == mapping))) {
++        mapping->transition_active = false;
++    }
++    qemu_mutex_unlock(&mapping->mutex);
++    return status ? status : post;
++#else
++    return -ENOTSUP;
++#endif
 +}
 diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
 new file mode 100644
@@ -147962,10 +148418,10 @@ index 0000000000000000000000000000000000000000..ae379395f87919cd5146cef5a3cba656
 +}
 diff --git a/plugins/crucible-paged-ram.c b/plugins/crucible-paged-ram.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..55f6534c66e1c526dd7b13a3d11b541843440d3c
+index 0000000000000000000000000000000000000000..42e3f8a328a926eee6a7f617829276b1d735d343
 --- /dev/null
 +++ b/plugins/crucible-paged-ram.c
-@@ -0,0 +1,7042 @@
+@@ -0,0 +1,7041 @@
 +/*
 + * Logical RAM observation and host paging ownership.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -150217,7 +150673,6 @@ index 0000000000000000000000000000000000000000..55f6534c66e1c526dd7b13a3d11b5418
 +    if (current_cpu && !bql_locked() &&
 +        qemu_plugin_crucible_single_threaded_rr() &&
 +        replay_mutex_owned()) {
-+        int status;
 +        uint64_t before_dirty, before_topology;
 +
 +        /* An instruction-boundary observer retains the existing RR token.
@@ -162354,10 +162809,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..09a379156bc44042304798b86155244e81992786
+index 0000000000000000000000000000000000000000..d9194211f2bfc0cb54cad15411ec0bff48ad2085
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,7094 @@
+@@ -0,0 +1,7105 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -162609,6 +163064,15 @@ index 0000000000000000000000000000000000000000..09a379156bc44042304798b86155244e
 +        .bytes = qemu_crucible_checkpoint_owner_bytes(),
 +        .held = true,
 +    };
++    /* Consume the distinct once-carrier workspace role only after this
++     * complete Source declaration has its actual fixed-floor custody. Its
++     * output remains canonical even if the independent borrow post refuses.
++     * No optional role creates no loan and preserves ordinary setup. */
++    status = qemu_crucible_preexec_workspace_borrow_v1(
++        owner, &startup_source.workspace_role);
++    if (status) {
++        return startup_failure(status);
++    }
 +    /* The actual provisional native floor included this separate VL static
 +     * declaration before Source/metadata births. Retain its distinct storage
 +     * lender under the SAME preexec issuer before the independent post. */
@@ -169452,12 +169916,14 @@ index 0000000000000000000000000000000000000000..09a379156bc44042304798b86155244e
 +#include "crucible-command-membership.inc.h"
 +
 +#include "crucible-command-receive.inc.h"
++
++#include "crucible-device-workspace.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ac08bce1a85fdd2296a1e0cbcb0483ae18b44ec1
+index 0000000000000000000000000000000000000000..ee4c9a8dbe782781e20bc8cec1e079d1b48a3c71
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,1719 @@
+@@ -0,0 +1,1758 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -169707,6 +170173,7 @@ index 0000000000000000000000000000000000000000..ac08bce1a85fdd2296a1e0cbcb0483ae
 +    uintptr_t runtime_base;
 +    uint64_t runtime_extent;
 +    uint64_t component_users;
++    uint64_t workspace_users;
 +    pid_t process;
 +    int first_status;
 +    int post_status;
@@ -169966,6 +170433,42 @@ index 0000000000000000000000000000000000000000..ac08bce1a85fdd2296a1e0cbcb0483ae
 +    bool physical_returned;
 +    bool unmap_uncertain;
 +} QemuCrucibleSetupMappingOwner;
++
++/* Fixed Source constructor custody for the separately issued workspace role.
++ * Later digest/worker/park ownership is deliberately a different parent. */
++struct QemuCrucibleDeviceWorkspaceMapping {
++    QemuCrucibleCallbackChildOwner *child_owner;
++    uintptr_t runtime_base;
++    uint64_t runtime_extent;
++    QemuCrucibleWorkspacePurposeOwner *role;
++    QemuCrucibleStartupInstallerBinding installer;
++    QemuCrucibleStartupRuntimePurpose *runtime;
++    struct QemuCrucibleDeviceWorkspaceMapping *creation_owner;
++    struct QemuCrucibleDeviceWorkspaceMapping **holder;
++    QemuMutex mutex;
++    void *address;
++    size_t request_bytes;
++    uint64_t fixed_storage_bytes;
++    uint64_t fixed_native_extent;
++    pid_t process;
++    int descriptor;
++    int first_status;
++    int post_status;
++    int unmap_status;
++    int return_status;
++    bool attempted;
++    bool held;
++    bool transition_active;
++    bool transferred;
++    bool closing;
++    bool mmap_attempted;
++    bool mmap_returned;
++    bool mapped;
++    bool dontfork;
++    bool unmap_attempted;
++    bool physical_returned;
++    bool unmap_uncertain;
++};
 +
 +/* The initial framed exchange borrows the authentic preexec control role.
 + * Frames, partial cursors and Original relation remain Source-owned on every
@@ -170810,6 +171313,7 @@ index 0000000000000000000000000000000000000000..ac08bce1a85fdd2296a1e0cbcb0483ae
 +     * retained owners. A later plan fd, scalar TOTAL or decoded record cannot
 +     * replace the actual artifact/contract and disjoint incarnation custody. */
 +    QemuCruciblePreexecPurposeOwner *preexec_purpose_owner;
++    QemuCrucibleWorkspacePurposeOwner *workspace_role;
 +    QemuCrucibleProcessContractOwner *process_contract_owner;
 +    QemuCrucibleIncarnationPurposeOwner *incarnation_purpose_owner;
 +    QemuCrucibleRamEndpointPurposeOwner *ram_endpoint_purpose_owner;
@@ -170821,6 +171325,7 @@ index 0000000000000000000000000000000000000000..ac08bce1a85fdd2296a1e0cbcb0483ae
 +    QemuCrucibleCallbackPublicationRegistry callbacks;
 +    QemuCrucibleCallbackRegistrationGroups callback_groups;
 +    QemuCrucibleSetupMappingOwner setup_mapping;
++    QemuCrucibleDeviceWorkspaceMapping workspace_mapping;
 +    QemuCrucibleSetupHandshakeOwner setup_handshake;
 +    QemuCrucibleSetupSlotOwner setup_slot;
 +    uint64_t preexec_native_extent;
@@ -181849,10 +182354,10 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..70e75a571125434e2911ab3507b094da1cb93a4e
+index 0000000000000000000000000000000000000000..dec28e4236f71cfaf3fbdc0dec7ba2e8ece82995
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,83 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Bind literal pure record bodies for the executable's raw preinit owner."""
 +
@@ -181862,18 +182367,22 @@ index 0000000000000000000000000000000000000000..70e75a571125434e2911ab3507b094da
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'system/crucible-preexec-setup.c':
++        '596f7fa74c125374088b1eaf3e5879fcf97ad7fe670e34e2d3b1b82924b68931',
++    'system/crucible-preexec-workspace.inc.h':
++        '2c7e8965e8585b9ce3988f1068f7c5c68c2f447669200ee76450f998028e60ca',
 +    'plugins/crucible-process-purpose.c':
 +        'e37d3d2052c3b9f9de91359bae2e31d8ddeb8551d76d51f18bf0914e8ab6cb0c',
 +    'include/qemu/crucible-process-purpose.h':
-+        '569743c799a5daf82a94acc59205aa28c428c0d0bfde949432dac6923a698581',
++        'ee8a9e4c92a0d4658a1a816bdc204021623e8aa6a58bf06e5444d62a2b99576a',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '0d9a7ac15df5856a327c19b1fd37d3794476c8597cafa430cd208807385f6a27',
++        '93573ce1d72875412dc10b68a273761af892f1ca08b1bdbfeafdab1b1a2849f2',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1dae25d09df2a5965dde3fd73b6a3bc7160976ab3f7d2e731a420291a2f89d14',
++        '29674a82f2d420e34f30a37107b17afca8f8d2e8f95315404d6ac4d549139ae3',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -190395,10 +190904,10 @@ index 0000000000000000000000000000000000000000..5dac90d3e342a9c5af2ddd28e68c2b80
 +};
 diff --git a/system/crucible-observation-writer.c b/system/crucible-observation-writer.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..4440885b07eb540dc618957c0b60b40eba55b62d
+index 0000000000000000000000000000000000000000..6290cfc6ab93db39f6fc90b81a21491d6af46f00
 --- /dev/null
 +++ b/system/crucible-observation-writer.c
-@@ -0,0 +1,623 @@
+@@ -0,0 +1,607 @@
 +/*
 + * Native logical-observation writer loan
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -190412,24 +190921,8 @@ index 0000000000000000000000000000000000000000..4440885b07eb540dc618957c0b60b40e
 +#include "system/crucible-observation-writer.h"
 +#include "system/crucible-ram-quiescence.h"
 +
-+/* Defined by the native Root caller, never by a plugin-supplied counter. */
-+int qemu_crucible_ram_fingerprint_root_invocation_current_v1(uint64_t id);
-+
 +typedef struct QemuCrucibleFingerprintRootFrame
 +    QemuCrucibleFingerprintRootFrame;
-+/* Literal producer: fingerprint-execution-frame-proof proposal V1. */
-+int qemu_crucible_ram_fingerprint_root_execution_identity_v1(
-+    uint64_t id, QemuCrucibleFingerprintRootFrame **out);
-+
-+typedef struct QemuCrucibleFingerprintCleanupExecution
-+    QemuCrucibleFingerprintCleanupExecution;
-+/* Literal producer: fingerprint-cleanup-birth-proof proposal V1. */
-+int qemu_crucible_ram_fingerprint_cleanup_birth_current_v1(
-+    QemuCrucibleFingerprintCleanupExecution *candidate, uint64_t id,
-+    QemuCrucibleObservationRootExecutionWitness **witness);
-+int qemu_crucible_ram_fingerprint_cleanup_candidate_current_v1(
-+    QemuCrucibleFingerprintCleanupExecution *candidate, uint64_t id,
-+    QemuCrucibleObservationRootExecutionWitness **witness);
 +
 +struct QemuCrucibleObservationCleanupCpuClosure {
 +    QemuThreadRamCpuConstruction cpus;
@@ -192259,10 +192752,10 @@ index 0000000000000000000000000000000000000000..e1eda5efbd1c2db8ce485fce38f76bbe
 +}
 diff --git a/system/crucible-preexec-setup.c b/system/crucible-preexec-setup.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1d49197e5e009617e8c340a72d530295d78d3dd9
+index 0000000000000000000000000000000000000000..a7dcfd109ecdab3b506ec5179f3a71aafb004fd8
 --- /dev/null
 +++ b/system/crucible-preexec-setup.c
-@@ -0,0 +1,2589 @@
+@@ -0,0 +1,2630 @@
 +/*
 + * Fixed selected executable preinit Setup custody.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -192400,6 +192893,36 @@ index 0000000000000000000000000000000000000000..1d49197e5e009617e8c340a72d530295
 +    uint8_t snapshot[QEMU_CRUCIBLE_STANDING_PAYLOAD_BYTES];
 +};
 +
++struct QemuCrucibleWorkspacePurposeOwner {
++    QemuCruciblePreexecPurposeOwner *issuer;
++    QemuCrucibleProcessContractOwner *contract;
++    QemuCrucibleIncarnationPurposeOwner *incarnation;
++    QemuCrucibleSourceAssignmentOwner *assignment;
++    QemuCrucibleWorkspacePurposeOwner **borrower_holder;
++    int *descriptor_slot;
++    long process;
++    int descriptor;
++    uint64_t process_generation;
++    uint64_t account_generation;
++    uint64_t workspace_generation;
++    uint64_t allocation_extent;
++    uint64_t fixed_storage_bytes;
++    uint64_t device;
++    uint64_t inode;
++    int first_status;
++    int post_status;
++    int return_status;
++    bool attempted;
++    bool held;
++    bool backing_retained;
++    bool published;
++    bool borrowed;
++    bool borrower_returned;
++    bool close_attempted;
++    bool alias_returned;
++    bool close_uncertain;
++};
++
 +typedef struct QemuCruciblePreexecPurposeOwner {
 +    long process_id;
 +    long thread_id;
@@ -192442,6 +192965,7 @@ index 0000000000000000000000000000000000000000..1d49197e5e009617e8c340a72d530295
 +    int walking_directory;
 +    int close_status;
 +    uint64_t provisional_native_extent;
++    bool workspace_backing_protected;
 +    char cgroup_path[4096];
 +    char cgroup_mount[4096];
 +    char cgroup_target[8192];
@@ -192458,6 +192982,7 @@ index 0000000000000000000000000000000000000000..1d49197e5e009617e8c340a72d530295
 +    struct QemuCrucibleProcessContractOwner contract;
 +    struct QemuCrucibleIncarnationPurposeOwner incarnation;
 +    struct QemuCrucibleRamEndpointPurposeOwner ram_endpoint;
++    struct QemuCrucibleWorkspacePurposeOwner workspace;
 +    struct stat artifact_before;
 +    struct stat artifact_after;
 +    uint8_t artifact_buffer[4096];
@@ -193050,6 +193575,11 @@ index 0000000000000000000000000000000000000000..1d49197e5e009617e8c340a72d530295
 +        return -ENOSPC;
 +    }
 +    owner->provisional_native_extent += bytes;
++    if (owner->plan.workspace_bytes) {
++        /* This actual debit protected the disjoint compulsory backing before
++         * any native request; only its constructor can consume that role. */
++        owner->workspace_backing_protected = true;
++    }
 +    return 0;
 +}
 +
@@ -194472,6 +195002,7 @@ index 0000000000000000000000000000000000000000..1d49197e5e009617e8c340a72d530295
 +
 +#include "crucible-preexec-contract.inc.h"
 +#include "crucible-preexec-ram.inc.h"
++#include "crucible-preexec-workspace.inc.h"
 +
 +int qemu_crucible_preexec_peer_observe_v3(
 +    QemuCruciblePreexecPurposeOwner *held,
@@ -194830,6 +195361,9 @@ index 0000000000000000000000000000000000000000..1d49197e5e009617e8c340a72d530295
 +            status = preexec_standing_construct(owner, page_size);
 +        }
 +        if (!status) {
++            status = preexec_workspace_construct(owner);
++        }
++        if (!status) {
 +            status = qemu_crucible_startup_source_preexec_publish_v3(owner);
 +        }
 +        if (!status) {
@@ -194852,6 +195386,269 @@ index 0000000000000000000000000000000000000000..1d49197e5e009617e8c340a72d530295
 +/* Main-executable only: this object is never in a common library/plugin. */
 +static void (*const preexec_setup_hook)(int, char **, char **)
 +    __attribute__((section(".preinit_array"), used)) = preexec_setup_entry;
+diff --git a/system/crucible-preexec-workspace.inc.h b/system/crucible-preexec-workspace.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e1e42fea29a94b0eb8d343a252e428041c928a09
+--- /dev/null
++++ b/system/crucible-preexec-workspace.inc.h
+@@ -0,0 +1,257 @@
++/*
++ * Once-carrier workspace role and retained received-alias custody
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ *
++ * Included by the raw preexec constructor. No QEMU state hook, allocation,
++ * callback, descriptor duplication or operation constructor runs here.
++ */
++
++static bool preexec_workspace_output_overlaps(const void *output, size_t bytes)
++{
++    uintptr_t address = (uintptr_t)output;
++    uintptr_t owner = (uintptr_t)&preexec_setup_owner;
++
++    return bytes > UINTPTR_MAX - address ||
++        (address < owner + sizeof(preexec_setup_owner) &&
++         owner < address + bytes);
++}
++
++static int preexec_workspace_identity(QemuCrucibleWorkspacePurposeOwner *role)
++{
++    QemuCruciblePreexecSetupOwner *owner = &preexec_setup_owner;
++    long process = preexec_setup_syscall5(SYS_getpid, 0, 0, 0, 0, 0);
++
++    if (role != &owner->workspace || process != owner->process_id ||
++        preexec_setup_syscall5(SYS_gettid, 0, 0, 0, 0, 0) != owner->thread_id) {
++        return -EPERM;
++    }
++    if (!role->attempted || !role->held || role->issuer != owner ||
++        role->contract != &owner->contract ||
++        role->incarnation != &owner->incarnation ||
++        role->assignment != &owner->fixed_family.source ||
++        owner->incarnation.assignment != role->assignment ||
++        !owner->fixed_family.retained || !role->assignment->retained ||
++        !owner->plan_validated || !owner->peer_validated ||
++        owner->descriptor_count != QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_FDS ||
++        role->descriptor_slot !=
++            &owner->descriptors[QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_INDEX] ||
++        role->process != process ||
++        role->process_generation != owner->incarnation.generation ||
++        role->account_generation != owner->plan.purpose.account_generation ||
++        role->workspace_generation != owner->plan.workspace.workspace_generation ||
++        role->allocation_extent != owner->plan.workspace.allocation_extent ||
++        !role->backing_retained || !owner->workspace_backing_protected ||
++        role->fixed_storage_bytes != sizeof(owner->workspace)) {
++        return -ESTALE;
++    }
++    return 0;
++}
++
++static int preexec_workspace_alias_current(QemuCrucibleWorkspacePurposeOwner *role)
++{
++    struct stat identity;
++    long flags;
++    long status;
++
++    if (role->close_attempted || role->alias_returned || role->close_uncertain ||
++        *role->descriptor_slot != role->descriptor) {
++        return -ESTALE;
++    }
++    status = preexec_setup_syscall5(SYS_fstat, role->descriptor,
++        (long)(uintptr_t)&identity, 0, 0, 0);
++    if (status < 0) {
++        return (int)status;
++    }
++    if (!S_ISREG(identity.st_mode) || identity.st_size < 0 ||
++        (uint64_t)identity.st_size != role->allocation_extent ||
++        (uint64_t)identity.st_dev != role->device ||
++        (uint64_t)identity.st_ino != role->inode) {
++        return -ESTALE;
++    }
++    flags = preexec_setup_syscall5(SYS_fcntl, role->descriptor, F_GETFL, 0, 0, 0);
++    if (flags < 0) {
++        return (int)flags;
++    }
++    if ((flags & O_ACCMODE) != O_RDWR) {
++        return -EPERM;
++    }
++    flags = preexec_setup_syscall5(SYS_fcntl, role->descriptor, F_GETFD, 0, 0, 0);
++    if (flags < 0) {
++        return (int)flags;
++    }
++    if (!(flags & FD_CLOEXEC)) {
++        return -EPERM;
++    }
++    flags = preexec_setup_syscall5(SYS_fcntl, role->descriptor, F_GET_SEALS, 0, 0, 0);
++    if (flags < 0) {
++        return (int)flags;
++    }
++    if (flags != (F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL)) {
++        return -EPERM;
++    }
++    return 0;
++}
++
++static int preexec_workspace_construct(QemuCruciblePreexecSetupOwner *owner)
++{
++    QemuCrucibleWorkspacePurposeOwner *role = &owner->workspace;
++    const QemuCrucibleProcessWorkspacePurpose *purpose = &owner->plan.workspace;
++    int status;
++
++    if (!owner->plan.workspace_bytes) {
++        return 0;
++    }
++    status = qemu_crucible_preexec_purpose_check_v3(owner);
++    if (status) {
++        return status;
++    }
++    if (role->attempted) {
++        return -EALREADY;
++    }
++    if (owner->descriptor_count != QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_FDS ||
++        purpose->allocation_extent != QEMU_CRUCIBLE_PROCESS_WORKSPACE_ALLOCATION_BYTES ||
++        owner->provisional_native_extent < sizeof(*owner) ||
++        !owner->workspace_backing_protected ||
++        purpose->process_generation != owner->incarnation.generation) {
++        return -ENOKEY;
++    }
++    /* This complete inline role belongs to the actual once-carrier debit.
++     * Its backing is the disjoint compulsory share already protected before
++     * that debit, not a second native allocation or a decoded scalar grant. */
++    *role = (QemuCrucibleWorkspacePurposeOwner) {
++        .issuer = owner,
++        .contract = &owner->contract,
++        .incarnation = &owner->incarnation,
++        .assignment = &owner->fixed_family.source,
++        .descriptor_slot =
++            &owner->descriptors[QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_INDEX],
++        .descriptor = owner->descriptors[QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_INDEX],
++        .process = owner->process_id,
++        .process_generation = owner->incarnation.generation,
++        .account_generation = owner->plan.purpose.account_generation,
++        .workspace_generation = purpose->workspace_generation,
++        .allocation_extent = purpose->allocation_extent,
++        .fixed_storage_bytes = sizeof(owner->workspace),
++        .device = purpose->device,
++        .inode = purpose->inode,
++        .attempted = true,
++        .held = true,
++        .backing_retained = true,
++    };
++    status = preexec_workspace_identity(role);
++    if (!status) {
++        status = preexec_workspace_alias_current(role);
++    }
++    role->first_status = status;
++    role->post_status = preexec_setup_original_live();
++    role->published = !role->first_status && !role->post_status;
++    return role->first_status ? role->first_status : role->post_status;
++}
++
++int qemu_crucible_preexec_workspace_borrow_v1(
++    QemuCruciblePreexecPurposeOwner *issuer,
++    QemuCrucibleWorkspacePurposeOwner **out)
++{
++    QemuCruciblePreexecSetupOwner *owner = &preexec_setup_owner;
++    QemuCrucibleWorkspacePurposeOwner *role = &owner->workspace;
++    int status;
++
++    if (issuer != owner || !out ||
++        preexec_workspace_output_overlaps(out, sizeof(*out)) || *out ||
++        preexec_setup_syscall5(SYS_gettid, 0, 0, 0, 0, 0) != owner->thread_id) {
++        return -EPERM;
++    }
++    if (!owner->plan.workspace_bytes) {
++        return 0;
++    }
++    status = preexec_workspace_identity(role);
++    if (status) {
++        return status;
++    }
++    if (role->borrowed || role->borrower_returned) {
++        return -EALREADY;
++    }
++    role->borrowed = true;
++    role->borrower_holder = out;
++    *out = role;
++    /* Retain the authentic born loan even when its independent post refuses.
++     * The Source borrower must inspect its output before signed status. */
++    status = preexec_setup_original_live();
++    return role->first_status ? role->first_status :
++        role->post_status ? role->post_status : status;
++}
++
++int qemu_crucible_preexec_workspace_current_v1(
++    QemuCrucibleWorkspacePurposeOwner *role,
++    QemuCrucibleWorkspacePurposeObservation *out)
++{
++    QemuCrucibleWorkspacePurposeObservation view;
++    int status = preexec_workspace_identity(role);
++
++    if (status || !out || preexec_workspace_output_overlaps(out, sizeof(*out))) {
++        return status ? status : -EINVAL;
++    }
++    if (!role->published || !role->borrowed || role->borrower_returned ||
++        !role->borrower_holder || *role->borrower_holder != role) {
++        return -ESTALE;
++    }
++    status = preexec_workspace_alias_current(role);
++    if (status) {
++        return status;
++    }
++    view = (QemuCrucibleWorkspacePurposeObservation) {
++        .contract = role->contract,
++        .incarnation = role->incarnation,
++        .assignment = role->assignment,
++        .descriptor = role->descriptor,
++        .allocation_extent = role->allocation_extent,
++        .device = role->device,
++        .inode = role->inode,
++        .workspace_generation = role->workspace_generation,
++        .process_generation = role->process_generation,
++        .account_generation = role->account_generation,
++    };
++    *out = view;
++    return 0;
++}
++
++int qemu_crucible_preexec_workspace_identity_return_v1(
++    QemuCrucibleWorkspacePurposeOwner **holder)
++{
++    QemuCrucibleWorkspacePurposeOwner *role = &preexec_setup_owner.workspace;
++    long result;
++    int status = preexec_workspace_identity(role);
++
++    if (status) {
++        return status;
++    }
++    if (!holder || holder != role->borrower_holder || *holder != role ||
++        !role->borrowed || role->borrower_returned) {
++        return -ESTALE;
++    }
++    if (role->close_uncertain) {
++        return role->return_status ? role->return_status : -EIO;
++    }
++    if (role->close_attempted) {
++        return -EBUSY;
++    }
++    /* The Source borrower calls this only after its actual mapping/users
++     * have returned. Consume the received alias once; never refund the
++     * containing backing share still retained by its producing parent. */
++    if (*role->descriptor_slot != role->descriptor) {
++        return -ESTALE;
++    }
++    role->close_attempted = true;
++    result = preexec_setup_syscall5(SYS_close, role->descriptor, 0, 0, 0, 0);
++    role->return_status = result < 0 ? (int)result : 0;
++    role->close_uncertain = result < 0;
++    if (result < 0) {
++        return role->return_status;
++    }
++    role->alias_returned = true;
++    *role->descriptor_slot = -1;
++    role->borrower_returned = true;
++    *holder = NULL;
++    role->borrower_holder = NULL;
++    return 0;
++}
 diff --git a/system/crucible-ram-fork.c b/system/crucible-ram-fork.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..b4fb265161580080ff341f5d4a1290565c5ca88d
@@ -220549,10 +221346,10 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
  }
 diff --git a/tests/unit/crucible-startup-source-fixture.inc.h b/tests/unit/crucible-startup-source-fixture.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e87591108078c89f152fdcacc3278964a9dfa6e4
+index 0000000000000000000000000000000000000000..64fdd30d01b4a44406608dc96d9d8f76fd688d95
 --- /dev/null
 +++ b/tests/unit/crucible-startup-source-fixture.inc.h
-@@ -0,0 +1,687 @@
+@@ -0,0 +1,713 @@
 +/*
 + * Actual-body controls for original installer startup source
 + *
@@ -220672,6 +221469,9 @@ index 0000000000000000000000000000000000000000..e87591108078c89f152fdcacc3278964
 +    int purpose_check_status;
 +    int standing_borrow_status;
 +    bool standing_output_on_failure;
++    unsigned workspace_borrows;
++    int workspace_borrow_status;
++    bool workspace_role_absent;
 +    bool family_prepared;
 +    bool workspace;
 +} SourceFixture;
@@ -220826,6 +221626,26 @@ index 0000000000000000000000000000000000000000..e87591108078c89f152fdcacc3278964
 +#define qemu_crucible_ram_fingerprint_root_invocation_current_v1 fixture_root_current_unavailable
 +#define qemu_crucible_machine_construction_frame_current_v1 fixture_machine_current_unavailable
 +#include "crucible-startup-source-body.inc.h"
++
++/* This boundary models only the explicitly absent optional role. It cannot
++ * construct, lend or validate a positive workspace purpose. Real role/mapping
++ * bodies have separate controls with their disclosed parent assumptions. */
++int qemu_crucible_preexec_workspace_borrow_v1(
++    QemuCruciblePreexecPurposeOwner *owner,
++    QemuCrucibleWorkspacePurposeOwner **out)
++{
++    if (owner != &modeled_preexec_owner || !fixture.family_prepared ||
++        getpid() != fixture.process || !qemu_thread_is_self(&fixture.thread) ||
++        !out || out != &startup_source.workspace_role || *out) {
++        return -EPERM;
++    }
++    fixture.workspace_borrows++;
++    if (!fixture.workspace_role_absent || fixture.plan.workspace_bytes) {
++        return -ENOKEY;
++    }
++    return fixture.workspace_borrow_status;
++}
++
 +#undef qemu_crucible_machine_construction_frame_current_v1
 +#undef qemu_crucible_ram_fingerprint_root_invocation_current_v1
 +#undef qemu_crucible_checkpoint_inventory_metadata_current_v1
@@ -221057,6 +221877,9 @@ index 0000000000000000000000000000000000000000..e87591108078c89f152fdcacc3278964
 +        end = now + UINT64_C(1000000000);
 +    }
 +    fixture.workspace = fixture_workspace_requested;
++    fixture.workspace_role_absent = !fixture_workspace_requested;
++    fixture.workspace_borrows = 0;
++    fixture.workspace_borrow_status = 0;
 +    fixture.descriptors[QEMU_CRUCIBLE_PREEXEC_SETUP_STANDING_PUBLICATION_INDEX] = -1;
 +    fixture.descriptors[QEMU_CRUCIBLE_PREEXEC_SETUP_STANDING_CANCELLATION_INDEX] = -1;
 +    fixture.descriptors[QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_INDEX] = -1;
@@ -221640,10 +222463,10 @@ index 0000000000000000000000000000000000000000..855cea98f5a5321a6c2b2040a96b8e54
 +    main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a83abe3551bfce3c911413ea819e66ba4893ddb1
+index 0000000000000000000000000000000000000000..30d8887b6b38fa25357e32a23c7781df2b3fc29b
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,813 @@
+@@ -0,0 +1,812 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -221653,6 +222476,12 @@ index 0000000000000000000000000000000000000000..a83abe3551bfce3c911413ea819e66ba
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'plugins/crucible-device-workspace.inc.h':
++        '7895ebd3a7bb4c7c2df10377429de3cb204b9fa41dd1c242b8ce17c0cf1d2c60',
++    'system/crucible-preexec-setup.c':
++        '596f7fa74c125374088b1eaf3e5879fcf97ad7fe670e34e2d3b1b82924b68931',
++    'system/crucible-preexec-workspace.inc.h':
++        '2c7e8965e8585b9ce3988f1068f7c5c68c2f447669200ee76450f998028e60ca',
 +    'plugins/crucible-control-invocation.inc.h':
 +        '4f59239c0d71e335dbc76a737cf9b5bf24d8c9ee21804bcc508bb3db60d1de81',
 +    'plugins/crucible-setup-handshake.inc.h':
@@ -221660,9 +222489,9 @@ index 0000000000000000000000000000000000000000..a83abe3551bfce3c911413ea819e66ba
 +    'plugins/crucible-setup-mapping.inc.h':
 +        '873455344e7aace6607c1426cc573ad68ea7701770756b6fd51eba0670fc10b4',
 +    'tests/unit/test-crucible-startup-source.c':
-+        'cd875252a11c7d31ee960a8cef7a72c6de4fe54e3072f36546415a7b6d2e7b90',
++        '680a34bfcd164939a94ef6e3b14dccc86a4b45c19f5fe54571f9259cb2a628b2',
 +    'tests/unit/crucible-startup-source-fixture.inc.h':
-+        'e0b8147cc4477a2b784e0d6993af5b5452d35706188e08bb813ee5f2bf69e65b',
++        '1971684b98fa817f026b310d9c898614b7850f5bb829c52de271b7629a806b10',
 +    'include/qemu/crucible-metadata-partition.h':
 +        '62dd96cf5bb1594dd3e42360459b409573cecd5d196f355f72edffa2250ee95a',
 +    'plugins/api-system.c':
@@ -221674,27 +222503,27 @@ index 0000000000000000000000000000000000000000..a83abe3551bfce3c911413ea819e66ba
 +    'plugins/loader.c':
 +        'ee5bb6da8d25638e197eb03de2e9d5de344eae52f77f8a0143513124bed9f502',
 +    'plugins/crucible-paged-ram.c':
-+        'efa5b48de8398055bac62472c5708ea6ea5afdca44343939f1d10fddf4d6dce1',
++        '322bf51026f20cdf74bd105706e6d2121127409ff6867a06a5cb67b5e1be85f9',
 +    'monitor/qmp-cmds.c':
 +        '7517b27d55d47c05c63f1d2c8a3b8d35dfd38491698bd40b0e1e61ffcf8267b2',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'plugins/crucible-startup-source.c':
-+        '329838d7445d810c3278580fd7a5a58133234e2ca42e54912f3eaf71a1faaf98',
++        'e5c71d2e6570dac6ad21956ee095684449cbebfa424083e8edc582376efca80a',
 +    'plugins/crucible-startup-source.h':
-+        '0d47deeaabba99f36c2336f7139f8da927fbcb2a1ffa81f2d42438ff54c16162',
++        '340c7c2a53c189405951f4276ddaa8ffa38cb993c7568d834e7924ee1fa64ebb',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '0d9a7ac15df5856a327c19b1fd37d3794476c8597cafa430cd208807385f6a27',
++        '93573ce1d72875412dc10b68a273761af892f1ca08b1bdbfeafdab1b1a2849f2',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
-+        '2d1e1f7913d1bcd3d326cb228e79c2fe084cf3a866d294bbf81cebb1acc95a43',
++        '2f92445b734c20c28d4668d12d0d08eaa359c57e0f4f8ac549a6b83764c2cf7b',
 +    'plugins/crucible-callback-child.inc.h':
-+        '4d6d2814a8e68086bffa566251078f2b3a40153722ba9a1091091c3b422b66cd',
++        '8b0a0a6530307a7e3ab7e251744449dc33bda85554eade94e20f0cd25227d8ca',
 +    'plugins/crucible-callback-publication.inc.h':
 +        '79faed4ff36b426c3b03d672b60d33383d6b0f7ae636872f3a6481cc3787a24a',
 +    'plugins/crucible-ram-control.inc.h':
@@ -221732,7 +222561,7 @@ index 0000000000000000000000000000000000000000..a83abe3551bfce3c911413ea819e66ba
 +    'plugins/crucible-qmp-visitor.inc.h':
 +        'f18dae5542b712a64bfbd4c3437043d82ca11d8b9f1a50650cb4e847fa3d7548',
 +    'plugins/crucible-checkpoint-receiving.c':
-+        '97b70de9163c98ee08fb0af2be521a161632bd121e38bda431212a9110fc7f40',
++        '33a8127d130875f47af20da4f679aaf00a4ef200475037bea8d4b1540cdfa7d8',
 +    'plugins/crucible-checkpoint-receiving.h':
 +        '51d32f9ee1b555ccf8cd050b14bc7197ebcb99005bae49a6ce1e39b9247354ba',
 +    'plugins/crucible-control-stop.h':
@@ -221746,11 +222575,11 @@ index 0000000000000000000000000000000000000000..a83abe3551bfce3c911413ea819e66ba
 +    'system/crucible-observation-realization.c':
 +        'be20ad9c90068e19343732b4f4766d6a9745666acc27693bcdc2c8ea3bc4832f',
 +    'system/crucible-observation-writer.c':
-+        '0c02dff01d11c6a0bf5cbcd0ed1f2ead44756f18ca1799fd2550a1670095a2f2',
++        'd7bf391b8fbf506a9c4dcd2b8e792af6e2d079ee2675a2159177aa6021480a40',
 +    'include/system/crucible-observation-realization.h':
 +        '8df6724535132634884f702ce14e43cf1bb60e1d3d8e426ff75a031d56675f5f',
 +    'include/system/crucible-observation-writer.h':
-+        '7a4aa8aedd5d86ccdbeba6fedd4ded9732f0d549701abd70e8462aa6cbe555c7',
++        'e5b6a66f2a44f5840c5c36a558ffffa12683e5c1a73540e2c0049c3b1a1d20fb',
 +    'include/system/crucible-hot-fork-coordinator.h':
 +        'c8fcfdf24406c55aab0bf144329171b8cd9c4888dfa9a243089f381928886934',
 +    'include/system/crucible-ram-quiescence.h':
@@ -221758,9 +222587,9 @@ index 0000000000000000000000000000000000000000..a83abe3551bfce3c911413ea819e66ba
 +    'include/qemu/thread.h':
 +        'a3254ccf7b60eb60a6d36b1113bb97036fcf43e2d4c9582c655939c409078ca8',
 +    'include/qemu/crucible-process-purpose.h':
-+        '569743c799a5daf82a94acc59205aa28c428c0d0bfde949432dac6923a698581',
++        'ee8a9e4c92a0d4658a1a816bdc204021623e8aa6a58bf06e5444d62a2b99576a',
 +    'include/qemu/crucible-paged-ram.h':
-+        '512c67a1baad64eec9d0c96dba1c988e52e13a331aeba901115ef77e8870c067',
++        'b494cc6b7158fd4b98d237e3b6238ddb259a09f5e8de3f18686cbbdb8b4b3eaa',
 +    'include/qom/object.h':
 +        'faa9179526b91ac70c3813eb273f5367bb1510a06345994d84a9a1342742f414',
 +    'qobject/json-writer.c':
@@ -222180,6 +223009,7 @@ index 0000000000000000000000000000000000000000..a83abe3551bfce3c911413ea819e66ba
 +              '#include "plugins/crucible-control-stop.h"',
 +              '#include "system/crucible-hot-fork-coordinator.h"',
 +              '#include "system/crucible-observation-realization.h"',
++              '#include "system/crucible-observation-writer.h"',
 +              '#include "system/crucible-ram-quiescence.h"',
 +              '#include "monitor/monitor-internal.h"']
 +    blocks = (
@@ -222206,19 +223036,11 @@ index 0000000000000000000000000000000000000000..a83abe3551bfce3c911413ea819e66ba
 +         "struct QemuCrucibleObservationCleanupCpuClosure {",
 +         "size_t qemu_crucible_observation_writer_fence_body_bytes_v1("),
 +    )
-+    # Only the type contracts are needed here. The complete Writer API header
-+    # repeats SDK declarations, which real warning-as-error compilation rejects.
-+    output.append(body_cut(sources["include/system/crucible-observation-writer.h"],
-+        "typedef struct QemuCrucibleObservationCpuBoundaryScope {",
-+        "int qemu_crucible_observation_cpu_boundary_begin_v1("))
-+    output.append(body_cut(sources["include/system/crucible-observation-writer.h"],
-+        "typedef struct QemuCrucibleObservationWriterFence\n",
-+        "/* Native Source invocation identity"))
-+    output.append(unique_line(sources["include/system/crucible-observation-writer.h"],
-+        "size_t qemu_crucible_observation_writer_metadata_bytes_v1(void);"))
++    # The owning Writer header now consumes SDK declarations without repeating
++    # them. Retain only the implementation's distinct private RootFrame alias.
 +    output.append(body_cut(sources["system/crucible-observation-writer.c"],
 +        "typedef struct QemuCrucibleFingerprintRootFrame\n",
-+        "/* Literal producer:"))
++        "struct QemuCrucibleObservationCleanupCpuClosure {"))
 +    for name, first, after in blocks:
 +        # Preserve the owning source notice with every literal declaration cut.
 +        notice = sources[name][:sources[name].index("*/") + 2]
@@ -222556,7 +223378,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..c577ca23ffe35a801d2120bf89b576ffbd88cef8 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..ae904f689e9c99ea5999c3a1208256a06db2d070 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -222617,7 +223439,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..c577ca23ffe35a801d2120bf89b576ff
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +244,1011 @@ foreach test_name, extra: tests
+@@ -207,3 +244,1014 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -223365,6 +224187,9 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..c577ca23ffe35a801d2120bf89b576ff
 +              meson.project_source_root(), '@OUTPUT0@',
 +              '--source-body', '@OUTPUT1@', '--storage', '@OUTPUT2@'],
 +    depend_files: files('../../plugins/crucible-control-invocation.inc.h',
++                        '../../plugins/crucible-device-workspace.inc.h',
++                        '../../system/crucible-preexec-setup.c',
++                        '../../system/crucible-preexec-workspace.inc.h',
 +                        '../../plugins/crucible-setup-handshake.inc.h',
 +                        '../../plugins/crucible-setup-mapping.inc.h',
 +                        'test-crucible-startup-source.c',
@@ -267879,10 +268704,10 @@ index 0000000000000000000000000000000000000000..2d6095e07373bad053241cac032344a2
 +}
 diff --git a/tests/unit/test-crucible-startup-source.c b/tests/unit/test-crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..f66587e6d143996c98a906758de637b4e957d086
+index 0000000000000000000000000000000000000000..785d21eb6602f04809e364a42347dc27cbc14d92
 --- /dev/null
 +++ b/tests/unit/test-crucible-startup-source.c
-@@ -0,0 +1,3911 @@
+@@ -0,0 +1,3949 @@
 +/*
 + * Actual Source lifecycle, accounting and registration controls.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -271207,6 +272032,8 @@ index 0000000000000000000000000000000000000000..f66587e6d143996c98a906758de637b4
 +    fixture_clear_source();
 +    g_assert_cmpint(qemu_crucible_startup_source_preexec_publish_v3(
 +        &modeled_preexec_owner), ==, 0);
++    g_assert_cmpuint(fixture.workspace_borrows, ==, 1);
++    g_assert_null(startup_source.workspace_role);
 +    g_assert_true(startup_source.process_purpose_complete);
 +    g_assert_true(startup_source.metadata_partition.controller_retained);
 +    g_assert_true(startup_source.standing.construction_storage.fixed_charge.held);
@@ -271218,6 +272045,38 @@ index 0000000000000000000000000000000000000000..f66587e6d143996c98a906758de637b4
 +    g_assert_cmpint(fixture_acquire(), ==, 0);
 +    assert_retained();
 +    g_assert_null(qemu_crucible_startup_source_native_selection_v1());
++}
++
++static void scenario_constructor_workspace_refusal(void)
++{
++    fixture_prepare(0, false);
++    fixture_clear_source();
++    fixture.workspace_borrow_status = -EIO;
++
++    g_assert_cmpint(qemu_crucible_startup_source_preexec_publish_v3(
++        &modeled_preexec_owner), ==, -EIO);
++    g_assert_cmpuint(fixture.workspace_borrows, ==, 1);
++    g_assert_null(startup_source.workspace_role);
++    g_assert_false(startup_source.process_purpose_complete);
++    g_assert_cmpint(startup_source.first_negative_status, ==, -EIO);
++    g_assert_false(startup_source.standing.construction_storage.fixed_charge.held);
++    assert_preexec_custody();
++}
++
++static void scenario_constructor_workspace_unsupported(void)
++{
++    fixture_prepare(0, false);
++    fixture_clear_source();
++    fixture.plan.workspace_bytes = QEMU_CRUCIBLE_PROCESS_WORKSPACE_BYTES;
++
++    g_assert_cmpint(qemu_crucible_startup_source_preexec_publish_v3(
++        &modeled_preexec_owner), ==, -ENOKEY);
++    g_assert_cmpuint(fixture.workspace_borrows, ==, 1);
++    g_assert_null(startup_source.workspace_role);
++    g_assert_false(startup_source.process_purpose_complete);
++    g_assert_cmpint(startup_source.first_negative_status, ==, -ENOKEY);
++    g_assert_false(startup_source.standing.construction_storage.fixed_charge.held);
++    assert_preexec_custody();
 +}
 +
 +static void scenario_constructor_post_refusal(void)
@@ -271626,6 +272485,8 @@ index 0000000000000000000000000000000000000000..f66587e6d143996c98a906758de637b4
 +SOURCE_SCENARIO(purpose8_ram_invalid)
 +
 +SOURCE_SCENARIO(constructor_healthy)
++SOURCE_SCENARIO(constructor_workspace_refusal)
++SOURCE_SCENARIO(constructor_workspace_unsupported)
 +SOURCE_SCENARIO(constructor_post_refusal)
 +SOURCE_SCENARIO(constructor_standing_refusal)
 +SOURCE_SCENARIO(constructor_wrong_issuer)
@@ -271775,6 +272636,8 @@ index 0000000000000000000000000000000000000000..f66587e6d143996c98a906758de637b4
 +    REGISTER_SCENARIO(purpose8_ram_present);
 +    REGISTER_SCENARIO(purpose8_ram_invalid);
 +    REGISTER_SCENARIO(constructor_healthy);
++    REGISTER_SCENARIO(constructor_workspace_refusal);
++    REGISTER_SCENARIO(constructor_workspace_unsupported);
 +    REGISTER_SCENARIO(constructor_post_refusal);
 +    REGISTER_SCENARIO(constructor_standing_refusal);
 +    REGISTER_SCENARIO(constructor_wrong_issuer);

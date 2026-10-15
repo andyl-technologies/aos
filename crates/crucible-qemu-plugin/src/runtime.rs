@@ -31,6 +31,7 @@ mod parent_park;
 pub(crate) mod prebirth;
 mod teardown_latch;
 mod worker_quiescence;
+mod workspace_mapping;
 pub(super) use teardown_latch::LiveRuntimeTeardownRouter;
 use teardown_latch::{TriggerConsumer, TriggerPublisher};
 
@@ -375,6 +376,7 @@ pub(crate) struct OwnedCallbackRuntimeState {
     callback_child: callback_child::CallbackChild,
     registration_owner: registration_owner::RegistrationOwner,
     registration_groups: registration_groups::RegistrationGroups,
+    workspace_mapping: workspace_mapping::WorkspaceMapping,
     original_userdata_retained: AtomicBool,
     owner_process: u32,
     workspace_disarmed: bool,
@@ -435,6 +437,7 @@ impl OwnedCallbackRuntimeState {
             callback_child: callback_child::CallbackChild::new(),
             registration_owner: registration_owner::RegistrationOwner::new(),
             registration_groups: registration_groups::RegistrationGroups::new(),
+            workspace_mapping: workspace_mapping::WorkspaceMapping::new(),
             original_userdata_retained: AtomicBool::new(false),
             owner_process: std::process::id(),
             workspace_disarmed: false,
@@ -917,9 +920,29 @@ impl OwnedCallbackRuntimeState {
                 LiveVcpuTimeCallbackError::CallbackRegistrationOwner { source }
             })?;
 
-            // The worker's creator and complete auxiliary backing are separate
-            // from physical callback registration. Refuse that exact birth cut.
             if fingerprint.is_some() {
+                // The whole keeper belongs to Runtime request0. Source's
+                // constructor consumes its actual optional role, then transfer
+                // binds this fixed field to the genuine completed child owner.
+                let (id, runtime, _) = state.setup.callback_child_material().map_err(|source| {
+                    LiveVcpuTimeCallbackError::DeviceDigestWorkspace {
+                        source: crate::DeviceDigestWorkspaceError::StartupSource { source },
+                    }
+                })?;
+                // SAFETY: the actual paid/pinned Runtime and transferred child
+                // stay retained through every born output and negative post.
+                let mapping = unsafe { state.workspace_mapping.create(id, runtime) };
+                let mapping_post = state.setup.check_runtime_installation();
+                mapping.map_err(|source| LiveVcpuTimeCallbackError::DeviceDigestWorkspace {
+                    source,
+                })?;
+                mapping_post.map_err(|source| {
+                    LiveVcpuTimeCallbackError::DeviceDigestWorkspace {
+                        source: crate::DeviceDigestWorkspaceError::StartupSource { source },
+                    }
+                })?;
+                // Physical current supplies no mutable bytes or worker creator.
+                // Those genuine operating/terminal producers remain required.
                 return Err(callback_child::CallbackChild::worker_unavailable());
             }
             Ok(PreparedLiveCallbacks {})
@@ -1261,6 +1284,12 @@ impl Drop for RequiredOwnedCallbacksRegistered {
                 return;
             }
             if state.registration_groups.identity_return().is_err() {
+                return;
+            }
+            // Mapping custody independently pins the actual child owner. The
+            // current Source contract retains transferred mapping debt until a
+            // genuine worker/material terminal producer supplies its last use.
+            if state.workspace_mapping.identity_return().is_err() {
                 return;
             }
             if state.registration_owner.retained()

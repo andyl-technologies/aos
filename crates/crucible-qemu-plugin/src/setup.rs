@@ -205,6 +205,7 @@ pub struct PluginSetupCompletion {
     registered_wake_fd: Option<RegisteredWakeFd>,
     process_generation: u64,
     startup_source: Option<crate::startup_source::InstallerStartupSource>,
+    #[cfg(test)]
     refused_device_digest_workspace: Option<crate::device_digest_workspace::DeviceDigestWorkspace>,
     device_digest_workspace: Option<(
         crucible_protocol::DeviceDigestWorkspaceBinding,
@@ -384,10 +385,11 @@ impl PluginSetupCompletion {
         Ok(())
     }
 
-    /// Consumes the fixed handover only for its actual installing incarnation.
+    /// Consumes only the explicit local descriptor fixture's fixed handover.
+    #[cfg(test)]
     pub(crate) fn take_device_digest_workspace(
         &mut self,
-        plugin_id: crate::QemuPluginId,
+        _plugin_id: crate::QemuPluginId,
         process_generation: u64,
     ) -> Result<
         crate::device_digest_workspace::DeviceDigestWorkspace,
@@ -395,7 +397,7 @@ impl PluginSetupCompletion {
     > {
         if self.refused_device_digest_workspace.is_some() {
             return Err(crate::DeviceDigestWorkspaceError::Ownership {
-                reason: "the native workspace claim remains refused or uncertain",
+                reason: "the local workspace fixture remains refused or uncertain",
             });
         }
         if self.process_generation != process_generation {
@@ -409,27 +411,19 @@ impl PluginSetupCompletion {
         original
             .check()
             .map_err(|source| crate::DeviceDigestWorkspaceError::StartupSource { source })?;
-        let plan = original
-            .plan_fd()
-            .map_err(|source| crate::DeviceDigestWorkspaceError::StartupSource { source })?
-            .as_raw_fd();
         let (binding, descriptor) = self.device_digest_workspace.take().ok_or(
             crate::DeviceDigestWorkspaceError::Ownership {
                 reason: "fingerprint-enabled setup lacks its compulsory workspace",
             },
         )?;
-        match crate::device_digest_workspace::DeviceDigestWorkspace::prepare(
-            plugin_id,
-            process_generation,
-            binding,
-            descriptor,
-            plan,
+        match crate::device_digest_workspace::DeviceDigestWorkspace::prepare_fixture(
+            binding, descriptor,
         ) {
             Ok(workspace) => Ok(workspace),
             Err(failure) => {
                 let source = failure.source;
-                // The same Source retains the plan. The workspace owner keeps
-                // its ambiguous claim and mapping through physical containment.
+                // This explicit local fixture retains its refused descriptor;
+                // it neither issues nor repairs production Source ownership.
                 self.refused_device_digest_workspace = Some(failure.workspace);
                 Err(source)
             }
@@ -830,6 +824,7 @@ pub(crate) fn prepare_setup_completion_borrowing_plan<W: Write>(
         selectable_catalog_plan: decoded_plans.selectable_catalog_plan,
         registered_wake_fd: None,
         process_generation,
+        #[cfg(test)]
         refused_device_digest_workspace: None,
         startup_source: None,
         device_digest_workspace,

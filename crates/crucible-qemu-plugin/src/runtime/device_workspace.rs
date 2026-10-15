@@ -30,6 +30,11 @@ impl OwnedCallbackRuntimeState {
         {
             return Err(-libc::EPROTO);
         }
+        // Source's VMA is DONTFORK. Disarm only the child's copied local
+        // metadata before any inherited lock, callback or descriptor reuse.
+        self.workspace_mapping
+            .disarm_inherited()
+            .map_err(|_| -libc::EIO)?;
         if let Some(live) = self.live_vcpu_time.as_mut()
             && live
                 .as_mut()

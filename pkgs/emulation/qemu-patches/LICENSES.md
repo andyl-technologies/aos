@@ -20,6 +20,7 @@ The atomic integration patch creates these QEMU source files:
 | `plugins/crucible-native-invocation.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-device-workspace.h` | GPL-2.0-or-later | Explicit SPDX identifier; fixed workspace and original startup wire declarations |
 | `plugins/crucible-device-workspace.c` | GPL-2.0-or-later | Explicit SPDX identifier; bounded wire and sealed descriptor decoding |
+| `plugins/crucible-device-workspace.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier; Source-owned physical workspace mapping custody |
 | `plugins/crucible-startup-source.c` | GPL-2.0-or-later | Explicit SPDX identifier; original installer deadline, cancellation, and retained custody |
 | `plugins/crucible-startup-source.h` | GPL-2.0-or-later | Explicit SPDX identifier; private native startup control declarations |
 | `tests/unit/extract-crucible-startup-source-controls.py` | GPL-2.0-or-later | Explicit SPDX identifier; literal production-body control extraction |
@@ -232,6 +233,7 @@ The atomic integration patch creates these QEMU source files:
 | `system/crucible-preexec-contract.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `system/crucible-preexec-family.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `system/crucible-preexec-ram.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-workspace.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier; preissued workspace role and retained alias custody |
 | `system/crucible-preexec-setup.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/crucible-startup-source-fixture.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/extract-crucible-checkpoint-placement.py` | GPL-2.0-or-later | Explicit SPDX identifier |
