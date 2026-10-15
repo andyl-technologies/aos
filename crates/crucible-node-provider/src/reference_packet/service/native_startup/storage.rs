@@ -217,7 +217,8 @@ pub fn original_native_birth_startup_storage_data(
         maximum,
     )?;
     let coordinator_decode = original_native_coordinator_decode_storage_data(
-        launch.initial_coordinator.bytes.as_slice(), maximum,
+        launch.initial_coordinator.bytes.as_slice(),
+        maximum,
     )?;
     let source_shape = private_bootstrap::project(input, maximum)?;
     // The same nine immutable base Values and the closed Binding14 additions
@@ -344,7 +345,10 @@ fn decode(bytes: &[u8], typed: usize, maximum: usize) -> Result<usize, ProviderE
 }
 
 /// Counts the selected complete coordinator and its actual validation phases.
-pub(crate) fn original_native_coordinator_decode_storage_data(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError> {
+pub(crate) fn original_native_coordinator_decode_storage_data(
+    bytes: &[u8],
+    maximum: usize,
+) -> Result<usize, ProviderError> {
     coordinator_decode::quote(bytes, maximum)
 }
 

@@ -117,7 +117,12 @@ fn started_prepare_failure_retires_without_retry_or_losing_original_holder() {
     let original = Rc::clone(&installed.original);
     // The real stage retains these owners, then refuses this invalid geometry
     // before supervisor reservation or any Child construction.
-    installed.incoming.as_mut().unwrap().runtime_limits.maximum_nodes = 0;
+    installed
+        .incoming
+        .as_mut()
+        .unwrap()
+        .runtime_limits
+        .maximum_nodes = 0;
 
     assert!(installed.prepare().is_err());
     assert!(installed.attempted);
@@ -149,7 +154,9 @@ fn changed_source_file_refuses_the_unchanged_pinned_manifest() {
     std::fs::write(&path, &bytes).unwrap();
     assert!(expected.verify(&bytes).is_err());
 
-    assert!(InstalledCompleteScene::install(manifest.clone(), directory.path().join("drift")).is_err());
+    assert!(
+        InstalledCompleteScene::install(manifest.clone(), directory.path().join("drift")).is_err()
+    );
     assert_eq!(std::fs::read(&manifest.path).unwrap(), manifest_bytes);
     // Namespace absence is not used as an oracle for acquisition ordering.
 }

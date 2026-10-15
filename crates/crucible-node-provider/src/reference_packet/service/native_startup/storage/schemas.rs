@@ -82,7 +82,8 @@ pub(super) fn project(
     }
 
     let admission = decode_value(
-        include_bytes!("../../ack_emitter/admission-contract.json"), maximum,
+        include_bytes!("../../ack_emitter/admission-contract.json"),
+        maximum,
     )?;
     // Hash construction may retain the generated reference while a verification
     // reference is built. Each independent HashRef owns all three real Strings.

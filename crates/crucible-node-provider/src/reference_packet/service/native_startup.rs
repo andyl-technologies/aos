@@ -251,5 +251,7 @@ pub(crate) use storage::{
     original_host_initial_lifecycle_shapes_data,
 };
 
-pub(crate) use storage::{original_native_coordinator_decode_storage_data,
-    original_native_coordinator_decode_counter_scratch_data};
+pub(crate) use storage::{
+    original_native_coordinator_decode_counter_scratch_data,
+    original_native_coordinator_decode_storage_data,
+};

@@ -147,7 +147,10 @@ pub(super) fn project(
         sum(&[source, host, association.requested_total()?], maximum)?,
         kernel.requested_total()?,
         sum(&[source, host, policy.requested_total()?], maximum)?,
-        sum(&[host, native_id.finish(maximum)?.requested_total()?], maximum)?,
+        sum(
+            &[host, native_id.finish(maximum)?.requested_total()?],
+            maximum,
+        )?,
         assigned_admit,
     ];
     let mut retained = 0usize;

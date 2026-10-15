@@ -57,7 +57,10 @@ fn complete_host_definition_preserves_original_literal_bytes() -> TestResult {
         "profile":"source-owned.host-scheduling-original-lineage/2",
         "native_scope":"host coordinator and declared connection resources only; native peers require independently installed native-five capture and genuine fresh adoption"
     }))?;
-    assert_eq!(complete_host_definition()?, canonical::content_ref(&bytes, "application/json")?);
+    assert_eq!(
+        complete_host_definition()?,
+        canonical::content_ref(&bytes, "application/json")?
+    );
     Ok(())
 }
 
@@ -69,7 +72,10 @@ fn complete_host_continuation_schema_preserves_original_literal_bytes() -> TestR
         "runtime":"closed original-lineage Runtime7; complete native ancestry and typed original bodies",
         "administration":"separate runtime-original-capture-journal/1 in index3; unchanged Runtime7 and Coordinator7"
     }))?;
-    assert_eq!(complete_host_continuation_schema()?.definition, canonical::content_ref(&bytes, "application/json")?);
+    assert_eq!(
+        complete_host_continuation_schema()?.definition,
+        canonical::content_ref(&bytes, "application/json")?
+    );
     Ok(())
 }
 

@@ -178,11 +178,7 @@ pub(super) fn project(bytes: &[u8], maximum: usize) -> Result<SourceBindingStora
     for (key, value) in BASE.into_iter().zip(values) {
         encoded = sum(&[encoded, key.len() + 2, value.len()], maximum)?;
         decoded = sum(
-            &[
-                decoded,
-                decode_value(value, maximum)?,
-                key.len(),
-            ],
+            &[decoded, decode_value(value, maximum)?, key.len()],
             maximum,
         )?;
     }

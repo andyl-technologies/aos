@@ -412,13 +412,26 @@ pub(crate) fn selected_native_dto_decode_storage_data(
     typed_slot: usize,
     maximum: usize,
 ) -> Result<usize, ProviderError> {
-    let credit = scan(bytes, maximum, typed_slot,
-        map_node(size_of::<String>() + size_of::<Value>(), align_of::<Value>())?)?;
+    let credit = scan(
+        bytes,
+        maximum,
+        typed_slot,
+        map_node(
+            size_of::<String>() + size_of::<Value>(),
+            align_of::<Value>(),
+        )?,
+    )?;
     let requested = sum(&[
-        credit.requested(&Phases { dom: 2, typed: 1, canonical: 1 })?,
+        credit.requested(&Phases {
+            dom: 2,
+            typed: 1,
+            canonical: 1,
+        })?,
         mul(2, size_of::<Value>())?,
     ])?;
-    if requested > maximum { return Err(exhausted()); }
+    if requested > maximum {
+        return Err(exhausted());
+    }
     Ok(requested)
 }
 
@@ -437,12 +450,19 @@ pub(crate) fn selected_value_decode_storage_data(
         bytes,
         maximum,
         size_of::<Value>(),
-        map_node(size_of::<String>() + size_of::<Value>(), align_of::<Value>())?,
+        map_node(
+            size_of::<String>() + size_of::<Value>(),
+            align_of::<Value>(),
+        )?,
     )?;
     // scan stores the root inline header in its typed term. This Value-only
     // phase must name both independent root headers explicitly, including {}.
     let requested = sum(&[
-        credit.requested(&Phases { dom: 2, typed: 0, canonical: 1 })?,
+        credit.requested(&Phases {
+            dom: 2,
+            typed: 0,
+            canonical: 1,
+        })?,
         mul(2, size_of::<Value>())?,
     ])?;
     if requested > maximum {
@@ -475,10 +495,17 @@ mod tests {
     }
 
     #[test]
-    fn actual_value_quote_covers_two_empty_scalar_container_and_escape_owners() -> Result<(), Box<dyn std::error::Error>> {
+    fn actual_value_quote_covers_two_empty_scalar_container_and_escape_owners()
+    -> Result<(), Box<dyn std::error::Error>> {
         use crate::retained_metadata::{MetadataObserver, requested_metadata_backing_storage_data};
-        for raw in [b"{}".as_slice(), b"[]", b"null", b"0", br#""""#,
-            br#"{"a":[0,1,2],"b":{"quoted":"\u0000\n\"\\\uD834\uDD1E"}}"#] {
+        for raw in [
+            b"{}".as_slice(),
+            b"[]",
+            b"null",
+            b"0",
+            br#""""#,
+            br#"{"a":[0,1,2],"b":{"quoted":"\u0000\n\"\\\uD834\uDD1E"}}"#,
+        ] {
             let original = canonical::parse_json(raw, raw.len())?;
             let independent = original.clone();
             let mut a = MetadataObserver::new();
@@ -486,9 +513,12 @@ mod tests {
             let mut b = MetadataObserver::new();
             b.observe(&independent)?;
             let bank = canonical::canonical_json(&independent)?;
-            let actual = sum(&[requested_metadata_backing_storage_data(&a.finish())?,
-                requested_metadata_backing_storage_data(&b.finish())?, bank.capacity(),
-                2 * size_of::<Value>()])?;
+            let actual = sum(&[
+                requested_metadata_backing_storage_data(&a.finish())?,
+                requested_metadata_backing_storage_data(&b.finish())?,
+                bank.capacity(),
+                2 * size_of::<Value>(),
+            ])?;
             let quoted = selected_value_decode_storage_data(raw, usize::MAX)?;
             assert!(quoted >= actual);
             assert!(quoted >= 2 * size_of::<Value>());
@@ -497,7 +527,8 @@ mod tests {
     }
 
     #[test]
-    fn value_quote_exact_one_short_raw_cap_and_depth_limits_refuse() -> Result<(), Box<dyn std::error::Error>> {
+    fn value_quote_exact_one_short_raw_cap_and_depth_limits_refuse()
+    -> Result<(), Box<dyn std::error::Error>> {
         let input = br#"{"schema":"a","values":["one","two",{},[]]}"#;
         let quote = selected_value_decode_storage_data(input, usize::MAX)?;
         assert_eq!(selected_value_decode_storage_data(input, quote)?, quote);
