@@ -377,15 +377,19 @@ selects the model-specific verifier. The campaign layer retains those bytes and
 generic evidence children but never treats a caller-asserted hash as semantic
 proof. Current Crucible payload schema 2 retains the canonical
 `crucible.model.measurement-evaluation.v2` body and adds an exact raw-input
-contract. Its `evidence` set contains exactly one `Trace` content ID using
-`crucible.executor.measurement-replay-evidence.v2`. The strict canonical CBOR
-leaf binds the scenario-definition ID, configuration ID, measurement-definition
-hash, complete authenticated scheduler-event sequence, and terminal ready,
-frontier, per-node icount, and quiescence state. The leaf is bounded at 64 MiB;
-its event and node collections use the model's deterministic count limits and
-reject oversized declared lengths before reserving their contents. Verification
-requires the supplied leaf's ID to equal that singleton edge, rederives all
-guest and model samples solely from the leaf, evaluates the windows again, and
+contract. Its `evidence` set contains one `Trace` content ID using
+`crucible.executor.measurement-replay-evidence.v3` plus the attempt-log segment
+leaves it references. The strict canonical CBOR manifest binds the
+scenario-definition ID, configuration ID, measurement-definition hash, entry
+count, final attempt-log chain hash, ordered segment references, and terminal
+ready, frontier, per-node icount, and quiescence state; the segments carry the
+complete authenticated scheduler-event sequence
+([`15-segmented-event-log.md`](15-segmented-event-log.md)). The manifest is
+bounded at 64 MiB; its node collections use the model's deterministic count
+limits and reject oversized declared lengths before reserving their contents.
+Verification requires the supplied manifest's ID to equal its evidence edge,
+authenticates every segment in order, rederives all guest and model samples
+solely from the manifest and its segments, evaluates the windows again, and
 exact-compares the definition hash, evaluation hash, and payload bytes. A
 missing or additional evidence edge, stale binding, forged or non-dense log,
 invalid guest message, noncanonical leaf, or replay disagreement fails closed.

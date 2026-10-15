@@ -324,7 +324,11 @@ effects into arbitrary callbacks.
 16. [`14-automated-release-validation.md`](14-automated-release-validation.md)
     defines automated packaged-QEMU release validation, the same-host replay
     profile matrix, and authenticated release evidence.
-17. [`schema-registry.tsv`](schema-registry.tsv) assigns each wire and object
+17. [`15-segmented-event-log.md`](15-segmented-event-log.md) defines segmented
+    attempt event logs, bounded trigger and assertion evaluation, named
+    predicate accumulators, the streaming console matcher, and segment-manifest
+    measurement evidence.
+18. [`schema-registry.tsv`](schema-registry.tsv) assigns each wire and object
     schema its version owner, storage domain, and compatibility gates.
     [`schema-inventory.md`](schema-inventory.md) records the source audit and
     explicit exclusions.

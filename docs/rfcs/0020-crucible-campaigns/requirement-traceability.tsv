@@ -169,6 +169,12 @@ CCOMP-21	T-CAM-4.9	gate:campaign-component-contract,gate:campaign-cold-continuit
 CCOMP-22	T-CAM-4.9	gate:campaign-component-contract,gate:campaign-cold-continuity
 CCOMP-23	T-CAM-4.9	gate:campaign-component-contract
 CCOMP-24	T-CAM-4.9	gate:campaign-component-contract
+CCOMP-25	T-CAM-4.11	gate:campaign-replay,gate:attempt-idempotence
+CCOMP-26	T-CAM-4.11	gate:campaign-replay,gate:content-address
+CCOMP-27	T-CAM-4.11	gate:campaign-replay,gate:e2e-determinism
+CCOMP-28	T-CAM-4.11	gate:campaign-component-contract,gate:attempt-idempotence
+CCOMP-29	T-CAM-4.11	gate:attempt-idempotence,gate:content-address
+CCOMP-30	T-CAM-4.11	gate:campaign-replay,gate:campaign-cold-continuity
 HFORK-1	T-CAM-7.3,T-CAM-7.6	gate:hot-fork-equivalence
 HFORK-2	T-CAM-7.3,T-CAM-7.6	gate:hot-fork-equivalence
 HFORK-3	T-CAM-6.1,T-CAM-7.1	gate:hot-fork-isolation,gate:abi-conformance
@@ -249,6 +255,14 @@ CMEAS-11	T-CAM-3.5	gate:campaign-replay
 CMEAS-12	T-CAM-3.5	gate:campaign-replay
 CMEAS-13	T-CAM-3.5,T-CAM-8.2	gate:campaign-replay
 CMEAS-14	T-CAM-3.4,T-CAM-8.2	gate:campaign-model
+CMEAS-15	T-CAM-3.7	gate:campaign-replay
+CMEAS-16	T-CAM-3.7	gate:campaign-replay,gate:campaign-cold-continuity
+CMEAS-17	T-CAM-3.8	gate:campaign-replay
+CMEAS-18	T-CAM-3.9	gate:campaign-model,gate:campaign-replay
+CMEAS-19	T-CAM-3.9	gate:campaign-replay
+CMEAS-20	T-CAM-3.10	gate:campaign-replay,gate:content-address
+CMEAS-21	T-CAM-3.10	gate:campaign-replay
+CMEAS-22	T-CAM-4.12	gate:campaign-replay,gate:campaign-component-contract
 CSEC-1	T-CAM-1.6,T-CAM-4.9	gate:content-address,gate:campaign-component-contract
 CSEC-2	T-CAM-2.4,T-CAM-2.5	gate:typed-choice,gate:abi-conformance
 CSEC-3	T-CAM-2.4,T-CAM-2.5	gate:campaign-policy-timeout-real-qemu,gate:typed-choice,gate:abi-conformance
@@ -270,3 +284,4 @@ CPERF-6	T-CAM-4.1	gate:lazy-frontier
 CPERF-7	T-CAM-7.6	gate:hot-fork-equivalence
 CPERF-8	T-CAM-4.2	gate:branch-point-model,gate:attempt-idempotence
 CPERF-9	T-CAM-4.10	gate:campaign-mutation-scaling
+CPERF-10	T-CAM-4.13	gate:campaign-performance

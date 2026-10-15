@@ -2889,15 +2889,17 @@ content-addressed objects for bounded GC; the campaign assignment root is not
 published until no-write authentication completes and the exact expected root
 is durably staged.
 
-The driver retains at most 1,000,000 dense scheduler entries, at most 64 MiB of
-their aggregate canonical identity material, and admits at most 1,000,000
-property-by-event evaluation visits. It deduplicates at most 65,530
+The driver retains the attempt event log as sealed segments plus an open tail
+under the storage limit of
+[`15-segmented-event-log.md`](15-segmented-event-log.md); no whole-log entry or
+byte bound applies. Assertion evaluation is the bounded fold of that chapter.
+It deduplicates at most 65,530
 self-contained discovered-choice bundles by exact opportunity identity, shares
 equal declaration/domain values by content identity, and enforces the candidate
 format's 128 MiB aggregate unique-record bound while discoveries arrive. After
 runner-owned shutdown, it appends the final dense event suffix under the same
-bounds before any semantic result is built. The complete retained log is checked by the offline
-assertion evaluator under the scenario's white-box and final-quiescence policy;
+limit before any semantic result is built. The complete log is checked, segment
+by segment, by the offline assertion evaluator under the scenario's white-box and final-quiescence policy;
 `Violated` and `NeverReachedFail` become failed campaign properties,
 `Passed`/`Satisfied` become passed properties, and other non-failing terminal
 states remain inconclusive. A stop from which the run can continue (a requested

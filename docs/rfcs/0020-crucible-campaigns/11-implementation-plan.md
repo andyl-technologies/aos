@@ -375,6 +375,20 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   guest/model raw-evidence replay, and an objective driven only by the verified
   retained publication. The task remains open for the packaged known-finding
   integration gate.
+- [ ] **T-CAM-3.7** Replace the condition prefix's complete histories with the
+  bounded fold of §15.4: declaration-catalog folds, a tail held until every
+  consumer advances, deadline evaluation from the interval snapshot, and
+  scheduler checkpoints carrying fold state and chain position instead of
+  retained entries.
+- [ ] **T-CAM-3.8** Convert named host predicates to pure accumulators with
+  bounded canonical state owned and checkpointed by the assertion evaluator.
+- [ ] **T-CAM-3.9** Compile console patterns at validation into bounded
+  deterministic byte automata with every-match-end semantics, reject
+  constructs a byte automaton cannot decide causally, and checkpoint one
+  automaton state per declared node and pattern.
+- [ ] **T-CAM-3.10** Publish measurement replay evidence v3 as a manifest of
+  ordered segment leaves, verify and rederive measurements in one forward pass,
+  and stream the seal-time assertion check and reproduction trace hash.
 
 **Gates:** `gate:campaign-model`, `gate:campaign-replay`, guest protocol
 extensions under `gate:abi-conformance`.
@@ -1663,6 +1677,18 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   authenticated membership and result-locator indexes; promote only after ref
   CAS, retain full fail-closed validation for imported or restarted heads, and
   exercise 10,000 mixed request/control mutations plus deep exact replay.
+- [ ] **T-CAM-4.11** Retain attempt logs as sealed, chained segments in
+  quota-accounted attempt storage with an open tail, remove the whole-log entry
+  and byte bounds, enforce the operational `maximum_event_log_bytes` limit,
+  publish segments as trace leaves, and resume from chain positions.
+- [ ] **T-CAM-4.12** Convert finding replay captures, CLI explanation,
+  objective and observation-stop verification, remote resume, hot-fork
+  materialization, and the campaign trace protocol to segment-by-segment
+  readers.
+- [ ] **T-CAM-4.13** Make replay-target matching, network-fault discovery,
+  guest-marker observation, and console matching proportional to each
+  quantum's appended entries, and prove flat memory and per-quantum time over a
+  long-horizon attempt.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,
@@ -2569,13 +2595,13 @@ traceability records:
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..32` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
 | `LAZY-1..48`, `LAZY-54` | 4 | lazy frontier, attempt idempotence, campaign replay |
-| `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
+| `CCOMP-1..30` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..28` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
 | `CAPI-1..14` | 8 | CLI/API contracts, continuity, campaign replay |
-| `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
+| `CMEAS-1..22` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |
-| `CPERF-1..9` | 4–7, 9 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
+| `CPERF-1..10` | 4–7, 9 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
 
 The executable traceability check required by T-CAM-0.4 must require one row per
 requirement ID, name at least one implementing task and test for each, reject
