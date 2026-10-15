@@ -1,6 +1,6 @@
-From ab97de831c930939a20d88fca873c5b6db68833e Mon Sep 17 00:00:00 2001
+From 2c946782538467b1c98770e32988412b65c8b903 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 04:44:51 -0700
+Date: Thu, 15 Oct 2026 05:00:45 -0700
 Subject: [PATCH] plugins: retain startup custody and nested writer intervals
 
 Capture the complete startup Source, Native callback lifecycle, nominal
@@ -19,6 +19,9 @@ Promote outstanding nested writes before returning their enclosing admission,
 and preserve read-only close, foreign drain, alias and copied-custody guards.
 Register 25 literal-body scenarios and ten targeted omission controls using
 the configured compiler and explicit physical operand adapters.
+
+Keep the regression operand scaffolding in readable structs, function blocks
+and primitive macros while preserving token behavior and exact test outcomes.
 
 The source remains inactive; complete operating and terminal joins are
 separate. Include actual generator inputs and corresponding-source notices
@@ -221350,10 +221353,10 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
  }
 diff --git a/tests/unit/crucible-cached-writer-memory.inc.h b/tests/unit/crucible-cached-writer-memory.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d43a4866744161c69e0979a83e30e54a636fb4e2
+index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747b8becc60
 --- /dev/null
 +++ b/tests/unit/crucible-cached-writer-memory.inc.h
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,127 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/* Physical operand adapters only; literal cached accessors follow this file.
 + * The historical row below is solely the V23 layout comparator. The exercised
@@ -221374,39 +221377,110 @@ index 0000000000000000000000000000000000000000..d43a4866744161c69e0979a83e30e54a
 +    uint64_t ram_writer_cpu_execution_generation;
 +    unsigned ram_writer_io_depth;
 +} OldQemuHotForkThreadRecord;
++
 +typedef uint64_t hwaddr;
 +typedef unsigned MemTxAttrs;
 +typedef unsigned MemTxResult;
-+typedef struct MemoryRegionCache { uint8_t *ptr; hwaddr len; } MemoryRegionCache;
++
++typedef struct MemoryRegionCache {
++    uint8_t *ptr;
++    hwaddr len;
++} MemoryRegionCache;
++
 +#define MEMTX_OK 0
 +#define MEMTXATTRS_UNSPECIFIED 0
 +#define likely(x) (x)
 +#define unlikely(x) (x)
-+#define glue1(a,b) a##b
-+#define glue(a,b) glue1(a,b)
++#define glue1(a, b) a##b
++#define glue(a, b) glue1(a, b)
++
 +static bool qemu_crucible_fault_memory_dma_rules_active(bool write)
-+{ (void)write; return false; }
++{
++    (void)write;
++    return false;
++}
++
 +static MemTxResult address_space_write_cached_fault(const MemoryRegionCache *c,
 +    hwaddr a, MemTxAttrs attrs, const void *b, hwaddr n)
-+{ (void)c; (void)a; (void)attrs; (void)b; (void)n; abort(); }
++{
++    (void)c;
++    (void)a;
++    (void)attrs;
++    (void)b;
++    (void)n;
++
++    abort();
++}
++
 +static MemTxResult address_space_write_cached_slow(const MemoryRegionCache *c,
 +    hwaddr a, const void *b, hwaddr n)
-+{ (void)c; (void)a; (void)b; (void)n; abort(); }
++{
++    (void)c;
++    (void)a;
++    (void)b;
++    (void)n;
++
++    abort();
++}
++
 +static void address_space_stb_cached_slow(const MemoryRegionCache *c,
 +    hwaddr a, uint8_t v, MemTxAttrs attrs, MemTxResult *r)
-+{ (void)c; (void)a; (void)v; (void)attrs; (void)r; abort(); }
-+static void stb_p(void *p, uint8_t value) { *(uint8_t *)p = value; }
-+#define PRIMITIVE(size, type, bytes) \
-+static void st##size##_le_p(void *p, type value) \
-+{ for (unsigned i = 0; i < bytes; i++) { ((uint8_t *)p)[i] = value >> (i * 8); } } \
-+static void st##size##_be_p(void *p, type value) \
-+{ for (unsigned i = 0; i < bytes; i++) { ((uint8_t *)p)[bytes - i - 1] = value >> (i * 8); } } \
-+static void address_space_st##size##_le_cached_slow(const MemoryRegionCache *c, \
-+    hwaddr a, type v, MemTxAttrs attrs, MemTxResult *r) \
-+{ (void)c; (void)a; (void)v; (void)attrs; (void)r; abort(); } \
-+static void address_space_st##size##_be_cached_slow(const MemoryRegionCache *c, \
-+    hwaddr a, type v, MemTxAttrs attrs, MemTxResult *r) \
-+{ (void)c; (void)a; (void)v; (void)attrs; (void)r; abort(); }
++{
++    (void)c;
++    (void)a;
++    (void)v;
++    (void)attrs;
++    (void)r;
++
++    abort();
++}
++
++static void stb_p(void *p, uint8_t value)
++{
++    *(uint8_t *)p = value;
++}
++
++#define PRIMITIVE(size, type, bytes)                                         \
++    static void st##size##_le_p(void *p, type value)                         \
++    {                                                                        \
++        for (unsigned i = 0; i < bytes; i++) {                               \
++            ((uint8_t *)p)[i] = value >> (i * 8);                            \
++        }                                                                    \
++    }                                                                        \
++                                                                             \
++    static void st##size##_be_p(void *p, type value)                         \
++    {                                                                        \
++        for (unsigned i = 0; i < bytes; i++) {                               \
++            ((uint8_t *)p)[bytes - i - 1] = value >> (i * 8);                \
++        }                                                                    \
++    }                                                                        \
++                                                                             \
++    static void address_space_st##size##_le_cached_slow(                     \
++        const MemoryRegionCache *c, hwaddr a, type v,                        \
++        MemTxAttrs attrs, MemTxResult *r)                                    \
++    {                                                                        \
++        (void)c;                                                             \
++        (void)a;                                                             \
++        (void)v;                                                             \
++        (void)attrs;                                                         \
++        (void)r;                                                             \
++                                                                             \
++        abort();                                                             \
++    }                                                                        \
++                                                                             \
++    static void address_space_st##size##_be_cached_slow(                     \
++        const MemoryRegionCache *c, hwaddr a, type v,                        \
++        MemTxAttrs attrs, MemTxResult *r)                                    \
++    {                                                                        \
++        (void)c;                                                             \
++        (void)a;                                                             \
++        (void)v;                                                             \
++        (void)attrs;                                                         \
++        (void)r;                                                             \
++                                                                             \
++        abort();                                                             \
++    }
++
 +PRIMITIVE(w, uint16_t, 2)
 +PRIMITIVE(l, uint32_t, 4)
 +PRIMITIVE(q, uint64_t, 8)
@@ -222131,10 +222205,10 @@ index 0000000000000000000000000000000000000000..64fdd30d01b4a44406608dc96d9d8f76
 +}
 diff --git a/tests/unit/extract-crucible-cached-writer.py b/tests/unit/extract-crucible-cached-writer.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..3ebb98451d8b3f7c67077e5ca2fd26558e1cdc9e
+index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387e7f9ee7f
 --- /dev/null
 +++ b/tests/unit/extract-crucible-cached-writer.py
-@@ -0,0 +1,277 @@
+@@ -0,0 +1,352 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract real Linux writer/cache bodies and ten behavioral omissions.
 +
@@ -222151,14 +222225,22 @@ index 0000000000000000000000000000000000000000..3ebb98451d8b3f7c67077e5ca2fd2655
 +import re
 +
 +SOURCE_HASHES = {
-+    'util/qemu-thread-posix.c': 'ac52a830c15de950ed855ce27a216e2226872e958760a38a0f5504390cd634bf',
-+    'util/oslib-posix.c': '04c5696686ee58dbd402f0ed31845de3dec234c38b7aa97ec98506356adc9789',
-+    'include/qemu/thread.h': 'a3254ccf7b60eb60a6d36b1113bb97036fcf43e2d4c9582c655939c409078ca8',
-+    'include/qemu/thread-posix.h': '22edf9398513dc3889c9fdb2f558ebd0321cfcc7ee33e6ad574941c220c22b6c',
-+    'include/system/memory_cached.h': '33db362075a85b1326d38c9d772f131e4bdd7cada5e68a47b99515a1ac33e61b',
-+    'include/system/memory_ldst_cached.h.inc': '0330f0a65ef81d51ba040b8512cd00bb06cb117a81a954b202132a2a6da48d2d',
-+    'tests/unit/test-crucible-cached-writer.c': 'dd728ef9b5959696a38ee31d11ba465f864c4ed7fef22a31ab467754509ffd18',
-+    'tests/unit/crucible-cached-writer-memory.inc.h': '86d2cb20759344c25d82840657e747265c171aa8c86807020383496f2bdbed70'
++    'util/qemu-thread-posix.c':
++        'ac52a830c15de950ed855ce27a216e2226872e958760a38a0f5504390cd634bf',
++    'util/oslib-posix.c':
++        '04c5696686ee58dbd402f0ed31845de3dec234c38b7aa97ec98506356adc9789',
++    'include/qemu/thread.h':
++        'a3254ccf7b60eb60a6d36b1113bb97036fcf43e2d4c9582c655939c409078ca8',
++    'include/qemu/thread-posix.h':
++        '22edf9398513dc3889c9fdb2f558ebd0321cfcc7ee33e6ad574941c220c22b6c',
++    'include/system/memory_cached.h':
++        '33db362075a85b1326d38c9d772f131e4bdd7cada5e68a47b99515a1ac33e61b',
++    'include/system/memory_ldst_cached.h.inc':
++        '0330f0a65ef81d51ba040b8512cd00bb06cb117a81a954b202132a2a6da48d2d',
++    'tests/unit/test-crucible-cached-writer.c':
++        'dd728ef9b5959696a38ee31d11ba465f864c4ed7fef22a31ab467754509ffd18',
++    'tests/unit/crucible-cached-writer-memory.inc.h':
++        'fa5b6074c5b5639538ad529b7a7d5a30ed1ed0dadee8fc6fb547d47e8b79457e'
 +}
 +
 +
@@ -222208,7 +222290,10 @@ index 0000000000000000000000000000000000000000..3ebb98451d8b3f7c67077e5ca2fd2655
 +
 +
 +def typedef(text, name):
-+    return re.search(r'typedef (?:struct|enum) ' + name + r' \{.*?\n\} ' + name + ';', text, re.S).group()
++    return re.search(
++        r'typedef (?:struct|enum) ' + name + r' \{.*?\n\} ' + name + ';',
++        text, re.S,
++    ).group()
 +
 +
 +def assemble(root):
@@ -222236,51 +222321,110 @@ index 0000000000000000000000000000000000000000..3ebb98451d8b3f7c67077e5ca2fd2655
 +    #include <sys/wait.h>
 +    #include <unistd.h>
 +    #define qatomic_load_acquire(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
-+    #define qatomic_store_release(p,v) __atomic_store_n((p),(v), __ATOMIC_RELEASE)
++    #define qatomic_store_release(p, v) __atomic_store_n((p), (v), __ATOMIC_RELEASE)
 +    #define QEMU_HOT_FORK_THREAD_NAME_MAX 256
 +    #define QEMU_HOT_FORK_THREAD_INVENTORY_MAX 65536
 +    #define QEMU_RAM_PAUSE_MAX_THREADS 4096
 +    #define QEMU_THREAD_JOINABLE 0
 +    #define QEMU_THREAD_DETACHED 1
++
 +    typedef struct QemuThread QemuThread;
 +    typedef struct QemuThreadRamActorBinding QemuThreadRamActorBinding;
 +    '''
-+    prefix += re.search(r'struct QemuThread \{.*?\n\};', input_file('include/qemu/thread-posix.h').read_text(), re.S).group() + '\n'
-+    for name in ['QemuThreadHotForkDisposition', 'QemuThreadRamPauseRefusal', 'QemuThreadRamPauseTransaction', 'QemuThreadRamWriterScope', 'QemuThreadRamWriterTransaction', 'QemuThreadRamCpuExecutionWitness', 'QemuThreadRamCpuConstruction']:
++    prefix += re.search(
++        r'struct QemuThread \{.*?\n\};',
++        input_file('include/qemu/thread-posix.h').read_text(), re.S,
++    ).group() + '\n'
++    for name in [
++        'QemuThreadHotForkDisposition',
++        'QemuThreadRamPauseRefusal',
++        'QemuThreadRamPauseTransaction',
++        'QemuThreadRamWriterScope',
++        'QemuThreadRamWriterTransaction',
++        'QemuThreadRamCpuExecutionWitness',
++        'QemuThreadRamCpuConstruction',
++    ]:
 +        prefix += typedef(header, name) + '\n'
-+    prefix += re.search(r'struct QemuThreadRamActorBinding \{.*?\n\};', source, re.S).group() + '\n'
++    prefix += re.search(
++        r'struct QemuThreadRamActorBinding \{.*?\n\};', source, re.S,
++    ).group() + '\n'
 +    prefix += typedef(source, 'QemuHotForkThreadRecord') + '\n'
-+    globals_text = source[source.index('static pthread_mutex_t qemu_hot_fork_thread_lock'):source.index('/* Introspection may reenter the registry.')]
++    globals_text = source[
++        source.index('static pthread_mutex_t qemu_hot_fork_thread_lock'):
++        source.index('/* Introspection may reenter the registry.')
++    ]
 +    # These two unrelated registry operations are not part of this finite fixture.
-+    globals_text = globals_text.replace('static size_t qemu_hot_fork_thread_starts_in_flight;\n', '').replace('static int64_t qemu_hot_fork_coordinator_thread_id;\n', '')
++    globals_text = globals_text.replace(
++        'static size_t qemu_hot_fork_thread_starts_in_flight;\n', '',
++    ).replace(
++        'static int64_t qemu_hot_fork_coordinator_thread_id;\n', '',
++    )
 +    prefix += globals_text
 +    prefix += '''
 +    static _Thread_local unsigned writer_locks;
 +    static _Thread_local unsigned native_id_calls;
++
 +    static int counted_lock(pthread_mutex_t *mutex)
-+    { if (mutex == &ram_writer_lock) { writer_locks++; } return pthread_mutex_lock(mutex); }
++    {
++        if (mutex == &ram_writer_lock) {
++            writer_locks++;
++        }
++
++        return pthread_mutex_lock(mutex);
++    }
++
 +    static int counted_trylock(pthread_mutex_t *mutex)
-+    { if (mutex == &ram_writer_lock) { writer_locks++; } return pthread_mutex_trylock(mutex); }
++    {
++        if (mutex == &ram_writer_lock) {
++            writer_locks++;
++        }
++
++        return pthread_mutex_trylock(mutex);
++    }
++
 +    #define pthread_mutex_lock counted_lock
 +    #define pthread_mutex_trylock counted_trylock
++
 +    static _Atomic unsigned writer_waits;
++
 +    static int counted_wait(pthread_cond_t *condition, pthread_mutex_t *mutex)
 +    {
-+        if (mutex == &ram_writer_lock) { atomic_fetch_add(&writer_waits, 1); }
++        if (mutex == &ram_writer_lock) {
++            atomic_fetch_add(&writer_waits, 1);
++        }
++
 +        return pthread_cond_wait(condition, mutex);
 +    }
++
 +    #define pthread_cond_wait counted_wait
++
 +    static bool refuse_atfork;
-+    static int observed_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void))
-+    { return refuse_atfork ? ENOMEM : pthread_atfork(prepare, parent, child); }
++
++    static int observed_atfork(void (*prepare)(void), void (*parent)(void),
++                               void (*child)(void))
++    {
++        return refuse_atfork ? ENOMEM : pthread_atfork(prepare, parent, child);
++    }
++
 +    #define pthread_atfork observed_atfork
 +    '''
-+    prefix += whole(input_file('util/oslib-posix.c').read_text(), 'qemu_get_thread_id').replace('return syscall(SYS_gettid);', 'native_id_calls++; return syscall(SYS_gettid);') + '\n'
++    prefix += whole(
++        input_file('util/oslib-posix.c').read_text(), 'qemu_get_thread_id',
++    ).replace(
++        'return syscall(SYS_gettid);',
++        'native_id_calls++;\n    return syscall(SYS_gettid);',
++    ) + '\n'
 +    # The sole instrumentation edit counts the actual Linux native ID syscall.
-+    prefix += re.search(r'^int64_t qemu_thread_current_id\(void\);$', header, re.M).group() + '\n'
-+    prefix += source[source.index('/* Linux mutex-owner TIDs'):source.index('/*\n * This is not defined on Linux')]
++    prefix += re.search(
++        r'^int64_t qemu_thread_current_id\(void\);$', header, re.M,
++    ).group() + '\n'
++    prefix += source[
++        source.index('/* Linux mutex-owner TIDs'):
++        source.index('/*\n * This is not defined on Linux')
++    ]
 +    prefix += '\n' + whole(source, 'error_exit')
-+    prefix += '\n' + whole(source, 'qemu_thread_get_self') + '\n' + whole(source, 'qemu_thread_is_self')
++    prefix += ('\n' + whole(source, 'qemu_thread_get_self') + '\n'
++               + whole(source, 'qemu_thread_is_self'))
 +    names = [
 +        'ram_membership_wait_locked',
 +        'ram_writer_record_inherited',
@@ -222318,12 +222462,17 @@ index 0000000000000000000000000000000000000000..3ebb98451d8b3f7c67077e5ca2fd2655
 +    cached = input_file('include/system/memory_cached.h').read_text()
 +    inc = input_file('include/system/memory_ldst_cached.h.inc').read_text()
 +    consumer = (root / 'tests/unit/crucible-cached-writer-memory.inc.h').read_text()
-+    consumer += '\n' + whole(cached, 'address_space_stb_cached') + '\n' + whole(cached, 'address_space_write_cached')
++    consumer += ('\n' + whole(cached, 'address_space_stb_cached') + '\n'
++                 + whole(cached, 'address_space_write_cached'))
 +    stores = inc[inc.index('#define ADDRESS_SPACE_ST_CACHED(size)'):]
-+    consumer += '\n#define ENDIANNESS _le\n' + stores + '\n#define ENDIANNESS _be\n' + stores
++    consumer += ('\n#define ENDIANNESS _le\n' + stores
++                 + '\n#define ENDIANNESS _be\n' + stores)
 +    # This fixture uses an actual admitted registry row; no scalar depth injection.
 +    tail = (root / 'tests/unit/test-crucible-cached-writer.c').read_text()
-+    for literal in ['crucible_mutex_owner_cache_refresh(child_thread_id);', 'coordinator->thread_id = child_thread_id;']:
++    for literal in [
++        'crucible_mutex_owner_cache_refresh(child_thread_id);',
++        'coordinator->thread_id = child_thread_id;',
++    ]:
 +        assert literal in functions(source)['qemu_thread_hot_fork_reconstruct_child_registry'] and literal in tail
 +
 +
