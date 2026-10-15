@@ -222,9 +222,10 @@ pub(super) struct ResumeHandleEvidence {
         crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
     /// Retains a v6 source claim until campaign-owned replay reproduces it.
     pub(super) source_observation_proof: Option<Box<crucible_campaign::ObservationStopProof>>,
-    /// Retains the original raw boundary for exact comparison with source replay.
+    /// Retains the original raw boundary, with its log segments, for exact
+    /// comparison with source replay.
     pub(super) source_observation_evidence:
-        Option<Box<crucible_daemon::CrucibleMeasurementReplayEvidence>>,
+        Option<Box<crucible_daemon::CrucibleMeasurementEvidenceBundle>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -503,9 +504,11 @@ where
         evidence.source_observation_evidence.as_deref(),
     ) {
         (Some(proof), Some(source_evidence)) => {
-            let raw_evidence = source_evidence.canonical_bytes().map_err(|error| {
-                artifact_error(format!("encode remote observation evidence: {error}"))
-            })?;
+            let raw_evidence = source_evidence
+                .canonical_bytes_with_limit(crucible_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES)
+                .map_err(|error| {
+                    artifact_error(format!("encode remote observation evidence: {error}"))
+                })?;
             crucible_api::ResumeObservationSource::new(
                 &evidence.scenario_form,
                 &evidence.schedule,

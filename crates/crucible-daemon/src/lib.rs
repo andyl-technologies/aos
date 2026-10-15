@@ -57,7 +57,9 @@
 //! [`crucible_artifact`] strictly
 //! translates opaque campaign payloads into Crucible execution-model values;
 //! [`prepared_result_journal`] retains a complete semantic result across
-//! crash-safe publication retries;
+//! crash-safe publication retries; `attempt_event_log` retains an attempt's
+//! scheduler log as sealed, chained segments plus an open tail, and
+//! [`AttemptLogManifest`] names a complete log by its segment references;
 //! [`crucible_execution`] supplies the typed runner boundary used by the local
 //! QEMU/session adapter; [`crucible_qemu_runner`] connects that boundary to the
 //! exact-restore/thin-replay QEMU realization path; [`crucible_qemu_session`]
@@ -91,6 +93,9 @@
 
 mod anchored_fs;
 pub mod assignment_ledger;
+// crucible-lint: allow rust-allow -- the writer half is unused until the executor's live retention spills sealed segments.
+#[allow(dead_code)]
+mod attempt_event_log;
 pub mod automatic_finding_runner;
 pub mod campaign_attachment;
 pub mod campaign_bootstrap;
@@ -183,6 +188,11 @@ pub use assignment_ledger::{
     AttemptRuntimeState, AttemptStateCas, CheckpointPromotionExecutionBasis,
     CompletedFindingCandidate, DirectoryAssignmentLedger, ExactCheckpointResumeBasis,
     MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
+};
+pub use attempt_event_log::{
+    ATTEMPT_LOG_SEGMENT_SCHEMA, AttemptEventLogError, AttemptLogManifest, AttemptLogSegmentRef,
+    AttemptLogSegmentSource, MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS, MAX_ATTEMPT_LOG_SEGMENT_BYTES,
+    MemorySegmentStore, decode_segment,
 };
 pub use automatic_finding_runner::{
     AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,
@@ -318,13 +328,15 @@ pub use crucible_execution::{
 };
 pub use crucible_measurement::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
-    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CrucibleMeasurementError,
-    CrucibleMeasurementPublication, CrucibleMeasurementReplayEvidence,
-    CrucibleMeasurementStopEvidence, CrucibleObservationBoundaryEvidence,
-    MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, derive_crucible_measurement_samples,
+    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V3,
+    CrucibleMeasurementError, CrucibleMeasurementEvidenceBundle, CrucibleMeasurementPublication,
+    CrucibleMeasurementReplayEvidence, CrucibleMeasurementStopEvidence,
+    CrucibleObservationBoundaryEvidence, ExecutorTraceSegmentSource,
+    MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, MeasurementSetSegmentSource,
+    ObjectiveInputSegmentSource, derive_crucible_measurement_samples,
     evaluate_crucible_measurement_publication, evaluate_crucible_objectives,
-    evaluate_crucible_observation_measurement_publication, project_crucible_objective_values,
-    verify_crucible_measurement_publication,
+    evaluate_crucible_observation_measurement_publication, measurement_replay_leaf_id,
+    project_crucible_objective_values, verify_crucible_measurement_publication,
 };
 pub use crucible_qemu::LinuxQemuAttemptHostConfig;
 pub use crucible_qemu_runner::{

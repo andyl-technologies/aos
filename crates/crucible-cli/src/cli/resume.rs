@@ -126,7 +126,9 @@ pub(super) fn savepoint_handle_evidence(
             crucible_campaign::CampaignHash::from_bytes(configuration.id().bytes),
         );
         evidence
+            .evidence()
             .replay(
+                evidence.segments(),
                 campaign_scenario,
                 campaign_configuration,
                 scenario_form.measurements(),

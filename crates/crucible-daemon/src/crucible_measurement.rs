@@ -19,6 +19,11 @@ use crucible_campaign::{
 use crucible_cas::content_store::ContentId;
 
 mod evidence;
+mod sources;
+
+pub use sources::{
+    ExecutorTraceSegmentSource, MeasurementSetSegmentSource, ObjectiveInputSegmentSource,
+};
 
 pub(crate) use evidence::{
     observation_event_prefix_digest, verified_assertion_transition,
@@ -27,11 +32,13 @@ pub(crate) use evidence::{
 
 pub use evidence::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
-    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CrucibleMeasurementPublication,
+    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V3,
+    CrucibleMeasurementEvidenceBundle, CrucibleMeasurementPublication,
     CrucibleMeasurementReplayEvidence, CrucibleMeasurementStopEvidence,
     CrucibleObservationBoundaryEvidence, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     derive_crucible_measurement_samples, evaluate_crucible_measurement_publication,
-    evaluate_crucible_observation_measurement_publication, verify_crucible_measurement_publication,
+    evaluate_crucible_observation_measurement_publication, measurement_replay_leaf_id,
+    verify_crucible_measurement_publication,
 };
 
 /// Failure while binding or verifying a Crucible measurement evaluation.
@@ -76,10 +83,12 @@ pub enum CrucibleMeasurementError {
         /// Mismatched scenario, configuration, or definition binding.
         binding: &'static str,
     },
-    /// The measurement set does not own exactly its one raw replay leaf.
-    #[error("Crucible measurement set has {actual_count} evidence edges; expected only {expected}")]
+    /// The measurement set does not own exactly its replay leaf and segments.
+    #[error(
+        "Crucible measurement set has {actual_count} evidence edges; expected {expected} and its log segments"
+    )]
     ReplayEvidenceSetMismatch {
-        /// Required singleton trace identity.
+        /// Required replay-evidence trace identity.
         expected: ContentId,
         /// Actual number of retained evidence edges.
         actual_count: usize,
@@ -98,6 +107,9 @@ pub enum CrucibleMeasurementError {
     /// The retained evaluation identity differs from exact replay output.
     #[error("Crucible measurement evaluation identity does not match the campaign record")]
     EvaluationIdentityMismatch,
+    /// A referenced attempt-log segment was absent or failed authentication.
+    #[error(transparent)]
+    EventLog(#[from] crate::attempt_event_log::AttemptEventLogError),
     /// Pure evaluation or exact replay verification failed.
     #[error(transparent)]
     Evaluation(#[from] MeasurementEvaluationError),
@@ -118,9 +130,33 @@ pub enum CrucibleMeasurementError {
     },
 }
 
+/// Seals `entries` into an in-memory log and evaluates its publication.
+#[cfg(test)]
+pub(crate) fn test_measurement_publication(
+    scenario: crucible_campaign::ScenarioDefId,
+    configuration: crucible_campaign::ConfigurationId,
+    definitions: &MeasurementDefinitions,
+    entries: Vec<crucible::SchedulerEventLogEntry>,
+    terminal: MeasurementTerminalState,
+    maximum_evidence_bytes: usize,
+) -> Result<(CrucibleMeasurementPublication, crate::MemorySegmentStore), CrucibleMeasurementError> {
+    let mut segments = crate::MemorySegmentStore::default();
+    let log = segments.sealed_log(entries)?;
+    let publication = evaluate_crucible_measurement_publication(
+        scenario,
+        configuration,
+        definitions,
+        log,
+        &segments,
+        terminal,
+        maximum_evidence_bytes,
+    )?;
+    Ok((publication, segments))
+}
+
 #[cfg(test)]
 pub(crate) fn empty_test_measurement_set() -> MeasurementSet {
-    let publication = evaluate_crucible_measurement_publication(
+    let publication = test_measurement_publication(
         crucible_campaign::ScenarioDefId::from_hash(CampaignHash::derive(
             "crucible.test.measurement-scenario",
             b"empty",
@@ -139,7 +175,7 @@ pub(crate) fn empty_test_measurement_set() -> MeasurementSet {
         },
         MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     );
-    let Ok(publication) = publication else {
+    let Ok((publication, _)) = publication else {
         panic!("empty test measurement publication must be valid: {publication:?}");
     };
 

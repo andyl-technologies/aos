@@ -1410,9 +1410,7 @@ mod tests {
     use crucible_cas::content_store::{ContentId, ObjectKind};
     use tempfile::TempDir;
 
-    use crate::{
-        MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, evaluate_crucible_measurement_publication,
-    };
+    use crate::MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES;
 
     use super::*;
 
@@ -1568,12 +1566,12 @@ mod tests {
         );
         assert_eq!(
             blake3::hash(&payload).to_hex().as_str(),
-            "cd69f331dd3299f67b9b4c293edd9c8dd1c3b9d3f4dc173afabcc741d3c19daa"
+            "71a28d34fed554dbde01c4939312c4806fe3e021aecd90c609befb8c42565a76"
         );
         let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v2 state");
         assert_eq!(
             blake3::hash(&state).to_hex().as_str(),
-            "ad3c60c271c1441a76a22096a1cb1ad21754571b9a45b58c630023906394f2ba"
+            "9f213ff1b54b9ec475e81cbac52630a1578cb9b3327a5c42ff7d6d90c127e0d4"
         );
         journal.remove().expect("remove v2 journal");
     }
@@ -1883,7 +1881,7 @@ mod tests {
     fn measurement_result(marker: u8, attempt: AttemptId) -> PreparedSemanticAttemptResult {
         let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", &[marker, 0]));
         let configuration = ConfigurationId::from_hash(CampaignHash::derive("test", &[marker, 2]));
-        let publication = evaluate_crucible_measurement_publication(
+        let publication = crate::crucible_measurement::test_measurement_publication(
             scenario,
             configuration,
             &MeasurementDefinitions::empty(),
@@ -1896,12 +1894,18 @@ mod tests {
             },
             MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
         )
-        .expect("measurement publication");
+        .expect("measurement publication")
+        .0;
         let (evidence, _, measurements) = publication.into_parts();
         let candidate = observation_candidate(marker, attempt, measurements);
 
         assert!(matches!(
-            PreparedSemanticAttemptResult::new(candidate.clone(), Vec::new(), None),
+            PreparedSemanticAttemptResult::new(
+                candidate.clone(),
+                Vec::new(),
+                crate::MemorySegmentStore::default(),
+                None
+            ),
             Err(PreparedSemanticResultCodecError::Inconsistent {
                 component: "missing measurement replay evidence"
             })
@@ -1910,15 +1914,21 @@ mod tests {
             PreparedSemanticAttemptResult::new(
                 candidate.clone(),
                 vec![evidence.clone(), evidence.clone()],
-                None,
+                crate::MemorySegmentStore::default(),
+                None
             ),
             Err(PreparedSemanticResultCodecError::Inconsistent {
                 component: "duplicate measurement replay evidence"
             })
         ));
 
-        let result = PreparedSemanticAttemptResult::new(candidate, vec![evidence], None)
-            .expect("prepared measurement result");
+        let result = PreparedSemanticAttemptResult::new(
+            candidate,
+            vec![evidence],
+            crate::MemorySegmentStore::default(),
+            None,
+        )
+        .expect("prepared measurement result");
         let encoded = result
             .canonical_bytes()
             .expect("encoded measurement result");

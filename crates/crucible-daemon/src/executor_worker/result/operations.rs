@@ -698,6 +698,7 @@ pub(crate) fn publish_prepared_semantic_attempt_result(
     exact_authenticator: &dyn FindingExactCheckpointAuthenticator,
     result: &PreparedSemanticAttemptResult,
 ) -> Result<ObservationId, AttemptResultPublicationFailure> {
+    publish_log_segments(store, result.log_segments())?;
     for evidence in result.measurement_replay_evidence() {
         let expected = match evidence.id() {
             Ok(expected) => expected,
@@ -714,6 +715,25 @@ pub(crate) fn publish_prepared_semantic_attempt_result(
         finding.publish_for_executor(store, exact_authenticator)?;
     }
     Ok(observation)
+}
+
+/// Publishes attempt-log segments as executor trace leaves.
+///
+/// Segments are published before any replay leaf that references them, so no
+/// published leaf names an absent segment (RFC-0020 CCOMP-29). Republishing an
+/// identical segment is idempotent.
+///
+/// # Errors
+///
+/// Returns an error when a segment cannot be published under its identity.
+pub(crate) fn publish_log_segments(
+    store: &CampaignExecutorStore,
+    segments: &crate::MemorySegmentStore,
+) -> Result<(), AttemptResultPublicationFailure> {
+    for (id, bytes) in segments.iter() {
+        store.publish_executor_trace_leaf(id, crate::ATTEMPT_LOG_SEGMENT_SCHEMA, bytes)?;
+    }
+    Ok(())
 }
 
 /// Aborts a stably conflicting prepared publication before immutable writes.

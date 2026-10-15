@@ -2277,7 +2277,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     assert_eq!(evidence.selections(), &[selection]);
     assert_eq!(measurement_replay_evidence.len(), 1);
     assert_eq!(
-        measurement_replay_evidence[0].configuration(),
+        measurement_replay_evidence[0].evidence().configuration(),
         evidence.configuration().configuration()
     );
     let triage = outcome
@@ -2316,8 +2316,13 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     let minimization_target = signature.clone();
     let prepared =
         crate::crucible_artifact::prepare_automatic_signature_preserving_finding_with_outcomes(
-            PreparedSemanticAttemptResult::new(owned.clone(), Vec::new(), None)
-                .expect("prepared composed observation"),
+            PreparedSemanticAttemptResult::new(
+                owned.clone(),
+                Vec::new(),
+                crate::MemorySegmentStore::default(),
+                None,
+            )
+            .expect("prepared composed observation"),
             crate::crucible_artifact::AutomaticFindingPreparation {
                 signature,
                 finding: &candidate,

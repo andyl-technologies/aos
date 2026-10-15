@@ -768,7 +768,7 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
         MeasurementAggregateValue, MeasurementSampleValue, MeasurementTerminalState,
     };
     use crucible_daemon::{
-        CrucibleMeasurementError, evaluate_crucible_measurement_publication,
+        CrucibleMeasurementError, MemorySegmentStore, evaluate_crucible_measurement_publication,
         verify_crucible_measurement_publication,
     };
 
@@ -812,10 +812,25 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
         "http-measurement-test",
         b"configuration",
     ));
-    let evaluate = |definitions: &MeasurementDefinitions, node: NodeId, instance: &str, ready| {
-        evaluate_crucible_measurement_publication(
+    // Seals the entries into an in-memory log and publishes its evidence.
+    let publish = |definitions: &MeasurementDefinitions,
+                   entries: Vec<SchedulerEventLogEntry>,
+                   terminal: MeasurementTerminalState| {
+        let mut segments = MemorySegmentStore::default();
+        let log = segments.sealed_log(entries)?;
+        let publication = evaluate_crucible_measurement_publication(
             scenario,
             configuration,
+            definitions,
+            log,
+            &segments,
+            terminal,
+            1024 * 1024,
+        )?;
+        Ok::<_, CrucibleMeasurementError>((publication, segments))
+    };
+    let evaluate = |definitions: &MeasurementDefinitions, node: NodeId, instance: &str, ready| {
+        publish(
             definitions,
             vec![SchedulerEventLogEntry::guest_semantic_marker_observation(
                 0,
@@ -831,7 +846,6 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
                 node_icounts: BTreeMap::from([(client.clone(), Icount { retired: 5 })]),
                 scheduler_quiescent: true,
             },
-            1024 * 1024,
         )
     };
 
@@ -849,19 +863,19 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
     let needs_ready =
         MeasurementDefinitions::new(&world, &plan, &Properties::empty(), needs_ready)?;
     // A window that never opens commits no measurement, so its max is absent.
-    let unready = evaluate(&needs_ready, client.clone(), HTTP_MARKER_INSTANCE, None)?;
+    let (unready, unready_segments) =
+        evaluate(&needs_ready, client.clone(), HTTP_MARKER_INSTANCE, None)?;
     let evaluation = verify_crucible_measurement_publication(
         unready.measurement_set(),
         unready.evidence(),
+        &unready_segments,
         scenario,
         configuration,
         &needs_ready,
     )?;
     require_uncommitted_http_window(&evaluation)?;
 
-    let no_response_marker = evaluate_crucible_measurement_publication(
-        scenario,
-        configuration,
+    let (no_response_marker, no_response_segments) = publish(
         restored.measurements(),
         Vec::new(),
         MeasurementTerminalState {
@@ -870,11 +884,11 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
             node_icounts: BTreeMap::new(),
             scheduler_quiescent: true,
         },
-        1024 * 1024,
     )?;
     let evaluation = verify_crucible_measurement_publication(
         no_response_marker.measurement_set(),
         no_response_marker.evidence(),
+        &no_response_segments,
         scenario,
         configuration,
         restored.measurements(),
@@ -886,7 +900,7 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
         Some(VirtualTime { ticks: 1 }),
         Some(VirtualTime { ticks: 6 }),
     ] {
-        let accepted = evaluate(
+        let (accepted, accepted_segments) = evaluate(
             restored.measurements(),
             client.clone(),
             HTTP_MARKER_INSTANCE,
@@ -895,6 +909,7 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
         let evaluation = verify_crucible_measurement_publication(
             accepted.measurement_set(),
             accepted.evidence(),
+            &accepted_segments,
             scenario,
             configuration,
             restored.measurements(),
@@ -903,7 +918,14 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
         let MeasurementWindowOutcome::Completed { begin, end } = outcome.window() else {
             panic!("response marker must close its own measurement window");
         };
-        let marker = &accepted.evidence().entries()[0];
+        let mut first_entries = Vec::new();
+        accepted
+            .evidence()
+            .try_for_each_entry_in(&accepted_segments, 0..1, |entry| {
+                first_entries.push(entry.clone());
+                Ok::<_, CrucibleMeasurementError>(())
+            })?;
+        let marker = &first_entries[0];
         assert_eq!(begin, end);
         assert_eq!(begin.sequence(), Some(marker.sequence()));
         assert_eq!(begin.at(), marker.at());

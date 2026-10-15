@@ -60,8 +60,9 @@ pub enum AutomaticFindingReplayOutcome {
     Observed {
         /// Typed semantic evidence evaluated at the exact candidate boundary.
         evidence: Box<CrucibleFindingReplayEvidence>,
-        /// Raw measurement leaves needed to reauthenticate `evidence`.
-        measurement_replay_evidence: Vec<crate::CrucibleMeasurementReplayEvidence>,
+        /// Raw measurement leaves, with their log segments, needed to
+        /// reauthenticate `evidence`.
+        measurement_replay_evidence: Vec<crate::CrucibleMeasurementEvidenceBundle>,
         /// Native full-signature evidence retained from this exact replay.
         triage_evidence: Option<Box<FailureTriageReplayEvidence>>,
         /// Path-free production replay content captured before lifecycle teardown.
@@ -81,7 +82,7 @@ impl AutomaticFindingReplayOutcome {
     #[must_use]
     pub fn observed(
         evidence: CrucibleFindingReplayEvidence,
-        measurement_replay_evidence: Vec<crate::CrucibleMeasurementReplayEvidence>,
+        measurement_replay_evidence: Vec<crate::CrucibleMeasurementEvidenceBundle>,
     ) -> Self {
         Self::Observed {
             evidence: Box::new(evidence),
@@ -95,7 +96,7 @@ impl AutomaticFindingReplayOutcome {
     #[must_use]
     pub fn observed_with_triage(
         evidence: CrucibleFindingReplayEvidence,
-        measurement_replay_evidence: Vec<crate::CrucibleMeasurementReplayEvidence>,
+        measurement_replay_evidence: Vec<crate::CrucibleMeasurementEvidenceBundle>,
         triage_evidence: FailureTriageReplayEvidence,
     ) -> Self {
         Self::Observed {

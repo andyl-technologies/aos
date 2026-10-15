@@ -51,7 +51,7 @@ use crate::{
     AutomaticFindingExecutionRunner, AutomaticFindingExecutionRunnerError,
     ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError, CrucibleCampaignArtifactStore,
     CrucibleExecutionModel, CrucibleExecutionModelError, CrucibleExecutionRunner,
-    CrucibleMeasurementError, CrucibleMeasurementReplayEvidence, ExactCheckpointStore,
+    CrucibleMeasurementError, CrucibleMeasurementEvidenceBundle, ExactCheckpointStore,
     ExactCheckpointStoreError, ExecutionCancellation, ExecutorCapacityError,
     LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostResourceFactory,
     MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, QemuAttemptHostResourceFactory,
@@ -165,7 +165,7 @@ where
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuardedDefaultCampaignObservationSource {
     proof: ObservationStopProof,
-    evidence: CrucibleMeasurementReplayEvidence,
+    evidence: CrucibleMeasurementEvidenceBundle,
 }
 
 impl GuardedDefaultCampaignObservationSource {
@@ -173,7 +173,7 @@ impl GuardedDefaultCampaignObservationSource {
     #[must_use]
     pub const fn new(
         proof: ObservationStopProof,
-        evidence: CrucibleMeasurementReplayEvidence,
+        evidence: CrucibleMeasurementEvidenceBundle,
     ) -> Self {
         Self { proof, evidence }
     }
@@ -434,7 +434,7 @@ pub struct GuardedDefaultCampaignObservation {
     properties: crucible_campaign::PropertyVerdictSet,
     coverage: crucible_campaign::CoverageProjection,
     evidence: QemuAttemptExecutionEvidenceSnapshot,
-    observation_evidence: Option<CrucibleMeasurementReplayEvidence>,
+    observation_evidence: Option<CrucibleMeasurementEvidenceBundle>,
     replay_closure: GuardedCampaignReplayClosure,
     supplemental_finding: Option<GuardedCampaignSupplementalFinding>,
     timeout: Option<GuardedCampaignTimeoutEvidence>,
@@ -483,9 +483,10 @@ impl GuardedDefaultCampaignObservation {
         &self.evidence
     }
 
-    /// Returns the raw replay evidence for an authenticated observation stop.
+    /// Returns the raw replay evidence, with its log segments, for an
+    /// authenticated observation stop.
     #[must_use]
-    pub const fn observation_evidence(&self) -> Option<&CrucibleMeasurementReplayEvidence> {
+    pub const fn observation_evidence(&self) -> Option<&CrucibleMeasurementEvidenceBundle> {
         self.observation_evidence.as_ref()
     }
 
@@ -2293,9 +2294,11 @@ where
                     );
                 };
                 actual
-                    .verify_observation_stop_proof(proof)
+                    .evidence()
+                    .verify_observation_stop_proof(actual.segments(), proof)
                     .map_err(GuardedDefaultCampaignRunError::Measurement)?;
-                if &actual != expected {
+                // Equal manifests name equal chains, hence equal entries.
+                if actual.evidence() != expected.evidence() {
                     return Err(
                         GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch.into(),
                     );

@@ -25,7 +25,7 @@ use crate::qemu_resource_guard::RetainedLinuxQemuAttemptWorkspace;
 use crate::supervision::ProcessDeadline;
 use crate::{
     AttemptExecutionContext, ComposedQemuAttemptResourceGuardFactory,
-    CrucibleMeasurementReplayEvidence, ExactCheckpointStore, ExecutionCancellation,
+    CrucibleMeasurementEvidenceBundle, ExactCheckpointStore, ExecutionCancellation,
     ExecutionCheckpointRequest,
 };
 
@@ -143,12 +143,14 @@ impl RemoteObservationResumeFactory {
         }
         let proof = ObservationStopProof::from_canonical_bytes(source.proof())
             .map_err(|error| observation_error(format!("decode observation proof: {error}")))?;
-        let evidence = CrucibleMeasurementReplayEvidence::from_canonical_bytes(source.evidence())
-            .map_err(|error| {
-            observation_error(format!("decode observation evidence: {error}"))
-        })?;
+        let evidence = CrucibleMeasurementEvidenceBundle::from_canonical_bytes_with_limit(
+            source.evidence(),
+            crucible_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES,
+        )
+        .map_err(|error| observation_error(format!("decode observation evidence: {error}")))?;
         evidence
-            .verify_observation_stop_proof(&proof)
+            .evidence()
+            .verify_observation_stop_proof(evidence.segments(), &proof)
             .map_err(|error| observation_error(format!("validate observation source: {error}")))?;
         let closure = decode_replay_closure(request)?;
         ensure_preparation_active(context, &execution_cancellation, preparation_deadline)?;

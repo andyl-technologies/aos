@@ -1036,16 +1036,26 @@ where
                 let measurements = self
                     .repository
                     .load_measurement_set(observation.measurements())?;
-                let evidence = measurements.evaluation().evidence();
-                let trace = evidence
-                    .iter()
-                    .next()
-                    .copied()
-                    .filter(|_| evidence.len() == 1)
-                    .ok_or(CampaignRepositoryError::InvalidRequest {
+                let trace = super::trace::measurement_replay_leaf(&measurements).ok_or(
+                    CampaignRepositoryError::InvalidRequest {
                         reason: "campaign-measurement-event-log-is-not-unique",
-                    })?;
+                    },
+                )?;
                 (Some(measurements), trace)
+            }
+            CampaignTraceKind::MeasurementEventLogSegment(segment) => {
+                let measurements = self
+                    .repository
+                    .load_measurement_set(observation.measurements())?;
+                if segment.schema_version() != super::trace::MEASUREMENT_EVENT_LOG_SEGMENT_SCHEMA
+                    || !measurements.evaluation().evidence().contains(&segment)
+                {
+                    return Err(CampaignRepositoryError::InvalidRequest {
+                        reason: "campaign-measurement-event-log-segment-is-not-owned",
+                    }
+                    .into());
+                }
+                (Some(measurements), segment)
             }
         };
         let (total_bytes, chunk) =

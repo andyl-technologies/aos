@@ -267,7 +267,7 @@ impl PrivateFindingReplayRunner for ReplayRunner {
         .map_err(|error| AttemptWorkerFailure::Terminal(io::Error::other(error)))?;
         Ok(AutomaticFindingReplayOutcome::observed(
             evidence,
-            result.measurement_replay_evidence().to_vec(),
+            result_bundles(&result)?,
         ))
     }
 }
@@ -476,7 +476,7 @@ impl PrivateFindingReplayRunner for DivergenceReplayRunner {
         .map_err(|error| AttemptWorkerFailure::Terminal(io::Error::other(error)))?;
         Ok(AutomaticFindingReplayOutcome::observed_with_triage(
             evidence,
-            result.measurement_replay_evidence().to_vec(),
+            result_bundles(&result)?,
             triage,
         ))
     }
@@ -881,7 +881,27 @@ fn failed_result_for_schedule_with_stop(
         observation,
     )
     .expect("candidate");
-    PreparedSemanticAttemptResult::new(candidate, Vec::new(), None).expect("prepared result")
+    PreparedSemanticAttemptResult::new(
+        candidate,
+        Vec::new(),
+        crate::MemorySegmentStore::default(),
+        None,
+    )
+    .expect("prepared result")
+}
+
+/// Pairs each replay leaf of `result` with the segments it references.
+fn result_bundles(
+    result: &PreparedSemanticAttemptResult,
+) -> Result<Vec<crate::CrucibleMeasurementEvidenceBundle>, AttemptWorkerFailure<io::Error>> {
+    result
+        .measurement_replay_evidence()
+        .iter()
+        .map(|leaf| {
+            crate::CrucibleMeasurementEvidenceBundle::collect(leaf.clone(), result.log_segments())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| AttemptWorkerFailure::Terminal(io::Error::other(error)))
 }
 
 fn input_fixture() -> (

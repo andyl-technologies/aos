@@ -512,9 +512,14 @@ impl FindingExactCheckpointAuthenticator for ExactFindingCheckpointAuthenticator
         }
         let leaf = crate::CrucibleMeasurementReplayEvidence::from_canonical_bytes(trace_bytes)
             .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+        // Segments are published before the leaf that references them, and
+        // each is authenticated against the leaf's manifest when read.
+        let segments = crate::ExecutorTraceSegmentSource::new(self.campaign);
         if leaf.scenario() != scenario
             || leaf.configuration() != configuration
-            || !crate::crucible_measurement::verify_assertion_failure_boundary(&leaf, boundary)
+            || !crate::crucible_measurement::verify_assertion_failure_boundary(
+                &leaf, &segments, boundary,
+            )
         {
             return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
         }
@@ -544,9 +549,28 @@ impl FindingExactCheckpointAuthenticator for ExactFindingCheckpointAuthenticator
             )) != configuration
             || scheduler.retained_event_log_base_events() != 0
             || scheduler.retained_event_log_entries().len() as u64 != checkpoint_events
-            || scheduler.retained_event_log_entries().get(..shared_len)
-                != leaf.entries().get(..shared_len)
         {
+            return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
+        }
+
+        // The checkpoint's retained log must equal the leaf's over their
+        // shared prefix; only the segments spanning it are read.
+        let retained = scheduler
+            .retained_event_log_entries()
+            .get(..shared_len)
+            .ok_or(FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+        let mut expected = retained.iter();
+        leaf.try_for_each_entry_in(&segments, 0..shared_events, |entry| {
+            if expected.next() == Some(entry) {
+                Ok(())
+            } else {
+                Err(crate::CrucibleMeasurementError::EvidenceBindingMismatch {
+                    binding: "checkpoint-event-prefix",
+                })
+            }
+        })
+        .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
+        if expected.next().is_some() {
             return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
         }
         Ok(())

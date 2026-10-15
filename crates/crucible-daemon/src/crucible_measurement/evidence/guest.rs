@@ -79,7 +79,10 @@ impl<'definitions> GuestMeasurementNormalizer<'definitions> {
                         instance,
                         entry.sequence(),
                     )?;
-                    if !self.open.contains(&(node.clone(), measurement.clone(), instance)) {
+                    if !self
+                        .open
+                        .contains(&(node.clone(), measurement.clone(), instance))
+                    {
                         return Err(guest_measurement_error(
                             entry.sequence(),
                             format!("measurement `{measurement}` instance is not open"),
@@ -116,7 +119,8 @@ impl<'definitions> GuestMeasurementNormalizer<'definitions> {
                     validate_guest_measurement_value(value, contract).map_err(|error| {
                         guest_measurement_error(entry.sequence(), error.to_string())
                     })?;
-                    self.sample_work_bytes = self.sample_work_bytes
+                    self.sample_work_bytes = self
+                        .sample_work_bytes
                         .checked_add(guest_sample_normalization_work(
                             measurement.as_str(),
                             metric.as_str(),
@@ -153,7 +157,10 @@ impl<'definitions> GuestMeasurementNormalizer<'definitions> {
                         instance,
                         entry.sequence(),
                     )?;
-                    if !self.open.remove(&(node.clone(), measurement.clone(), instance)) {
+                    if !self
+                        .open
+                        .remove(&(node.clone(), measurement.clone(), instance))
+                    {
                         return Err(guest_measurement_error(
                             entry.sequence(),
                             format!("measurement `{measurement}` instance is not open"),

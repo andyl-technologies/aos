@@ -227,6 +227,7 @@ fn terminal_evidence_runner_rejects_previous_attempt_samples_after_a_factory_res
     let next_result = PreparedSemanticAttemptResult::new(
         first_result.observation().clone(),
         first_result.measurement_replay_evidence().to_vec(),
+        first_result.log_segments().clone(),
         first_result.finding().cloned(),
     )
     .expect("next prepared result without terminal evidence");

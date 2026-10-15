@@ -49,7 +49,7 @@ use crate::qemu_campaign_lifecycle::{
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure, CrucibleArtifactError,
     CrucibleAttemptExecution, CrucibleFindingReplayEvidence, CrucibleMeasurementError,
-    CrucibleMeasurementReplayEvidence, CrucibleObservationBoundaryEvidence,
+    CrucibleMeasurementEvidenceBundle, CrucibleObservationBoundaryEvidence,
     PreparedSemanticAttemptResult, PreparedSemanticResultCodecError, QemuFreshAttemptDriver,
     QemuFreshAttemptLifecycle, QemuFreshDriveOutcome, QemuFreshStartMaterialization,
     encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
@@ -377,7 +377,7 @@ impl QemuFreshPendingObservation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct QemuFindingCandidateBoundaryEvidence {
     replay: CrucibleFindingReplayEvidence,
-    measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+    measurement_replay_evidence: Vec<CrucibleMeasurementEvidenceBundle>,
     final_events: Vec<SchedulerEventLogEntry>,
     triage: QemuFindingCandidateTriageInputs,
     policy_timeout: Option<(StopCondition, PolicyTimeoutKind, BoundedStopProof)>,
@@ -528,7 +528,7 @@ impl QemuFindingCandidateBoundaryEvidence {
         self,
     ) -> (
         CrucibleFindingReplayEvidence,
-        Vec<CrucibleMeasurementReplayEvidence>,
+        Vec<CrucibleMeasurementEvidenceBundle>,
         Vec<SchedulerEventLogEntry>,
         QemuFindingCandidateTriageInputs,
     ) {
@@ -2623,7 +2623,7 @@ fn primary_stop_at(
 struct QemuBoundaryProjection {
     input: CrucibleAttemptExecution,
     child: ConfigurationArtifact,
-    measurement_evidence: CrucibleMeasurementReplayEvidence,
+    measurement_evidence: CrucibleMeasurementEvidenceBundle,
     measurements: crucible_campaign::MeasurementSet,
     properties: PropertyVerdictSet,
     failures: Vec<FailureClusterReportFailure>,
@@ -2915,7 +2915,17 @@ pub(crate) fn build_finding_candidate_boundary_evidence(
         projection.discovered_choices,
         projection.produced_selections,
     )?;
-    let causal_entries = projection.measurement_evidence.entries().to_vec();
+    // Triage retains the causal log under its own bound; it is read back
+    // from the bundle's segments rather than kept as a second copy.
+    let mut causal_entries = Vec::new();
+    projection
+        .measurement_evidence
+        .evidence()
+        .try_for_each_entry(projection.measurement_evidence.segments(), |entry| {
+            causal_entries.push(entry.clone());
+            Ok::<_, crate::CrucibleMeasurementError>(())
+        })
+        .map_err(QemuFreshModeledDriverError::Measurements)?;
     let coverage_fingerprint = coverage_fingerprint_from_event_log(&causal_entries);
     Ok(QemuFindingCandidateBoundaryEvidence {
         replay,

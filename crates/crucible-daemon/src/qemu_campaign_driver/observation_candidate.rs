@@ -97,7 +97,11 @@ pub(super) fn project_boundary(
             format_args!("completed=true"),
         );
     }
+    let (measurement_publication, log_segments) = measurement_publication;
     let (measurement_evidence, _, measurements) = measurement_publication.into_parts();
+    let measurement_evidence =
+        crate::CrucibleMeasurementEvidenceBundle::collect(measurement_evidence, &log_segments)
+            .map_err(QemuFreshModeledDriverError::Measurements)?;
     let mut stop = project_stop
         .then(|| stop_outcome(pending.stop, &report))
         .transpose()?;
@@ -195,10 +199,19 @@ fn record_assertion_seal_input(pending: &QemuFreshPendingObservation) {
     );
 }
 
+/// Evaluates the attempt's measurements over its sealed log.
+///
+/// Returns the publication together with the segments its leaf references.
 pub(super) fn campaign_measurements(
     pending: &QemuFreshPendingObservation,
     configuration: crucible_campaign::ConfigurationId,
-) -> Result<crate::CrucibleMeasurementPublication, QemuFreshModeledDriverError> {
+) -> Result<
+    (
+        crate::CrucibleMeasurementPublication,
+        crate::MemorySegmentStore,
+    ),
+    QemuFreshModeledDriverError,
+> {
     let definitions = pending.input.scenario().measurements();
     let mut node_icounts = BTreeMap::new();
     for entry in &pending.event_log {
@@ -230,13 +243,18 @@ pub(super) fn campaign_measurements(
             .as_ref()
             .is_some_and(SchedulerQuiescence::is_quiescent),
     };
+    let mut log_segments = crate::MemorySegmentStore::default();
+    let log = log_segments
+        .sealed_log(pending.event_log.iter().cloned())
+        .map_err(|error| QemuFreshModeledDriverError::Measurements(error.into()))?;
     let publication = match &pending.stop {
         ModeledStop::ObservationReached { evidence, .. } => {
             evaluate_crucible_observation_measurement_publication(
                 pending.input.lineage().scenario(),
                 configuration,
                 definitions,
-                pending.event_log.clone(),
+                log,
+                &log_segments,
                 terminal,
                 *evidence,
                 MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
@@ -246,12 +264,14 @@ pub(super) fn campaign_measurements(
             pending.input.lineage().scenario(),
             configuration,
             definitions,
-            pending.event_log.clone(),
+            log,
+            &log_segments,
             terminal,
             MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
         ),
     };
-    publication.map_err(QemuFreshModeledDriverError::Measurements)
+    let publication = publication.map_err(QemuFreshModeledDriverError::Measurements)?;
+    Ok((publication, log_segments))
 }
 
 pub(super) fn property_verdicts(
@@ -377,8 +397,13 @@ fn build_observation_candidate_inner(
         Some(bytes) => candidate.with_resolved_effect_trace(bytes)?,
         None => candidate,
     };
-    let result =
-        PreparedSemanticAttemptResult::new(candidate, vec![projection.measurement_evidence], None)?;
+    let (measurement_evidence, log_segments) = projection.measurement_evidence.into_parts();
+    let result = PreparedSemanticAttemptResult::new(
+        candidate,
+        vec![measurement_evidence],
+        log_segments,
+        None,
+    )?;
     // The stop names any assertion that will start automatic finding
     // reduction; bound it so an observation proof cannot flood stderr.
     crate::crucible_execution::record_execution_phase_diagnostic_lazy(

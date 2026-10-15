@@ -32,7 +32,7 @@ use crate::{
     CompletedFindingCandidate, CompletionOutcome, CrucibleMeasurementPublication,
     CrucibleMeasurementReplayEvidence, ExactCheckpointStore, ExecutorCapacity, LocalExecutorError,
     LocalExecutorSupervisor, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
-    MemoryAssignmentLedger, PreparedAttemptWorkResult, evaluate_crucible_measurement_publication,
+    MemoryAssignmentLedger, PreparedAttemptWorkResult,
     incorporate_and_acknowledge_finding_candidate, prepare_attempt_result,
     publish_prepared_attempt_result, reconcile_published_attempt_result,
     stage_prepared_attempt_result,
@@ -129,7 +129,7 @@ fn empty_measurement_publication(
     scenario: ScenarioDefId,
     configuration: ConfigurationId,
 ) -> CrucibleMeasurementPublication {
-    evaluate_crucible_measurement_publication(
+    crate::crucible_measurement::test_measurement_publication(
         scenario,
         configuration,
         &MeasurementDefinitions::empty(),
@@ -143,6 +143,7 @@ fn empty_measurement_publication(
         MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     )
     .expect("empty measurement publication")
+    .0
 }
 
 fn observation_with_measurements(

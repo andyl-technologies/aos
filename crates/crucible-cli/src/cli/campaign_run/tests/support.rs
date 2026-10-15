@@ -305,8 +305,9 @@ pub(super) fn capture_only_remote_observation_factory(
                 }
             })?;
         let replay_evidence =
-            crucible_daemon::CrucibleMeasurementReplayEvidence::from_canonical_bytes(
+            crucible_daemon::CrucibleMeasurementEvidenceBundle::from_canonical_bytes_with_limit(
                 source.evidence(),
+                crucible_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES,
             )
             .map_err(|error| {
                 crucible_api::LifecycleApiError::ResumeObservationSource {
@@ -314,7 +315,8 @@ pub(super) fn capture_only_remote_observation_factory(
                 }
             })?;
         replay_evidence
-            .verify_observation_stop_proof(&proof)
+            .evidence()
+            .verify_observation_stop_proof(replay_evidence.segments(), &proof)
             .map_err(
                 |error| crucible_api::LifecycleApiError::ResumeObservationSource {
                     message: format!("validate test remote observation source: {error}"),

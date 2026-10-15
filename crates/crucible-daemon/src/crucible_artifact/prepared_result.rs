@@ -8,11 +8,12 @@
 //! measurement-ownership, or finding-closure invariants.
 //!
 //! ```text
-//! v7-magic
+//! v8-magic
 //! observation-child, measurements, properties, coverage
 //! discovered-choice-count, discovered-choice records
 //! produced-selection-count, selection records, observation, optional resolved-effect trace
 //! measurement-replay-evidence-count, measurement-replay-evidence records
+//! log-segment-count, encoded attempt-log segment records (identity order)
 //! optional terminal-fingerprint records
 //! finding-present
 //! [discovery-path, minimization-seed, scenario, original configuration,
@@ -26,8 +27,10 @@
 //! MiB, and replay reconstruction by both record and referenced-byte budgets.
 //!
 //! Raw-leaf validation here proves structural ownership: exact trace identity,
-//! singleton measurement edge, and scenario, configuration, and definition
-//! bindings. It also authenticates an observation-stop proof against the owned
+//! a measurement evidence set of exactly the leaf and its log segments, and
+//! scenario, configuration, and definition bindings. The result carries every
+//! referenced segment, and only those, so it is a complete segment source for
+//! its own leaves. It also authenticates an observation-stop proof against the owned
 //! raw event prefix and terminal evidence. This codec does not possess
 //! authenticated scenario measurement definitions and therefore does not
 //! replay the leaf or compare the retained evaluation payload. Production
@@ -38,18 +41,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crucible::{
-    AssertionPhase, ContentHash, ExecutionFingerprint, FailureClusterReportFailure, FailureKind,
+    ContentHash, ExecutionFingerprint, FailureClusterReportFailure, FailureKind,
     FailureTriageReplayEvidence, FindingReproductionArtifact, FingerprintSample, NodeId,
-    ObservableEventPayload, ScenarioDefForm, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    VirtualTime,
+    ScenarioDefForm, VirtualTime,
 };
 use crucible_campaign::{
-    CampaignCodecError, CampaignHash, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity,
-    ConfigurationArtifact, CoverageProjection, FindingCandidateBundle, FindingKind,
-    FindingSignature, FindingTarget, FindingTriageReplayEvidence, MeasurementSet, Observation,
-    ObservationCandidate, ObservationCondition, ObservationStopSatisfaction, PropertyVerdict,
-    PropertyVerdictSet, ReproductionArtifact, ScenarioArtifact, SelectableDeclaration, Selection,
-    StopOutcome,
+    CampaignCodecError, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ConfigurationArtifact,
+    CoverageProjection, FindingCandidateBundle, FindingKind, FindingSignature, FindingTarget,
+    FindingTriageReplayEvidence, MeasurementSet, Observation, ObservationCandidate,
+    PropertyVerdict, PropertyVerdictSet, ReproductionArtifact, ScenarioArtifact,
+    SelectableDeclaration, Selection, StopOutcome,
 };
 use thiserror::Error;
 
@@ -69,10 +70,11 @@ use super::{
 };
 use crate::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2, CrucibleMeasurementError,
-    CrucibleMeasurementReplayEvidence, verify_crucible_measurement_publication,
+    CrucibleMeasurementReplayEvidence, MemorySegmentStore, measurement_replay_leaf_id,
+    verify_crucible_measurement_publication,
 };
 
-const PREPARED_RESULT_MAGIC_V7: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v7\0";
+const PREPARED_RESULT_MAGIC_V8: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v8\0";
 pub(super) const MAX_PREPARED_RESULT_RECORDS: usize = 200_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPLAY_VALIDATION_REFERENCES: usize = 4 * 1024 * 1024;
@@ -85,6 +87,7 @@ pub const MAX_PREPARED_SEMANTIC_RESULT_BYTES: usize = 1024 * 1024 * 1024;
 pub struct PreparedSemanticAttemptResult {
     observation: ObservationCandidate,
     measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+    log_segments: MemorySegmentStore,
     terminal_fingerprints: Option<Vec<FingerprintSample>>,
     finding: Option<PreparedCrucibleFindingCandidate>,
 }
@@ -94,7 +97,8 @@ impl PreparedSemanticAttemptResult {
     ///
     /// The leaves are retained in content-identity order, and duplicates are
     /// rejected. The supplied set must exactly cover every Crucible measurement
-    /// payload v2 referenced by the observation and both finding replay passes.
+    /// payload v2 referenced by the observation and both finding replay passes,
+    /// and `log_segments` must hold exactly the segments those leaves reference.
     /// This authenticates closure ownership and any observation-stop proof;
     /// callers must separately run [`crate::verify_crucible_measurement_publication`]
     /// with the authenticated scenario definitions before publication.
@@ -103,23 +107,28 @@ impl PreparedSemanticAttemptResult {
     ///
     /// Returns [`PreparedSemanticResultCodecError`] when a leaf is duplicated,
     /// unowned, absent, or bound to a different scenario, configuration, or
-    /// measurement definition, or when the finding does not belong to the
-    /// observation.
+    /// measurement definition, when a referenced segment is absent or an
+    /// unreferenced one is supplied, or when the finding does not belong to
+    /// the observation.
     pub fn new(
         observation: ObservationCandidate,
         measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+        log_segments: MemorySegmentStore,
         finding: Option<PreparedCrucibleFindingCandidate>,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
         validate_measurement_evidence_order(&measurement_replay_evidence)?;
+        validate_log_segments(&measurement_replay_evidence, &log_segments)?;
         validate_pair(&observation, finding.as_ref())?;
         validate_measurement_evidence(
             &observation,
             &measurement_replay_evidence,
+            &log_segments,
             finding.as_ref(),
         )?;
         Ok(Self {
             observation,
             measurement_replay_evidence,
+            log_segments,
             terminal_fingerprints: None,
             finding,
         })
@@ -158,6 +167,14 @@ impl PreparedSemanticAttemptResult {
     #[must_use]
     pub fn measurement_replay_evidence(&self) -> &[CrucibleMeasurementReplayEvidence] {
         &self.measurement_replay_evidence
+    }
+
+    /// Returns every log segment the retained leaves reference.
+    ///
+    /// Publication stores each segment before any leaf that references it.
+    #[must_use]
+    pub const fn log_segments(&self) -> &MemorySegmentStore {
+        &self.log_segments
     }
 
     /// Checks the retained attempt trace against the authenticated scenario contract.
@@ -240,6 +257,7 @@ impl PreparedSemanticAttemptResult {
         self,
         finding: PreparedCrucibleFindingCandidate,
         replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+        replay_segments: MemorySegmentStore,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
         if self.finding.is_some() {
             return Err(inconsistent("duplicate finding attachment"));
@@ -254,8 +272,11 @@ impl PreparedSemanticAttemptResult {
             return Err(PreparedSemanticResultCodecError::LimitExceeded);
         }
 
+        let mut log_segments = self.log_segments;
+        log_segments.extend(replay_segments);
         let mut evidence = BTreeMap::new();
-        let mut evidence_bytes = 0usize;
+        let mut evidence_bytes = usize::try_from(log_segments.total_bytes())
+            .map_err(|_| PreparedSemanticResultCodecError::LimitExceeded)?;
         for leaf in self
             .measurement_replay_evidence
             .into_iter()
@@ -281,11 +302,13 @@ impl PreparedSemanticAttemptResult {
         }
 
         let terminal_fingerprints = self.terminal_fingerprints;
-        let result = Self::new(
-            self.observation,
-            evidence.into_values().collect(),
-            Some(finding),
-        )?;
+        let evidence = evidence.into_values().collect::<Vec<_>>();
+        let referenced = evidence
+            .iter()
+            .flat_map(|leaf| leaf.segments().iter().map(|segment| segment.id))
+            .collect::<BTreeSet<_>>();
+        log_segments.retain(|id| referenced.contains(&id));
+        let result = Self::new(self.observation, evidence, log_segments, Some(finding))?;
         match terminal_fingerprints {
             Some(terminal_fingerprints) => result.with_terminal_fingerprints(terminal_fingerprints),
             None => Ok(result),
@@ -310,6 +333,7 @@ impl PreparedSemanticAttemptResult {
         validate_measurement_evidence(
             &self.observation,
             &self.measurement_replay_evidence,
+            &self.log_segments,
             self.finding.as_ref(),
         )?;
 
@@ -330,6 +354,7 @@ impl PreparedSemanticAttemptResult {
             expected_scenario,
             scenario,
             &evidence_by_id,
+            &self.log_segments,
         )?;
         // Structural validation above visits every reference. Replay each
         // distinct retained evaluation/configuration pair once so repeated
@@ -391,6 +416,7 @@ impl PreparedSemanticAttemptResult {
                         expected_scenario,
                         scenario,
                         &evidence_by_id,
+                        &self.log_segments,
                     )?;
                 }
             }
@@ -463,9 +489,10 @@ impl PreparedSemanticAttemptResult {
         }
 
         let mut encoder = Encoder::new(maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES));
-        encoder.raw(PREPARED_RESULT_MAGIC_V7)?;
+        encoder.raw(PREPARED_RESULT_MAGIC_V8)?;
         encode_observation(&mut encoder, &self.observation)?;
         encode_measurement_evidence(&mut encoder, &self.measurement_replay_evidence)?;
+        encode_log_segments(&mut encoder, &self.log_segments)?;
         match &self.terminal_fingerprints {
             Some(terminal_fingerprints) => {
                 encoder.byte(1)?;
@@ -484,9 +511,11 @@ impl PreparedSemanticAttemptResult {
 
         // Enforce the caller's operational byte ceiling before hashing raw
         // trace tables or reconstructing retained finding replay records.
+        validate_log_segments(&self.measurement_replay_evidence, &self.log_segments)?;
         validate_measurement_evidence(
             &self.observation,
             &self.measurement_replay_evidence,
+            &self.log_segments,
             self.finding.as_ref(),
         )?;
         if let Some(finding) = &self.finding {
@@ -520,13 +549,14 @@ impl PreparedSemanticAttemptResult {
             return Err(PreparedSemanticResultCodecError::LimitExceeded);
         }
 
-        if !bytes.starts_with(PREPARED_RESULT_MAGIC_V7) {
+        if !bytes.starts_with(PREPARED_RESULT_MAGIC_V8) {
             return Err(PreparedSemanticResultCodecError::Version);
         }
         let mut decoder = Decoder::new(bytes);
-        decoder.magic(PREPARED_RESULT_MAGIC_V7)?;
+        decoder.magic(PREPARED_RESULT_MAGIC_V8)?;
         let observation = decode_observation(&mut decoder)?;
         let measurement_replay_evidence = decode_measurement_evidence(&mut decoder)?;
+        let log_segments = decode_log_segments(&mut decoder)?;
         let terminal_fingerprints = match decoder.byte()? {
             0 => None,
             1 => Some(decode_terminal_fingerprints(&mut decoder)?),
@@ -539,7 +569,12 @@ impl PreparedSemanticAttemptResult {
         };
         decoder.finish()?;
 
-        let value = Self::new(observation, measurement_replay_evidence, finding)?;
+        let value = Self::new(
+            observation,
+            measurement_replay_evidence,
+            log_segments,
+            finding,
+        )?;
         let value = match terminal_fingerprints {
             Some(terminal_fingerprints) => {
                 value.with_terminal_fingerprints(terminal_fingerprints)?
@@ -555,21 +590,30 @@ impl PreparedSemanticAttemptResult {
 
     /// Consumes the durable result into its exact publication records.
     #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        ObservationCandidate,
-        Vec<CrucibleMeasurementReplayEvidence>,
-        Option<Vec<FingerprintSample>>,
-        Option<PreparedCrucibleFindingCandidate>,
-    ) {
-        (
-            self.observation,
-            self.measurement_replay_evidence,
-            self.terminal_fingerprints,
-            self.finding,
-        )
+    pub fn into_parts(self) -> PreparedSemanticAttemptResultParts {
+        PreparedSemanticAttemptResultParts {
+            observation: self.observation,
+            measurement_replay_evidence: self.measurement_replay_evidence,
+            log_segments: self.log_segments,
+            terminal_fingerprints: self.terminal_fingerprints,
+            finding: self.finding,
+        }
     }
+}
+
+/// The publication records of one consumed prepared result.
+#[derive(Debug)]
+pub struct PreparedSemanticAttemptResultParts {
+    /// The complete canonical observation candidate.
+    pub observation: ObservationCandidate,
+    /// Raw measurement leaves in content-identity order.
+    pub measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+    /// Every log segment the leaves reference.
+    pub log_segments: MemorySegmentStore,
+    /// The terminal fingerprint set, when terminal capture completed.
+    pub terminal_fingerprints: Option<Vec<FingerprintSample>>,
+    /// The prepared finding closure, when execution found one.
+    pub finding: Option<PreparedCrucibleFindingCandidate>,
 }
 
 /// Failure to encode or authenticate a prepared semantic result.
@@ -714,6 +758,21 @@ fn validate_measurement_evidence_order(
     Ok(())
 }
 
+/// Requires `log_segments` to hold exactly the segments the leaves reference.
+fn validate_log_segments(
+    evidence: &[CrucibleMeasurementReplayEvidence],
+    log_segments: &MemorySegmentStore,
+) -> Result<(), PreparedSemanticResultCodecError> {
+    let referenced = evidence
+        .iter()
+        .flat_map(|leaf| leaf.segments().iter().map(|segment| segment.id))
+        .collect::<BTreeSet<_>>();
+    if !log_segments.ids().eq(referenced.iter().copied()) {
+        return Err(inconsistent("measurement log segments"));
+    }
+    Ok(())
+}
+
 fn validate_terminal_fingerprints(
     terminal_fingerprints: &[FingerprintSample],
 ) -> Result<(), PreparedSemanticResultCodecError> {
@@ -737,6 +796,7 @@ fn validate_terminal_fingerprints(
 fn validate_measurement_evidence(
     observation: &ObservationCandidate,
     evidence: &[CrucibleMeasurementReplayEvidence],
+    log_segments: &MemorySegmentStore,
     finding: Option<&PreparedCrucibleFindingCandidate>,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let observation_requires_evidence =
@@ -768,7 +828,7 @@ fn validate_measurement_evidence(
         &evidence_by_id,
         &mut owned,
     )?;
-    validate_observation_stop_evidence(observation, &evidence_by_id)?;
+    validate_observation_stop_evidence(observation, &evidence_by_id, log_segments)?;
 
     if let Some(finding) = finding {
         let retained = finding.bundle().exact_retention_evidence();
@@ -781,16 +841,15 @@ fn validate_measurement_evidence(
                     .get(&boundary.trace())
                     .ok_or_else(|| inconsistent("finding assertion trace"))?;
                 if boundary.property() != property
-                    || observation.measurements().evaluation().evidence().len() != 1
-                    || !observation
-                        .measurements()
-                        .evaluation()
-                        .evidence()
-                        .contains(&boundary.trace())
+                    || measurement_replay_leaf_id(
+                        observation.measurements().evaluation().evidence(),
+                    ) != Some(boundary.trace())
                     || leaf.scenario() != observation.child().scenario()
                     || leaf.configuration() != observation.child().configuration()
                     || !crate::crucible_measurement::verify_assertion_failure_boundary(
-                        leaf, boundary,
+                        leaf,
+                        log_segments,
+                        boundary,
                     )
                 {
                     return Err(inconsistent("finding assertion boundary"));
@@ -884,6 +943,7 @@ fn validate_observation_stop_evidence(
         crucible_cas::content_store::ContentId,
         &CrucibleMeasurementReplayEvidence,
     >,
+    log_segments: &MemorySegmentStore,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let StopOutcome::ObservationReached(proof) = candidate.observation().stop() else {
         return Ok(());
@@ -896,151 +956,18 @@ fn validate_observation_stop_evidence(
     }
 
     let evaluation = candidate.measurements().evaluation();
-    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
-        || evaluation.evidence().len() != 1
-    {
+    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
         return Err(inconsistent("observation stop measurement evidence"));
     }
-    let evidence_id = *evaluation
-        .evidence()
-        .first()
+    let evidence = measurement_replay_leaf_id(evaluation.evidence())
+        .and_then(|id| evidence_by_id.get(&id).copied())
         .ok_or_else(|| inconsistent("observation stop measurement evidence"))?;
-    let evidence = evidence_by_id
-        .get(&evidence_id)
-        .copied()
-        .ok_or_else(|| inconsistent("observation stop measurement evidence"))?;
-    if evidence.configuration() != proof.child() {
-        return Err(inconsistent("observation stop configuration"));
-    }
 
-    let event_log = proof.event_log();
-    let crate::CrucibleMeasurementStopEvidence::Observation(retained_boundary) = evidence.stop()
-    else {
-        return Err(inconsistent("observation stop execution boundary"));
-    };
-    let retained_offset = retained_boundary.event_log_offset();
-    if retained_boundary.frontier().ticks != boundary.frontier_picoseconds()
-        || retained_boundary.quantum_start_completed_quanta() != boundary.start_completed_quanta()
-        || retained_boundary.completed_quanta() != boundary.completed_quanta()
-        || retained_boundary.quantum_start_events() != boundary.start_events()
-        || CampaignHash::from_bytes(retained_offset.prefix.bytes) != event_log.prefix()
-        || retained_offset
-            .appended_segment
-            .map(|hash| CampaignHash::from_bytes(hash.bytes))
-            != event_log.appended_segment()
-        || retained_offset.bytes != event_log.bytes()
-        || retained_offset.events != event_log.events()
-    {
-        return Err(inconsistent("observation stop execution boundary"));
-    }
-    let event_count = usize::try_from(event_log.events())
-        .map_err(|_| inconsistent("observation stop event count"))?;
-    let quantum_start = usize::try_from(boundary.start_events())
-        .map_err(|_| inconsistent("observation stop quantum event count"))?;
-    let prefix = evidence
-        .entries()
-        .get(..event_count)
-        .ok_or_else(|| inconsistent("observation stop event prefix"))?;
-    if quantum_start > event_count
-        || observation_event_prefix_digest(prefix) != event_log.digest()
-        || prefix
-            .iter()
-            .any(|entry| entry.at().ticks > boundary.frontier_picoseconds())
-        || evidence.terminal().at.ticks < boundary.frontier_picoseconds()
-    {
-        return Err(inconsistent("observation stop event prefix"));
-    }
-
-    match proof.condition() {
-        ObservationCondition::SchedulerQuiescent => {
-            if proof.satisfaction() != ObservationStopSatisfaction::SchedulerQuiescent
-                || proof.assertion_witness().is_some()
-                || !retained_boundary.scheduler_quiescent()
-            {
-                return Err(inconsistent("scheduler-quiescent observation stop"));
-            }
-        }
-        ObservationCondition::AssertionViolationTransition(assertion) => {
-            if proof.satisfaction() != ObservationStopSatisfaction::AssertionViolationTransition {
-                return Err(inconsistent("assertion observation stop witness"));
-            }
-            let witness = proof
-                .assertion_witness()
-                .ok_or_else(|| inconsistent("assertion observation stop witness"))?;
-            let entry = prefix
-                .get(quantum_start..)
-                .and_then(|entries| {
-                    entries
-                        .iter()
-                        .find(|entry| entry.sequence() == witness.sequence())
-                })
-                .ok_or_else(|| inconsistent("assertion observation stop witness"))?;
-            if CampaignHash::from_bytes(entry.content_hash().bytes) != witness.entry()
-                || !matches!(
-                    entry.payload(),
-                    SchedulerEventLogPayload::Observable(
-                        ObservableEventPayload::AssertionStateChanged { name, state }
-                    ) if name.name == *assertion
-                        && name.name == witness.assertion()
-                        && *state == AssertionPhase::Violated
-                )
-            {
-                return Err(inconsistent("assertion observation stop witness"));
-            }
-        }
-        ObservationCondition::AnyAssertionViolationTransition => {
-            if proof.satisfaction() != ObservationStopSatisfaction::AssertionViolationTransition {
-                return Err(inconsistent("assertion observation stop witness"));
-            }
-            let witness = proof
-                .assertion_witness()
-                .ok_or_else(|| inconsistent("assertion observation stop witness"))?;
-            let entry = prefix
-                .get(quantum_start..)
-                .and_then(|entries| {
-                    entries
-                        .iter()
-                        .find(|entry| entry.sequence() == witness.sequence())
-                })
-                .ok_or_else(|| inconsistent("assertion observation stop witness"))?;
-            if CampaignHash::from_bytes(entry.content_hash().bytes) != witness.entry()
-                || !matches!(
-                    entry.payload(),
-                    SchedulerEventLogPayload::Observable(
-                        ObservableEventPayload::AssertionStateChanged { name, state }
-                    ) if name.name == witness.assertion()
-                        && *state == AssertionPhase::Violated
-                )
-            {
-                return Err(inconsistent("assertion observation stop witness"));
-            }
-        }
-        ObservationCondition::SchedulerQuiescentOrExecutionQuanta { execution_quanta } => {
-            let expected_satisfaction = if retained_boundary.scheduler_quiescent() {
-                ObservationStopSatisfaction::SchedulerQuiescent
-            } else if boundary.completed_quanta() >= *execution_quanta {
-                ObservationStopSatisfaction::ExecutionQuanta
-            } else {
-                return Err(inconsistent("compound observation stop"));
-            };
-            if proof.satisfaction() != expected_satisfaction || proof.assertion_witness().is_some()
-            {
-                return Err(inconsistent("compound observation stop"));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn observation_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> CampaignHash {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"crucible.savepoint-replay-event-prefix.v1\0");
-    hasher.update(&(entries.len() as u64).to_be_bytes());
-    for entry in entries {
-        hasher.update(&entry.sequence().to_be_bytes());
-        hasher.update(&entry.content_hash().bytes);
-    }
-    CampaignHash::from_bytes(*hasher.finalize().as_bytes())
+    // The leaf owns the exact boundary, prefix, and witness checks; the
+    // result carries every segment the prefix spans.
+    evidence
+        .verify_observation_stop_proof(log_segments, proof)
+        .map_err(|_| inconsistent("observation stop execution boundary"))
 }
 
 fn verify_measurement_record(
@@ -1052,15 +979,13 @@ fn verify_measurement_record(
         crucible_cas::content_store::ContentId,
         &CrucibleMeasurementReplayEvidence,
     >,
+    log_segments: &MemorySegmentStore,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let evaluation = measurement.evaluation();
     if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
         return Ok(());
     }
-    let evidence_id = evaluation
-        .evidence()
-        .first()
-        .copied()
+    let evidence_id = measurement_replay_leaf_id(evaluation.evidence())
         .ok_or_else(|| inconsistent("measurement replay evidence edge"))?;
     let evidence = evidence_by_id
         .get(&evidence_id)
@@ -1070,6 +995,7 @@ fn verify_measurement_record(
     verify_crucible_measurement_publication(
         measurement,
         evidence,
+        log_segments,
         expected_scenario,
         configuration,
         scenario.measurements(),
@@ -1091,16 +1017,14 @@ fn validate_measurement_record(
     if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
         return Ok(());
     }
-    if evaluation.evidence().len() != 1 {
-        return Err(inconsistent("measurement replay evidence edge"));
-    }
-    let evidence_id = *evaluation
-        .evidence()
-        .first()
+    let evidence_id = measurement_replay_leaf_id(evaluation.evidence())
         .ok_or_else(|| inconsistent("measurement replay evidence edge"))?;
     let leaf = evidence_by_id
         .get(&evidence_id)
         .ok_or_else(|| inconsistent("missing measurement replay evidence"))?;
+    if evaluation.evidence() != &leaf.evidence_ids()? {
+        return Err(inconsistent("measurement replay evidence edge"));
+    }
     if leaf.scenario() != scenario
         || leaf.configuration() != configuration
         || leaf.definitions() != evaluation.definitions()
@@ -1153,6 +1077,34 @@ fn encode_measurement_evidence(
         encoder.record(&leaf.canonical_bytes()?)?;
     }
     Ok(())
+}
+
+fn encode_log_segments(
+    encoder: &mut Encoder,
+    log_segments: &MemorySegmentStore,
+) -> Result<(), PreparedSemanticResultCodecError> {
+    encoder.count(log_segments.len())?;
+    for (_, bytes) in log_segments.iter() {
+        encoder.record(bytes)?;
+    }
+    Ok(())
+}
+
+fn decode_log_segments(
+    decoder: &mut Decoder<'_>,
+) -> Result<MemorySegmentStore, PreparedSemanticResultCodecError> {
+    let count = decoder.count()?;
+    decoder.preflight_collection(count, size_of::<u32>())?;
+    let mut log_segments = MemorySegmentStore::default();
+    for _ in 0..count {
+        log_segments
+            .insert(decoder.record()?.to_vec())
+            .map_err(CrucibleMeasurementError::from)?;
+    }
+    if log_segments.len() != count {
+        return Err(inconsistent("duplicate measurement log segment"));
+    }
+    Ok(log_segments)
 }
 
 fn decode_measurement_evidence(

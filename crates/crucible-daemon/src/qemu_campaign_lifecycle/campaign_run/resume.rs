@@ -11,7 +11,7 @@ pub(super) struct GuardedDefaultCampaignResumeSource {
     pub(super) final_stop: StopCondition,
     pub(super) checkpoints: Arc<ExactCheckpointStore>,
     pub(super) source_observation_proof: Option<ObservationStopProof>,
-    pub(super) source_observation_evidence: Option<crate::CrucibleMeasurementReplayEvidence>,
+    pub(super) source_observation_evidence: Option<crate::CrucibleMeasurementEvidenceBundle>,
     pub(super) capture_only: bool,
 }
 
@@ -137,7 +137,8 @@ where
         source.source_observation_evidence.as_ref(),
     ) {
         (Some(proof), Some(evidence)) => evidence
-            .verify_observation_stop_proof(proof)
+            .evidence()
+            .verify_observation_stop_proof(evidence.segments(), proof)
             .map_err(GuardedDefaultCampaignRunError::Measurement)?,
         (None, None) => {}
         (Some(_), None) | (None, Some(_)) => {

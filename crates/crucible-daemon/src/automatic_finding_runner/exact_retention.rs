@@ -392,6 +392,17 @@ pub(super) fn prepare_finding_exact_retention(
         }),
         StopOutcome::AssertionFailure(property) => execution
             .and_then(|execution| assertion_failure_boundary(input, result, execution, property))
+            .map(|boundary| {
+                // The checkpoint authenticator reads the leaf's segments from
+                // the campaign store, so they are published first; they are
+                // immutable content-addressed leaves either way.
+                crate::executor_worker::publish_log_segments(store, result.log_segments())
+                    .map(|()| boundary)
+                    .map_err(|_| CampaignCodecError::InvalidValue {
+                        reason: "finding assertion log segments could not be published",
+                    })
+            })
+            .transpose()?
             .map(|(witness, bytes)| FindingExactBoundary {
                 failure_events: witness.terminal_events(),
                 measurement_events: Some(witness.quantum_start_events()),
@@ -436,23 +447,33 @@ fn assertion_failure_boundary(
         return None;
     }
 
+    // The observation's measurement set owns exactly one replay leaf; it must
+    // be the campaign-stop leaf whose log equals the execution's.
     let measurement_ids = observation.measurements().evaluation().evidence();
-    let mut matching = result
+    let trace = crate::measurement_replay_leaf_id(measurement_ids)?;
+    let leaf = result
         .measurement_replay_evidence()
         .iter()
-        .filter_map(|leaf| {
-            let id = leaf.id().ok()?;
-            (measurement_ids.contains(&id)
-                && leaf.scenario() == input.lineage().scenario()
-                && leaf.configuration() == observation.child().configuration()
-                && leaf.stop() == CrucibleMeasurementStopEvidence::Campaign
-                && leaf.entries() == entries)
-                .then_some((id, leaf))
-        });
-    let (trace, leaf) = matching.next()?;
-    if matching.next().is_some() || measurement_ids.len() != 1 {
+        .find(|leaf| leaf.id().ok() == Some(trace))?;
+    if leaf.evidence_ids().ok().as_ref() != Some(measurement_ids)
+        || leaf.scenario() != input.lineage().scenario()
+        || leaf.configuration() != observation.child().configuration()
+        || leaf.stop() != CrucibleMeasurementStopEvidence::Campaign
+        || leaf.entry_count() != terminal_events
+    {
         return None;
     }
+    let mut expected = entries.iter();
+    leaf.try_for_each_entry(result.log_segments(), |entry| {
+        if expected.next() == Some(entry) {
+            Ok(())
+        } else {
+            Err(crate::CrucibleMeasurementError::EvidenceBindingMismatch {
+                binding: "execution-event-log",
+            })
+        }
+    })
+    .ok()?;
 
     let transition = verified_assertion_transition(entries, quantum_start_events, property)?;
 

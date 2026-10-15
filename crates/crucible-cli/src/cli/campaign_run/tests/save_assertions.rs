@@ -195,8 +195,11 @@ pub(super) fn assert_campaign_save_exports_closure(
                 panic!("expected authenticated campaign observation proof");
             };
             let retained_evidence =
-                crucible_daemon::CrucibleMeasurementReplayEvidence::from_canonical_bytes(evidence)
-                    .or_panic("decode retained campaign observation evidence");
+                crucible_daemon::CrucibleMeasurementEvidenceBundle::from_canonical_bytes_with_limit(
+                    evidence,
+                    crucible_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES,
+                )
+                .or_panic("decode retained campaign observation evidence");
             assert_eq!(proof.condition(), condition);
             assert_eq!(proof.child(), campaign.terminal().observation().child());
             assert_eq!(
@@ -440,7 +443,7 @@ pub(super) fn assert_campaign_save_exports_closure(
             .as_deref()
             .or_panic("v6 handle retains raw source evidence");
         let crucible_daemon::CrucibleMeasurementStopEvidence::Observation(source_boundary) =
-            source_evidence.stop()
+            source_evidence.evidence().stop()
         else {
             panic!("v6 raw evidence retains an observation boundary");
         };
@@ -460,20 +463,39 @@ pub(super) fn assert_campaign_save_exports_closure(
         .into_iter()
         .find_map(|(mutation, proof)| (mutation == "quanta").then_some(proof))
         .or_panic("quantum-coordinate proof forgery");
+        let mut source_entries = Vec::new();
+        source_evidence
+            .evidence()
+            .try_for_each_entry(source_evidence.segments(), |entry| {
+                source_entries.push(entry.clone());
+                Ok::<_, crucible_daemon::CrucibleMeasurementError>(())
+            })
+            .or_panic("read source raw evidence entries");
+        let mut shifted_segments = crucible_daemon::MemorySegmentStore::default();
+        let shifted_log = shifted_segments
+            .sealed_log(source_entries)
+            .or_panic("seal shifted raw evidence log");
         let (shifted_evidence, _, _) =
             crucible_daemon::evaluate_crucible_observation_measurement_publication(
-                source_evidence.scenario(),
-                source_evidence.configuration(),
+                source_evidence.evidence().scenario(),
+                source_evidence.evidence().configuration(),
                 handle_evidence.scenario_form.measurements(),
-                source_evidence.entries().to_vec(),
-                source_evidence.terminal().clone(),
+                shifted_log,
+                &shifted_segments,
+                source_evidence.evidence().terminal().clone(),
                 shifted_boundary,
                 crucible_daemon::MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
             )
             .or_panic("build coherent shifted raw evidence")
             .into_parts();
+        let shifted_evidence = crucible_daemon::CrucibleMeasurementEvidenceBundle::collect(
+            shifted_evidence,
+            &shifted_segments,
+        )
+        .or_panic("bundle shifted raw evidence");
         shifted_evidence
-            .verify_observation_stop_proof(&shifted_proof)
+            .evidence()
+            .verify_observation_stop_proof(shifted_evidence.segments(), &shifted_proof)
             .or_panic("shifted proof and raw evidence agree with each other");
         let forged_handle =
             handle_with_observation_claim(&handle, &shifted_proof, &shifted_evidence);

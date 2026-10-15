@@ -775,8 +775,7 @@ where
         .id()
         .map_err(CrucibleArtifactError::from)?;
     let mut transcript = CrucibleFindingReplayTranscript::new();
-    let mut replay_measurements =
-        BoundedReplayMeasurementEvidence::new(result.measurement_replay_evidence())?;
+    let mut replay_measurements = BoundedReplayMeasurementEvidence::new(&result)?;
 
     for pass in [
         FindingReplayPass::Minimization,
@@ -843,30 +842,35 @@ where
         seed,
         transcript,
     )?;
-    let replay_measurements = replay_measurements.finish();
+    let (replay_measurements, replay_segments) = replay_measurements.finish();
     result
-        .attach_finding(prepared, replay_measurements)
+        .attach_finding(prepared, replay_measurements, replay_segments)
         .map_err(AutomaticFindingPreparationError::PreparedResult)
 }
 
+/// Accumulates finding replay leaves and their segments under the
+/// prepared-result record and byte bounds.
 struct BoundedReplayMeasurementEvidence<'a> {
     existing: BTreeMap<ContentId, &'a crate::CrucibleMeasurementReplayEvidence>,
     additional: BTreeMap<ContentId, crate::CrucibleMeasurementReplayEvidence>,
+    segments: crate::MemorySegmentStore,
     records: usize,
     canonical_bytes: usize,
 }
 
 impl<'a> BoundedReplayMeasurementEvidence<'a> {
     fn new(
-        existing: &'a [crate::CrucibleMeasurementReplayEvidence],
+        result: &'a PreparedSemanticAttemptResult,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
         let mut accumulator = Self {
             existing: BTreeMap::new(),
             additional: BTreeMap::new(),
+            segments: crate::MemorySegmentStore::default(),
             records: 0,
-            canonical_bytes: 0,
+            canonical_bytes: usize::try_from(result.log_segments().total_bytes())
+                .map_err(|_| PreparedSemanticResultCodecError::LimitExceeded)?,
         };
-        for leaf in existing {
+        for leaf in result.measurement_replay_evidence() {
             let id = leaf.id()?;
             if accumulator.existing.insert(id, leaf).is_some() {
                 return Err(PreparedSemanticResultCodecError::Inconsistent {
@@ -880,9 +884,10 @@ impl<'a> BoundedReplayMeasurementEvidence<'a> {
 
     fn extend(
         &mut self,
-        evidence: Vec<crate::CrucibleMeasurementReplayEvidence>,
+        evidence: Vec<crate::CrucibleMeasurementEvidenceBundle>,
     ) -> Result<(), PreparedSemanticResultCodecError> {
-        for leaf in evidence {
+        for bundle in evidence {
+            let (leaf, segments) = bundle.into_parts();
             let id = leaf.id()?;
             if let Some(existing) = self.existing.get(&id) {
                 if *existing != &leaf {
@@ -902,6 +907,16 @@ impl<'a> BoundedReplayMeasurementEvidence<'a> {
             }
 
             self.charge(&leaf)?;
+            for (segment, bytes) in segments.iter() {
+                if !self.segments.contains(segment) {
+                    self.canonical_bytes = self
+                        .canonical_bytes
+                        .checked_add(bytes.len() + std::mem::size_of::<u32>())
+                        .filter(|total| *total <= MAX_PREPARED_SEMANTIC_RESULT_BYTES)
+                        .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
+                }
+            }
+            self.segments.extend(segments);
             self.additional.insert(id, leaf);
         }
         Ok(())
@@ -929,8 +944,13 @@ impl<'a> BoundedReplayMeasurementEvidence<'a> {
         Ok(())
     }
 
-    fn finish(self) -> Vec<crate::CrucibleMeasurementReplayEvidence> {
-        self.additional.into_values().collect()
+    fn finish(
+        self,
+    ) -> (
+        Vec<crate::CrucibleMeasurementReplayEvidence>,
+        crate::MemorySegmentStore,
+    ) {
+        (self.additional.into_values().collect(), self.segments)
     }
 }
 

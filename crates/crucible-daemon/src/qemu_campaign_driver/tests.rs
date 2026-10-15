@@ -80,14 +80,14 @@ fn prepared_semantic_observation(product: AttemptExecutionProduct) -> Observatio
     let AttemptExecutionProduct::PreparedSemantic(result) = product else {
         panic!("modeled driver must return a prepared semantic result")
     };
-    result.into_parts().0
+    result.into_parts().observation
 }
 
 fn evaluate_test_measurements(
     definitions: &MeasurementDefinitions,
     entries: Vec<SchedulerEventLogEntry>,
 ) -> Result<crate::CrucibleMeasurementPublication, CrucibleMeasurementError> {
-    evaluate_crucible_measurement_publication(
+    crate::crucible_measurement::test_measurement_publication(
         ScenarioDefId::from_hash(CampaignHash::derive(
             "test",
             b"qemu-driver-measurement-scenario",
@@ -106,6 +106,7 @@ fn evaluate_test_measurements(
         },
         MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
     )
+    .map(|(publication, _segments)| publication)
 }
 
 struct FakeLifecycle {

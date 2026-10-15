@@ -274,23 +274,21 @@ fn verified_observation(
     let repository = repository(fixture);
     let observation = repository.load_observation(ObservationId::parse(observation)?)?;
     let measurements = repository.load_measurement_set(observation.measurements())?;
-    let evidence_id = *measurements
-        .evaluation()
-        .evidence()
-        .iter()
-        .next()
-        .ok_or("measured observation omitted its raw event log")?;
-    let bytes = CampaignExecutorStore::new(Arc::clone(&repository))
-        .read_measurement_evidence_leaf(
-            observation.measurements(),
-            evidence_id,
-            64 * 1024 * 1024,
-        )?;
+    let evidence_id =
+        crucible_daemon::measurement_replay_leaf_id(measurements.evaluation().evidence())
+            .ok_or("measured observation omitted its raw event log")?;
+    let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    let bytes = store.read_measurement_evidence_leaf(
+        observation.measurements(),
+        evidence_id,
+        64 * 1024 * 1024,
+    )?;
     let evidence = CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes)?;
     let lineage = CampaignLineage::from_canonical_bytes(&fs::read(lineage_path)?)?;
     let evaluation = verify_crucible_measurement_publication(
         &measurements,
         &evidence,
+        &crucible_daemon::MeasurementSetSegmentSource::new(&store, observation.measurements()),
         lineage.scenario(),
         observation.child(),
         scenario.measurements(),

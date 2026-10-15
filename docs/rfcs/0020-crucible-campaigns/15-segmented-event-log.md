@@ -230,6 +230,17 @@ verification, observation-stop verification, remote observation resume, hot-fork
 materialization, and the campaign trace protocol all consume the attempt log.
 Each reads segments by reference.
 
+Published evidence is read through the repository: a measurement set owns
+its replay leaf and every segment the leaf references, so an
+ownership-checked read of the set's evidence fetches each segment, and the
+campaign trace protocol serves one segment per request. A few carriers have
+no repository: the lifecycle API's resume request, a savepoint handle, and a
+guarded run's result after its private repository is released. They carry an
+evidence bundle, the leaf followed by its segments in manifest order, bounded
+by the carrier's own message limit. A bundle is a transport form; it never
+enters production identity, and decoding it requires exactly the referenced
+segments.
+
 - **[CMEAS-22]** A reader MUST NOT materialize a complete attempt log. Every
   service response that carries log content MUST carry at most one segment and
   remain within the ordinary 64 MiB component-message bound. Digests, density

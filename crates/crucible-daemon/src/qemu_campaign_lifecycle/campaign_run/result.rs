@@ -239,7 +239,7 @@ where
 pub(super) fn load_observation_stop_evidence<E>(
     repository: &Arc<CampaignRepository>,
     observation: &Observation,
-) -> Result<Option<CrucibleMeasurementReplayEvidence>, GuardedDefaultCampaignRunError<E>>
+) -> Result<Option<crate::CrucibleMeasurementEvidenceBundle>, GuardedDefaultCampaignRunError<E>>
 where
     E: Error + 'static,
 {
@@ -251,14 +251,8 @@ where
         .load_measurement_set(observation.measurements())
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
     let retained = measurements.evaluation();
-    let mut evidence_ids = retained.evidence().iter();
-    let evidence_id = evidence_ids
-        .next()
-        .copied()
+    let evidence_id = crate::measurement_replay_leaf_id(retained.evidence())
         .ok_or(GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch)?;
-    if evidence_ids.next().is_some() {
-        return Err(GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch.into());
-    }
     let bytes = store
         .read_measurement_evidence_leaf(
             observation.measurements(),
@@ -266,20 +260,31 @@ where
             MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES as u64,
         )
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
-    let evidence = CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes)
+    let evidence = crate::CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes)
         .map_err(GuardedDefaultCampaignRunError::Measurement)?;
     if evidence
         .id()
         .map_err(GuardedDefaultCampaignRunError::Measurement)?
         != evidence_id
+        || &evidence
+            .evidence_ids()
+            .map_err(GuardedDefaultCampaignRunError::Measurement)?
+            != retained.evidence()
     {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch.into());
     }
-    evidence
-        .verify_observation_stop_proof(proof)
+
+    // The run's private repository is dropped with the run, so the result
+    // keeps the segments the leaf references alongside it.
+    let segments = crate::MeasurementSetSegmentSource::new(&store, observation.measurements());
+    let bundle = crate::CrucibleMeasurementEvidenceBundle::collect(evidence, &segments)
+        .map_err(GuardedDefaultCampaignRunError::Measurement)?;
+    bundle
+        .evidence()
+        .verify_observation_stop_proof(bundle.segments(), proof)
         .map_err(GuardedDefaultCampaignRunError::Measurement)?;
 
-    Ok(Some(evidence))
+    Ok(Some(bundle))
 }
 
 pub(super) fn authenticated_timeout_evidence<E>(

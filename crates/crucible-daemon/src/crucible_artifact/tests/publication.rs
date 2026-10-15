@@ -340,6 +340,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let observation_result = PreparedSemanticAttemptResult::new(
         observation_candidate_with_measurements.clone(),
         vec![observation_evidence],
+        crate::MemorySegmentStore::default(),
         None,
     )
     .expect("bind observation result");
@@ -393,6 +394,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let trace_result = PreparedSemanticAttemptResult::new(
         trace_candidate,
         observation_result.measurement_replay_evidence().to_vec(),
+        crate::MemorySegmentStore::default(),
         None,
     )
     .expect("trace result");
@@ -567,7 +569,13 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             .expect("incompatibility triage replay evidence");
             Ok(AutomaticFindingReplayOutcome::observed_with_triage(
                 replay,
-                vec![evidence],
+                vec![
+                    crate::CrucibleMeasurementEvidenceBundle::collect(
+                        evidence,
+                        &crate::MemorySegmentStore::default(),
+                    )
+                    .expect("empty-log evidence bundle"),
+                ],
                 triage,
             ))
         },
@@ -618,7 +626,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         PreparedSemanticAttemptResult::new(
             observation_candidate_with_measurements.clone(),
             missing_reduced_leaf,
-            decoded_incompatibility.finding().cloned(),
+            crate::MemorySegmentStore::default(),
+            decoded_incompatibility.finding().cloned()
         ),
         Err(PreparedSemanticResultCodecError::Inconsistent {
             component: "missing measurement replay evidence"
@@ -685,6 +694,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         incompatibility_result
             .measurement_replay_evidence()
             .to_vec(),
+        crate::MemorySegmentStore::default(),
         Some(mismatched_incompatibility),
     )
     .expect("structurally retain mismatched incompatibility");
@@ -762,7 +772,13 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             .expect("observed finding triage replay evidence");
             Ok(AutomaticFindingReplayOutcome::observed_with_triage(
                 replay,
-                vec![evidence],
+                vec![
+                    crate::CrucibleMeasurementEvidenceBundle::collect(
+                        evidence,
+                        &crate::MemorySegmentStore::default(),
+                    )
+                    .expect("empty-log evidence bundle"),
+                ],
                 triage,
             ))
         },
@@ -879,6 +895,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let tampered_result = PreparedSemanticAttemptResult::new(
         observation_candidate_with_measurements.clone(),
         measurement_evidence.clone(),
+        crate::MemorySegmentStore::default(),
         Some(tampered_finding),
     )
     .expect("retain structurally owned shared evidence");
@@ -902,7 +919,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         PreparedSemanticAttemptResult::new(
             observation_candidate_with_measurements.clone(),
             unordered_evidence,
-            Some(prepared_finding.clone()),
+            crate::MemorySegmentStore::default(),
+            Some(prepared_finding.clone())
         ),
         Err(PreparedSemanticResultCodecError::Inconsistent {
             component: "measurement replay evidence order"
@@ -930,7 +948,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         PreparedSemanticAttemptResult::new(
             observation_candidate_with_measurements.clone(),
             evidence_with_extra.values().cloned().collect(),
-            Some(prepared_finding.clone()),
+            crate::MemorySegmentStore::default(),
+            Some(prepared_finding.clone())
         ),
         Err(PreparedSemanticResultCodecError::Inconsistent {
             component: "unowned measurement replay evidence"
@@ -945,7 +964,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         PreparedSemanticAttemptResult::new(
             observation_candidate_with_measurements.clone(),
             evidence_with_extra.into_values().collect(),
-            Some(finding_with_unused_measurement),
+            crate::MemorySegmentStore::default(),
+            Some(finding_with_unused_measurement)
         ),
         Err(PreparedSemanticResultCodecError::Inconsistent {
             component: "unreferenced finding replay measurement record"
@@ -987,7 +1007,12 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             wrong_measurements,
         );
         assert!(matches!(
-            PreparedSemanticAttemptResult::new(wrong_candidate, vec![wrong_evidence], None,),
+            PreparedSemanticAttemptResult::new(
+                wrong_candidate,
+                vec![wrong_evidence],
+                crate::MemorySegmentStore::default(),
+                None
+            ),
             Err(PreparedSemanticResultCodecError::Inconsistent {
                 component: "measurement replay evidence binding"
             })
@@ -1011,6 +1036,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let durable_result = PreparedSemanticAttemptResult::new(
         observation_candidate.clone(),
         current_measurement_evidence.clone(),
+        crate::MemorySegmentStore::default(),
         Some(prepared.clone()),
     )
     .expect("bind prepared semantic result");
@@ -1080,7 +1106,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         PreparedSemanticAttemptResult::new(
             unrelated_candidate,
             current_measurement_evidence.clone(),
-            Some(mismatched_finding),
+            crate::MemorySegmentStore::default(),
+            Some(mismatched_finding)
         ),
         Err(PreparedSemanticResultCodecError::Inconsistent {
             component: "finding observation reproduction basis"
@@ -1115,7 +1142,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         PreparedSemanticAttemptResult::new(
             observation_candidate.clone(),
             current_measurement_evidence.clone(),
-            Some(inconsistent_finding),
+            crate::MemorySegmentStore::default(),
+            Some(inconsistent_finding)
         ),
         Err(PreparedSemanticResultCodecError::Inconsistent {
             component: "finding replay measurement configuration"
@@ -1158,6 +1186,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let semantic = PreparedSemanticAttemptResult::new(
         observation_candidate,
         current_measurement_evidence,
+        crate::MemorySegmentStore::default(),
         Some(prepared),
     )
     .expect("prepare paired semantic result");

@@ -556,11 +556,13 @@ fn validate_replayed_source_observation(
         ))
     })?;
     actual_evidence
-        .verify_observation_stop_proof(expected)
+        .evidence()
+        .verify_observation_stop_proof(actual_evidence.segments(), expected)
         .map_err(|error| {
             campaign_run_error("authenticate replayed source observation evidence", error)
         })?;
-    if actual_evidence != expected_evidence {
+    // Equal manifests name equal segment chains, hence equal entries.
+    if actual_evidence.evidence() != expected_evidence.evidence() {
         return Err(CliError::Identity(String::from(
             "campaign resume did not reproduce the portable source observation evidence",
         )));
@@ -740,7 +742,7 @@ fn campaign_save_boundary_proof(
     plan: &SaveInvocationPlan,
     terminal: &StopOutcome,
     evidence: &crucible_daemon::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
-    observation_evidence: Option<&crucible_daemon::CrucibleMeasurementReplayEvidence>,
+    observation_evidence: Option<&crucible_daemon::CrucibleMeasurementEvidenceBundle>,
 ) -> Result<SaveBoundaryProof, CliError> {
     match (plan.at, plan.selector.as_ref(), terminal) {
         (SaveAtArg::VirtualTime, None, _) => return Ok(SaveBoundaryProof::Coordinate),
@@ -756,7 +758,8 @@ fn campaign_save_boundary_proof(
                 )
             })?;
             observation_evidence
-                .verify_observation_stop_proof(proof)
+                .evidence()
+                .verify_observation_stop_proof(observation_evidence.segments(), proof)
                 .map_err(|error| {
                     campaign_run_error(
                         "authenticate campaign observation save boundary evidence",
@@ -765,9 +768,11 @@ fn campaign_save_boundary_proof(
                 })?;
             return Ok(SaveBoundaryProof::CampaignObservation {
                 proof: proof.clone(),
-                evidence: observation_evidence.canonical_bytes().map_err(|error| {
-                    campaign_run_error("encode campaign observation boundary evidence", error)
-                })?,
+                evidence: observation_evidence
+                    .canonical_bytes_with_limit(crucible_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES)
+                    .map_err(|error| {
+                        campaign_run_error("encode campaign observation boundary evidence", error)
+                    })?,
             });
         }
         (SaveAtArg::Marker, Some(SaveAtSelector::Marker { .. }), _) => {}

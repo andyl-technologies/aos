@@ -11,33 +11,64 @@ pub const MAX_CAMPAIGN_TRACE_CHUNK_BYTES: u32 = 1024 * 1024;
 /// Maximum logical bytes admitted for one observation-linked trace.
 pub const MAX_CAMPAIGN_TRACE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Payload schema of a measurement event-log segment leaf.
+pub(super) const MEASUREMENT_EVENT_LOG_SEGMENT_SCHEMA: u32 = 1;
+
 /// Trace leaf selected from one authenticated attempt observation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CampaignTraceKind {
     /// The canonical trace of resolved environment and guest effects.
     ResolvedEffect,
-    /// The canonical measurement event log retained by the measurement set.
+    /// The measurement replay leaf retained by the measurement set.
+    ///
+    /// A schema 2 leaf embeds the event log; a schema 3 leaf references it as
+    /// segments, each read with [`Self::MeasurementEventLogSegment`].
     MeasurementEventLog,
+    /// One event-log segment owned by the measurement set.
+    MeasurementEventLogSegment(ContentId),
 }
 
 impl Canonical for CampaignTraceKind {
     fn encode(&self, encoder: &mut Encoder) {
-        encoder.u8(match self {
-            Self::ResolvedEffect => 0,
-            Self::MeasurementEventLog => 1,
-        });
+        match self {
+            Self::ResolvedEffect => encoder.u8(0),
+            Self::MeasurementEventLog => encoder.u8(1),
+            Self::MeasurementEventLogSegment(segment) => {
+                encoder.u8(2);
+                segment.encode(encoder);
+            }
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
         match decoder.u8()? {
             0 => Ok(Self::ResolvedEffect),
             1 => Ok(Self::MeasurementEventLog),
+            2 => Ok(Self::MeasurementEventLogSegment(ContentId::decode(
+                decoder,
+            )?)),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-trace-kind",
                 tag,
             }),
         }
     }
+}
+
+/// Returns the measurement replay leaf among a measurement set's evidence.
+///
+/// The set owns exactly one replay leaf (schema 2 or 3); any other evidence
+/// objects are the leaf's event-log segments.
+#[must_use]
+pub(super) fn measurement_replay_leaf(measurement_set: &MeasurementSet) -> Option<ContentId> {
+    let mut leaves = measurement_set
+        .evaluation()
+        .evidence()
+        .iter()
+        .copied()
+        .filter(|id| matches!(id.schema_version(), 2 | 3));
+    let leaf = leaves.next()?;
+    leaves.next().is_none().then_some(leaf)
 }
 
 /// Snapshot- and attempt-bound request for one bounded trace byte range.
@@ -326,12 +357,17 @@ impl GetCampaignTraceChunkResponse {
             CampaignTraceKind::MeasurementEventLog => {
                 let measurement_set = self.measurement_set.as_ref().ok_or_else(invalid)?;
                 if measurement_set.id()? != self.observation.measurements()
-                    || self.trace.schema_version() != 2
-                    || measurement_set.evaluation().evidence().len() != 1
-                    || !measurement_set
-                        .evaluation()
-                        .evidence()
-                        .contains(&self.trace)
+                    || measurement_replay_leaf(measurement_set) != Some(self.trace)
+                {
+                    return Err(invalid());
+                }
+            }
+            CampaignTraceKind::MeasurementEventLogSegment(segment) => {
+                let measurement_set = self.measurement_set.as_ref().ok_or_else(invalid)?;
+                if measurement_set.id()? != self.observation.measurements()
+                    || self.trace != segment
+                    || segment.schema_version() != MEASUREMENT_EVENT_LOG_SEGMENT_SCHEMA
+                    || !measurement_set.evaluation().evidence().contains(&segment)
                 {
                     return Err(invalid());
                 }
