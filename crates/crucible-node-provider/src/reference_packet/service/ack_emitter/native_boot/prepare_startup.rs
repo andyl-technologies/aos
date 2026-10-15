@@ -5,7 +5,6 @@
 //! the resource-admitted boot6 owner. Input/model adoption is a later action.
 
 use super::*;
-use crate::reference_packet::coordinator::PacketNative5CoordinatorInstallation;
 use crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow;
 use crate::retained_metadata::serialization_storage::{
     OriginalJsonValueStorageExtentData, original_json_value_storage_extent_counter_scratch_data,
@@ -133,10 +132,11 @@ pub fn original_native_prepare_startup_storage_data(
         size_of::<PacketNative5SourceLaunch>(),
         1024 * 1024,
     )?;
-    let coordinator_decode = selected_issuer_decode_storage_data(
-        launch.initial_coordinator.bytes.as_slice(),
-        size_of::<PacketNative5CoordinatorInstallation>(),
-        384 * 1024,
+    // The helper preserves the coordinator's actual raw input cap separately
+    // from its requested-layout result. This prospective DATA function has no
+    // caller policy parameter; the original outer admission checks the result.
+    let coordinator_decode = crate::reference_packet::service::native_startup::original_native_coordinator_decode_storage_data(
+        launch.initial_coordinator.bytes.as_slice(), usize::MAX,
     )?;
 
     // A valid selected-feature Id needs at least three JSON string bytes.
@@ -315,6 +315,7 @@ pub fn original_native_prepare_startup_counter_scratch_data() -> usize {
         crate::reference_packet::endpoint::OriginalNativeFreshPrepareHeader::counter_scratch_data(),
         Connection::<crate::client::DeadlineStream>::original_fresh_prepare_handoff_counter_scratch_data(),
         selected_issuer_decode_counter_scratch_data(),
+        crate::reference_packet::service::native_startup::original_native_coordinator_decode_counter_scratch_data(),
         original_json_value_storage_extent_counter_scratch_data(),
         original_prepare_executable_measurement_counter_scratch_data(),
         super::prepare_bindings::declared_counter_scratch_data(),

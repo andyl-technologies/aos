@@ -17,6 +17,7 @@ use crate::{ProviderError, protocol_snapshot::ProtocolSnapshotReservation};
 use std::mem::{align_of, size_of};
 
 mod admit;
+mod coordinator_decode;
 mod hello;
 mod initial;
 mod private_bootstrap;
@@ -114,6 +115,7 @@ impl PacketNativeBirthStartupStorageData {
 pub fn original_native_birth_startup_counter_scratch_data() -> usize {
     size_of::<crate::reference_packet::service::ack_emitter::OriginalNativeBirthReadScope<'static>>()
         + super::data_equality::counter_scratch_data()
+        + coordinator_decode::counter_scratch_data()
         + crate::protocol_snapshot::owned11::correspondence::envelope_counter_scratch_data()
         + size_of::<PacketNativeBirthStartupStorageData>()
         + size_of::<PacketNativeBirthStartupInputs<'_>>()
@@ -124,7 +126,9 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + size_of::<InitialCounterLocals>()
         + crate::connection::original_packet_prefix_startup_counter_scratch_data()
         + crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::requested_serialization_scratch_bytes()
-        + size_of::<crate::retained_metadata::serialization_storage::OriginalSerializationStorageProjection>()
+        // The closed once-Admit outer projector holds association, kernel and
+        // policy counters together; this precedes any native constructor.
+        + 3 * size_of::<crate::retained_metadata::serialization_storage::OriginalSerializationStorageProjection>()
         + 5 * size_of::<crate::retained_metadata::serialization_storage::OriginalSerializationStorageData>()
         + size_of::<[u8; 20]>()
         + size_of::<[u8; 64]>()
@@ -212,19 +216,15 @@ pub fn original_native_birth_startup_storage_data(
         size_of::<PacketNative5SourceLaunch>(),
         maximum,
     )?;
-    let coordinator_decode = decode(
-        launch.initial_coordinator.bytes.as_slice(),
-        size_of::<crate::reference_packet::coordinator::PacketNative5CoordinatorInstallation>(),
-        maximum,
+    let coordinator_decode = original_native_coordinator_decode_storage_data(
+        launch.initial_coordinator.bytes.as_slice(), maximum,
     )?;
     let source_shape = private_bootstrap::project(input, maximum)?;
-    let source_decode = original_json_value_storage_extent_data(source_shape.maximum_source_bytes)?
-        .canonical_pass_requested_bytes()?;
-    let registration_decode = decode(
-        input.host_registration,
-        size_of::<serde_json::Value>(),
-        maximum,
-    )?;
+    // The same nine immutable base Values and the closed Binding14 additions
+    // determine this tree. Its encoded length is not a license to replace that
+    // known structure with the worst possible arbitrary JSON of equal length.
+    let source_decode = source_shape.source_requested_bytes;
+    let registration_decode = decode_value(input.host_registration, maximum)?;
 
     let selection = metadata_backing(&launch.selection)?;
     let provider = metadata_backing(&launch.selection.provider)?;
@@ -341,6 +341,21 @@ fn decode(bytes: &[u8], typed: usize, maximum: usize) -> Result<usize, ProviderE
     super::super::complete_restore::transfer::selected_issuer_decode_storage_data(
         bytes, typed, maximum,
     )
+}
+
+/// Counts the selected complete coordinator and its actual validation phases.
+pub(crate) fn original_native_coordinator_decode_storage_data(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError> {
+    coordinator_decode::quote(bytes, maximum)
+}
+
+pub(crate) fn original_native_coordinator_decode_counter_scratch_data() -> usize {
+    coordinator_decode::counter_scratch_data()
+}
+
+// Only actual Value-only fields use this helper. Typed launch/coordinator and
+// authority constructors retain their independently named complete quotes.
+fn decode_value(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError> {
+    super::super::complete_restore::transfer::selected_value_decode_storage_data(bytes, maximum)
 }
 
 fn literal_bank(bytes: usize, frames: usize) -> Result<usize, ProviderError> {

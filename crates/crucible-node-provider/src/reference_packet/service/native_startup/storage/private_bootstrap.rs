@@ -14,6 +14,8 @@ pub(super) struct PrivateBootstrapStorage {
     pub(super) transient: usize,
     pub(super) maximum_boot_bytes: usize,
     pub(super) maximum_source_bytes: usize,
+    // Complete known base/additions Value plus canonical/parser work, not bytes.
+    pub(super) source_requested_bytes: usize,
 }
 
 fn object(p: &mut Projection, keys: &[&str]) -> Result<(), ProviderError> {
@@ -185,11 +187,7 @@ pub(super) fn project(
         &[base.base_decoded_bytes, additions.requested_total()?],
         maximum,
     )?;
-    let registration = decode(
-        input.host_registration,
-        size_of::<serde_json::Value>(),
-        maximum,
-    )?;
+    let registration = decode_value(input.host_registration, maximum)?;
     let launch = decode(
         input.encoded_launch,
         size_of::<PacketNative5SourceLaunch>(),
@@ -239,5 +237,6 @@ pub(super) fn project(
         transient,
         maximum_boot_bytes,
         maximum_source_bytes,
+        source_requested_bytes: source,
     })
 }

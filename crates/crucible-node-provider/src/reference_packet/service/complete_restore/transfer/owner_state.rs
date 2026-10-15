@@ -24,6 +24,7 @@ pub use owner_decode::{
 };
 pub(crate) use owner_decode::{
     selected_issuer_decode_counter_scratch_data, selected_issuer_decode_storage_data,
+    selected_value_decode_storage_data, selected_native_dto_decode_storage_data,
 };
 use serde_json::Value;
 

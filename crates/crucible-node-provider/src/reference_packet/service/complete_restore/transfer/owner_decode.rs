@@ -402,6 +402,55 @@ pub(crate) fn selected_issuer_decode_storage_data(
     })
 }
 
+/// Counts a closed native DTO roster without importing restore/model layouts.
+///
+/// The caller supplies the compiled maximum of every actual nested DTO/Vec
+/// element; portable extension maps remain String-to-Value. Two complete DOMs
+/// cover parser/borrowed decoding and container rebuilds independently.
+pub(crate) fn selected_native_dto_decode_storage_data(
+    bytes: &[u8],
+    typed_slot: usize,
+    maximum: usize,
+) -> Result<usize, ProviderError> {
+    let credit = scan(bytes, maximum, typed_slot,
+        map_node(size_of::<String>() + size_of::<Value>(), align_of::<Value>())?)?;
+    let requested = sum(&[
+        credit.requested(&Phases { dom: 2, typed: 1, canonical: 1 })?,
+        mul(2, size_of::<Value>())?,
+    ])?;
+    if requested > maximum { return Err(exhausted()); }
+    Ok(requested)
+}
+
+/// Counts actual raw Value-only parsing, cloning and canonical work.
+///
+/// Native Source and registration children have no Control/model DTO per raw
+/// token. Two complete DOMs conservatively cover parser and borrowed/owned
+/// Value-deserialization container rebuilding; strings remain double-counted.
+/// This uses the existing selected-issuer fixed scanner scratch, admitted by
+/// the original native counter before entry. Strict validation stays separate.
+pub(crate) fn selected_value_decode_storage_data(
+    bytes: &[u8],
+    maximum: usize,
+) -> Result<usize, ProviderError> {
+    let credit = scan(
+        bytes,
+        maximum,
+        size_of::<Value>(),
+        map_node(size_of::<String>() + size_of::<Value>(), align_of::<Value>())?,
+    )?;
+    // scan stores the root inline header in its typed term. This Value-only
+    // phase must name both independent root headers explicitly, including {}.
+    let requested = sum(&[
+        credit.requested(&Phases { dom: 2, typed: 0, canonical: 1 })?,
+        mul(2, size_of::<Value>())?,
+    ])?;
+    if requested > maximum {
+        return Err(exhausted());
+    }
+    Ok(requested)
+}
+
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- Closed requested-storage data controls intentionally panic on failed invariants.
 #[allow(clippy::unwrap_used)]
@@ -423,5 +472,39 @@ mod tests {
         let original = br#"{"model":{"capacities":{"events":18446744073709551615,"reactions":0,"delivered_inputs":0,"publications":0,"outputs":0,"stages":0}}}"#;
         assert!(model_capacity_backing(original, 2).is_err());
         assert!(model_capacity_backing(br#"{"model":{"capacities":{"events":-1}}}"#, 2).is_err());
+    }
+
+    #[test]
+    fn actual_value_quote_covers_two_empty_scalar_container_and_escape_owners() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::retained_metadata::{MetadataObserver, requested_metadata_backing_storage_data};
+        for raw in [b"{}".as_slice(), b"[]", b"null", b"0", br#""""#,
+            br#"{"a":[0,1,2],"b":{"quoted":"\u0000\n\"\\\uD834\uDD1E"}}"#] {
+            let original = canonical::parse_json(raw, raw.len())?;
+            let independent = original.clone();
+            let mut a = MetadataObserver::new();
+            a.observe(&original)?;
+            let mut b = MetadataObserver::new();
+            b.observe(&independent)?;
+            let bank = canonical::canonical_json(&independent)?;
+            let actual = sum(&[requested_metadata_backing_storage_data(&a.finish())?,
+                requested_metadata_backing_storage_data(&b.finish())?, bank.capacity(),
+                2 * size_of::<Value>()])?;
+            let quoted = selected_value_decode_storage_data(raw, usize::MAX)?;
+            assert!(quoted >= actual);
+            assert!(quoted >= 2 * size_of::<Value>());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn value_quote_exact_one_short_raw_cap_and_depth_limits_refuse() -> Result<(), Box<dyn std::error::Error>> {
+        let input = br#"{"schema":"a","values":["one","two",{},[]]}"#;
+        let quote = selected_value_decode_storage_data(input, usize::MAX)?;
+        assert_eq!(selected_value_decode_storage_data(input, quote)?, quote);
+        assert!(selected_value_decode_storage_data(input, quote - 1).is_err());
+        assert!(selected_value_decode_storage_data(input, input.len() - 1).is_err());
+        let deep = format!("{}null{}", "[".repeat(65), "]".repeat(65));
+        assert!(selected_value_decode_storage_data(deep.as_bytes(), usize::MAX).is_err());
+        Ok(())
     }
 }

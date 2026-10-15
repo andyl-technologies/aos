@@ -180,7 +180,7 @@ pub(super) fn project(bytes: &[u8], maximum: usize) -> Result<SourceBindingStora
         decoded = sum(
             &[
                 decoded,
-                decode(value, size_of::<serde_json::Value>(), maximum)?,
+                decode_value(value, maximum)?,
                 key.len(),
             ],
             maximum,

@@ -65,10 +65,10 @@ fn proof(maximum: usize) -> Result<OriginalSerializationStorageData, ProviderErr
     p.finish(maximum)
 }
 
-fn normalized_outer_extents(
+fn normalized_outer_storage(
     input: &PacketNativeBirthStartupInputs<'_>,
     maximum: usize,
-) -> Result<[usize; 3], ProviderError> {
+) -> Result<[OriginalSerializationStorageData; 3], ProviderError> {
     let mut association = Projection::new(maximum)?;
     object(
         &mut association,
@@ -123,9 +123,9 @@ fn normalized_outer_extents(
     // feature/definition/key children without decoding a replacement DTO.
     policy.add_value(&())?;
     Ok([
-        association.finish(maximum)?.maximum_encoded_bytes,
-        kernel.finish(maximum)?.maximum_encoded_bytes,
-        policy.finish(maximum)?.maximum_encoded_bytes,
+        association.finish(maximum)?,
+        kernel.finish(maximum)?,
+        policy.finish(maximum)?,
     ])
 }
 
@@ -134,27 +134,31 @@ pub(super) fn project(
     private: &private_bootstrap::PrivateBootstrapStorage,
     maximum: usize,
 ) -> Result<AdmitStorage, ProviderError> {
-    let source = private.maximum_source_bytes;
-    let host = input.host_registration.len();
-    let outer = normalized_outer_extents(input, maximum)?;
-    let normalized_extents = [
-        sum(&[source, host, outer[0]], maximum)?,
-        outer[1],
-        sum(&[source, host, outer[2]], maximum)?,
-        // Only connection_id differs between these exact registration rosters.
-        // The genuine native Id has at most128 unescaped ASCII bytes plusquotes.
-        sum(&[host, 128 + 2], maximum)?,
-        initial::admit_projection(input.launch, maximum)?.maximum_encoded_bytes,
+    let source = private.source_requested_bytes;
+    let host = decode_value(input.host_registration, maximum)?;
+    let [association, kernel, policy] = normalized_outer_storage(input, maximum)?;
+    // Native registration changes only the connection ID. Keep the complete
+    // original host tree and add the actual native Id's full128-byte grammar.
+    // Its old ID is deliberately not refunded from this conservative bound.
+    let mut native_id = Projection::new(maximum)?;
+    native_id.add_unescaped_ascii_extent(128)?;
+    let assigned_admit = initial::admit_projection(input.launch, maximum)?.requested_total()?;
+    let normalized_requested = [
+        sum(&[source, host, association.requested_total()?], maximum)?,
+        kernel.requested_total()?,
+        sum(&[source, host, policy.requested_total()?], maximum)?,
+        sum(&[host, native_id.finish(maximum)?.requested_total()?], maximum)?,
+        assigned_admit,
     ];
     let mut retained = 0usize;
     let mut transient = 0usize;
-    for extent in normalized_extents {
-        let tree = original_json_value_storage_extent_data(extent)?;
-        // Each normalized Value survives through the same once-Admit owner.
-        // The later canonical bank is independently retained; canonical work
-        // finishes before the next normalizer and is conservatively MAXed.
-        retained = sum(&[retained, tree.value_dom_requested_bytes], maximum)?;
-        transient = transient.max(tree.canonical_pass_requested_bytes()?);
+    for requested in normalized_requested {
+        // All five independently constructed Values remain live together.
+        // Each complete known-shape quote already includes its canonical bank;
+        // retaining that work too is conservative. The additional temporary
+        // canonical writer phase is sequential and may be MAXed separately.
+        retained = sum(&[retained, requested], maximum)?;
+        transient = transient.max(requested);
     }
     let context = context(maximum)?;
     let proof = proof(maximum)?;
@@ -181,7 +185,11 @@ pub(super) fn project(
             retained,
             context_children,
             proof_children,
-            initial::admit_projection(input.launch, maximum)?.requested_total()?,
+            // The lifecycle's original remains separate. owner.original and
+            // expected_body/comparison have independent backing beside all five
+            // normalizations. A full original Envelope safely overcounts each.
+            assigned_admit,
+            assigned_admit,
         ],
         maximum,
     )?;
@@ -200,8 +208,10 @@ pub(super) fn project(
             size_of::<AdmitStorage>(),
             size_of::<[usize; 5]>(),
             size_of::<[usize; 3]>(),
-            size_of::<Projection>(),
-            2 * size_of::<OriginalSerializationStorageData>(),
+            // The three outer projections coexist before finishing; their
+            // returned data can coexist with the native-ID projection/result.
+            3 * size_of::<Projection>(),
+            4 * size_of::<OriginalSerializationStorageData>(),
             size_of::<blake3::Hasher>(),
             size_of::<[u8; 32]>(),
         ],
