@@ -190,9 +190,10 @@ pub use assignment_ledger::{
     MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
 };
 pub use attempt_event_log::{
-    ATTEMPT_LOG_SEGMENT_SCHEMA, AttemptEventLogError, AttemptLogManifest, AttemptLogSegmentRef,
-    AttemptLogSegmentSource, MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS, MAX_ATTEMPT_LOG_SEGMENT_BYTES,
-    MemorySegmentStore, decode_segment,
+    ATTEMPT_LOG_SEGMENT_SCHEMA, ATTEMPT_LOG_SEGMENT_TARGET_BYTES, AttemptEventLogError,
+    AttemptLogManifest, AttemptLogSegmentRef, AttemptLogSegmentSource, MAX_ATTEMPT_LOG_ENTRY_BYTES,
+    MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS, MAX_ATTEMPT_LOG_SEGMENT_BYTES, MemorySegmentStore,
+    decode_segment,
 };
 pub use automatic_finding_runner::{
     AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,
