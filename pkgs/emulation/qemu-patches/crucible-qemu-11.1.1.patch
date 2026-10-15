@@ -1,11 +1,10 @@
-From 1422002342f3b4708308e8af0c446c55859ba442 Mon Sep 17 00:00:00 2001
+From 5d47413de0bce650b5c980d9a3875ebf2c7bd95f Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 08:50:43 -0700
-Subject: [PATCH] plugins: retain startup ownership and current plugin controls
+Date: Thu, 15 Oct 2026 09:56:48 -0700
+Subject: [PATCH] plugins: retain startup ownership and checkpoint inventory
+ controls
 
-Retain nominal startup, workspace and command custody through cleanup.
-Keep extracted controls aligned with the current interfaces and declared
-preexec selector, and make the RAM endpoint flag usable from C++23.
+Migrate checkpoint topology preparation to retained inventory ownership, preserve descriptor cleanup, and charge temporary root-record storage through the existing QMP allocator.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -82755,10 +82754,10 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..d8e56e85c4108d61af6a8283e73f3e823869275f 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..8b09b1d5b68194c04bddea695c83da173e76e646 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -14,53 +14,7000 @@
+@@ -14,53 +14,7058 @@
   */
  
  #include "qemu/osdep.h"
@@ -82974,23 +82973,81 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..d8e56e85c4108d61af6a8283e73f3e82
 +    const char *checkpoint_sha256, const char *target_sha256,
 +    const char *frontier_sha256, Error **errp)
 +{
-+    CrucibleCheckpointTopology *report;
-+    int root_fd = monitor_get_fd(monitor_cur(), root_fdname, errp);
-+    int cancellation_fd;
++#ifdef CONFIG_PLUGIN
++    QemuCrucibleCheckpointInventoryLoan *inventory = NULL;
++    CrucibleCheckpointTopology *report = NULL;
++    int root_fd = -1;
++    int cancellation_fd = -1;
++    int semantic_status = 0;
++    int status;
 +
-+    if (root_fd < 0) {
++    status = qemu_crucible_checkpoint_inventory_prepare_current_v1(monitor_cur());
++    if (status) {
++        error_setg_errno(errp, -status,
++                         "Checkpoint topology has no ready receiving request");
 +        return NULL;
++    }
++    status = qemu_crucible_checkpoint_inventory_begin_v1(monitor_cur(), &inventory);
++    if (status) {
++        goto out;
++    }
++
++    root_fd = monitor_get_fd(monitor_cur(), root_fdname, errp);
++    if (root_fd < 0) {
++        status = -EBADF;
++        goto out;
++    }
++    status = qemu_crucible_checkpoint_inventory_output_adopt_v1(inventory,
++                                                               &root_fd);
++    if (status) {
++        goto out;
 +    }
 +    cancellation_fd = monitor_get_fd(monitor_cur(), cancellation_fdname, errp);
 +    if (cancellation_fd < 0) {
-+        close(root_fd);
-+        return NULL;
++        status = -EBADF;
++        goto out;
 +    }
++    status = qemu_crucible_checkpoint_inventory_cancellation_adopt_v1(
++        inventory, &cancellation_fd);
++    if (status) {
++        goto out;
++    }
++
 +    report = qemu_crucible_checkpoint_prepare_topology(
-+        root_fd, cancellation_fd, checkpoint_sha256, target_sha256,
-+        frontier_sha256, errp);
-+    close(cancellation_fd);
++        &inventory, checkpoint_sha256, target_sha256, frontier_sha256,
++        &semantic_status, errp);
++    status = semantic_status;
++out:
++    /* Adopt updates each local slot before its fallible identity observation.
++     * Only aliases that never moved to the inventory remain ours to close. */
++    if (root_fd >= 0 && close(root_fd) < 0 && !status) {
++        status = -errno;
++    }
++    if (cancellation_fd >= 0 && close(cancellation_fd) < 0 && !status) {
++        status = -errno;
++    }
++    if (inventory) {
++        int returned = qemu_crucible_checkpoint_inventory_output_close_v1(inventory);
++        int post;
++
++        if (!status) {
++            status = returned;
++        }
++        post = qemu_crucible_checkpoint_inventory_post_v1(inventory, status);
++        returned = qemu_crucible_checkpoint_inventory_end_v1(&inventory, status);
++        if (!status) {
++            status = post ? post : returned;
++        }
++    }
++    if (status && !*errp) {
++        error_setg_errno(errp, -status,
++                         "Checkpoint topology inventory did not complete");
++    }
 +    return report;
++#else
++    error_setg(errp, "Checkpoint topology requires plugin receiving support");
++    return NULL;
++#endif
 +}
 +
 +CrucibleCheckpointBegin *qmp_crucible_checkpoint_begin(
@@ -89775,7 +89832,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..d8e56e85c4108d61af6a8283e73f3e82
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +7015,27 @@ void qmp_cont(Error **errp)
+@@ -68,7 +7073,27 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
@@ -89803,7 +89860,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..d8e56e85c4108d61af6a8283e73f3e82
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +7083,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +7141,155 @@ void qmp_cont(Error **errp)
      }
  }
  
@@ -89959,7 +90016,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..d8e56e85c4108d61af6a8283e73f3e82
  void qmp_add_client(const char *protocol, const char *fdname,
                      bool has_skipauth, bool skipauth, bool has_tls, bool tls,
                      Error **errp)
-@@ -207,3 +7323,49 @@ static void __attribute__((__constructor__)) monitor_init_qmp_commands(void)
+@@ -207,3 +7381,49 @@ static void __attribute__((__constructor__)) monitor_init_qmp_commands(void)
                           qmp_marshal_qmp_capabilities,
                           QCO_ALLOW_PRECONFIG, 0);
  }
@@ -182341,7 +182398,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..29b2ea8be88cd2c1aef317b0d8e57c717bde06ea
+index 0000000000000000000000000000000000000000..dcb0a7d895f4fab804f83577c6cfd112c1cdad1d
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,83 @@
@@ -182369,7 +182426,7 @@ index 0000000000000000000000000000000000000000..29b2ea8be88cd2c1aef317b0d8e57c71
 +    'include/plugins/qemu-plugin.h':
 +        'e90a655812ce9e96eaec89a7bcb45594984e405cb3b5bf7acb59887932b8aa7e',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '29e613d7190c4192668b65378e8d49d4ec75e02c63a10f6ae2b6a0030e85632a',
++        '697b277e7bf399d924bfd955d7d8e11f93d7703564d06f0375e4dda7cd9da926',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -184493,10 +184550,10 @@ index 0000000000000000000000000000000000000000..00a802f7d877e4a8fbac170734e15f36
 +}
 diff --git a/system/crucible-checkpoint.c b/system/crucible-checkpoint.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..04ff1dc5445cbd031be866195bb1d82ff1b1ae06
+index 0000000000000000000000000000000000000000..6c2ddfd2582fc5bab36cbaeca0ed22448187c773
 --- /dev/null
 +++ b/system/crucible-checkpoint.c
-@@ -0,0 +1,1928 @@
+@@ -0,0 +1,2107 @@
 +/*
 + * Crucible exact checkpoint RAM epochs
 + *
@@ -184522,6 +184579,7 @@ index 0000000000000000000000000000000000000000..04ff1dc5445cbd031be866195bb1d82f
 +#include "qemu/module.h"
 +#include "qemu/main-loop.h"
 +#include "qemu/crucible-paged-ram.h"
++#include "qemu/crucible-qmp-allocation.h"
 +#include "qemu/plugin.h"
 +#include "plugins/qemu-plugin.h"
 +#ifdef CONFIG_PLUGIN
@@ -185454,92 +185512,222 @@ index 0000000000000000000000000000000000000000..04ff1dc5445cbd031be866195bb1d82f
 +    return 0;
 +}
 +
-+CrucibleCheckpointTopology *qemu_crucible_checkpoint_prepare_topology(
-+    int root_fd, int cancellation_fd, const char *checkpoint_sha256,
-+    const char *target_sha256, const char *frontier_sha256, Error **errp)
++#ifdef CONFIG_PLUGIN
++static int crucible_checkpoint_inventory_poll(
++    QemuCrucibleCheckpointInventoryLoan *inventory, int fd, Error **errp)
 +{
-+    struct qemu_plugin_crucible_ram_capture_v1 inventory = { 0 };
-+    g_autofree uint8_t *record = NULL;
-+    CrucibleCheckpointTopology *report = NULL;
-+    CrucibleCheckpointWriter writer = {
-+        .fd = root_fd,
-+        .cancellation_fd = cancellation_fd,
-+        .maximum_bytes = CRUCIBLE_CHECKPOINT_ROOT_MAX_BYTES,
-+    };
-+    uint8_t root[32], copied_root[32], topology[32];
-+    uint8_t checkpoint[32], target[32], frontier[32];
-+    uint64_t logical_bytes;
-+    size_t length = 0, copied = 0;
-+    struct stat metadata;
++    struct pollfd cancellation = { .fd = fd, .events = POLLIN };
++    uint64_t slice;
 +    int status;
 +
++    for (;;) {
++        int current = qemu_crucible_checkpoint_inventory_current_v1(inventory,
++                                                                    &slice);
++
++        if (current) {
++            return current;
++        }
++        status = poll(&cancellation, 1, 0);
++        if (status >= 0 || errno != EINTR) {
++            break;
++        }
++    }
++    if (status < 0) {
++        int failure = errno;
++
++        error_setg_errno(errp, failure,
++                         "Could not poll RAM topology cancellation");
++        return -failure;
++    }
++    if (!status) {
++        return 0;
++    }
++    if (cancellation.revents & POLLIN) {
++        error_setg(errp, "RAM topology preparation was cancelled");
++        return -ECANCELED;
++    }
++    error_setg(errp, "RAM topology cancellation descriptor failed");
++    return -EIO;
++}
++
++static int crucible_checkpoint_inventory_write(
++    QemuCrucibleCheckpointInventoryLoan *inventory,
++    CrucibleCheckpointWriter *writer, const void *bytes, size_t length,
++    Error **errp)
++{
++    const uint8_t *cursor = bytes;
++    uint64_t slice;
++
++    if (length > writer->maximum_bytes - writer->written) {
++        error_setg(errp, "RAM topology record exceeds its maximum byte count");
++        return -EFBIG;
++    }
++    while (length) {
++        ssize_t written;
++        int status = crucible_checkpoint_inventory_poll(
++            inventory, writer->cancellation_fd, errp);
++
++        if (!status) {
++            status = qemu_crucible_checkpoint_inventory_current_v1(inventory,
++                                                                   &slice);
++        }
++        if (status) {
++            return status;
++        }
++        written = write(writer->fd, cursor, length);
++        if (written < 0 && errno == EINTR) {
++            /* Reobserve the same Original before retrying the unchanged slice. */
++            continue;
++        }
++        if (written <= 0) {
++            int failure = written == 0 ? EIO : errno;
++
++            error_setg_errno(errp, failure, "Could not write RAM topology record");
++            return -failure;
++        }
++        cursor += written;
++        length -= written;
++        writer->written += written;
++
++        /* Journal real progress before any independent trailing refusal. */
++        status = qemu_crucible_checkpoint_inventory_current_v1(inventory, &slice);
++        if (status) {
++            return status;
++        }
++    }
++    return 0;
++}
++#endif
++
++CrucibleCheckpointTopology *qemu_crucible_checkpoint_prepare_topology(
++    QemuCrucibleCheckpointInventoryLoan **inventory_owner,
++    const char *checkpoint_sha256, const char *target_sha256,
++    const char *frontier_sha256, int *semantic_status, Error **errp)
++{
++#ifdef CONFIG_PLUGIN
++    QemuCrucibleCheckpointInventoryLoan *inventory;
++    QemuCrucibleRamInventoryCaptureLoan *capture = NULL;
++    QemuCrucibleQmpAllocationOwner *allocation_owner = NULL;
++    struct qemu_plugin_crucible_ram_capture_v1 header = { 0 };
++    CrucibleCheckpointTopology *report = NULL;
++    CrucibleCheckpointWriter writer = {
++        .fd = -1,
++        .cancellation_fd = -1,
++        .maximum_bytes = CRUCIBLE_CHECKPOINT_ROOT_MAX_BYTES,
++    };
++    void *payload = NULL;
++    uint8_t root[32], copied_root[32], topology[32];
++    uint8_t checkpoint[32], target[32], frontier[32];
++    uint64_t logical_bytes, slice;
++    size_t length = 0, copied = 0;
++    struct stat metadata;
++    bool boundary_entered = false;
++    int status = -EINVAL;
++    int cleanup_status = 0;
++    int post, returned;
++
 +    topology_receipt_active = 0;
++    if (semantic_status) {
++        *semantic_status = status;
++    }
++    if (!semantic_status || !inventory_owner || !*inventory_owner) {
++        error_setg(errp, "Checkpoint topology requires its retained inventory");
++        return NULL;
++    }
++    inventory = *inventory_owner;
++    status = qemu_crucible_checkpoint_inventory_current_v1(inventory, &slice);
++    if (status) {
++        goto out;
++    }
++    status = -EINVAL;
 +    if (!crucible_checkpoint_exact_paused_boundary() ||
 +        crucible_checkpoint_authority.candidate_active ||
 +        topology_receipt_generation == UINT64_MAX ||
 +        !crucible_checkpoint_identity(checkpoint_sha256, checkpoint, errp) ||
 +        !crucible_checkpoint_identity(target_sha256, target, errp) ||
-+        !crucible_checkpoint_identity(frontier_sha256, frontier, errp) ||
-+        !crucible_checkpoint_output_file(root_fd, "RAM topology record",
-+                                        &metadata, errp)) {
++        !crucible_checkpoint_identity(frontier_sha256, frontier, errp)) {
 +        if (!*errp) {
 +            error_setg(errp, "RAM topology preparation requires an unused "
 +                       "paused exact checkpoint boundary");
 +        }
 +        goto out;
 +    }
++    status = qemu_crucible_checkpoint_inventory_output_current_v1(inventory,
++                                                                 &writer.fd);
++    if (!status) {
++        status = qemu_crucible_checkpoint_inventory_cancellation_current_v1(
++            inventory, &writer.cancellation_fd);
++    }
++    if (status || !crucible_checkpoint_output_file(writer.fd,
++                                                  "RAM topology record",
++                                                  &metadata, errp)) {
++        status = status ? status : -EINVAL;
++        goto out;
++    }
 +
 +    qemu_plugin_crucible_exact_boundary_enter();
-+    /* Capacity admission uses metadata only; dirty pages remain untouched. */
-+    status = qemu_crucible_ram_cached_root(1, root, &logical_bytes);
++    boundary_entered = true;
++    status = qemu_crucible_checkpoint_inventory_cached_root_v1(
++        inventory, 1, root, &logical_bytes);
 +    if (!status) {
-+        status = qemu_plugin_crucible_ram_root_record_v1(
-+            1, NULL, 0, &length, copied_root);
++        status = qemu_crucible_checkpoint_inventory_root_record_v1(
++            inventory, 1, NULL, 0, &length, copied_root);
 +    }
 +    if (status || !length || length > CRUCIBLE_CHECKPOINT_ROOT_MAX_BYTES ||
 +        memcmp(root, copied_root, 32)) {
 +        error_setg(errp, "Could not measure bounded RAM topology record (%d)",
 +                   status);
-+        goto leave;
++        status = status ? status : -EINVAL;
++        goto out;
 +    }
-+    record = g_try_malloc(length);
-+    if (!record) {
-+        error_setg(errp, "Could not reserve RAM topology metadata");
-+        goto leave;
++
++    /* This pays physical QMP storage only. The retained inventory separately
++     * qualifies every metadata operation and the native region pin below. */
++    status = qemu_crucible_qmp_scope_current(&allocation_owner);
++    if (!status) {
++        status = qemu_crucible_qmp_allocate(allocation_owner, length, false,
++                                            &payload);
 +    }
-+    status = qemu_plugin_crucible_ram_root_record_v1(
-+        1, record, length, &copied, copied_root);
++    if (status || !payload) {
++        error_setg(errp, "Could not reserve RAM topology metadata (%d)", status);
++        status = status ? status : -ENOMEM;
++        goto out;
++    }
++    status = qemu_crucible_checkpoint_inventory_root_record_v1(
++        inventory, 1, payload, length, &copied, copied_root);
 +    if (status || copied != length || memcmp(root, copied_root, 32)) {
 +        error_setg(errp, "RAM topology record changed during preparation");
-+        goto leave;
++        status = status ? status : -ESTALE;
++        goto out;
 +    }
-+    status = qemu_plugin_crucible_ram_capture_begin_v2(1, 0, &inventory);
++
++    status = qemu_crucible_ram_inventory_capture_begin_v1(inventory, &capture,
++                                                         &header);
 +    if (status) {
 +        error_setg_errno(errp, -status,
 +                         "Could not fence RAM topology inventory");
-+        goto leave;
++        goto out;
 +    }
-+    status = qemu_plugin_crucible_ram_capture_topology_v2(
-+        inventory.capture_generation, 0, topology);
-+    {
-+        int finish = qemu_plugin_crucible_ram_capture_finish_v2(
-+            inventory.capture_generation, 0, 0);
-+
-+        if (!status) {
-+            status = finish;
-+        }
++    status = qemu_crucible_ram_inventory_capture_topology_v1(capture, topology);
++    if (!status) {
++        status = qemu_crucible_checkpoint_inventory_current_v1(inventory, &slice);
 +    }
-+    if (status || !inventory.topology_generation ||
-+        !crucible_checkpoint_prepare_output_file(root_fd,
-+                                                 "RAM topology record", errp) ||
-+        !crucible_checkpoint_writer_write(&writer, record, length, errp)) {
++    if (status || !header.topology_generation ||
++        !crucible_checkpoint_prepare_output_file(writer.fd,
++                                                 "RAM topology record", errp)) {
 +        if (!*errp) {
 +            error_setg(errp, "RAM topology inventory changed during preparation");
 +        }
-+        goto leave;
++        status = status ? status : -EIO;
++        goto out;
++    }
++    status = crucible_checkpoint_inventory_write(inventory, &writer, payload,
++                                                 length, errp);
++    if (status) {
++        goto out;
 +    }
 +
-+    topology_receipt_inventory = inventory.topology_generation;
++    topology_receipt_inventory = header.topology_generation;
 +    topology_receipt_owner = getpid();
 +    memcpy(topology_receipt_checkpoint, checkpoint, 32);
 +    memcpy(topology_receipt_target, target, 32);
@@ -185559,13 +185747,61 @@ index 0000000000000000000000000000000000000000..04ff1dc5445cbd031be866195bb1d82f
 +        snprintf(report->ram_root_blake3 + 2 * index, 3, "%02x", root[index]);
 +        snprintf(report->topology_blake3 + 2 * index, 3, "%02x", topology[index]);
 +    }
-+leave:
-+    qemu_plugin_crucible_exact_boundary_leave();
++
 +out:
-+    if (root_fd >= 0) {
-+        close(root_fd);
++    if (payload) {
++        cleanup_status = qemu_crucible_qmp_free(&payload);
++        /* A failed physical return leaves the block in the actual QMP owner's
++         * registry. After free, Source retains its separate debit journal. */
 +    }
++    returned = qemu_crucible_checkpoint_inventory_output_close_v1(inventory);
++    if (!cleanup_status) {
++        cleanup_status = returned;
++    }
++    /* Keep capture and inventory custody through the independent post. Return
++     * failures are distinct from the interpretation and Original post result. */
++    post = qemu_crucible_checkpoint_inventory_post_v1(
++        inventory, status ? status : cleanup_status);
++    if (!status) {
++        status = post;
++    }
++    if (capture) {
++        returned = qemu_crucible_ram_inventory_capture_end_v1(&capture);
++        if (!cleanup_status) {
++            cleanup_status = returned;
++        }
++    }
++    if (!capture) {
++        returned = qemu_crucible_checkpoint_inventory_end_v1(
++            inventory_owner, status ? status : cleanup_status);
++        if (!cleanup_status) {
++            cleanup_status = returned;
++        }
++    }
++    if (boundary_entered) {
++        qemu_plugin_crucible_exact_boundary_leave();
++    }
++    *semantic_status = status;
++    if (status || cleanup_status || capture || *inventory_owner) {
++        topology_receipt_active = 0;
++        qapi_free_CrucibleCheckpointTopology(report);
++        if (!*errp) {
++            int failure = status ? status : cleanup_status ? cleanup_status : -EBUSY;
++
++            error_setg_errno(errp, -failure,
++                             "RAM topology inventory did not complete");
++        }
++        return NULL;
++    }
++
 +    return report;
++#else
++    if (semantic_status) {
++        *semantic_status = -ENOTSUP;
++    }
++    error_setg(errp, "Checkpoint topology requires plugin receiving support");
++    return NULL;
++#endif
 +}
 +
 +CrucibleCheckpointCapture *qemu_crucible_checkpoint_capture(
@@ -222580,7 +222816,7 @@ index 0000000000000000000000000000000000000000..744c2574bf925b75789a7ddf89525387
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..683325255967eafee8f6a92dcfb1f52a14b27775
+index 0000000000000000000000000000000000000000..6c7ba80758bc241c359de22b3e84c2ce907cc60f
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -222598,7 +222834,7 @@ index 0000000000000000000000000000000000000000..683325255967eafee8f6a92dcfb1f52a
 +    'include/system/crucible-ram-quiescence.h':
 +        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '29e613d7190c4192668b65378e8d49d4ec75e02c63a10f6ae2b6a0030e85632a',
++        '697b277e7bf399d924bfd955d7d8e11f93d7703564d06f0375e4dda7cd9da926',
 +}
 +
 +FUNCTIONS = (
@@ -222686,7 +222922,7 @@ index 0000000000000000000000000000000000000000..683325255967eafee8f6a92dcfb1f52a
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..047da7e58010b1df2abd5ae761c81f55d184e058
+index 0000000000000000000000000000000000000000..2e9691e0e4b38d75b6e9ff533b9cce9016837fb1
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -222717,7 +222953,7 @@ index 0000000000000000000000000000000000000000..047da7e58010b1df2abd5ae761c81f55
 +    'include/system/crucible-ram-quiescence.h':
 +        '34995e91ab8d4aa930fb8d1bb3d221040d8855c4c5adb12ac0bb7bdc4c946380',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '29e613d7190c4192668b65378e8d49d4ec75e02c63a10f6ae2b6a0030e85632a',
++        '697b277e7bf399d924bfd955d7d8e11f93d7703564d06f0375e4dda7cd9da926',
 +}
 +
 +FUNCTIONS = (
@@ -222933,7 +223169,7 @@ index 0000000000000000000000000000000000000000..047da7e58010b1df2abd5ae761c81f55
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..6709daa1900746d25f0d96f7e2162d201aab5480
+index 0000000000000000000000000000000000000000..dbb0944f8364a4aa61a78be0b427150d5084ce10
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -222957,7 +223193,7 @@ index 0000000000000000000000000000000000000000..6709daa1900746d25f0d96f7e2162d20
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '29e613d7190c4192668b65378e8d49d4ec75e02c63a10f6ae2b6a0030e85632a',
++        '697b277e7bf399d924bfd955d7d8e11f93d7703564d06f0375e4dda7cd9da926',
 +}
 +
 +FUNCTIONS = (
@@ -223051,7 +223287,7 @@ index 0000000000000000000000000000000000000000..6709daa1900746d25f0d96f7e2162d20
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1d7c5eacb55625b0665d47b69c5ff5ace498b207
+index 0000000000000000000000000000000000000000..3fdfed8200a94d934e1de430b4e4935e7d7754f9
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -223092,9 +223328,9 @@ index 0000000000000000000000000000000000000000..1d7c5eacb55625b0665d47b69c5ff5ac
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '29e613d7190c4192668b65378e8d49d4ec75e02c63a10f6ae2b6a0030e85632a',
++        '697b277e7bf399d924bfd955d7d8e11f93d7703564d06f0375e4dda7cd9da926',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '2f27f98de50747c25f43e678bee449f145cf8fbabec3d83c5dac3a2146604498',
++        'eae81d3a22693db6e0a431472b742580749f25f9d97bdf63d1703fff78466a59',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -223230,7 +223466,7 @@ index 0000000000000000000000000000000000000000..1d7c5eacb55625b0665d47b69c5ff5ac
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7f5c430c80370f271837a14de87eb4af9d983da2
+index 0000000000000000000000000000000000000000..8c2f1e6abffb5e4481122b33faeb4ceade9263df
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,812 @@
@@ -223272,7 +223508,7 @@ index 0000000000000000000000000000000000000000..7f5c430c80370f271837a14de87eb4af
 +    'plugins/crucible-paged-ram.c':
 +        '322bf51026f20cdf74bd105706e6d2121127409ff6867a06a5cb67b5e1be85f9',
 +    'monitor/qmp-cmds.c':
-+        '7517b27d55d47c05c63f1d2c8a3b8d35dfd38491698bd40b0e1e61ffcf8267b2',
++        'fdd97526198c0b69110aab04ea94b2643b95bdd38ddc37b0da8940b91ada7c1c',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'plugins/crucible-startup-source.c':
