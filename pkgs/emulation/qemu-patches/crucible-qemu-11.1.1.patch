@@ -1,10 +1,9 @@
-From f67e678b01d01125ca7844e39b5b1caaeed7cd69 Mon Sep 17 00:00:00 2001
+From fe5b9c08383dc57ea4a880f1820fc97327db7066 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 10:54:33 -0700
-Subject: [PATCH] plugins: retain startup ownership and checkpoint control
- paths
+Date: Thu, 15 Oct 2026 11:20:58 -0700
+Subject: [PATCH] plugins: retain startup ownership and ordinary control paths
 
-Retain startup and checkpoint custody through cleanup, align current wire fixtures, and integrate ordinary system and tool dispatch paths.
+Retain current startup and checkpoint custody, align wire fixtures, and preserve ordinary tool and storage-daemon operation without issuing Source ownership.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -183180,6 +183179,95 @@ index 0000000000000000000000000000000000000000..bb34625996ad4c32a849c50b33fb698e
 +{
 +    return -EPERM;
 +}
+diff --git a/stubs/crucible-qmp-monitor.c b/stubs/crucible-qmp-monitor.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..5b621520f01df8189cc338e46789cb05dc48e540
+--- /dev/null
++++ b/stubs/crucible-qmp-monitor.c
+@@ -0,0 +1,83 @@
++/*
++ * Ordinary QMP Monitor operation without a Source allocation issuer
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/atomic.h"
++#include "qemu/crucible-preexec-setup.h"
++#include "qemu/crucible-qmp-allocation.h"
++#ifdef CONFIG_PLUGIN
++#include "plugins/crucible-startup-source.h"
++#endif
++
++int qemu_crucible_qmp_message_owner_begin(
++    Monitor *monitor, QemuCrucibleQmpAllocationOwner **out)
++{
++    if (!out) {
++        return -EINVAL;
++    }
++    if (*out) {
++        return -EPERM;
++    }
++    return qatomic_load_acquire(&qemu_crucible_selected_process_id) ?
++        -ENOTSUP : 0;
++}
++
++int qemu_crucible_qmp_owner_end(QemuCrucibleQmpAllocationOwner **owner)
++{
++    return owner && *owner ? -EPERM : -EINVAL;
++}
++
++int qemu_crucible_qmp_owner_borrow(QemuCrucibleQmpAllocationOwner *owner,
++                                  QemuCrucibleQmpAllocationBorrow **out)
++{
++    return out ? -EPERM : -EINVAL;
++}
++
++int qemu_crucible_qmp_borrow_observe(
++    QemuCrucibleQmpAllocationBorrow *borrow,
++    QemuCrucibleQmpAllocationObservation *out)
++{
++    return out ? -EPERM : -EINVAL;
++}
++
++int qemu_crucible_qmp_borrow_end(QemuCrucibleQmpAllocationBorrow **borrow)
++{
++    return borrow && *borrow ? -EPERM : -EINVAL;
++}
++
++int qemu_crucible_qmp_parser_scope_enter(QemuCrucibleQmpAllocationOwner *owner,
++                                        QemuCrucibleQmpAllocationScope **out)
++{
++    return out ? -EPERM : -EINVAL;
++}
++
++int qemu_crucible_qmp_dispatch_scope_enter(QemuCrucibleQmpAllocationBorrow *borrow,
++                                          QemuCrucibleQmpAllocationScope **out)
++{
++    return out ? -EPERM : -EINVAL;
++}
++
++int qemu_crucible_qmp_scope_end(QemuCrucibleQmpAllocationScope **scope)
++{
++    return scope && *scope ? -EPERM : -EINVAL;
++}
++
++#ifdef CONFIG_PLUGIN
++int qemu_crucible_startup_source_monitor_prefix_admit(
++    uint64_t extent, QemuCrucibleMonitorPurpose **out)
++{
++    if (out && *out) {
++        return -EPERM;
++    }
++    return qatomic_load_acquire(&qemu_crucible_selected_process_id) ?
++        -ENOTSUP : 0;
++}
++
++void qemu_crucible_startup_source_monitor_prefix_failed(
++    QemuCrucibleMonitorPurpose *purpose)
++{
++    /* This provider has no Source prefix or physical charge to retire. */
++}
++#endif
 diff --git a/stubs/crucible-socket-ingress.c b/stubs/crucible-socket-ingress.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..f421afc95b070663eb21d96b3b04ecd18739fef3
@@ -183218,16 +183306,17 @@ index 0000000000000000000000000000000000000000..f421afc95b070663eb21d96b3b04ecd1
 +    return -EPERM;
 +}
 diff --git a/stubs/meson.build b/stubs/meson.build
-index 3b2f2680b19359e94216b26f102fd8821ad0a9e7..a68f987124085568898504a31ef43242672bbcc0 100644
+index 3b2f2680b19359e94216b26f102fd8821ad0a9e7..45a04c059b99526cee3b56a9324ea8fec036a0a4 100644
 --- a/stubs/meson.build
 +++ b/stubs/meson.build
-@@ -100,3 +100,6 @@ if have_system or have_user
+@@ -100,3 +100,7 @@ if have_system or have_user
    stub_ss.add(files('hotplug-stubs.c'))
    stub_ss.add(files('sysbus.c'))
  endif
 +
 +# Common QObject and socket users retain explicit negative Source providers.
 +stub_ss.add(files('crucible-qmp-allocation.c', 'crucible-socket-ingress.c'))
++stub_ss.add(files('crucible-qmp-monitor.c'))
 diff --git a/stubs/monitor-core.c b/stubs/monitor-core.c
 index a7c32297c90a64bdc63955c5177a4efe873abb2a..201cd7cfc9144d8671e3d35dfd99c43f7f07a854 100644
 --- a/stubs/monitor-core.c
