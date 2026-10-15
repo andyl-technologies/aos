@@ -127,13 +127,18 @@ empty `terrane` binary.
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
 
 The corrected source checkpoint `d5b708f9ba` has independently reviewed passing
-outputs for 21 of the 89 current gates. Its strict native Clippy/rustdoc checks
-and application test-target compilation also pass. The full production
-package, feature matrix, local workflows and aggregate remain pending. Five
-isolated workers qualify that same immutable source: the aggregate, feature
-matrix, index maintenance, file-store conformance and collector gates. Nix
-shares identical prerequisite builds between their requests. No task checkbox
-or milestone advances from these partial results.
+outputs for 82 of the 89 current gates. Completed qualification groups include
+all thirteen pack/manifest gates, seven tree/property gates, five collector
+gates with their complete local prerequisite chain, and eight refs/provenance
+gates. Golden vectors pass all twenty owning suites covering thirty-one
+published sections. Strict native Clippy/rustdoc checks and application
+test-target compilation also pass, as do the local SDK and CLI workflows.
+The full production package, feature matrix, index maintenance, remaining
+file-store checks, genuine ext4 workflow and aggregate remain pending. Four
+isolated workers continue the same immutable source through the original
+aggregate, feature-matrix, index and file-store requests. Nix shares identical
+prerequisite builds between them. No task checkbox or milestone advances
+from these scoped results.
 
 The earlier 2026-10-15 qualification candidate `c4e44d6208` has independently
 reviewed passing outputs for 87 of the 89 current gates, including every store gate,
