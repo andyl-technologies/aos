@@ -2,6 +2,159 @@
 
 use super::*;
 
+fn retain_clock_command(
+    bridge: &mut FaultCommandBridge,
+    sequence: u64,
+    binding_hash: [u8; 32],
+    operation: NodeFaultOperationV1,
+    command_kind: FaultCommandKind,
+) {
+    bridge.clock_commands.insert(
+        sequence,
+        ClockCommandExpectation {
+            operation,
+            command_kind: command_kind as u16,
+            binding_hash,
+            model_phase: 28,
+            source_ids: vec![[sequence as u8; 32]],
+            parameters: ClockCommandParameters::SourceState {
+                transition: serde_json::json!({ "kind": "locked" }),
+                synchronization: serde_json::json!({ "kind": "none" }),
+            },
+        },
+    );
+}
+
+fn publish_clock_result(
+    bridge: &mut FaultCommandBridge,
+    sequence: u64,
+    status: FaultResultStatus,
+    command_kind: FaultCommandKind,
+) {
+    bridge.apis.peek = peek_register_result;
+    bridge.apis.poll = poll_register_result;
+    bridge.apis.event_peek = no_clock_event;
+    TEST_REGISTER_RESULT.with(|pending| {
+        *pending.borrow_mut() = Some((
+            QemuFaultResult {
+                command_kind: command_kind as u16,
+                status: status as u16,
+                command_sequence: sequence,
+                semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+                capability_version: 1,
+                phase: FaultBoundaryPhase::NodeBoundary as u16,
+                ..QemuFaultResult::default()
+            },
+            Vec::new(),
+        ));
+    });
+
+    assert_eq!(bridge.drain_publications(0), Ok(true));
+    TEST_REGISTER_RESULT.with(|pending| assert!(pending.borrow().is_none()));
+}
+
+extern "C" fn no_clock_event(_: *mut QemuFaultEvent, _: *mut usize) -> libc::c_int {
+    0
+}
+
+#[test]
+fn applied_clock_replacement_retires_only_the_previous_expectation() {
+    for kind in [
+        FaultCommandKind::ClockTransform,
+        FaultCommandKind::ClockSourceState,
+    ] {
+        test_support::with_initialized_bridge(|bridge, _, results| {
+            let binding = [1; 32];
+            retain_clock_command(bridge, 1, binding, NodeFaultOperationV1::Upsert, kind);
+            retain_clock_command(bridge, 2, binding, NodeFaultOperationV1::Upsert, kind);
+            retain_clock_command(bridge, 3, [3; 32], NodeFaultOperationV1::Upsert, kind);
+            bridge.active_clock_bindings.insert(binding, 1);
+            bridge.active_clock_bindings.insert([3; 32], 3);
+
+            publish_clock_result(bridge, 2, FaultResultStatus::Applied, kind);
+
+            assert_eq!(results.write_index(), 1);
+            assert!(!bridge.clock_commands.contains_key(&1));
+            assert!(bridge.clock_commands.contains_key(&2));
+            assert!(bridge.clock_commands.contains_key(&3));
+            assert_eq!(bridge.active_clock_bindings.get(&binding), Some(&2));
+            assert_eq!(bridge.active_clock_bindings.get(&[3; 32]), Some(&3));
+        });
+    }
+}
+
+#[test]
+fn applied_clock_removal_retires_the_prior_and_removal_expectations() {
+    for kind in [
+        FaultCommandKind::ClockTransform,
+        FaultCommandKind::ClockSourceState,
+    ] {
+        test_support::with_initialized_bridge(|bridge, _, results| {
+            let binding = [1; 32];
+            retain_clock_command(bridge, 1, binding, NodeFaultOperationV1::Upsert, kind);
+            retain_clock_command(bridge, 2, binding, NodeFaultOperationV1::Remove, kind);
+            bridge.active_clock_bindings.insert(binding, 1);
+
+            publish_clock_result(bridge, 2, FaultResultStatus::Applied, kind);
+
+            assert_eq!(results.write_index(), 1);
+            assert!(bridge.clock_commands.is_empty());
+            assert!(bridge.active_clock_bindings.is_empty());
+            assert!(bridge.local_custody_is_empty());
+        });
+    }
+}
+
+#[test]
+fn repeated_clock_result_keeps_its_own_expectation() {
+    test_support::with_initialized_bridge(|bridge, _, results| {
+        let kind = FaultCommandKind::ClockTransform;
+        let binding = [1; 32];
+        retain_clock_command(bridge, 1, binding, NodeFaultOperationV1::Upsert, kind);
+        bridge.active_clock_bindings.insert(binding, 1);
+
+        publish_clock_result(bridge, 1, FaultResultStatus::Applied, kind);
+        publish_clock_result(bridge, 1, FaultResultStatus::Applied, kind);
+
+        assert_eq!(results.write_index(), 2);
+        assert!(bridge.clock_commands.contains_key(&1));
+        assert_eq!(bridge.clock_commands.len(), 1);
+        assert_eq!(bridge.active_clock_bindings.get(&binding), Some(&1));
+    });
+}
+
+#[test]
+fn failed_or_prepared_clock_results_keep_the_active_prior_expectation() {
+    for operation in [NodeFaultOperationV1::Upsert, NodeFaultOperationV1::Remove] {
+        for status in [
+            FaultResultStatus::InternalError,
+            FaultResultStatus::Prepared,
+        ] {
+            test_support::with_initialized_bridge(|bridge, _, results| {
+                let kind = FaultCommandKind::ClockTransform;
+                let binding = [1; 32];
+                retain_clock_command(bridge, 1, binding, NodeFaultOperationV1::Upsert, kind);
+                retain_clock_command(bridge, 2, binding, operation, kind);
+                bridge.active_clock_bindings.insert(binding, 1);
+
+                publish_clock_result(bridge, 2, status, kind);
+
+                assert_eq!(results.write_index(), 1);
+                assert!(bridge.clock_commands.contains_key(&1));
+                assert_eq!(bridge.active_clock_bindings.get(&binding), Some(&1));
+                assert_eq!(
+                    bridge.clock_commands.contains_key(&2),
+                    status == FaultResultStatus::Prepared,
+                );
+                assert_eq!(
+                    bridge.prepared_commands.contains(&2),
+                    status == FaultResultStatus::Prepared,
+                );
+            });
+        }
+    }
+}
+
 #[test]
 fn clock_timer_evidence_is_manifest_bound_and_typed() {
     let row = FaultClockCapabilityRowV2 {

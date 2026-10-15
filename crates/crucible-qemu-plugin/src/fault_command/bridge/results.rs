@@ -283,12 +283,20 @@ impl FaultCommandBridge {
             if result.status == FaultResultStatus::Applied as u16 {
                 match command.operation {
                     NodeFaultOperationV1::Upsert => {
-                        let _prior = self
+                        if let Some(prior) = self
                             .active_clock_bindings
-                            .insert(command.binding_hash, result.command_sequence);
+                            .insert(command.binding_hash, result.command_sequence)
+                            && prior != result.command_sequence
+                        {
+                            self.clock_commands.remove(&prior);
+                        }
                     }
                     NodeFaultOperationV1::Remove => {
-                        let _prior = self.active_clock_bindings.remove(&command.binding_hash);
+                        if let Some(prior) =
+                            self.active_clock_bindings.remove(&command.binding_hash)
+                        {
+                            self.clock_commands.remove(&prior);
+                        }
                         self.clock_commands.remove(&result.command_sequence);
                     }
                     NodeFaultOperationV1::Apply => {}
