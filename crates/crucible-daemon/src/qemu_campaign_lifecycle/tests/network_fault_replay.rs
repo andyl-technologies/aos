@@ -6,13 +6,17 @@ use super::*;
 /// Fake all-VM park at one network fault phase marker.
 ///
 /// Every VM parks once the lifecycle completes `parks_after_quanta`; VMs stay
-/// physically parked through the scheduler join until each is released.
+/// physically parked through the scheduler join until each is released. The
+/// park publishes `published` into the parked quantum's outcome, and the
+/// branch append returns `branch_entries`, as the production scheduler does.
 pub(super) struct FakeNetworkPark {
     parks_after_quanta: u64,
     marker: &'static str,
     joined_at: VirtualTime,
     parked: bool,
     released: BTreeSet<NodeId>,
+    pub(super) published: Vec<SchedulerEventLogEntry>,
+    pub(super) branch_entries: Vec<SchedulerEventLogEntry>,
 }
 
 impl FakeNetworkPark {
@@ -190,9 +194,52 @@ fn parked_lifecycle(joined_at: VirtualTime) -> FakeFreshLifecycle {
             joined_at,
             parked: false,
             released: BTreeSet::new(),
+            published: Vec::new(),
+            branch_entries: Vec::new(),
         }),
         ..replay_lifecycle()
     }
+}
+
+/// Parks and branch appends add scheduler entries outside a driven quantum;
+/// the observed evidence must still hold every entry, densely.
+#[test]
+fn observed_lifecycle_records_park_publications_and_branch_entries() {
+    let at = VirtualTime { ticks: 40 };
+    let (input, _target) = network_fault_branch_input(at);
+    let genesis = Configuration::genesis(input.scenario().scenario_def());
+    let branch = input.signal_fault_replay().network_branches()[0].clone();
+    let published = SchedulerEventLogEntry::execution_budget_exhausted(0, at, "park-peer");
+    let selection = SchedulerEventLogEntry::execution_budget_exhausted(1, at, "branch-selection");
+    let mut lifecycle = parked_lifecycle(at);
+    let park = lifecycle.network_park.as_mut().expect("network park");
+    park.published = vec![published.clone()];
+    park.branch_entries = vec![selection.clone()];
+    let evidence = QemuAttemptExecutionEvidence::default();
+    let mut observed =
+        QemuObservedFreshAttemptLifecycle::new(lifecycle, Vec::new(), evidence.clone());
+
+    let mut outcome = observed
+        .drive_quantum(QuantumRequest {
+            configuration: genesis,
+            control: Vec::new(),
+        })
+        .expect("parked quantum");
+    observed
+        .park_held_campaign_markers(
+            &crate::qemu_campaign_driver::NETWORK_FAULT_PHASE_MARKERS,
+            &mut outcome,
+        )
+        .expect("park publishes its peers");
+    observed
+        .append_network_fault_campaign_branch(&branch)
+        .expect("branch append");
+
+    let snapshot = evidence.snapshot().expect("observed evidence");
+    assert_eq!(
+        snapshot.event_log_entries().expect("recorded entries"),
+        vec![published, selection]
+    );
 }
 
 /// With every VM parked no quantum can advance, so replay joins the parks,

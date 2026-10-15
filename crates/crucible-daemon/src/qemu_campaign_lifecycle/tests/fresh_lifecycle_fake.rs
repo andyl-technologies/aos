@@ -109,7 +109,7 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
     fn park_held_campaign_markers(
         &mut self,
         markers: &[&str],
-        _outcome: &mut crucible::QuantumOutcome,
+        outcome: &mut crucible::QuantumOutcome,
     ) -> Result<usize, SchedulerError> {
         if markers != crate::qemu_campaign_driver::NETWORK_FAULT_PHASE_MARKERS {
             return Err(SchedulerError::BoundaryViolation {
@@ -122,6 +122,9 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
             .push("park");
         if let Some(park) = &mut self.network_park {
             park.observe_quantum(self.completed_quanta);
+            outcome
+                .event_log_entries
+                .extend(std::mem::take(&mut park.published));
         }
         Ok(1)
     }
@@ -154,7 +157,12 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
             .push("append");
         // Like the production scheduler, the branch append is one quantum.
         self.completed_quanta += 1;
-        Ok((branch.selected().clone(), Vec::new()))
+        let entries = self
+            .network_park
+            .as_mut()
+            .map(|park| std::mem::take(&mut park.branch_entries))
+            .unwrap_or_default();
+        Ok((branch.selected().clone(), entries))
     }
 
     fn release_parked_campaign_marker(

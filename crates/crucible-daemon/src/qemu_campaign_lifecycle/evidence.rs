@@ -219,7 +219,20 @@ where
         markers: &[&str],
         outcome: &mut QuantumOutcome,
     ) -> Result<usize, SchedulerError> {
-        self.lifecycle.park_held_campaign_markers(markers, outcome)
+        let recorded = outcome.event_log_entries.len();
+        let parks = self
+            .lifecycle
+            .park_held_campaign_markers(markers, outcome)?;
+
+        // Each park publishes its peers' outcomes into `outcome`, after the
+        // quantum it extends was recorded. Their entries continue the same
+        // exact evidence prefix.
+        let published = outcome
+            .event_log_entries
+            .get(recorded..)
+            .unwrap_or_default();
+        self.evidence.record_appended_entries(published)?;
+        Ok(parks)
     }
 
     fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
@@ -230,7 +243,14 @@ where
         &mut self,
         branch: &crucible::NetworkFaultCampaignBranch,
     ) -> Result<(Configuration, Vec<SchedulerEventLogEntry>), SchedulerError> {
-        self.lifecycle.append_network_fault_campaign_branch(branch)
+        let (configuration, entries) = self
+            .lifecycle
+            .append_network_fault_campaign_branch(branch)?;
+
+        // The branch selection and its trigger settlement are scheduler
+        // entries recorded outside any driven quantum.
+        self.evidence.record_appended_entries(&entries)?;
+        Ok((configuration, entries))
     }
 
     fn campaign_marker_release_committed(
