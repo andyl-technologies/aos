@@ -4,6 +4,8 @@
 //! It grants neither first ownership nor complete serving-placement permission;
 //! native requests additionally require the matching current DATA qualifier.
 
+#[path = "selected_permanent_local/physical.rs"]
+mod physical;
 #[path = "selected_permanent_local/request.rs"]
 mod request;
 #[path = "selected_permanent_local/selection.rs"]

@@ -6,6 +6,7 @@
 //! synchronizes actual absent anchors before they can resolve selected duties.
 
 use super::super::{FencePolicy, NativeEffectFailure, Path, PathBuf, Plan, Worker};
+use super::recipes::Recipes;
 use super::{ExtractedPair, NativePermanentObservation, physical::Leaf};
 use crate::pack::PackId;
 use std::io;
@@ -205,6 +206,7 @@ pub(in super::super) fn execute(
     let mut leaf_timings = LeafTimings::new();
 
     let mut leaves = Vec::new();
+    let recipes = Recipes::new(&worker.projection);
     // The fixed leaf vector is one readonly observation request. Whole current
     // authority brackets its physical capture; each leaf independently checks
     // actual ancestry, nofollow incarnation, policy and absence under the same
@@ -220,6 +222,7 @@ pub(in super::super) fn execute(
         let capture_started = leaf_timings.start();
         leaves.push(Leaf::capture(
             &worker,
+            &recipes,
             request.root.join(key),
             request.owner,
         )?);
@@ -254,7 +257,13 @@ pub(in super::super) fn execute(
             // the first missing ancestor when the family directory is absent.
             worker.refresh(&[])?;
             leaf.check(&worker.projection.exclusions)?;
-            let directory = super::effects::parent(&worker, leaf.checked_path())?;
+            let parent = leaf
+                .checked_path()
+                .parent()
+                .and_then(|path| recipes.name(&worker.projection, path))
+                .ok_or_else(|| io::Error::other("permanent sync parent is not retained"))?;
+            let directory =
+                super::effects::parent_from_recipe(&worker, leaf.checked_path(), parent)?;
             if synchronized.insert(directory.path.clone()) {
                 worker.directory_sync(&directory, false, &[])?;
             }

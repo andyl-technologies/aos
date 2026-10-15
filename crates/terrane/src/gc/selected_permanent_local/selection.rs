@@ -1,7 +1,6 @@
 //! Resolves exact immutable owner and genesis records from a retained selected chain.
 
-use super::{SelectedObservation, denied};
-use crate::bucket::publication::receipts::RecordRead;
+use super::{SelectedObservation, denied, physical::PhysicalReads};
 use crate::store::StoreFailure;
 use std::path::{Path, PathBuf};
 use terrane_core::bucket::{BucketCapabilities, GenerationManifest};
@@ -28,33 +27,20 @@ pub(super) struct ResolvedOwner {
     pub(super) selected_owner: RecordPointer,
 }
 
-fn physical<'read>(
-    observed: &'read SelectedObservation<'_>,
-    control: &Path,
-    key: &str,
-) -> Result<&'read [u8], StoreFailure> {
-    observed
-        .physical_reads()
-        .iter()
-        .find(|read| read.path() == control.join(key))
-        .and_then(RecordRead::bytes)
-        .ok_or_else(denied)
-}
-
 /// Resolves a publication slot and its bound transaction from retained physical reads.
 ///
 /// # Errors
 /// Refuses missing retained slot or proposal bytes, invalid encodings, mismatched
 /// slot keys or transaction bindings, and revisions that differ from the request.
 pub(super) fn transaction(
-    observed: &SelectedObservation<'_>,
+    physical: &PhysicalReads<'_>,
     control: &Path,
     revision: u64,
 ) -> Result<(OwnershipSlot, PublicationTransaction), StoreFailure> {
     let key = format!("publication/commits/{revision}");
-    let bytes = physical(observed, control, &key)?;
+    let bytes = physical.bytes(control, &key)?;
     let commit = PublicationCommit::decode(bytes).map_err(|_| denied())?;
-    let proposal = physical(observed, control, &commit.transaction_key)?;
+    let proposal = physical.bytes(control, &commit.transaction_key)?;
     commit
         .check_transaction(&key, proposal)
         .map_err(|_| denied())?;
@@ -144,7 +130,8 @@ pub(super) fn resolve(
     {
         return Err(denied());
     }
-    let (genesis, genesis_transaction) = transaction(observed, control, 0)?;
+    let physical = PhysicalReads::new(observed);
+    let (genesis, genesis_transaction) = transaction(&physical, control, 0)?;
     if registration.genesis != Some(genesis.digest)
         || genesis_transaction.old.is_some()
         || genesis_transaction.predecessor.is_some()
@@ -171,7 +158,7 @@ pub(super) fn resolve(
     .map_err(|_| denied())?
     .checked_add(1)
     .ok_or_else(denied)?;
-    let (owner, owner_transaction) = transaction(observed, control, revision)?;
+    let (owner, owner_transaction) = transaction(&physical, control, revision)?;
     authorization
         .check_owner_slot(&owner)
         .map_err(|_| denied())?;

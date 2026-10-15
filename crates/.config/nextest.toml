@@ -26,13 +26,14 @@ filter = 'package(terrane) & (test(gc::runner::copied_retirement_tests::) | test
 threads-required = "num-test-threads"
 
 # This recovery stress case discovers 4,100 canonical trash families and selects
-# at least 33 durable events after a genuine sixty-second barrier. Its native
-# trace spends about 77 seconds before reconciliation and 11-12 seconds on each
-# initial progress publication. Allow a bounded fifteen-minute test process;
-# all collector, lease, commit and G/D deadlines and completion checks stay live.
+# at least 33 durable events after a genuine sixty-second barrier. Its complete
+# nontraced release run passes in 801 seconds; separate attempts reach the
+# fifteen-minute process limit. Allow a finite thirty-minute process for measured
+# runtime variation; all collector, lease, commit and G/D deadlines and completion
+# checks stay live.
 [[profile.default.overrides]]
 filter = 'package(terrane) & test(=gc::runner::permanent_local_tests::recovery::permanent_local_pass_reclaims_pack_index_and_all_observed_trash_cycles)'
-slow-timeout = { period = "60s", terminate-after = 15 }
+slow-timeout = { period = "60s", terminate-after = 30 }
 
 # This fault case keeps the pack through its first failed reclaim, then performs
 # genuine pack and trash recovery after a sixty-second ownership barrier. Its
@@ -67,6 +68,11 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 filter = 'package(terrane) & test(=gc::runner::permanent_local_tests::restore::permanent_local_restore_preserves_fresh_serving_quarantine_and_unrelated_retirement)'
 slow-timeout = { period = "60s", terminate-after = 3 }
 
+# Authorized-only cancellation performs the same full deletion barrier and
+# repeated durable restore/reopen work. Its isolated unchanged release run takes
+# 107 seconds, while the full package run reaches the default 120-second limit;
+# include it in the finite five-minute local-deletion allowance below.
+#
 # The ten native local-deletion cases include real grace waits and repeated
 # durable fault/recovery prefixes. Their owning Nix run measured 100-210 seconds
 # per case. Reserve all test slots and bound each runner process to five minutes;
@@ -89,6 +95,7 @@ package(terrane) & (
   test(=gc::runner::tests::local_deletion::recovery::cancelled_waiter_retains_exclusion_until_worker_then_fresh_collector_finishes) |
   test(=gc::runner::tests::local_deletion::recovery::changed_current_fence_reconciles_retained_index_after_container_absence) |
   test(=gc::runner::tests::local_deletion::recovery::restore_durably_cancels_exact_local_owner_before_clearing_exclusion) |
+  test(=gc::runner::tests::local_deletion::recovery::restore_durably_cancels_authorized_only_local_intent_before_clearing_exclusion) |
   test(=gc::runner::tests::local_deletion::recovery::missing_trash_crash_requires_fresh_retirement_and_full_d_before_done) |
   test(=gc::runner::tests::source_carry::post_done::ordinary::ordinary_source_and_original_survive_done_reopen_and_zero_node_cold_fork) |
   test(=gc::runner::tests::source_carry::post_done::imported::foreign_used_view_and_original_survive_done_reopen_and_zero_node_cold_fork) |
@@ -113,6 +120,15 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 # commit, grace, deletion, retention and live lease clocks remain unchanged.
 [[profile.default.overrides]]
 filter = 'package(terrane) & test(=gc::runner::walk::tests::native::overlays::signed_overlay_layer_ancestry_survives_collection_and_reopen)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# Indexed overlay replay checks genuine publications, independent index bytes,
+# reopen, reversed inputs and refusal paths. Its unchanged isolated release run
+# completes in 107 seconds; the full package run reaches the default 120-second
+# limit. Allow a finite third runner minute without changing fixture clocks,
+# production deadlines, workloads or assertions.
+[[profile.default.overrides]]
+filter = 'package(terrane) & test(=gc::runner::walk::tests::native::overlays::indexed_signed_overlay_layer_replays_exact_output)'
 slow-timeout = { period = "60s", terminate-after = 3 }
 
 # These native collector matrices complete six fault or handoff fixtures, or

@@ -5,8 +5,8 @@
 //! current checks; it never ends permanent ownership or covers a late instance.
 
 use super::super::{
-    MetadataStamp, NativeEffectFailure, NativeOpenedDirectory, ParentFence, Path, PathBuf, Plan,
-    Worker, open_native,
+    MetadataStamp, NamedFence, NativeEffectFailure, NativeOpenedDirectory, ParentFence, Path,
+    PathBuf, Plan, Worker, open_native,
 };
 use super::NativePermanentObservation;
 use crate::selected_bridge::native_permanent_local::CheckedPermanentReclaim;
@@ -129,6 +129,22 @@ pub(super) fn parent(worker: &Worker, target: &Path) -> io::Result<NativeOpenedD
         .names
         .iter()
         .find(|name| name.path == path)
+        .ok_or_else(|| io::Error::other("permanent sync parent is not retained"))?;
+    parent_from_recipe(worker, target, fence)
+}
+
+/// Opens and freshly checks the original parent selected by a fixed recipe index.
+///
+/// # Errors
+/// Refuses a recipe for another parent, changed instances or unsafe metadata.
+pub(super) fn parent_from_recipe(
+    worker: &Worker,
+    target: &Path,
+    fence: &NamedFence,
+) -> io::Result<NativeOpenedDirectory> {
+    let path = target
+        .parent()
+        .filter(|path| *path == fence.path)
         .ok_or_else(|| io::Error::other("permanent sync parent is not retained"))?;
     fence.check(&worker.projection.exclusions)?;
     let file = open_native(path, true)?;

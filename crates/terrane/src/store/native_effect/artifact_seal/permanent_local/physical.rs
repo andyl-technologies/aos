@@ -6,6 +6,7 @@
 
 use super::super::{FencePolicy, MetadataStamp, NativeExclusion, ParentFence, Worker};
 use super::super::{absent_name, check_opened_name, open_native};
+use super::recipes::Recipes;
 use crate::store::native_effect::check_parents;
 use std::fs::File;
 use std::io;
@@ -55,24 +56,17 @@ impl Leaf {
     ///
     /// # Errors
     /// Refuses missing retained ancestry, unsafe leaves, replacements and I/O failures.
-    pub(super) fn capture(worker: &Worker, path: PathBuf, owner: u32) -> io::Result<Self> {
+    pub(super) fn capture(
+        worker: &Worker,
+        recipes: &Recipes,
+        path: PathBuf,
+        owner: u32,
+    ) -> io::Result<Self> {
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::other("permanent residue lacks parent"))?;
-        let fence = worker
-            .projection
-            .names
-            .iter()
-            .find(|name| name.path == parent)
-            .or_else(|| {
-                parent.ancestors().find_map(|ancestor| {
-                    worker
-                        .projection
-                        .names
-                        .iter()
-                        .find(|name| name.path == ancestor)
-                })
-            })
+        let fence = recipes
+            .ancestor(&worker.projection, parent)
             .ok_or_else(|| io::Error::other("permanent residue ancestry was not retained"))?;
         fence.check(&worker.projection.exclusions)?;
         if fence.path != parent {
@@ -86,7 +80,7 @@ impl Leaf {
                 ));
             }
             let anchor = fence.path.join(first);
-            let read = worker.projection.exact(&anchor, None)?;
+            let read = recipes.exact(&worker.projection, &anchor, None)?;
             if !matches!(read.policy, FencePolicy::Payload { owner: actual } if actual == owner) {
                 return Err(io::Error::other(
                     "permanent missing ancestor lacks current absence",

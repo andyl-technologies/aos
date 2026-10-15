@@ -4,7 +4,7 @@
 //! selecting transaction and its predecessor. A cache or an isolated public
 //! delta cannot certify accumulated duties or completion.
 
-use super::{CheckedPermanentLocalOwner, denied, selection};
+use super::{CheckedPermanentLocalOwner, denied, physical::PhysicalReads, selection};
 use crate::bucket::BucketBinding;
 use crate::bucket::publication::receipts::RecordRead;
 use crate::store::{LocalFs, StoreFailure};
@@ -172,8 +172,10 @@ pub(crate) async fn selected<F: LocalFs + BucketBinding>(
     let mut events = Vec::new();
     let mut reads = Vec::new();
     let mut latest: Option<RecordPointer> = None;
+    let physical = PhysicalReads::new(observed);
     for revision in owner.owner().revision..=observed.stamp().0 {
-        let (_, transaction) = selection::transaction(observed, owner.backend_control(), revision)?;
+        let (_, transaction) =
+            selection::transaction(&physical, owner.backend_control(), revision)?;
         let Some(change) = transaction
             .changes
             .iter()

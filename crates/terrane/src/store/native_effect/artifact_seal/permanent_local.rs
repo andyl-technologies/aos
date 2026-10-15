@@ -7,6 +7,9 @@
 #[path = "permanent_local/physical.rs"]
 mod physical;
 
+#[path = "permanent_local/recipes.rs"]
+mod recipes;
+
 #[path = "permanent_local/walk.rs"]
 mod walk;
 

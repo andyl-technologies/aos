@@ -125,6 +125,27 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
+
+The 2026-10-15 qualification candidate `c4e44d6208` has independently reviewed
+passing outputs for 87 of the 89 current gates, including every store gate,
+all 183 index-maintenance selections, and the complete collector gate. Its
+strict native Clippy/rustdoc checks and application test-target compilation
+also pass. Its full production package run fails: 1,926 tests pass and two
+reach the default 120-second limit, with none skipped. The timed-out cases
+are authorized-only local-intent cancellation and indexed overlay replay.
+Separate uninstrumented executions of the exact retained release binary pass
+all their assertions in 107.24 and 107.04 seconds respectively. These isolated
+passes do not replace the failed full-package result or establish its cause.
+
+The preparatory trunk now includes the reviewed permanent-observation lookup
+changes from that candidate. Authorized-only cancellation joins the existing
+five-minute local-deletion runner group; indexed overlay replay receives a
+finite three-minute allowance. These changes preserve fixtures, assertions,
+collector and lease clocks, publication deadlines and test selection. The
+corrected trunk requires a fresh full qualification before formal task merges
+or acceptance. The unchanged earlier feature matrix continues independently;
+its first native profile passes all 1,149 tests with none failed or ignored.
+T1 remains open at eight accepted tasks; T2 and branch work remain deferred.
 Parallel worklines cover codec and domain conformance, index lookup, collector
 lifetimes, permanent recovery, growing-index source acquisition, SDK completion
 and derived-record verification. Separate workers now isolate retirement-barrier
@@ -7602,6 +7623,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection.
+  Current release checkpoint: the private ordered history and recipe lookups
+  pass their production builds and eight focused regressions. Their composed
+  source passes strict Clippy and private rustdoc for all three supported
+  profiles, plus compilation of all application test targets. A complete
+  nontraced release run of the 4,100-family recovery case passes in 800.872
+  seconds with a finite 1,800-second diagnostic runner allowance, including
+  final reclamation, selected lease renewals, ownership and actual reopen
+  assertions. Earlier 900-second timeouts remain failed. The exact case's
+  runner allowance is calibrated to thirty minutes for measured headroom;
+  workload, assertions and all production clocks remain unchanged. Fresh
+  qualification of the committed configuration and full current gate set
+  remains required; this task and the milestone remain open.
   Source review identifies a GC-6/GC-7 gap: a broader parent cutoff for the
   same fully expanded commit and proof occurrence repeats its own metadata
   expansion. Only newly eligible parent edges require another traversal.
