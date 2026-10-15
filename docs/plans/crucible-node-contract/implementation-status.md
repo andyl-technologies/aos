@@ -52,8 +52,8 @@ set. This checkpoint has no dependency on subsequent Core changes.
 ### Application compilation
 
 The production compiler build and installed compiler verification pass. The
-refreshed mandatory application-target gate passes for the pre-dedup
-original-report checkpoint, compiling 167 test targets across
+refreshed mandatory application-target gate passes for the current
+original-report, deduplication and ARM-source checkpoint, compiling 167 test targets across
 all 48 selected application roots, including 69 integration targets. Independent
 verification checks the actual compiler messages, captured source, artifact
 roles and registered output. This gate compiles tests without executing them;
@@ -92,8 +92,14 @@ complete birth-event archive was not retained for independent recomputation.
 
 Earlier separately qualified x86/AArch64 model profiles exercise source removal,
 two fresh continuations, resource-root relocation and fresh recapture. Those
-profile-specific results do not establish full Linux preservation. The new ARM
-Linux boot check remains unqualified.
+profile-specific results do not establish full Linux preservation.
+
+The ARM Linux check also passes two fresh native boots. Both reach the two PID1
+markers at tick 201,523,590,000 with 12,952,448 callbacks and identical
+18,858-byte consoles. Installed verification checks both receipts and consoles,
+the source copies and registered outputs. Loader geometry and console controls
+pass. These results qualify the selected Linux/PID1 workload; common-node
+readiness, capture, restoration and complete device parity remain outstanding.
 
 ## Work in progress
 
@@ -106,18 +112,24 @@ startup failures, and the archive case also exceeds 120 seconds in isolation.
 These failures remain unresolved qualification failures; this stage is
 uncommitted.
 
-The startup fixture selects a 64 KiB negotiated message window whose conservative
-report projections exceed its 512 MiB policy. That policy correctly refuses.
-A separately configured positive fixture and an explicit original-window
-negative are being checked without reducing production accounting or raising
-that policy.
+The startup fixture's conservative report projections exceed its 512 MiB policy.
+An actual census at a 16 KiB negotiated message window projects 636,395,099
+bytes (606.9 MiB): 14,468,229 holder bytes, 20,686,433 source bytes, 485,739,905
+report-purpose bytes and a 115,500,532-byte aggregate Core/finalization residual.
+The diagnostic passes and confirms refusal after restoring the original 512 MiB
+policy. The positive test fixture now selects a finite 768 MiB policy and passes
+normal type checking; its corrected runtime cases remain unrun. The explicit
+64 KiB-window/512 MiB negative and production accounting remain intact.
 
-The archive test repeatedly hashes actual measured files. A proposed optimization
+The archive test repeatedly hashes actual measured files. A committed optimization
 shares completed full hashes of exact aliases within one validation pass while
 retaining every descriptor/path fence and sticky refusal. The next pass hashes
 again. Four new controls cover aliases, distinct inodes, full content pins and
-observed drift. The change is imported but uncompiled and unrun; no performance
-gain is claimed yet.
+observed drift. All four pass as part of an isolated 26-control daemon run,
+which also covers the two frame-window controls. Ten aliases require one full
+measurement per pass. The complete daemon cohort still fails its five startup
+cases and times out in archive validation; profiling that case remains necessary.
+No wall-time gain is claimed for the deduplication change.
 
 Further source work covers original allocation admission before native startup,
 full Prepare/report publication, same-owner query budgets, the ordinary Clock
@@ -140,8 +152,10 @@ including:
 - Paced KVM qualification. Its selected CREATE still refuses before allocation,
   with only one of eleven required coverage bits implemented. Complete
   DMTCP/kernel qualification also remains outstanding.
-- Resolution of twenty retained provider Clippy findings and the four-vCPU ABI
-  timer-deadline divergence.
+- A clean final strict Clippy run. The current run stops at 59 provider errors,
+  mostly unused methods and fields awaiting their production callers; deeper
+  crates remain unchecked. The four-vCPU ABI timer-deadline divergence also
+  remains unresolved.
 - Quiet final Linux comparisons against fresh origin/master, plus same-binary
   TCG+icount versus SIM with both set to 50 ps/instruction.
 
