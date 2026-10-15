@@ -220,3 +220,23 @@ impl Serialize for TransferOwnedPolicyView<'_> {
         }
     }
 }
+
+impl Native5Policy {
+    pub(crate) fn authenticate_prepare_startup_header_data(
+        &self,
+        original: &Envelope,
+    ) -> Result<(), ProviderError> {
+        if self.complete_restore_selection
+            != Some(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
+        {
+            return Err(ProviderError::Correlation(
+                "native Prepare startup selection",
+            ));
+        }
+        crate::connection::authenticate_original_native_prepare_header_data(
+            &self.selection,
+            self.fresh_restore_allocation_selection().is_some(),
+            original,
+        )
+    }
+}

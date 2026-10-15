@@ -6,6 +6,7 @@
 //! The resulting proof enables only the native ACK mechanism; complete graph,
 //! Arm, Capture and restoration admission remain independent.
 
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use std::os::unix::fs::MetadataExt;
 
 use super::*;
@@ -28,6 +29,8 @@ use crucible_node_provider::{
 // originals remain separately charged at the complete allocation boundary.
 #[path = "association/complete_restore.rs"]
 mod complete_restore;
+#[path = "association/fresh_restore_host.rs"]
+mod fresh_restore_host;
 #[path = "association/restore_transfer_banks.rs"]
 mod restore_transfer_banks;
 pub use complete_restore::PacketCompleteRestorePreparation;
@@ -107,22 +110,30 @@ impl OriginalAckPeerAssociation {
     }
 
     pub(super) fn allocated_bank_bytes(&self) -> Result<usize, OperationFailure> {
+        self.allocated_bank_bytes_with_error::<OperationFailure>()
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn allocated_bank_bytes_with_error<
+        E: StorageError,
+    >(
+        &self,
+    ) -> Result<usize, E> {
         let existing = self.banks.iter().try_fold(0usize, |sum, bank| {
             sum.checked_add(bank.capacity())
-                .ok_or_else(|| refused("ACK association capacity overflow"))
+                .ok_or_else(|| E::limit("ACK association capacity overflow"))
         })?;
         let restore = self
             .restore
             .as_ref()
-            .map_or(Ok(0), |restore| restore.allocated_bytes())?;
+            .map_or(Ok(0), |restore| restore.allocated_bytes_with_error::<E>())?;
         let transfer = self
             .restore_transfer_banks
             .as_ref()
-            .map_or(Ok(0), |banks| banks.allocated_bytes())?;
+            .map_or(Ok(0), |banks| banks.allocated_bytes_with_error::<E>())?;
         existing
             .checked_add(restore)
             .and_then(|bytes| bytes.checked_add(transfer))
-            .ok_or_else(|| refused("complete restore association capacity overflow"))
+            .ok_or_else(|| E::limit("complete restore association capacity overflow"))
     }
 
     fn emitter(&self) -> Result<&OriginalCanonicalBlobAckEmitter, OperationFailure> {
@@ -1023,6 +1034,14 @@ impl OriginalAckPeerAssociation {
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_reserved_prebirth_data(
         &self,
     ) -> Result<(), OperationFailure> {
+        self.authenticate_reserved_prebirth_data_with_error::<OperationFailure>()
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn authenticate_reserved_prebirth_data_with_error<
+        E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
+    >(
+        &self,
+    ) -> Result<(), E> {
         let Self {
             restore,
             restore_transfer_banks,
@@ -1058,13 +1077,15 @@ impl OriginalAckPeerAssociation {
             || completed_mechanism.get()
             || banks.iter().any(|bank| !bank.is_empty())
         {
-            return Err(refused("reserved prebirth ACK association is already used"));
+            return Err(E::refused(
+                "reserved prebirth ACK association is already used",
+            ));
         }
         if let Some(restore) = restore {
-            restore.authenticate_reserved_prebirth_data()?;
+            restore.authenticate_reserved_prebirth_data_with_error::<E>()?;
         }
         if let Some(transfer) = restore_transfer_banks {
-            transfer.authenticate_reserved_prebirth_data()?;
+            transfer.authenticate_reserved_prebirth_data_with_error::<E>()?;
         }
         Ok(())
     }

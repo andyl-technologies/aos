@@ -55,6 +55,8 @@ impl PacketWorldHostSupervisor {
         let native: [Box<dyn CnpSemanticProcessSlot>; 3] = std::array::from_fn(|member| {
             Box::new(WorldNativeSlot {
                 original: NativeSlot {
+                    process: std::process::id(),
+                    thread: std::thread::current().id(),
                     mailbox: self.mailboxes[member].clone(),
                     transferred: false,
                 },

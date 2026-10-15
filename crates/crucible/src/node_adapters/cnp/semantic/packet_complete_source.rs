@@ -7,6 +7,7 @@
 
 use super::packet_connected_source::*;
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crate::{node_contract::*, node_scheduling::*};
 use crucible_node_contract::*;
 use crucible_node_provider::{
@@ -282,6 +283,34 @@ impl PacketCompleteSemanticSource {
     }
 
     // Raw origin precedes the original source's cells, controller and SDK reads.
+    /// Quotes fixed Source/read component observation layouts before a walk.
+    ///
+    /// This conservative sum includes actual metadata/scanner view layouts and
+    /// the nested read counter separately from an enclosing preparation counter.
+    /// It certifies no compiler/recursive frames, allocator or kernel resources.
+    pub fn retained_requested_storage_precredit_scratch_data() -> usize {
+        Self::original_report_startup_observer_scratch_data()
+            + NodeRuntime::capture_opaque_owner_observer_scratch_data()
+            + CnpSemanticSourceRead::retained_requested_storage_precredit_scratch_data()
+            + std::mem::size_of::<[Option<super::retained_storage::CnpRetainedStorageReport>; 2]>()
+            + 3 * std::mem::size_of::<retained_storage::PacketCompleteSourceRetainedStorage>()
+            + std::mem::size_of::<[usize; 9]>()
+    }
+
+    pub(super) fn storage_origin_with_error<E: StorageError>(&self) -> Result<(), E> {
+        if self.process != std::process::id() {
+            return Err(E::origin(
+                "complete source belongs to another creator process",
+            ));
+        }
+        if self.thread != std::thread::current().id() {
+            return Err(E::origin(
+                "complete source belongs to another creator thread",
+            ));
+        }
+        Ok(())
+    }
+
     fn ensure_origin(&self) -> Result<(), OperationFailure> {
         if self.process != std::process::id() {
             return Err(refused(
@@ -383,6 +412,14 @@ impl PacketCompleteSemanticSource {
 }
 
 impl CnpSemanticSource for PacketCompleteSemanticSource {
+    fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, crate::node_contract::RuntimeError> {
+        self.original_complete_retained_nested_precredit_data(maximum)
+            .map(Some)
+    }
+
     fn retained_requested_storage_data(
         &self,
         maximum: usize,
@@ -1188,13 +1225,22 @@ impl PacketCompleteSemanticSource {
         &self,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
-        self.ensure_origin()?;
+        self.original_complete_static_lineage_storage_data_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn original_complete_static_lineage_storage_data_with_error<
+        E: StorageError,
+    >(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        self.storage_origin_with_error::<E>()?;
         match &self.original {
             CompletePacketOriginal::Producer(_) => Ok(0),
-            CompletePacketOriginal::Reactive(source) => retained_values::sum(
+            CompletePacketOriginal::Reactive(source) => retained_values::sum_with_error::<E, _>(
                 [
-                    source.complete_input_static_storage()?,
-                    source.complete_retained_lineage_storage(maximum)?,
+                    source.complete_input_static_storage_with_error::<E>()?,
+                    source.complete_retained_lineage_storage_with_error::<E>(maximum)?,
                 ],
                 maximum,
             ),
@@ -1213,6 +1259,9 @@ mod retained_registry;
 
 #[path = "packet_complete_source/retained_storage.rs"]
 mod retained_storage;
+
+#[path = "packet_complete_source/storage_error.rs"]
+pub(in crate::node_adapters::cnp::semantic) mod storage_error;
 pub use retained_storage::PacketCompleteSourceRetainedStorage;
 
 #[path = "packet_complete_source/complete_launch.rs"]

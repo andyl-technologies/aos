@@ -8,6 +8,9 @@ use std::{cell::Cell, rc::Rc};
 #[path = "current/retained_storage.rs"]
 mod retained_storage;
 
+#[path = "current/fresh_current.rs"]
+mod fresh_current;
+
 use crucible_node_contract::U64;
 use crucible_node_provider::{ProviderError, client::CnpRegistrarRead};
 

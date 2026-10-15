@@ -481,6 +481,19 @@ pub trait RuntimeCustodySlot {
         Ok(None)
     }
 
+    /// Names explicit fixed scratch for the original typed storage observation.
+    ///
+    /// Unknown erased slots refuse. This term covers named counter/borrow
+    /// headers, not compiler frames or a physical allocator peak.
+    ///
+    /// # Errors
+    /// Refuses foreign creator custody or an unsupported original slot.
+    fn retained_requested_storage_precredit_scratch_data(
+        &self,
+    ) -> Result<Option<usize>, RuntimeError> {
+        Ok(None)
+    }
+
     /// Checks that the reserved capacity belongs to this exact world and policy.
     ///
     /// # Errors

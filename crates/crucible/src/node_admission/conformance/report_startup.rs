@@ -383,6 +383,19 @@ impl OriginalReportStartupMember {
             .authenticate_original_report_startup_member(plan.evidence(), &scope)
     }
 
+    pub(crate) fn retained_shared_storage_precredit_data(
+        &self,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        self.plan
+            .retained_allocation_bytes()
+            .checked_add(
+                crate::node_contract::NodeRuntime::capture_shared_allocation_storage::<
+                    PacketCompleteSemanticSource,
+                >(),
+            )
+            .ok_or(crate::node_contract::RuntimeError::ResourceLimit)
+    }
+
     pub(crate) fn retained_shared_storage_data(&self) -> Result<usize, EvidenceError> {
         // Both weak owners retain their real allocation after the strong owner
         // drops. Live strong-row conjunction may conservatively count it again.

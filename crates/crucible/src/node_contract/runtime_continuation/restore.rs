@@ -207,6 +207,58 @@ impl PreparedRuntimeRestore {
         })
     }
 
+    pub(crate) fn original_publication_data(&self) -> impl serde::Serialize + '_ {
+        // Exhaustive concrete destructures keep the durable data contract tied
+        // to every retained continuation field, rather than a guessed DTO.
+        let Self {
+            target,
+            snapshot,
+            native,
+            runtime_input_acknowledgements,
+        } = self;
+        let VerifiedNativeContinuation {
+            target: native_target,
+            scheduler_hash,
+            reservations,
+            input_batches,
+            input_acknowledgements,
+            proof,
+            epochs,
+        } = native;
+        let epochs = epochs.as_ref().map(|value| {
+            let crate::node_scheduling::SchedulingEpochEvidence {
+                policy,
+                rows,
+                objects,
+            } = value;
+            (policy, rows, objects)
+        });
+        (
+            (
+                &target.generation,
+                &target.activation_id,
+                &target.world_binding_hash,
+                &target.owners,
+                &target.boundary,
+            ),
+            snapshot,
+            (
+                &native_target.generation,
+                &native_target.activation_id,
+                &native_target.world_binding_hash,
+                &native_target.owners,
+                &native_target.boundary,
+            ),
+            scheduler_hash,
+            reservations,
+            input_batches,
+            input_acknowledgements,
+            proof,
+            epochs,
+            runtime_input_acknowledgements,
+        )
+    }
+
     /// Borrows accepted native continuity proof without exposing execution authority.
     pub fn native_continuation(&self) -> &VerifiedNativeContinuation {
         &self.native

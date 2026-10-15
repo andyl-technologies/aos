@@ -6,16 +6,13 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    mem::{align_of_val, size_of, size_of_val},
+    mem::{align_of, align_of_val, size_of, size_of_val},
     rc::Rc,
 };
 
 pub(crate) use crate::node_contract::runtime::RuntimeOwnedStorage as OwnedStorage;
 
-use crate::{
-    node_contract::{NodeRuntime, RuntimeError},
-    node_state::{borrowed_btree_map_requested_storage, borrowed_btree_set_requested_storage},
-};
+use crate::node_contract::{NodeRuntime, RuntimeError};
 
 const SHARED_ROOTS: usize = 512;
 
@@ -273,17 +270,26 @@ impl RetainedRuntimeCounter {
     }
 
     pub(crate) fn map<K, V>(&mut self, value: &BTreeMap<K, V>) -> Result<(), RuntimeError> {
-        self.add(
-            borrowed_btree_map_requested_storage(value, self.remaining())
-                .map_err(|_| RuntimeError::ResourceLimit)?,
-        )
+        let entry_bytes = size_of::<K>()
+            .checked_add(size_of::<V>())
+            .ok_or(RuntimeError::ResourceLimit)?;
+        self.add(NodeRuntime::capture_protocol_tree_storage(
+            1,
+            value.len(),
+            entry_bytes,
+            align_of::<K>().max(align_of::<V>()),
+            self.remaining(),
+        )?)
     }
 
     pub(crate) fn set<T>(&mut self, value: &BTreeSet<T>) -> Result<(), RuntimeError> {
-        self.add(
-            borrowed_btree_set_requested_storage(value, self.remaining())
-                .map_err(|_| RuntimeError::ResourceLimit)?,
-        )
+        self.add(NodeRuntime::capture_protocol_tree_storage(
+            1,
+            value.len(),
+            size_of::<T>(),
+            align_of::<T>(),
+            self.remaining(),
+        )?)
     }
 
     pub(crate) fn owned<T: OwnedStorage + ?Sized>(

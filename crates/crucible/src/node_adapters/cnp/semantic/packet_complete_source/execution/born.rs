@@ -6,6 +6,7 @@
 //! codecs still run before signed archive admission or any fresh installation.
 
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 
 /// Names only the object roles created by this concrete original capture path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,21 +39,28 @@ impl OriginalBornObject {
     }
 
     pub(super) fn retained_storage(&self, maximum: usize) -> Result<usize, OperationFailure> {
-        let mut bytes = retained_values::sum(
+        self.retained_storage_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn retained_storage_with_error<E: StorageError>(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        let mut bytes = retained_values::sum_with_error::<E, _>(
             [
-                NodeRuntime::capture_reference_storage(&self.reference).map_err(unknown)?,
+                NodeRuntime::capture_reference_storage(&self.reference).map_err(E::runtime)?,
                 self.dependencies
                     .capacity()
                     .checked_mul(size_of::<ContentRef>())
-                    .ok_or_else(|| refused("original born adjacency slots overflow"))?,
+                    .ok_or_else(|| E::refused("original born adjacency slots overflow"))?,
             ],
             maximum,
         )?;
         for dependency in &self.dependencies {
-            bytes = retained_values::sum(
+            bytes = retained_values::sum_with_error::<E, _>(
                 [
                     bytes,
-                    NodeRuntime::capture_reference_storage(dependency).map_err(unknown)?,
+                    NodeRuntime::capture_reference_storage(dependency).map_err(E::runtime)?,
                 ],
                 maximum,
             )?;

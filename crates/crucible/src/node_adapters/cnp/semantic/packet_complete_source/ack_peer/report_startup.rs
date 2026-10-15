@@ -7,6 +7,7 @@
 
 use super::super::*;
 use super::OriginalAckPeerBirth;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crate::node_admission::{OriginalReportStartupMember, StartupRows};
 use crucible_node_provider::{
     reference_packet::service::{
@@ -27,6 +28,15 @@ pub(super) struct OriginalReportStartupFinalization {
 
 impl OriginalReportStartupFinalization {
     pub(super) fn retained_storage_data(&self, maximum: usize) -> Result<usize, OperationFailure> {
+        self.retained_storage_data_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn retained_storage_data_with_error<
+        E: StorageError,
+    >(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
         let Self {
             member,
             replacement,
@@ -34,19 +44,19 @@ impl OriginalReportStartupFinalization {
             additions,
             complete: _,
         } = self;
-        retained_values::sum(
+        retained_values::sum_with_error::<E, _>(
             [
                 replacement.capacity(),
                 body.as_ref()
-                    .map(|value| retained_values::value_storage(value, 0, maximum))
+                    .map(|value| retained_values::value_storage_with_error::<E>(value, 0, maximum))
                     .transpose()?
                     .unwrap_or(0),
                 additions
                     .as_ref()
-                    .map(|value| retained_values::value_storage(value, 0, maximum))
+                    .map(|value| retained_values::value_storage_with_error::<E>(value, 0, maximum))
                     .transpose()?
                     .unwrap_or(0),
-                member.retained_shared_storage_data().map_err(unknown)?,
+                E::member_headers(member)?,
             ],
             maximum,
         )
@@ -481,5 +491,31 @@ impl PacketCompleteSemanticSource {
             refused: birth.failed,
             boot_started: birth.boot_started.get(),
         })
+    }
+}
+
+impl OriginalAckPeerBirth {
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn original_fresh_query_key_data(
+        &self,
+    ) -> Result<&[u8; 32], crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        if self.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        if !self.ready
+            || self.failed
+            || !self.boot_started.get()
+            || !self.report_startup_required
+            || self
+                .report_startup
+                .as_ref()
+                .is_none_or(|state| !state.complete)
+        {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        Ok(&self.key)
     }
 }

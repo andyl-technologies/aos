@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::node_adapters::cnp::CnpSemanticSourceRead;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crucible_node_provider::protocol_snapshot::OriginalProtocolStorageFacts;
 
 pub(super) struct OriginalCompletePreconstruction {
@@ -197,10 +198,12 @@ impl PacketCompleteSemanticSource {
 }
 
 impl OriginalCompletePreconstruction {
-    pub(super) fn retained_native_read_storage_data(
+    pub(in crate::node_adapters::cnp::semantic) fn retained_native_read_storage_data_with_error<
+        E: StorageError,
+    >(
         &self,
         maximum: usize,
-    ) -> Result<super::super::retained_storage::CnpRetainedStorageReport, OperationFailure> {
-        self.native.retained_requested_storage_data(maximum)
+    ) -> Result<super::super::retained_storage::CnpRetainedStorageReport, E> {
+        E::read(&self.native, maximum)
     }
 }

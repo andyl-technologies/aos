@@ -6,7 +6,7 @@
 
 mod report_startup;
 mod retained;
-pub use report_startup::PacketCompleteReportStartupHolder;
+pub use report_startup::{PacketCompletePreparationConnection, PacketCompleteReportStartupHolder};
 
 use super::super::scope;
 use super::{

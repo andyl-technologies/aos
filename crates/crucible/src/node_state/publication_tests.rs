@@ -70,6 +70,7 @@ fn failed_complete_publication_reconciles_original_bytes_without_scalar_fallback
             status: None,
             publication: &mut knowledge,
             prepared: &mut retained,
+            retain_first: false,
         };
         assert_eq!(
             recording.publish_complete(&original, &prepared),
@@ -115,6 +116,7 @@ fn uncertain_complete_retry_retains_first_original_coordinator_object() {
             status: None,
             publication: &mut knowledge,
             prepared: &mut retained,
+            retain_first: false,
         };
         assert_eq!(
             recording.reconcile_complete(&original, &prepared),
@@ -163,6 +165,7 @@ fn publisher_unwind_retains_original_complete_bytes_and_uncertainty() {
             status: None,
             publication: &mut knowledge,
             prepared: &mut retained,
+            retain_first: false,
         };
         recording.publish_complete(&original, &prepared);
     }));

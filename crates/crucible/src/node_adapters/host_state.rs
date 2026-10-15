@@ -1500,3 +1500,6 @@ fn validate_rate_alarm_capture(
     }
     Ok(())
 }
+
+#[path = "host_state_requested_storage.rs"]
+mod requested_storage;

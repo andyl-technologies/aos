@@ -39,11 +39,12 @@ pub use capabilities::{
 };
 
 pub use conformance::{
-    CompleteArchiveCodeGraph, CompleteOriginalReportStartupAdmission,
-    ConformanceAdmissionAuthority, ConformanceGraph, ConformancePlanEvidence,
-    InstalledConformancePlan, OriginalReportStartupMemberScope, OriginalReportStartupPolicy,
-    OriginalReportStartupScope, OriginalReportStartupStorage, admit_complete_archive_code_graph,
-    admit_conformance_graph,
+    CompleteArchiveCodeGraph, CompleteOriginalFreshRestoreHostWindow,
+    CompleteOriginalReportStartupAdmission, ConformanceAdmissionAuthority, ConformanceGraph,
+    ConformancePlanEvidence, InstalledConformancePlan, OriginalFreshRestoreHostMemberScope,
+    OriginalFreshRestoreHostPolicy, OriginalFreshRestoreHostScope, OriginalFreshRestoreHostStorage,
+    OriginalReportStartupMemberScope, OriginalReportStartupPolicy, OriginalReportStartupScope,
+    OriginalReportStartupStorage, admit_complete_archive_code_graph, admit_conformance_graph,
 };
 
 pub use error::{AdmissionCode, AdmissionError, AdmissionStage, AdmissionSubject, EffectCertainty};

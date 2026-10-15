@@ -172,6 +172,7 @@ impl InstalledNodeCatalog {
                 },
                 label: None,
                 capabilities: Some(resolved),
+                normal_clock: None,
             },
         )?;
         drop(prepared.realization);

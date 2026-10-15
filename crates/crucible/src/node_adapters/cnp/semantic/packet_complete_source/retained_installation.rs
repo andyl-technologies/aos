@@ -6,6 +6,7 @@
 //! this exact component is not a successful Capture geometry or permission.
 
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crucible_node_provider::retained_metadata::{
     RetainedCompleteSourceDefinition, RetainedCompleteSourceMetadata,
 };
@@ -32,11 +33,20 @@ impl PacketCompleteSemanticSource {
         &self,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
-        self.ensure_origin()?;
+        self.original_complete_installation_storage_data_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn original_complete_installation_storage_data_with_error<
+        E: StorageError,
+    >(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        self.storage_origin_with_error::<E>()?;
         let (definition, coordinator, activation) = match &self.original {
             CompletePacketOriginal::Producer(source) => {
                 let (definition, coordinator, activation) =
-                    source.complete_retained_declaration_parts()?;
+                    source.complete_retained_declaration_parts_with_error::<E>()?;
                 (
                     RetainedCompleteSourceDefinition::Program(definition),
                     coordinator,
@@ -45,7 +55,7 @@ impl PacketCompleteSemanticSource {
             }
             CompletePacketOriginal::Reactive(source) => {
                 let (definition, coordinator, activation) =
-                    source.complete_retained_declaration_parts()?;
+                    source.complete_retained_declaration_parts_with_error::<E>()?;
                 (
                     RetainedCompleteSourceDefinition::Connected(definition),
                     coordinator,
@@ -74,8 +84,8 @@ impl PacketCompleteSemanticSource {
             coordinator,
             definition,
         };
-        let facts = view.observe_retained_metadata().map_err(unknown)?;
-        let typed = Self::complete_retained_metadata_storage_data(&facts, maximum)?;
+        let facts = view.observe_retained_metadata().map_err(E::unknown)?;
+        let typed = Self::complete_retained_metadata_storage_with_error::<E>(&facts, maximum)?;
         for facet in &installation.facets {
             match facet {
                 FacetKind::ExactExecution
@@ -94,29 +104,37 @@ impl PacketCompleteSemanticSource {
             .facets
             .capacity()
             .checked_mul(size_of::<FacetKind>())
-            .ok_or_else(|| refused("complete retained facets capacity overflow"))?;
-        sum(
+            .ok_or_else(|| E::refused("complete retained facets capacity overflow"))?;
+        sum_with_error::<E, _>(
             [
                 typed,
                 facets,
                 size_of::<PacketNative5CoordinatorInstallation>(),
-                activation_storage(activation, maximum)?,
+                activation_storage_with_error::<E>(activation, maximum)?,
             ],
             maximum,
         )
     }
 }
 
+#[cfg(test)]
 fn activation_storage(
     value: &SavedRuntimeActivation,
     maximum: usize,
 ) -> Result<usize, OperationFailure> {
+    activation_storage_with_error::<OperationFailure>(value, maximum)
+}
+
+pub(in crate::node_adapters::cnp::semantic) fn activation_storage_with_error<E: StorageError>(
+    value: &SavedRuntimeActivation,
+    maximum: usize,
+) -> Result<usize, E> {
     let owners = value
         .owners
         .capacity()
         .checked_mul(size_of::<OwnerIdentity>())
-        .ok_or_else(|| refused("retained activation owner capacity overflow"))?;
-    let mut retained = sum(
+        .ok_or_else(|| E::refused("retained activation owner capacity overflow"))?;
+    let mut retained = sum_with_error::<E, _>(
         [
             owners,
             value.activation_id.allocated_capacity(),
@@ -127,7 +145,7 @@ fn activation_storage(
         maximum,
     )?;
     for owner in &value.owners {
-        retained = sum(
+        retained = sum_with_error::<E, _>(
             [
                 retained,
                 owner.owner.allocated_capacity(),
@@ -139,12 +157,15 @@ fn activation_storage(
     Ok(retained)
 }
 
-fn sum<const N: usize>(terms: [usize; N], maximum: usize) -> Result<usize, OperationFailure> {
+fn sum_with_error<E: StorageError, const N: usize>(
+    terms: [usize; N],
+    maximum: usize,
+) -> Result<usize, E> {
     terms.into_iter().try_fold(0usize, |total, bytes| {
         total
             .checked_add(bytes)
             .filter(|total| *total <= maximum)
-            .ok_or_else(|| refused("complete installation requested storage exhausted"))
+            .ok_or_else(|| E::limit("complete installation requested storage exhausted"))
     })
 }
 

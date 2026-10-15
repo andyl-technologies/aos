@@ -9,6 +9,7 @@ use super::*;
 use crate::protocol_snapshot::PreparedArchivedProtocolMapping;
 use crate::reference_packet::service::complete_restore::transfer::*;
 use serde::Deserialize;
+use serde_json::Map;
 
 /// Borrows one actual phase-assigned restore original without moving its owners.
 #[must_use = "the exact original remains in its controller when this loan ends"]
@@ -229,21 +230,14 @@ impl CnpController {
         // This reset belongs only to creation of this previously absent phase.
         // Resume/seal/publish authenticate the stored cut and never call reset.
         let (sequence, cut) = self.session.begin_original_ack_admit(self.budget)?;
-        let original = Envelope {
-            protocol: "CNP/1".into(),
-            message: MessageKind::Request,
-            session_id: Nullable(Some(self.authority().session_id().clone())),
-            incarnation_id: Nullable(Some(self.authority().incarnation_id().clone())),
-            node_id: Nullable(Some(self.route.node.clone())),
-            execution_owner_id: Nullable(Some(self.route.execution_owner.clone())),
-            capture_owner_id: Nullable(None),
-            request_id: Nullable(Some(request_id)),
-            operation_id: Nullable(None),
+        let original = assigned_transfer_original(
+            self.authority(),
+            &self.route,
+            request_id,
             sequence,
-            method: Method::Begin,
             body,
             extensions,
-        };
+        );
         let final_maximum = crate::connection::serialized_credit(&original, maximum)?
             .checked_add(phase.proof_extension().len() + 3)
             .and_then(|n| n.checked_add(MAXIMUM_COMPLETE_RESTORE_TRANSFER_PROOF_BYTES))
@@ -545,4 +539,48 @@ fn refused() -> ProviderError {
 }
 fn credit() -> ProviderError {
     ProviderError::ResourceExhausted("original restore transfer bank credit")
+}
+
+/// Constructs the same assigned transfer header after the real issuer's guards.
+///
+/// This only moves/duplicates routing data. The caller retains all mapping,
+/// emitter, original phase, sequence/cut and subsequent proof checks.
+fn assigned_transfer_original(
+    authority: &crate::handshake::ConnectionAuthority,
+    route: &ControllerRoute,
+    request_id: Id,
+    sequence: U64,
+    body: Map<String, Value>,
+    extensions: Extensions,
+) -> Envelope {
+    Envelope {
+        protocol: "CNP/1".into(),
+        message: MessageKind::Request,
+        session_id: Nullable(Some(authority.session_id().clone())),
+        incarnation_id: Nullable(Some(authority.incarnation_id().clone())),
+        node_id: Nullable(Some(route.node.clone())),
+        execution_owner_id: Nullable(Some(route.execution_owner.clone())),
+        capture_owner_id: Nullable(None),
+        request_id: Nullable(Some(request_id)),
+        operation_id: Nullable(None),
+        sequence,
+        method: Method::Begin,
+        body,
+        extensions,
+    }
+}
+
+#[cfg(test)]
+impl CnpController {
+    /// Reuses the actual production header writer without issuing a phase owner.
+    pub(crate) fn original_assigned_transfer_envelope_fixture_data(
+        authority: &crate::handshake::ConnectionAuthority,
+        route: &ControllerRoute,
+        request_id: Id,
+        sequence: U64,
+        body: Map<String, Value>,
+        extensions: Extensions,
+    ) -> Envelope {
+        assigned_transfer_original(authority, route, request_id, sequence, body, extensions)
+    }
 }

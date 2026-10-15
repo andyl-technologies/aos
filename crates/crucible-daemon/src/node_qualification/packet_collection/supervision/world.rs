@@ -134,6 +134,8 @@ impl PacketWorldHostSupervisor {
         let native: [Box<dyn CnpSemanticProcessSlot>; 3] = std::array::from_fn(|member| {
             Box::new(WorldNativeSlot {
                 original: NativeSlot {
+                    process: std::process::id(),
+                    thread: std::thread::current().id(),
                     mailbox: self.mailboxes[member].clone(),
                     transferred: false,
                 },
@@ -395,6 +397,14 @@ struct WorldNativeSlot {
 }
 
 impl CnpSemanticProcessSlot for WorldNativeSlot {
+    fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, crucible::node_contract::RuntimeError> {
+        self.original
+            .retained_requested_storage_precredit_data(maximum)
+    }
+
     fn retained_requested_storage_data(
         &self,
         maximum: usize,

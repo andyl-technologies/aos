@@ -29,6 +29,7 @@ pub use confirmation::PacketNative5ConfirmationSelection;
 mod connected;
 mod native5;
 mod native5_policy;
+pub mod native_startup;
 pub use native5::{
     PacketNative5CaptureProfile, PacketNative5SourceLaunch, PacketNative5StorageLimits,
 };
@@ -342,3 +343,8 @@ pub(crate) fn prepared_blob_proof_codec_for_test(
 
 /// Defines inert fresh inactive allocation query/report grammar.
 pub mod fresh_restore_allocation;
+
+pub use ack_emitter::{
+    PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,
+    original_native_prepare_startup_storage_data,
+};

@@ -1,6 +1,7 @@
 //! Counts the actual Source Rc allocation and its independent inline Box value.
 
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use std::{
     mem::{align_of, size_of, size_of_val},
     rc::Rc,
@@ -27,24 +28,42 @@ impl PacketCompleteSemanticSource {
         self: &Rc<Self>,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
-        self.ensure_origin()?;
-        let nested = self.original_complete_nested_holder_storage_data(maximum)?;
+        self.original_complete_holder_storage_data_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn original_complete_holder_storage_data_with_error<
+        E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
+    >(
+        self: &Rc<Self>,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        self.storage_origin_with_error::<E>()?;
+        let nested = self.original_complete_nested_holder_storage_data_with_error::<E>(maximum)?;
         let root_header =
             NodeRuntime::capture_protocol_shared_header_storage(1, align_of::<Self>(), maximum)
-                .map_err(unknown)?;
-        retained_values::sum([size_of::<Self>(), root_header, nested], maximum)
+                .map_err(E::unknown)?;
+        retained_values::sum_with_error::<E, _>([size_of::<Self>(), root_header, nested], maximum)
     }
 
     pub(super) fn original_complete_nested_holder_storage_data(
         &self,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
-        self.ensure_origin()?;
+        self.original_complete_nested_holder_storage_data_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn original_complete_nested_holder_storage_data_with_error<
+        E: StorageError,
+    >(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        self.storage_origin_with_error::<E>()?;
         let underlying = match &self.original {
             CompletePacketOriginal::Producer(source) => size_of_val(source.as_ref()),
             CompletePacketOriginal::Reactive(source) => size_of_val(source.as_ref()),
         };
-        retained_values::sum(
+        retained_values::sum_with_error::<E, _>(
             [
                 underlying,
                 self.effect_receiver

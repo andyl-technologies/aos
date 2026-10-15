@@ -4,12 +4,25 @@
 //! latter includes partially retained issuer/codec/Hello owners on refusal, not
 //! merely the completed snapshot case. Repeated shared views receive no credit.
 
-use super::super::retained_values::sum;
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 
 impl PacketCompleteCaptureBanks {
+    #[cfg(test)]
     fn retained_requested_storage_data(&self, maximum: usize) -> Result<usize, OperationFailure> {
-        let mut bytes = sum([self.facts()?.total_bytes], maximum)?;
+        self.retained_requested_storage_data_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn retained_requested_storage_data_with_error<
+        E: StorageError,
+    >(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        let mut bytes = super::super::retained_values::sum_with_error::<E, _>(
+            [self.facts_with_error::<E>()?.total_bytes],
+            maximum,
+        )?;
         for reservation in self
             .semantic
             .iter()
@@ -18,11 +31,8 @@ impl PacketCompleteCaptureBanks {
             .chain(self.native_banks.iter().flatten())
             .chain(self.native_after_bank.iter())
         {
-            bytes = sum(
-                [
-                    bytes,
-                    reservation.retained_metadata_requested_storage_data()?,
-                ],
+            bytes = super::super::retained_values::sum_with_error::<E, _>(
+                [bytes, E::reservation_metadata(reservation)?],
                 maximum,
             )?;
         }
@@ -36,18 +46,21 @@ impl PacketCompleteCaptureBanks {
             .chain(self.native_objects.iter().flatten())
             .chain(self.native_after_object.iter())
         {
-            bytes = sum(
+            bytes = super::super::retained_values::sum_with_error::<E, _>(
                 [
                     bytes,
-                    NodeRuntime::capture_reference_storage(&object.reference).map_err(unknown)?,
+                    NodeRuntime::capture_reference_storage(&object.reference)
+                        .map_err(E::unknown)?,
                 ],
                 maximum,
             )?;
         }
 
         if let Some(snapshot) = &self.semantic_snapshot {
-            let report = snapshot.retained_metadata_requested_storage_data(maximum)?;
-            bytes = sum([bytes, report.complete_requested_bytes()?], maximum)?;
+            bytes = super::super::retained_values::sum_with_error::<E, _>(
+                [bytes, E::snapshot_metadata(snapshot, maximum)?],
+                maximum,
+            )?;
         }
         use crucible_node_provider::retained_metadata::RetainedCaptureProtocolData;
         for response in self.capture_response.iter().chain(
@@ -57,11 +70,11 @@ impl PacketCompleteCaptureBanks {
         ) {
             let metadata = RetainedCaptureProtocolData::Response(response)
                 .observe_retained_metadata()
-                .map_err(unknown)?;
-            bytes = sum(
+                .map_err(E::unknown)?;
+            bytes = super::super::retained_values::sum_with_error::<E, _>(
                 [
                     bytes,
-                    PacketCompleteSemanticSource::complete_retained_metadata_storage_data(
+                    PacketCompleteSemanticSource::complete_retained_metadata_storage_with_error::<E>(
                         &metadata, maximum,
                     )?,
                 ],
@@ -71,11 +84,11 @@ impl PacketCompleteCaptureBanks {
         if let Some((_, receipt)) = &self.confirmation_response {
             let metadata = RetainedCaptureProtocolData::AfterConfirmation(receipt)
                 .observe_retained_metadata()
-                .map_err(unknown)?;
-            bytes = sum(
+                .map_err(E::unknown)?;
+            bytes = super::super::retained_values::sum_with_error::<E, _>(
                 [
                     bytes,
-                    PacketCompleteSemanticSource::complete_retained_metadata_storage_data(
+                    PacketCompleteSemanticSource::complete_retained_metadata_storage_with_error::<E>(
                         &metadata, maximum,
                     )?,
                 ],
@@ -88,7 +101,9 @@ impl PacketCompleteCaptureBanks {
                 || self.settled_protocol.is_some()
                 || self.protocol_payload.is_some()
             {
-                return Err(refused("detached original host owner remains duplicated"));
+                return Err(E::refused(
+                    "detached original host owner remains duplicated",
+                ));
             }
             return Ok(bytes);
         }
@@ -99,23 +114,23 @@ impl PacketCompleteCaptureBanks {
         ) {
             (Some(reservation), None, None) => reservation
                 .original_retained_metadata_facts()
-                .map_err(unknown)?,
+                .map_err(E::unknown)?,
             (None, Some(snapshot), None) => snapshot
                 .original_retained_metadata_facts()
-                .map_err(unknown)?,
-            (None, None, Some((owner, _))) => {
-                owner.original_retained_metadata_facts().map_err(unknown)?
-            }
+                .map_err(E::unknown)?,
+            (None, None, Some((owner, _))) => owner
+                .original_retained_metadata_facts()
+                .map_err(E::unknown)?,
             _ => {
-                return Err(refused(
+                return Err(E::refused(
                     "retained capture protocol owner association differs",
                 ));
             }
         };
-        sum(
+        super::super::retained_values::sum_with_error::<E, _>(
             [
                 bytes,
-                PacketCompleteSemanticSource::complete_retained_metadata_storage_data(
+                PacketCompleteSemanticSource::complete_retained_metadata_storage_with_error::<E>(
                     &metadata, maximum,
                 )?,
             ],
@@ -147,15 +162,24 @@ impl PacketCompleteSemanticSource {
         &self,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
-        self.ensure_origin()?;
+        self.original_complete_capture_bank_storage_data_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn original_complete_capture_bank_storage_data_with_error<
+        E: StorageError,
+    >(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        self.storage_origin_with_error::<E>()?;
         let banks = self
             .capture_banks
             .try_borrow()
-            .map_err(|_| refused("retained capture banks already borrowed"))?;
+            .map_err(|_| E::refused("retained capture banks already borrowed"))?;
         banks
             .as_ref()
-            .ok_or_else(|| refused("retained capture banks absent"))?
-            .retained_requested_storage_data(maximum)
+            .ok_or_else(|| E::refused("retained capture banks absent"))?
+            .retained_requested_storage_data_with_error::<E>(maximum)
     }
 }
 

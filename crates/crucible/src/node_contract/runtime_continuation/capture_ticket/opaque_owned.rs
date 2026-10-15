@@ -564,3 +564,13 @@ mod tests {
         Ok(())
     }
 }
+
+impl NodeRuntime {
+    /// Quotes the concrete fixed opaque-owner observation bank and descriptor.
+    ///
+    /// This includes the twelve original shared slots before deduplication. It
+    /// does not certify compiler/recursive frames or physical allocator peaks.
+    pub(crate) fn capture_opaque_owner_observer_scratch_data() -> usize {
+        size_of::<RetainedCoreOwnerStorage<'_>>() + size_of::<RetainedCoreSharedAllocation>()
+    }
+}

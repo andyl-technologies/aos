@@ -36,7 +36,9 @@ mod state;
 mod world_provider;
 
 pub use capture::{CnpNativeAfterConfirmationCall, CnpSemanticCaptureScope};
-pub use retained_storage::{CnpRetainedStorageReport, CnpRetainedStorageUnknowns};
+pub use retained_storage::{
+    CnpPreparationStorageScratch, CnpRetainedStorageReport, CnpRetainedStorageUnknowns,
+};
 pub use semantic_snapshot::{CnpOriginalSemanticSnapshot, CnpSemanticSnapshotReservation};
 
 pub use conformance::{
@@ -133,5 +135,6 @@ mod tests {
     // crucible-lint: allow rust-allow -- Only native/test fixture constructors use panics.
     #[allow(clippy::unwrap_used)]
     mod packet_protocol;
+    mod preparation_storage;
     mod process;
 }

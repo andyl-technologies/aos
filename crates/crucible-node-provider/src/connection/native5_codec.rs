@@ -5,6 +5,8 @@
 //! semantic, process and restoration custody remain independent conjunctions.
 
 use super::*;
+#[path = "controller_fresh_restore.rs"]
+mod controller_fresh_restore;
 #[path = "controller_input_emitter.rs"]
 mod controller_input_emitter;
 #[path = "controller_restore.rs"]
@@ -75,6 +77,8 @@ pub(crate) struct ControllerNative5Policy {
     complete_restore_transfer_definitions: Option<[ContentRef; 7]>,
     restore_input_emitter_selection: Option<crate::reference_packet::service::complete_restore::PacketNative5RestoreInputEmitterSelection>,
     restore_input_emitter_definition: Option<ContentRef>,
+    fresh_restore_allocation_selection: Option<crate::reference_packet::service::fresh_restore_allocation::PacketNative5FreshRestoreAllocationSelection>,
+    fresh_restore_allocation_definitions: Option<[ContentRef; 5]>,
 }
 
 impl ControllerNative5Policy {
@@ -99,6 +103,8 @@ impl ControllerNative5Policy {
             complete_restore_transfer_definitions,
             restore_input_emitter_selection,
             restore_input_emitter_definition,
+            fresh_restore_allocation_selection,
+            fresh_restore_allocation_definitions,
         } = self;
         // The unit selection is inline; actual retained allocations are walked below.
         match metadata_extent {
@@ -127,6 +133,8 @@ impl ControllerNative5Policy {
             }
         }
         observer.observe(restore_input_emitter_definition)?;
+        observer.observe(fresh_restore_allocation_selection)?;
+        observer.observe(fresh_restore_allocation_definitions)?;
         Ok(())
     }
 
@@ -214,6 +222,8 @@ impl ControllerNative5Policy {
             complete_restore_transfer_definitions: None,
             restore_input_emitter_selection: None,
             restore_input_emitter_definition: None,
+            fresh_restore_allocation_selection: None,
+            fresh_restore_allocation_definitions: None,
         };
         original.validate_installation(authority)?;
         serialized_credit(
@@ -423,6 +433,7 @@ impl ControllerNative5Policy {
             )?;
         }
         self.validate_current_restore(authority)?;
+        self.validate_current_fresh_restore(authority)?;
         authority.ensure_live()
     }
 
@@ -561,19 +572,19 @@ impl ControllerNative5Policy {
 
 impl ControllerNative5Policy {
     fn owned_protocol_view(&self) -> impl serde::Serialize + '_ {
-        controller_input_emitter::ControllerInputEmitterView {
+        controller_fresh_restore::ControllerFreshRestoreView {
             policy: self,
             encoding: controller_restore::Encoding::Owned,
         }
     }
     fn compact_protocol_view(&self) -> impl serde::Serialize + '_ {
-        controller_input_emitter::ControllerInputEmitterView {
+        controller_fresh_restore::ControllerFreshRestoreView {
             policy: self,
             encoding: controller_restore::Encoding::Compact,
         }
     }
     fn protocol_view(&self) -> impl serde::Serialize + '_ {
-        controller_input_emitter::ControllerInputEmitterView {
+        controller_fresh_restore::ControllerFreshRestoreView {
             policy: self,
             encoding: controller_restore::Encoding::Ordinary,
         }
@@ -811,6 +822,11 @@ impl BodySchemaVerifier for Native5CodecOwner {
         match self {
             Self::ControllerPacket(policy) => {
                 policy.validate_current_negotiation(authority)?;
+                if controller_fresh_restore::verify_selected_fresh(
+                    policy, authority, envelope, body,
+                )? {
+                    return authority.ensure_live();
+                }
                 if controller_restore::verify_selected_transfer(policy, authority, envelope, body)?
                 {
                     return authority.ensure_live();

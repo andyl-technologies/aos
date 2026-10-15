@@ -18,6 +18,7 @@ struct Enrollment {
     binding: NodeBinding,
     child_pid: Option<u32>,
     model_bytes: Option<Vec<u8>>,
+    clock_native: bool,
     condition_native: bool,
     rate_alarm_native: bool,
     rate_alarm_script_native: bool,
@@ -86,6 +87,7 @@ impl InstalledEvidence {
                         binding: binding.clone(),
                         child_pid: Some(child.child_pid()),
                         model_bytes: None,
+                        clock_native: false,
                         condition_native: false,
                         rate_alarm_native: false,
                         rate_alarm_script_native: false,
@@ -94,6 +96,7 @@ impl InstalledEvidence {
                 (None, Some(model)) => Enrollment {
                     binding: binding.clone(),
                     child_pid: None,
+                    clock_native: matches!(model, HostModel::Clock(_)),
                     condition_native: matches!(model, HostModel::ConditionObserver(_)),
                     rate_alarm_native: matches!(model, HostModel::RateAlarmClock(_)),
                     rate_alarm_script_native: matches!(model, HostModel::ScriptedSource(source)
@@ -272,6 +275,53 @@ impl AdmissionEvidence for InstalledEvidence {
     }
 
     fn authenticate_schema(&self, schema: &SchemaRef) -> Result<(), EvidenceError> {
+        if matches!(
+            schema.id.as_str(),
+            "crucible/host-public-clock-preparation-v1"
+                | "crucible/host-public-clock-continuation-v1"
+        ) {
+            use crucible::node_adapters::{
+                HOST_PUBLIC_CLOCK_CONTINUATION_SPECIFICATION,
+                HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION, host_public_clock_continuation_schema,
+                host_public_clock_preparation_schema,
+            };
+            let (expected, specification) =
+                if schema.id.as_str() == "crucible/host-public-clock-preparation-v1" {
+                    (
+                        host_public_clock_preparation_schema(),
+                        HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION,
+                    )
+                } else {
+                    (
+                        host_public_clock_continuation_schema(),
+                        HOST_PUBLIC_CLOCK_CONTINUATION_SPECIFICATION,
+                    )
+                };
+            let expected = expected.map_err(|error| evidence(&error.reason))?;
+            if schema != &expected
+                || self.enrollments.len() != 1
+                || !self.enrollments.values().all(|row| {
+                    row.clock_native
+                        && row
+                            .binding
+                            .compatibility
+                            .implementation
+                            .formats
+                            .contains(schema)
+                })
+                || self.content.get(&schema.definition.hash.digest).is_none_or(
+                    |(reference, bytes)| {
+                        reference != &schema.definition
+                            || bytes.as_slice() != specification.as_bytes()
+                    },
+                )
+            {
+                return Err(evidence(
+                    "public Clock codec lacks its actual typed source-owned Clock and exact schema body",
+                ));
+            }
+            return Ok(());
+        }
         let semantic_v2 = schema.version == 2
             && matches!(
                 schema.id.as_str(),

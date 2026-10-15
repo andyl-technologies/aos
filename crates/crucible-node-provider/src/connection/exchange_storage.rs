@@ -664,3 +664,19 @@ fn requested_facts(facts: &RetainedProtocolMetadataFacts) -> Result<usize, Provi
 #[cfg(test)]
 #[path = "exchange_storage_tests.rs"]
 mod tests;
+
+impl<S: ProviderStream> Connection<S> {
+    pub(crate) fn original_fresh_query_raw_receive_storage_data(
+        &self,
+    ) -> Result<usize, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        acknowledgements::open_ack_storage(allowance(self.authority.limits().frame_bytes.get())?)
+    }
+}
+
+impl<S: ProviderStream> Connection<S> {
+    pub(crate) fn original_fresh_report_decode_storage_data(&self) -> Result<usize, ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        acknowledgements::open_ack_storage(crate::reference_packet::service::fresh_restore_allocation::MAXIMUM_FRESH_RESTORE_ALLOCATION_REPORT_BYTES)
+    }
+}

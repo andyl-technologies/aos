@@ -239,6 +239,14 @@ impl OriginalProtocolSupervisor {
         )
     }
 
+    pub(crate) fn observe_original_actor(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.actor.ensure_current()?;
+        observer.shared_value(self.actor.as_ref())
+    }
+
     pub(crate) fn with_original_state(
         &self,
         inspect: &mut dyn FnMut(OriginalSupervisorProtocolView<'_>) -> Result<(), ProviderError>,
@@ -289,3 +297,7 @@ impl<S: ProviderStream> Connection<S> {
 #[expect(clippy::unwrap_used, reason = "original loan ownership assertions")]
 #[path = "supervisor_state_tests.rs"]
 mod tests;
+
+#[path = "retained_supervisor.rs"]
+mod retained_supervisor;
+pub use retained_supervisor::OriginalRetainedSupervisor;

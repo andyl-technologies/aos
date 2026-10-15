@@ -8,6 +8,27 @@
 use super::*;
 #[path = "input_admission.rs"]
 mod input_admission;
+#[path = "prepare_bindings.rs"]
+mod prepare_bindings;
+#[path = "prepare_startup.rs"]
+mod prepare_startup;
+pub(crate) use prepare_startup::OriginalNativePrepareStartupAllocation;
+pub use prepare_startup::{
+    PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,
+    original_native_prepare_startup_storage_data,
+};
+#[path = "prepare_context.rs"]
+mod prepare_context;
+#[path = "prepare_measurement.rs"]
+mod prepare_measurement;
+// Selected baseline birth reuses the same reviewed streamed measurement body.
+pub(crate) use prepare_measurement::{
+    measure_executable as measure_original_prepare_executable_data,
+    original_prepare_executable_measurement_counter_scratch_data,
+};
+#[path = "prepare_target.rs"]
+mod prepare_target;
+pub(super) use prepare_target::authenticate_target;
 #[path = "prepare_receipt.rs"]
 mod prepare_receipt;
 use crate::reference_packet::service::NativeRestoreServiceAllocationQuote;
@@ -67,6 +88,46 @@ impl NativeAckBoot {
             crate::reference_packet::control::PacketFreshRestoreControlAllocation,
         >,
     ) -> Result<(), ProviderError> {
+        Self::authenticate_legacy_prepare_startup_data(boot)?;
+        Self::verify_complete_restore_prepare_with_startup_into(
+            boot,
+            hello,
+            original,
+            connection,
+            None,
+            completed,
+            service_quote,
+            control_quote,
+        )
+    }
+
+    pub(crate) fn authenticate_legacy_prepare_startup_data(
+        boot: &Rc<RefCell<Self>>,
+    ) -> Result<(), ProviderError> {
+        let owner = boot.try_borrow().map_err(|_| borrowed())?;
+        owner.ensure_origin()?;
+        if owner.startup.is_some() {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify_complete_restore_prepare_with_startup_into<S: ProviderStream>(
+        boot: &Rc<RefCell<Self>>,
+        hello: &OriginalNativeHelloJournal,
+        original: &Envelope,
+        connection: &Connection<S>,
+        startup: Option<&OriginalNativePrepareStartupAllocation>,
+        completed: &mut Option<VerifiedCompleteRestorePrepare>,
+        service_quote: &mut Option<NativeRestoreServiceAllocationQuote>,
+        control_quote: &mut Option<
+            crate::reference_packet::control::PacketFreshRestoreControlAllocation,
+        >,
+    ) -> Result<(), ProviderError> {
+        match startup {
+            Some(startup) => startup.authenticate_header(connection, original)?,
+            None => Self::authenticate_legacy_prepare_startup_data(boot)?,
+        }
         let admitted = connection.original_native_owned11_admission()?;
         admitted.authenticate_current(connection)?;
         if completed.is_some()
@@ -163,13 +224,14 @@ impl NativeAckBoot {
             .as_ref()
             .ok_or_else(refused)?
             .validate_data(PacketCompleteRestoreTransferPhase::Prepare)?;
-        let launch = PacketNative5SourceLaunch::decode(&owner.launch_body, 1024 * 1024)?;
+        let launch = decode_verified_prepare_launch(&owner)?;
         flight.realize = Some(launch.selection.realize.clone());
         flight.reactive = matches!(
             launch.program,
             crate::reference_packet::service::PacketConnectedSourceProgram::Reactive { .. }
         );
-        authenticate_target(
+        prepare_target::authenticate_verified_prepare_target(
+            &owner,
             &launch,
             flight.request.as_ref().ok_or_else(refused)?,
             original,
@@ -185,31 +247,27 @@ impl NativeAckBoot {
         {
             return Err(refused());
         }
-        let host_executable = crate::conformance::measure_executable(&std::path::PathBuf::from(
-            format!("/proc/{}/exe", launch.controller_pid.get()),
-        ))?;
+        let host_executable =
+            prepare_measurement::measure_controller_executable(launch.controller_pid)?;
         if host_executable != owner.data.host_executable {
             return Err(refused());
         }
-        let native_executable = crate::conformance::measure_executable(&std::env::current_exe()?)?;
-        flight.kernel = Some(serde_json::json!({
-            "schema":"source-owned.packet-canonical-ack-kernel-binding/5",
-            "controller":{"pid":launch.controller_pid,"uid":launch.controller_uid,"executable":host_executable},
-            "native":{"pid":U64::new(u64::from(std::process::id())),
-                "uid":U64::new(u64::from(rustix::process::geteuid().as_raw())),"executable":native_executable}
-        }));
-        let extensions = authority.selected_extensions().ok_or_else(refused)?;
-        flight.policy = Some(serde_json::json!({
-            "schema":"source-owned.packet-canonical-ack-policy-binding/5",
-            "source_binding":owner.data.source_birth,
-            "negotiated":{"limits":authority.limits(),"features":authority.selected_features(),
-                "extensions":extensions,"envelope_extensions":authority.envelope_extensions()}
-        }));
-        if flight.kernel.as_ref() != owner.normalized[1].as_ref()
-            || flight.policy.as_ref() != owner.normalized[2].as_ref()
-        {
-            return Err(refused());
-        }
+        let native_executable = prepare_measurement::measure_current_executable()?;
+        // Authenticate every current binding against the original admitted
+        // boot values without constructing a second kernel/source-policy DOM.
+        // These attempt slots remain empty; neither slot is a proof predicate.
+        prepare_bindings::authenticate_kernel_data(
+            owner.normalized[1].as_ref().ok_or_else(refused)?,
+            launch.controller_pid,
+            launch.controller_uid,
+            &host_executable,
+            &native_executable,
+        )?;
+        prepare_bindings::authenticate_policy_data(
+            owner.normalized[2].as_ref().ok_or_else(refused)?,
+            &owner.data.source_birth,
+            &admitted.authority,
+        )?;
         let maximum =
             usize::try_from(authority.limits().frame_bytes.get()).map_err(|_| refused())?;
         let request = flight.request.as_ref().ok_or_else(refused)?;
@@ -239,24 +297,20 @@ impl NativeAckBoot {
             input_roster,
         });
         let context = flight.context.as_ref().ok_or_else(refused)?;
-        context.authenticate_request_data(flight.request.as_ref().ok_or_else(refused)?)?;
+        // This private context was constructed immediately above from this
+        // validated request's exact canonical bytes and input-roster digest.
+        // Verify the native MAC over that SAME one canonical context bank.
         let key: &[u8; 32] = owner
             .data
             .private_key
             .as_slice()
             .try_into()
             .map_err(|_| refused())?;
-        verify_complete_restore_prepare_proof_data(
+        flight.context_body = prepare_context::authenticate_derived_context_data(
             key,
             context,
             flight.proof.as_ref().ok_or_else(refused)?,
         )?;
-        flight.context_body = canonical::canonical_json(
-            &serde_json::to_value(context).map_err(ContractError::from)?,
-        )?;
-        if flight.context_body.len() > MAXIMUM_COMPLETE_RESTORE_TRANSFER_CONTEXT_BYTES {
-            return Err(refused());
-        }
         let derived = blake3::derive_key(
             "source-owned.packet-complete-restore-transfer-token-key/12",
             key,
@@ -637,68 +691,29 @@ fn retained_shared_header_storage(
         .ok_or_else(refused)
 }
 
-pub(super) fn authenticate_target(
-    launch: &PacketNative5SourceLaunch,
-    request: &PacketCompleteRestorePrepareRequest,
-    original: &Envelope,
-    authority: &ConnectionAuthority,
-) -> Result<(), ProviderError> {
-    let binding = launch
-        .selection
-        .realization
-        .bindings
-        .first()
-        .ok_or_else(refused)?;
-    let owner = launch
-        .selection
-        .realization
-        .owner_bindings
-        .first()
-        .ok_or_else(refused)?;
-    let RequestBody::Begin(begin) = decode_request(original.method, &original.body)? else {
-        return Err(refused());
-    };
-    let BeginArguments::PrepareRestore(arguments) = begin.decoded_arguments()? else {
-        return Err(refused());
-    };
-    let coordinator =
-        crate::reference_packet::coordinator::PacketNative5CoordinatorInstallation::decode(
-            launch.initial_coordinator.bytes.as_slice(),
-            &launch.selection,
-        )?;
-    let activation = &coordinator.template["activation"];
-    let target = &request.restoration;
-    if launch.complete_restore_selection
-        != Some(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
-        || original.session_id.0.as_ref() != Some(authority.session_id())
-        || original.incarnation_id.0.as_ref() != Some(authority.incarnation_id())
-        || original.node_id.0.as_ref() != Some(&binding.compatibility.node_id)
-        || original.capture_owner_id.0.as_ref() != Some(&owner.owner.id)
-        || original.execution_owner_id.0.is_some()
-        || original.operation_id.0.is_none()
-        || target.target_world != launch.selection.world
-        || target.target_owner != owner.owner.id
-        || target.target_owner_binding != owner.identity()?
-        || target.target_owner_generation != binding.authority.owner_generation
-        || serde_json::to_value(&target.target_activation).map_err(ContractError::from)?
-            != activation["activation_id"]
-        || serde_json::to_value(target.target_generation).map_err(ContractError::from)?
-            != activation["generation"]
-        || begin.binding_hash != target.target_owner_binding
-        || begin.activation_id.0.as_ref() != Some(&target.target_activation)
-        || begin.world_generation != target.target_generation
-        || begin.owner_generation != target.target_owner_generation
-        || !begin.extensions.is_empty()
-        || arguments.transaction_id != request.transaction_id
-        || arguments.capture_manifest != target.capture_manifest
-        || arguments.expected_world_binding_hash != target.target_world
-        || arguments.expected_owner_binding_hash != target.target_owner_binding
-        || arguments.destination_owner_ids.len() != 1
-        || arguments.destination_owner_ids.first() != Some(&target.target_owner)
+/// Reuses the immutable birth validation completed by this same verified ACK.
+///
+/// Boot's launch_body is assigned once by prepare_into and is private to the
+/// boot family. verify_admit fully decodes and validates those SAME bytes before
+/// it can set verified. No method replaces or edits that bank afterward. This
+/// avoids rebuilding every selected schema/contract at each Prepare; bounded
+/// duplicate-refusing parsing and owned typed decode remain charged phases.
+fn decode_verified_prepare_launch(
+    owner: &NativeAckBoot,
+) -> Result<PacketNative5SourceLaunch, ProviderError> {
+    owner.ensure_origin()?;
+    if !owner.ready
+        || !owner.verified
+        || owner.original.is_none()
+        || owner.context.is_none()
+        || owner.proof.is_none()
     {
         return Err(refused());
     }
-    Ok(())
+    let value = canonical::parse_json(&owner.launch_body, 1024 * 1024)?;
+    PacketNative5SourceLaunch::deserialize(value)
+        .map_err(ContractError::from)
+        .map_err(Into::into)
 }
 
 fn digest(bytes: &[u8]) -> Bytes {

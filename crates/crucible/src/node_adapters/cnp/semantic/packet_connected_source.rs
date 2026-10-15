@@ -5,6 +5,7 @@
 //! joins actual native journals to the same private child and original common
 //! authority. Schema fields and decoded records cannot issue readiness or grants.
 
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use std::cell::RefCell;
 
 use crucible_node_contract::*;
@@ -160,11 +161,19 @@ impl PacketConnectedSemanticSource {
     }
 
     pub(super) fn complete_preparation_unbound(&self) -> Result<bool, OperationFailure> {
-        self.local_owner()?;
+        self.complete_preparation_unbound_with_error::<OperationFailure>()
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn complete_preparation_unbound_with_error<
+        E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
+    >(
+        &self,
+    ) -> Result<bool, E> {
+        self.local_owner_with_error::<E>()?;
         self.current_native
             .try_borrow()
             .map(|original| original.is_none())
-            .map_err(|_| refused("complete source native association is busy"))
+            .map_err(|_| E::refused("complete source native association is busy"))
     }
 
     pub(super) fn new_complete_collecting(
@@ -406,8 +415,14 @@ impl PacketConnectedSemanticSource {
     }
 
     fn local_owner(&self) -> Result<(), OperationFailure> {
+        self.local_owner_with_error::<OperationFailure>()
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn local_owner_with_error<E: StorageError>(
+        &self,
+    ) -> Result<(), E> {
         if self.process != std::process::id() || self.thread != std::thread::current().id() {
-            return Err(refused(
+            return Err(E::origin(
                 "connected packet foreign original source process/thread",
             ));
         }
@@ -644,7 +659,9 @@ impl PacketConnectedSemanticSource {
 }
 
 impl PacketConnectedSemanticSource {
-    pub(super) fn complete_retained_declaration_parts(
+    pub(in crate::node_adapters::cnp::semantic) fn complete_retained_declaration_parts_with_error<
+        E: StorageError,
+    >(
         &self,
     ) -> Result<
         (
@@ -652,9 +669,9 @@ impl PacketConnectedSemanticSource {
             &PacketNative5CoordinatorInstallation,
             &SavedRuntimeActivation,
         ),
-        OperationFailure,
+        E,
     > {
-        let (coordinator, activation) = self.world.complete_retained_parts()?;
+        let (coordinator, activation) = self.world.complete_retained_parts_with_error::<E>()?;
         Ok((&self.definition, coordinator, activation))
     }
 }
@@ -663,17 +680,19 @@ impl PacketConnectedSemanticSource {
 mod retained_lineage;
 
 impl PacketConnectedSemanticSource {
-    pub(in crate::node_adapters::cnp::semantic) fn complete_retained_native_read_storage_data(
+    pub(in crate::node_adapters::cnp::semantic) fn complete_retained_native_read_storage_data_with_error<
+        E: StorageError,
+    >(
         &self,
         maximum: usize,
-    ) -> Result<Option<super::retained_storage::CnpRetainedStorageReport>, OperationFailure> {
+    ) -> Result<Option<super::retained_storage::CnpRetainedStorageReport>, E> {
         // The complete outer Source checks its actual creator first. This is
         // retained-data observation, so revoked or reaped reads remain data.
         self.current_native
             .try_borrow()
-            .map_err(|_| refused("retained source native read already borrowed"))?
+            .map_err(|_| E::refused("retained source native read already borrowed"))?
             .as_ref()
-            .map(|read| read.retained_requested_storage_data(maximum))
+            .map(|read| E::read(read, maximum))
             .transpose()
     }
 }

@@ -5,6 +5,7 @@
 //! barrier and independently installed host policy must authenticate all three
 //! original native owners before any durable publication or gate opening.
 
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crucible_node_provider::{
     bodies::RealizeResult,
     reference_packet::{
@@ -340,20 +341,22 @@ impl InstalledCoordinator {
 }
 
 impl PacketWorldSourceScope {
-    pub(super) fn complete_retained_parts(
+    pub(in crate::node_adapters::cnp::semantic) fn complete_retained_parts_with_error<
+        E: StorageError,
+    >(
         &self,
     ) -> Result<
         (
             &PacketNative5CoordinatorInstallation,
             &SavedRuntimeActivation,
         ),
-        OperationFailure,
+        E,
     > {
         match &self.coordinator {
             InstalledCoordinator::Complete(coordinator) => {
                 Ok((coordinator.as_ref(), &self.activation))
             }
-            _ => Err(refused("retained complete coordinator absent")),
+            _ => Err(E::refused("retained complete coordinator absent")),
         }
     }
 }

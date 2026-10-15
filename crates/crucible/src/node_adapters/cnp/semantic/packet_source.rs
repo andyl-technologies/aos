@@ -8,6 +8,7 @@
 //! Refused plan and original source custody without issuing class acceptance.
 //! Portable records cannot construct common activation, admissions or tokens.
 
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crucible_node_contract::*;
 use crucible_node_provider::{
     bodies::*,
@@ -409,14 +410,22 @@ impl PacketSemanticSource {
     }
 
     pub(super) fn complete_preparation_unbound(&self) -> Result<bool, OperationFailure> {
+        self.complete_preparation_unbound_with_error::<OperationFailure>()
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn complete_preparation_unbound_with_error<
+        E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
+    >(
+        &self,
+    ) -> Result<bool, E> {
         // The complete outer source authenticates its creator before this loan.
         if self.complete_storage.is_none() {
-            return Err(refused("source has no complete preparation selection"));
+            return Err(E::refused("source has no complete preparation selection"));
         }
         self.current_native
             .try_borrow()
             .map(|original| original.is_none())
-            .map_err(|_| refused("complete source native association is busy"))
+            .map_err(|_| E::refused("complete source native association is busy"))
     }
 
     pub(super) fn new_complete_collecting(
@@ -1398,30 +1407,32 @@ fn native_shape(
 }
 
 impl PacketSemanticSource {
-    pub(super) fn complete_retained_declaration_parts(
+    pub(in crate::node_adapters::cnp::semantic) fn complete_retained_declaration_parts_with_error<E: StorageError>(
         &self,
-    ) -> Result<(&PacketProgramDefinition, &crucible_node_provider::reference_packet::coordinator::PacketNative5CoordinatorInstallation, &SavedRuntimeActivation), OperationFailure>{
+    ) -> Result<(&PacketProgramDefinition, &crucible_node_provider::reference_packet::coordinator::PacketNative5CoordinatorInstallation, &SavedRuntimeActivation), E>{
         let (coordinator, activation) = self
             .world_scope
             .as_ref()
-            .ok_or_else(|| refused("retained complete producer world absent"))?
-            .complete_retained_parts()?;
+            .ok_or_else(|| E::refused("retained complete producer world absent"))?
+            .complete_retained_parts_with_error::<E>()?;
         Ok((&self.program, coordinator, activation))
     }
 }
 
 impl PacketSemanticSource {
-    pub(in crate::node_adapters::cnp::semantic) fn complete_retained_native_read_storage_data(
+    pub(in crate::node_adapters::cnp::semantic) fn complete_retained_native_read_storage_data_with_error<
+        E: StorageError,
+    >(
         &self,
         maximum: usize,
-    ) -> Result<Option<super::retained_storage::CnpRetainedStorageReport>, OperationFailure> {
+    ) -> Result<Option<super::retained_storage::CnpRetainedStorageReport>, E> {
         // The complete outer Source checks its actual creator first. This is
         // retained-data observation, so revoked or reaped reads remain data.
         self.current_native
             .try_borrow()
-            .map_err(|_| refused("retained source native read already borrowed"))?
+            .map_err(|_| E::refused("retained source native read already borrowed"))?
             .as_ref()
-            .map(|read| read.retained_requested_storage_data(maximum))
+            .map(|read| E::read(read, maximum))
             .transpose()
     }
 }

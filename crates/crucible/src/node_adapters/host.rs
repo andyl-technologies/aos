@@ -320,6 +320,7 @@ pub struct HostModelNode {
     initial: Rc<Vec<u8>>,
     boundary: Position,
     thread: std::thread::ThreadId,
+    process: u32,
     facets: Vec<FacetKind>,
     preservation: HostFacet,
     fault_injection: HostFacet,
@@ -531,6 +532,7 @@ impl HostModelNode {
             initial: Rc::new(initial),
             boundary,
             thread: std::thread::current().id(),
+            process: std::process::id(),
             facets,
             preservation: HostFacet(preservation),
             fault_injection: HostFacet(fault_injection),
@@ -757,6 +759,9 @@ pub(super) mod rate_alarm_evidence;
 
 #[path = "host_runtime.rs"]
 mod runtime;
+
+#[path = "host_requested_storage.rs"]
+mod requested_storage;
 
 #[path = "host_roles.rs"]
 mod roles;

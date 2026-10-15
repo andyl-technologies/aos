@@ -40,6 +40,31 @@ impl HostSchedulingSource {
                 "historical Host source backing is not an original metadata view",
             ));
         }
+        self.retained_original_metadata_bytes_excluding_runtime_precredit_data(maximum)
+            .map_err(failure)
+    }
+
+    /// Counts the same original Host metadata with allocation-free error values.
+    ///
+    /// The caller separately admits this observer's fixed scratch and enclosing
+    /// Rc storage. This never renews native, scheduler or restoration currency.
+    ///
+    /// # Errors
+    /// Refuses foreign creator or thread, unsupported edition/historical tickets,
+    /// busy owners, unsupported metadata or checked storage exhaustion.
+    pub fn retained_original_metadata_bytes_excluding_runtime_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        if self.process != std::process::id()
+            || self.owner_thread != thread::current().id()
+            || self.edition != preservation::Edition::CompleteOriginalLineage
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.original_ticket.is_some() || self.archive_ticket.is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
         let bytes = (|| -> Result<usize, RuntimeError> {
             let selection = NodeRuntime::capture_host_selection_storage(&self.selection)?
                 .checked_sub(std::mem::size_of::<HostSchedulingSelection>())
@@ -75,8 +100,7 @@ impl HostSchedulingSource {
                 return Err(RuntimeError::ResourceLimit);
             }
             Ok(total)
-        })()
-        .map_err(failure)?;
+        })()?;
         Ok(bytes)
     }
 }

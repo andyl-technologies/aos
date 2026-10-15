@@ -3,6 +3,34 @@
 use super::*;
 
 impl SimulationNode for HostModelNode {
+    fn retained_requested_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, OperationFailure> {
+        match self.original_clock_requested_backing_data(maximum) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(RuntimeError::UnsupportedFacet) => Ok(None),
+            Err(_) => Err(failure(
+                "complete original Clock requested storage is unavailable",
+            )),
+        }
+    }
+
+    fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, RuntimeError> {
+        self.original_clock_requested_backing_data(maximum)
+            .map(Some)
+    }
+
+    fn retained_requested_storage_precredit_scratch_data(
+        &self,
+    ) -> Result<Option<usize>, RuntimeError> {
+        self.original_clock_storage_origin()?;
+        Ok(Some(Self::original_clock_requested_backing_scratch_data()))
+    }
+
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
     }

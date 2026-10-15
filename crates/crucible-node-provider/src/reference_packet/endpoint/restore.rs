@@ -127,6 +127,9 @@ impl PacketEndpoint<DeadlineStream> {
             self.restore_protocol_attempted = true;
             let policy = Rc::clone(&installed.policy);
             let boot = self.canonical_ack_boot.as_ref().ok_or_else(refused)?;
+            // A resource-admitted boot6 must arrive through its genuine scoped
+            // pre-read route; this legacy entry cannot allocate its verifier.
+            NativeAckBoot::authenticate_legacy_prepare_startup_data(boot)?;
             let roots = service.with_original_endpoint_roots(boot, &self.policy);
             let mut service_quote =
                 Some(roots.quote_original_restore_service_allocation(connection, &self.uploads)?);

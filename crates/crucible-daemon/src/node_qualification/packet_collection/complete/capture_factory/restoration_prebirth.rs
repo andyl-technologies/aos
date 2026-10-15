@@ -5,6 +5,8 @@
 //! retains partial preparation on refusal, and issues no native birth/report,
 //! whole-preparation context, readiness or restoration installation permission.
 
+mod precredit;
+
 use super::*;
 use crucible::node_admission::{CompleteArchiveCodeGraph, ConformanceGraph};
 use crucible::node_contract::{
@@ -161,6 +163,82 @@ impl PacketCompleteRestorationPrebirth {
             .as_ref()
             .map(HostSchedulingOwner::source)
             .ok_or_else(|| refused("actual restored host has not been prepared"))
+    }
+
+    /// Transfers real baseline peers into the same prebirth preparation holder.
+    ///
+    /// Actual native birth and baseline transport owners require their existing
+    /// admission before this entry. It does not launch a Child or obtain native
+    /// authority from archive data. The immutable capsule loan ends before the
+    /// same registered holder negotiates/attaches each actual peer and retains
+    /// its genuine completed-Admit preparation. No HOST query is sent here, and
+    /// no opaque verifier loan survives into the later HOST-ticket phase.
+    ///
+    /// # Errors
+    /// Refuses a foreign/bound capsule, absent holder, changed baseline source or
+    /// failed SDK/native preparation. Surviving originals stay in holder slots.
+    pub fn prepare_original_fresh_connections<
+        V: crucible_node_provider::handshake::TrustedHandshakeVerifier,
+    >(
+        original: &Rc<RefCell<Self>>,
+        connections: &mut [Option<super::super::PacketCompletePreparationConnection>; 3],
+        verifiers: &mut [V; 3],
+    ) -> Result<(), StateError> {
+        let startup = Self::original_preparation_holder(original)?;
+        for member in 0..3 {
+            super::super::PacketCompleteReportStartupHolder::prepare_original_connection_into(
+                &startup,
+                member,
+                &mut connections[member],
+                &mut verifiers[member],
+            )
+            .map_err(error)?;
+        }
+        original
+            .try_borrow()
+            .map_err(error)?
+            .authenticate_code_owner()
+    }
+
+    /// Dispatches actual ticketed HOST queries before target graph construction.
+    ///
+    /// The preceding connection transaction must have retained all three actual
+    /// completed-Admit preparations in this capsule's registered holder. Core
+    /// observes their real backing and the installed resource policy before
+    /// constructing/dispatching each Query. Unsupported native Fresh publication
+    /// remains a terminal refusal, with original results and custody retained.
+    ///
+    /// # Errors
+    /// Refuses foreign/busy capsules, missing original holders/preparations,
+    /// repeated query windows, unknown storage or any native/SDK failure.
+    pub fn prepare_original_fresh_host_reports(
+        original: &Rc<RefCell<Self>>,
+    ) -> Result<(), StateError> {
+        let startup = Self::original_preparation_holder(original)?;
+        for member in 0..3 {
+            super::super::PacketCompleteReportStartupHolder::call_original_fresh_restore_query(
+                &startup, member,
+            )
+            .map_err(error)?;
+        }
+        original
+            .try_borrow()
+            .map_err(error)?
+            .authenticate_code_owner()
+    }
+
+    fn original_preparation_holder(
+        original: &Rc<RefCell<Self>>,
+    ) -> Result<Rc<RefCell<super::super::PacketCompleteReportStartupHolder>>, StateError> {
+        let held = original.try_borrow().map_err(error)?;
+        held.authenticate_code_owner()?;
+        if held.binding_attempted || held.runtime_attempted || held.fresh_graph.is_some() {
+            return Err(refused("fresh host preparation follows graph binding"));
+        }
+        held.report_startup_holder
+            .as_ref()
+            .and_then(std::rc::Weak::upgrade)
+            .ok_or_else(|| refused("actual original report startup holder is absent"))
     }
 
     /// Retains the actual fresh graph before binding this source once to its plan.

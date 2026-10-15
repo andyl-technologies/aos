@@ -5,6 +5,7 @@
 //! permission. Ordinary connected-four never enters this data path.
 
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crate::node_adapters::cnp::semantic::packet_lineage::Rows;
 
 pub(super) struct CompleteInputStaticRows {
@@ -14,22 +15,28 @@ pub(super) struct CompleteInputStaticRows {
 }
 
 impl PacketConnectedSemanticSource {
-    pub(in crate::node_adapters::cnp::semantic) fn complete_prebirth_input_static_storage(
+    pub(in crate::node_adapters::cnp::semantic) fn complete_prebirth_input_static_storage_with_error<
+        E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
+    >(
         &self,
         maximum: usize,
-    ) -> Result<usize, OperationFailure> {
-        self.local_owner()?;
-        if !self.world.is_complete() || !self.complete_preparation_unbound()? {
-            return Err(refused("complete static data is outside its unbound phase"));
+    ) -> Result<usize, E> {
+        self.local_owner_with_error::<E>()?;
+        if !self.world.is_complete() || !self.complete_preparation_unbound_with_error::<E>()? {
+            return Err(E::refused(
+                "complete static data is outside its unbound phase",
+            ));
         }
         let slot = self
             .complete_input_static
             .try_borrow()
-            .map_err(|_| refused("complete static bank busy"))?;
+            .map_err(|_| E::refused("complete static bank busy"))?;
         match slot.as_ref() {
             None => Ok(0),
-            Some(original) if original.complete && !original.failed => original.storage(maximum),
-            Some(_) => Err(refused("complete static graph rows incomplete")),
+            Some(original) if original.complete && !original.failed => {
+                original.storage_with_error::<E>(maximum)
+            }
+            Some(_) => Err(E::refused("complete static graph rows incomplete")),
         }
     }
 
@@ -111,21 +118,29 @@ impl PacketConnectedSemanticSource {
     pub(in crate::node_adapters::cnp::semantic) fn complete_input_static_storage(
         &self,
     ) -> Result<usize, OperationFailure> {
-        self.local_owner()?;
+        self.complete_input_static_storage_with_error::<OperationFailure>()
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn complete_input_static_storage_with_error<
+        E: StorageError,
+    >(
+        &self,
+    ) -> Result<usize, E> {
+        self.local_owner_with_error::<E>()?;
         if !self.world.is_complete() {
-            return Err(refused("ordinary input has no complete static bank"));
+            return Err(E::refused("ordinary input has no complete static bank"));
         }
         let slot = self
             .complete_input_static
             .try_borrow()
-            .map_err(|_| refused("complete static bank busy"))?;
+            .map_err(|_| E::refused("complete static bank busy"))?;
         let original = slot
             .as_ref()
-            .ok_or_else(|| refused("complete input static graph rows absent"))?;
+            .ok_or_else(|| E::refused("complete input static graph rows absent"))?;
         if !original.complete || original.failed {
-            return Err(refused("complete static graph rows incomplete"));
+            return Err(E::refused("complete static graph rows incomplete"));
         }
-        original.storage(512 * 1024 * 1024)
+        original.storage_with_error::<E>(512 * 1024 * 1024)
     }
 
     pub(super) fn add_complete_input_static_rows(
@@ -152,35 +167,42 @@ impl PacketConnectedSemanticSource {
 
 impl CompleteInputStaticRows {
     fn storage(&self, maximum: usize) -> Result<usize, OperationFailure> {
+        self.storage_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn storage_with_error<E: StorageError>(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
         let mut bytes = std::mem::size_of::<Self>()
             .checked_add(
                 self.rows
                     .capacity()
                     .checked_mul(std::mem::size_of::<(InputPayload, Vec<ContentRef>)>())
-                    .ok_or_else(|| refused("complete static row layout overflow"))?,
+                    .ok_or_else(|| E::refused("complete static row layout overflow"))?,
             )
-            .ok_or_else(|| refused("complete static holder overflow"))?;
+            .ok_or_else(|| E::refused("complete static holder overflow"))?;
         for (body, dependencies) in &self.rows {
             for amount in [
                 body.bytes.capacity(),
-                NodeRuntime::capture_reference_storage(&body.reference).map_err(unknown)?,
+                NodeRuntime::capture_reference_storage(&body.reference).map_err(E::runtime)?,
                 dependencies
                     .capacity()
                     .checked_mul(std::mem::size_of::<ContentRef>())
-                    .ok_or_else(|| refused("complete static dependency layout overflow"))?,
+                    .ok_or_else(|| E::refused("complete static dependency layout overflow"))?,
             ] {
-                bytes = add(bytes, amount, maximum)?;
+                bytes = add_with_error::<E>(bytes, amount, maximum)?;
             }
             for reference in dependencies {
-                bytes = add(
+                bytes = add_with_error::<E>(
                     bytes,
-                    NodeRuntime::capture_reference_storage(reference).map_err(unknown)?,
+                    NodeRuntime::capture_reference_storage(reference).map_err(E::runtime)?,
                     maximum,
                 )?;
             }
         }
         if bytes > maximum {
-            return Err(refused("complete static bank exceeds allowance"));
+            return Err(E::refused("complete static bank exceeds allowance"));
         }
         Ok(bytes)
     }
@@ -357,10 +379,18 @@ fn validate_policy_data(
 }
 
 fn add(total: usize, amount: usize, maximum: usize) -> Result<usize, OperationFailure> {
+    add_with_error::<OperationFailure>(total, amount, maximum)
+}
+
+pub(in crate::node_adapters::cnp::semantic) fn add_with_error<E: StorageError>(
+    total: usize,
+    amount: usize,
+    maximum: usize,
+) -> Result<usize, E> {
     total
         .checked_add(amount)
         .filter(|sum| *sum <= maximum)
-        .ok_or_else(|| refused("complete static input aggregate exceeds allowance"))
+        .ok_or_else(|| E::limit("complete static input aggregate exceeds allowance"))
 }
 
 #[cfg(test)]

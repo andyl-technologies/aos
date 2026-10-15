@@ -33,7 +33,28 @@ pub(crate) fn fresh_restore_allocation_startup_shapes(
     launch: &PacketNative5SourceLaunch,
     maximum_requested_bytes: usize,
 ) -> Result<FreshRestoreAllocationStartupShapes, ProviderError> {
-    let [binding] = launch.selection.realization.bindings.as_slice() else {
+    shapes(
+        &launch.selection,
+        Some(&launch.program),
+        maximum_requested_bytes,
+    )
+}
+
+/// Uses the longer actual inactive inventory domain for the host receive bound.
+/// No prospective native program or launch is manufactured.
+pub(crate) fn fresh_restore_allocation_host_shapes(
+    selection: &crate::reference_packet::control::PacketControlSelection,
+    maximum_requested_bytes: usize,
+) -> Result<FreshRestoreAllocationStartupShapes, ProviderError> {
+    shapes(selection, None, maximum_requested_bytes)
+}
+
+fn shapes(
+    selection: &crate::reference_packet::control::PacketControlSelection,
+    program: Option<&PacketConnectedSourceProgram>,
+    maximum_requested_bytes: usize,
+) -> Result<FreshRestoreAllocationStartupShapes, ProviderError> {
+    let [binding] = selection.realization.bindings.as_slice() else {
         return Err(invalid());
     };
     let scope = ScopeFields {
@@ -42,14 +63,12 @@ pub(crate) fn fresh_restore_allocation_startup_shapes(
         node: &binding.compatibility.node_id,
         owner: &binding.compatibility.execution_owner.id,
         owner_generation: binding.authority.owner_generation,
-        world: &launch.selection.world,
-        prepared_token: &launch.selection.prepared_token,
-        admission: &launch.selection.admission,
+        world: &selection.world,
+        prepared_token: &selection.prepared_token,
+        admission: &selection.admission,
     };
     let original = count(maximum_requested_bytes, |p| original(p, &scope))?;
-    let terminal = count(maximum_requested_bytes, |p| {
-        terminal(p, &scope, &launch.program)
-    })?;
+    let terminal = count(maximum_requested_bytes, |p| terminal(p, &scope, program))?;
     let query = byte_formatter_storage(
         count(maximum_requested_bytes, query)?,
         3,
@@ -290,7 +309,7 @@ fn receipt(p: &mut Projection) -> Result<(), ProviderError> {
 fn terminal(
     p: &mut Projection,
     scope: &ScopeFields<'_>,
-    program: &PacketConnectedSourceProgram,
+    program: Option<&PacketConnectedSourceProgram>,
 ) -> Result<(), ProviderError> {
     envelope(p, scope, true)?;
     object(p, &["status", "operation_state", "result", "extensions"])?;
@@ -311,8 +330,10 @@ fn terminal(
     hash(
         p,
         match program {
-            PacketConnectedSourceProgram::Producer { .. } => "source-owned.packet-inventory.v1",
-            PacketConnectedSourceProgram::Reactive { .. } => {
+            Some(PacketConnectedSourceProgram::Producer { .. }) => {
+                "source-owned.packet-inventory.v1"
+            }
+            Some(PacketConnectedSourceProgram::Reactive { .. }) | None => {
                 "source-owned.packet-connected-inventory/4"
             }
         },

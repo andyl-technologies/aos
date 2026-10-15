@@ -1,0 +1,89 @@
+//! Retains the actual boot6 baseline action and its nonrenewing Prepare occurrence.
+//!
+//! Only the new original private-bootstrap path can construct this owner, after
+//! associating its retained preamble and exact canonical launch/boot bodies.
+//! Decoded allocation rows alone never construct a native scope.
+
+use super::*;
+use crate::reference_packet::service::native_startup::{
+    PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA, PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA,
+    PacketNativeStartupAllocation, PacketNativeStartupAllocationRow,
+};
+
+pub(super) struct OriginalNativeStartupBoot {
+    pub(super) allocation: PacketNativeStartupAllocation,
+    pub(super) source_digest: [u8; 32],
+    pub(super) launch_digest: [u8; 32],
+    pub(super) birth_id: [u8; 32],
+    pub(super) native_birth_issued: bool,
+    pub(super) baseline_complete: bool,
+    pub(super) prepare_startup_issued: bool,
+}
+
+impl NativeAckBoot {
+    fn authenticate_native_startup_data(
+        &self,
+    ) -> Result<&OriginalNativeStartupBoot, ProviderError> {
+        self.ensure_origin()?;
+        let original = self
+            .startup
+            .as_ref()
+            .ok_or(ProviderError::Correlation("native startup origin absent"))?;
+        if !self.ready
+            || !self.verified
+            || !original.native_birth_issued
+            || !original.baseline_complete
+            || self.data.schema != PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA
+            || self
+                .data
+                .source_birth
+                .get("schema")
+                .and_then(serde_json::Value::as_str)
+                != Some(PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA)
+            || self.data.birth_id.as_slice() != original.birth_id
+            || blake3::hash(&self.launch_body).as_bytes() != &original.launch_digest
+            || blake3::hash(&self.source_body).as_bytes() != &original.source_digest
+        {
+            return Err(ProviderError::Correlation(
+                "native startup original body differs",
+            ));
+        }
+        Ok(original)
+    }
+
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn authenticate_original_native_baseline_data(
+        &self,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native_startup_data().map(|_| ())
+    }
+
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn original_native_prepare_startup_row_data(
+        &self,
+    ) -> Result<PacketNativeStartupAllocationRow, ProviderError> {
+        self.authenticate_native_startup_data()?
+            .allocation
+            .restore_prepare
+            .ok_or(ProviderError::Correlation(
+                "native Prepare startup not selected",
+            ))
+    }
+
+    // The verified token authenticates its actual connection/boot/policy before
+    // borrowing this owner mutably. Once claimed, no read/error/unwind can reopen
+    // the occurrence merely because no Prepare attempt has been installed yet.
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn claim_original_native_prepare_startup_row_data(
+        &mut self,
+    ) -> Result<PacketNativeStartupAllocationRow, ProviderError> {
+        let row = self.original_native_prepare_startup_row_data()?;
+        let original = self
+            .startup
+            .as_mut()
+            .ok_or(ProviderError::Correlation("native startup origin absent"))?;
+        if std::mem::replace(&mut original.prepare_startup_issued, true) {
+            return Err(ProviderError::Conflict(
+                "native Prepare startup already claimed",
+            ));
+        }
+        Ok(row)
+    }
+}

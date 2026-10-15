@@ -142,6 +142,8 @@ impl PacketHostSupervisor {
             .reserve_world(activation, limits)
             .map_err(|_| QualificationError::Refused("packet original runtime reservation"))?;
         let native = Box::new(NativeSlot {
+            process: std::process::id(),
+            thread: std::thread::current().id(),
             mailbox: self.mailbox.clone(),
             transferred: false,
         });
@@ -228,11 +230,20 @@ impl PacketHostSupervisor {
 }
 
 struct NativeSlot {
+    process: u32,
+    thread: std::thread::ThreadId,
     mailbox: Rc<Mailbox>,
     transferred: bool,
 }
 
 impl CnpSemanticProcessSlot for NativeSlot {
+    fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, crucible::node_contract::RuntimeError> {
+        NativeSlot::retained_requested_storage_precredit_data(self, maximum)
+    }
+
     fn identity(&self) -> U64 {
         U64::new(1)
     }

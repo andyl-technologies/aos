@@ -21,6 +21,11 @@ use crucible_node_provider::ProviderError;
 
 use super::current::KernelIdentity;
 
+#[path = "executable_guard/fresh_current.rs"]
+mod fresh_current;
+
+pub(in crate::node_adapters::cnp::semantic) use fresh_current::FreshCurrentScratch;
+
 const MAXIMUM_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(PartialEq, Eq)]
@@ -69,6 +74,35 @@ pub(super) struct OriginalExecutable {
 }
 
 impl OriginalExecutable {
+    pub(in crate::node_adapters::cnp::semantic) fn storage_origin_precredit_data(
+        &self,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+
+        if self.creator != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        Ok(())
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn charge_retained_storage_precredit_data(
+        &self,
+        counter: &mut super::super::retained_storage::preparation::PreparationCounter,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        self.storage_origin_precredit_data()?;
+        counter.path(&self.process_path)?;
+        counter.path(&self.original_target)?;
+        counter.content_reference(&self.expected)?;
+        if self.original.lease().is_some() {
+            counter.unknowns.executable_lease_worker = true;
+        }
+        counter.arc_file(self.original.file())?;
+        self.storage_origin_precredit_data()
+    }
+
     pub(super) fn open(
         pid: u32,
         expected: &ContentRef,

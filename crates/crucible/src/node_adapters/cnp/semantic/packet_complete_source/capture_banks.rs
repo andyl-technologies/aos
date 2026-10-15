@@ -5,6 +5,7 @@
 //! full codec and factory still authenticate all coexisting storage and metadata.
 
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 
 #[path = "capture_banks/retained.rs"]
 mod retained;
@@ -181,23 +182,41 @@ impl PacketCompleteCaptureBanks {
     }
 
     pub(super) fn facts(&self) -> Result<PacketCompleteCaptureBankFacts, OperationFailure> {
+        self.facts_with_error::<OperationFailure>()
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn facts_with_error<E: StorageError>(
+        &self,
+    ) -> Result<PacketCompleteCaptureBankFacts, E> {
         let semantic_bytes = match (&self.semantic, &self.semantic_snapshot) {
             (Some(bank), None) => bank.allocated_bytes(),
             (None, Some(snapshot)) => snapshot.payload().bytes.capacity(),
             (None, None) if self.transferred => 0,
-            _ => return Err(refused("original semantic bank association is incomplete")),
+            _ => {
+                return Err(E::refused(
+                    "original semantic bank association is incomplete",
+                ));
+            }
         };
         let ancestry_bytes = match (&self.ancestry, &self.ancestry_record) {
             (Some(bank), None) => bank.allocated_bytes(),
             (None, Some(record)) => record.bytes.capacity(),
             (None, None) if self.transferred => 0,
-            _ => return Err(refused("original ancestry bank association is incomplete")),
+            _ => {
+                return Err(E::refused(
+                    "original ancestry bank association is incomplete",
+                ));
+            }
         };
         let journal_bytes = match (&self.journal, &self.journal_record) {
             (Some(bank), None) => bank.allocated_bytes(),
             (None, Some(record)) => record.bytes.capacity(),
             (None, None) if self.transferred => 0,
-            _ => return Err(refused("original journal bank association is incomplete")),
+            _ => {
+                return Err(E::refused(
+                    "original journal bank association is incomplete",
+                ));
+            }
         };
         let protocol_bytes = match (
             &self.protocol,
@@ -206,39 +225,43 @@ impl PacketCompleteCaptureBanks {
         ) {
             (Some(bank), None, None) => {
                 bank.original_allocation_facts()
-                    .map_err(unknown)?
+                    .map_err(E::unknown)?
                     .allocated_bytes
             }
             (None, Some(snapshot), None) => {
                 snapshot
                     .original_allocation_facts()
-                    .map_err(unknown)?
+                    .map_err(E::unknown)?
                     .allocated_bytes
             }
             (None, None, Some((owner, bytes))) => {
                 // The owner retains the literal bank and immutable issuance facts,
                 // but the moved vector is the sole current encoded allocation.
-                let facts = owner.original_allocation_facts().map_err(unknown)?;
+                let facts = owner.original_allocation_facts().map_err(E::unknown)?;
                 let literal = facts.literal.map_or(0, |literal| literal.allocated_bytes);
                 let records = owner
                     .original_metadata_record_allocation_facts()
-                    .map_err(unknown)?
+                    .map_err(E::unknown)?
                     .map_or(0, |facts| facts.allocated_bytes);
                 let aliases = owner
                     .original_alias_allocation_facts()
-                    .map_err(unknown)?
+                    .map_err(E::unknown)?
                     .map(|facts| facts.row_bytes.checked_add(facts.lookup_bytes))
                     .unwrap_or(Some(0))
-                    .ok_or_else(|| refused("original protocol alias extent overflow"))?;
+                    .ok_or_else(|| E::refused("original protocol alias extent overflow"))?;
                 bytes
                     .capacity()
                     .checked_add(literal)
                     .and_then(|bytes| bytes.checked_add(records))
                     .and_then(|bytes| bytes.checked_add(aliases))
-                    .ok_or_else(|| refused("original protocol payload allocation overflow"))?
+                    .ok_or_else(|| E::refused("original protocol payload allocation overflow"))?
             }
             (None, None, None) if self.protocol_detached => 0,
-            _ => return Err(refused("original protocol bank association is incomplete")),
+            _ => {
+                return Err(E::refused(
+                    "original protocol bank association is incomplete",
+                ));
+            }
         };
         let mut native_capacity = [0usize; 3];
         for (index, capacity) in native_capacity.iter_mut().enumerate() {
@@ -246,7 +269,7 @@ impl PacketCompleteCaptureBanks {
                 (Some(bank), None) => bank.allocated_bytes(),
                 (None, Some(object)) => object.bytes.capacity(),
                 (None, None) if self.transferred => 0,
-                _ => return Err(refused("native return bank association is incomplete")),
+                _ => return Err(E::refused("native return bank association is incomplete")),
             };
         }
         let [
@@ -260,7 +283,7 @@ impl PacketCompleteCaptureBanks {
             (Some(bank), None) => bank.allocated_bytes(),
             (None, Some(object)) => object.bytes.capacity(),
             _ => {
-                return Err(refused(
+                return Err(E::refused(
                     "native-after return bank association is incomplete",
                 ));
             }
@@ -277,7 +300,7 @@ impl PacketCompleteCaptureBanks {
         ]
         .into_iter()
         .try_fold(0usize, |sum, size| sum.checked_add(size))
-        .ok_or_else(|| refused("complete source bank allocation overflow"))?;
+        .ok_or_else(|| E::refused("complete source bank allocation overflow"))?;
         Ok(PacketCompleteCaptureBankFacts {
             semantic_bytes,
             ancestry_bytes,

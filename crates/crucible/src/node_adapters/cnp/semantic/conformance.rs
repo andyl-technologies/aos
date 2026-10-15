@@ -21,6 +21,24 @@ use super::{
 pub trait CnpSemanticConformanceAuthority:
     crate::node_admission::ConformanceAdmissionAuthority
 {
+    /// Observes actual nested backing before allocation credit, using raw failures.
+    ///
+    /// Implementations walk the same concrete owner without heap allocation,
+    /// formatting, serialization, I/O, or currentness callbacks. The caller
+    /// separately charges the actual outer allocation and observer scratch.
+    /// `None` retains an unknown owner. This default never calls the legacy
+    /// allocating-error observer and grants no native or allocation authority.
+    ///
+    /// # Errors
+    /// Returns a typed origin, busy-loan, unsupported-layout or checked-bound
+    /// refusal without constructing an owned diagnostic.
+    fn retained_requested_storage_precredit_data(
+        &self,
+        _maximum: usize,
+    ) -> Result<Option<usize>, crate::node_contract::RuntimeError> {
+        Ok(None)
+    }
+
     /// Observes this same installed owner's nested requested storage as data.
     ///
     /// The caller charges the actual Rc header and inline payload separately.

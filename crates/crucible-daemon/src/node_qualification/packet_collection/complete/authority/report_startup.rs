@@ -5,6 +5,9 @@
 //! array before any observation. No callback follows a raw pointer or accepts
 //! a caller-computed byte total, and no report admits its own construction.
 
+mod preparation;
+pub use preparation::PacketCompletePreparationConnection;
+
 use super::super::retained::Counter;
 use super::super::{PacketCompleteGraphOwner, capture_factory::PacketCompleteRestorationPrebirth};
 use super::*;
@@ -38,6 +41,7 @@ pub struct PacketCompleteReportStartupHolder {
     attempted: Cell<bool>,
     in_flight: Cell<bool>,
     completed: Cell<bool>,
+    preparations: RefCell<preparation::PreparationOwners>,
 }
 
 enum StartupHolderPurpose {
@@ -117,6 +121,42 @@ impl PacketCompleteReportStartupHolder {
         Ok(holder)
     }
 
+    /// Retains a fresh holder before reserving its actual preparation supervisors.
+    ///
+    /// The prebirth capsule, policy, Source3 and archive-ticketed Host keep their
+    /// existing authentication. Once installed, the caller's output owns the
+    /// holder even if a later constructor or original Hello-slot binding refuses.
+    /// This reserves host transport custodians; it does not admit native birth.
+    ///
+    /// # Errors
+    /// Refuses occupied output, foreign installed originals, repeated policy
+    /// registration or insufficient storage for all three known reservations.
+    pub fn install_fresh_preparation_into(
+        graph_owner: PacketCompleteGraphOwner,
+        authority: Rc<InstalledPacketCompleteCollectionAuthority>,
+        plan: Rc<InstalledConformancePlan>,
+        resources: ResourceLimits,
+        capsule: Rc<RefCell<PacketCompleteRestorationPrebirth>>,
+        receiver_group: Rc<PacketCompleteEffectReceiverGroup>,
+        receiver_reader: PacketCompleteEffectReceiverReader,
+        output: &mut Option<Rc<RefCell<Self>>>,
+    ) -> Result<(), QualificationError> {
+        if output.is_some() {
+            return Err(refused());
+        }
+        let original = Self::install_fresh_restoration(
+            graph_owner,
+            authority,
+            plan,
+            resources,
+            capsule,
+            receiver_group,
+            receiver_reader,
+        )?;
+        *output = Some(original);
+        Self::reserve_original_preparation_supervisors(output.as_ref().ok_or_else(refused)?)
+    }
+
     fn install(
         graph_owner: PacketCompleteGraphOwner,
         authority: Rc<InstalledPacketCompleteCollectionAuthority>,
@@ -159,6 +199,7 @@ impl PacketCompleteReportStartupHolder {
             attempted: Cell::new(false),
             in_flight: Cell::new(false),
             completed: Cell::new(false),
+            preparations: RefCell::new(preparation::PreparationOwners::new()),
         }));
         authority
             .report_startup_holder
@@ -218,6 +259,31 @@ impl PacketCompleteReportStartupHolder {
         }
         self.graph_owner
             .authenticate_original_report_policy_data(&authority.graph_policy)
+    }
+
+    pub(super) fn charge_fresh_host_archive_precredit_data(
+        &self,
+        authority: &InstalledPacketCompleteCollectionAuthority,
+        counter: &mut Counter,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        self.authenticate_origin()
+            .map_err(|_| crucible::node_contract::RuntimeError::ForeignAuthority)?;
+        if !std::ptr::eq(self.authority.as_ref(), authority) {
+            return Err(crucible::node_contract::RuntimeError::ForeignAuthority);
+        }
+        self.graph_owner
+            .authenticate_original_report_policy_data(&authority.graph_policy)
+            .map_err(|_| crucible::node_contract::RuntimeError::ForeignAuthority)?;
+        let StartupHolderPurpose::FreshRestoration(capsule) = &self.purpose else {
+            return Err(crucible::node_contract::RuntimeError::UnsupportedFacet);
+        };
+        let bytes = capsule
+            .try_borrow()
+            .map_err(|_| crucible::node_contract::RuntimeError::OwnerBusy)?
+            .retained_fresh_host_archive_precredit_data(&authority.host, counter.remaining())?;
+        counter
+            .add(bytes)
+            .map_err(|_| crucible::node_contract::RuntimeError::ResourceLimit)
     }
 
     fn authenticate_origin(&self) -> Result<(), QualificationError> {
@@ -297,7 +363,7 @@ impl PacketCompleteReportStartupHolder {
         counter.rc(original)?;
         counter.add(
             held.receiver_group
-                .original_retained_requested_storage_data(counter.remaining())
+                .original_retained_requested_storage_precredit_data(counter.remaining())
                 .map_err(|_| refused())?,
         )?;
         if counter.rc(&held.authority)? {
@@ -313,8 +379,8 @@ impl PacketCompleteReportStartupHolder {
         if counter.rc(&held.plan)? {
             counter.add(
                 held.plan
-                    .retained_allocation_bytes_excluding_authority()
-                    .map_err(evidence_qualification)?,
+                    .retained_allocation_bytes_excluding_authority_precredit_data()
+                    .map_err(|_| refused())?,
             )?;
         }
         if let StartupHolderPurpose::FreshRestoration(capsule) = &held.purpose {
@@ -322,10 +388,14 @@ impl PacketCompleteReportStartupHolder {
                 capsule
                     .try_borrow()
                     .map_err(|_| refused())?
-                    .retained_report_startup_storage_data(capsule, counter.remaining())
+                    .retained_host_holder_precredit_data(capsule, counter.remaining())
                     .map_err(|_| refused())?,
             )?;
         }
+        held.preparations
+            .try_borrow()
+            .map_err(|_| refused())?
+            .charge_supervisors(&mut counter)?;
         // This selected success path walks borrowed capacities without a new
         // temporary heap bank. All compiled counters/metadata views are already
         // admitted by policy_data; source/finalization phases are Core terms.

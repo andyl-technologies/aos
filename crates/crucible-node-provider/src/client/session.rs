@@ -19,6 +19,7 @@ use crate::transport::{FrameReader, write_frame_with_limits};
 
 use super::{ClientContent, DeadlineStream, ExchangeDeadline};
 
+mod fresh_restore_query;
 #[path = "session/original_conflict.rs"]
 pub(super) mod original_conflict;
 #[path = "session/resend.rs"]
@@ -478,6 +479,19 @@ impl ClientSession {
         }
         self.authority.ensure_live()?;
         self.connection.retain_original_protocol_supervisor()
+    }
+
+    pub(super) fn authenticate_original_retained_supervisor(
+        &self,
+        owner: &crate::connection::OriginalRetainedSupervisor,
+    ) -> Result<(), ProviderError> {
+        if self.original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "supervisor witness refuses mutable loss callback",
+            ));
+        }
+        self.authority.ensure_live()?;
+        owner.authenticate(&self.connection)
     }
 
     pub(super) fn authenticate_original_protocol_supervisor(
@@ -1765,5 +1779,38 @@ impl ClientSession {
         self.authenticate_native5_source_codec()?;
         self.connection
             .original_native5_restore_input_emitter_selection()
+    }
+}
+
+impl ClientSession {
+    pub(super) fn observe_original_host_live_metadata_extras(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            connection,
+            authority: _,
+            deadline,
+            sequence: _,
+            peer_pid: _,
+            peer_executable: _,
+            original_ack_hello,
+            original_response_loss,
+        } = self;
+        if original_response_loss.is_some() {
+            return Err(ProviderError::Correlation(
+                "live host metadata mutable loss callback",
+            ));
+        }
+        connection.observe_original_host_live_metadata_extras(observer)?;
+        deadline.observe_owned11_metadata(observer)?;
+        if let Some(bank) = original_ack_hello {
+            // The existing tuple metadata already counts this Session Rc edge.
+            // This additive live walk includes its actual bytes/descriptors.
+            bank.try_borrow()
+                .map_err(|_| ProviderError::Conflict("live host Hello bank borrowed"))?
+                .observe_owned11_metadata(observer)?;
+        }
+        Ok(())
     }
 }

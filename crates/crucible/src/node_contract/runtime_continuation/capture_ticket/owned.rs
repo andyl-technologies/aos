@@ -632,3 +632,8 @@ impl NodeRuntime {
         super::serialization::counter_scratch_data()
     }
 }
+
+/// Names the actual fixed descriptor bank used while the owning walk borrows it.
+pub(crate) fn opaque_owner_counter_scratch_data() -> usize {
+    size_of::<opaque_owned::RetainedCoreOwnerStorage<'_>>()
+}

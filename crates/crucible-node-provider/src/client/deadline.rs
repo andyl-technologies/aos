@@ -132,6 +132,19 @@ impl DeadlineStreamBirthRefusal {
 }
 
 impl DeadlineStream {
+    pub(crate) fn observe_original_host_live_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), crate::ProviderError> {
+        let Self {
+            stream: _,
+            deadline,
+        } = self;
+        // The selected std UnixStream owns its descriptor inline. Kernel socket
+        // storage is a separate resource, not Rust requested heap backing.
+        deadline.observe_owned11_metadata(observer)
+    }
+
     pub(crate) fn authenticate_original_deadline(
         &self,
         deadline: &ExchangeDeadline,

@@ -4,6 +4,8 @@
 //! implements no live Capture, native restoration, staging, geometry or Ready
 //! gate. Its private inner owner never enrolls as the scene's live factory.
 
+mod precredit;
+
 use super::*;
 use crucible::node_admission::{
     AdmissionLimits, CompleteArchiveCodeGraph, admit_complete_archive_code_graph,

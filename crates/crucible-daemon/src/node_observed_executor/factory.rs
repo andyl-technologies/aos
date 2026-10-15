@@ -20,6 +20,7 @@ mod condition_debug;
 mod controlled;
 mod faulted;
 mod native_state;
+mod normal_clock;
 mod prepared_models;
 mod profile;
 #[cfg(test)]
@@ -32,6 +33,12 @@ pub use condition_debug::InstalledConditionDebugProfile;
 mod transcript;
 mod trust;
 mod typed_reader;
+
+pub use normal_clock::{
+    ClockStateObservationData, InstalledNormalClockProfile, InstalledNormalClockStateFactory,
+    NormalClockProgramme, OriginalClockAggregateResources, OriginalClockProcessBootstrap,
+    OriginalClockQualificationRun, OriginalClockStateProgramme, OriginalClockStateWitness,
+};
 
 pub use typed_reader::{
     InstalledTypedReaderCatalog, InstalledTypedReaderCatalogPolicy,
@@ -519,6 +526,7 @@ struct SelectedPreparation<'a> {
     source: PreparationSource<'a>,
     label: Option<&'a clock_label::ClockLabelPolicy>,
     capabilities: Option<&'a capabilities::ResolvedCapabilityWorld>,
+    normal_clock: Option<&'a normal_clock::InstalledNormalClockProfile>,
 }
 
 /// Owns trusted local installation measurements and finite world retirement slots.
@@ -536,6 +544,7 @@ pub struct InstalledNodeCatalog {
     socket_parent: PathBuf,
     control_timeout: Duration,
     custody: RuntimeCustodyQueue,
+    runtime_wake: Option<crucible::node_contract::RuntimeCustodyWakeReader>,
     artifacts: BTreeMap<String, InstalledIoArtifact>,
     behavioral_acceptance: Option<acceptance::InstalledBehavioralAcceptance>,
     vendor_providers: Option<crucible::node_contract::InstalledProviderRegistry>,
@@ -558,6 +567,50 @@ impl InstalledNodeCatalog {
         control_timeout: Duration,
         maximum_worlds: usize,
     ) -> Result<Self, NodeObservedError> {
+        Self::new_with_runtime_wake(
+            device_executable,
+            expected_device,
+            socket_parent,
+            control_timeout,
+            maximum_worlds,
+            false,
+        )
+    }
+
+    /// Opens the same catalog with its concrete retained runtime wake owner.
+    ///
+    /// This selects the existing Core bounded-wake queue at actual construction.
+    /// Source owning observations can then account for its real retained waker;
+    /// no pointer classification or generic opaque-waker exemption is used.
+    /// Native/model/source qualification and all admission gates stay separate.
+    ///
+    /// # Errors
+    /// Refuses ordinary catalog validation, descriptor resources or wake setup.
+    pub fn new_with_bounded_runtime_wake(
+        device_executable: PathBuf,
+        expected_device: ContentRef,
+        socket_parent: PathBuf,
+        control_timeout: Duration,
+        maximum_worlds: usize,
+    ) -> Result<Self, NodeObservedError> {
+        Self::new_with_runtime_wake(
+            device_executable,
+            expected_device,
+            socket_parent,
+            control_timeout,
+            maximum_worlds,
+            true,
+        )
+    }
+
+    fn new_with_runtime_wake(
+        device_executable: PathBuf,
+        expected_device: ContentRef,
+        socket_parent: PathBuf,
+        control_timeout: Duration,
+        maximum_worlds: usize,
+        bounded_wake: bool,
+    ) -> Result<Self, NodeObservedError> {
         if !device_executable.is_absolute()
             || !socket_parent.is_absolute()
             || control_timeout.is_zero()
@@ -576,7 +629,16 @@ impl InstalledNodeCatalog {
         }
         let host_executable = PathBuf::from("/proc/self/exe");
         let host_identity = measure_executable(&host_executable)?;
-        let custody = RuntimeCustodyQueue::new(maximum_worlds).map_err(native)?;
+        let (custody, runtime_wake) = if bounded_wake {
+            let (queue, reader) =
+                RuntimeCustodyQueue::new_with_bounded_wake(maximum_worlds).map_err(native)?;
+            (queue, Some(reader))
+        } else {
+            (
+                RuntimeCustodyQueue::new(maximum_worlds).map_err(native)?,
+                None,
+            )
+        };
         Ok(Self {
             host_executable,
             host_identity,
@@ -585,6 +647,7 @@ impl InstalledNodeCatalog {
             socket_parent,
             control_timeout,
             custody,
+            runtime_wake,
             artifacts: BTreeMap::new(),
             behavioral_acceptance: None,
             vendor_providers: None,
@@ -976,6 +1039,7 @@ impl InstalledNodeCatalog {
                 source,
                 label: None,
                 capabilities: None,
+                normal_clock: None,
             },
         )
     }
@@ -993,6 +1057,7 @@ impl InstalledNodeCatalog {
             source,
             label,
             capabilities,
+            normal_clock,
         } = preparation;
         if label.is_some() && self.behavioral_acceptance.is_some() {
             return Err(refused(
@@ -1005,6 +1070,25 @@ impl InstalledNodeCatalog {
             &self.device_identity,
             artifacts,
         )?;
+        if let Some(clock) = normal_clock {
+            if label.is_some()
+                || capabilities.is_some()
+                || resolved.scenario.canonical_bytes()? != clock.baseline.canonical_bytes()?
+            {
+                return Err(refused(
+                    "normal Clock source has foreign or composed preparation scope",
+                ));
+            }
+            resolved.scenario = normal_clock::profile::build(&resolved.scenario)?;
+            if source.activation.is_some() != source.preserved_cut.is_some() {
+                return Err(refused("normal Clock restore source/cut scope differs"));
+            }
+            if let Some(original) = source.activation
+                && original.world_binding_hash != resolved.scenario.world.identity()?
+            {
+                return Err(refused("normal Clock restore source world differs"));
+            }
+        }
         if let Some(label) = label {
             if resolved.scenario.canonical_bytes()? != label.base.canonical_bytes()? {
                 return Err(refused(
@@ -1292,6 +1376,12 @@ impl InstalledNodeCatalog {
                         HostModelResources::default(),
                     )
                     .map_err(native)?;
+                    let mut actual = actual;
+                    if normal_clock.is_some() {
+                        actual
+                            .qualify_public_preserving_initial_clock(&graph, &evidence)
+                            .map_err(native)?;
+                    }
                     let actual = if selections.iter().any(|selected| {
                         matches!(
                             selected.kind,
@@ -1361,6 +1451,22 @@ impl InstalledNodeCatalog {
     /// Returns owning cleanup supervision for polling on every daemon actor turn.
     pub fn custody(&self) -> &RuntimeCustodyQueue {
         &self.custody
+    }
+
+    fn poll_original_runtime_custody(
+        &self,
+        context: &mut std::task::Context<'_>,
+    ) -> Result<
+        std::task::Poll<Result<(), crucible::node_contract::RuntimePollFailure>>,
+        NodeObservedError,
+    > {
+        match &self.runtime_wake {
+            Some(reader) => self
+                .custody
+                .poll_reclamation_with_original_wake(reader)
+                .map_err(native),
+            None => Ok(self.custody.poll_reclamation(context)),
+        }
     }
 
     pub(super) fn authenticate_cache_selection(

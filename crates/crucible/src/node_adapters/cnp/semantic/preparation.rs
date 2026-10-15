@@ -43,6 +43,9 @@ pub struct CnpSemanticPreparation {
     pub(super) realization: RealizeResult,
 }
 
+#[path = "preparation/fresh_restore_host.rs"]
+mod fresh_restore_host;
+
 impl CnpSemanticPreparation {
     /// Transfers native custody while retaining original discovery and realization data.
     ///

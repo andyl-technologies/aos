@@ -109,3 +109,12 @@ pub(crate) use native_boot::{
     original_native_ack_boot_layout, original_native_private_bootstrap_layout,
     original_native_report_startup_scope_layout_data,
 };
+
+pub(crate) use native_boot::{
+    OriginalNativePrepareStartupAllocation, measure_original_prepare_executable_data,
+    original_prepare_executable_measurement_counter_scratch_data,
+};
+pub use native_boot::{
+    PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,
+    original_native_prepare_startup_storage_data,
+};

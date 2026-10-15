@@ -85,6 +85,10 @@ impl EvaluatedAcceptance<'_> {
         self.original_bytes
     }
 
+    pub(super) fn into_record(self) -> AcceptanceRecord {
+        self.record
+    }
+
     /// Borrows the retained decision, including refused or failed coverage.
     pub fn record(&self) -> &AcceptanceRecord {
         &self.record

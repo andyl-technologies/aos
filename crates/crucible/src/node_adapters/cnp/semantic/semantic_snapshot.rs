@@ -611,3 +611,26 @@ mod reference_tests;
 #[cfg(test)]
 #[path = "semantic_snapshot/canonical_component_tests.rs"]
 mod canonical_component_tests;
+
+impl CnpSemanticSnapshotReservation {
+    pub(in crate::node_adapters::cnp::semantic) fn retained_metadata_requested_storage_precredit_data(
+        &self,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        self.storage_origin.check_precredit_data()?;
+        Ok(0)
+    }
+}
+
+impl CnpOriginalSemanticSnapshot {
+    pub(in crate::node_adapters::cnp::semantic) fn retained_metadata_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<super::CnpRetainedStorageReport, crate::node_contract::RuntimeError> {
+        self.storage_origin.check_precredit_data()?;
+        let mut counter = super::retained_storage::preparation::PreparationCounter::new(maximum);
+        counter.content_reference(&self.payload.reference)?;
+        counter.activation(&self.active)?;
+        self.storage_origin.check_precredit_data()?;
+        Ok(counter.finish())
+    }
+}

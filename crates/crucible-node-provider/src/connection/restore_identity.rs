@@ -255,3 +255,45 @@ impl OriginalNativeRestorationConnectionIdentity {
         observer.observe(literal_length)
     }
 }
+
+impl<S: ProviderStream> Connection<S> {
+    /// Names the actual independently allocated assigned-response owner header.
+    pub(crate) fn original_prepare_response_owner_layout_data() -> usize {
+        super::restore_response::original_restore_response_owner_layout()
+    }
+
+    /// Counts the two independently copied authority backings of real Prepare.
+    pub(crate) fn original_prepare_authority_clone_storage_data(
+        &self,
+        maximum_features: usize,
+    ) -> Result<usize, ProviderError> {
+        let installed = self.original_native_owned11_admission()?;
+        for authority in [&self.authority, &installed.authority] {
+            let maximum_keys = authority.selected_features().len().checked_mul(2).ok_or(
+                ProviderError::ResourceExhausted("Prepare extension cardinality"),
+            )?;
+            if authority.selected_features().len() > maximum_features
+                || authority.envelope_extensions().len() > maximum_keys
+                || authority
+                    .envelope_extensions()
+                    .iter()
+                    .any(|key| key.len() > 128)
+            {
+                return Err(ProviderError::Correlation("Prepare extension cardinality"));
+            }
+        }
+        let identity = self.authority.independent_clone_backing_storage_data()?;
+        let prepare = installed
+            .authority
+            .independent_clone_backing_storage_data()?;
+        identity
+            .checked_add(prepare)
+            .ok_or(ProviderError::ResourceExhausted(
+                "Prepare authority clone backing",
+            ))
+    }
+}
+
+#[path = "prepare_startup_receive.rs"]
+mod prepare_startup_receive;
+pub(crate) use prepare_startup_receive::authenticate_original_native_prepare_header_data;

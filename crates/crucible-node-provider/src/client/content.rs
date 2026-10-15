@@ -520,3 +520,44 @@ mod tests {
 
 /// Validates explicit content-eight metadata capacities without granting installation.
 pub mod compact_metadata8;
+
+impl ClientContent {
+    pub(super) fn fresh_report_requested_layout_data(
+        &self,
+        raw_capacity: usize,
+    ) -> Result<usize, ProviderError> {
+        use std::mem::{align_of, size_of};
+        let entries = self
+            .transfers
+            .len()
+            .checked_add(self.objects.len())
+            .and_then(|n| n.checked_add(2))
+            .ok_or(ProviderError::ResourceExhausted(
+                "fresh report content tree extent",
+            ))?;
+        let tree = crate::retained_metadata::requested_storage::tree_storage_data(
+            2,
+            entries,
+            (size_of::<Id>() + size_of::<Transfer>())
+                .max(size_of::<String>() + size_of::<(ContentRef, Rc<Vec<u8>>)>()),
+            align_of::<Transfer>().max(align_of::<ContentRef>()),
+        )?;
+        // The single initialized transfer and completed object retain the SAME
+        // actual Rc<Vec<u8>>; the two edge headers themselves are inline above.
+        [
+            tree,
+            raw_capacity,
+            size_of::<Vec<u8>>(),
+            crate::retained_metadata::requested_storage::shared_header_storage_data(
+                1,
+                align_of::<Vec<u8>>(),
+            )?,
+        ]
+        .into_iter()
+        .try_fold(0usize, |n, bytes| {
+            n.checked_add(bytes).ok_or(ProviderError::ResourceExhausted(
+                "fresh report content backing",
+            ))
+        })
+    }
+}

@@ -17,11 +17,12 @@ use serde::{Deserialize, Serialize};
 mod contract;
 mod crypto;
 mod metadata;
+pub(crate) mod policy;
 mod startup;
 
 pub(crate) use startup::{
-    FreshRestoreAllocationStartupShapes, fresh_restore_allocation_startup_counter_scratch_data,
-    fresh_restore_allocation_startup_shapes,
+    FreshRestoreAllocationStartupShapes, fresh_restore_allocation_host_shapes,
+    fresh_restore_allocation_startup_counter_scratch_data, fresh_restore_allocation_startup_shapes,
 };
 
 #[cfg(test)]

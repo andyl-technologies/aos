@@ -32,6 +32,14 @@ impl CnpController {
         self.protocol_owner.ensure_current()?;
         self.authenticate_native5_source_codec()?;
         self.ensure_no_pending_original_complete_restore()?;
+        if self
+            .original_native5_fresh_restore_allocation_selection()?
+            .is_some()
+        {
+            return Err(ProviderError::Correlation(
+                "fresh query owner requires extended host complete class",
+            ));
+        }
         if self.fenced || !reservation.uses_owned11_encoding() {
             return Err(ProviderError::Correlation(
                 "complete host quote class absent",
@@ -72,6 +80,14 @@ impl CnpController {
         &'a self,
         supervisor: &'a OriginalSupervisorProtocolView<'_>,
     ) -> Result<impl Serialize + 'a, ProviderError> {
+        if self
+            .original_native5_fresh_restore_allocation_selection()?
+            .is_some()
+        {
+            return Err(ProviderError::Correlation(
+                "fresh query owner requires extended host complete class",
+            ));
+        }
         Ok((
             crate::protocol_snapshot::owned11::outer::COMPLETE_CONTROLLER_FORMAT,
             &self.route.node,

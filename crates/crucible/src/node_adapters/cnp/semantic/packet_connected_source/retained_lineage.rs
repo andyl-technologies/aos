@@ -1,6 +1,7 @@
 //! Observes actual first-sealed lineage owners without rebuilding their claims.
 
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use std::mem::size_of;
 
 impl PacketConnectedSemanticSource {
@@ -8,18 +9,27 @@ impl PacketConnectedSemanticSource {
         &self,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
-        self.local_owner()?;
+        self.complete_retained_lineage_storage_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn complete_retained_lineage_storage_with_error<
+        E: StorageError,
+    >(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        self.local_owner_with_error::<E>()?;
         if !self.world.is_complete() {
-            return Err(refused(
+            return Err(E::refused(
                 "ordinary connected source has no complete lineage row",
             ));
         }
         let lineages = self
             .input_lineage
             .try_borrow()
-            .map_err(|_| refused("retained complete lineage bank already borrowed"))?;
+            .map_err(|_| E::refused("retained complete lineage bank already borrowed"))?;
         if lineages.len() > self.installation.maximum_operations {
-            return Err(refused(
+            return Err(E::refused(
                 "retained complete lineage population exceeds original bound",
             ));
         }
@@ -27,7 +37,7 @@ impl PacketConnectedSemanticSource {
             .capacity()
             .checked_mul(size_of::<OriginalInputLineage>())
             .filter(|bytes| *bytes <= maximum)
-            .ok_or_else(|| refused("retained complete lineage Vec capacity exhausted"))?;
+            .ok_or_else(|| E::refused("retained complete lineage Vec capacity exhausted"))?;
         for (index, lineage) in lineages.iter().enumerate() {
             // Both original backings must agree. The Core private observer
             // independently charges data and original batch allocations; sharing
@@ -40,14 +50,14 @@ impl PacketConnectedSemanticSource {
             if !repeated {
                 let next = lineage
                     .retained_requested_storage(maximum)
-                    .map_err(unknown)?;
+                    .map_err(E::runtime)?;
                 bytes = bytes
                     .checked_add(next)
                     .filter(|bytes| *bytes <= maximum)
-                    .ok_or_else(|| refused("retained complete lineage backing exhausted"))?;
+                    .ok_or_else(|| E::refused("retained complete lineage backing exhausted"))?;
             }
         }
-        self.local_owner()?;
+        self.local_owner_with_error::<E>()?;
         Ok(bytes)
     }
 }

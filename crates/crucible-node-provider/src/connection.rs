@@ -34,7 +34,9 @@ pub(crate) use restore_proof_quote::OriginalRestoreHeldProofAllocationQuote;
 mod restore_inputs;
 mod restore_response;
 pub(crate) use ack_admission::OriginalNativeAckConnectionIdentity;
-pub(crate) use restore_identity::OriginalNativeRestorationConnectionIdentity;
+pub(crate) use restore_identity::{
+    OriginalNativeRestorationConnectionIdentity, authenticate_original_native_prepare_header_data,
+};
 pub(crate) use restore_input_quote::NativeRestoreInputAllocationQuote;
 pub(crate) use restore_inputs::{
     OriginalCompleteRestoreInputCustody, OriginalCompleteRestoreInputProgress,
@@ -55,6 +57,7 @@ pub(crate) use exchange::{
     original_report_query_receive_counter_scratch_data, original_report_query_receive_storage_data,
     quote_original_packet_prefix_startup_storage_data,
 };
+mod fresh_restore_receive;
 mod native5_codec;
 pub use native5_codec::CanonicalAckCodecMetadataExtent;
 pub(crate) use native5_codec::{Native5CodecOwner, ProtocolCodecView};
@@ -74,8 +77,8 @@ pub(crate) use native_owned11::NativeOwned11AfterProtocolCapacityFacts;
 mod supervisor_state;
 pub use original_history::OriginalNative5FrameHistory;
 pub use supervisor_state::{
-    OriginalProtocolSupervisor, OriginalSupervisorCallback, OriginalSupervisorProtocolView,
-    OriginalSupervisorState,
+    OriginalProtocolSupervisor, OriginalRetainedSupervisor, OriginalSupervisorCallback,
+    OriginalSupervisorProtocolView, OriginalSupervisorState,
 };
 mod packet_schema;
 
@@ -766,3 +769,74 @@ mod complete_installation;
 mod restore_realize;
 
 mod restore_input_protocol;
+
+impl Connection<crate::client::DeadlineStream> {
+    pub(crate) fn observe_original_host_live_metadata_extras(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_native5_source_codec()?;
+        let Self {
+            reader,
+            authority: _,
+            guard: _,
+            supervisor,
+            schemas: _,
+            protocol_owner,
+            native5_blobs,
+            native5_codec,
+            original_restore_inputs,
+            original_restore_responses,
+            original_complete_restoration,
+            original_canonical_ack_admission,
+            packet_schema,
+            original_frames,
+            connected_packet_schema,
+            fenced,
+            role,
+        } = self;
+        if *role != EndpointRole::Controller
+            || native5_blobs.is_some()
+            || original_restore_inputs.is_some()
+            || original_restore_responses.iter().any(Option::is_some)
+            || original_complete_restoration.is_some()
+            || original_canonical_ack_admission.is_some()
+        {
+            return Err(ProviderError::Correlation(
+                "live host metadata owner family unsupported",
+            ));
+        }
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::ProtocolOwner,
+            protocol_owner.as_ref(),
+        )?;
+        // Codec currentness established that the erased schemas field and this
+        // typed codec are the SAME allocation. Count that independent edge too.
+        let codec = native5_codec
+            .as_ref()
+            .ok_or(ProviderError::Correlation("live host codec absent"))?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::Codec,
+            codec.as_ref(),
+        )?;
+        codec.observe_retained_metadata(observer)?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::HostSupervisor,
+            supervisor.as_ref(),
+        )?;
+        let bank = original_frames
+            .as_ref()
+            .ok_or(ProviderError::Correlation("live host frame bank absent"))?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::FrameBank,
+            bank.as_ref(),
+        )?;
+        bank.try_borrow()
+            .map_err(|_| ProviderError::Conflict("live host frame bank borrowed"))?
+            .observe_owned11_metadata(observer)?;
+        reader.observe_original_host_live_metadata(bank, observer)?;
+        observer.observe(packet_schema)?;
+        observer.observe(connected_packet_schema)?;
+        observer.observe(fenced)
+    }
+}

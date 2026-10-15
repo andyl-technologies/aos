@@ -6,6 +6,7 @@
 //! retains every original owner; it cannot be retried with replacement data.
 
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crate::{
     node_contract::OriginalLineageRestoration,
     node_state::{CompleteOriginalNativeTicket, CompleteOriginalRestorationSource},
@@ -71,9 +72,15 @@ pub(super) struct OriginalCompleteRestoreAttempt {
 
 impl OriginalCompleteRestoreAttempt {
     pub(super) fn allocated_bytes(&self) -> Result<usize, OperationFailure> {
+        self.allocated_bytes_with_error::<OperationFailure>()
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn allocated_bytes_with_error<E: StorageError>(
+        &self,
+    ) -> Result<usize, E> {
         self.banks.iter().try_fold(0usize, |sum, bank| {
             sum.checked_add(bank.capacity())
-                .ok_or_else(|| refused("complete restore actual bank extent overflow"))
+                .ok_or_else(|| E::limit("complete restore actual bank extent overflow"))
         })
     }
 
@@ -838,7 +845,11 @@ mod reservation_tests {
 }
 
 impl OriginalCompleteRestoreAttempt {
-    pub(super) fn authenticate_unpopulated_capture_metadata(&self) -> Result<(), OperationFailure> {
+    pub(in crate::node_adapters::cnp::semantic) fn authenticate_unpopulated_capture_metadata_with_error<
+        E: StorageError,
+    >(
+        &self,
+    ) -> Result<(), E> {
         if self.ticket.is_some()
             || self.mapping.is_some()
             || self.journal.is_some()
@@ -846,7 +857,7 @@ impl OriginalCompleteRestoreAttempt {
             || self.context.is_some()
             || self.normalized.iter().any(Option::is_some)
         {
-            return Err(refused(
+            return Err(E::refused(
                 "retained restore graph requires post-install owning class coverage",
             ));
         }
@@ -855,7 +866,11 @@ impl OriginalCompleteRestoreAttempt {
 }
 
 impl OriginalCompleteRestoreAttempt {
-    pub(super) fn authenticate_reserved_prebirth_data(&self) -> Result<(), OperationFailure> {
+    pub(in crate::node_adapters::cnp::semantic) fn authenticate_reserved_prebirth_data_with_error<
+        E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
+    >(
+        &self,
+    ) -> Result<(), E> {
         let Self {
             ticket,
             mapping,
@@ -887,7 +902,9 @@ impl OriginalCompleteRestoreAttempt {
             || *frame_maximum == 0
             || banks.iter().any(|bank| !bank.is_empty())
         {
-            return Err(refused("reserved prebirth restore banks are already used"));
+            return Err(E::refused(
+                "reserved prebirth restore banks are already used",
+            ));
         }
         Ok(())
     }

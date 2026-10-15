@@ -19,9 +19,11 @@ use crate::{
     },
 };
 use crucible_node_contract::IdSet;
-pub(crate) use owner_decode::selected_issuer_decode_storage_data;
 pub use owner_decode::{
     PacketCompleteRestoreOwnerValidationStorage, complete_restore_owner_validation_storage_data,
+};
+pub(crate) use owner_decode::{
+    selected_issuer_decode_counter_scratch_data, selected_issuer_decode_storage_data,
 };
 use serde_json::Value;
 

@@ -154,6 +154,9 @@ pub trait TrustedHandshakeVerifier {
     fn fence_connection(&mut self, connection: &Id) -> Result<(), ProviderError>;
 }
 
+#[path = "authority_clone_storage.rs"]
+mod authority_clone_storage;
+
 #[path = "registration_read.rs"]
 mod registration_read;
 pub(crate) use registration_read::RegistrationRead;

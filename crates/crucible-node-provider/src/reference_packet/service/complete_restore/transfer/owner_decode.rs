@@ -358,6 +358,24 @@ fn model_capacity_backing(
     Ok(total)
 }
 
+/// Reports explicit fixed scanner, layout, result and nested sum headers.
+///
+/// This is the counter precredit for the actual helper below. It excludes
+/// compiler/recursive frames, allocator metadata and all future decoded owners.
+pub(crate) const fn selected_issuer_decode_counter_scratch_data() -> usize {
+    size_of::<[u8; 64]>()
+        + size_of::<Credit>()
+        + size_of::<Phases>()
+        + size_of::<crate::reference_packet::control::PacketControlSnapshotValidationLayouts>()
+        + 12 * size_of::<usize>()
+        + 3 * size_of::<std::alloc::Layout>()
+        + size_of::<[usize; 6]>()
+        + size_of::<[usize; 4]>()
+        + 2 * size_of::<&[usize]>()
+        + 2 * size_of::<std::slice::Iter<'static, usize>>()
+        + size_of::<&[u8]>()
+}
+
 /// Counts one closed native issuer decode using its actual selected type layouts.
 ///
 /// This crate-private requested-storage component grants no allocation authority.

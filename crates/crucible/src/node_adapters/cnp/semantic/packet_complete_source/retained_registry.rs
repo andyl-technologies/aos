@@ -6,6 +6,7 @@
 //! the Source's controller/registrar/semantic authority checks.
 
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crucible_node_provider::handshake::OriginalExtensionRegistryOwner;
 use std::cell::Ref;
 
@@ -77,18 +78,26 @@ impl PacketCompleteSemanticSource {
     pub fn original_extension_registry_owner_data(
         &self,
     ) -> Result<Ref<'_, OriginalExtensionRegistryOwner>, OperationFailure> {
-        self.ensure_origin()?;
+        self.original_extension_registry_owner_data_with_error::<OperationFailure>()
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn original_extension_registry_owner_data_with_error<
+        E: StorageError,
+    >(
+        &self,
+    ) -> Result<Ref<'_, OriginalExtensionRegistryOwner>, E> {
+        self.storage_origin_with_error::<E>()?;
         if !self.registry_retention_attempted.get() || self.registry_retention_failed.get() {
-            return Err(refused(
+            return Err(E::refused(
                 "original extension registry metadata custody incomplete",
             ));
         }
         let slot = self
             .original_extension_registry
             .try_borrow()
-            .map_err(|_| refused("original extension registry metadata already borrowed"))?;
+            .map_err(|_| E::refused("original extension registry metadata already borrowed"))?;
         Ref::filter_map(slot, Option::as_ref)
-            .map_err(|_| refused("original extension registry metadata owner absent"))
+            .map_err(|_| E::refused("original extension registry metadata owner absent"))
     }
 
     /// Counts actual known registry and creator backing from the retained owner.
@@ -102,9 +111,20 @@ impl PacketCompleteSemanticSource {
         &self,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
-        let owner = self.original_extension_registry_owner_data()?;
-        Self::complete_retained_metadata_storage_data(
-            &owner.original_retained_metadata_facts().map_err(unknown)?,
+        self.original_extension_registry_storage_data_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn original_extension_registry_storage_data_with_error<
+        E: StorageError,
+    >(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        let owner = self.original_extension_registry_owner_data_with_error::<E>()?;
+        Self::complete_retained_metadata_storage_with_error::<E>(
+            &owner
+                .original_retained_metadata_facts()
+                .map_err(E::unknown)?,
             maximum,
         )
     }

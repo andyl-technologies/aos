@@ -15,6 +15,9 @@ use crate::node_contract::{
 };
 use crate::node_scheduling::PreparedSchedulingRestore;
 
+#[path = "transaction/publication.rs"]
+mod publication;
+
 use super::validation::{incompatible, incomplete};
 use super::{
     PreparedNativeCustody, PreparedRestoreAllocation, StateError, StateErrorCode, StateLimits,
@@ -226,6 +229,7 @@ pub struct RestoreFailure {
     staging: Option<Box<PreparedNativeCustody>>,
     runtime: Option<Box<QuarantinedRuntime>>,
     rejected_runtime: Option<Box<crate::node_contract::RuntimePreparationFailure>>,
+    panic_payload: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl RestoreFailure {
@@ -247,6 +251,7 @@ impl RestoreFailure {
             staging: Some(Box::new(staging)),
             runtime: None,
             rejected_runtime: None,
+            panic_payload: None,
         }
     }
 
@@ -261,7 +266,17 @@ impl RestoreFailure {
             staging: None,
             runtime: None,
             rejected_runtime: None,
+            panic_payload: None,
         }
+    }
+
+    /// Reports an original opaque callback panic retained by an opt-in owner.
+    ///
+    /// The payload is not serialized, formatted, resumed or reinterpreted as
+    /// authority. Its private heap layout is unknown; a complete owning-storage
+    /// observer must refuse unsupported accounting rather than count it as zero.
+    pub fn has_retained_panic_payload_data(&self) -> bool {
+        self.panic_payload.is_some()
     }
 
     /// Reports durable publication knowledge without implying native rollback.
@@ -730,6 +745,21 @@ struct RecordingPublisher<'a> {
     status: Option<PublicationStatus>,
     publication: &'a mut PublicationKnowledge,
     prepared: &'a mut Option<Rc<PreparedWorldPublication>>,
+    retain_first: bool,
+}
+
+impl RecordingPublisher<'_> {
+    fn retain_complete_bank(&mut self, prepared: &PreparedWorldPublication) -> bool {
+        if self.retain_first
+            && let Some(original) = self.prepared.as_ref()
+        {
+            // The opt-in handoff already owns its complete first body. Equality
+            // authenticates all fields without replacing that owning allocation.
+            return original.as_ref() == prepared;
+        }
+        *self.prepared = Some(Rc::new(prepared.clone()));
+        true
+    }
 }
 
 impl ActivationPublisher for RecordingPublisher<'_> {
@@ -746,7 +776,13 @@ impl ActivationPublisher for RecordingPublisher<'_> {
         record: &ActivationRecord,
         prepared: &crate::node_contract::PreparedWorldPublication,
     ) -> PublicationStatus {
-        *self.prepared = Some(Rc::new(prepared.clone()));
+        if !self.retain_complete_bank(prepared) {
+            // A changed complete body cannot reach the actual publisher. Keep
+            // the original bank and conservative prior publication uncertainty.
+            self.status = Some(PublicationStatus::Unknown);
+            *self.publication = PublicationKnowledge::Unknown;
+            return PublicationStatus::Unknown;
+        }
         self.status = Some(PublicationStatus::Unknown);
         *self.publication = PublicationKnowledge::Unknown;
         let status = self.publisher.publish_complete(record, prepared);
@@ -760,7 +796,13 @@ impl ActivationPublisher for RecordingPublisher<'_> {
         record: &ActivationRecord,
         prepared: &crate::node_contract::PreparedWorldPublication,
     ) -> PublicationStatus {
-        *self.prepared = Some(Rc::new(prepared.clone()));
+        if !self.retain_complete_bank(prepared) {
+            // A changed complete body cannot reach the actual publisher. Keep
+            // the original bank and conservative prior publication uncertainty.
+            self.status = Some(PublicationStatus::Unknown);
+            *self.publication = PublicationKnowledge::Unknown;
+            return PublicationStatus::Unknown;
+        }
         self.status = Some(PublicationStatus::Unknown);
         *self.publication = PublicationKnowledge::Unknown;
         let status = self.publisher.reconcile_complete(record, prepared);
@@ -804,119 +846,106 @@ impl<'a> PreparedRestore<'a> {
     }
 
     fn publication(
-        mut self,
+        self,
         publisher: &mut dyn ActivationPublisher,
         reconcile: bool,
     ) -> RestorePublication<'a> {
-        let (result, publication_status) = {
+        self.publication_with_unwind_policy(publisher, reconcile, false)
+    }
+
+    fn publication_with_unwind_policy(
+        mut self,
+        publisher: &mut dyn ActivationPublisher,
+        reconcile: bool,
+        retain_unwind: bool,
+    ) -> RestorePublication<'a> {
+        if self.runtime.is_none() {
+            return RestorePublication::Failed(self.fail(incomplete(
+                "restore runtime",
+                "prepared runtime custody absent",
+            )));
+        }
+        let mut attempt = || {
             let mut publisher = RecordingPublisher {
                 publisher,
                 status: None,
                 publication: &mut self.publication,
                 prepared: &mut self.prepared_publication,
+                retain_first: retain_unwind,
             };
             let result = match self.runtime.as_mut() {
                 Some(runtime) if reconcile => runtime.reconcile_activation(&mut publisher),
                 Some(runtime) => runtime.activate(&mut publisher),
-                None => {
-                    return RestorePublication::Failed(self.fail(incomplete(
-                        "restore runtime",
-                        "prepared runtime custody absent",
-                    )));
-                }
+                None => Err(crate::node_contract::RuntimeError::OutstandingObligations),
             };
             (result, publisher.status)
+        };
+        let (result, publication_status) = if retain_unwind {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(attempt)) {
+                Ok(result) => result,
+                Err(payload) => {
+                    let mut failure = self.fail(incomplete(
+                        "restored publication",
+                        "original publisher callback unwound",
+                    ));
+                    failure.panic_payload = Some(payload);
+                    return RestorePublication::Failed(failure);
+                }
+            }
+        } else {
+            attempt()
         };
         match result {
             Ok(activation) => {
                 self.publication = PublicationKnowledge::Committed;
-                let scheduler = match self.scheduler.take() {
-                    Some(scheduler) => scheduler,
-                    None => {
-                        return RestorePublication::Failed(self.fail(incomplete(
-                            "restored scheduler",
-                            "prepared continuation absent",
-                        )));
-                    }
+                let finished = if retain_unwind {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.finish_committed_publication(activation)
+                    }))
+                } else {
+                    Ok(self.finish_committed_publication(activation))
                 };
-                let scheduler = match scheduler.activate(self.graph, &activation) {
-                    Ok(scheduler) => scheduler,
-                    Err(error) => {
-                        return RestorePublication::Failed(self.fail(StateError::new(
-                            StateErrorCode::Restoration,
-                            "published scheduler",
-                            error.to_string(),
-                        )));
+                match finished {
+                    Ok(Ok(world)) => RestorePublication::Committed(world),
+                    Ok(Err(error)) => RestorePublication::Failed(self.fail(error)),
+                    Err(payload) => {
+                        let mut failure = self.fail(incomplete(
+                            "published continuation",
+                            "original post-commit callback unwound",
+                        ));
+                        failure.panic_payload = Some(payload);
+                        RestorePublication::Failed(failure)
                     }
-                };
-                let mut runtime = match self.runtime.take() {
-                    Some(runtime) => runtime,
-                    None => {
-                        return RestorePublication::Failed(self.fail(incomplete(
-                            "restore runtime",
-                            "published runtime custody absent",
-                        )));
-                    }
-                };
-                if let Err(error) = runtime.install_restored_scheduler(&activation, scheduler) {
-                    self.runtime = Some(runtime);
-                    return RestorePublication::Failed(self.fail(StateError::new(
-                        StateErrorCode::Restoration,
-                        "published scheduler installation",
-                        error.to_string(),
-                    )));
                 }
-                let continuation = match self.continuation.take() {
-                    Some(continuation) => continuation,
-                    None => {
-                        self.runtime = Some(runtime);
-                        return RestorePublication::Failed(self.fail(incomplete(
-                            "runtime continuation",
-                            "prepared original operation custody absent",
-                        )));
-                    }
-                };
-                if let Err(error) = continuation.install(&mut runtime, &activation) {
-                    self.runtime = Some(runtime);
-                    return RestorePublication::Failed(self.fail(StateError::new(
-                        StateErrorCode::Restoration,
-                        "published runtime continuation",
-                        error.to_string(),
-                    )));
-                }
-                let staging = match self.staging.take() {
-                    Some(staging) => staging,
-                    None => {
-                        self.runtime = Some(runtime);
-                        return RestorePublication::Failed(self.fail(incomplete(
-                            "restore capsule",
-                            "native coordinator custody absent",
-                        )));
-                    }
-                };
-                let original = staging.original_disposition();
-                RestorePublication::Committed(Box::new(RestoredWorld {
-                    runtime,
-                    activation,
-                    staging,
-                    artifact: self.capture.artifact.clone(),
-                    original,
-                    repeatability: self.capture.repeatability,
-                }))
             }
             Err(_error) if publication_status == Some(PublicationStatus::Unknown) => {
-                let containment = match self.staging.as_mut() {
+                let mut contain = || match self.staging.as_mut() {
                     Some(staging) => staging.contain_uncertain_publication(&self.activation),
                     None => Err(incomplete(
                         "restore capsule",
                         "uncertain publication has no native custody",
                     )),
                 };
+                let containment = if retain_unwind {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(contain))
+                } else {
+                    Ok(contain())
+                };
                 match containment {
-                    Ok(()) => RestorePublication::Uncertain(Box::new(PendingRestorePublication {
-                        prepared: self,
-                    })),
-                    Err(error) => RestorePublication::Failed(self.fail(error)),
+                    Ok(Ok(())) => {
+                        RestorePublication::Uncertain(Box::new(PendingRestorePublication {
+                            prepared: self,
+                        }))
+                    }
+                    Ok(Err(error)) => RestorePublication::Failed(self.fail(error)),
+                    Err(payload) => {
+                        let mut failure = self.fail(incomplete(
+                            "uncertain publication containment",
+                            "original callback unwound",
+                        ));
+                        failure.panic_payload = Some(payload);
+                        RestorePublication::Failed(failure)
+                    }
                 }
             }
             Err(error) => RestorePublication::Failed(self.fail(StateError::new(
@@ -925,6 +954,79 @@ impl<'a> PreparedRestore<'a> {
                 error.to_string(),
             ))),
         }
+    }
+
+    fn finish_committed_publication(
+        &mut self,
+        activation: WorldActivation,
+    ) -> Result<Box<RestoredWorld>, StateError> {
+        let scheduler = self
+            .scheduler
+            .take()
+            .ok_or_else(|| incomplete("restored scheduler", "prepared continuation absent"))?;
+        let scheduler = scheduler
+            .activate(self.graph, &activation)
+            .map_err(|error| {
+                StateError::new(
+                    StateErrorCode::Restoration,
+                    "published scheduler",
+                    error.to_string(),
+                )
+            })?;
+        let runtime = self
+            .runtime
+            .as_mut()
+            .ok_or_else(|| incomplete("restore runtime", "published runtime custody absent"))?;
+        runtime
+            .install_restored_scheduler(&activation, scheduler)
+            .map_err(|error| {
+                StateError::new(
+                    StateErrorCode::Restoration,
+                    "published scheduler installation",
+                    error.to_string(),
+                )
+            })?;
+        let continuation = self.continuation.take().ok_or_else(|| {
+            incomplete(
+                "runtime continuation",
+                "prepared original operation custody absent",
+            )
+        })?;
+        continuation
+            .install(runtime, &activation)
+            .map_err(|error| {
+                StateError::new(
+                    StateErrorCode::Restoration,
+                    "published runtime continuation",
+                    error.to_string(),
+                )
+            })?;
+        // Keep both native owners in self across every callback and fallible
+        // clone. The opt-in caller can then return the actual original failure
+        // even after durable publication, without implying rollback.
+        let original = self
+            .staging
+            .as_ref()
+            .ok_or_else(|| incomplete("restore capsule", "native coordinator custody absent"))?
+            .original_disposition();
+        let artifact = self.capture.artifact.clone();
+        let repeatability = self.capture.repeatability;
+        let runtime = self
+            .runtime
+            .take()
+            .ok_or_else(|| incomplete("restore runtime", "published runtime custody absent"))?;
+        let staging = self
+            .staging
+            .take()
+            .ok_or_else(|| incomplete("restore capsule", "native coordinator custody absent"))?;
+        Ok(Box::new(RestoredWorld {
+            runtime,
+            activation,
+            staging,
+            artifact,
+            original,
+            repeatability,
+        }))
     }
 
     fn fail(mut self, error: StateError) -> RestoreFailure {

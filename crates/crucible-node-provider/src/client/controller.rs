@@ -31,6 +31,7 @@ pub(crate) use ack_emitter::maximum_canonical_ack_framed_bytes;
 mod assigned_admit;
 mod assigned_restore;
 mod assigned_transfer;
+mod fresh_restore_query;
 #[path = "controller/input_emitter.rs"]
 mod input_emitter;
 mod owned11_quote;
@@ -40,6 +41,7 @@ pub use assigned_restore::{CompletedOriginalCompleteRestore, PreparedOriginalCom
 pub use assigned_transfer::{
     CompletedOriginalCompleteRestoreTransfer, PreparedOriginalCompleteRestoreTransfer,
 };
+pub use fresh_restore_query::{OriginalFreshRestoreQuery, OriginalFreshRestoreQueryStorageData};
 pub use input_emitter::OriginalCanonicalRestoreInputEmitter;
 
 /// Names one node and its indivisible execution owner on an actual connection.
@@ -370,6 +372,42 @@ impl CnpController {
         facts.ok_or(ProviderError::Correlation(
             "original supervisor facts absent",
         ))
+    }
+
+    /// Counts a known retention supervisor directly beside this actual controller.
+    ///
+    /// The SDK-owned concrete family supplies the incident bank. This observer
+    /// invokes no erased supervisor callback, serializer, formatting or I/O.
+    /// It counts the owner handle's shared edge and, when supplied, the existing
+    /// protocol witness's independent actor and supervisor edges. Enclosing
+    /// handle headers remain part of the caller's owning row.
+    ///
+    /// # Errors
+    /// Refuses another actor, supervisor or codec, mutable loss callbacks,
+    /// active or incomplete incident callbacks, conflicting borrows or checked
+    /// metadata traversal exhaustion. Facts provide no allocation permission.
+    pub fn original_owned11_metadata_facts_with_retained_supervisor(
+        &self,
+        owner: &crate::connection::OriginalRetainedSupervisor,
+        witness: Option<&crate::connection::OriginalProtocolSupervisor>,
+    ) -> Result<crate::protocol_snapshot::RetainedProtocolMetadataFacts, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.session
+            .authenticate_original_retained_supervisor(owner)?;
+        if let Some(witness) = witness {
+            self.session
+                .authenticate_original_protocol_supervisor(witness)?;
+        }
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        self.observe_owned11_metadata(&mut observer)?;
+        owner.observe_retained_metadata(&mut observer)?;
+        if let Some(witness) = witness {
+            witness.observe_original_header(&mut observer)?;
+            witness.observe_original_actor(&mut observer)?;
+        }
+        self.session
+            .authenticate_original_retained_supervisor(owner)?;
+        Ok(observer.finish())
     }
 
     /// Retains the actual original supervisor witness beside its owning controller.
@@ -1684,5 +1722,63 @@ impl CnpController {
         self.authenticate_native5_source_codec()?;
         self.session
             .original_native5_restore_input_emitter_selection()
+    }
+}
+
+impl CnpController {
+    /// Reports fixed SDK observation headers before an owning live-host walk.
+    ///
+    /// This names explicit observer/result/borrow headers, not compiler call
+    /// frames, recursion, allocator overhead or physical stack measurement.
+    pub const fn original_live_host_metadata_counter_scratch_data() -> usize {
+        std::mem::size_of::<crate::retained_metadata::MetadataObserver<'static>>()
+            + std::mem::size_of::<crate::protocol_snapshot::RetainedProtocolMetadataFacts>()
+            + crate::connection::OriginalRetainedSupervisor::metadata_counter_scratch_data()
+            + std::mem::size_of::<crate::transport::OriginalFrameReaderFacts>()
+            // Count Connection, reader and separately retained Session Hello loans.
+            + 3 * std::mem::size_of::<
+                std::cell::Ref<
+                    'static,
+                    crate::transport::original_frames::OriginalFrameReservation,
+                >,
+            >()
+    }
+
+    /// Observes actual live host protocol owners with a known direct supervisor.
+    ///
+    /// Adds the actual reader, literal banks, Hello backing, deadline and every
+    /// shared edge to the existing tuple metadata. Each retained view is charged
+    /// conservatively; this provides no alias discount. Enclosing inline owner
+    /// headers and kernel resources remain separate caller terms. No erased
+    /// callback, formatting, serializer, allocation or I/O runs in this walk.
+    ///
+    /// # Errors
+    /// Refuses a foreign/revoked actor, wrong known supervisor, mutable callbacks,
+    /// unsupported restoration/native owner roots, conflicting loans or checked
+    /// metadata traversal exhaustion. Facts grant no Source budget or authority.
+    pub fn original_live_host_metadata_facts_with_retained_supervisor(
+        &self,
+        owner: &crate::connection::OriginalRetainedSupervisor,
+        witness: Option<&crate::connection::OriginalProtocolSupervisor>,
+    ) -> Result<crate::protocol_snapshot::RetainedProtocolMetadataFacts, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.session
+            .authenticate_original_retained_supervisor(owner)?;
+        if let Some(witness) = witness {
+            self.session
+                .authenticate_original_protocol_supervisor(witness)?;
+        }
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        self.observe_owned11_metadata(&mut observer)?;
+        self.session
+            .observe_original_host_live_metadata_extras(&mut observer)?;
+        owner.observe_retained_metadata(&mut observer)?;
+        if let Some(witness) = witness {
+            witness.observe_original_header(&mut observer)?;
+            witness.observe_original_actor(&mut observer)?;
+        }
+        self.session
+            .authenticate_original_retained_supervisor(owner)?;
+        Ok(observer.finish())
     }
 }

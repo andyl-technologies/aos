@@ -7,6 +7,7 @@
 
 use super::super::retained_storage::CnpRetainedStorageReport;
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use std::rc::Rc;
 
 #[derive(Clone, Copy)]
@@ -109,41 +110,47 @@ impl PacketCompleteSemanticSource {
         self.original_prebirth_storage_data(PrebirthStoragePurpose::ReportStartup, maximum)
     }
 
-    fn authenticate_prebirth_storage_phase(
+    fn authenticate_prebirth_storage_phase_with_error<
+        E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
+    >(
         &self,
         purpose: PrebirthStoragePurpose,
-    ) -> Result<(), OperationFailure> {
+    ) -> Result<(), E> {
         // Creator checks precede all interior loans. A dropped reservation
         // cannot erase its spent launch flag and reopen the pre-Child phase.
-        self.ensure_origin()?;
+        self.storage_origin_with_error::<E>()?;
         if self.complete_bytes_launch_reserved.get()
             || self.registry_retention_attempted.get()
             || self.registry_retention_failed.get()
             || self
                 .preconstruction
                 .try_borrow()
-                .map_err(unknown)?
+                .map_err(E::unknown)?
                 .is_some()
             || self
                 .original_extension_registry
                 .try_borrow()
-                .map_err(unknown)?
+                .map_err(E::unknown)?
                 .is_some()
         {
-            return Err(refused(
+            return Err(E::refused(
                 "original Source is outside its pre-Child storage phase",
             ));
         }
         let unbound = match &self.original {
-            CompletePacketOriginal::Producer(source) => source.complete_preparation_unbound()?,
-            CompletePacketOriginal::Reactive(source) => source.complete_preparation_unbound()?,
+            CompletePacketOriginal::Producer(source) => {
+                source.complete_preparation_unbound_with_error::<E>()?
+            }
+            CompletePacketOriginal::Reactive(source) => {
+                source.complete_preparation_unbound_with_error::<E>()?
+            }
         };
         if !unbound {
-            return Err(refused(
+            return Err(E::refused(
                 "pre-Child Source already has original native custody",
             ));
         }
-        let birth = self.ack_peer_birth.try_borrow().map_err(unknown)?;
+        let birth = self.ack_peer_birth.try_borrow().map_err(E::unknown)?;
         match purpose {
             PrebirthStoragePurpose::Code => {
                 if self.ack_birth_attempted
@@ -151,28 +158,30 @@ impl PacketCompleteSemanticSource {
                     || self
                         .ack_peer_association
                         .try_borrow()
-                        .map_err(unknown)?
+                        .map_err(E::unknown)?
                         .is_some()
                 {
-                    return Err(refused("archive code Source has attempted private birth"));
+                    return Err(E::refused(
+                        "archive code Source has attempted private birth",
+                    ));
                 }
             }
             PrebirthStoragePurpose::ReportStartup => {
                 if !self.ack_birth_attempted {
-                    return Err(refused(
+                    return Err(E::refused(
                         "report startup Source has no original private birth",
                     ));
                 }
                 birth
                     .as_ref()
-                    .ok_or_else(|| refused("report startup private birth is absent"))?
-                    .authenticate_unstarted_storage_phase()?;
+                    .ok_or_else(|| E::refused("report startup private birth is absent"))?
+                    .authenticate_unstarted_storage_phase_with_error::<E>()?;
                 self.ack_peer_association
                     .try_borrow()
-                    .map_err(unknown)?
+                    .map_err(E::unknown)?
                     .as_ref()
-                    .ok_or_else(|| refused("report startup reserved ACK banks are absent"))?
-                    .authenticate_reserved_prebirth_data()?;
+                    .ok_or_else(|| E::refused("report startup reserved ACK banks are absent"))?
+                    .authenticate_reserved_prebirth_data_with_error::<E>()?;
             }
         }
         Ok(())
@@ -183,16 +192,27 @@ impl PacketCompleteSemanticSource {
         purpose: PrebirthStoragePurpose,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
-        self.authenticate_prebirth_storage_phase(purpose)?;
-        let holders = self.original_complete_holder_storage_data(maximum)?;
-        let installation = self.original_complete_installation_storage_data(maximum)?;
-        let boot = self.original_complete_boot_association_storage_data(maximum)?;
+        self.original_prebirth_storage_data_with_error::<OperationFailure>(purpose, maximum)
+    }
+
+    fn original_prebirth_storage_data_with_error<
+        E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
+    >(
+        self: &Rc<Self>,
+        purpose: PrebirthStoragePurpose,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        self.authenticate_prebirth_storage_phase_with_error::<E>(purpose)?;
+        let holders = self.original_complete_holder_storage_data_with_error::<E>(maximum)?;
+        let installation =
+            self.original_complete_installation_storage_data_with_error::<E>(maximum)?;
+        let boot = self.original_complete_boot_association_storage_data_with_error::<E>(maximum)?;
         let lineage = match &self.original {
             CompletePacketOriginal::Producer(_) => 0,
-            CompletePacketOriginal::Reactive(source) => retained_values::sum(
+            CompletePacketOriginal::Reactive(source) => retained_values::sum_with_error::<E, _>(
                 [
-                    source.complete_prebirth_input_static_storage(maximum)?,
-                    source.complete_retained_lineage_storage(maximum)?,
+                    source.complete_prebirth_input_static_storage_with_error::<E>(maximum)?,
+                    source.complete_retained_lineage_storage_with_error::<E>(maximum)?,
                 ],
                 maximum,
             )?,
@@ -200,14 +220,19 @@ impl PacketCompleteSemanticSource {
 
         // Only this explicit unlaunched phase accepts an actually absent bank.
         // The live complete observer keeps its existing mandatory-bank checks.
-        let capture = if self.capture_banks.try_borrow().map_err(unknown)?.is_some() {
-            self.original_complete_capture_bank_storage_data(maximum)?
+        let capture = if self
+            .capture_banks
+            .try_borrow()
+            .map_err(E::unknown)?
+            .is_some()
+        {
+            self.original_complete_capture_bank_storage_data_with_error::<E>(maximum)?
         } else {
             0
         };
-        let execution = self.original_complete_execution_storage_data(maximum)?;
-        let registry = self.original_registry_capture_storage_data(maximum)?;
-        let total = retained_values::sum(
+        let execution = self.original_complete_execution_storage_data_with_error::<E>(maximum)?;
+        let registry = self.original_registry_capture_storage_data_with_error::<E>(maximum)?;
+        let total = retained_values::sum_with_error::<E, _>(
             [
                 holders,
                 installation,
@@ -219,7 +244,7 @@ impl PacketCompleteSemanticSource {
             ],
             maximum,
         )?;
-        self.authenticate_prebirth_storage_phase(purpose)?;
+        self.authenticate_prebirth_storage_phase_with_error::<E>(purpose)?;
         Ok(total)
     }
 
@@ -272,36 +297,52 @@ impl PacketCompleteSemanticSource {
         holders: usize,
         maximum: usize,
     ) -> Result<PacketCompleteSourceRetainedStorage, OperationFailure> {
-        let installation = self.original_complete_installation_storage_data(maximum)?;
-        let boot_association = self.original_complete_boot_association_storage_data(maximum)?;
-        let static_lineage = self.original_complete_static_lineage_storage_data(maximum)?;
-        let capture_banks = self.original_complete_capture_bank_storage_data(maximum)?;
-        let execution = self.original_complete_execution_storage_data(maximum)?;
-        let registry = retained_values::sum(
+        self.original_complete_storage_with_holders_data_with_error::<OperationFailure>(
+            holders, maximum,
+        )
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn original_complete_storage_with_holders_data_with_error<
+        E: StorageError,
+    >(
+        &self,
+        holders: usize,
+        maximum: usize,
+    ) -> Result<PacketCompleteSourceRetainedStorage, E> {
+        let installation =
+            self.original_complete_installation_storage_data_with_error::<E>(maximum)?;
+        let boot_association =
+            self.original_complete_boot_association_storage_data_with_error::<E>(maximum)?;
+        let static_lineage =
+            self.original_complete_static_lineage_storage_data_with_error::<E>(maximum)?;
+        let capture_banks =
+            self.original_complete_capture_bank_storage_data_with_error::<E>(maximum)?;
+        let execution = self.original_complete_execution_storage_data_with_error::<E>(maximum)?;
+        let registry = retained_values::sum_with_error::<E, _>(
             [
-                self.original_extension_registry_storage_data(maximum)?,
-                self.original_registry_capture_storage_data(maximum)?,
+                self.original_extension_registry_storage_data_with_error::<E>(maximum)?,
+                self.original_registry_capture_storage_data_with_error::<E>(maximum)?,
             ],
             maximum,
         )?;
         let underlying_read = match &self.original {
             CompletePacketOriginal::Producer(source) => {
-                source.complete_retained_native_read_storage_data(maximum)?
+                source.complete_retained_native_read_storage_data_with_error::<E>(maximum)?
             }
             CompletePacketOriginal::Reactive(source) => {
-                source.complete_retained_native_read_storage_data(maximum)?
+                source.complete_retained_native_read_storage_data_with_error::<E>(maximum)?
             }
         };
         let preconstruction = self
             .preconstruction
             .try_borrow()
-            .map_err(|_| refused("retained preconstruction already borrowed"))?;
+            .map_err(|_| E::refused("retained preconstruction already borrowed"))?;
         let preconstruction_read = preconstruction
             .as_ref()
-            .map(|original| original.retained_native_read_storage_data(maximum))
+            .map(|original| original.retained_native_read_storage_data_with_error::<E>(maximum))
             .transpose()?;
         let native_reads = [underlying_read, preconstruction_read];
-        let mut known_requested_bytes = retained_values::sum(
+        let mut known_requested_bytes = retained_values::sum_with_error::<E, _>(
             [
                 holders,
                 installation,
@@ -314,12 +355,12 @@ impl PacketCompleteSemanticSource {
             maximum,
         )?;
         for read in native_reads.iter().flatten() {
-            known_requested_bytes = retained_values::sum(
+            known_requested_bytes = retained_values::sum_with_error::<E, _>(
                 [known_requested_bytes, read.known_requested_bytes()],
                 maximum,
             )?;
         }
-        self.ensure_origin()?;
+        self.storage_origin_with_error::<E>()?;
         Ok(PacketCompleteSourceRetainedStorage {
             holders,
             installation,
@@ -337,3 +378,65 @@ impl PacketCompleteSemanticSource {
 #[cfg(test)]
 #[path = "retained_storage/prebirth_tests.rs"]
 mod prebirth_tests;
+
+impl PacketCompleteSourceRetainedStorage {
+    pub(in crate::node_adapters::cnp::semantic) fn complete_requested_bytes_precredit_data(
+        &self,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        for read in self.native_reads.iter().flatten() {
+            read.complete_requested_bytes_precredit_data()?;
+        }
+        Ok(self.known_requested_bytes)
+    }
+}
+
+impl PacketCompleteSemanticSource {
+    pub(in crate::node_adapters::cnp::semantic) fn original_complete_retained_nested_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+
+        self.storage_origin_with_error::<RuntimeError>()?;
+        let holders =
+            self.original_complete_nested_holder_storage_data_with_error::<RuntimeError>(maximum)?;
+        self.original_complete_storage_with_holders_data_with_error::<RuntimeError>(
+            holders, maximum,
+        )?
+        .complete_requested_bytes_precredit_data()
+    }
+}
+
+impl PacketCompleteSemanticSource {
+    /// Observes actual never-born code selection owners with raw failures.
+    ///
+    /// # Errors
+    /// Refuses foreign, spent, associated, unsupported or over-bound owners.
+    pub fn original_complete_code_retained_storage_precredit_data(
+        self: &Rc<Self>,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        self.original_prebirth_storage_data_with_error::<crate::node_contract::RuntimeError>(
+            PrebirthStoragePurpose::Code,
+            maximum,
+        )
+    }
+
+    /// Observes actual ready and unstarted private-birth owners with raw failures.
+    ///
+    /// # Errors
+    /// Refuses foreign, absent, failed, started, associated or over-bound owners.
+    pub fn original_complete_report_startup_retained_storage_precredit_data(
+        self: &Rc<Self>,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        self.original_prebirth_storage_data_with_error::<crate::node_contract::RuntimeError>(
+            PrebirthStoragePurpose::ReportStartup,
+            maximum,
+        )
+    }
+}
+
+#[cfg(test)]
+#[path = "retained_storage/prebirth_precredit_tests.rs"]
+mod prebirth_precredit_tests;

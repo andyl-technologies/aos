@@ -70,6 +70,37 @@ impl AdmissionEvidence for InstalledPacketCompleteCollectionAuthority {
 }
 
 impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthority {
+    fn authenticate_original_fresh_restore_host_member(
+        &self,
+        _plan: ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalFreshRestoreHostMemberScope<'_>,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        self.authenticate_original_fresh_restore_host_member_data(scope)
+    }
+
+    fn original_fresh_restore_host_policy(
+        &self,
+        _plan: ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalFreshRestoreHostScope<'_>,
+    ) -> Result<
+        crucible::node_admission::OriginalFreshRestoreHostPolicy,
+        crucible::node_contract::RuntimeError,
+    > {
+        self.original_fresh_restore_host_policy_data(scope)
+    }
+
+    fn authenticate_original_fresh_restore_host(
+        &self,
+        _plan: ConformancePlanEvidence<'_>,
+        scope: &crucible::node_admission::OriginalFreshRestoreHostScope<'_>,
+        policy: &crucible::node_admission::OriginalFreshRestoreHostPolicy,
+    ) -> Result<
+        crucible::node_admission::OriginalFreshRestoreHostStorage,
+        crucible::node_contract::RuntimeError,
+    > {
+        self.authenticate_original_fresh_restore_host_data(scope, policy)
+    }
+
     fn original_report_startup_policy(
         &self,
         _plan: ConformancePlanEvidence<'_>,
@@ -249,6 +280,14 @@ impl ConformanceAdmissionAuthority for InstalledPacketCompleteCollectionAuthorit
 }
 
 impl CnpSemanticRegistrationPolicy for InstalledPacketCompleteCollectionAuthority {
+    fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, crucible::node_contract::RuntimeError> {
+        self.original_retained_requested_storage_precredit_data(maximum)
+            .map(Some)
+    }
+
     fn retained_requested_storage_data(
         &self,
         maximum: usize,
@@ -268,6 +307,14 @@ impl CnpSemanticRegistrationPolicy for InstalledPacketCompleteCollectionAuthorit
 }
 
 impl CnpSemanticConformanceAuthority for InstalledPacketCompleteCollectionAuthority {
+    fn retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, crucible::node_contract::RuntimeError> {
+        self.original_retained_requested_storage_precredit_data(maximum)
+            .map(Some)
+    }
+
     fn retained_requested_storage_data(
         &self,
         maximum: usize,

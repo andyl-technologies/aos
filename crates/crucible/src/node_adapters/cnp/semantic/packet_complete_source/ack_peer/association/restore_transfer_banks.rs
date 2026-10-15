@@ -5,6 +5,7 @@
 //! independently; reusing one would erase the authenticated prepare history.
 
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crucible_node_provider::reference_packet::service::complete_restore::transfer::{
     MAXIMUM_COMPLETE_RESTORE_TRANSFER_CONTEXT_BYTES, MAXIMUM_COMPLETE_RESTORE_TRANSFER_PROOF_BYTES,
     MAXIMUM_COMPLETE_RESTORE_TRANSFER_RECEIPT_BYTES,
@@ -28,12 +29,18 @@ fn limits(frame_bytes: usize) -> [usize; 5] {
 
 impl OriginalRestoreTransferBanks {
     pub(super) fn allocated_bytes(&self) -> Result<usize, OperationFailure> {
+        self.allocated_bytes_with_error::<OperationFailure>()
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn allocated_bytes_with_error<E: StorageError>(
+        &self,
+    ) -> Result<usize, E> {
         self.prepare
             .iter()
             .chain(&self.commit)
             .try_fold(0usize, |sum, bank| {
                 sum.checked_add(bank.capacity())
-                    .ok_or_else(|| refused("selected12 actual phase capacity overflow"))
+                    .ok_or_else(|| E::limit("selected12 actual phase capacity overflow"))
             })
     }
 }
@@ -115,10 +122,16 @@ mod tests {
 }
 
 impl OriginalRestoreTransferBanks {
-    pub(super) fn authenticate_reserved_prebirth_data(&self) -> Result<(), OperationFailure> {
+    pub(in crate::node_adapters::cnp::semantic) fn authenticate_reserved_prebirth_data_with_error<
+        E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
+    >(
+        &self,
+    ) -> Result<(), E> {
         let Self { prepare, commit } = self;
         if prepare.iter().chain(commit).any(|bank| !bank.is_empty()) {
-            return Err(refused("reserved prebirth transfer banks are already used"));
+            return Err(E::refused(
+                "reserved prebirth transfer banks are already used",
+            ));
         }
         Ok(())
     }

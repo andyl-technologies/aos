@@ -45,11 +45,13 @@ pub use schema::{
 pub use admission::{AcceptanceScope, BehavioralAdmissionEvidence, InstalledAcceptancePolicy};
 pub use production_conformance::{
     CollectedConformance, ExactCompletionCase, ExactCompletionObservation,
-    InstalledConformanceAuthority, InstalledRuntimeWitnessOracle, OriginalCollectionAttempts,
-    OriginalCompletionObservation, OriginalCompletionWitness, OriginalProtocolWitness,
-    OriginalRealizedCaseReservation, OriginalRuntimeReportStore, PlannedFixtureAudit,
-    ProductionConformanceRunner, ProtocolCase, ProtocolObservation, QuantizedCompletionCase,
-    QuantizedCompletionObservation,
+    InstalledConformanceAuthority, InstalledOriginalConformanceAcceptance,
+    InstalledRuntimeWitnessOracle, OriginalClockStateObservation, OriginalCollectionAttempts,
+    OriginalCompletionObservation, OriginalCompletionWitness, OriginalConformanceEnrollment,
+    OriginalConformanceEnrollmentFailure, OriginalProtocolWitness, OriginalRealizedCaseReservation,
+    OriginalRuntimeReportStore, OriginalSourceInspection, OriginalSourceInspectionSlot,
+    PlannedFixtureAudit, ProductionConformanceRunner, ProtocolCase, ProtocolObservation,
+    QuantizedCompletionCase, QuantizedCompletionObservation, SourceInspectionOutcome,
 };
 pub use record::{
     AcceptanceDecision, AcceptanceLimits, AcceptanceRecord, EvaluatedAcceptance,

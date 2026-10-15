@@ -23,12 +23,16 @@ mod conformance_dispatch;
 
 use conformance_dispatch::final_collection_scope;
 
+#[path = "runtime_pause.rs"]
+mod pause;
+
 #[path = "runtime/retained_storage.rs"]
 mod retained_storage;
 
 pub(crate) use retained_storage::OriginalRuntimeStorageIdentity;
 
 pub(crate) use continuation::capture_ticket::owned::OwnedStorage as RuntimeOwnedStorage;
+pub(crate) use continuation::capture_ticket::owned::opaque_owner_counter_scratch_data;
 
 #[path = "runtime/scheduling_state.rs"]
 pub(super) mod scheduling_state;

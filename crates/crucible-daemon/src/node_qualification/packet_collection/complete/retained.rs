@@ -78,11 +78,12 @@ impl Counter {
         &mut self,
         facts: &RetainedProtocolMetadataFacts,
     ) -> Result<(), QualificationError> {
-        let bytes = PacketCompleteSemanticSource::complete_retained_metadata_storage_data(
-            facts,
-            self.remaining(),
-        )
-        .map_err(|_| exhausted())?;
+        let bytes =
+            PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
+                facts,
+                self.remaining(),
+            )
+            .map_err(|_| exhausted())?;
         self.add(bytes)
     }
 
@@ -123,7 +124,10 @@ impl Counter {
 }
 
 // Uses the same checked requested layout for strong and conservative Weak views.
-fn shared_requested_storage(inline: usize, alignment: usize) -> Result<usize, QualificationError> {
+pub(in crate::node_qualification::packet_collection) fn shared_requested_storage(
+    inline: usize,
+    alignment: usize,
+) -> Result<usize, QualificationError> {
     let padding = alignment
         .max(align_of::<usize>())
         .checked_sub(1)

@@ -140,6 +140,7 @@ impl InstalledNodeCatalog {
                 },
                 label: Some(profile),
                 capabilities: None,
+                normal_clock: None,
             },
         )
     }

@@ -5,6 +5,7 @@
 //! settled journal, backend and whole archive validators bind its full reference.
 
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crucible_node_provider::retained_metadata::{
     aliases::MetadataAliasBank,
     records::{MetadataCapacityRecord, MetadataRecordBank},
@@ -107,15 +108,22 @@ impl OriginalCompleteRegistryCapture {
     }
 
     fn retained_storage(&self, maximum: usize) -> Result<usize, OperationFailure> {
+        self.retained_storage_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn retained_storage_with_error<E: StorageError>(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
         let reference = self
             .payload
             .as_ref()
             .map(|payload| {
-                NodeRuntime::capture_reference_storage(&payload.reference).map_err(unknown)
+                NodeRuntime::capture_reference_storage(&payload.reference).map_err(E::unknown)
             })
             .transpose()?
             .unwrap_or(0);
-        retained_values::sum(
+        retained_values::sum_with_error::<E, _>(
             [
                 self.encoded.capacity(),
                 self.records
@@ -292,12 +300,21 @@ impl PacketCompleteSemanticSource {
         &self,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
-        self.ensure_origin()?;
+        self.original_registry_capture_storage_data_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn original_registry_capture_storage_data_with_error<
+        E: StorageError,
+    >(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        self.storage_origin_with_error::<E>()?;
         self.registry_capture
             .try_borrow()
-            .map_err(|_| refused("retained complete registry bank is borrowed"))?
+            .map_err(|_| E::refused("retained complete registry bank is borrowed"))?
             .as_ref()
-            .map(|original| original.retained_storage(maximum))
+            .map(|original| original.retained_storage_with_error::<E>(maximum))
             .transpose()
             .map(|bytes| bytes.unwrap_or(0))
     }

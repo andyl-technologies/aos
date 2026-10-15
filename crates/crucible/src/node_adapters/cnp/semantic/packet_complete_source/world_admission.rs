@@ -19,6 +19,8 @@ pub(in crate::node_adapters::cnp::semantic) struct OriginalCompletedCanonicalAck
     source: Rc<PacketCompleteSemanticSource>,
     issued: bool,
     spent: bool,
+    host_query_issued: std::cell::Cell<bool>,
+    fresh_query: Option<crucible_node_provider::client::OriginalFreshRestoreQuery>,
 }
 
 impl OriginalCompletedCanonicalAckWorldAdmission {
@@ -105,6 +107,8 @@ impl CnpSemanticPreparation {
                 source: Rc::clone(source),
                 issued: false,
                 spent: false,
+                host_query_issued: std::cell::Cell::new(false),
+                fresh_query: None,
             });
         let owner = Rc::clone(&native.read_owner);
         let mut attempt = WorldAdmissionAttempt {
@@ -202,6 +206,158 @@ impl OriginalCompletedCanonicalAckWorldAdmission {
         // The Source's concrete factory/program/DOM/bank owners are separate
         // obligations. Equal public source labels cannot discharge those heaps.
         counter.unknowns.installed_source_owners = true;
+        if let Some(query) = &self.fresh_query {
+            counter.metadata(&query.original_retained_metadata_facts().map_err(unknown)?)?;
+        }
         self.authenticate_origin()
+    }
+}
+
+impl OriginalCompletedCanonicalAckWorldAdmission {
+    pub(in crate::node_adapters::cnp::semantic) fn charge_retained_storage_precredit_data(
+        &self,
+        counter: &mut super::super::retained_storage::preparation::PreparationCounter,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if counter.rc(&self.source)? {
+            counter.add(
+                self.source
+                    .original_complete_retained_nested_precredit_data(counter.remaining())?,
+            )?;
+        }
+        if let Some(query) = &self.fresh_query {
+            counter.metadata(
+                &query
+                    .original_retained_metadata_facts()
+                    .map_err(|_| RuntimeError::OwnerUnavailable)?,
+            )?;
+        }
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+}
+
+impl CnpSemanticPreparation {
+    /// Authenticates the same original completed-Admit preparation as borrowed data.
+    ///
+    /// This checks raw origin and actual Source/token identity before any policy
+    /// callback. It neither renews kernel currentness nor permits Query or Ready.
+    ///
+    /// # Errors
+    /// Refuses another origin, busy owner, a foreign/unissued/spent token or runtime.
+    pub fn authenticate_original_fresh_query_preparation_data(
+        &self,
+        source: &Rc<PacketCompleteSemanticSource>,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        self.guard.preparation_storage_origin_precredit_data()?;
+        source.storage_origin_with_error::<RuntimeError>()?;
+        let native = self
+            .guard
+            .custody
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        native.read_owner.original_fresh_query_custody_data()?;
+        let installed = native
+            .source
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        if !std::ptr::eq(
+            Rc::as_ptr(installed).cast::<()>(),
+            Rc::as_ptr(source).cast::<()>(),
+        ) || !std::ptr::eq(installed.installation(), source.installation())
+            || !native.completed_ack_protocol_started
+            || native.runtime.is_some()
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let token = native
+            .completed_ack_admission
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let token = token.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        if token.process != std::process::id()
+            || token.thread != std::thread::current().id()
+            || !token.issued
+            || token.spent
+            || !Rc::ptr_eq(&token.source, source)
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn authenticate_original_fresh_query_plan_data(
+        &self,
+        plan: &crate::node_admission::InstalledConformancePlan,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        self.guard.preparation_storage_origin_precredit_data()?;
+        let native = self
+            .guard
+            .custody
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let own = native
+            .collection_plan
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        let authority = native
+            .conformance
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        if !plan.is_same_original_plan_data(own) || !plan.has_authority(authority.as_ref()) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn claim_original_fresh_query_window_data(
+        &self,
+        source: &Rc<PacketCompleteSemanticSource>,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        self.authenticate_original_fresh_query_preparation_data(source)?;
+        let native = self
+            .guard
+            .custody
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let token = native
+            .completed_ack_admission
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let token = token.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
+        if token.host_query_issued.replace(true) {
+            return Err(RuntimeError::DuplicateOperation);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn original_fresh_query_owner_identity_data(
+        &self,
+        source: &Rc<PacketCompleteSemanticSource>,
+    ) -> Result<*const (), crate::node_contract::RuntimeError> {
+        self.authenticate_original_fresh_query_preparation_data(source)?;
+        let native = self
+            .guard
+            .custody
+            .as_ref()
+            .ok_or(crate::node_contract::RuntimeError::OwnerUnavailable)?;
+        Ok(Rc::as_ptr(&native.read_owner).cast())
+    }
+}
+
+impl OriginalCompletedCanonicalAckWorldAdmission {
+    pub(in crate::node_adapters::cnp::semantic) fn fresh_query_slot_data(
+        &mut self,
+    ) -> &mut Option<crucible_node_provider::client::OriginalFreshRestoreQuery> {
+        &mut self.fresh_query
     }
 }

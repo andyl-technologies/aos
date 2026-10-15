@@ -281,6 +281,27 @@ impl RuntimeCustodySlot for QueueSlot {
         Ok(Some(bytes))
     }
 
+    fn retained_requested_storage_precredit_scratch_data(
+        &self,
+    ) -> Result<Option<usize>, RuntimeError> {
+        if self.process != std::process::id()
+            || self.thread != std::thread::current().id()
+            || self.inner.process != self.process
+            || self.inner.thread != self.thread
+            || self.transferred
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        use crate::node_contract::runtime_owned_counter::RetainedRuntimeCounter;
+        use std::{cell::Ref, mem::size_of};
+        Ok(Some(
+            size_of::<RetainedRuntimeCounter>()
+                + size_of::<Ref<'_, Option<Waker>>>()
+                + size_of::<Ref<'_, Option<Rc<QueueInner>>>>()
+                + size_of::<Ref<'_, Option<WholeRuntimeCustody>>>(),
+        ))
+    }
+
     fn original_transferred(&self) -> bool {
         self.transferred
     }

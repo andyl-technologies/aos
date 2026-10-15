@@ -19,7 +19,10 @@ use super::{
 };
 
 mod attempts;
+mod clock_state;
+mod enrollment;
 mod exact;
+pub use clock_state::OriginalClockStateObservation;
 mod exact_input;
 mod exact_input_collection;
 mod fixture_audit;
@@ -29,9 +32,17 @@ mod quantized;
 mod reservations;
 mod runtime_reports;
 mod runtime_witness;
+mod source_inspection;
 mod staging;
+pub use source_inspection::{
+    OriginalSourceInspection, OriginalSourceInspectionSlot, SourceInspectionOutcome,
+};
 
 pub use attempts::OriginalCollectionAttempts;
+pub use enrollment::{
+    InstalledOriginalConformanceAcceptance, OriginalConformanceEnrollment,
+    OriginalConformanceEnrollmentFailure,
+};
 pub use exact::{ExactCompletionCase, ExactCompletionObservation};
 pub use fixture_audit::PlannedFixtureAudit;
 pub use protocol_witness::OriginalProtocolWitness;
@@ -50,6 +61,47 @@ mod tests;
 pub trait InstalledConformanceAuthority:
     InstalledAcceptancePolicy + InstalledWitnessAuthority
 {
+    /// Authenticates the exact local ordinary profile and resource selection.
+    ///
+    /// A source-owned implementation compares the plan with its installed
+    /// original profile, full binding and actual resource/class selection. This
+    /// callback cannot accept a profile merely because its metadata is valid.
+    ///
+    /// # Errors
+    /// Defaults to refusal without a concrete installed ordinary source owner.
+    fn authenticate_original_provider_plan(
+        &self,
+        _selection: crucible::node_contract::ProviderPlanningRequest<'_>,
+        _plan: &crucible::node_contract::ProviderPreparationPlan,
+    ) -> Result<(), QualificationError> {
+        Err(QualificationError::Refused(
+            "original ordinary provider source plan is unsupported",
+        ))
+    }
+
+    /// Executes one fixed source inspection into its runner-owned original slot.
+    ///
+    /// The exact complete plan and case are authenticated before this callback.
+    /// Implementations perform their independently installed source checks, write
+    /// only public evidence into the finite slot, and return the actual verdict.
+    /// This path cannot record a model, protocol or realized-provider case.
+    /// Source/native authority and any callback working-storage peak remain
+    /// separate prerequisites; this byte ceiling measures serialized evidence.
+    ///
+    /// # Errors
+    /// Defaults to refusal. Missing checks, changed source, failed observations
+    /// or unavailable original custody cannot be replaced with a later retry.
+    fn execute_original_source_inspection(
+        &self,
+        _population: &WitnessPlan,
+        _case: &super::PlannedWitnessCase,
+        _output: &mut OriginalSourceInspectionSlot,
+    ) -> Result<CaseVerdict, QualificationError> {
+        Err(QualificationError::Refused(
+            "no installed original source inspection executor",
+        ))
+    }
+
     /// Authenticates the exact source fixture, protocol oracle and actual peer.
     ///
     /// # Errors
@@ -105,6 +157,28 @@ pub trait InstalledConformanceAuthority:
     ) -> Result<(), QualificationError> {
         Err(QualificationError::Refused(
             "no installed original runtime observation sink",
+        ))
+    }
+
+    /// Authenticates real retired Clock and independent fresh continuation owners.
+    ///
+    /// The runner retains its original report before this callback. The opaque
+    /// view borrows actual owned Core state, not decoded success data. A concrete
+    /// source must independently check its full expected state programme.
+    ///
+    /// # Errors
+    /// Defaults to refusal without an installed complete original-state oracle.
+    fn retain_original_clock_state_witness(
+        &self,
+        _population: &WitnessPlan,
+        _case: &str,
+        _oracle: &ContentRef,
+        _original: &crate::node_observed_executor::OriginalClockStateWitness<'_>,
+        _reference: &ContentRef,
+        _bytes: &[u8],
+    ) -> Result<CaseVerdict, QualificationError> {
+        Err(QualificationError::Refused(
+            "no installed original Clock state oracle",
         ))
     }
 
@@ -193,6 +267,8 @@ pub struct ProtocolObservation {
 
 /// Owns finite original observations while their provider retains native custody.
 pub struct ProductionConformanceRunner<'a> {
+    process: u32,
+    owner_thread: std::thread::ThreadId,
     authority: &'a dyn InstalledConformanceAuthority,
     node: Id,
     binding: HashRef,
@@ -202,6 +278,8 @@ pub struct ProductionConformanceRunner<'a> {
     attempts: OriginalCollectionAttempts,
     reservation_owner: std::rc::Rc<()>,
     observations: BTreeMap<String, ProtocolObservation>,
+    source_inspections: BTreeMap<String, OriginalSourceInspection>,
+    clock_state_observations: BTreeMap<String, OriginalClockStateObservation>,
     exact_observations: BTreeMap<String, ExactCompletionObservation>,
     quantized_observations: BTreeMap<String, QuantizedCompletionObservation>,
     limits: QualificationLimits,
@@ -216,6 +294,10 @@ pub struct CollectedConformance {
     pub issued: Result<IssuedQualification, QualificationError>,
     /// Retains original reports even when evidence authentication refused them.
     pub observations: BTreeMap<String, ProtocolObservation>,
+    /// Owns source callback output, including partial error/unwind bytes.
+    pub source_inspections: BTreeMap<String, OriginalSourceInspection>,
+    /// Retains actual state reports across failed or unissued qualification.
+    pub clock_state_observations: BTreeMap<String, OriginalClockStateObservation>,
     /// Retains actual completed runtime witnesses without promoting their kind.
     pub exact_observations: BTreeMap<String, ExactCompletionObservation>,
     /// Retains complete original quantized closure and staged producer witnesses.
@@ -250,6 +332,8 @@ impl<'a> ProductionConformanceRunner<'a> {
         protocol::check_applicability(authority, &plan, plan_reference)?;
 
         Ok(Self {
+            process: std::process::id(),
+            owner_thread: std::thread::current().id(),
             authority,
             node,
             binding,
@@ -259,6 +343,8 @@ impl<'a> ProductionConformanceRunner<'a> {
             attempts: OriginalCollectionAttempts::default(),
             reservation_owner: std::rc::Rc::new(()),
             observations: BTreeMap::new(),
+            source_inspections: BTreeMap::new(),
+            clock_state_observations: BTreeMap::new(),
             exact_observations: BTreeMap::new(),
             quantized_observations: BTreeMap::new(),
             limits,
@@ -714,6 +800,8 @@ impl<'a> ProductionConformanceRunner<'a> {
             issued,
             attempts,
             observations: self.observations,
+            source_inspections: self.source_inspections,
+            clock_state_observations: self.clock_state_observations,
             exact_observations: self.exact_observations,
             quantized_observations: self.quantized_observations,
         }

@@ -66,6 +66,23 @@ pub trait ActivationPublisher {
         Err(RuntimeError::PublicationFailed)
     }
 
+    /// Retains the actual inactive restored coordinator before public activation.
+    ///
+    /// This opt-in restoration handoff supplies authenticated historical state,
+    /// checked fresh native continuation and original ready records. It never
+    /// publishes a world or grants execution. Initial extraction is separate.
+    ///
+    /// # Errors
+    /// Defaults to refusal without concrete durable restored-state retention.
+    fn retain_restored_coordinator(
+        &mut self,
+        _record: &ActivationRecord,
+        _nodes: Vec<ValidatedNodePreparation>,
+        _coordinator: InputPayload,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::PublicationFailed)
+    }
+
     /// Reads the actual complete prepared coordinator object before publication.
     ///
     /// Implementations must bind the complete routing, clock, scheduling, input

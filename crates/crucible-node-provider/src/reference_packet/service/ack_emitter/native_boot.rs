@@ -19,3 +19,12 @@ pub(in crate::reference_packet::service) use bootstrap::accept;
 pub(crate) use bootstrap::{
     OriginalNativeBootstrapOwned11, original_native_private_bootstrap_layout,
 };
+
+pub(crate) use boot::{
+    OriginalNativePrepareStartupAllocation, measure_original_prepare_executable_data,
+    original_prepare_executable_measurement_counter_scratch_data,
+};
+pub use boot::{
+    PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,
+    original_native_prepare_startup_storage_data,
+};

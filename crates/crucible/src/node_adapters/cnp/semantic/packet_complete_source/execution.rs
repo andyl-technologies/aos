@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::node_adapters::cnp::CnpSemanticSnapshotReservation;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crucible_node_provider::protocol_snapshot::OriginalProtocolPayloadOwner;
 use std::mem::size_of;
 
@@ -47,75 +48,89 @@ pub(super) struct OriginalCompleteCaptureExecution {
 
 impl OriginalCompleteCaptureExecution {
     fn retained_storage(&self, maximum: usize) -> Result<usize, OperationFailure> {
+        self.retained_storage_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn retained_storage_with_error<E: StorageError>(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
         let bank = match (&self.backend_bank, &self.backend) {
             (Some(bank), None) => bank.allocated_bytes(),
             (None, Some(body)) => body.bytes.capacity(),
             (None, None) if self.failed || self.transferred => 0,
-            _ => return Err(refused("original backend bank association differs")),
+            _ => return Err(E::refused("original backend bank association differs")),
         };
         let references = self
             .backend
             .as_ref()
-            .map(|body| NodeRuntime::capture_reference_storage(&body.reference).map_err(unknown))
+            .map(|body| NodeRuntime::capture_reference_storage(&body.reference).map_err(E::unknown))
             .transpose()?
             .unwrap_or(0);
-        let mut bytes = retained_values::sum(
+        let mut bytes = retained_values::sum_with_error::<E, _>(
             [
                 bank,
                 references,
                 self.evidence
                     .capacity()
                     .checked_mul(size_of::<InputPayload>())
-                    .ok_or_else(|| refused("original evidence slots overflow"))?,
+                    .ok_or_else(|| E::refused("original evidence slots overflow"))?,
                 self.born
                     .capacity()
                     .checked_mul(size_of::<born::OriginalBornObject>())
-                    .ok_or_else(|| refused("original creation slots overflow"))?,
+                    .ok_or_else(|| E::refused("original creation slots overflow"))?,
             ],
             maximum,
         )?;
         if let Some(plan) = &self.dependency_plan {
-            bytes = retained_values::sum(
+            bytes = retained_values::sum_with_error::<E, _>(
                 [
                     bytes,
-                    NodeRuntime::capture_reference_storage(&plan.runtime).map_err(unknown)?,
+                    NodeRuntime::capture_reference_storage(&plan.runtime).map_err(E::unknown)?,
                 ],
                 maximum,
             )?;
         }
         for original in &self.born {
-            bytes = retained_values::sum([bytes, original.retained_storage(maximum)?], maximum)?;
+            bytes = retained_values::sum_with_error::<E, _>(
+                [bytes, original.retained_storage_with_error::<E>(maximum)?],
+                maximum,
+            )?;
         }
         for request in self
             .capture_request
             .iter()
             .chain(self.confirmation_request.iter())
         {
-            bytes = retained_values::sum([bytes, request.allocated_capacity()], maximum)?;
+            bytes = retained_values::sum_with_error::<E, _>(
+                [bytes, request.allocated_capacity()],
+                maximum,
+            )?;
         }
         if let Some(host) = &self.host_protocol {
-            bytes = retained_values::sum(
+            bytes = retained_values::sum_with_error::<E, _>(
                 [
                     bytes,
                     host.bytes.capacity(),
-                    NodeRuntime::capture_reference_storage(&host.reference).map_err(unknown)?,
+                    NodeRuntime::capture_reference_storage(&host.reference).map_err(E::unknown)?,
                 ],
                 maximum,
             )?;
         }
         for object in &self.evidence {
-            bytes = retained_values::sum(
+            bytes = retained_values::sum_with_error::<E, _>(
                 [
                     bytes,
                     object.bytes.capacity(),
-                    NodeRuntime::capture_reference_storage(&object.reference).map_err(unknown)?,
+                    NodeRuntime::capture_reference_storage(&object.reference)
+                        .map_err(E::unknown)?,
                 ],
                 maximum,
             )?;
         }
         match (&self.owner, &self.key) {
             (Some(owner), Some(key)) => {
-                bytes = retained_values::sum(
+                bytes = retained_values::sum_with_error::<E, _>(
                     [
                         bytes,
                         NodeRuntime::capture_native_output_metadata_storage_data(
@@ -123,25 +138,29 @@ impl OriginalCompleteCaptureExecution {
                             &self.participants,
                             key,
                         )
-                        .map_err(unknown)?,
+                        .map_err(E::unknown)?,
                     ],
                     maximum,
                 )?;
             }
             (None, None) if self.participants.is_empty() => {}
-            _ => return Err(refused("original output metadata association differs")),
+            _ => return Err(E::refused("original output metadata association differs")),
         }
         if let Some(owner) = &self.retained_protocol_owner {
-            let metadata = owner.original_retained_metadata_facts().map_err(unknown)?;
-            let allocation = owner.original_allocation_facts().map_err(unknown)?;
+            let metadata = owner
+                .original_retained_metadata_facts()
+                .map_err(E::unknown)?;
+            let allocation = owner.original_allocation_facts().map_err(E::unknown)?;
             let records = owner
                 .original_metadata_record_allocation_facts()
-                .map_err(unknown)?;
-            let aliases = owner.original_alias_allocation_facts().map_err(unknown)?;
-            bytes = retained_values::sum(
+                .map_err(E::unknown)?;
+            let aliases = owner
+                .original_alias_allocation_facts()
+                .map_err(E::unknown)?;
+            bytes = retained_values::sum_with_error::<E, _>(
                 [
                     bytes,
-                    PacketCompleteSemanticSource::complete_retained_metadata_storage_data(
+                    PacketCompleteSemanticSource::complete_retained_metadata_storage_with_error::<E>(
                         &metadata, maximum,
                     )?,
                     allocation.literal.map_or(0, |bank| bank.allocated_bytes),
@@ -149,7 +168,7 @@ impl OriginalCompleteCaptureExecution {
                     aliases
                         .map(|bank| bank.row_bytes.checked_add(bank.lookup_bytes))
                         .unwrap_or(Some(0))
-                        .ok_or_else(|| refused("original moved host alias banks overflow"))?,
+                        .ok_or_else(|| E::refused("original moved host alias banks overflow"))?,
                 ],
                 maximum,
             )?;
@@ -415,14 +434,23 @@ impl PacketCompleteSemanticSource {
         &self,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
-        self.ensure_origin()?;
+        self.original_complete_execution_storage_data_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn original_complete_execution_storage_data_with_error<
+        E: StorageError,
+    >(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        self.storage_origin_with_error::<E>()?;
         let execution = self
             .capture_execution
             .try_borrow()
-            .map_err(|_| refused("original output banks are borrowed"))?;
+            .map_err(|_| E::refused("original output banks are borrowed"))?;
         execution
             .as_ref()
-            .map(|original| original.retained_storage(maximum))
+            .map(|original| original.retained_storage_with_error::<E>(maximum))
             .transpose()
             .map(|bytes| bytes.unwrap_or(0))
     }

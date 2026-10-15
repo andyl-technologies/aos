@@ -24,6 +24,10 @@ pub(crate) use restore_prepare::{
     VerifiedCanonicalRestoreInputAdmission, VerifiedCompleteRestorePrepare,
 };
 
+#[path = "native_startup.rs"]
+mod native_startup;
+use native_startup::OriginalNativeStartupBoot;
+
 #[path = "report_startup.rs"]
 mod report_startup;
 pub(crate) use report_startup::{
@@ -43,6 +47,9 @@ struct BootData {
 }
 
 pub(crate) struct NativeAckBoot {
+    // Only the separate resource-admitted bootstrap constructor may create
+    // Some. The existing boot5 constructor remains explicitly unavailable to it.
+    startup: Option<OriginalNativeStartupBoot>,
     creator: u32,
     thread: ThreadId,
     data: BootData,
@@ -89,6 +96,7 @@ impl NativeAckBoot {
         let data: BootData =
             BootData::deserialize(value).map_err(crucible_node_contract::ContractError::from)?;
         let original = Rc::new(RefCell::new(Self {
+            startup: None,
             creator: std::process::id(),
             thread: std::thread::current().id(),
             data,
@@ -474,3 +482,12 @@ impl VerifiedCanonicalAckAdmission {
 #[path = "control_admit.rs"]
 mod control_admit;
 pub(crate) use control_admit::OriginalCanonicalAckControlAdmit;
+
+pub(crate) use restore_prepare::{
+    OriginalNativePrepareStartupAllocation, measure_original_prepare_executable_data,
+    original_prepare_executable_measurement_counter_scratch_data,
+};
+pub use restore_prepare::{
+    PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,
+    original_native_prepare_startup_storage_data,
+};

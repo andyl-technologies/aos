@@ -637,3 +637,84 @@ mod selected_header_tests {
 
 pub(crate) use original_frames::original_frame_bank_layout;
 pub use original_frames::{DecodedCompactOriginalFrames, ValidatedCompactOriginalFrames};
+
+impl FrameReader<crate::client::DeadlineStream> {
+    pub(crate) fn observe_original_host_live_metadata(
+        &self,
+        bank: &Rc<RefCell<OriginalFrameReservation>>,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        self.original_owned11_facts(bank)?;
+        let Self {
+            stream,
+            maximum_bytes,
+            maximum_nesting,
+            failed,
+            originals,
+            last_original_slot,
+        } = self;
+        stream.observe_original_host_live_metadata(observer)?;
+        observer.observe(maximum_bytes)?;
+        observer.observe(maximum_nesting)?;
+        observer.observe(failed)?;
+        observer.observe(last_original_slot)?;
+        let bank = originals
+            .as_ref()
+            .ok_or(ProviderError::Correlation("live host reader bank absent"))?;
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::FrameBank,
+            bank.as_ref(),
+        )?;
+        bank.try_borrow()
+            .map_err(|_| ProviderError::Conflict("live host reader bank borrowed"))?
+            .observe_owned11_metadata(observer)
+    }
+}
+
+#[cfg(test)]
+mod original_live_host_metadata_tests {
+    use super::*;
+    use crate::{client::DeadlineStream, retained_metadata::MetadataObserver};
+    use std::{os::unix::net::UnixStream, time::Duration};
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn actual_deadline_reader_counts_full_spare_bank_and_shared_roots_without_reading() -> TestResult
+    {
+        let (stream, _peer) = UnixStream::pair()?;
+        let (stream, _deadline) = DeadlineStream::new(stream, Duration::from_secs(60))?;
+        let mut reader = FrameReader::with_limits(stream, 64, 8)?;
+        let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(4096, 9)?));
+        let actual_backing = bank.borrow().allocated_bytes();
+        reader.originals = Some(Rc::clone(&bank));
+        let strong = Rc::strong_count(&bank);
+        let mut observer = MetadataObserver::new();
+        reader.observe_original_host_live_metadata(&bank, &mut observer)?;
+        let facts = observer.finish();
+        assert_eq!(facts.vector_capacity_bytes, actual_backing);
+        assert_eq!(facts.shared_backing_views, 2);
+        assert_eq!(Rc::strong_count(&bank), strong);
+        assert_eq!(reader.last_original_slot, None);
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_reader_bank_refuses_before_observing_any_requested_backing() -> TestResult {
+        let (stream, _peer) = UnixStream::pair()?;
+        let (stream, _deadline) = DeadlineStream::new(stream, Duration::from_secs(60))?;
+        let mut reader = FrameReader::with_limits(stream, 64, 8)?;
+        let actual = Rc::new(RefCell::new(OriginalFrameReservation::reserve(4096, 9)?));
+        let foreign = Rc::new(RefCell::new(OriginalFrameReservation::reserve(4096, 9)?));
+        reader.originals = Some(actual);
+        let mut observer = MetadataObserver::new();
+        assert!(
+            reader
+                .observe_original_host_live_metadata(&foreign, &mut observer)
+                .is_err()
+        );
+        let facts = observer.finish();
+        assert_eq!(facts.observed_nodes, 0);
+        assert_eq!(facts.vector_capacity_bytes, 0);
+        Ok(())
+    }
+}

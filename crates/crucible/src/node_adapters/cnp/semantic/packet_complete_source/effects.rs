@@ -90,6 +90,35 @@ impl PacketCompleteEffectReceiverGroup {
             .ok_or_else(|| refused("original receiver group storage exhausted"))
     }
 
+    /// Counts the same receiver group with raw precredit failures.
+    ///
+    /// This reads only Rust ownership/layout. Descriptor queues and native
+    /// frontier emptiness retain their independent authenticated kernel checks.
+    ///
+    /// # Errors
+    /// Refuses another creator/thread or checked requested-storage exhaustion.
+    pub fn original_retained_requested_storage_precredit_data(
+        self: &Rc<Self>,
+        maximum: usize,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::{NodeRuntime, RuntimeError};
+        if self.process != std::process::id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        let header = NodeRuntime::capture_protocol_shared_header_storage(
+            1,
+            std::mem::align_of::<Self>(),
+            maximum,
+        )?;
+        std::mem::size_of::<Self>()
+            .checked_add(header)
+            .filter(|bytes| *bytes <= maximum)
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+
     /// Authenticates an actual original bound address against its selected launch path.
     ///
     /// # Errors
@@ -313,6 +342,29 @@ impl super::PacketCompleteSemanticSource {
             })
             .transpose()?;
         self.ensure_origin()?;
+        Ok(bytes)
+    }
+
+    /// Counts the same optional group view with allocation-free failures.
+    ///
+    /// # Errors
+    /// Refuses foreign creator/thread or checked requested-storage exhaustion.
+    pub fn original_effect_receiver_retained_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<usize>, crate::node_contract::RuntimeError> {
+        use crate::node_contract::RuntimeError;
+        self.storage_origin_with_error::<RuntimeError>()?;
+        let bytes = self
+            .effect_receiver
+            .as_ref()
+            .map(|original| {
+                original
+                    .group
+                    .original_retained_requested_storage_precredit_data(maximum)
+            })
+            .transpose()?;
+        self.storage_origin_with_error::<RuntimeError>()?;
         Ok(bytes)
     }
 

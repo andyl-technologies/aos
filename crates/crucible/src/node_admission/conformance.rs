@@ -15,7 +15,12 @@ use super::*;
 
 mod archive_code;
 mod extensions;
+mod fresh_restore_host;
 mod report_startup;
+pub use fresh_restore_host::{
+    CompleteOriginalFreshRestoreHostWindow, OriginalFreshRestoreHostMemberScope,
+    OriginalFreshRestoreHostPolicy, OriginalFreshRestoreHostScope, OriginalFreshRestoreHostStorage,
+};
 
 pub(crate) use report_startup::{OriginalReportStartupMember, StartupRows};
 
@@ -55,6 +60,46 @@ pub struct ConformancePlanEvidence<'a> {
 /// [`AdmissionEvidence`]. Collection authorization must never issue an accepted
 /// class or use vendor-selected omissions as a normative witness population.
 pub trait ConformanceAdmissionAuthority: AdmissionEvidence {
+    /// Reads the actual installed host-query resource action without allocation.
+    ///
+    /// # Errors
+    /// Refuses unsupported actions and foreign registered holders by default.
+    fn original_fresh_restore_host_policy(
+        &self,
+        _evidence: ConformancePlanEvidence<'_>,
+        _scope: &OriginalFreshRestoreHostScope<'_>,
+    ) -> Result<OriginalFreshRestoreHostPolicy, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Observes the same registered host holder after its scratch is precredited.
+    ///
+    /// # Errors
+    /// Refuses unsupported backing or a changed original holder by default.
+    fn authenticate_original_fresh_restore_host(
+        &self,
+        _evidence: ConformancePlanEvidence<'_>,
+        _scope: &OriginalFreshRestoreHostScope<'_>,
+        _policy: &OriginalFreshRestoreHostPolicy,
+    ) -> Result<OriginalFreshRestoreHostStorage, crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
+    /// Checks raw installed-holder currency while mutable query custody is held.
+    ///
+    /// This callback must not borrow the preparation bank or observe its owners.
+    /// It checks only the registered original Source/plan and actual revision.
+    ///
+    /// # Errors
+    /// Refuses unsupported actions or a revoked/foreign holder by default.
+    fn authenticate_original_fresh_restore_host_member(
+        &self,
+        _evidence: ConformancePlanEvidence<'_>,
+        _scope: &OriginalFreshRestoreHostMemberScope<'_>,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        Err(crate::node_contract::RuntimeError::UnsupportedFacet)
+    }
+
     /// Reads the installed resource policy before startup observers or reports allocate.
     ///
     /// This callback authenticates the actual immutable Source/launch roster and
@@ -561,6 +606,48 @@ impl InstalledConformancePlan {
                     .map_err(|_| failure("original plan world storage overflow"))?,
             )
             .ok_or_else(|| failure("original plan retained aggregate overflow"))
+    }
+
+    /// Observes this same installed plan with allocation-free bound failures.
+    ///
+    /// Counts the actual private Plan allocation, original byte/vector capacities
+    /// and complete reference strings. Its borrowed authority remains a distinct
+    /// owner. This performs no graph validation, serializer or authority callback.
+    ///
+    /// # Errors
+    /// Returns `ResourceLimit` on checked arithmetic overflow without allocating
+    /// an EvidenceError diagnostic. This data result grants no plan permission.
+    pub fn retained_allocation_bytes_excluding_authority_precredit_data(
+        &self,
+    ) -> Result<usize, crate::node_contract::RuntimeError> {
+        use crate::node_contract::NodeRuntime;
+        let mut total = NodeRuntime::capture_shared_allocation_storage::<Plan>();
+        let vector = self
+            .0
+            .sources
+            .capacity()
+            .checked_mul(std::mem::size_of::<ContentRef>())
+            .ok_or(crate::node_contract::RuntimeError::ResourceLimit)?;
+        for bytes in [
+            self.0.plan_bytes.capacity(),
+            self.0.refused_bytes.capacity(),
+            vector,
+        ] {
+            total = total
+                .checked_add(bytes)
+                .ok_or(crate::node_contract::RuntimeError::ResourceLimit)?;
+        }
+        for reference in [&self.0.plan_ref, &self.0.refused_ref]
+            .into_iter()
+            .chain(&self.0.sources)
+        {
+            total = total
+                .checked_add(NodeRuntime::capture_reference_storage(reference)?)
+                .ok_or(crate::node_contract::RuntimeError::ResourceLimit)?;
+        }
+        total
+            .checked_add(NodeRuntime::capture_hash_storage(&self.0.world)?)
+            .ok_or(crate::node_contract::RuntimeError::ResourceLimit)
     }
 
     pub(crate) fn retained(&self) -> Self {

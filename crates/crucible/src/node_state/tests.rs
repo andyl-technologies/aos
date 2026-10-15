@@ -1454,3 +1454,21 @@ fn exact_restoration_preserves_nondeterministic_world_classification() {
         Repeatability::Nondeterministic
     );
 }
+
+/// Supplies only the existing synthetic native fixture to transaction custody tests.
+pub(super) fn prepared_publication_fixture(
+    graph: &AdmittedGraph,
+    blobs: BTreeMap<String, Vec<u8>>,
+) -> Result<super::transaction::PreparedRestore<'_>, RestoreFailure> {
+    let (mut evidence, manifest, requirements) = setup(graph, blobs);
+    let capture =
+        verify(graph, &mut evidence, &manifest, requirements).map_err(RestoreFailure::refused)?;
+    let mut driver = driver(graph, manifest.provenance_ref, Rc::new(Cell::new(0)));
+    stage_restore(
+        graph,
+        capture,
+        activation(graph),
+        &mut driver,
+        StateLimits::default(),
+    )
+}

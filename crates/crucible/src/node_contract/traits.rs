@@ -7,7 +7,7 @@ use crucible_node_contract::{NodeBinding, NodeDescriptor, Position, PreparedOwne
 use super::{
     ActivationRecord, CancelStatus, FacetKind, NativeReclamationReceipt, NodeRoute, NodeStatus,
     OperationAdmission, OperationFailure, OperationOutcome, OperationToken, OwnerIdentity, Refusal,
-    Submission,
+    RuntimeError, Submission,
 };
 
 /// Reports an owner's prepared domains without authorizing execution.
@@ -56,6 +56,36 @@ pub trait SimulationNode {
         &self,
         _maximum: usize,
     ) -> Result<Option<usize>, OperationFailure> {
+        Ok(None)
+    }
+
+    /// Observes a closed original owner without allocating an error before credit.
+    ///
+    /// This separate typed path never falls back to the legacy string-error
+    /// observer. Implementations must account for the same actual complete
+    /// backing and check their original creator before following owner loans.
+    /// Unknown implementations return `None`; metadata grants no permission.
+    ///
+    /// # Errors
+    /// Refuses unsupported phases, foreign origin, busy owners or the bound.
+    fn retained_requested_storage_precredit_data(
+        &self,
+        _maximum: usize,
+    ) -> Result<Option<usize>, RuntimeError> {
+        Ok(None)
+    }
+
+    /// Names fixed explicit scratch for the closed typed owning observation.
+    ///
+    /// The enclosing runtime keeps its own counter live beside this term.
+    /// Recursive/compiler frames, allocator residency and native memory remain
+    /// separate. A missing term refuses the typed observation.
+    ///
+    /// # Errors
+    /// Refuses a foreign original creator or an unsupported owning phase.
+    fn retained_requested_storage_precredit_scratch_data(
+        &self,
+    ) -> Result<Option<usize>, RuntimeError> {
         Ok(None)
     }
 

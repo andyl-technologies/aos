@@ -26,11 +26,13 @@ pub use contract::{
     complete_restore_transfer_schema,
 };
 pub use crypto::*;
-pub(crate) use owner_state::selected_issuer_decode_storage_data;
 pub use owner_state::{
     PacketCompleteRestoreOwnerProjection, PacketCompleteRestoreOwnerStateData,
     PacketCompleteRestoreOwnerValidationStorage, authenticate_complete_restore_owner_state_data,
     complete_restore_owner_validation_storage_data,
+};
+pub(crate) use owner_state::{
+    selected_issuer_decode_counter_scratch_data, selected_issuer_decode_storage_data,
 };
 
 /// Names the exact registered transfer feature.

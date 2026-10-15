@@ -95,6 +95,35 @@ impl PreparedSchedulingRestore {
         })
     }
 
+    pub(crate) fn original_publication_data(&self) -> impl serde::Serialize + '_ {
+        let Self {
+            target,
+            snapshot,
+            input_acknowledgements,
+            epochs,
+        } = self;
+        let epochs = epochs.as_ref().map(|value| {
+            let super::super::SchedulingEpochEvidence {
+                policy,
+                rows,
+                objects,
+            } = value;
+            (policy, rows, objects)
+        });
+        (
+            (
+                &target.generation,
+                &target.activation_id,
+                &target.world_binding_hash,
+                &target.owners,
+                &target.boundary,
+            ),
+            snapshot,
+            input_acknowledgements,
+            epochs,
+        )
+    }
+
     /// Binds the checked coordinator to the original complete fresh activation.
     ///
     /// # Errors

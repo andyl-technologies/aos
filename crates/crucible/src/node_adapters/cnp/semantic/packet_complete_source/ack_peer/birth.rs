@@ -5,6 +5,7 @@
 //! native execution, capture or restoration. A later original post-Hello
 //! association must authenticate the actual SDK writer and native read.
 
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use std::{
     fs::File,
     io::Read,
@@ -94,9 +95,24 @@ impl OriginalAckPeerBirth {
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_unstarted_storage_phase(
         &self,
     ) -> Result<(), OperationFailure> {
-        self.ensure_origin()?;
+        self.authenticate_unstarted_storage_phase_with_error::<OperationFailure>()
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn authenticate_unstarted_storage_phase_with_error<
+        E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
+    >(
+        &self,
+    ) -> Result<(), E> {
+        if self.process != std::process::id() {
+            return Err(E::origin("original ACK birth belongs to another process"));
+        }
+        if self.thread != std::thread::current().id() {
+            return Err(E::origin("original ACK birth belongs to another thread"));
+        }
         if !self.ready || self.failed || self.boot_started.get() {
-            return Err(refused("original private birth is not ready and unstarted"));
+            return Err(E::refused(
+                "original private birth is not ready and unstarted",
+            ));
         }
         Ok(())
     }
@@ -356,19 +372,21 @@ impl<'a> PacketCompleteAckPeerBootMaterial<'a> {
 }
 
 impl OriginalAckPeerBirth {
-    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn retained_heap_storage_data(
+    pub(in crate::node_adapters::cnp::semantic) fn retained_heap_storage_data_with_error<
+        E: StorageError,
+    >(
         &self,
         maximum: usize,
-    ) -> Result<usize, OperationFailure> {
+    ) -> Result<usize, E> {
         if self.process != std::process::id() || self.thread != std::thread::current().id() {
-            return Err(refused("retained ACK birth foreign origin"));
+            return Err(E::refused("retained ACK birth foreign origin"));
         }
         // File, revision, private key/birth arrays and scalar states are inline
         // in the Source allocation. No executable read, hash or cut renewal.
         let reference =
             crate::node_contract::NodeRuntime::capture_reference_storage(&self.host_executable)
-                .map_err(super::super::unknown)?;
-        super::super::retained_values::sum(
+                .map_err(E::runtime)?;
+        super::super::retained_values::sum_with_error::<E, _>(
             [
                 reference,
                 self.private_launch.allocated_capacity(),
@@ -376,7 +394,7 @@ impl OriginalAckPeerBirth {
                 self.expected_host_registration.capacity(),
                 self.report_startup
                     .as_ref()
-                    .map(|state| state.retained_storage_data(maximum))
+                    .map(|state| state.retained_storage_data_with_error::<E>(maximum))
                     .transpose()?
                     .unwrap_or(0),
             ],

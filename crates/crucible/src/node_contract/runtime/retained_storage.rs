@@ -82,6 +82,70 @@ impl NodeRuntime {
         &self,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
+        self.retained_requested_storage_inner(maximum, false)
+    }
+
+    /// Observes actual owners using only closed typed precredit node callbacks.
+    ///
+    /// Unknown node implementations refuse, even if their legacy string-error
+    /// observer supports a later credited inspection. This method grants no
+    /// allocation or execution permission; its fixed scratch must be admitted
+    /// separately before the walk.
+    ///
+    /// # Errors
+    /// Refuses unsupported typed owners, foreign origin, busy originals,
+    /// conflicting shared widths or the requested bound.
+    pub fn original_retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        self.original_retained_requested_storage_precredit_scratch_data()?;
+        self.retained_requested_storage_inner(maximum, true)
+    }
+
+    /// Names simultaneous fixed counters for this closed typed owning walk.
+    ///
+    /// Child observations are sequential, so their largest explicit term is
+    /// live beside the runtime counter. Compiler/recursive frames, native or
+    /// kernel storage and physical allocator residency remain separate.
+    ///
+    /// # Errors
+    /// Refuses foreign scheduling custody, unknown node scratch or overflow.
+    pub fn original_retained_requested_storage_precredit_scratch_data(
+        &self,
+    ) -> Result<usize, RuntimeError> {
+        let scheduler = self
+            .scheduler
+            .as_ref()
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        scheduler
+            .authenticate_retained(&self.authority, &self.barrier.record().world_binding_hash)?;
+        let mut child = 0usize;
+        for node in self.nodes.values() {
+            child = child.max(
+                node.retained_requested_storage_precredit_scratch_data()?
+                    .ok_or(RuntimeError::UnsupportedFacet)?,
+            );
+        }
+        if let Some(slot) = &self.custody_slot {
+            child = child.max(
+                slot.retained_requested_storage_precredit_scratch_data()?
+                    .ok_or(RuntimeError::UnsupportedFacet)?,
+            );
+        }
+        child = child.max(super::opaque_owner_counter_scratch_data());
+        scheduler
+            .authenticate_retained(&self.authority, &self.barrier.record().world_binding_hash)?;
+        size_of::<RetainedRuntimeCounter>()
+            .checked_add(child)
+            .ok_or(RuntimeError::ResourceLimit)
+    }
+
+    fn retained_requested_storage_inner(
+        &self,
+        maximum: usize,
+        precredit: bool,
+    ) -> Result<usize, RuntimeError> {
         // Authenticate the retained original before following its owner graph.
         self.scheduler
             .as_ref()
@@ -170,10 +234,13 @@ impl NodeRuntime {
         for (key, node) in nodes {
             counter.owned(key)?;
             counter.add(size_of_val(node.as_ref()))?;
-            let backing = node
-                .retained_requested_storage_data(maximum)
-                .map_err(|_| RuntimeError::UnsupportedFacet)?
-                .ok_or(RuntimeError::UnsupportedFacet)?;
+            let backing = if precredit {
+                node.retained_requested_storage_precredit_data(maximum)?
+            } else {
+                node.retained_requested_storage_data(maximum)
+                    .map_err(|_| RuntimeError::UnsupportedFacet)?
+            }
+            .ok_or(RuntimeError::UnsupportedFacet)?;
             counter.add(backing)?;
         }
         if let Some(slot) = custody_slot {

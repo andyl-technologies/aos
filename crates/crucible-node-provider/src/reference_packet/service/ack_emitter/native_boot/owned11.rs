@@ -22,6 +22,13 @@ impl NativeAckBoot {
 
     fn authenticate_admitted_boot_state(&self) -> Result<(), ProviderError> {
         self.ensure_origin()?;
+        // The old tuple/observer has no startup owner leaf. Refuse before
+        // traversing any children; an absent constructor is not a new codec.
+        if self.startup.is_some() {
+            return Err(ProviderError::Correlation(
+                "native old11 startup owner unsupported",
+            ));
+        }
         if !self.ready
             || !self.attempted
             || !self.verified
@@ -81,6 +88,7 @@ impl NativeAckBoot {
             verified,
             restoration: _,
             transfer: _,
+            startup: _,
         } = self;
         observer.observe(creator)?;
         let BootData {
@@ -232,6 +240,7 @@ impl Serialize for BootView<'_> {
             verified,
             restoration: _,
             transfer: _,
+            startup: _,
         } = self.0;
         let policy = policy
             .as_ref()

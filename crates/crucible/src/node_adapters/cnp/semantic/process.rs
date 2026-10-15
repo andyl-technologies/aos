@@ -23,6 +23,7 @@ pub(super) use current::ReadCall;
 mod complete_registry;
 mod executable_guard;
 mod original_child;
+mod precredit_storage;
 mod retained_storage;
 
 mod reservation;
@@ -39,6 +40,24 @@ pub trait CnpSemanticProcessSlot {
     /// The pre-Child reservation reads this callback before spawning. Its result
     /// is cached; later guard identity reads do not invoke installed callbacks.
     fn identity(&self) -> U64;
+
+    /// Observes actual nested backing before allocation credit, using raw failures.
+    ///
+    /// Implementations walk the same concrete owner without heap allocation,
+    /// formatting, serialization, I/O, or currentness callbacks. The caller
+    /// separately charges the actual outer allocation and observer scratch.
+    /// `None` retains an unknown owner. This default never calls the legacy
+    /// allocating-error observer and grants no native or allocation authority.
+    ///
+    /// # Errors
+    /// Returns a typed origin, busy-loan, unsupported-layout or checked-bound
+    /// refusal without constructing an owned diagnostic.
+    fn retained_requested_storage_precredit_data(
+        &self,
+        _maximum: usize,
+    ) -> Result<Option<usize>, crate::node_contract::RuntimeError> {
+        Ok(None)
+    }
 
     /// Observes actual backing heaps of the same concrete supervision slot.
     ///

@@ -43,10 +43,10 @@ pub use process::{
 };
 
 pub use semantic::{
-    CnpNativeAfterConfirmationCall, CnpOriginalSemanticSnapshot, CnpRetainedStorageReport,
-    CnpRetainedStorageUnknowns, CnpSemanticAcceptance, CnpSemanticAdmissionFailure,
-    CnpSemanticAttachmentFailure, CnpSemanticCaptureScope, CnpSemanticConformanceAuthority,
-    CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
+    CnpNativeAfterConfirmationCall, CnpOriginalSemanticSnapshot, CnpPreparationStorageScratch,
+    CnpRetainedStorageReport, CnpRetainedStorageUnknowns, CnpSemanticAcceptance,
+    CnpSemanticAdmissionFailure, CnpSemanticAttachmentFailure, CnpSemanticCaptureScope,
+    CnpSemanticConformanceAuthority, CnpSemanticConformanceNode, CnpSemanticConformanceProvider,
     CnpSemanticConformanceWorldProvider, CnpSemanticExactConformanceWorldProvider,
     CnpSemanticExactWorldReservation, CnpSemanticExactWorldReservationFailure,
     CnpSemanticInstallation, CnpSemanticLaunchFailure, CnpSemanticLaunchGuard,

@@ -73,8 +73,7 @@ impl CompleteArchiveCodeGraph {
         self.graph.charge_original_retained_storage(&mut counter)?;
         counter.add(
             self.plan
-                .retained_allocation_bytes_excluding_authority()
-                .map_err(|_| crate::node_contract::RuntimeError::ResourceLimit)?,
+                .retained_allocation_bytes_excluding_authority_precredit_data()?,
         )?;
         self.authenticate_origin()?;
         Ok(counter.bytes())

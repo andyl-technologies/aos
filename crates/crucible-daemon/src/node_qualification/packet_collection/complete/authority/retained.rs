@@ -55,6 +55,49 @@ impl InstalledPacketCompleteCollectionAuthority {
     /// The process observer separately charges this authority's enclosing Rc and
     /// inline payload. This loan follows actual backing identities only, avoids
     /// current/kernel callbacks, and remains data after collection revocation.
+    pub(in crate::node_qualification::packet_collection::complete) fn original_retained_requested_storage_precredit_data(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, crucible::node_contract::RuntimeError> {
+        self.graph_policy
+            .authenticate_retained_origin_data()
+            .map_err(|_| crucible::node_contract::RuntimeError::ForeignAuthority)?;
+        let mut counter = Counter::new(maximum);
+        // Source3 is walked by the actual preparation/holder rows. The Host is
+        // either an original source or this exact fresh capsule's archive tuple.
+        self.charge_report_startup_retained_storage(&mut counter)
+            .map_err(|_| crucible::node_contract::RuntimeError::ResourceLimit)?;
+        match self
+            .host
+            .retained_original_metadata_bytes_excluding_runtime_precredit_data(counter.remaining())
+        {
+            Ok(bytes) => {
+                counter
+                    .rc(&self.host)
+                    .map_err(|_| crucible::node_contract::RuntimeError::ResourceLimit)?;
+                counter
+                    .add(bytes)
+                    .map_err(|_| crucible::node_contract::RuntimeError::ResourceLimit)?;
+            }
+            Err(crucible::node_contract::RuntimeError::UnsupportedFacet) => {
+                let holder = self
+                    .report_startup_holder
+                    .get()
+                    .and_then(std::rc::Weak::upgrade)
+                    .ok_or(crucible::node_contract::RuntimeError::OwnerUnavailable)?;
+                let held = holder
+                    .try_borrow()
+                    .map_err(|_| crucible::node_contract::RuntimeError::OwnerBusy)?;
+                held.charge_fresh_host_archive_precredit_data(self, &mut counter)?;
+            }
+            Err(error) => return Err(error),
+        }
+        self.graph_policy
+            .authenticate_retained_origin_data()
+            .map_err(|_| crucible::node_contract::RuntimeError::ForeignAuthority)?;
+        Ok(counter.bytes())
+    }
+
     pub(super) fn original_retained_requested_storage_data(
         &self,
         maximum: usize,
@@ -91,7 +134,9 @@ impl InstalledPacketCompleteCollectionAuthority {
         if !restored_host_counted_by_capsule && counter.rc(&self.host)? {
             let host = self
                 .host
-                .retained_original_metadata_bytes_excluding_runtime(counter.remaining())
+                .retained_original_metadata_bytes_excluding_runtime_precredit_data(
+                    counter.remaining(),
+                )
                 .map_err(|_| refused())?;
             counter.add(host)?;
         }

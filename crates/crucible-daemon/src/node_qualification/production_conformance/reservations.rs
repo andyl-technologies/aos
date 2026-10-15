@@ -31,7 +31,13 @@ impl OriginalRealizedCaseReservation {
         &self.case
     }
 
-    fn matches(&self, owner: &Rc<()>, case: &str, oracle: &ContentRef, maximum_bytes: u64) -> bool {
+    pub(super) fn matches(
+        &self,
+        owner: &Rc<()>,
+        case: &str,
+        oracle: &ContentRef,
+        maximum_bytes: u64,
+    ) -> bool {
         Rc::ptr_eq(&self.owner, owner)
             && self.case == case
             && &self.oracle == oracle

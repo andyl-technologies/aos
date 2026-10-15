@@ -20,6 +20,8 @@ use crate::node_contract::{NodeRuntime, OperationFailure};
 use super::{CnpSemanticNode, PacketCompleteSemanticSource, refused, unknown};
 
 pub(super) mod common;
+pub(super) mod preparation;
+pub use preparation::CnpPreparationStorageScratch;
 
 /// Identifies backing whose actual owner still needs a separate typed observer.
 ///
@@ -29,6 +31,10 @@ pub(super) mod common;
 pub struct CnpRetainedStorageUnknowns {
     /// The independent supervisor slot contains an erased owning implementation.
     pub supervisor_slot: bool,
+    /// The protocol supervisor retains an erased callback without a typed data loan.
+    pub protocol_supervisor_callback: bool,
+    /// Tuple metadata has no exhaustive actual live SDK reader/stream/root observer.
+    pub live_sdk_backing: bool,
     /// An acquired executable lease retains private thread/channel backing.
     pub executable_lease_worker: bool,
     /// The selected build has not bound the audited std Child layout contract.
@@ -508,6 +514,16 @@ pub(super) struct StorageOrigin {
 }
 
 impl StorageOrigin {
+    pub(super) fn check_precredit_data(&self) -> Result<(), crate::node_contract::RuntimeError> {
+        if self.process != std::process::id() {
+            return Err(crate::node_contract::RuntimeError::ForeignAuthority);
+        }
+        if self.thread != std::thread::current().id() {
+            return Err(crate::node_contract::RuntimeError::ThreadAffinity);
+        }
+        Ok(())
+    }
+
     pub(super) fn current() -> Self {
         Self {
             process: std::process::id(),

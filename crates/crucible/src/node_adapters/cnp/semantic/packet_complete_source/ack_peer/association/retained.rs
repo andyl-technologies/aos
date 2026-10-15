@@ -1,29 +1,44 @@
 //! Observes source-owned original peer association backing without serialization.
 
 use super::*;
+use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 
 impl OriginalAckPeerAssociation {
+    #[cfg(test)]
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn retained_heap_storage_data(
         &self,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
+        self.retained_heap_storage_data_with_error::<OperationFailure>(maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic) fn retained_heap_storage_data_with_error<
+        E: StorageError,
+    >(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
         use crate::node_adapters::cnp::semantic::packet_complete_source::retained_values::{
-            sum, value_storage,
+            sum_with_error, value_storage_with_error,
         };
         if let Some(restore) = self.restore.as_ref() {
-            restore.authenticate_unpopulated_capture_metadata()?;
+            restore.authenticate_unpopulated_capture_metadata_with_error::<E>()?;
         }
-        let mut bytes = sum([self.allocated_bank_bytes()?], maximum)?;
+        let mut bytes =
+            sum_with_error::<E, _>([self.allocated_bank_bytes_with_error::<E>()?], maximum)?;
         for value in self
             .normalized
             .iter()
             .chain(std::iter::once(&self.proof))
             .flatten()
         {
-            bytes = sum([bytes, value_storage(value, 0, maximum)?], maximum)?;
+            bytes = sum_with_error::<E, _>(
+                [bytes, value_storage_with_error::<E>(value, 0, maximum)?],
+                maximum,
+            )?;
         }
         if let Some(context) = &self.context {
-            bytes = sum(
+            bytes = sum_with_error::<E, _>(
                 [
                     bytes,
                     context.schema.capacity(),
@@ -44,13 +59,13 @@ impl OriginalAckPeerAssociation {
         // SDK byte/literal/metadata-bank owners outside this association remain
         // separately counted by the actual node/controller owning row.
         if let Some(emitter) = &self.emitter {
-            bytes = sum(
+            bytes = sum_with_error::<E, _>(
                 [
                     bytes,
-                    PacketCompleteSemanticSource::complete_retained_metadata_storage_data(
+                    PacketCompleteSemanticSource::complete_retained_metadata_storage_with_error::<E>(
                         &emitter
                             .original_retained_metadata_facts()
-                            .map_err(unknown)?,
+                            .map_err(E::unknown)?,
                         maximum,
                     )?,
                 ],
@@ -58,13 +73,13 @@ impl OriginalAckPeerAssociation {
             )?;
         }
         if let Some(emitter) = &self.restore_input_emitter {
-            bytes = sum(
+            bytes = sum_with_error::<E, _>(
                 [
                     bytes,
-                    PacketCompleteSemanticSource::complete_retained_metadata_storage_data(
+                    PacketCompleteSemanticSource::complete_retained_metadata_storage_with_error::<E>(
                         &emitter
                             .original_retained_metadata_facts()
-                            .map_err(unknown)?,
+                            .map_err(E::unknown)?,
                         maximum,
                     )?,
                 ],
@@ -72,11 +87,13 @@ impl OriginalAckPeerAssociation {
             )?;
         }
         if let Some(hello) = &self.hello {
-            bytes = sum(
+            bytes = sum_with_error::<E, _>(
                 [
                     bytes,
-                    PacketCompleteSemanticSource::complete_retained_metadata_storage_data(
-                        &hello.original_retained_metadata_facts().map_err(unknown)?,
+                    PacketCompleteSemanticSource::complete_retained_metadata_storage_with_error::<E>(
+                        &hello
+                            .original_retained_metadata_facts()
+                            .map_err(E::unknown)?,
                         maximum,
                     )?,
                 ],

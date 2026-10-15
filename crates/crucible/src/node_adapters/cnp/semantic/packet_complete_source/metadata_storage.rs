@@ -4,7 +4,9 @@
 //! pinned Core layout helpers own those layout rules; this adapter adds the
 //! terms under one checked ceiling without inferring any installed authority.
 
+use super::storage_error::StorageError;
 use super::*;
+use crate::node_contract::RuntimeError;
 use crucible_node_provider::retained_metadata::RetainedProtocolMetadataFacts;
 
 impl PacketCompleteSemanticSource {
@@ -24,6 +26,24 @@ impl PacketCompleteSemanticSource {
         facts: &RetainedProtocolMetadataFacts,
         maximum: usize,
     ) -> Result<usize, OperationFailure> {
+        Self::complete_retained_metadata_storage_with_error::<OperationFailure>(facts, maximum)
+    }
+
+    /// Converts actual metadata facts without allocating a failure diagnostic.
+    ///
+    /// # Errors
+    /// Refuses unsupported facts, checked layout overflow or the supplied bound.
+    pub fn complete_retained_metadata_storage_precredit_data(
+        facts: &RetainedProtocolMetadataFacts,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        Self::complete_retained_metadata_storage_with_error::<RuntimeError>(facts, maximum)
+    }
+
+    pub(super) fn complete_retained_metadata_storage_with_error<E: StorageError>(
+        facts: &RetainedProtocolMetadataFacts,
+        maximum: usize,
+    ) -> Result<usize, E> {
         let payload = [
             facts.string_capacity_bytes,
             facts.vector_capacity_bytes,
@@ -35,7 +55,7 @@ impl PacketCompleteSemanticSource {
             total
                 .checked_add(bytes)
                 .filter(|total| *total <= maximum)
-                .ok_or_else(|| refused("complete metadata payload storage exhausted"))
+                .ok_or_else(|| E::limit("complete metadata payload storage exhausted"))
         })?;
 
         let trees = NodeRuntime::capture_protocol_tree_storage(
@@ -45,21 +65,21 @@ impl PacketCompleteSemanticSource {
             facts.maximum_tree_entry_alignment,
             maximum - payload,
         )
-        .map_err(unknown)?;
+        .map_err(E::runtime)?;
         let retained = payload
             .checked_add(trees)
-            .ok_or_else(|| refused("complete metadata tree storage overflow"))?;
+            .ok_or_else(|| E::limit("complete metadata tree storage overflow"))?;
         let headers = NodeRuntime::capture_protocol_shared_header_storage(
             facts.shared_backing_views,
             facts.maximum_shared_value_alignment,
             maximum - retained,
         )
-        .map_err(unknown)?;
+        .map_err(E::runtime)?;
 
         retained
             .checked_add(headers)
             .filter(|total| *total <= maximum)
-            .ok_or_else(|| refused("complete metadata combined storage exhausted"))
+            .ok_or_else(|| E::limit("complete metadata combined storage exhausted"))
     }
 }
 
