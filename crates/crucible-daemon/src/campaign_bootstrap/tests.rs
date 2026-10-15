@@ -775,7 +775,15 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         "x86_64",
         "deterministic-tcg-v1",
         CampaignHash::derive("crucible.test.shared-packaged-store.v1", b"bootstrap"),
-        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
+        // The executor stages prepared results under the run-state root, so it
+        // must stay inside the fixture directory.
+        ProductionVmLifecycleConfig::new(
+            "qemu",
+            "plugin",
+            "kernel",
+            "root",
+            directory.path().join("run-state"),
+        ),
         host,
     )
     .expect("packaged executor configuration");
