@@ -230,6 +230,7 @@ The atomic integration patch creates these QEMU source files:
 | `scripts/extract-crucible-preexec-purpose.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `scripts/gen-crucible-shared-region-layout.py` | MIT | Explicit SPDX identifier |
 | `stubs/crucible-qmp-allocation.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `stubs/crucible-qmp-monitor.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `stubs/crucible-socket-ingress.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `system/crucible-observation-realization.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `system/crucible-observation-writer.c` | GPL-2.0-or-later | Explicit SPDX identifier |
