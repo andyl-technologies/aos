@@ -318,6 +318,8 @@ impl DurablePortableWorkspaceMetadataV1 {
             &self.sandbox_spec_bytes,
         );
         if encode_sandbox_spec(&spec) != self.sandbox_spec_bytes
+            || manifest.manifest().sandbox_spec().media_type().as_str()
+                != aos_sandbox_core::sandbox_spec_media_type(&spec).as_str()
             || manifest
                 .broker_assignment()
                 .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?
@@ -2130,6 +2132,102 @@ mod tests {
             MAXIMUM_RESPONSE_BYTES,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn portable_metadata_refuses_specification_media_relabeling() {
+        use aos_sandbox_core::model::{
+            AssignmentManifestV1, GuestExecutionIdentityPolicyV1, NetworkKind, NetworkProfile,
+            ResourceProfile, SandboxAncestry, UnmappableIdentityPolicy,
+        };
+        use aos_sandbox_core::{FeatureRef, NamespaceGeneration, ProjectId, ResourceVector};
+
+        for version in [1, 2] {
+            let environment = ObjectDescriptor::new(
+                MediaType::new(PortableMediaType::Environment.as_str().to_owned()).unwrap(),
+                ObjectDigest::from_bytes([1; 32]),
+                1,
+            );
+            let root = root_image(2);
+            let mut spec = SandboxSpec::new(
+                FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 0).unwrap(),
+                IdentityProfile::PrivateUserns {
+                    id_range_size: std::num::NonZeroU32::new(RANGE_SIZE).unwrap(),
+                    unmappable_policy: UnmappableIdentityPolicy::Reject,
+                    required_features: Vec::new(),
+                },
+                ResourceProfile::new(Vec::new()).unwrap(),
+                environment.clone(),
+                root.clone(),
+                Vec::new(),
+                NetworkProfile::new(NetworkKind::Isolated, Vec::new(), Vec::new()).unwrap(),
+                Vec::new(),
+            )
+            .unwrap();
+            if version == 2 {
+                spec = spec
+                    .with_guest_execution_identity(
+                        GuestExecutionIdentityPolicyV1::new(1000, 1000, vec![4, 44]).unwrap(),
+                    )
+                    .unwrap();
+            }
+            let bytes = encode_sandbox_spec(&spec);
+            let exact = aos_sandbox_core::sandbox_spec_media_type(&spec);
+            let wrong = if version == 1 {
+                PortableMediaType::SandboxSpecV2
+            } else {
+                PortableMediaType::SandboxSpec
+            };
+            for media in [exact, wrong] {
+                let descriptor = descriptor_for_bytes(
+                    MediaType::new(media.as_str().to_owned()).unwrap(),
+                    &bytes,
+                );
+                let sandbox = SandboxId::from_bytes([3; 16]);
+                let manifest = CanonicalAssignmentManifestV1::new(
+                    AssignmentManifestV1::new(
+                        sandbox,
+                        ProjectId::from_bytes([4; 16]),
+                        SandboxAncestry::new(sandbox, Vec::new()).unwrap(),
+                        IncarnationId::from_bytes([5; 16]),
+                        NodeId::from_bytes([6; 16]),
+                        AssignmentEpoch::new(1),
+                        DesiredGeneration::new(1),
+                        NamespaceGeneration::new(1),
+                        descriptor,
+                        ObjectDescriptor::new(
+                            MediaType::new(PortableMediaType::Policy.as_str().to_owned()).unwrap(),
+                            ObjectDigest::from_bytes([7; 32]),
+                            1,
+                        ),
+                        environment.clone(),
+                        root.clone(),
+                        Vec::new(),
+                        ObjectDigest::from_bytes([8; 32]),
+                        ResourceVector::ZERO,
+                        Vec::new(),
+                    )
+                    .unwrap(),
+                );
+                let result = DurablePortableWorkspaceMetadataV1::new(
+                    [9; 16],
+                    ObjectDigest::from_bytes([10; 32]),
+                    manifest.broker_assignment().unwrap(),
+                    NodeId::from_bytes([6; 16]),
+                    WorkspaceRootPolicyV1::create_initialize(),
+                    manifest.canonical_bytes().to_vec(),
+                    bytes.clone(),
+                );
+                if media == exact {
+                    assert_eq!(result.unwrap().sandbox_spec().unwrap(), spec);
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(StorageWorkspaceCatalogError::InvalidCandidate)
+                    ));
+                }
+            }
+        }
     }
 
     #[test]

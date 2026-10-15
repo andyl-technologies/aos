@@ -1,10 +1,16 @@
 //! Checked portable descriptor and feature values shared by inert clients.
 
+#[cfg(test)]
+mod tests;
+
 use aos_proto::aos::sandbox::v1::{Feature, ObjectDescriptor};
 use buffa::Message as _;
 
 use super::model::{ClientStateItem, MAXIMUM_PUBLIC_RESOURCE_BYTES};
-use super::registry::{validate_descriptor, validate_descriptor_media, validate_features};
+use super::registry::{
+    validate_descriptor, validate_descriptor_media, validate_features,
+    validate_sandbox_specification_descriptor,
+};
 use super::resource::InvalidPublicResource;
 
 /// Stores one deeply checked established public object descriptor.
@@ -42,6 +48,11 @@ impl ClientStateItem for CheckedObjectDescriptorV1 {
 
 macro_rules! checked_descriptor_role {
     ($name:ident, $summary:literal, $media_type:literal) => {
+        checked_descriptor_role!($name, $summary, validator = |value| {
+            validate_descriptor_media(value, $media_type)
+        });
+    };
+    ($name:ident, $summary:literal, validator = $validator:expr) => {
         #[doc = $summary]
         #[derive(Clone, Debug, PartialEq)]
         pub struct $name(ObjectDescriptor);
@@ -55,7 +66,7 @@ macro_rules! checked_descriptor_role {
                 {
                     return Err(InvalidPublicResource::ResourceTooLarge);
                 }
-                validate_descriptor_media(&value, $media_type)?;
+                ($validator)(&value)?;
                 Ok(Self(value))
             }
         }
@@ -72,8 +83,8 @@ macro_rules! checked_descriptor_role {
 
 checked_descriptor_role!(
     CheckedSandboxSpecificationV1,
-    "Stores a descriptor restricted to the portable sandbox-spec media type.",
-    "application/vnd.aos.sandbox.spec.v1+cbor"
+    "Stores a descriptor restricted to supported portable sandbox-spec media types.",
+    validator = validate_sandbox_specification_descriptor
 );
 checked_descriptor_role!(
     CheckedPolicyDescriptorV1,

@@ -403,11 +403,11 @@ pub(crate) fn get(
 ) -> Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError> {
     validate_spec_descriptor(descriptor)?;
     let history = History::load(journal)?;
-    Ok(history
+    let record = history
         .specifications
         .get(&descriptor_tuple(descriptor))
-        .cloned()
-        .map(|record| DurableSandboxSpecV1 { record }))
+        .cloned();
+    checked_lookup(record, descriptor)
 }
 
 /// Reads one specification after the caller has validated the complete namespace.
@@ -416,11 +416,26 @@ pub(crate) fn get_in_validated_namespace(
     descriptor: &ObjectDescriptor,
 ) -> Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError> {
     validate_spec_descriptor(descriptor)?;
-    journal
+    let record = journal
         .get(RecordNamespace::SandboxSpec, &descriptor_key(descriptor))
         .map(Record::decode)
-        .transpose()
-        .map(|record| record.map(|record| DurableSandboxSpecV1 { record }))
+        .transpose()?;
+    checked_lookup(record, descriptor)
+}
+
+fn checked_lookup(
+    record: Option<Record>,
+    descriptor: &ObjectDescriptor,
+) -> Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError> {
+    // The bounded index omits media; its hit must still identify the exact
+    // decoded specification rather than aliasing another portable version.
+    if record
+        .as_ref()
+        .is_some_and(|record| record.descriptor != *descriptor)
+    {
+        return Err(SandboxSpecStateError::InvalidPublication);
+    }
+    Ok(record.map(|record| DurableSandboxSpecV1 { record }))
 }
 
 pub(crate) fn validate_namespace(journal: &Journal) -> Result<(), SandboxSpecStateError> {
@@ -437,11 +452,12 @@ pub(crate) fn validate_slot_declaration(
         .specifications
         .get(&validated_descriptor_tuple(descriptor)?)
         .ok_or(SandboxSpecStateError::Conflict)?;
-    if record
-        .spec
-        .attachment_slots()
-        .binary_search(&slot_id)
-        .is_err()
+    if record.descriptor != *descriptor
+        || record
+            .spec
+            .attachment_slots()
+            .binary_search(&slot_id)
+            .is_err()
     {
         return Err(SandboxSpecStateError::Conflict);
     }
@@ -459,11 +475,12 @@ pub(crate) fn validate_historical_slot_declarations<'a>(
         let Some(record) = history.specifications.get(&key) else {
             return Err(SandboxSpecStateError::CorruptState);
         };
-        if record
-            .spec
-            .attachment_slots()
-            .binary_search(&slot_id)
-            .is_err()
+        if record.descriptor != *descriptor
+            || record
+                .spec
+                .attachment_slots()
+                .binary_search(&slot_id)
+                .is_err()
         {
             return Err(SandboxSpecStateError::CorruptState);
         }
@@ -645,6 +662,68 @@ mod tests {
             ObjectDigest::from_bytes([byte.wrapping_add(20); 32]),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn every_lookup_refuses_relabeling_without_changing_retained_specifications() {
+        use aos_sandbox_core::model::GuestExecutionIdentityPolicyV1;
+
+        for version in [1, 2] {
+            let (_directory, mut journal) = journal();
+            let slot = AttachmentSlotId::from_bytes([4; 16]);
+            let mut specification = spec(vec![slot]);
+            if version == 2 {
+                specification = specification
+                    .with_guest_execution_identity(
+                        GuestExecutionIdentityPolicyV1::new(1000, 1000, vec![4, 44]).unwrap(),
+                    )
+                    .unwrap();
+            }
+            let publication = SandboxSpecPublicationV1::new(
+                specification,
+                OperationId::from_bytes([3; 16]),
+                ObjectDigest::from_bytes([23; 32]),
+            )
+            .unwrap();
+            let descriptor = publication.descriptor().clone();
+            assert!(get(&journal, &descriptor).unwrap().is_none());
+            assert!(
+                get_in_validated_namespace(&journal, &descriptor)
+                    .unwrap()
+                    .is_none()
+            );
+            let (durable, _) = commit(&mut journal, publication).unwrap();
+            let wrong_media = if version == 1 {
+                PortableMediaType::SandboxSpecV2
+            } else {
+                PortableMediaType::SandboxSpec
+            };
+            let relabeled = ObjectDescriptor::new(
+                MediaType::new(wrong_media.as_str().to_owned()).unwrap(),
+                descriptor.digest(),
+                descriptor.encoded_size(),
+            );
+            let sequence = journal.snapshot_sequence();
+
+            for lookup in [get, get_in_validated_namespace] {
+                assert!(matches!(
+                    lookup(&journal, &relabeled),
+                    Err(SandboxSpecStateError::InvalidPublication)
+                ));
+                assert_eq!(lookup(&journal, &descriptor).unwrap().unwrap(), durable);
+            }
+            assert!(matches!(
+                validate_slot_declaration(&journal, &relabeled, slot),
+                Err(SandboxSpecStateError::Conflict)
+            ));
+            assert!(matches!(
+                validate_historical_slot_declarations(&journal, [(&relabeled, slot)]),
+                Err(SandboxSpecStateError::CorruptState)
+            ));
+            validate_slot_declaration(&journal, &descriptor, slot).unwrap();
+            validate_historical_slot_declarations(&journal, [(&descriptor, slot)]).unwrap();
+            assert_eq!(journal.snapshot_sequence(), sequence);
+        }
     }
 
     #[test]

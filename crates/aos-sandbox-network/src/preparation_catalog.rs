@@ -23,6 +23,7 @@ use aos_sandbox_core::model::{NetworkKind, NetworkProfile, SandboxSpec};
 use aos_sandbox_core::{
     BrokerAssignment, CanonicalAssignmentManifestV1, DecodeLimits, NetworkEndpointId, NodeId,
     ObjectDigest, decode_sandbox_spec, descriptor_for_bytes, encode_sandbox_spec,
+    sandbox_spec_media_type,
 };
 use aos_sandbox_protocol::canonical_map;
 use serde::{Deserialize, Serialize};
@@ -301,6 +302,8 @@ impl NetworkPreparationReservationV1 {
             &sandbox_spec_bytes,
         );
         if observed_spec != *manifest_model.sandbox_spec()
+            || manifest_model.sandbox_spec().media_type().as_str()
+                != sandbox_spec_media_type(sandbox_spec).as_str()
             || sandbox_spec.environment() != manifest_model.environment()
             || sandbox_spec.root_view() != manifest_model.root_view()
             || sandbox_spec.network_profile().kind() == NetworkKind::Host
@@ -1633,9 +1636,25 @@ mod tests {
         sandbox_marker: u8,
         desired_generation: u64,
     ) -> CanonicalAssignmentManifestV1 {
+        manifest_for_node_with_media(
+            spec,
+            node,
+            sandbox_marker,
+            desired_generation,
+            sandbox_spec_media_type(spec),
+        )
+    }
+
+    fn manifest_for_node_with_media(
+        spec: &SandboxSpec,
+        node: NodeId,
+        sandbox_marker: u8,
+        desired_generation: u64,
+        media: PortableMediaType,
+    ) -> CanonicalAssignmentManifestV1 {
         let spec_bytes = encode_sandbox_spec(spec);
         let spec_descriptor = descriptor_for_bytes(
-            MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned()).unwrap(),
+            MediaType::new(media.as_str().to_owned()).unwrap(),
             &spec_bytes,
         );
         CanonicalAssignmentManifestV1::new(
@@ -1769,6 +1788,31 @@ mod tests {
             endpoints,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn reservations_require_the_decoded_specification_media_version() {
+        use aos_sandbox_core::model::GuestExecutionIdentityPolicyV1;
+
+        for version in [1, 2] {
+            let mut spec = sandbox_spec(isolated_profile());
+            if version == 2 {
+                spec = spec
+                    .with_guest_execution_identity(
+                        GuestExecutionIdentityPolicyV1::new(1000, 1000, vec![4, 44]).unwrap(),
+                    )
+                    .unwrap();
+            }
+            let exact = manifest(&spec, 2, 5);
+            NetworkPreparationReservationV1::new(&exact, &spec).unwrap();
+            let wrong = if version == 1 {
+                PortableMediaType::SandboxSpecV2
+            } else {
+                PortableMediaType::SandboxSpec
+            };
+            let relabeled = manifest_for_node_with_media(&spec, NODE, 2, 5, wrong);
+            assert!(NetworkPreparationReservationV1::new(&relabeled, &spec).is_err());
+        }
     }
 
     #[test]

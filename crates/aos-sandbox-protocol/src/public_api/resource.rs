@@ -15,7 +15,10 @@ use super::model::{
     ClientStateItem, InvalidQueryModel, MAXIMUM_PUBLIC_RESOURCE_BYTES, OpaqueResponseBytesV1,
     OpaqueResponseKindV1,
 };
-use super::registry::{checked_timestamp, validate_descriptor_media, validate_features};
+use super::registry::{
+    checked_timestamp, validate_descriptor_media, validate_features,
+    validate_sandbox_specification_descriptor,
+};
 
 /// Maximum public conditions carried by one checked resource.
 pub const MAXIMUM_RESOURCE_CONDITIONS: usize = 128;
@@ -754,12 +757,11 @@ impl TryFrom<Sandbox> for CheckedSandboxResourceV1 {
         {
             return Err(InvalidPublicResource::Unspecified);
         }
-        validate_descriptor_media(
+        validate_sandbox_specification_descriptor(
             desired
                 .specification
                 .as_option()
                 .ok_or(InvalidPublicResource::Unspecified)?,
-            "application/vnd.aos.sandbox.spec.v1+cbor",
         )?;
         validate_descriptor_media(
             desired

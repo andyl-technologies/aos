@@ -1268,9 +1268,8 @@ impl OriginalQ04ControllerLedgerV1 {
             .specification
             .as_option()
             .ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        aos_sandbox_protocol::public_api::registry::validate_descriptor_media(
+        aos_sandbox_protocol::public_api::registry::validate_sandbox_specification_descriptor(
             specification,
-            "application/vnd.aos.sandbox.spec.v1+cbor",
         )
         .map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
         let specification = aos_sandbox_core::ObjectDescriptor::new(

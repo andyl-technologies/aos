@@ -25,6 +25,9 @@
 //! must still authenticate a signed plan and current ownership lease, durably
 //! admit that intersection, and serialize slot operations with Mount resource
 //! mutations before calling it.
+//!
+//! AOSMSL02 records bind the closed specification version code (1 or 2) in
+//! their digest. Earlier PR-only AOSMSL01 records are refused unchanged.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::MaybeUninit;
@@ -36,7 +39,8 @@ use aos_sandbox::journal::{Journal, JournalRecord, JournalTransaction, RecordNam
 use aos_sandbox_core::model::SandboxSpec;
 use aos_sandbox_core::{
     AttachmentSlotId, DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest, OperationId,
-    PortableMediaType, descriptor_for_bytes, encode_sandbox_spec, validate_descriptor_role,
+    PortableMediaType, descriptor_for_bytes, encode_sandbox_spec, sandbox_spec_media_type,
+    validate_descriptor_role,
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::inventory::MountId;
@@ -46,9 +50,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{MountError, Result};
 
-const MAGIC: &[u8; 8] = b"AOSMSL01";
-const DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.v1\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.transaction.v1\0";
+const MAGIC: &[u8; 8] = b"AOSMSL02";
+const DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.v2\0";
+const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.mount-destination-slot.transaction.v2\0";
 const RECORD_BYTES: usize = 436;
 const MAXIMUM_SLOT_RESOURCES: usize = 16_384;
 const SLOT_DIRECTORY_MODE: u32 = 0o555;
@@ -90,7 +94,7 @@ impl DestinationSlotBindingV1 {
         slot_id: AttachmentSlotId,
     ) -> Result<Self> {
         let spec_bytes = encode_sandbox_spec(sandbox_spec);
-        let derived_descriptor = sandbox_spec_descriptor_for(&spec_bytes)?;
+        let derived_descriptor = sandbox_spec_descriptor_for(sandbox_spec, &spec_bytes)?;
         if namespace_generation == 0
             || slot_id.as_bytes() == &[0; 16]
             || spec_bytes.is_empty()
@@ -1681,7 +1685,14 @@ impl Record {
         bytes.push(self.phase as u8);
         bytes.push(u8::from(has_reap));
         bytes.push(u8::from(has_rematerialization));
-        bytes.push(0);
+        // Zero is unrepresentable; binding validation rejects unsupported roles.
+        bytes.push(
+            match PortableMediaType::parse(self.binding.sandbox_spec.media_type().as_str()) {
+                Ok(PortableMediaType::SandboxSpec) => 1,
+                Ok(PortableMediaType::SandboxSpecV2) => 2,
+                _ => 0,
+            },
+        );
         bytes.extend_from_slice(&self.kernel_boot_id);
         bytes.extend_from_slice(&self.binding.sandbox_id);
         bytes.extend_from_slice(&self.binding.incarnation_id);
@@ -1749,11 +1760,11 @@ impl Record {
             1 => true,
             _ => return Err(corrupt("destination-slot record flags are invalid")),
         };
-        if take::<1>(&mut bytes)? != [0] {
-            return Err(corrupt(
-                "destination-slot record reserved bytes are nonzero",
-            ));
-        }
+        let spec_media = match take::<1>(&mut bytes)?[0] {
+            1 => PortableMediaType::SandboxSpec,
+            2 => PortableMediaType::SandboxSpecV2,
+            _ => return Err(corrupt("destination-slot specification version is invalid")),
+        };
         let kernel_boot_id = take(&mut bytes)?;
         let sandbox_id = take(&mut bytes)?;
         let incarnation_id = take(&mut bytes)?;
@@ -1804,7 +1815,7 @@ impl Record {
                 "destination-slot optional record fields are invalid",
             ));
         }
-        let media_type = MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned())
+        let media_type = MediaType::new(spec_media.as_str().to_owned())
             .map_err(|_| corrupt("sandbox specification media type is unavailable"))?;
         let binding = DestinationSlotBindingV1 {
             sandbox_id,
@@ -1891,8 +1902,8 @@ fn commit_record(journal: &mut Journal, record: &Record) -> Result<()> {
     Ok(())
 }
 
-fn sandbox_spec_descriptor_for(bytes: &[u8]) -> Result<ObjectDescriptor> {
-    let media_type = MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned())
+fn sandbox_spec_descriptor_for(spec: &SandboxSpec, bytes: &[u8]) -> Result<ObjectDescriptor> {
+    let media_type = MediaType::new(sandbox_spec_media_type(spec).as_str().to_owned())
         .map_err(|_| corrupt("sandbox specification media type is unavailable"))?;
     Ok(descriptor_for_bytes(media_type, bytes))
 }
@@ -2038,7 +2049,7 @@ mod tests {
             .unwrap();
             let slot_id = AttachmentSlotId::from_bytes([4; 16]);
             let spec = sandbox_spec(vec![slot_id]);
-            let descriptor = sandbox_spec_descriptor_for(&encode_sandbox_spec(&spec)).unwrap();
+            let descriptor = sandbox_spec_descriptor_for(&spec, &encode_sandbox_spec(&spec)).unwrap();
             let binding =
                 DestinationSlotBindingV1::new(&fence(), 7, &spec, descriptor, slot_id).unwrap();
             let materialization = DestinationSlotMaterializationV1::new(
@@ -2098,10 +2109,152 @@ mod tests {
     }
 
     #[test]
+    fn both_spec_versions_bind_canonical_content_and_survive_slot_recovery() {
+        use aos_sandbox_core::model::GuestExecutionIdentityPolicyV1;
+
+        for version in [1, 2] {
+            let mut fixture = Fixture::new();
+            let slot = AttachmentSlotId::from_bytes([4; 16]);
+            let mut spec = sandbox_spec(vec![slot]);
+            if version == 2 {
+                spec = spec
+                    .with_guest_execution_identity(
+                        GuestExecutionIdentityPolicyV1::new(1000, 1000, vec![4, 44]).unwrap(),
+                    )
+                    .unwrap();
+            }
+            let bytes = encode_sandbox_spec(&spec);
+            let descriptor = sandbox_spec_descriptor_for(&spec, &bytes).unwrap();
+            fixture.binding =
+                DestinationSlotBindingV1::new(&fence(), 7, &spec, descriptor.clone(), slot)
+                    .unwrap();
+            fixture.materialization = DestinationSlotMaterializationV1::new(
+                fixture.binding.clone(),
+                OperationId::from_bytes([10; 16]),
+                ObjectDigest::from_bytes([11; 32]),
+            )
+            .unwrap();
+            let record = Record::materializing(
+                fixture.store.kernel_boot_id,
+                fixture.binding.clone(),
+                fixture.materialization.operation_id,
+                fixture.materialization.request_digest,
+            )
+            .unwrap();
+            assert_eq!(record.encode()[11], version);
+            assert_eq!(Record::decode(&record.encode()).unwrap(), record);
+            for invalid in [0, 3, if version == 1 { 2 } else { 1 }] {
+                let mut changed = record.encode();
+                changed[11] = invalid;
+                assert!(Record::decode(&changed).is_err());
+            }
+            let wrong_kind = if version == 1 {
+                PortableMediaType::SandboxSpecV2
+            } else {
+                PortableMediaType::SandboxSpec
+            };
+            let relabeled = descriptor_for_bytes(
+                MediaType::new(wrong_kind.as_str().to_owned()).unwrap(),
+                &bytes,
+            );
+            assert!(DestinationSlotBindingV1::new(&fence(), 7, &spec, relabeled, slot).is_err());
+
+            commit_record(&mut fixture.journal, &record).unwrap();
+            let mut fixture = fixture.reopen();
+            assert_eq!(
+                fixture.store.records.get(&fixture.binding.key()).unwrap(),
+                &record
+            );
+            assert_eq!(fixture.binding.sandbox_spec(), &descriptor);
+            // Resume the real retained materialization, rather than treating recovery as Ready.
+            let (ready, _) = fixture
+                .store
+                .materialize(&mut fixture.journal, &fixture.materialization)
+                .unwrap();
+            assert_eq!(ready.binding().sandbox_spec(), &descriptor);
+            let ready_digest = ready.record_digest();
+            let mut fixture = fixture.reopen();
+            let (replayed, outcome) = fixture
+                .store
+                .materialize(&mut fixture.journal, &fixture.materialization)
+                .unwrap();
+            assert_eq!(outcome, DestinationSlotMutationOutcomeV1::Replay);
+            assert_eq!(replayed.record_digest(), ready_digest);
+            assert_eq!(replayed.binding().sandbox_spec(), &descriptor);
+            let reap = fixture.reap(ready_digest, 40);
+            let (released, _) = fixture
+                .store
+                .reap(&mut fixture.journal, &reap, |_| Ok(true))
+                .unwrap();
+            assert_eq!(released.binding().sandbox_spec(), &descriptor);
+            let mut fixture = fixture.reopen();
+            let (replayed, outcome) = fixture
+                .store
+                .reap(&mut fixture.journal, &reap, |_| Ok(true))
+                .unwrap();
+            assert_eq!(outcome, DestinationSlotMutationOutcomeV1::Replay);
+            assert_eq!(replayed.binding().sandbox_spec(), &descriptor);
+        }
+    }
+
+    #[test]
+    fn legacy_slot_namespace_is_refused_without_rewriting_retained_bytes() {
+        let mut fixture = Fixture::new();
+        let record = Record::materializing(
+            fixture.store.kernel_boot_id,
+            fixture.binding.clone(),
+            fixture.materialization.operation_id,
+            fixture.materialization.request_digest,
+        )
+        .unwrap();
+        let mut fields = record.encode_fields();
+        fields[3] = 0;
+        let digest = Sha256::new()
+            .chain_update(b"aos.sandbox.mount-destination-slot.v1\0")
+            .chain_update(&fields)
+            .finalize();
+        let mut legacy = b"AOSMSL01".to_vec();
+        legacy.extend_from_slice(&fields);
+        legacy.extend_from_slice(&digest);
+        let key = fixture.binding.key().encode();
+        fixture
+            .journal
+            .commit(
+                &JournalTransaction::new(
+                    [90; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::MountDestinationSlot,
+                        key.clone(),
+                        legacy.clone(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let sequence = fixture.journal.snapshot_sequence();
+
+        assert!(
+            DestinationSlotStoreV1::recover(
+                fixture.directory.path(),
+                rustix::process::getuid().as_raw(),
+                &fixture.journal
+            )
+            .is_err()
+        );
+        assert_eq!(fixture.journal.snapshot_sequence(), sequence);
+        assert_eq!(
+            fixture
+                .journal
+                .get(RecordNamespace::MountDestinationSlot, &key),
+            Some(legacy.as_slice())
+        );
+    }
+
+    #[test]
     fn exact_specification_declaration_derives_only_fixed_paths() {
         let slot_id = AttachmentSlotId::from_bytes([4; 16]);
         let spec = sandbox_spec(vec![slot_id]);
-        let descriptor = sandbox_spec_descriptor_for(&encode_sandbox_spec(&spec)).unwrap();
+        let descriptor = sandbox_spec_descriptor_for(&spec, &encode_sandbox_spec(&spec)).unwrap();
         let binding =
             DestinationSlotBindingV1::new(&fence(), 7, &spec, descriptor.clone(), slot_id).unwrap();
 
@@ -2122,7 +2275,7 @@ mod tests {
 
         let undeclared = sandbox_spec(vec![AttachmentSlotId::from_bytes([5; 16])]);
         let undeclared_descriptor =
-            sandbox_spec_descriptor_for(&encode_sandbox_spec(&undeclared)).unwrap();
+            sandbox_spec_descriptor_for(&undeclared, &encode_sandbox_spec(&undeclared)).unwrap();
         assert!(
             DestinationSlotBindingV1::new(
                 &fence(),
@@ -2249,7 +2402,7 @@ mod tests {
 
         let other_slot = AttachmentSlotId::from_bytes([5; 16]);
         let spec = sandbox_spec(vec![other_slot]);
-        let descriptor = sandbox_spec_descriptor_for(&encode_sandbox_spec(&spec)).unwrap();
+        let descriptor = sandbox_spec_descriptor_for(&spec, &encode_sandbox_spec(&spec)).unwrap();
         let other_binding =
             DestinationSlotBindingV1::new(&fence(), 7, &spec, descriptor, other_slot).unwrap();
         let reused_operation = DestinationSlotMaterializationV1::new(

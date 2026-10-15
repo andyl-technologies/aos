@@ -19,7 +19,7 @@ use aos_sandbox_core::model::SandboxSpec;
 use aos_sandbox_core::{
     BrokerArgumentCommitment, BrokerAssignment, BrokerGrantTarget, BrokerResourceHandle,
     BrokerVerb, CanonicalAssignmentManifestV1, DecodeLimits, ObjectDigest, ProtocolId,
-    decode_sandbox_spec, descriptor_for_bytes, encode_sandbox_spec,
+    decode_sandbox_spec, descriptor_for_bytes, encode_sandbox_spec, sandbox_spec_media_type,
 };
 use buffa::Message as _;
 
@@ -567,6 +567,8 @@ fn decode_workspace_metadata(
         sandbox_spec_bytes,
     );
     if encode_sandbox_spec(&sandbox_spec) != sandbox_spec_bytes
+        || manifest.manifest().sandbox_spec().media_type().as_str()
+            != sandbox_spec_media_type(&sandbox_spec).as_str()
         || manifest
             .broker_assignment()
             .map_err(|_| StorageSemanticsError::InvalidWorkspaceMetadata)?
@@ -792,8 +794,20 @@ mod tests {
         )
         .unwrap();
         let specification_bytes = encode_sandbox_spec(&specification);
+        workspace_metadata_for(
+            specification,
+            specification_bytes,
+            PortableMediaType::SandboxSpec,
+        )
+    }
+
+    fn workspace_metadata_for(
+        specification: SandboxSpec,
+        specification_bytes: Vec<u8>,
+        media: PortableMediaType,
+    ) -> (CanonicalAssignmentManifestV1, Vec<u8>) {
         let specification_descriptor = descriptor_for_bytes(
-            MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned()).unwrap(),
+            MediaType::new(media.as_str().to_owned()).unwrap(),
             &specification_bytes,
         );
         let manifest = AssignmentManifestV1::new(
@@ -910,6 +924,53 @@ mod tests {
 
         assert_eq!(semantics.argument_commitment(), persisted);
         assert!(semantics.workspace_metadata().is_some());
+    }
+
+    #[test]
+    fn workspace_metadata_checks_the_decoded_specification_media_version() {
+        use aos_sandbox_core::model::GuestExecutionIdentityPolicyV1;
+
+        let (_, base_bytes) = workspace_metadata();
+        for version in [1, 2] {
+            let mut spec = decode_sandbox_spec(&base_bytes, DecodeLimits::default()).unwrap();
+            if version == 2 {
+                spec = spec
+                    .with_guest_execution_identity(
+                        GuestExecutionIdentityPolicyV1::new(1000, 1000, vec![4, 44]).unwrap(),
+                    )
+                    .unwrap();
+            }
+            let media = sandbox_spec_media_type(&spec);
+            let bytes = encode_sandbox_spec(&spec);
+            let (exact, _) = workspace_metadata_for(spec.clone(), bytes.clone(), media);
+            let assignment = exact.broker_assignment().unwrap();
+            assert!(
+                decode_workspace_metadata(
+                    StorageOperation::CreateWorkspace { quota_bytes: 4096 },
+                    assignment,
+                    exact.canonical_bytes(),
+                    &bytes
+                )
+                .unwrap()
+                .is_some()
+            );
+
+            let wrong = if version == 1 {
+                PortableMediaType::SandboxSpecV2
+            } else {
+                PortableMediaType::SandboxSpec
+            };
+            let (relabeled, _) = workspace_metadata_for(spec, bytes.clone(), wrong);
+            assert!(matches!(
+                decode_workspace_metadata(
+                    StorageOperation::CreateWorkspace { quota_bytes: 4096 },
+                    relabeled.broker_assignment().unwrap(),
+                    relabeled.canonical_bytes(),
+                    &bytes
+                ),
+                Err(StorageSemanticsError::InvalidWorkspaceMetadata)
+            ));
+        }
     }
 
     #[test]

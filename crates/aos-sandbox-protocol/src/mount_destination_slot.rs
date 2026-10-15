@@ -22,7 +22,7 @@ use aos_proto::aos::sandbox::local::v1::{
 };
 use aos_sandbox_core::{
     DecodeLimits, DescriptorRole, ObjectDescriptor, ProtocolId, decode_sandbox_spec,
-    descriptor_for_bytes, encode_sandbox_spec,
+    descriptor_for_bytes, encode_sandbox_spec, sandbox_spec_media_type,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -508,6 +508,8 @@ pub fn decode_destination_slot_request(
         decode_sandbox_spec(&request.sandbox_spec_bytes, sandbox_spec_decode_limits())
             .map_err(|error| ProtocolValidationError::InvalidDescriptor(error.to_string()))?;
     if encode_sandbox_spec(&sandbox_specification) != request.sandbox_spec_bytes
+        || sandbox_spec.media_type().as_str()
+            != sandbox_spec_media_type(&sandbox_specification).as_str()
         || descriptor_for_bytes(
             sandbox_spec.media_type().clone(),
             &request.sandbox_spec_bytes,
@@ -1332,6 +1334,48 @@ mod tests {
             anchor.unique_mount_id,
         )
         .to_vec();
+    }
+
+    #[test]
+    fn slot_request_checks_decoded_version_against_the_full_content_descriptor() {
+        use aos_sandbox_core::model::GuestExecutionIdentityPolicyV1;
+
+        for version in [1, 2] {
+            let mut request = request(
+                DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+                8,
+            );
+            let (mut spec, _, _) = specification([4; 16]);
+            if version == 2 {
+                spec = spec
+                    .with_guest_execution_identity(
+                        GuestExecutionIdentityPolicyV1::new(1000, 1000, vec![4, 44]).unwrap(),
+                    )
+                    .unwrap();
+            }
+            request.sandbox_spec_bytes = encode_sandbox_spec(&spec);
+            let media = MediaType::new(sandbox_spec_media_type(&spec).as_str().to_owned()).unwrap();
+            let descriptor = descriptor_for_bytes(media, &request.sandbox_spec_bytes);
+            request.sandbox_spec = Some(proto_descriptor(&descriptor)).into();
+            assert_eq!(decode(&request).sandbox_spec(), &descriptor);
+
+            // Recompute the digest for the false media label, so digest checking
+            // alone cannot explain this rejection.
+            let wrong = if version == 1 {
+                PortableMediaType::SandboxSpecV2
+            } else {
+                PortableMediaType::SandboxSpec
+            };
+            let relabeled = descriptor_for_bytes(
+                MediaType::new(wrong.as_str().to_owned()).unwrap(),
+                &request.sandbox_spec_bytes,
+            );
+            request.sandbox_spec = Some(proto_descriptor(&relabeled)).into();
+            assert!(
+                decode_destination_slot_request(&request.encode_to_vec(), peer(), policy(), 1)
+                    .is_err()
+            );
+        }
     }
 
     #[test]

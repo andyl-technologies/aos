@@ -3,6 +3,7 @@
 use aos_proto::aos::sandbox::v1::{
     Command, Feature, ObjectDescriptor, PublicFeatureDefinition, PublicFeatureRegistry, Timestamp,
 };
+use aos_sandbox_core::PortableMediaType;
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
@@ -134,7 +135,8 @@ pub(crate) fn validate_descriptor(value: &ObjectDescriptor) -> Result<(), Invali
         "application/vnd.aos.sandbox.view.v1+cbor",
         "application/vnd.aos.sandbox.environment.v1+cbor",
         "application/vnd.aos.sandbox.optimization.v1+cbor",
-        "application/vnd.aos.sandbox.spec.v1+cbor",
+        PortableMediaType::SandboxSpec.as_str(),
+        PortableMediaType::SandboxSpecV2.as_str(),
         "application/vnd.aos.sandbox.snapshot.v1+cbor",
         "application/vnd.aos.sandbox.trust-policy.v1+cbor",
         "application/vnd.aos.sandbox.signature.v1+cbor",
@@ -169,6 +171,24 @@ pub fn validate_descriptor_media(
         Ok(())
     } else {
         Err(InvalidPublicResource::InvalidCode)
+    }
+}
+
+/// Validates a public descriptor for either supported sandbox specification version.
+///
+/// This checks descriptor shape and its closed media role, without decoding
+/// content or granting authority to use it.
+///
+/// # Errors
+///
+/// Returns [`InvalidPublicResource`] for malformed descriptors or another media role.
+pub fn validate_sandbox_specification_descriptor(
+    value: &ObjectDescriptor,
+) -> Result<(), InvalidPublicResource> {
+    validate_descriptor(value)?;
+    match PortableMediaType::parse(&value.media_type) {
+        Ok(PortableMediaType::SandboxSpec | PortableMediaType::SandboxSpecV2) => Ok(()),
+        _ => Err(InvalidPublicResource::InvalidCode),
     }
 }
 
