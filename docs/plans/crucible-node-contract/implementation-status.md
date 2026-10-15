@@ -103,33 +103,41 @@ readiness, capture, restoration and complete device parity remain outstanding.
 
 ## Work in progress
 
-The pre-dedup original-report/storage checkpoint passes normal five-crate,
-all-feature/all-target checking and 196 selected runtime controls: two campaign,
-120 provider, 71 Core and three integration cases. Its daemon cohort fails:
-five startup cases report resource-policy errors before an archive-validation
-case exceeds the 120-second cohort budget. A separate run confirms all five
-startup failures, and the archive case also exceeds 120 seconds in isolation.
-These failures remain unresolved qualification failures; this stage is
-uncommitted.
+Packet startup/report, capture and restoration storage accounting is committed
+in `196c68fd91`, with formatting separately in `5f2586267f`. Normal five-crate,
+all-feature/all-target checking passes. A fresh daemon executable passes 34
+selected controls, including all five corrected startup cases, two new
+fixture/policy controls, original finite-bound negatives, and alias/drift checks.
+The full archive-admission case still exceeds its original 120-second budget
+in isolation. It remains an unresolved qualification failure.
 
-The startup fixture's conservative report projections exceed its 512 MiB policy.
-An actual census at a 16 KiB negotiated message window projects 636,395,099
-bytes (606.9 MiB): 14,468,229 holder bytes, 20,686,433 source bytes, 485,739,905
-report-purpose bytes and a 115,500,532-byte aggregate Core/finalization residual.
-The diagnostic passes and confirms refusal after restoring the original 512 MiB
-policy. The positive test fixture now selects a finite 768 MiB policy and passes
-normal type checking; its corrected runtime cases remain unrun. The explicit
-64 KiB-window/512 MiB negative and production accounting remain intact.
+An earlier original-report/storage stage passes 196 selected controls: two
+campaign, 120 provider, 71 Core and three integration cases. Its five startup
+failures and archive timeouts remain recorded as failures at that stage.
 
-The archive test repeatedly hashes actual measured files. A committed optimization
-shares completed full hashes of exact aliases within one validation pass while
-retaining every descriptor/path fence and sticky refusal. The next pass hashes
-again. Four new controls cover aliases, distinct inodes, full content pins and
-observed drift. All four pass as part of an isolated 26-control daemon run,
-which also covers the two frame-window controls. Ten aliases require one full
-measurement per pass. The complete daemon cohort still fails its five startup
-cases and times out in archive validation; profiling that case remains necessary.
-No wall-time gain is claimed for the deduplication change.
+The startup fixture originally selected a 512 MiB policy. A recorded census at
+a 16 KiB negotiated message window projects 606.9 MiB for that checkpoint's
+actual executable and retained reports. Its diagnostic confirms refusal after
+restoring the original 512 MiB policy. The positive fixture now selects a finite
+768 MiB policy; its runtime cases pass. The explicit 64 KiB-window/512 MiB
+negative and production accounting remain intact.
+
+A later archive run finishes with a missing immutable Host continuation definition.
+The fixture now supplies the pinned definition, checks transitive content closure,
+and explicitly accepts all four actual unqualified participants. New controls
+reject missing or mismatched definition bytes, omitted participants, extras,
+duplicates and noncanonical ordering. Complete admission remains unqualified
+because the subsequent full test times out.
+
+Archive validation shares completed full hashes of exact aliases within one
+pass while retaining every descriptor/path fence and sticky refusal. The next
+pass hashes again. Ten aliases require one full measurement per pass, and all
+four alias/inode/media/drift controls pass. Full-file streams now use 256 KiB
+blocks, with the complete scratch allocation accounted at each owning boundary.
+A matched mechanics experiment measures a 23.65% mean reduction against 64 KiB
+blocks with identical framed hashes. This does not establish daemon or Linux
+boot speedup. Profiling still identifies repeated full-file authentication, and
+a separate upstream BLAKE3 backend experiment remains in progress.
 
 Further source work covers original allocation admission before native startup,
 full Prepare/report publication, same-owner query budgets, the ordinary Clock
@@ -166,6 +174,7 @@ including:
 | gem5 address-range predicate | 5.26x median improvement; one million allocations removed per round | Five matched lookup rounds with identical checksums |
 | gem5 thread-list transitions | 2.55x median improvement; 500,000 allocations removed per round | Five matched list-mechanics rounds |
 | QEMU/plugin Linux boot, six matched runs | Median 29.50669 to 29.54280 seconds (+0.12%) | Frozen controller, same guest and 50 ps/instruction; effectively flat |
+| Full-file hash stream, 64 to 256 KiB blocks | 23.65% lower mean time | Thirty matched rounds over the same 160.8 MB file; identical framed hashes |
 | Maximum-frontier component pair | 3.37x improvement | One matched component pair |
 | Immutable-domain component pair | 47.87x wall and 55.92x child CPU improvement | One matched component pair |
 
