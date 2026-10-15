@@ -15,6 +15,8 @@ The atomic integration patch creates these QEMU source files:
 | `plugins/crucible-callback-groups.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-callback-owner.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-callback-publication.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-command-receive.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-command-membership.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-native-invocation.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-device-workspace.h` | GPL-2.0-or-later | Explicit SPDX identifier; fixed workspace and original startup wire declarations |
 | `plugins/crucible-device-workspace.c` | GPL-2.0-or-later | Explicit SPDX identifier; bounded wire and sealed descriptor decoding |

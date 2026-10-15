@@ -1,15 +1,19 @@
-From 76475b08ddff4aec4b6e2fae4007766d4a14188b Mon Sep 17 00:00:00 2001
+From a91968fc45c6ae6215324dd3003e596d99ea1b7d Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 14 Oct 2026 16:33:51 -0700
-Subject: [PATCH] tests: anchor the Native plugin header in the generated unit
+Date: Wed, 14 Oct 2026 17:45:25 -0700
+Subject: [PATCH] plugins: retain protected command receiving custody across
+ transitions
 
-Resolve the genuine Native private header from the project source root in
-the generated unit body. Preserve its actual guarded header and all selected
-implementation bodies instead of relying on a donated private include path.
-Bind the preinit dependency guard to this exact owning extractor.
+Bind the command member and bounded three-argument reader to the genuine
+Source-created child, Bridge, slot and paid Runtime. Save born outputs and
+reader progress before signed and independent post failures. Hold whole
+member creation/transfer and receive creation transitions until their final
+saved disposition so reentrant returns cannot release their parents.
 
-Keep production, SDK, common lifetime code, complete storage getters and all
-139 scenarios unchanged.
+Keep received request debt distinct from local reader release. Physical
+current and observation issue no action Original or terminal permission.
+Preserve the eleven registration owners and all 139 registered scenarios;
+bind both new GPL fragments into the actual extractor and Meson cohort.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -64039,7 +64043,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5a4c04bc7f69976c6f292aa76e82e733
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..07bf21ef44fe9765f04568adf43bf331ccdc3289 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..1f2e0967cd5df1cb873de40652d1a4d7b3e680da 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -66806,7 +66810,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..07bf21ef44fe9765f04568adf43bf331
  
  /**
   * qemu_plugin_u64_set() - set value of a qemu_plugin_u64 for a given vcpu
-@@ -1353,15 +3225,2933 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
+@@ -1353,15 +3225,3062 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
   * @val: new value
   */
  QEMU_PLUGIN_API
@@ -69702,6 +69706,135 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..07bf21ef44fe9765f04568adf43bf331
 +    QemuCrucibleSourceControlBinding *component,
 +    qemu_plugin_vcpu_idle_resume_cb_t callback, void *child_userdata,
 +    QemuCrucibleSourceControlBinding **holder);
++
++/* Native process-private receiving custody. These true opaque tags and copied
++ * progress/status layouts are not shared wire objects or authority grants.
++ * The reader reports separate signed first/post dispositions and boolean attempt,
++ * receive and local-release facts. Local release is not request terminal evidence.
++ */
++typedef struct QemuCrucibleCommandConsumerMember QemuCrucibleCommandConsumerMember;
++typedef struct QemuCrucibleCommandReceiveOwner QemuCrucibleCommandReceiveOwner;
++
++typedef struct QemuCrucibleCommandReceiveProgress {
++    int32_t first_status;
++    int32_t post_status;
++    uint32_t read_attempted;
++    uint32_t request_received;
++    uint32_t reader_released;
++} QemuCrucibleCommandReceiveProgress;
++
++typedef struct QemuCrucibleCommandReceiveStatus {
++    uint64_t serial;
++    uint64_t publisher_sequence;
++    int32_t first_status;
++    int32_t reader_status;
++    int32_t validation_status;
++    int32_t post_status;
++    uint32_t invocation_attempted;
++    uint32_t invocation_returned;
++    uint32_t progress_valid;
++    uint32_t terminal_uncertain;
++} QemuCrucibleCommandReceiveStatus;
++
++typedef int (*QemuCrucibleCommandRequestReader)(
++    struct qemu_plugin_crucible_fingerprint_intent_facts_v1 *facts,
++    QemuCrucibleCommandReceiveProgress *progress, void *child_userdata);
++
++/* Binds the first actual three-argument reader to the genuine component's
++ * complete child and independent Bridge, received slot/mapping and same Runtime.
++ * A fresh disjoint output receives a movable projection only after Source
++ * creation custody and real component/slot dependencies. Outputs precede post;
++ * retain born custody on a negative result. This issues no request or Original.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_source_command_member_create_v1(
++    qemu_plugin_id_t id, QemuCrucibleSourceControlBinding *component,
++    QemuCrucibleCommandRequestReader reader,
++    QemuCrucibleCommandConsumerMember **out);
++
++/* Moves the nominal member into an empty distinct field of its authentic paid
++ * Runtime, corroborated by actual child custody and field geometry. The canonical
++ * move consumes the creating projection before independent post. A negative post
++ * leaves actual Runtime custody retained; preeffect refusals preserve fields.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_source_command_member_transfer_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember **projection,
++    QemuCrucibleCommandConsumerMember **runtime_field);
++
++/* Observes transferred physical member custody under the Source lock. This
++ * supplies no request, action row, Original, frontier advance, pump, writer,
++ * dispatch, Root, actor, time or material permission.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_source_command_member_current_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember *member);
++
++/* Returns by identity without renewing installing permission. Before transfer,
++ * authenticate the creating projection against Source; afterward only the exact
++ * Runtime field is accepted. Live receive/action users refuse return. Success
++ * consumes the field and releases this member's component/slot dependencies only.
++ * Refusal preserves custody and does not settle independent transport debt.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_source_command_member_identity_return_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember **holder);
++
++/* Creates under the actual owner thread outside BQL and coroutine context from
++ * the first-bound member and genuinely retained standing transport. Fresh NULL/0
++ * outputs must be disjoint from each other and Source/saved custody. Canonical
++ * Source creation, generated serial and member dependency precede outputs and
++ * the callback. The bound reader receives facts/progress/genuine child userdata
++ * outside the Source lock. Source saves all returned facts, progress and signed
++ * reader status before validation/post, including zero-valued requests and
++ * received-before-post failure. Preserve the born pair on every negative result.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_source_command_receive_create_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember *member,
++    QemuCrucibleCommandReceiveOwner **out, uint64_t *serial);
++
++/* Moves exact receive/serial custody into a distinct empty field of that real
++ * Runtime and consumes the creating projection. This identity move performs no
++ * new Original query, accepts born negative/uncertain custody and erases no debt.
++ * Active invocation and preeffect refusal preserve both fields.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_source_command_receive_transfer_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandReceiveOwner **projection,
++    uint64_t serial, QemuCrucibleCommandReceiveOwner **runtime_field);
++
++/* Copies saved factual observations, reader progress and Source disposition
++ * under registry-first identity authentication. Mutually disjoint outputs must
++ * exclude canonical Source/saved custody; active callback or any refusal leaves
++ * outputs intact. Observation reads no typed body and grants no action or Root.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_source_command_receive_observe_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandReceiveOwner *owner, uint64_t serial,
++    struct qemu_plugin_crucible_fingerprint_intent_facts_v1 *facts,
++    QemuCrucibleCommandReceiveProgress *progress,
++    QemuCrucibleCommandReceiveStatus *status);
++
++/* Checks completed, valid, certain received physical custody and its live member.
++ * Saved signed first/reader/post/validation failures remain failures. This does
++ * not construct a live publisher or action parent, Original, pump, mutation,
++ * Root, actor or time permission.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_source_command_receive_current_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandReceiveOwner *owner, uint64_t serial);
++
++/* Returns by identity using Source creation custody before transfer or the exact
++ * Runtime field afterward. Active invocation/action use or unknown local release
++ * keeps custody with EBUSY. request_received=1 remains ENOKEY until a genuine
++ * peer/material terminal producer exists; reader_released means only bounded
++ * local snapshot release. Refusal preserves holder/serial/dependencies; success
++ * consumes this owner and its member dependency without an Original query.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_source_command_receive_identity_return_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandReceiveOwner **holder, uint64_t serial);
 +
 +typedef struct QemuCrucibleFingerprintMainReadyFrame QemuCrucibleFingerprintMainReadyFrame;
 +typedef struct QemuCrucibleFingerprintMainExecution QemuCrucibleFingerprintMainExecution;
@@ -97080,10 +97213,10 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..eb12a5ad364bffd650058728d46c1f51
      QLIST_INIT(&plugin.scoreboards);
 diff --git a/plugins/crucible-callback-child.inc.h b/plugins/crucible-callback-child.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..af5c4d3737c088098709dafa7f0ad1d58475dfef
+index 0000000000000000000000000000000000000000..615e88fa289aa987fa8fb0ad8dd40046f19b2363
 --- /dev/null
 +++ b/plugins/crucible-callback-child.inc.h
-@@ -0,0 +1,819 @@
+@@ -0,0 +1,823 @@
 +/*
 + * Source-owned callback-child allocation and physical custody
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -97139,6 +97272,10 @@ index 0000000000000000000000000000000000000000..af5c4d3737c088098709dafa7f0ad1d5
 +        startup_source.setup_mapping.holder,
 +        startup_source.setup_handshake.holder,
 +        startup_source.setup_slot.holder,
++        startup_source.command_member.holder,
++        startup_source.command_member.runtime_holder,
++        startup_source.command_receive.holder,
++        startup_source.command_receive.runtime_holder,
 +        startup_source.fingerprint_completion.module_view_holder,
 +        startup_source.fingerprint_completion.publication_holder,
 +    };
@@ -106163,6 +106300,783 @@ index 0000000000000000000000000000000000000000..e127890106b42778422ee1a28f97090d
 +        storage->placement_attempted = true;
 +    }
 +    qemu_mutex_unlock(&registry->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
+diff --git a/plugins/crucible-command-membership.inc.h b/plugins/crucible-command-membership.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6d77e108bd7404a14ef13d25f5f1fc48dd5a0d6
+--- /dev/null
++++ b/plugins/crucible-command-membership.inc.h
+@@ -0,0 +1,348 @@
++/*
++ * Nominal membership of the actual contained command consumer.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifdef CONFIG_LINUX
++static int command_member_identity_locked(QemuCrucibleCommandConsumerMember *member)
++{
++    QemuCrucibleSourceControlBinding *component = &startup_source.control_callback;
++    QemuCrucibleCallbackChildOwner *owner = &startup_source.callbacks.owner;
++    QemuCrucibleSetupSlotOwner *slot = &startup_source.setup_slot;
++    int status;
++
++    /* Select the real Source slot before reading any nominated member. */
++    if (member != &startup_source.command_member) {
++        return -EPERM;
++    }
++    if (member->canonical_owner != member || !member->attempted ||
++        !member->held || member->returned || !member->reader || member->component != component ||
++        member->child_owner != owner || member->child != owner->child ||
++        member->bridge != owner->bridge || member->runtime != owner->runtime ||
++        member->slot != slot || member->mapping != slot->mapping ||
++        component->command_member != member || slot->command_member != member ||
++        component->child_owner != owner || !component->attempted ||
++        !component->holder || *component->holder != component ||
++        component->runtime != member->runtime ||
++        component->userdata != member->child->address ||
++        member->process != startup_source.commands.process ||
++        member->process_generation != startup_source.original.process_generation ||
++        member->account_generation != startup_source.standing.initial.account_generation ||
++        member->installer.ctx != startup_source.saved.ctx ||
++        member->installer.module != startup_source.saved.module ||
++        member->installer.install != startup_source.saved.install ||
++        member->installer.plugin_id != startup_source.saved.plugin_id ||
++        slot->runtime != member->runtime || !slot->transferred) {
++        return -ESTALE;
++    }
++    status = callback_child_owner_identity_locked(owner);
++    if (!status) {
++        status = setup_slot_identity(member->installer.plugin_id, slot);
++    }
++    if (status) {
++        return status;
++    }
++    if (!member->transferred) {
++        return member->creation_owner == member &&
++            member->holder == &member->creation_owner ? 0 : -ESTALE;
++    }
++
++    uintptr_t field = (uintptr_t)member->runtime_holder;
++
++    if (member->creation_owner || member->holder != member->runtime_holder ||
++        member->runtime_base != owner->runtime_base ||
++        member->runtime_extent != owner->runtime_extent ||
++        !member->runtime_base || member->runtime_extent < sizeof(*member->runtime_holder) ||
++        member->runtime_extent > UINTPTR_MAX - member->runtime_base ||
++        field < member->runtime_base ||
++        field % _Alignof(QemuCrucibleCommandConsumerMember *) ||
++        field - member->runtime_base >
++            member->runtime_extent - sizeof(*member->runtime_holder)) {
++        return -ESTALE;
++    }
++    return *member->runtime_holder == member ? 0 : -ESTALE;
++}
++
++static int command_member_live_locked(QemuCrucibleCommandConsumerMember *member)
++{
++    int status = command_member_identity_locked(member);
++
++    if (!status && member->transition_active) {
++        return -EBUSY;
++    }
++    if (!status && (!member->transferred || member->closing ||
++                    member->first_status || member->post_status ||
++                    !member->component->enrolled || member->component->first_status ||
++                    member->slot->post_status || member->mapping->closing ||
++                    member->mapping->physical_returned)) {
++        status = -ESTALE;
++    }
++    return status ? status : callback_registration_owner_live_locked(member->child_owner);
++}
++#endif
++
++int qemu_plugin_crucible_startup_source_command_member_create_v1(
++    qemu_plugin_id_t id, QemuCrucibleSourceControlBinding *component,
++    QemuCrucibleCommandRequestReader reader,
++    QemuCrucibleCommandConsumerMember **out)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleCommandConsumerMember *member = &startup_source.command_member;
++    QemuCrucibleCallbackChildOwner *owner = &startup_source.callbacks.owner;
++    QemuCrucibleSetupSlotOwner *slot = &startup_source.setup_slot;
++    int first = command_registry_identity(id);
++    int post;
++    int result;
++
++    if (first || !out || !reader || !startup_invocation(id) || startup_source.install_returned) {
++        return first ? first : -EPERM;
++    }
++    first = source_control_component_identity(component);
++    if (!first) {
++        first = qemu_plugin_crucible_startup_setup_slot_current_v1(id, slot);
++    }
++    if (!first) {
++        first = startup_runtime_admission(id, &startup_source.runtime_purpose);
++    }
++    if (first) {
++        return first;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    if (callback_child_output_conflicts_locked(out, sizeof(*out)) || *out) {
++        first = -EINVAL;
++    } else {
++        first = callback_registration_owner_live_locked(owner);
++    }
++    if (!first) {
++        first = setup_slot_identity(id, slot);
++    }
++    if (!first && (member->attempted || component != &startup_source.control_callback ||
++                   !component->enrolled || component->first_status ||
++                   component->child_owner != owner || component->command_member ||
++                   !component->holder || *component->holder != component ||
++                   component->runtime != owner->runtime ||
++                   component->userdata != owner->child->address ||
++                   slot->command_member || !slot->transferred ||
++                   slot->runtime != owner->runtime || slot->post_status ||
++                   slot->mapping->closing || slot->mapping->physical_returned)) {
++        first = -EBUSY;
++    }
++    if (first) {
++        qemu_mutex_unlock(&commands->mutex);
++        return first;
++    }
++
++    /* The component already retains the genuine completed child's independent
++     * Bridge borrower. This member keeps that component and the received VMA
++     * slot alive before publishing even a negative-post creation projection. */
++    *member = (QemuCrucibleCommandConsumerMember) {
++        .canonical_owner = member,
++        .creation_owner = member,
++        .holder = &member->creation_owner,
++        .component = component,
++        .child_owner = owner,
++        .child = owner->child,
++        .bridge = owner->bridge,
++        .runtime = owner->runtime,
++        .slot = slot,
++        .mapping = slot->mapping,
++        .installer = owner->installer,
++        .reader = reader,
++        .process_generation = owner->process_generation,
++        .account_generation = owner->account_generation,
++        .process = owner->process,
++        .attempted = true,
++        .held = true,
++        .transition_active = true,
++    };
++    component->command_member = member;
++    slot->command_member = member;
++    *out = member;
++    qemu_mutex_unlock(&commands->mutex);
++
++    post = startup_runtime_admission(id, member->runtime);
++    qemu_mutex_lock(&commands->mutex);
++    member->post_status = post;
++    result = command_member_identity_locked(member);
++    if (!result) {
++        member->transition_active = false;
++    }
++    if (post) {
++        result = post;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    if (post) {
++        crucible_metadata_partition_record_post(&startup_source.metadata_partition, post);
++    }
++    return result;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_startup_source_command_member_transfer_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember **projection,
++    QemuCrucibleCommandConsumerMember **runtime_field)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleCommandConsumerMember *member = &startup_source.command_member;
++    uintptr_t field = (uintptr_t)runtime_field;
++    int status = command_registry_identity(id);
++    int post;
++    int identity;
++
++    if (status || !projection || !runtime_field || !startup_invocation(id) ||
++        startup_source.install_returned) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    if (callback_child_output_conflicts_locked(projection, sizeof(*projection)) ||
++        callback_child_output_conflicts_locked(runtime_field, sizeof(*runtime_field)) ||
++        callback_child_output_overlap(projection, sizeof(*projection),
++                                      runtime_field, sizeof(*runtime_field))) {
++        status = -EINVAL;
++    } else {
++        status = command_member_identity_locked(member);
++    }
++    if (!status && member->transition_active) {
++        status = -EBUSY;
++    }
++    if (!status && (*projection != member || member->transferred ||
++                    member->closing || member->first_status || member->post_status)) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        status = callback_registration_owner_live_locked(member->child_owner);
++    }
++    if (!status && (!member->child_owner->runtime_base ||
++                    member->child_owner->runtime_extent < sizeof(*runtime_field) ||
++                    member->child_owner->runtime_extent >
++                        UINTPTR_MAX - member->child_owner->runtime_base ||
++                    field < member->child_owner->runtime_base ||
++                    field % _Alignof(QemuCrucibleCommandConsumerMember *) ||
++                    field - member->child_owner->runtime_base >
++                        member->child_owner->runtime_extent - sizeof(*runtime_field) ||
++                    *runtime_field)) {
++        status = -EINVAL;
++    }
++    if (!status) {
++        member->transition_active = true;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    if (status) {
++        return status;
++    }
++
++    status = startup_runtime_admission(id, &startup_source.runtime_purpose);
++    qemu_mutex_lock(&commands->mutex);
++    identity = command_member_identity_locked(member);
++    if (!identity && !status && (*projection != member || *runtime_field)) {
++        status = -ESTALE;
++    }
++    if (status || identity) {
++        if (status && !member->first_status) {
++            member->first_status = status;
++        }
++        if (!identity) {
++            member->transition_active = false;
++        }
++        qemu_mutex_unlock(&commands->mutex);
++        return status ? status : identity;
++    }
++    if (!status) {
++        *runtime_field = member;
++        member->runtime_holder = runtime_field;
++        member->runtime_base = member->child_owner->runtime_base;
++        member->runtime_extent = member->child_owner->runtime_extent;
++        member->holder = runtime_field;
++        member->transferred = true;
++        member->creation_owner = NULL;
++        *projection = NULL;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    if (status) {
++        return status;
++    }
++    post = startup_runtime_admission(id, member->runtime);
++    qemu_mutex_lock(&commands->mutex);
++    if (post && !member->post_status) {
++        member->post_status = post;
++    }
++    identity = command_member_identity_locked(member);
++    if (!identity) {
++        member->transition_active = false;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    if (post) {
++        crucible_metadata_partition_record_post(&startup_source.metadata_partition, post);
++    }
++    return post ? post : identity;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_startup_source_command_member_current_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember *member)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    int status = command_registry_identity(id);
++
++    if (status) {
++        return status;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = command_member_live_locked(member);
++    qemu_mutex_unlock(&commands->mutex);
++    /* This physical member proves no request, action row, Original, frontier
++     * advancement, dispatch, Root, or material completion. */
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_startup_source_command_member_identity_return_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember **holder)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleCommandConsumerMember *member = &startup_source.command_member;
++    int status = command_registry_identity(id);
++
++    if (status || !holder) {
++        return status ? status : -EINVAL;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    if ((!member->transferred &&
++         callback_child_output_conflicts_locked(holder, sizeof(*holder))) ||
++        (member->transferred && holder != member->runtime_holder)) {
++        status = -EINVAL;
++    } else {
++        status = command_member_identity_locked(member);
++    }
++    if (!status && *holder != member) {
++        status = -ESTALE;
++    }
++    if (!status && (member->transition_active || member->action_users || member->receive_users)) {
++        status = -EBUSY;
++    }
++    if (!status) {
++        member->closing = true;
++        member->component->command_member = NULL;
++        member->slot->command_member = NULL;
++        *holder = NULL;
++        member->creation_owner = NULL;
++        member->holder = NULL;
++        member->held = false;
++        member->returned = true;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
+diff --git a/plugins/crucible-command-receive.inc.h b/plugins/crucible-command-receive.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f9b1aa74c39668316b7c90de649286702e07ed0b
+--- /dev/null
++++ b/plugins/crucible-command-receive.inc.h
+@@ -0,0 +1,417 @@
++/*
++ * Retained physical receive through the first-bound module reader.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifdef CONFIG_LINUX
++static int command_receive_identity_locked(QemuCrucibleCommandReceiveOwner *owner,
++                                           uint64_t serial)
++{
++    QemuCrucibleCommandConsumerMember *member = &startup_source.command_member;
++    uintptr_t field;
++    int status;
++
++    if (owner != &startup_source.command_receive || !serial) {
++        return -EPERM;
++    }
++    if (owner->canonical_owner != owner || !owner->held || owner->returned ||
++        owner->serial != serial || owner->member != member ||
++        owner->reader != member->reader ||
++        owner->lender != startup_source.standing.lender ||
++        owner->process != startup_source.commands.process || !member->receive_users) {
++        return -ESTALE;
++    }
++    status = command_member_identity_locked(member);
++    if (status) {
++        return status;
++    }
++    if (!owner->transferred) {
++        return owner->creation_owner == owner &&
++            owner->holder == &owner->creation_owner ? 0 : -ESTALE;
++    }
++    field = (uintptr_t)owner->runtime_holder;
++    if (owner->creation_owner || owner->holder != owner->runtime_holder ||
++        owner->runtime_base != member->runtime_base ||
++        owner->runtime_extent != member->runtime_extent ||
++        !owner->runtime_base || owner->runtime_extent < sizeof(*owner->runtime_holder) ||
++        owner->runtime_extent > UINTPTR_MAX - owner->runtime_base ||
++        field < owner->runtime_base ||
++        field % _Alignof(QemuCrucibleCommandReceiveOwner *) ||
++        field - owner->runtime_base > owner->runtime_extent - sizeof(*owner->runtime_holder)) {
++        return -ESTALE;
++    }
++    return *owner->runtime_holder == owner ? 0 : -ESTALE;
++}
++
++static bool command_receive_progress_valid(const QemuCrucibleCommandReceiveProgress *progress,
++                                           int reader_status)
++{
++    if (progress->first_status > 0 || progress->post_status > 0 || reader_status > 0 ||
++        progress->read_attempted > 1 || progress->request_received > 1 ||
++        progress->reader_released > 1 ||
++        (progress->request_received && !progress->read_attempted) ||
++        (progress->reader_released && !progress->read_attempted)) {
++        return false;
++    }
++    /* Before-entry refusal has no local reader to release. A silent all-zero
++     * output cannot certify that the genuinely registered reader ran. */
++    return progress->read_attempted || (progress->first_status < 0 && reader_status < 0);
++}
++
++static int command_receive_result_locked(QemuCrucibleCommandReceiveOwner *owner)
++{
++    /* Keep the reader's initiating cause before synthesized uncertainty.
++     * Its independent post precedes protocol validation and Source post. */
++    if (owner->progress.first_status < 0) {
++        return owner->progress.first_status;
++    }
++    if (owner->reader_status < 0) {
++        return owner->reader_status;
++    }
++    if (owner->first_status) {
++        return owner->first_status;
++    }
++    if (owner->progress.post_status < 0) {
++        return owner->progress.post_status;
++    }
++    if (owner->validation_status) {
++        return owner->validation_status;
++    }
++    return owner->post_status;
++}
++
++static int command_receive_publisher_corroboration(
++    QemuCrucibleCommandReceiveOwner *owner, const QemuCrucibleBoundaryActionRecord *current)
++{
++    const QemuCrucibleActionBinding *binding = &owner->publisher.binding;
++
++    /* These equalities bind two observations obtained from the actual
++     * installed transport and retained Source lender. They issue no Original;
++     * the separate publisher membership constructor must retain that loan. */
++    if (!owner->progress.request_received) {
++        return 0;
++    }
++    if (!owner->publisher.present || !current->present ||
++        binding->publisher_birth_sequence != current->binding.publisher_birth_sequence ||
++        binding->request_token != current->binding.request_token ||
++        binding->command_frontier != current->binding.command_frontier ||
++        binding->capture_generation != current->binding.capture_generation ||
++        owner->facts.control_sequence > UINT32_MAX ||
++        owner->facts.sample_generation > UINT32_MAX ||
++        owner->facts.control_sequence != binding->request_token ||
++        owner->facts.command_producer_ordinal != binding->command_frontier ||
++        owner->facts.sample_generation != binding->capture_generation ||
++        binding->account_incarnation != owner->member->account_generation ||
++        binding->process_incarnation != owner->member->process_generation ||
++        memcmp(binding->source_reservation, startup_source.standing.initial.source_reservation, 32)) {
++        return -ESTALE;
++    }
++    return standing_action_snapshot_validate(&owner->publisher, current,
++                                              startup_source.standing.sequence);
++}
++#endif
++
++int qemu_plugin_crucible_startup_source_command_receive_create_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember *member,
++    QemuCrucibleCommandReceiveOwner **out, uint64_t *serial)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleCommandReceiveOwner *owner = &startup_source.command_receive;
++    QemuThread thread;
++    int first = command_registry_identity(id);
++    int reader_status = 0;
++    int post;
++    int result;
++    int identity;
++    uint64_t born_serial;
++
++    if (first || !out || !serial || !startup_owner() || bql_locked() || qemu_in_coroutine()) {
++        return first ? first : -EPERM;
++    }
++    qemu_thread_get_self(&thread);
++    qemu_mutex_lock(&commands->mutex);
++    if (callback_child_output_conflicts_locked(out, sizeof(*out)) ||
++        callback_child_output_conflicts_locked(serial, sizeof(*serial)) ||
++        callback_child_output_overlap(out, sizeof(*out), serial, sizeof(*serial)) ||
++        *out || *serial) {
++        first = -EINVAL;
++    } else {
++        first = command_member_live_locked(member);
++    }
++    if (!first && (owner->held || member->receive_users || member->action_users ||
++                   startup_source.command_receive_serial == UINT64_MAX ||
++                   !startup_source.standing.retained || !startup_source.standing.lender)) {
++        first = -EBUSY;
++    }
++    if (first) {
++        qemu_mutex_unlock(&commands->mutex);
++        return first;
++    }
++
++    /* Source owns the receive transaction before invoking any module code or
++     * corroborating a publisher record. A negative result keeps this exact
++     * output/serial and the real member/transport dependency. */
++    *owner = (QemuCrucibleCommandReceiveOwner) {
++        .canonical_owner = owner,
++        .creation_owner = owner,
++        .holder = &owner->creation_owner,
++        .member = member,
++        .reader = member->reader,
++        .thread = thread,
++        .lender = startup_source.standing.lender,
++        .serial = ++startup_source.command_receive_serial,
++        .process = commands->process,
++        .held = true,
++        .creation_active = true,
++    };
++    born_serial = owner->serial;
++    member->receive_users++;
++    *out = owner;
++    *serial = owner->serial;
++    qemu_mutex_unlock(&commands->mutex);
++
++    first = standing_boundary();
++    qemu_mutex_lock(&commands->mutex);
++    owner->first_status = first;
++    if (!first) {
++        owner->publisher = startup_source.standing.current.action;
++        owner->publisher_sequence = startup_source.standing.sequence;
++        owner->invocation_attempted = true;
++        owner->invocation_active = true;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    if (!first) {
++        /* The first constructor bound this exact reader to the genuine child.
++         * Inflight fields have a single writer while observers refuse active
++         * invocation. No ledger/native lock or dequeue spans this callback. */
++        SOURCE_CALLBACK_MASKED_INVOKE(
++            reader_status, &member->reader, owner->reader, member->child->address,
++            &owner->inflight_facts, &owner->inflight_progress, member->child->address);
++        qemu_mutex_lock(&commands->mutex);
++        owner->facts = owner->inflight_facts;
++        owner->progress = owner->inflight_progress;
++        owner->reader_status = reader_status;
++        owner->invocation_returned = true;
++        owner->invocation_active = false;
++        /* Save even valid zero-valued requests and received-before-post
++         * refusals before interpreting any result or phase acknowledgement. */
++        owner->progress_valid = command_receive_progress_valid(&owner->progress, reader_status);
++        if (!owner->progress_valid) {
++            owner->validation_status = -EPROTO;
++            owner->terminal_uncertain = true;
++        } else if (owner->progress.read_attempted && !owner->progress.reader_released) {
++            owner->validation_status = -EIO;
++            owner->terminal_uncertain = true;
++        }
++        qemu_mutex_unlock(&commands->mutex);
++    }
++
++    post = standing_boundary();
++    qemu_mutex_lock(&commands->mutex);
++    owner->post_status = post;
++    if (!post && owner->progress_valid) {
++        owner->post_status = command_receive_publisher_corroboration(
++            owner, &startup_source.standing.current.action);
++    }
++    result = command_receive_result_locked(owner);
++    identity = command_receive_identity_locked(owner, born_serial);
++
++    if (!identity) {
++        owner->creation_active = false;
++    } else {
++        owner->terminal_uncertain = true;
++        if (!result) {
++            result = identity;
++        }
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    return result;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_startup_source_command_receive_transfer_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandReceiveOwner **projection,
++    uint64_t serial, QemuCrucibleCommandReceiveOwner **runtime_field)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleCommandReceiveOwner *owner = &startup_source.command_receive;
++    uintptr_t field = (uintptr_t)runtime_field;
++    int status = command_registry_identity(id);
++
++    if (status || !projection || !runtime_field || !startup_owner()) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    if (callback_child_output_conflicts_locked(projection, sizeof(*projection)) ||
++        callback_child_output_conflicts_locked(runtime_field, sizeof(*runtime_field)) ||
++        callback_child_output_overlap(projection, sizeof(*projection), runtime_field, sizeof(*runtime_field))) {
++        status = -EINVAL;
++    } else {
++        status = command_receive_identity_locked(owner, serial);
++    }
++    if (!status && owner->creation_active) {
++        status = -EBUSY;
++    }
++    if (!status && (*projection != owner || owner->transferred ||
++                    owner->invocation_active || !owner->member->runtime_base ||
++                    owner->member->runtime_extent < sizeof(*runtime_field) ||
++                    owner->member->runtime_extent > UINTPTR_MAX - owner->member->runtime_base ||
++                    field < owner->member->runtime_base ||
++                    field % _Alignof(QemuCrucibleCommandReceiveOwner *) ||
++                    field - owner->member->runtime_base >
++                        owner->member->runtime_extent - sizeof(*runtime_field) || *runtime_field)) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        *runtime_field = owner;
++        owner->runtime_holder = runtime_field;
++        owner->holder = runtime_field;
++        owner->runtime_base = owner->member->runtime_base;
++        owner->runtime_extent = owner->member->runtime_extent;
++        owner->transferred = true;
++        owner->creation_owner = NULL;
++        *projection = NULL;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    /* This identity move admits no semantic work or new Original query. It
++     * also moves a born-negative/uncertain receive without erasing its debt. */
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_startup_source_command_receive_observe_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandReceiveOwner *owner, uint64_t serial,
++    struct qemu_plugin_crucible_fingerprint_intent_facts_v1 *facts,
++    QemuCrucibleCommandReceiveProgress *progress,
++    QemuCrucibleCommandReceiveStatus *disposition)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    int status = command_registry_identity(id);
++
++    if (status || !facts || !progress || !disposition) {
++        return status ? status : -EINVAL;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    if (callback_child_output_conflicts_locked(facts, sizeof(*facts)) ||
++        callback_child_output_conflicts_locked(progress, sizeof(*progress)) ||
++        callback_child_output_conflicts_locked(disposition, sizeof(*disposition)) ||
++        callback_child_output_overlap(facts, sizeof(*facts), progress, sizeof(*progress)) ||
++        callback_child_output_overlap(facts, sizeof(*facts), disposition, sizeof(*disposition)) ||
++        callback_child_output_overlap(progress, sizeof(*progress), disposition, sizeof(*disposition))) {
++        status = -EINVAL;
++    } else {
++        status = command_receive_identity_locked(owner, serial);
++    }
++    if (!status && (owner->creation_active || owner->invocation_active)) {
++        status = -EBUSY;
++    }
++    if (!status) {
++        *facts = owner->facts;
++        *progress = owner->progress;
++        *disposition = (QemuCrucibleCommandReceiveStatus) {
++            .serial = owner->serial,
++            .publisher_sequence = owner->publisher_sequence,
++            .first_status = owner->first_status,
++            .reader_status = owner->reader_status,
++            .validation_status = owner->validation_status,
++            .post_status = owner->post_status,
++            .invocation_attempted = owner->invocation_attempted,
++            .invocation_returned = owner->invocation_returned,
++            .progress_valid = owner->progress_valid,
++            .terminal_uncertain = owner->terminal_uncertain,
++        };
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_startup_source_command_receive_current_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandReceiveOwner *owner, uint64_t serial)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    int status = command_registry_identity(id);
++
++    if (status) {
++        return status;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = command_receive_identity_locked(owner, serial);
++    if (!status && (owner->creation_active || owner->invocation_active || !owner->invocation_returned ||
++                    !owner->progress_valid || owner->terminal_uncertain ||
++                    !owner->progress.request_received)) {
++        status = -EBUSY;
++    }
++    if (!status) {
++        status = command_member_live_locked(owner->member);
++    }
++    if (!status) {
++        status = command_receive_result_locked(owner);
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    /* Current physical receive custody is not the live publisher subscription
++     * or an entered action parent, and cannot admit pump or mutation effects. */
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_startup_source_command_receive_identity_return_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandReceiveOwner **holder, uint64_t serial)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleCommandReceiveOwner *owner = &startup_source.command_receive;
++    int status = command_registry_identity(id);
++
++    if (status || !holder) {
++        return status ? status : -EINVAL;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    if ((!owner->transferred && callback_child_output_conflicts_locked(holder, sizeof(*holder))) ||
++        (owner->transferred && holder != owner->runtime_holder)) {
++        status = -EINVAL;
++    } else {
++        status = command_receive_identity_locked(owner, serial);
++    }
++    if (!status && *holder != owner) {
++        status = -ESTALE;
++    }
++    if (!status && (owner->creation_active || owner->invocation_active || owner->member->action_users ||
++                    owner->terminal_uncertain ||
++                    (owner->invocation_attempted && (!owner->invocation_returned ||
++                     !owner->progress_valid || (owner->progress.read_attempted &&
++                      !owner->progress.reader_released))))) {
++        status = -EBUSY;
++    }
++    if (!status && owner->progress.request_received) {
++        /* A bounded reader release returns no request epoch, pending payload,
++         * publication, action, Root, or material loan. The genuine peer-return
++         * producer is not implemented in this physical receive precursor. */
++        status = -ENOKEY;
++    }
++    if (!status) {
++        owner->member->receive_users--;
++        *holder = NULL;
++        owner->creation_owner = NULL;
++        owner->holder = NULL;
++        owner->held = false;
++        owner->returned = true;
++    }
++    qemu_mutex_unlock(&commands->mutex);
 +    return status;
 +#else
 +    return -ENOTSUP;
@@ -159717,10 +160631,10 @@ index 0000000000000000000000000000000000000000..20c2f767347147954a75f466db2076a5
 +#endif
 diff --git a/plugins/crucible-setup-handshake.inc.h b/plugins/crucible-setup-handshake.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..73945a173dcc9950eafbea8463f091e01e1425d6
+index 0000000000000000000000000000000000000000..18190df94fa498850c655e6b2070c685fc321903
 --- /dev/null
 +++ b/plugins/crucible-setup-handshake.inc.h
-@@ -0,0 +1,817 @@
+@@ -0,0 +1,832 @@
 +/*
 + * Source-owned initial control exchange and retained selected-slot loan.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -160507,6 +161421,8 @@ index 0000000000000000000000000000000000000000..73945a173dcc9950eafbea8463f091e0
 +{
 +#ifdef CONFIG_LINUX
 +    QemuCrucibleSetupSlotOwner *slot = &startup_source.setup_slot;
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    bool locked;
 +    int status = setup_slot_identity(id, slot);
 +
 +    if (status) {
@@ -160515,25 +161431,38 @@ index 0000000000000000000000000000000000000000..73945a173dcc9950eafbea8463f091e0
 +    if (!startup_owner() || !holder) {
 +        return -EPERM;
 +    }
++    /* A slot can precede Runtime enrollment. Once the command ledger exists,
++     * its member constructor and this parent return share that same mutex. */
++    locked = qatomic_load_acquire(&commands->initialized);
++    if (locked) {
++        qemu_mutex_lock(&commands->mutex);
++    }
++    status = setup_slot_identity(id, slot);
 +    if (slot->transferred) {
 +        if (holder != slot->holder) {
-+            return -EPERM;
++            status = -EPERM;
 +        }
 +    } else if (slot->holder != &slot->creation_owner || slot->creation_owner != slot) {
-+        return -ESTALE;
++        status = -ESTALE;
 +    }
-+    if (*holder != slot) {
-+        return -ESTALE;
++    if (!status && *holder != slot) {
++        status = -ESTALE;
 +    }
-+    /* No writer/action children exist in this finite cut. Their future real
-+     * constructors must install retained parent links before any write. */
-+    slot->mapping->slot_child = NULL;
-+    slot->handshake->slot_child = NULL;
-+    *holder = NULL;
-+    slot->creation_owner = NULL;
-+    slot->holder = NULL;
-+    slot->held = false;
-+    return 0;
++    if (!status && slot->command_member) {
++        status = -EBUSY;
++    }
++    if (!status) {
++        slot->mapping->slot_child = NULL;
++        slot->handshake->slot_child = NULL;
++        *holder = NULL;
++        slot->creation_owner = NULL;
++        slot->holder = NULL;
++        slot->held = false;
++    }
++    if (locked) {
++        qemu_mutex_unlock(&commands->mutex);
++    }
++    return status;
 +#else
 +    return -ENOTSUP;
 +#endif
@@ -161419,10 +162348,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..5a8e41144417ab8decb1a4e2f16dbface6342874
+index 0000000000000000000000000000000000000000..09a379156bc44042304798b86155244e81992786
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,7089 @@
+@@ -0,0 +1,7094 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -168340,7 +169269,8 @@ index 0000000000000000000000000000000000000000..5a8e41144417ab8decb1a4e2f16dbfac
 +    status = callback_child_owner_identity_locked(owner);
 +    if (!status && (binding->holder != holder || *holder != binding ||
 +                    !owner->component_users || binding->invocation.held ||
-+                    binding->invocation.active || binding->invocation.retained)) {
++                    binding->invocation.active || binding->invocation.retained ||
++                    binding->command_member)) {
 +        status = -ESTALE;
 +    }
 +    if (!status) {
@@ -168512,12 +169442,16 @@ index 0000000000000000000000000000000000000000..5a8e41144417ab8decb1a4e2f16dbfac
 +#include "crucible-callback-owner.inc.h"
 +
 +#include "crucible-callback-groups.inc.h"
++
++#include "crucible-command-membership.inc.h"
++
++#include "crucible-command-receive.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..3350e69a8862963ef9ba198db6918027eebd8ef4
+index 0000000000000000000000000000000000000000..ac08bce1a85fdd2296a1e0cbcb0483ae18b44ec1
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,1630 @@
+@@ -0,0 +1,1719 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -169086,6 +170020,7 @@ index 0000000000000000000000000000000000000000..3350e69a8862963ef9ba198db6918027
 +    QemuCrucibleStartupRuntimePurpose *runtime;
 +    struct QemuCrucibleSetupSlotOwner *creation_owner;
 +    struct QemuCrucibleSetupSlotOwner **holder;
++    struct QemuCrucibleCommandConsumerMember *command_member;
 +    uint64_t process_generation;
 +    uint64_t account_generation;
 +    uint64_t fixed_native_extent;
@@ -169170,6 +170105,7 @@ index 0000000000000000000000000000000000000000..3350e69a8862963ef9ba198db6918027
 +    QemuCrucibleStartupRuntimePurpose *runtime;
 +    struct QemuCrucibleFingerprintCompletionBinding *completion;
 +    QemuCrucibleSourceControlBinding **holder;
++    struct QemuCrucibleCommandConsumerMember *command_member;
 +    qemu_plugin_vcpu_idle_resume_cb_t callback;
 +    qemu_plugin_crucible_fingerprint_intent_cb_v1 snapshot_callback;
 +    void *userdata;
@@ -169183,6 +170119,90 @@ index 0000000000000000000000000000000000000000..3350e69a8862963ef9ba198db6918027
 +    uint64_t descriptor_limit;
 +    QemuCrucibleSourceControlInvocation invocation;
 +};
++
++/* Physical membership in the genuine contained command consumer. The child
++ * supplies the borrowed Bridge relation; the received slot supplies its VMA.
++ * Neither this holder nor a queue coordinate creates an action Original. */
++typedef struct QemuCrucibleCommandConsumerMember {
++    struct QemuCrucibleCommandConsumerMember *canonical_owner;
++    struct QemuCrucibleCommandConsumerMember *creation_owner;
++    struct QemuCrucibleCommandConsumerMember **holder;
++    struct QemuCrucibleCommandConsumerMember **runtime_holder;
++    QemuCrucibleSourceControlBinding *component;
++    QemuCrucibleCallbackChildOwner *child_owner;
++    QemuCrucibleCallbackChildStorage *child;
++    QemuCrucibleCommandConsumerStorage *bridge;
++    QemuCrucibleStartupRuntimePurpose *runtime;
++    QemuCrucibleSetupSlotOwner *slot;
++    QemuCrucibleSetupMappingOwner *mapping;
++    QemuCrucibleStartupInstallerBinding installer;
++    QemuCrucibleCommandRequestReader reader;
++    uintptr_t runtime_base;
++    uint64_t runtime_extent;
++    uint64_t process_generation;
++    uint64_t account_generation;
++    uint64_t action_users;
++    uint64_t receive_users;
++    pid_t process;
++    int first_status;
++    int post_status;
++    bool attempted;
++    bool held;
++    /* Whole creator/move call, including outside-lock pre/post checks. */
++    bool transition_active;
++    bool transferred;
++    bool closing;
++    bool returned;
++} QemuCrucibleCommandConsumerMember;
++
++
++
++
++
++
++/* One actual bounded receive, retained independently of the reader's local
++ * guard. Facts and authenticated publisher evidence remain observations until
++ * the separate operational lender constructor enters the action parent. */
++typedef struct QemuCrucibleCommandReceiveOwner {
++    struct QemuCrucibleCommandReceiveOwner *canonical_owner;
++    struct QemuCrucibleCommandReceiveOwner *creation_owner;
++    struct QemuCrucibleCommandReceiveOwner **holder;
++    struct QemuCrucibleCommandReceiveOwner **runtime_holder;
++    QemuCrucibleCommandConsumerMember *member;
++    QemuCrucibleCommandRequestReader reader;
++    QemuThread thread;
++    struct qemu_plugin_crucible_fingerprint_intent_facts_v1 facts;
++    struct qemu_plugin_crucible_fingerprint_intent_facts_v1 inflight_facts;
++    QemuCrucibleCommandReceiveProgress progress;
++    QemuCrucibleCommandReceiveProgress inflight_progress;
++    QemuCrucibleBoundaryActionRecord publisher;
++    QemuCrucibleStandingPurposeOwner *lender;
++    uint64_t publisher_sequence;
++    uint64_t serial;
++    uintptr_t runtime_base;
++    uint64_t runtime_extent;
++    pid_t process;
++    int reader_status;
++    int first_status;
++    int validation_status;
++    int post_status;
++    bool held;
++    /* Distinct from the narrower module reader invocation. */
++    bool creation_active;
++    bool invocation_attempted;
++    bool invocation_active;
++    bool invocation_returned;
++    bool progress_valid;
++    bool transferred;
++    bool returned;
++    bool terminal_uncertain;
++} QemuCrucibleCommandReceiveOwner;
++
++
++
++
++
++
 +
 +/* A private factual observation, not a producing operation or immutable
 + * command-frontier owner. Its copied tuple grants no read, Root, clock or ACK.
@@ -169805,6 +170825,9 @@ index 0000000000000000000000000000000000000000..3350e69a8862963ef9ba198db6918027
 +    QemuCrucibleQmpAllocationLedger qmp_allocations;
 +    QemuCrucibleCheckpointStoragePurpose checkpoint_storage;
 +    QemuCrucibleSourceControlBinding control_callback;
++    QemuCrucibleCommandConsumerMember command_member;
++    QemuCrucibleCommandReceiveOwner command_receive;
++    uint64_t command_receive_serial;
 +    QemuCrucibleFingerprintWakeKeeper wake_keeper;
 +    QemuCrucibleFingerprintIntentObservation intent_observation;
 +    QemuCrucibleSocketIngressLoan socket_ingress;
@@ -180820,7 +181843,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..6c602e94bafd6bd151f52d8c1357b1fe44e18a5d
+index 0000000000000000000000000000000000000000..495eec044d6796f84feda001d51abf728ec9c797
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,79 @@
@@ -180842,9 +181865,9 @@ index 0000000000000000000000000000000000000000..6c602e94bafd6bd151f52d8c1357b1fe
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '02aead048f3ed5b31a5d7607de4fa083c64650c102bf77d95278bd292e27ffab',
++        '0d9a7ac15df5856a327c19b1fd37d3794476c8597cafa430cd208807385f6a27',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '12f6baab66051a3dff616fe5e61a2e3dbcf8c4787aa2725935bc36bd56717ef5',
++        'b5ba012bfa398cf6e201358b5084a29a2753833dbf5e556daf39cb9db40e10f1',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -220611,10 +221634,10 @@ index 0000000000000000000000000000000000000000..855cea98f5a5321a6c2b2040a96b8e54
 +    main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..820dd2e85d6f8e528e85f6b6f2ff7e0a187d3a17
+index 0000000000000000000000000000000000000000..726fded94b77e94e2876b1ceba54e25589235c26
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,809 @@
+@@ -0,0 +1,813 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -220627,7 +221650,7 @@ index 0000000000000000000000000000000000000000..820dd2e85d6f8e528e85f6b6f2ff7e0a
 +    'plugins/crucible-control-invocation.inc.h':
 +        '4f59239c0d71e335dbc76a737cf9b5bf24d8c9ee21804bcc508bb3db60d1de81',
 +    'plugins/crucible-setup-handshake.inc.h':
-+        'bba558274734d69792bdc6bf179306adc1d104db5190b8271ae9fa31db268dbc',
++        'e63117f5ca94f23bd68ed18d7094556fb0de5d7ce1e086d04ec2d0f226fbb840',
 +    'plugins/crucible-setup-mapping.inc.h':
 +        '0d789dac7d8a0914b940ad157cbe06789df07e617b3f20f5fe43a7c4a209250d',
 +    'tests/unit/test-crucible-startup-source.c':
@@ -220651,21 +221674,21 @@ index 0000000000000000000000000000000000000000..820dd2e85d6f8e528e85f6b6f2ff7e0a
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'plugins/crucible-startup-source.c':
-+        '9cac428c2f50ac5ea96c92fc1db73ac8cbe270a1e8d092635bc0feeb1ed0dbd4',
++        '329838d7445d810c3278580fd7a5a58133234e2ca42e54912f3eaf71a1faaf98',
 +    'plugins/crucible-startup-source.h':
-+        '31229b20706c45a08849645951ce332011f6a4c60214194e153a9628c0ddfde3',
++        '0d47deeaabba99f36c2336f7139f8da927fbcb2a1ffa81f2d42438ff54c16162',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '02aead048f3ed5b31a5d7607de4fa083c64650c102bf77d95278bd292e27ffab',
++        '0d9a7ac15df5856a327c19b1fd37d3794476c8597cafa430cd208807385f6a27',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
 +        '2d1e1f7913d1bcd3d326cb228e79c2fe084cf3a866d294bbf81cebb1acc95a43',
 +    'plugins/crucible-callback-child.inc.h':
-+        '1d32f71cae1862d1f7b874c2d56f950885e49b53631b2d595812422aacb8dc68',
++        '4d6d2814a8e68086bffa566251078f2b3a40153722ba9a1091091c3b422b66cd',
 +    'plugins/crucible-callback-publication.inc.h':
 +        '79faed4ff36b426c3b03d672b60d33383d6b0f7ae636872f3a6481cc3787a24a',
 +    'plugins/crucible-ram-control.inc.h':
@@ -220760,6 +221783,10 @@ index 0000000000000000000000000000000000000000..820dd2e85d6f8e528e85f6b6f2ff7e0a
 +        '1e0bc29ed45ac85f03414c0df66629720cb89e8bc4de413ccdf8496e424e8c32',
 +    'hw/virtio/virtio-crucible-accelerator.c':
 +        'fe8e88375876d4783b36639ea98ca4465764be8182ecd7978b17bdeba444c6cc',
++    'plugins/crucible-command-membership.inc.h':
++        '918cfd81474e95dfa5bd5b4b305a6834e104005750e9aa6b52d44cc13e26e5cb',
++    'plugins/crucible-command-receive.inc.h':
++        'f6238debeea530f83ee17165df60ac7802b82b6e092eb1d71df934145bb2ceb5',
 +}
 +
 +
@@ -221523,7 +222550,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..571a29ef6271e3b03f9549f012da175ca5608fe9 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..c577ca23ffe35a801d2120bf89b576ffbd88cef8 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -221584,7 +222611,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..571a29ef6271e3b03f9549f012da175c
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +244,1009 @@ foreach test_name, extra: tests
+@@ -207,3 +244,1011 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -222354,6 +223381,8 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..571a29ef6271e3b03f9549f012da175c
 +                        '../../plugins/crucible-callback-child.inc.h',
 +                        '../../plugins/crucible-callback-publication.inc.h',
 +                        '../../plugins/crucible-callback-groups.inc.h',
++                        '../../plugins/crucible-command-membership.inc.h',
++                        '../../plugins/crucible-command-receive.inc.h',
 +                        '../../accel/tcg/tcg-accel-ops-sim-shmem.c',
 +                        '../../net/net.c',
 +                        '../../block/crucible-shmem.c',
