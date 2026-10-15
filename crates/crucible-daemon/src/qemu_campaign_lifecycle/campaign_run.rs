@@ -193,6 +193,7 @@ pub struct GuardedDefaultCampaignRunRequest {
     initial_replay_closure: Option<GuardedCampaignReplayClosure>,
     discovery_stop: StopCondition,
     verify_determinism_findings: bool,
+    maximum_event_log_bytes: u64,
     collect_watch_frames: bool,
     capture_reached_stop: Option<Arc<ExactCheckpointStore>>,
     resume_source: Option<GuardedDefaultCampaignResumeSource>,
@@ -225,6 +226,7 @@ impl GuardedDefaultCampaignRunRequest {
             initial_replay_closure: None,
             discovery_stop: StopCondition::NextChoice,
             verify_determinism_findings: false,
+            maximum_event_log_bytes: crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
             collect_watch_frames: false,
             capture_reached_stop: None,
             resume_source: None,
@@ -274,6 +276,16 @@ impl GuardedDefaultCampaignRunRequest {
     #[must_use]
     pub const fn with_determinism_finding_verification(mut self) -> Self {
         self.verify_determinism_findings = true;
+        self
+    }
+
+    /// Bounds each attempt's encoded event log at `maximum_bytes`.
+    ///
+    /// The bound is operational and never enters production or campaign
+    /// identity; it defaults to [`crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES`].
+    #[must_use]
+    pub const fn with_maximum_event_log_bytes(mut self, maximum_bytes: u64) -> Self {
+        self.maximum_event_log_bytes = maximum_bytes;
         self
     }
 
@@ -1555,7 +1567,8 @@ where
         daemon_epoch,
         request.resources,
         request.cancellation.clone(),
-    );
+    )
+    .with_maximum_event_log_bytes(request.maximum_event_log_bytes);
     let capture_checkpoints = request.capture_reached_stop.as_ref().or_else(|| {
         request
             .resume_source

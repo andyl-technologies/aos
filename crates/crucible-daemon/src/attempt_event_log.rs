@@ -337,7 +337,7 @@ impl AttemptLogSegmentSource for MemorySegmentStore {
 }
 
 /// An attempt log retained as sealed segments plus an open tail.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct AttemptEventLog<S> {
     store: S,
     maximum_bytes: u64,
@@ -447,6 +447,16 @@ impl<S: AttemptLogSegmentStore> AttemptEventLog<S> {
         Ok(())
     }
 
+    /// Returns the operational storage bound applied to appends.
+    pub(crate) const fn maximum_bytes(&self) -> u64 {
+        self.maximum_bytes
+    }
+
+    /// Replaces the operational storage bound applied to later appends.
+    pub(crate) fn set_maximum_bytes(&mut self, maximum_bytes: u64) {
+        self.maximum_bytes = maximum_bytes;
+    }
+
     /// Returns the references of every sealed segment, in order.
     pub(crate) fn sealed_segments(&self) -> &[AttemptLogSegmentRef] {
         &self.sealed
@@ -520,6 +530,13 @@ impl<S: AttemptLogSegmentStore> AttemptEventLog<S> {
     /// Borrows the segment store, for publication of sealed segments.
     pub(crate) const fn store(&self) -> &S {
         &self.store
+    }
+
+    /// Releases the segment store, which holds every sealed segment.
+    ///
+    /// Entries still in the open tail are dropped; seal first to keep them.
+    pub(crate) fn into_store(self) -> S {
+        self.store
     }
 }
 

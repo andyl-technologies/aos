@@ -228,7 +228,6 @@ struct FakeResumeDriver {
 
 struct ObservedResume {
     events: Vec<SchedulerEventLogEntry>,
-    bytes: usize,
     completed_quanta: u64,
     frontier: VirtualTime,
     quiescence: Option<SchedulerQuiescence>,
@@ -249,11 +248,10 @@ impl QemuFreshAttemptDriver for FakeResumeDriver {
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
         self.calls.drives.fetch_add(1, Ordering::SeqCst);
         let attempt_event_count = materialization.attempt_event_count();
-        let (events, bytes, completed_quanta, frontier, quiescence, _terminal) =
+        let (events, completed_quanta, frontier, quiescence, _terminal) =
             materialization.into_parts();
         *self.observed.lock().expect("resume observation") = Some(ObservedResume {
-            events,
-            bytes,
+            events: events.materialize().expect("readable resume log"),
             completed_quanta,
             frontier,
             quiescence,
@@ -358,10 +356,6 @@ fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
     let observed = Arc::new(Mutex::new(None));
     let prefix = vec![event(0, 11, "restored-prefix")];
     let final_events = vec![event(1, 12, "final-drain")];
-    let expected_bytes: usize = prefix
-        .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
-        .sum();
     let mut runner = resume_runner(
         Arc::clone(&calls),
         Arc::clone(&observed),
@@ -396,7 +390,6 @@ fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
         .take()
         .expect("driver should retain resume evidence");
     assert_eq!(observed.events, prefix);
-    assert_eq!(observed.bytes, expected_bytes);
     assert_eq!(observed.completed_quanta, 4);
     assert_eq!(observed.frontier, VirtualTime { ticks: 17 });
     assert_eq!(observed.quiescence, Some(SchedulerQuiescence::default()));

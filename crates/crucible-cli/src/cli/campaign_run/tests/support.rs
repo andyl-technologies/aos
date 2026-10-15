@@ -42,10 +42,15 @@ fn determinism_policy_request() -> GuardedDefaultCampaignRunRequest {
 
 #[test]
 fn deployment_determinism_policy_controls_paired_replay_verification() {
-    let request = apply_guarded_campaign_determinism_policy(determinism_policy_request(), false);
+    let policy = |verify_determinism_findings| GuardedCampaignAttemptPolicy {
+        verify_determinism_findings,
+        maximum_event_log_bytes: crucible_daemon::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+    };
+
+    let request = policy(false).apply(determinism_policy_request());
     assert!(!request.verifies_determinism_findings());
 
-    let request = apply_guarded_campaign_determinism_policy(determinism_policy_request(), true);
+    let request = policy(true).apply(determinism_policy_request());
     assert!(request.verifies_determinism_findings());
 }
 

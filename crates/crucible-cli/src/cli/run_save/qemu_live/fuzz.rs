@@ -34,7 +34,7 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
     .with_world_artifacts(lifecycle_artifacts.clone())
     .with_signal_artifacts(lifecycle_artifacts);
     let deployment = load_guarded_campaign_deployment(plan.campaign_deployment.as_deref())?;
-    let verify_determinism_findings = deployment.verify_determinism_findings;
+    let attempt_policy = deployment.attempt_policy;
     if deployment.resources.maximum_execution_quanta() < LIVE_FUZZ_QUANTUM_LIMIT {
         return Err(backend_error(format!(
             "campaign deployment admits {} execution quanta, below the fuzz requirement of {}",
@@ -46,7 +46,7 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         config: &config,
         host: &deployment.host,
         resources: deployment.resources,
-        verify_determinism_findings,
+        attempt_policy,
         plan,
         backend_plan,
     };
@@ -288,7 +288,7 @@ struct QemuFuzzExecutionContext<'a> {
     config: &'a production_api::ProductionVmLifecycleConfig,
     host: &'a crucible_daemon::LinuxQemuAttemptHostConfig,
     resources: crucible_campaign::AttemptResourceLimits,
-    verify_determinism_findings: bool,
+    attempt_policy: GuardedCampaignAttemptPolicy,
     plan: &'a FuzzDriverPlan,
     backend_plan: &'a BackendSelectionPlan,
 }
@@ -498,8 +498,7 @@ fn execute_qemu_fuzz_iterations(
             None => request,
         }
         .with_exploration(exploration);
-        let request =
-            apply_guarded_campaign_determinism_policy(request, context.verify_determinism_findings);
+        let request = context.attempt_policy.apply(request);
         let campaign = run_guarded_default_campaign(request).map_err(|error| {
             backend_error(format!(
                 "execute QEMU fuzz iteration {sequence} through campaign owner: {error}",

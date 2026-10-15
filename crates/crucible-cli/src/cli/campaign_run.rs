@@ -91,7 +91,7 @@ fn run_local_qemu_campaign_continuation_workflow(
         resolve_guarded_campaign_deployment_path(resume_plan.campaign_deployment.as_deref())?;
     let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, None)?;
-    let verify_determinism_findings = deployment.verify_determinism_findings;
+    let attempt_policy = deployment.attempt_policy;
     let qemu_build_id = match backend {
         ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
         #[cfg(any(test, feature = "test-double"))]
@@ -125,7 +125,7 @@ fn run_local_qemu_campaign_continuation_workflow(
         deployment.host,
         resources,
     );
-    let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
+    let request = attempt_policy.apply(request);
     let request =
         attach_guarded_resume_source(request, evidence, final_stop, Arc::clone(&checkpoints));
     let request = if resume_plan.watch_streams_live_status {
@@ -222,7 +222,7 @@ pub(super) fn run_local_qemu_campaign_replay(
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
     let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
-    let verify_determinism_findings = deployment.verify_determinism_findings;
+    let attempt_policy = deployment.attempt_policy;
     let qemu_build_id = match backend {
         ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
         #[cfg(any(test, feature = "test-double"))]
@@ -247,7 +247,7 @@ pub(super) fn run_local_qemu_campaign_replay(
     )
     .with_discovery_stop(guarded_discovery_stop(run_plan)?)
     .with_initial_replay(schedule, Some(replay_closure));
-    let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
+    let request = attempt_policy.apply(request);
     let request = if run_plan.watch_streams_live_status {
         request.with_watch_frames()
     } else {
@@ -299,7 +299,7 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
     let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
-    let verify_determinism_findings = deployment.verify_determinism_findings;
+    let attempt_policy = deployment.attempt_policy;
     let qemu_build_id = match backend {
         ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
         #[cfg(any(test, feature = "test-double"))]
@@ -343,7 +343,7 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
     )
     .with_discovery_stop(stop.clone())
     .with_reached_stop_savepoint_capture(Arc::clone(&checkpoints));
-    let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
+    let request = attempt_policy.apply(request);
     let report = run_guarded_default_campaign(request)
         .map_err(|error| {
             campaign_run_error("capture savepoint through shared campaign owner", error)

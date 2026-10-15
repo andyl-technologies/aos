@@ -43,13 +43,13 @@ use crate::guest_selectable::{
     GuestSelectableReplayOpportunityContext, GuestSelectableReplayPhase,
     record_guest_selectable_boundary_diagnostic, resolve_guest_selectable, selected_guest_reply,
 };
+use crate::qemu_campaign_driver::{DEFAULT_MAXIMUM_EVENT_LOG_BYTES, RetainedAttemptLog};
 use crate::{
     AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionProduct,
     AttemptWorkerFailure, CapturedAttemptCheckpoint, CheckpointHandoffFailure,
     CrucibleAttemptExecution, CrucibleExecutionOutcome, CrucibleExecutionRunner,
     CrucibleMaterializationTier, CrucibleResolvedAttemptStart, ExactCheckpointStore,
     ExactCheckpointStoreError, MAX_QEMU_ATTEMPT_GENERATION_NODES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
     ProductionAttemptCheckpointRestoreError, QemuAttemptGenerationResourceOwner,
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard,
     QemuAttemptProductionVmNodeLauncher, QemuAttemptResourceGuard, QemuAttemptResourceGuardFactory,
@@ -1636,8 +1636,7 @@ fn bounded_driver_failure(driver: &impl std::fmt::Display) -> String {
 #[derive(Debug)]
 pub struct QemuFreshStartMaterialization {
     restored_configuration: Option<Configuration>,
-    event_log: Vec<SchedulerEventLogEntry>,
-    event_log_bytes: usize,
+    event_log: RetainedAttemptLog,
     completed_quanta: u64,
     frontier: crucible::VirtualTime,
     terminal_quiescence: Option<SchedulerQuiescence>,
@@ -1657,8 +1656,7 @@ impl QemuFreshStartMaterialization {
     pub(crate) fn at_quanta(completed_quanta: u64) -> Self {
         Self {
             restored_configuration: None,
-            event_log: Vec::new(),
-            event_log_bytes: 0,
+            event_log: RetainedAttemptLog::new(DEFAULT_MAXIMUM_EVENT_LOG_BYTES),
             completed_quanta,
             frontier: crucible::VirtualTime::default(),
             terminal_quiescence: None,
@@ -1724,16 +1722,13 @@ impl QemuFreshStartMaterialization {
 
     /// Consumes the materialization into cumulative replay evidence and state.
     ///
-    /// The byte count is the checked aggregate canonical material length of
-    /// `event_log`. `frontier`, `terminal_quiescence`, and `terminal_verdict`
-    /// describe the exact admitted start after replay, not a later attempt
-    /// quantum.
+    /// `frontier`, `terminal_quiescence`, and `terminal_verdict` describe the
+    /// exact admitted start after replay, not a later attempt quantum.
     #[must_use]
-    pub fn into_parts(
+    pub(crate) fn into_parts(
         self,
     ) -> (
-        Vec<SchedulerEventLogEntry>,
-        usize,
+        RetainedAttemptLog,
         u64,
         crucible::VirtualTime,
         Option<SchedulerQuiescence>,
@@ -1741,7 +1736,6 @@ impl QemuFreshStartMaterialization {
     ) {
         (
             self.event_log,
-            self.event_log_bytes,
             self.completed_quanta,
             self.frontier,
             self.terminal_quiescence,
@@ -1758,8 +1752,7 @@ impl QemuFreshStartMaterialization {
 
     pub(crate) fn from_resume_parts(
         restored_configuration: Configuration,
-        event_log: Vec<SchedulerEventLogEntry>,
-        event_log_bytes: usize,
+        event_log: RetainedAttemptLog,
         completed_quanta: u64,
         frontier: crucible::VirtualTime,
         terminal_quiescence: SchedulerQuiescence,
@@ -1768,7 +1761,6 @@ impl QemuFreshStartMaterialization {
         Self {
             restored_configuration: Some(restored_configuration),
             event_log,
-            event_log_bytes,
             completed_quanta,
             frontier,
             terminal_quiescence: Some(terminal_quiescence),
@@ -1782,8 +1774,7 @@ impl QemuFreshStartMaterialization {
 
     /// Carries one verified origin stop into the next continuation segment.
     pub(crate) fn from_origin_parts(
-        event_log: Vec<SchedulerEventLogEntry>,
-        event_log_bytes: usize,
+        event_log: RetainedAttemptLog,
         completed_quanta: u64,
         frontier: crucible::VirtualTime,
         terminal_quiescence: Option<SchedulerQuiescence>,
@@ -1791,7 +1782,6 @@ impl QemuFreshStartMaterialization {
         Self {
             restored_configuration: None,
             event_log,
-            event_log_bytes,
             completed_quanta,
             frontier,
             terminal_quiescence,
@@ -1807,7 +1797,7 @@ impl QemuFreshStartMaterialization {
         &self,
         configuration: &Configuration,
     ) -> Result<QemuSavepointReplayProof, crate::QemuFreshModeledDriverError> {
-        QemuSavepointReplayProof::from_reached_boundary(
+        QemuSavepointReplayProof::from_retained_boundary(
             configuration,
             self.completed_quanta,
             self.frontier,
@@ -1820,7 +1810,7 @@ impl QemuFreshStartMaterialization {
         &self,
         configuration: &Configuration,
     ) -> Result<QemuAttemptStartReplayProof, crate::QemuFreshModeledDriverError> {
-        QemuAttemptStartReplayProof::from_reached_boundary(configuration, &self.event_log)
+        QemuAttemptStartReplayProof::from_retained_boundary(configuration, &self.event_log)
     }
 
     /// Returns the scheduler configuration after restoration and authenticated start replay.
@@ -1831,19 +1821,14 @@ impl QemuFreshStartMaterialization {
 
     #[cfg(test)]
     pub(crate) fn from_test_parts(
-        event_log: Vec<SchedulerEventLogEntry>,
+        event_log: RetainedAttemptLog,
         frontier: crucible::VirtualTime,
         terminal_quiescence: Option<SchedulerQuiescence>,
         terminal_verdict: Option<QuantumTerminalVerdict>,
     ) -> Self {
-        let event_log_bytes = event_log
-            .iter()
-            .map(SchedulerEventLogEntry::canonical_material_len)
-            .sum();
         Self {
             restored_configuration: None,
             event_log,
-            event_log_bytes,
             completed_quanta: 0,
             frontier,
             terminal_quiescence,
@@ -1930,6 +1915,9 @@ pub enum QemuFreshStartReplayError {
         /// Coordinate reported by the live scheduler lifecycle.
         authoritative: u64,
     },
+    /// The replayed start log refused an entry or could not read a segment.
+    #[error("fresh start replay event log failed: {0}")]
+    EventLog(#[source] Box<crate::QemuFreshModeledDriverError>),
     /// Replayed event history exceeded the observation projection bound.
     #[error("fresh start replay exceeded `{limit}`")]
     LimitExceeded {
@@ -1949,8 +1937,8 @@ pub enum QemuFreshStartReplayError {
         limit: &'static str,
         /// Entries retained when the bound was reached.
         retained_entries: usize,
-        /// Canonical bytes retained when the bound was reached.
-        retained_bytes: usize,
+        /// Encoded log bytes retained when the bound was reached.
+        retained_bytes: u64,
         /// Absolute quantum coordinate of the rejected quantum.
         completed_quanta: u64,
         /// Decisions replayed through the rejected quantum.
@@ -2510,7 +2498,12 @@ pub(crate) fn materialize_start_from<F, D>(
     let mut parallel_boot = crate::qemu_campaign_driver::envoy_choice_free_boot_replay_eligible(
         input,
         &replay.event_log,
-    );
+    )
+    .map_err(|error| {
+        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+            QemuFreshStartReplayError::EventLog(Box::new(error)),
+        ))
+    })?;
     lifecycle.set_choice_free_parallel_boot(parallel_boot);
 
     // A guest selectable can already be pending at lifecycle admission. Replay

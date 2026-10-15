@@ -27,11 +27,13 @@ use thiserror::Error;
 use super::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
     CapturedAttemptCheckpoint, CrucibleExecutionOutcome, CrucibleExecutionRunner,
-    MAX_QEMU_ATTEMPT_GENERATION_NODES, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, QemuAttemptContinuation, QemuFreshAttemptLifecycleFactory,
+    MAX_QEMU_ATTEMPT_GENERATION_NODES, QemuAttemptContinuation, QemuFreshAttemptLifecycleFactory,
     QemuFreshAttemptLifecycleOwner,
 };
-use crate::{AttemptExecutionDisposition, AttemptExecutionReconciliationStep};
+use crate::{
+    AttemptExecutionDisposition, AttemptExecutionReconciliationStep,
+    MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
+};
 
 const MAX_EXECUTION_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES * 2;
 const MAX_TERMINAL_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES;

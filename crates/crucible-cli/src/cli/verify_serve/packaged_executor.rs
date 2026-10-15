@@ -62,6 +62,16 @@ struct PackagedExecutorDeployment {
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticsDeployment>,
     #[serde(default)]
     verify_determinism_findings: bool,
+    attempt_storage: Option<AttemptStorageDeployment>,
+}
+
+/// Optional operational storage bounds for one attempt.
+///
+/// These bounds never enter production or campaign identity.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttemptStorageDeployment {
+    maximum_event_log_bytes: u64,
 }
 
 /// Required fixed bounds for coordinator and executor service work.
@@ -110,7 +120,32 @@ struct GuestSelectableBoundaryDiagnosticsDeployment {
 pub(crate) struct GuardedCampaignRunDeployment {
     pub(crate) host: crucible_daemon::LinuxQemuAttemptHostConfig,
     pub(crate) resources: crucible_campaign::AttemptResourceLimits,
+    pub(crate) attempt_policy: GuardedCampaignAttemptPolicy,
+}
+
+/// Deployment policy applied to every attempt of a guarded campaign run.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GuardedCampaignAttemptPolicy {
+    /// Whether ordinary attempts receive paired determinism replay.
     pub(crate) verify_determinism_findings: bool,
+    /// Operational bound on one attempt's encoded event log.
+    pub(crate) maximum_event_log_bytes: u64,
+}
+
+impl GuardedCampaignAttemptPolicy {
+    /// Applies this policy to one guarded campaign request.
+    #[must_use]
+    pub(crate) fn apply(
+        self,
+        request: crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest,
+    ) -> crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest {
+        let request = request.with_maximum_event_log_bytes(self.maximum_event_log_bytes);
+        if self.verify_determinism_findings {
+            request.with_determinism_finding_verification()
+        } else {
+            request
+        }
+    }
 }
 
 /// Prepared packaged executor and its authenticated coordinator tuning.
@@ -251,7 +286,10 @@ pub(crate) fn load_campaign_run_deployment(
     Ok(GuardedCampaignRunDeployment {
         host,
         resources,
-        verify_determinism_findings: deployment.verify_determinism_findings,
+        attempt_policy: GuardedCampaignAttemptPolicy {
+            verify_determinism_findings: deployment.verify_determinism_findings,
+            maximum_event_log_bytes: deployment_maximum_event_log_bytes(&deployment),
+        },
     })
 }
 
@@ -305,6 +343,7 @@ pub(super) fn prepare_cli_packaged_executor(
     let hot_fork = deployment_hot_fork_policy(&deployment, lifecycle)?;
     let guest_selectable_diagnostics =
         deployment_guest_selectable_boundary_diagnostics(&deployment)?;
+    let maximum_event_log_bytes = deployment_maximum_event_log_bytes(&deployment);
     let mut config = crucible_daemon::PackagedQemuExecutorConfig::new(
         campaigns,
         endpoint,
@@ -330,6 +369,9 @@ pub(super) fn prepare_cli_packaged_executor(
     if deployment.verify_determinism_findings {
         config = config.with_determinism_finding_verification();
     }
+    let config = config
+        .with_maximum_event_log_bytes(maximum_event_log_bytes)
+        .map_err(|error| serve_error(format!("campaign executor configuration error: {error}")))?;
     let executor = prepared
         .prepare_packaged_executor(config)
         .map_err(|error| {
@@ -515,6 +557,11 @@ fn load_validated_deployment(path: &Path) -> Result<PackagedExecutorDeployment, 
     }
     deployment_guest_selectable_boundary_diagnostics(&deployment)?;
     deployment_operations(&deployment)?;
+    if deployment_maximum_event_log_bytes(&deployment) == 0 {
+        return Err(serve_error(
+            "campaign packaged-executor event-log byte ceiling is zero",
+        ));
+    }
     let finish_timeout = Duration::from_millis(deployment.finish_timeout_ms);
     if finish_timeout.is_zero() || finish_timeout > Duration::from_secs(60 * 60) {
         return Err(serve_error(
@@ -523,6 +570,14 @@ fn load_validated_deployment(path: &Path) -> Result<PackagedExecutorDeployment, 
     }
 
     Ok(deployment)
+}
+
+/// Returns the attempt event-log bound, defaulting when the table is absent.
+fn deployment_maximum_event_log_bytes(deployment: &PackagedExecutorDeployment) -> u64 {
+    deployment.attempt_storage.as_ref().map_or(
+        crucible_daemon::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+        |storage| storage.maximum_event_log_bytes,
+    )
 }
 
 fn deployment_host(
@@ -843,7 +898,7 @@ qemu_profile = "deterministic-tcg-v1"
         let guarded = load_campaign_run_deployment(&path).expect("load guarded run deployment");
         assert_eq!(guarded.resources.maximum_vcpus(), 4);
         assert_eq!(guarded.resources.maximum_disk_bytes(), 2_147_483_648);
-        assert!(!guarded.verify_determinism_findings);
+        assert!(!guarded.attempt_policy.verify_determinism_findings);
 
         assert!(
             toml::from_str::<PackagedExecutorDeployment>(&authored_without_operations()).is_err()
@@ -940,7 +995,38 @@ qemu_profile = "deterministic-tcg-v1"
 
         let guarded = load_campaign_run_deployment(&path).expect("load guarded run deployment");
 
-        assert!(guarded.verify_determinism_findings);
+        assert!(guarded.attempt_policy.verify_determinism_findings);
+    }
+
+    #[test]
+    fn attempt_event_log_bound_defaults_and_rejects_zero() {
+        let directory = tempfile::tempdir().expect("deployment directory");
+        let path = directory.path().join("executor.toml");
+        let write = |deployment: String| {
+            fs::write(&path, deployment).expect("write deployment");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .expect("secure deployment");
+        };
+
+        write(authored());
+        let guarded = load_campaign_run_deployment(&path).expect("default event-log bound");
+        assert_eq!(
+            guarded.attempt_policy.maximum_event_log_bytes,
+            crucible_daemon::DEFAULT_MAXIMUM_EVENT_LOG_BYTES
+        );
+
+        write(format!(
+            "{}\n[attempt_storage]\nmaximum_event_log_bytes = 1048576\n",
+            authored()
+        ));
+        let guarded = load_campaign_run_deployment(&path).expect("explicit event-log bound");
+        assert_eq!(guarded.attempt_policy.maximum_event_log_bytes, 1_048_576);
+
+        write(format!(
+            "{}\n[attempt_storage]\nmaximum_event_log_bytes = 0\n",
+            authored()
+        ));
+        assert!(load_validated_deployment(&path).is_err());
     }
 
     #[test]

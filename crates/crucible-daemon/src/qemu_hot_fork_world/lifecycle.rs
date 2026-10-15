@@ -220,7 +220,8 @@ where
     /// # Errors
     ///
     /// Returns a scheduler error when the adopted lifecycle cannot expose its
-    /// exact boundary, retained only a suffix, or its event bytes overflow.
+    /// exact boundary, retained only a suffix, or its event log cannot be
+    /// retained within the attempt-log bounds.
     pub fn start_materialization(&self) -> Result<QemuFreshStartMaterialization, SchedulerError> {
         let (
             configuration,
@@ -238,17 +239,16 @@ where
                 ),
             });
         }
-        let event_log_bytes = event_log.iter().try_fold(0usize, |total, entry| {
-            total
-                .checked_add(entry.canonical_material_len())
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: String::from("hot-fork start event-log byte count overflowed"),
-                })
+        let event_log = crate::qemu_campaign_driver::RetainedAttemptLog::from_entries(
+            crate::qemu_campaign_driver::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+            event_log,
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("hot-fork start event log cannot be retained: {error}"),
         })?;
         Ok(QemuFreshStartMaterialization::from_resume_parts(
             configuration,
             event_log,
-            event_log_bytes,
             completed_quanta,
             frontier,
             quiescence,

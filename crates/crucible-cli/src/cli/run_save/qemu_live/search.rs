@@ -319,7 +319,7 @@ fn run_local_qemu_search_scenario(
     .with_world_artifacts(lifecycle_artifacts.clone())
     .with_signal_artifacts(lifecycle_artifacts);
     let deployment = load_guarded_campaign_deployment(plan.campaign_deployment.as_deref())?;
-    let verify_determinism_findings = deployment.verify_determinism_findings;
+    let attempt_policy = deployment.attempt_policy;
     if deployment.resources.maximum_execution_quanta() < LIVE_EXPLORATION_QUANTUM_LIMIT {
         return Err(backend_error(format!(
             "campaign deployment admits {} execution quanta, below the search requirement of {}",
@@ -358,7 +358,7 @@ fn run_local_qemu_search_scenario(
     )
     .with_exploration(exploration)
     .with_watch_frames();
-    request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
+    request = attempt_policy.apply(request);
     if let Some(oracle) = QemuSearchSupplementalOracle::from_plan(plan)? {
         request = request.with_supplemental_finding_oracle(Box::new(oracle));
     }

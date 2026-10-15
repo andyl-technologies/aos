@@ -445,9 +445,9 @@ impl QemuFreshAttemptDriver for ScriptedPublishedObservationDriver {
         _context: &AttemptExecutionContext,
         materialization: crate::QemuFreshStartMaterialization,
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
-        let (events, _bytes, _completed_quanta, _frontier, _terminal_quiescence, _terminal_verdict) =
+        let (events, _completed_quanta, _frontier, _terminal_quiescence, _terminal_verdict) =
             materialization.into_parts();
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
         self.drives.fetch_add(1, Ordering::SeqCst);
         Ok(QemuFreshDriveOutcome::Observation(
             self.result.observation().clone(),
@@ -668,8 +668,11 @@ impl QemuHotForkWorldLifecycleOwner for BranchReplayLifecycle {
     ) -> Result<crate::QemuFreshStartMaterialization, crucible::SchedulerError> {
         Ok(crate::QemuFreshStartMaterialization::from_resume_parts(
             self.configuration.clone(),
-            Vec::new(),
-            0,
+            crate::qemu_campaign_driver::RetainedAttemptLog::from_entries(
+                crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+                Vec::new(),
+            )
+            .expect("dense test start log"),
             self.completed_quanta,
             crucible::VirtualTime::default(),
             SchedulerQuiescence::default(),
@@ -904,15 +907,13 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
     fn start_materialization(
         &self,
     ) -> Result<crate::QemuFreshStartMaterialization, crucible::SchedulerError> {
-        let event_log_bytes = self
-            .start_events
-            .iter()
-            .map(SchedulerEventLogEntry::canonical_material_len)
-            .sum();
         Ok(crate::QemuFreshStartMaterialization::from_resume_parts(
             self.configuration.clone(),
-            self.start_events.clone(),
-            event_log_bytes,
+            crate::qemu_campaign_driver::RetainedAttemptLog::from_entries(
+                crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+                self.start_events.clone(),
+            )
+            .expect("dense test start log"),
             self.completed_quanta,
             self.frontier,
             SchedulerQuiescence::default(),
@@ -981,10 +982,9 @@ impl QemuFreshAttemptDriver for BranchReplayDriver {
         _context: &AttemptExecutionContext,
         materialization: crate::QemuFreshStartMaterialization,
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
-        let (events, bytes, completed_quanta, _frontier, quiescence, verdict) =
+        let (events, completed_quanta, _frontier, quiescence, verdict) =
             materialization.into_parts();
-        assert!(events.is_empty());
-        assert_eq!(bytes, 0);
+        assert_eq!(events.len(), 0);
         assert_eq!(
             quiescence,
             (completed_quanta == 0).then(SchedulerQuiescence::default)

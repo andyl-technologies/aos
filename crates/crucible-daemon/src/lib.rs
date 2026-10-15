@@ -93,7 +93,7 @@
 
 mod anchored_fs;
 pub mod assignment_ledger;
-// crucible-lint: allow rust-allow -- the writer half is unused until the executor's live retention spills sealed segments.
+// crucible-lint: allow rust-allow -- the directory store and chain accessors are unused until sealed segments spill to attempt storage.
 #[allow(dead_code)]
 mod attempt_event_log;
 pub mod automatic_finding_runner;
@@ -570,9 +570,10 @@ pub(crate) use qemu_baked_genesis::{
 };
 pub(crate) use qemu_campaign_driver::QemuSavepointReplayProbe;
 pub use qemu_campaign_driver::{
-    MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, QemuAttemptStartReplayProof, QemuFreshModeledDriver,
-    QemuFreshModeledDriverError, QemuModeledAttemptLifecycle, QemuSavepointReplayProof,
+    DEFAULT_MAXIMUM_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS,
+    MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES, MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES,
+    QemuAttemptStartReplayProof, QemuFreshModeledDriver, QemuFreshModeledDriverError,
+    QemuModeledAttemptLifecycle, QemuSavepointReplayProof,
 };
 pub use qemu_campaign_lifecycle::{
     InteractiveQemuSessionError, QemuAttemptContinuation, QemuAttemptProductionVmLifecycleError,

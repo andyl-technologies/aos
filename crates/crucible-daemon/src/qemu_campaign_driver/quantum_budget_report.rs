@@ -8,7 +8,9 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write as _;
 
-use crucible::{ObservableEventPayload, SchedulerEventLogEntry, SchedulerEventLogPayload};
+use crucible::{ObservableEventPayload, SchedulerEventLogPayload};
+
+use super::RetainedAttemptLog;
 
 /// Most recent semantic markers named for each node.
 const RECENT_MARKERS_PER_NODE: usize = 6;
@@ -25,14 +27,15 @@ struct NodeActivity {
 
 /// Writes one bounded `CRUCIBLE-QUANTUM-BUDGET-EXHAUSTED-V1` row to stderr.
 pub(super) fn report_quantum_budget_exhaustion(
-    event_log: &[SchedulerEventLogEntry],
+    event_log: &RetainedAttemptLog,
     completed_quanta: u64,
 ) {
-    let mut nodes = BTreeMap::<&str, NodeActivity>::new();
+    let mut nodes = BTreeMap::<String, NodeActivity>::new();
 
-    for entry in event_log {
+    // Diagnostic only: an unreadable segment leaves its entries unreported.
+    let _ = event_log.try_for_each_entry(|entry| {
         let SchedulerEventLogPayload::Observable(observable) = entry.payload() else {
-            continue;
+            return Ok(());
         };
         match observable {
             ObservableEventPayload::GuestSemanticMarker {
@@ -41,7 +44,7 @@ pub(super) fn report_quantum_budget_exhaustion(
                 instance,
                 ..
             } => {
-                let activity = nodes.entry(node.name.as_str()).or_default();
+                let activity = nodes.entry(node.name.clone()).or_default();
                 activity.marker_count += 1;
                 if activity.markers.len() == RECENT_MARKERS_PER_NODE {
                     activity.markers.pop_front();
@@ -51,14 +54,15 @@ pub(super) fn report_quantum_budget_exhaustion(
                     .push_back(format!("{marker}/{instance}@{}", entry.at().ticks));
             }
             ObservableEventPayload::ConsoleOutput { node, bytes } => {
-                let tail = &mut nodes.entry(node.name.as_str()).or_default().console_tail;
+                let tail = &mut nodes.entry(node.name.clone()).or_default().console_tail;
                 tail.extend_from_slice(bytes);
                 let excess = tail.len().saturating_sub(CONSOLE_TAIL_BYTES);
                 tail.drain(..excess);
             }
             _ => {}
         }
-    }
+        Ok(())
+    });
 
     let summary = nodes
         .iter()

@@ -558,6 +558,7 @@ pub struct AttemptExecutionContext {
     host_watchdog: Option<AssignmentHostWatchdog>,
     origin: AttemptExecutionOrigin,
     guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
+    maximum_event_log_bytes: u64,
     selected_checkpoint: Mutex<Option<crate::executor_supervisor::SelectedExactCheckpointRoot>>,
 }
 
@@ -578,6 +579,7 @@ impl Clone for AttemptExecutionContext {
             host_watchdog: self.host_watchdog.clone(),
             origin: self.origin,
             guest_selectable_diagnostics: self.guest_selectable_diagnostics.clone(),
+            maximum_event_log_bytes: self.maximum_event_log_bytes,
             selected_checkpoint: Mutex::new(None),
         }
     }
@@ -657,6 +659,7 @@ impl AttemptExecutionContext {
             host_watchdog: None,
             origin: AttemptExecutionOrigin::Initial,
             guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder::default(),
+            maximum_event_log_bytes: crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
             selected_checkpoint: Mutex::new(None),
         }
     }
@@ -786,6 +789,21 @@ impl AttemptExecutionContext {
     ) -> Self {
         self.guest_selectable_diagnostics = diagnostics;
         self
+    }
+
+    /// Applies the deployment's operational bound on one attempt's event log.
+    ///
+    /// The bound is not attempt resource identity (RFC-0020 CCOMP-28).
+    #[must_use]
+    pub(crate) const fn with_maximum_event_log_bytes(mut self, maximum_bytes: u64) -> Self {
+        self.maximum_event_log_bytes = maximum_bytes;
+        self
+    }
+
+    /// Returns the operational bound on one attempt's encoded event log.
+    #[must_use]
+    pub(crate) const fn maximum_event_log_bytes(&self) -> u64 {
+        self.maximum_event_log_bytes
     }
 
     /// Returns the resource limits available to a newly launched process owner.
@@ -1187,6 +1205,7 @@ pub struct RepositoryAttemptWorker<M> {
     store: CampaignExecutorStore,
     model: M,
     guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
+    maximum_event_log_bytes: u64,
 }
 
 impl<M> RepositoryAttemptWorker<M> {
@@ -1197,7 +1216,15 @@ impl<M> RepositoryAttemptWorker<M> {
             store,
             model,
             guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder::default(),
+            maximum_event_log_bytes: crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
         }
+    }
+
+    /// Bounds every attempt's encoded event log at `maximum_bytes`.
+    #[must_use]
+    pub(crate) const fn with_maximum_event_log_bytes(mut self, maximum_bytes: u64) -> Self {
+        self.maximum_event_log_bytes = maximum_bytes;
+        self
     }
 
     #[must_use]
@@ -1287,7 +1314,8 @@ where
         ))
         .with_execution_origin(queued.origin())
         .with_checkpoint_handoff(expected_scenario, queued.checkpoint_handoff().cloned())
-        .with_guest_selectable_boundary_diagnostics(self.guest_selectable_diagnostics.clone());
+        .with_guest_selectable_boundary_diagnostics(self.guest_selectable_diagnostics.clone())
+        .with_maximum_event_log_bytes(self.maximum_event_log_bytes);
         let mut host_watchdog = host_watchdog_ms
             .map(|milliseconds| {
                 AssignmentHostWatchdogGuard::start(milliseconds, context.cancellation().clone())

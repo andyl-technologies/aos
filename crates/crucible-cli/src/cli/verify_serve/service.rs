@@ -146,8 +146,9 @@ where
                 observation_config.clone(),
                 deployment.host,
                 deployment.resources,
-                deployment.verify_determinism_findings,
+                deployment.attempt_policy.verify_determinism_findings,
             )
+            .with_maximum_event_log_bytes(deployment.attempt_policy.maximum_event_log_bytes)
             .resume_loop(request, configuration, context)
         })
         .with_resume_replay_closure_validator(validate_remote_resume_replay_closure);

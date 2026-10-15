@@ -317,6 +317,7 @@ pub struct PackagedQemuExecutorConfig {
     hot_fork: Option<PackagedQemuHotForkConfig>,
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticConfig>,
     verify_determinism_findings: bool,
+    maximum_event_log_bytes: u64,
 }
 
 impl PackagedQemuExecutorConfig {
@@ -379,6 +380,7 @@ impl PackagedQemuExecutorConfig {
             hot_fork: None,
             guest_selectable_boundary_diagnostics: None,
             verify_determinism_findings: false,
+            maximum_event_log_bytes: crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
         })
     }
 
@@ -397,6 +399,32 @@ impl PackagedQemuExecutorConfig {
     ) -> Self {
         self.guest_selectable_boundary_diagnostics = Some(diagnostics);
         self
+    }
+
+    /// Replaces the operational bound on one attempt's encoded event log.
+    ///
+    /// The bound defaults to [`crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES`] and
+    /// never enters production or campaign identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PackagedQemuExecutorConfigError::ZeroEventLogBytes`] when
+    /// `maximum_bytes` is zero.
+    pub fn with_maximum_event_log_bytes(
+        mut self,
+        maximum_bytes: u64,
+    ) -> Result<Self, PackagedQemuExecutorConfigError> {
+        if maximum_bytes == 0 {
+            return Err(PackagedQemuExecutorConfigError::ZeroEventLogBytes);
+        }
+        self.maximum_event_log_bytes = maximum_bytes;
+        Ok(self)
+    }
+
+    /// Returns the operational bound on one attempt's encoded event log.
+    #[must_use]
+    pub const fn maximum_event_log_bytes(&self) -> u64 {
+        self.maximum_event_log_bytes
     }
 
     /// Enables paired private replay for automatic determinism findings.
@@ -480,6 +508,9 @@ pub enum PackagedQemuExecutorConfigError {
     /// No exact checkpoint can fit the configured immutable store.
     #[error("packaged QEMU executor checkpoint byte ceiling is zero")]
     ZeroCheckpointBytes,
+    /// No attempt event log can fit the configured storage bound.
+    #[error("packaged QEMU executor event-log byte ceiling is zero")]
+    ZeroEventLogBytes,
 }
 
 /// Prepared packaged executor pool bound to one exact campaign repository.
@@ -1379,7 +1410,8 @@ where
                 inner: RepositoryAttemptWorker::new(store.clone(), model)
                     .with_guest_selectable_boundary_diagnostics(
                         guest_selectable_diagnostics.clone(),
-                    ),
+                    )
+                    .with_maximum_event_log_bytes(config.maximum_event_log_bytes),
                 lifecycles: lifecycles.clone(),
             }
         })

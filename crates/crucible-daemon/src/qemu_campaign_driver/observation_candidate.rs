@@ -6,6 +6,12 @@ use crucible_cas::content_store::ObjectKind;
 /// Bounds the stop outcome rendered into the opt-in seal diagnostic.
 const STOP_DIAGNOSTIC_CHARS: usize = 512;
 
+/// Largest canonical measurement replay leaf one attempt publishes.
+///
+/// The leaf references the log's segments instead of embedding entries, so
+/// it stays far below the 64 MiB component-message bound (RFC-0020 CMEAS-22).
+const MAX_MEASUREMENT_EVIDENCE_LEAF_BYTES: usize = 64 * 1024 * 1024;
+
 pub(super) fn project_boundary(
     mut pending: QemuFreshPendingObservation,
     project_stop: bool,
@@ -86,11 +92,24 @@ pub(super) fn project_boundary(
             format_args!("completed=true"),
         );
         crate::crucible_execution::record_execution_phase_diagnostic(
+            "seal-coverage-enter",
+            format_args!("events={}", pending.event_log.len()),
+        );
+    }
+    let coverage = coverage_projection(&pending.event_log)?;
+    if project_stop {
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "seal-coverage-return",
+            format_args!("completed=true"),
+        );
+        crate::crucible_execution::record_execution_phase_diagnostic(
             "seal-measurements-enter",
             format_args!("events={}", pending.event_log.len()),
         );
     }
-    let measurement_publication = campaign_measurements(&pending, child.configuration())?;
+    // Measurement evaluation seals the log into the segments its evidence
+    // references, so every other reader of the log runs before it.
+    let measurement_publication = campaign_measurements(&mut pending, child.configuration())?;
     if project_stop {
         crate::crucible_execution::record_execution_phase_diagnostic(
             "seal-measurements-return",
@@ -110,19 +129,6 @@ pub(super) fn project_boundary(
         && let Some(stop) = &mut stop
     {
         *stop = StopOutcome::AssertionFailure(evaluation.property().to_owned());
-    }
-    if project_stop {
-        crate::crucible_execution::record_execution_phase_diagnostic(
-            "seal-coverage-enter",
-            format_args!("events={}", pending.event_log.len()),
-        );
-    }
-    let coverage = coverage_projection(&pending.event_log)?;
-    if project_stop {
-        crate::crucible_execution::record_execution_phase_diagnostic(
-            "seal-coverage-return",
-            format_args!("completed=true"),
-        );
     }
     let discovered_choices = pending.discoveries.into_values().collect::<Vec<_>>();
     let discovered_ids = discovered_choices
@@ -161,7 +167,8 @@ fn record_assertion_seal_input(pending: &QemuFreshPendingObservation) {
             let mut enabled_markers = 0;
             let mut backwards_points = 0;
             let mut latest_ticks = 0;
-            for entry in &pending.event_log {
+            // Diagnostic only: an unreadable segment leaves its entries uncounted.
+            let _ = pending.event_log.try_for_each_entry(|entry| {
                 match entry.payload() {
                     SchedulerEventLogPayload::Observable(payload) => {
                         observable += 1;
@@ -189,7 +196,8 @@ fn record_assertion_seal_input(pending: &QemuFreshPendingObservation) {
                 {
                     backwards_points += 1;
                 }
-            }
+                Ok(())
+            });
             format!(
                 "events={} properties={} observable={observable} causal={causal} boundaries={boundaries} enabled_markers={enabled_markers} backwards_points={backwards_points}",
                 pending.event_log.len(),
@@ -201,9 +209,10 @@ fn record_assertion_seal_input(pending: &QemuFreshPendingObservation) {
 
 /// Evaluates the attempt's measurements over its sealed log.
 ///
-/// Returns the publication together with the segments its leaf references.
+/// Sealing consumes the retained log, leaving `pending` with an empty one;
+/// the returned store holds exactly the segments the evidence references.
 pub(super) fn campaign_measurements(
-    pending: &QemuFreshPendingObservation,
+    pending: &mut QemuFreshPendingObservation,
     configuration: crucible_campaign::ConfigurationId,
 ) -> Result<
     (
@@ -214,7 +223,8 @@ pub(super) fn campaign_measurements(
 > {
     let definitions = pending.input.scenario().measurements();
     let mut node_icounts = BTreeMap::new();
-    for entry in &pending.event_log {
+    let mut scenario_ready_at = None;
+    pending.event_log.try_for_each_entry(|entry| {
         if let (Some(node), Some(retired)) = (&entry.time().stamp.node, entry.time().stamp.retired)
         {
             node_icounts
@@ -224,13 +234,13 @@ pub(super) fn campaign_measurements(
                 })
                 .or_insert(retired);
         }
-    }
+        if scenario_ready_at.is_none() && entry.event_payload().kind() == "scenario_ready" {
+            scenario_ready_at = Some(entry.at());
+        }
+        Ok(())
+    })?;
     let terminal = MeasurementTerminalState {
-        scenario_ready_at: pending
-            .event_log
-            .iter()
-            .find(|entry| entry.event_payload().kind() == "scenario_ready")
-            .map(SchedulerEventLogEntry::at),
+        scenario_ready_at,
         at: pending
             .event_log
             .last()
@@ -243,10 +253,12 @@ pub(super) fn campaign_measurements(
             .as_ref()
             .is_some_and(SchedulerQuiescence::is_quiescent),
     };
-    let mut log_segments = crate::MemorySegmentStore::default();
-    let log = log_segments
-        .sealed_log(pending.event_log.iter().cloned())
-        .map_err(|error| QemuFreshModeledDriverError::Measurements(error.into()))?;
+    let maximum_bytes = pending.event_log.maximum_bytes();
+    let retained = std::mem::replace(
+        &mut pending.event_log,
+        RetainedAttemptLog::new(maximum_bytes),
+    );
+    let (log, log_segments) = retained.seal()?;
     let publication = match &pending.stop {
         ModeledStop::ObservationReached { evidence, .. } => {
             evaluate_crucible_observation_measurement_publication(
@@ -257,7 +269,7 @@ pub(super) fn campaign_measurements(
                 &log_segments,
                 terminal,
                 *evidence,
-                MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+                MAX_MEASUREMENT_EVIDENCE_LEAF_BYTES,
             )
         }
         _ => evaluate_crucible_measurement_publication(
@@ -267,7 +279,7 @@ pub(super) fn campaign_measurements(
             log,
             &log_segments,
             terminal,
-            MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+            MAX_MEASUREMENT_EVIDENCE_LEAF_BYTES,
         ),
     };
     let publication = publication.map_err(QemuFreshModeledDriverError::Measurements)?;
@@ -421,14 +433,15 @@ fn build_observation_candidate_inner(
 }
 
 fn coverage_projection(
-    event_log: &[SchedulerEventLogEntry],
+    event_log: &RetainedAttemptLog,
 ) -> Result<CoverageProjection, QemuFreshModeledDriverError> {
-    let projection = crucible::event_log_coverage_projection(event_log);
-    let identities = projection
-        .entries()
-        .iter()
-        .map(|entry| coverage_identity(&entry.observation))
-        .collect();
+    let mut identities = BTreeSet::new();
+    event_log.try_for_each_entry(|entry| {
+        if let Some(observation) = EventLogCoverageObservation::from_entry(entry) {
+            identities.insert(coverage_identity(&observation));
+        }
+        Ok(())
+    })?;
     CoverageProjection::new(identities, BTreeSet::new()).map_err(Into::into)
 }
 

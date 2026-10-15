@@ -17,18 +17,7 @@ pub(crate) fn load_guarded_campaign_deployment(
     packaged_executor::load_campaign_run_deployment(&path)
 }
 
-/// Applies the deployment's paired-replay policy to one guarded campaign request.
-#[must_use]
-pub(crate) fn apply_guarded_campaign_determinism_policy(
-    request: crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest,
-    verify_determinism_findings: bool,
-) -> crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest {
-    if verify_determinism_findings {
-        request.with_determinism_finding_verification()
-    } else {
-        request
-    }
-}
+pub(crate) use packaged_executor::GuardedCampaignAttemptPolicy;
 
 #[path = "campaign_run.rs"]
 pub(crate) mod campaign_run;

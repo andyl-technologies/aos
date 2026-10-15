@@ -428,36 +428,44 @@ fn non_dense_final_drain_is_rejected_before_candidate_construction() {
         .seal(pending, vec![invalid])
         .expect_err("non-dense final suffix must fail closed");
 
+    // The retained log refuses the gap at append, before any checker runs.
     assert!(matches!(
         error,
-        AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::Assertions(_))
+        AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::EventLog(
+            crate::attempt_event_log::AttemptEventLogError::NonDense { actual: 7, .. }
+        ))
     ));
 }
 
 #[test]
-fn retained_event_material_is_byte_bounded_before_append() {
-    let entry = SchedulerEventLogEntry::guest_marker_observation(
+fn retained_event_log_is_bounded_by_its_operational_storage_limit() {
+    let first = SchedulerEventLogEntry::guest_marker_observation(
         0,
         Icount { retired: 1 },
         node("node-a"),
         MarkerId::from_name("bounded"),
     );
-    let mut event_log = Vec::new();
-    let mut retained_bytes = MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES
-        .checked_sub(entry.canonical_material_len())
-        .expect("entry fits configured bound")
-        + 1;
+    let second = SchedulerEventLogEntry::guest_marker_observation(
+        1,
+        Icount { retired: 2 },
+        node("node-a"),
+        MarkerId::from_name("bounded"),
+    );
+    let mut event_log = RetainedAttemptLog::new(DEFAULT_MAXIMUM_EVENT_LOG_BYTES);
+    event_log.append([first]).expect("first entry fits");
+    event_log.set_maximum_bytes(event_log.encoded_bytes());
 
-    let error = append_event_entries(&mut event_log, &mut retained_bytes, vec![entry])
-        .expect_err("aggregate event material must be rejected before retention");
+    let error = event_log
+        .append([second])
+        .expect_err("an entry beyond the storage bound must be refused");
 
     assert!(matches!(
         error,
-        QemuFreshModeledDriverError::LimitExceeded {
-            limit: "fresh-campaign-event-log-bytes"
-        }
+        QemuFreshModeledDriverError::EventLog(
+            crate::attempt_event_log::AttemptEventLogError::StorageLimit { .. }
+        )
     ));
-    assert!(event_log.is_empty());
+    assert_eq!(event_log.len(), 1);
 }
 
 #[test]

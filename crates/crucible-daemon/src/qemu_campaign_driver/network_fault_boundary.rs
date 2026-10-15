@@ -12,7 +12,7 @@ pub(super) fn discover_initial_network_fault_choice(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     input: &CrucibleAttemptExecution,
     configuration: &Configuration,
-    entries: &[SchedulerEventLogEntry],
+    markers: &NetworkFaultMarkerIndex,
     frontier: VirtualTime,
     quiescence: Option<&SchedulerQuiescence>,
     discoveries: &mut RetainedChoiceDiscoveries,
@@ -22,8 +22,7 @@ pub(super) fn discover_initial_network_fault_choice(
             lifecycle,
             input,
             configuration,
-            entries,
-            &[],
+            markers,
             frontier,
             quiescence,
         )
@@ -71,17 +70,20 @@ pub(super) fn append_new_network_fault_discovery(
 pub(super) fn discover_quantum_network_fault_choice(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     input: &CrucibleAttemptExecution,
-    retained_entries: &[SchedulerEventLogEntry],
+    retained: &NetworkFaultMarkerIndex,
     outcome: &mut QuantumOutcome,
     was_parallel_boot: bool,
     discoveries: &RetainedChoiceDiscoveries,
 ) -> Result<(), AttemptWorkerFailure<QemuFreshModeledDriverError>> {
+    // The index is bounded by phases and VMs, so this per-quantum view costs
+    // the new entries only, independent of the attempt's length.
+    let mut markers = retained.clone();
+    markers.observe_all(&outcome.event_log_entries);
     if let Some(discovery) = next_network_fault_discovery(
         lifecycle,
         input,
         &outcome.configuration,
-        retained_entries,
-        &outcome.event_log_entries,
+        &markers,
         outcome.frontier,
         outcome.scheduler_quiescence.as_ref(),
     )
@@ -180,8 +182,7 @@ pub(super) fn next_network_fault_discovery(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     input: &CrucibleAttemptExecution,
     parent: &Configuration,
-    retained: &[SchedulerEventLogEntry],
-    new_entries: &[SchedulerEventLogEntry],
+    markers: &NetworkFaultMarkerIndex,
     frontier: VirtualTime,
     quiescence: Option<&SchedulerQuiescence>,
 ) -> Result<Option<ChoiceDiscovery>, QemuFreshModeledDriverError> {
@@ -203,22 +204,7 @@ pub(super) fn next_network_fault_discovery(
         .map_err(|error| QemuFreshModeledDriverError::NetworkFault(Box::new(error)))?;
         return Ok(None);
     }
-    let entries = retained.iter().chain(new_entries);
-    let Some(phase) = entries
-        .clone()
-        .filter_map(|entry| {
-            let SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker {
-                marker,
-                ..
-            }) = entry.payload()
-            else {
-                return None;
-            };
-            marker_phase(&marker.name).map(|phase| (entry.sequence(), phase))
-        })
-        .max_by_key(|(sequence, _)| *sequence)
-        .map(|(_, phase)| phase)
-    else {
+    let Some(phase) = markers.latest_phase() else {
         return Ok(None);
     };
     let expected_nodes = input
@@ -228,19 +214,17 @@ pub(super) fn next_network_fault_discovery(
         .iter()
         .map(|vm| vm.id.clone())
         .collect::<BTreeSet<_>>();
-    let mut markers = BTreeMap::new();
-    for entry in entries {
+    let phase_markers = markers.phase(phase);
+    let mut markers_by_node = BTreeMap::new();
+    for entry in phase_markers.entries() {
         let SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker {
             retired_icount,
             node,
-            marker,
+            ..
         }) = entry.payload()
         else {
             continue;
         };
-        if marker_phase(&marker.name) != Some(phase) {
-            continue;
-        }
         // A VM parked at this marker no longer bounds the frontier, so its
         // committed marker may lie ahead of it until the all-VM park join.
         let parked_here = expected_nodes.contains(node)
@@ -254,19 +238,18 @@ pub(super) fn next_network_fault_discovery(
             frontier
         };
         validate_phase_marker_coordinate(phase, entry, node, &expected_nodes, coordinate_bound)?;
-        if markers
-            .insert(
-                node.clone(),
-                (*retired_icount, entry.at(), entry.sequence()),
-            )
-            .is_some()
-        {
-            return Err(QemuFreshModeledDriverError::NetworkFaultBoundary {
-                reason: "a VM emitted the same phase marker more than once",
-            });
-        }
+        markers_by_node.insert(
+            node.clone(),
+            (*retired_icount, entry.at(), entry.sequence()),
+        );
     }
-    if markers.len() != expected_nodes.len() {
+    if phase_markers.repeated() {
+        return Err(QemuFreshModeledDriverError::NetworkFaultBoundary {
+            reason: "a VM emitted the same phase marker more than once",
+        });
+    }
+    let markers_by_node = markers_by_node;
+    if markers_by_node.len() != expected_nodes.len() {
         // Scheduler quiescence can occur between staggered guest markers.
         // A missing event is terminal only when every VM has already parked
         // for this phase and no further marker can arrive.
@@ -298,7 +281,7 @@ pub(super) fn next_network_fault_discovery(
             continue;
         };
         let (retired, _, _) =
-            markers
+            markers_by_node
                 .get(node)
                 .ok_or(QemuFreshModeledDriverError::NetworkFaultBoundary {
                     reason: "parked VM has no authenticated phase marker",
@@ -351,14 +334,14 @@ pub(super) fn next_network_fault_discovery(
         .map_err(QemuFreshModeledDriverError::Scheduler)?
         .map_or(frontier, |joined| joined.max(frontier));
 
-    let marker_sequence = markers
+    let marker_sequence = markers_by_node
         .values()
         .map(|(_, _, sequence)| *sequence)
         .max()
         .ok_or(QemuFreshModeledDriverError::NetworkFaultBoundary {
             reason: "network phase has no final marker sequence",
         })?;
-    let last_marker_at = markers.values().map(|(_, at, _)| *at).max().ok_or(
+    let last_marker_at = markers_by_node.values().map(|(_, at, _)| *at).max().ok_or(
         QemuFreshModeledDriverError::NetworkFaultBoundary {
             reason: "network phase has no final marker time",
         },
@@ -369,8 +352,7 @@ pub(super) fn next_network_fault_discovery(
         frontier,
         quiescence,
         lifecycle.pending_network_output_count(),
-        retained,
-        new_entries,
+        markers.last_activity_sequence(),
     )?;
     if !lifecycle
         .exact_checkpoint_ready()
@@ -414,8 +396,7 @@ pub(super) fn validate_network_fault_boundary(
     frontier: VirtualTime,
     quiescence: Option<&SchedulerQuiescence>,
     pending_network_outputs: usize,
-    retained: &[SchedulerEventLogEntry],
-    new_entries: &[SchedulerEventLogEntry],
+    last_activity_sequence: Option<u64>,
 ) -> Result<(), QemuFreshModeledDriverError> {
     if marker_at > frontier {
         return Err(QemuFreshModeledDriverError::NetworkFaultBoundary {
@@ -448,15 +429,7 @@ pub(super) fn validate_network_fault_boundary(
             reason: "the virtual fabric retains pending output",
         });
     }
-    if retained.iter().chain(new_entries).any(|entry| {
-        entry.sequence() > marker_sequence
-            && matches!(
-                entry.payload(),
-                SchedulerEventLogPayload::Observable(_)
-                    | SchedulerEventLogPayload::ResolvedHappening(_)
-                    | SchedulerEventLogPayload::FaultObservation(_)
-            )
-    }) {
+    if last_activity_sequence.is_some_and(|sequence| sequence > marker_sequence) {
         return Err(QemuFreshModeledDriverError::NetworkFaultBoundary {
             reason: "an observable or resolved operation followed the final phase marker",
         });
@@ -482,5 +455,121 @@ fn not_quiescent_boundary(
     QemuFreshModeledDriverError::NetworkFaultBoundaryNotQuiescent {
         count: unsettled.len(),
         summary,
+    }
+}
+
+/// Network-fault phase markers and guest activity folded over an event log.
+///
+/// Discovery needs the latest phase marker, every VM's marker for that phase,
+/// and whether any observable or resolved work followed it. Retaining just
+/// those keeps the per-quantum check proportional to the quantum's new
+/// entries. The state is bounded by the two phases and the distinct VMs that
+/// emitted their markers.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct NetworkFaultMarkerIndex {
+    latest_phase: Option<(u64, NetworkFaultPhase)>,
+    first: PhaseMarkers,
+    followup: PhaseMarkers,
+    last_activity_sequence: Option<u64>,
+}
+
+/// Each VM's first marker for one phase, plus whether any VM repeated it.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PhaseMarkers {
+    by_node: BTreeMap<NodeId, SchedulerEventLogEntry>,
+    repeated: bool,
+}
+
+impl PhaseMarkers {
+    /// Returns the retained markers in log order.
+    pub(crate) fn entries(&self) -> Vec<&SchedulerEventLogEntry> {
+        let mut entries = self.by_node.values().collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.sequence());
+        entries
+    }
+
+    /// Returns whether some VM emitted this phase's marker more than once.
+    pub(crate) const fn repeated(&self) -> bool {
+        self.repeated
+    }
+}
+
+impl NetworkFaultMarkerIndex {
+    /// Folds every entry of `entries`, in order.
+    #[cfg(test)]
+    pub(crate) fn from_entries<'a>(
+        entries: impl IntoIterator<Item = &'a SchedulerEventLogEntry>,
+    ) -> Self {
+        let mut index = Self::default();
+        index.observe_all(entries);
+        index
+    }
+
+    /// Folds each entry of `entries`, in order.
+    pub(crate) fn observe_all<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = &'a SchedulerEventLogEntry>,
+    ) {
+        for entry in entries {
+            self.observe(entry);
+        }
+    }
+
+    /// Folds one appended entry.
+    pub(crate) fn observe(&mut self, entry: &SchedulerEventLogEntry) {
+        let payload = entry.payload();
+        if matches!(
+            payload,
+            SchedulerEventLogPayload::Observable(_)
+                | SchedulerEventLogPayload::ResolvedHappening(_)
+                | SchedulerEventLogPayload::FaultObservation(_)
+        ) {
+            self.last_activity_sequence = self.last_activity_sequence.max(Some(entry.sequence()));
+        }
+
+        let SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker {
+            node,
+            marker,
+            ..
+        }) = payload
+        else {
+            return;
+        };
+        let Some(phase) = marker_phase(&marker.name) else {
+            return;
+        };
+        if self
+            .latest_phase
+            .is_none_or(|(sequence, _)| entry.sequence() > sequence)
+        {
+            self.latest_phase = Some((entry.sequence(), phase));
+        }
+        let markers = match phase {
+            NetworkFaultPhase::First => &mut self.first,
+            NetworkFaultPhase::Followup => &mut self.followup,
+        };
+        if markers.by_node.contains_key(node) {
+            markers.repeated = true;
+        } else {
+            markers.by_node.insert(node.clone(), entry.clone());
+        }
+    }
+
+    /// Returns the phase of the latest phase marker.
+    pub(crate) fn latest_phase(&self) -> Option<NetworkFaultPhase> {
+        self.latest_phase.map(|(_, phase)| phase)
+    }
+
+    /// Returns the markers retained for `phase`.
+    pub(crate) const fn phase(&self, phase: NetworkFaultPhase) -> &PhaseMarkers {
+        match phase {
+            NetworkFaultPhase::First => &self.first,
+            NetworkFaultPhase::Followup => &self.followup,
+        }
+    }
+
+    /// Returns the latest observable, resolved, or fault entry's sequence.
+    pub(crate) const fn last_activity_sequence(&self) -> Option<u64> {
+        self.last_activity_sequence
     }
 }

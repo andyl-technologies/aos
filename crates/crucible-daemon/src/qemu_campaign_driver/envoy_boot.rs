@@ -13,7 +13,7 @@ use crucible::{
     WhiteBoxPolicy,
 };
 
-use super::{QemuFreshModeledDriverError, QemuModeledAttemptLifecycle};
+use super::{QemuFreshModeledDriverError, QemuModeledAttemptLifecycle, RetainedAttemptLog};
 use crate::{AttemptWorkerFailure, CrucibleAttemptExecution};
 
 const ENVOY_FIXTURE_SEED: u64 = 802_750_664_550_812_378;
@@ -36,11 +36,23 @@ pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) 
 /// at a time only over more quanta, so its retained event log would outgrow
 /// the parent it reconstructs. Replay ignores its own attempt's stop and
 /// network branches because neither existed when the prefix was first run.
+///
+/// # Errors
+///
+/// Returns [`QemuFreshModeledDriverError::EventLog`] when the retained log
+/// must be read and a sealed segment cannot be read back.
 pub(crate) fn envoy_choice_free_boot_replay_eligible(
     input: &CrucibleAttemptExecution,
-    retained_entries: &[SchedulerEventLogEntry],
-) -> bool {
-    audited_envoy_boot_graph(input) && !west_convergence_marker_seen(retained_entries)
+    retained: &RetainedAttemptLog,
+) -> Result<bool, QemuFreshModeledDriverError> {
+    Ok(audited_envoy_boot_graph(input) && !west_convergence_retained(retained)?)
+}
+
+/// Returns whether the retained log already holds west's convergence marker.
+fn west_convergence_retained(
+    retained: &RetainedAttemptLog,
+) -> Result<bool, QemuFreshModeledDriverError> {
+    Ok(retained.find(is_west_convergence_marker)?.is_some())
 }
 
 /// Matches the exact authored five-node World, seed and selectable catalog.
@@ -121,8 +133,11 @@ fn audited_envoy_boot_graph(input: &CrucibleAttemptExecution) -> bool {
 
 /// Finds west's authenticated convergence marker in scheduler-owned evidence.
 pub(crate) fn west_convergence_marker_seen(entries: &[SchedulerEventLogEntry]) -> bool {
-    entries.iter().any(|entry| {
-        matches!(
+    entries.iter().any(is_west_convergence_marker)
+}
+
+fn is_west_convergence_marker(entry: &SchedulerEventLogEntry) -> bool {
+    matches!(
             entry.payload(),
             SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestSemanticMarker {
                 node,
@@ -134,8 +149,7 @@ pub(crate) fn west_convergence_marker_seen(entries: &[SchedulerEventLogEntry]) -
                 && marker == "network.converged"
                 && instance == "instance-1"
                 && details.is_empty()
-        )
-    })
+    )
 }
 
 /// Owns the audited concurrent prefix before west reports route convergence.
@@ -184,11 +198,11 @@ impl EnvoyParallelBoot {
     pub(super) fn arm(
         input: &CrucibleAttemptExecution,
         fresh_start: bool,
-        entries: &[SchedulerEventLogEntry],
+        retained: &RetainedAttemptLog,
         lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
-    ) -> Self {
+    ) -> Result<Self, QemuFreshModeledDriverError> {
         let eligible = fresh_start && envoy_choice_free_boot_eligible(input);
-        let active = eligible && !west_convergence_marker_seen(entries);
+        let active = eligible && !west_convergence_retained(retained)?;
         lifecycle.set_choice_free_parallel_boot(active);
         if fresh_start && input.scenario().seed() == Seed::from_u64(ENVOY_FIXTURE_SEED) {
             let _ = writeln!(
@@ -196,7 +210,7 @@ impl EnvoyParallelBoot {
                 "CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 armed={active} eligible={eligible}"
             );
         }
-        Self {
+        Ok(Self {
             active,
             next_progress_quanta: 1,
             observable_events: 0,
@@ -210,7 +224,7 @@ impl EnvoyParallelBoot {
             .into_iter()
             .map(|node| (String::from(node), NodeBootProgress::new()))
             .collect(),
-        }
+        })
     }
 
     /// Reports bounded scheduler progress while the first Envoy choice is pending.

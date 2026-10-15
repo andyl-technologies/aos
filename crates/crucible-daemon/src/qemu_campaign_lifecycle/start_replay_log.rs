@@ -1,58 +1,29 @@
 //! Bounded event-log accounting, progress, and boot-prefix grouping for
 //! start replay.
 //!
-//! Start replay retains the complete genesis log under the same entry and
-//! byte bounds as result sealing, refuses a quantum that advances none of
+//! Start replay retains the complete genesis log under the same storage
+//! bound as result sealing, refuses a quantum that advances none of
 //! its replay coordinates, and groups the audited Envoy boot prefix exactly
 //! as the parent attempt did so the two logs stay identical.
 
 use super::*;
+use crate::attempt_event_log::AttemptEventLogError;
 
 pub(super) fn append_start_replay_events<F, D>(
     replay: &mut QemuFreshStartMaterialization,
     entries: &[SchedulerEventLogEntry],
 ) -> Result<(), AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>> {
-    let count = replay
+    replay
         .event_log
-        .len()
-        .checked_add(entries.len())
-        .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-entry-count"))?;
-    if count > MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES {
-        crate::qemu_campaign_driver::report_event_log_budget_exhaustion(
-            "fresh-campaign-event-log-entry-count",
-            &replay.event_log,
-            entries,
-        );
-        return Err(AttemptWorkerFailure::Terminal(
-            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::LimitExceeded {
-                limit: "fresh-campaign-event-log-entry-count",
-            }),
-        ));
-    }
-    let added = entries.iter().try_fold(0usize, |total, entry| {
-        total
-            .checked_add(entry.canonical_material_len())
-            .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-bytes"))
-    })?;
-    let bytes = replay
-        .event_log_bytes
-        .checked_add(added)
-        .ok_or_else(|| start_replay_limit_failure("fresh-campaign-event-log-bytes"))?;
-    if bytes > MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES {
-        crate::qemu_campaign_driver::report_event_log_budget_exhaustion(
-            "fresh-campaign-event-log-bytes",
-            &replay.event_log,
-            entries,
-        );
-        return Err(AttemptWorkerFailure::Terminal(
-            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::LimitExceeded {
-                limit: "fresh-campaign-event-log-bytes",
-            }),
-        ));
-    }
-    replay.event_log.extend_from_slice(entries);
-    replay.event_log_bytes = bytes;
-    Ok(())
+        .append(entries.iter().cloned())
+        .map_err(|error| match error {
+            crate::QemuFreshModeledDriverError::EventLog(AttemptEventLogError::StorageLimit {
+                ..
+            }) => start_replay_limit_failure("attempt-event-log-bytes"),
+            error => AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                QemuFreshStartReplayError::EventLog(Box::new(error)),
+            )),
+        })
 }
 
 /// Attaches replay progress to an event-log limit failure from one quantum.
@@ -69,7 +40,7 @@ pub(super) fn with_replay_progress<F, D>(
             QemuFreshStartReplayError::EventLogLimitExceeded {
                 limit,
                 retained_entries: replay.event_log.len(),
-                retained_bytes: replay.event_log_bytes,
+                retained_bytes: replay.event_log.encoded_bytes(),
                 completed_quanta: replay.completed_quanta,
                 schedule_len,
                 target_schedule_len,

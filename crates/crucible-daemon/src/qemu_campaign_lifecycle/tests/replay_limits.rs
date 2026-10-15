@@ -77,7 +77,10 @@ fn replay_progress_counts_log_or_frontier_advance_without_a_quantum() {
     let mut replay = QemuFreshStartMaterialization::at_quanta(41_518);
     let before = StartReplayProgress::observe(&replay, 1_884);
 
-    replay.event_log.push(guest_marker_entry());
+    replay
+        .event_log
+        .append([guest_marker_entry()])
+        .expect("dense genesis entry");
     let logged: Result<(), ReplayFailure> =
         before.require_advance(StartReplayProgress::observe(&replay, 1_884));
     assert!(logged.is_ok());

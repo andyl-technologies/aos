@@ -38,6 +38,7 @@ pub struct RemoteObservationResumeFactory {
     host: LinuxQemuAttemptHostConfig,
     resources: AttemptResourceLimits,
     verify_determinism_findings: bool,
+    maximum_event_log_bytes: u64,
 }
 
 impl RemoteObservationResumeFactory {
@@ -61,13 +62,22 @@ impl RemoteObservationResumeFactory {
             host,
             resources,
             verify_determinism_findings,
+            maximum_event_log_bytes: crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
         }
     }
 
-    fn apply_determinism_finding_policy(
+    /// Bounds each replayed attempt's encoded event log at `maximum_bytes`.
+    #[must_use]
+    pub const fn with_maximum_event_log_bytes(mut self, maximum_bytes: u64) -> Self {
+        self.maximum_event_log_bytes = maximum_bytes;
+        self
+    }
+
+    fn apply_attempt_policy(
         &self,
         request: GuardedDefaultCampaignRunRequest,
     ) -> GuardedDefaultCampaignRunRequest {
+        let request = request.with_maximum_event_log_bytes(self.maximum_event_log_bytes);
         if self.verify_determinism_findings {
             request.with_determinism_finding_verification()
         } else {
@@ -179,7 +189,7 @@ impl RemoteObservationResumeFactory {
                     observation_error(format!("open exact checkpoint store: {error}"))
                 })?,
         );
-        let campaign_request = self.apply_determinism_finding_policy(
+        let campaign_request = self.apply_attempt_policy(
             GuardedDefaultCampaignRunRequest::new(
                 request.scenario.clone(),
                 request.seed,
@@ -310,10 +320,10 @@ mod tests {
     #[test]
     fn factory_applies_deployment_determinism_policy_to_authentication_campaign()
     -> Result<(), Box<dyn std::error::Error>> {
-        let request = factory(false)?.apply_determinism_finding_policy(campaign_request()?);
+        let request = factory(false)?.apply_attempt_policy(campaign_request()?);
         assert!(!request.verifies_determinism_findings());
 
-        let request = factory(true)?.apply_determinism_finding_policy(campaign_request()?);
+        let request = factory(true)?.apply_attempt_policy(campaign_request()?);
         assert!(request.verifies_determinism_findings());
         Ok(())
     }

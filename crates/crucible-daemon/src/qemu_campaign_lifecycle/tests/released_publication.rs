@@ -88,9 +88,9 @@ fn retained_publication_refuses_gapped_suffix_and_regressed_decision_prefix() {
         ));
         assert_eq!(observed, current);
         let parts = replay.into_parts();
-        assert!(parts.0.is_empty());
-        assert_eq!(parts.2, 0);
-        assert_eq!(parts.3, VirtualTime::default());
+        assert_eq!(parts.0.len(), 0);
+        assert_eq!(parts.1, 0);
+        assert_eq!(parts.2, VirtualTime::default());
         assert!(lifecycle.order.lock().expect("operation order").is_empty());
     }
 }
@@ -150,10 +150,10 @@ fn newly_terminal_retained_boundary_refuses_further_replay_without_another_run()
     )
     .expect("exact terminal target remains a valid start");
     let parts = replay.into_parts();
-    assert_eq!(parts.2, 1);
-    assert_eq!(parts.3, VirtualTime { ticks: 19 });
+    assert_eq!(parts.1, 1);
+    assert_eq!(parts.2, VirtualTime { ticks: 19 });
     assert!(matches!(
-        parts.5,
+        parts.4,
         Some(crucible::QuantumTerminalVerdict::Failed(_))
     ));
     assert!(lifecycle.order.lock().expect("operation order").is_empty());

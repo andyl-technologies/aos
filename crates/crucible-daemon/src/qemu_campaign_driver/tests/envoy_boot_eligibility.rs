@@ -153,10 +153,13 @@ fn start_replay_reproduces_the_concurrent_boot_prefix_for_any_stop() {
     // The replayed prefix belongs to the parent, so the replaying attempt's
     // own stop does not decide how its boot RUNs are grouped.
     for stop in [StopCondition::NextChoice, StopCondition::Terminal] {
-        assert!(envoy_choice_free_boot_replay_eligible(
-            &input_for_scenario(scenario.clone(), stop),
-            &[],
-        ));
+        assert!(
+            envoy_choice_free_boot_replay_eligible(
+                &input_for_scenario(scenario.clone(), stop),
+                &retained_log(Vec::new()),
+            )
+            .expect("empty log is readable")
+        );
     }
 }
 
@@ -164,10 +167,13 @@ fn start_replay_reproduces_the_concurrent_boot_prefix_for_any_stop() {
 fn start_replay_keeps_serial_runs_after_west_converged_or_off_fixture() {
     let scenario = authored_fixture();
     let input = input_for_scenario(scenario.clone(), StopCondition::NextChoice);
-    assert!(!envoy_choice_free_boot_replay_eligible(
-        &input,
-        &[west_convergence_entry()],
-    ));
+    assert!(
+        !envoy_choice_free_boot_replay_eligible(
+            &input,
+            &retained_log(vec![west_convergence_entry()]),
+        )
+        .expect("retained log is readable")
+    );
 
     let different_seed = ScenarioDefForm::from_components(
         scenario.world(),
@@ -178,8 +184,11 @@ fn start_replay_keeps_serial_runs_after_west_converged_or_off_fixture() {
     .expect("valid different seed")
     .with_selectables(scenario.selectables().clone())
     .expect("valid catalog");
-    assert!(!envoy_choice_free_boot_replay_eligible(
-        &input_for_scenario(different_seed, StopCondition::NextChoice),
-        &[],
-    ));
+    assert!(
+        !envoy_choice_free_boot_replay_eligible(
+            &input_for_scenario(different_seed, StopCondition::NextChoice),
+            &retained_log(Vec::new()),
+        )
+        .expect("empty log is readable")
+    );
 }

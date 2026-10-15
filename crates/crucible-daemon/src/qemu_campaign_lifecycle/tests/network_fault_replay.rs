@@ -115,7 +115,7 @@ fn start_replay_parks_network_phase_markers_only_when_declared() {
         )
         .expect("start replay reaches its target");
 
-        assert_eq!(replay.into_parts().2, 2);
+        assert_eq!(replay.into_parts().1, 2);
         assert_eq!(*lifecycle.order.lock().expect("operation order"), expected);
     }
 }

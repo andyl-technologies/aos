@@ -494,7 +494,7 @@ fn replayed_guest_reply_at_start(already_held: bool) -> TestResult {
     )
     .map_err(|error| format!("already matching empty start: {error:?}"))?;
     assert_eq!(owner.completed_quanta(), 0);
-    assert!(empty_start.into_parts().0.is_empty());
+    assert!(empty_start.into_parts().0.len() == 0);
     let materialization = if already_held {
         let outcome = QuantumLoop::drive_quantum(
             &mut owner,
@@ -504,14 +504,8 @@ fn replayed_guest_reply_at_start(already_held: bool) -> TestResult {
             },
         )?;
         assert_eq!(owner.completed_quanta(), 1);
-        let bytes = outcome
-            .event_log_entries
-            .iter()
-            .map(SchedulerEventLogEntry::canonical_material_len)
-            .sum();
         QemuFreshStartMaterialization::from_origin_parts(
-            outcome.event_log_entries,
-            bytes,
+            retained_log(outcome.event_log_entries),
             owner.completed_quanta(),
             outcome.frontier,
             outcome.scheduler_quiescence,
@@ -577,7 +571,7 @@ fn replayed_guest_reply_at_start(already_held: bool) -> TestResult {
     };
     assert_eq!(observation.completed_quanta, expected_quanta);
     assert_eq!(observation.configuration, target);
-    assert_eq!(observation.event_log, settled.1);
+    assert_eq!(observation.event_log.materialize()?, settled.1);
     assert_eq!(observation.terminal_at, settled.4);
     assert_eq!(observation.terminal_quiescence, Some(settled.5));
     Ok(())
@@ -629,7 +623,7 @@ fn packaged_decorators_publish_replayed_held_suffix_into_exact_evidence() -> Tes
     )
     .map_err(|error| format!("already matching empty start: {error:?}"))?;
     assert_eq!(owner.completed_quanta(), 0);
-    assert!(empty_start.into_parts().0.is_empty());
+    assert!(empty_start.into_parts().0.len() == 0);
     let outcome = QemuFreshAttemptLifecycleOwner::drive_quantum(
         &mut owner,
         QuantumRequest {
@@ -638,14 +632,8 @@ fn packaged_decorators_publish_replayed_held_suffix_into_exact_evidence() -> Tes
         },
     )?;
     assert_eq!(owner.completed_quanta(), 1);
-    let bytes = outcome
-        .event_log_entries
-        .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
-        .sum();
     let materialization = QemuFreshStartMaterialization::from_origin_parts(
-        outcome.event_log_entries,
-        bytes,
+        retained_log(outcome.event_log_entries),
         owner.completed_quanta(),
         outcome.frontier,
         outcome.scheduler_quiescence,
@@ -708,7 +696,10 @@ fn packaged_decorators_publish_replayed_held_suffix_into_exact_evidence() -> Tes
     };
     assert_eq!(observation.completed_quanta, expected_quanta);
     assert_eq!(observation.configuration, target);
-    assert_eq!(observation.event_log, settled.event_log_entries());
+    assert_eq!(
+        observation.event_log.materialize()?,
+        settled.event_log_entries()
+    );
     assert_eq!(observation.terminal_at, settled.frontier());
     assert_eq!(settled.quanta(), expected_quanta);
     Ok(())
@@ -747,14 +738,8 @@ fn matching_start_retains_unresolved_guest_choice_for_ordinary_discovery() -> Te
         },
     )?;
     let before = owner.resume_state()?.into_parts();
-    let bytes = outcome
-        .event_log_entries
-        .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
-        .sum();
     let replay = QemuFreshStartMaterialization::from_origin_parts(
-        outcome.event_log_entries,
-        bytes,
+        retained_log(outcome.event_log_entries),
         owner.completed_quanta(),
         outcome.frontier,
         outcome.scheduler_quiescence,
@@ -782,7 +767,7 @@ fn matching_start_retains_unresolved_guest_choice_for_ordinary_discovery() -> Te
         return Err("matching unresolved start did not retain an observation".into());
     };
     assert_eq!(observation.completed_quanta, before.3);
-    assert_eq!(observation.event_log, before.1);
+    assert_eq!(observation.event_log.materialize()?, before.1);
     assert_eq!(observation.terminal_at, before.4);
     assert!(matches!(
         observation.stop,
