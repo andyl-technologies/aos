@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "df2f6b29e5af360631e976f5a255badad7df02775cf0e3a4fb80a873cc9c7a48";
-  subject = "Integrate current Crucible lifecycle and wake-event fixtures";
-  body = "Retain the current lifecycle, checkpoint and ordinary target integration\nwith serialized stop fixtures using genuine native declarations and the\nshared plugin wake-event header. Preserve existing fixture assertions\nand omission controls without changing production behavior.";
-  commit = "07fd99f24e10ed7c872a040d00e021a8f1cdac07";
-  tree = "1263c7ff9e6bd750afcc435eb1dc4bc9aed7e7da";
+  sha256 = "55fe050dec456a6803de7551766f43b6dc9a92bdc71f445e18cf0c4dfd2c3357";
+  subject = "Integrate public QEMU lifecycle and fixture updates";
+  body = "Update lifecycle ownership integration and public regression fixtures, including\ncurrent callback declarations and isolated ICH9 migration producers. Preserve\nordinary absence behavior and the existing test assertions.";
+  commit = "95ea8ea684f78810d7e960c95c270014a29886f7";
+  tree = "cbc603c820563b9f0c19a00d647653c987b6955b";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/wake-event-current";
+  branchRef = "dplecki/delivery-chain-timer-current";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "56e7ddccda348abd03021af6df4e8a45c5b28c5dc9e07b9503131524a70a4125";
+  bundleSha256 = "ab30f93131ce39143e630ca7bf78cfb65322c8fb8829e6a0888782d3aca76965";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-15T13:05:31-07:00";
+  deterministicPatchDate = "2026-10-15T13:44:11-07:00";
 
   additionalCapabilities = [
     {

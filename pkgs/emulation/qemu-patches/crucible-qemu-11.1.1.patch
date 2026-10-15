@@ -1,12 +1,11 @@
-From 07fd99f24e10ed7c872a040d00e021a8f1cdac07 Mon Sep 17 00:00:00 2001
+From 95ea8ea684f78810d7e960c95c270014a29886f7 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 15 Oct 2026 13:05:31 -0700
-Subject: [PATCH] Integrate current Crucible lifecycle and wake-event fixtures
+Date: Thu, 15 Oct 2026 13:44:11 -0700
+Subject: [PATCH] Integrate public QEMU lifecycle and fixture updates
 
-Retain the current lifecycle, checkpoint and ordinary target integration
-with serialized stop fixtures using genuine native declarations and the
-shared plugin wake-event header. Preserve existing fixture assertions
-and omission controls without changing production behavior.
+Update lifecycle ownership integration and public regression fixtures, including
+current callback declarations and isolated ICH9 migration producers. Preserve
+ordinary absence behavior and the existing test assertions.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -221922,10 +221921,10 @@ index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747
 +PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-net-stop-support.py b/tests/unit/crucible-net-stop-support.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7d1512160fb021cb6438928770f068d8053abe04
+index 0000000000000000000000000000000000000000..c4faa376c01509f12f8ce6aaa72bbc69e4d05b32
 --- /dev/null
 +++ b/tests/unit/crucible-net-stop-support.py
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,296 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Select literal dependencies for the ordinary serialized stop fixtures.
 +
@@ -222031,6 +222030,87 @@ index 0000000000000000000000000000000000000000..7d1512160fb021cb6438928770f068d8
 +    ),
 +}
 +
++FUNCTION_GROUPS = {
++    "native": set(FUNCTIONS["plugins/crucible-native-invocation.c"]) | {
++        "qemu_crucible_startup_source_native_selection_v1",
++        "qemu_plugin_crucible_startup_source_retained",
++        "qemu_thread_get_self", "qemu_thread_is_self",
++    },
++    "control": {"qemu_plugin_crucible_native_control_descriptor_observe_v1"},
++    "tx": set(FUNCTIONS["net/net.c"]),
++    "stop": {
++        "control_stop_identity",
++        "qemu_plugin_crucible_source_control_stop_intent_current_v1",
++        "qemu_plugin_crucible_source_control_stop_intent_admitted_v1",
++        "qemu_crucible_checkpoint_stop_admitted_v1",
++        "qemu_plugin_crucible_vmstop_generation",
++        "qemu_plugin_crucible_vmstop_cold_origin",
++        "qemu_in_main_thread",
++    },
++}
++
++UNAVAILABLE_GROUPS = {
++    "native": set(),
++    "control": {"control_stop_dispatch"},
++    "tx": set(),
++    "stop": {
++        "qemu_plugin_crucible_source_control_stop_intent_borrow_v1",
++        "qemu_crucible_source_control_invocation_current_v1",
++        "qemu_crucible_checkpoint_stop_admission_current_v1",
++        "qemu_crucible_checkpoint_stop_intent_control_v1",
++        "qemu_crucible_checkpoint_storage_current_v1",
++        "qemu_crucible_checkpoint_pager_binding_current",
++    },
++}
++
++DECLARATION_GROUPS = {
++    "native": {"source", "plugin"},
++    "control": {"callback-slots"},
++    "tx": {"tx-slots"},
++    "stop": {"vmstop", "control-stop", "receiving"},
++}
++
++HEADERS = r"""
++#include "qemu/osdep.h"
++#include "hw/core/cpu.h"
++#include "qemu/main-loop.h"
++#include "monitor/monitor.h"
++#include "system/cpus.h"
++#include "system/runstate.h"
++#include "system/crucible-ram-quiescence.h"
++#include "plugins/crucible-startup-source.h"
++#include "plugins/crucible-checkpoint-receiving.h"
++#include "plugins/crucible-control-stop.h"
++"""
++
++# These serialized fixtures never initialize a Source registry or plugin lock.
++# Real lock storage/signatures reject any unexpected attempt to use those locks.
++LOCK_PRIMITIVES = r"""
++void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, int line)
++{
++    g_assert_true(mutex->initialized);
++    g_assert_cmpint(pthread_mutex_lock(&mutex->lock), ==, 0);
++}
++
++void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, int line)
++{
++    g_assert_cmpint(pthread_mutex_unlock(&mutex->lock), ==, 0);
++}
++
++void qemu_rec_mutex_lock_impl(QemuRecMutex *mutex, const char *file, int line)
++{
++    qemu_mutex_lock_impl(&mutex->m, file, line);
++}
++
++void qemu_rec_mutex_unlock_impl(QemuRecMutex *mutex, const char *file, int line)
++{
++    qemu_mutex_unlock_impl(&mutex->m, file, line);
++}
++
++QemuMutexLockFunc qemu_mutex_lock_func = qemu_mutex_lock_impl;
++QemuRecMutexLockFunc qemu_rec_mutex_lock_func = qemu_rec_mutex_lock_impl;
++"""
++
 +
 +def definitions(path):
 +    source = (ROOT / path).read_text()
@@ -222048,63 +222128,85 @@ index 0000000000000000000000000000000000000000..7d1512160fb021cb6438928770f068d8
 +    return notice + "\n" + EXTRACT["body_cut"](source, first, after)
 +
 +
-+def declarations():
++def declarations(groups=None):
 +    """Keep canonical empty containing objects and their complete real types."""
 +    api = (ROOT / "plugins/api-system.c").read_text()
 +    source = (ROOT / "plugins/crucible-startup-source.c").read_text()
-+    net = (ROOT / "net/net.c").read_text()
-+    output = [
-+        declaration_block("plugins/api-system.c",
-+                          "enum {\n    QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE,",
-+                          '#include "crucible-control-stop.inc.h"'),
-+        declaration_block("plugins/api-system.c",
-+                          "static struct {\n    QemuCrucibleNativeRegistration *control;",
-+                          "static qemu_plugin_time_advance_cb_t"),
-+        EXTRACT["unique_line"](net,
++    output = {
++        "vmstop": lambda: declaration_block(
++            "plugins/api-system.c",
++            "enum {\n    QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE,",
++            '#include "crucible-control-stop.inc.h"'),
++        "callback-slots": lambda: declaration_block(
++            "plugins/api-system.c",
++            "static struct {\n    QemuCrucibleNativeRegistration *control;",
++            "static qemu_plugin_time_advance_cb_t"),
++        "tx-slots": lambda: EXTRACT["unique_line"](
++            (ROOT / "net/net.c").read_text(),
 +            "static QemuCrucibleNativeRegistration *native_net_tx_members[1];"),
-+        declaration_block("plugins/crucible-control-stop.inc.h",
-+                          "enum ControlDispatchPhase {",
-+                          "uint64_t qemu_plugin_crucible_control_stop_storage_bytes_v1("),
-+        declaration_block("plugins/crucible-checkpoint-receiving.c",
-+                          "struct QemuCrucibleCheckpointRequestLoan {",
-+                          "static int checkpoint_provider_check_main("),
-+        EXTRACT["body_cut"](source,
++        "control-stop": lambda: declaration_block(
++            "plugins/crucible-control-stop.inc.h",
++            "enum ControlDispatchPhase {",
++            "uint64_t qemu_plugin_crucible_control_stop_storage_bytes_v1("),
++        "receiving": lambda: declaration_block(
++            "plugins/crucible-checkpoint-receiving.c",
++            "struct QemuCrucibleCheckpointRequestLoan {",
++            "static int checkpoint_provider_check_main("),
++        "source": lambda: EXTRACT["body_cut"](
++            source,
 +            "static QemuCrucibleStartupSourceControl startup_source = {",
 +            "static int startup_failure("),
-+        declaration_block("plugins/api-system.c",
-+                          "struct QemuCrucibleFingerprintWakeWatcher {",
-+                          "size_t qemu_plugin_crucible_wake_watcher_storage_bytes_v1("),
-+        EXTRACT["body_cut"](api,
++        "watcher": lambda: declaration_block(
++            "plugins/api-system.c",
++            "struct QemuCrucibleFingerprintWakeWatcher {",
++            "size_t qemu_plugin_crucible_wake_watcher_storage_bytes_v1("),
++        "drain": lambda: EXTRACT["body_cut"](
++            api,
 +            "static int qemu_plugin_wake_fd = -1;",
 +            "static QemuMutex qemu_plugin_crucible_resource_lock;"),
-+        EXTRACT["body_cut"](api,
++        "wake-notifiers": lambda: EXTRACT["body_cut"](
++            api,
 +            "static NotifierList qemu_plugin_wake_notifiers =",
 +            "qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_control_boundary_cb;"),
-+        EXTRACT["unique_line"](api,
-+            "void *qemu_plugin_vcpu_idle_resume_userdata;"),
-+        EXTRACT["body_cut"](api,
++        "resume-userdata": lambda: EXTRACT["unique_line"](
++            api, "void *qemu_plugin_vcpu_idle_resume_userdata;"),
++        "resume-context": lambda: EXTRACT["body_cut"](
++            api,
 +            "static __thread CPUState *qemu_plugin_crucible_resume_callback_cpu;",
 +            "static __thread bool qemu_plugin_crucible_idle_wait_issued;"),
-+        EXTRACT["unique_line"]((ROOT / "util/osdep.c").read_text(),
++        "selected-process": lambda: EXTRACT["unique_line"](
++            (ROOT / "util/osdep.c").read_text(),
 +            "int qemu_crucible_selected_process_id;"),
-+        "struct qemu_plugin_state plugin;\n",
-+    ]
-+    return "\n\n".join(output)
++        "plugin": lambda: "struct qemu_plugin_state plugin;\n",
++    }
++    if groups is None:
++        return "\n\n".join(select() for select in output.values())
++    selected = set().union(*(DECLARATION_GROUPS[group] for group in groups))
++    return "\n\n".join(select() for name, select in output.items() if name in selected)
 +
 +
-+def dependencies(production):
++def dependencies(production, groups=None):
 +    """Add actual implementations once, sharing the fixture's callback slots."""
 +    selected = []
 +    original = list(EXTRACT["function_definitions"](production))
 +    existing = {name for name, _, _, _ in original}
++    functions = (None if groups is None else
++                 set().union(*(FUNCTION_GROUPS[group] for group in groups)))
++    boundaries = (None if groups is None else
++                  set().union(*(UNAVAILABLE_GROUPS[group] for group in groups)))
 +    for path, names in FUNCTIONS.items():
-+        available = definitions(path)
-+        selected.extend(available[name] for name in names if name not in existing)
++        needed = [name for name in names if name not in existing
++                  and (functions is None or name in functions)]
++        if needed:
++            available = definitions(path)
++            selected.extend(available[name] for name in needed)
 +    unavailable = []
 +    for path, names in UNAVAILABLE.items():
-+        available = definitions(path)
-+        for name in names:
-+            if name not in existing:
++        needed = [name for name in names if name not in existing
++                  and (boundaries is None or name in boundaries)]
++        if needed:
++            available = definitions(path)
++            for name in needed:
 +                signature = available[name].split("{", 1)[0].rstrip()
 +                unavailable.append(signature + "\n{\n    g_assert_not_reached();\n}\n")
 +    # All bodies remain whole; prototypes only resolve their original order.
@@ -239154,10 +239256,10 @@ index 0000000000000000000000000000000000000000..0463485486c70337da10dfb7966e6d3b
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..33f7c0bc21f8ad5cee75c42fb17882e54c3f4402
+index 0000000000000000000000000000000000000000..23ac44a8ba76bbf67c0a0fec607b659f2ddb1c41
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,352 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check the actual delivery witness and registered-callback wrapper bodies.
 +
@@ -239177,24 +239279,13 @@ index 0000000000000000000000000000000000000000..33f7c0bc21f8ad5cee75c42fb17882e5
 +
 +
 +ROOT = Path(__file__).resolve().parents[2]
-+definition = runpy.run_path(str(Path(__file__).with_name(
-+    "test-crucible-net-output-stop.py")))["definition"]
++NETWORK = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))
++definition = NETWORK["definition"]
++SUPPORT = NETWORK["SUPPORT"]
++GROUPS = ("native", "control")
 +
 +PRELUDE = r"""
-+#include <assert.h>
-+#include <errno.h>
-+#include <inttypes.h>
-+#include <limits.h>
-+#include <stdbool.h>
-+#include <stdint.h>
-+#include <stdio.h>
-+#include <string.h>
-+#include <unistd.h>
-+#include <glib.h>
-+#include "qemu/typedefs.h"
-+#define qemu_build_assert(condition) _Static_assert(condition, #condition)
-+#include "qemu/atomic.h"
-+#define ARRAY_SIZE(value) (sizeof(value) / sizeof((value)[0]))
 +#define TRACE_CRUCIBLE_SIM_RR_CONTROL_DELIVERY 1
 +static bool enabled, sim = true;
 +static pid_t fixture_pid = 100;
@@ -239202,7 +239293,7 @@ index 0000000000000000000000000000000000000000..33f7c0bc21f8ad5cee75c42fb17882e5
 +static unsigned int rr_tcg_exec_state = 2;
 +static bool rr_crucible_sim_mode(void) { return sim; }
 +static bool trace_event_get_state_backends(int event) { return enabled; }
-+static unsigned int runstate_get(void) { return 3; }
++RunState runstate_get(void) { return 3; }
 +static uint64_t icount_crucible_rr_current_vcpu(void) { return 5; }
 +
 +typedef struct Record {
@@ -239270,11 +239361,11 @@ index 0000000000000000000000000000000000000000..33f7c0bc21f8ad5cee75c42fb17882e5
 +static bool qemu_plugin_control_boundary_deferred = true;
 +static unsigned int qemu_plugin_crucible_exact_boundary_depth;
 +static unsigned int qemu_plugin_crucible_control_boundary_depth;
-+struct CPUState { unsigned int cpu_index; };
-+typedef void (*qemu_plugin_vcpu_idle_resume_cb_t)(unsigned int, uint64_t, void *);
-+static qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_control_boundary_cb;
-+static void *qemu_plugin_control_boundary_userdata;
-+static uint64_t qemu_plugin_icount_raw(void) { return 42; }
++CPUTailQ cpus_queue = QTAILQ_HEAD_INITIALIZER(cpus_queue);
++__thread CPUState *current_cpu;
++qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_control_boundary_cb;
++void *qemu_plugin_control_boundary_userdata;
++uint64_t qemu_plugin_icount_raw(void) { return 42; }
 +static void qemu_crucible_fault_lifecycle_ready_marker_control_boundary(uint64_t raw)
 +{
 +    g_assert_cmpuint(raw, ==, 42);
@@ -239297,10 +239388,12 @@ index 0000000000000000000000000000000000000000..33f7c0bc21f8ad5cee75c42fb17882e5
 +
 +int main(void)
 +{
-+    CPUState cpu = { 5 };
++    CPUState cpu = {.cpu_index = 5};
 +    unsigned int before;
 +    const char *wide_row;
 +    int saved_stderr, errno_after_write;
++
++    QTAILQ_INSERT_TAIL(&cpus_queue, &cpu, node);
 +
 +    qemu_plugin_trace_control_delivery("request");
 +    g_assert_cmpuint(record_count, ==, 0);
@@ -239485,6 +239578,7 @@ index 0000000000000000000000000000000000000000..33f7c0bc21f8ad5cee75c42fb17882e5
 +        "void qemu_plugin_crucible_exact_boundary_leave(void)",
 +        "void qemu_plugin_fire_control_boundary_cb(CPUState *cpu)",
 +    ])
++    bodies = SUPPORT["dependencies"](bodies, GROUPS) + "\n\n" + bodies
 +    if arguments.negative_control == "callback-return":
 +        statement = '            qemu_plugin_trace_control_delivery("registered-return");\n'
 +        assert bodies.count(statement) == 1
@@ -239502,7 +239596,8 @@ index 0000000000000000000000000000000000000000..33f7c0bc21f8ad5cee75c42fb17882e5
 +        bodies = bodies.replace(statement, "            (void)length;")
 +
 +    generated = arguments.output_dir / "control-delivery.c"
-+    generated.write_text(PRELUDE + bodies + CHECKS)
++    generated.write_text(SUPPORT["HEADERS"] + SUPPORT["declarations"](GROUPS) +
++                         SUPPORT["LOCK_PRIMITIVES"] + PRELUDE + bodies + CHECKS)
 +    binary = arguments.output_dir / "control-delivery"
 +    command = [os.environ.get("CC", "cc"),
 +               *shlex.split(os.environ.get("CFLAGS", "")),
@@ -239519,10 +239614,10 @@ index 0000000000000000000000000000000000000000..33f7c0bc21f8ad5cee75c42fb17882e5
 +    main()
 diff --git a/tests/unit/test-crucible-control-observer.py b/tests/unit/test-crucible-control-observer.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ba9308ceb3c6ae7ae2b98d8d6b615878bbb00a43
+index 0000000000000000000000000000000000000000..c5cb19100334b78babc16bb6398e5af13524dc6d
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-observer.py
-@@ -0,0 +1,362 @@
+@@ -0,0 +1,368 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Execute the native OOB template report and guarded RR restart paths.
 +
@@ -239604,8 +239699,14 @@ index 0000000000000000000000000000000000000000..ba9308ceb3c6ae7ae2b98d8d6b615878
 +static int qemu_plugin_crucible_vmstop_flush_status(void) { return flush_status; }
 +static bool qemu_plugin_crucible_vmstop_cold_origin(void) { return false; }
 +static bool qemu_crucible_cold_stop_receipt_valid(void) { return false; }
-+static int qemu_plugin_crucible_vmstop_begin(void)
-+{ g_assert_true(locked); cold_admitted = true; return 0; }
++static int qemu_plugin_crucible_vmstop_begin(bool ordinary)
++{
++    g_assert_false(ordinary);
++    g_assert_true(locked);
++
++    cold_admitted = true;
++    return 0;
++}
 +
 +static GMutex crucible_hot_fork_template_lock;
 +static uint64_t crucible_hot_fork_template_generation = 7;
@@ -249576,16 +249677,17 @@ index 0000000000000000000000000000000000000000..ca1c90abe3b22fa2412002e449f07c67
 +}
 diff --git a/tests/unit/test-crucible-ich9-aux-wide-clock.c b/tests/unit/test-crucible-ich9-aux-wide-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648c582d72e
+index 0000000000000000000000000000000000000000..664f9a7910c3411d7dea12951c1073ab619cf01a
 --- /dev/null
 +++ b/tests/unit/test-crucible-ich9-aux-wide-clock.c
-@@ -0,0 +1,735 @@
+@@ -0,0 +1,951 @@
 +/*
 + * Literal ICH9 auxiliary timer runtime and deferred migration regressions.
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
 +#include "qemu/osdep.h"
 +#include <sys/wait.h>
++#include <poll.h>
 +#include "qapi/error.h"
 +#include "qemu/main-loop.h"
 +#include "qemu/module.h"
@@ -249602,6 +249704,12 @@ index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648
 +#include "../../hw/acpi/ich9.c"
 +#include "../../hw/acpi/ich9_tco.c"
 +#include "../../hw/acpi/ich9_timer.c"
++
++static char *fixture_executable;
++
++#define PRODUCER_TIMEOUT_US (5 * G_USEC_PER_SEC)
++#define PRODUCER_CLEANUP_US G_USEC_PER_SEC
++#define SUBPROCESS_TIMEOUT_US (10 * G_USEC_PER_SEC)
 +
 +static __int128 observed_ps;
 +static unsigned smi_events;
@@ -249749,7 +249857,7 @@ index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648
 +static bool run_in_child(void)
 +{
 +    if (!g_test_subprocess()) {
-+        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_subprocess(NULL, SUBPROCESS_TIMEOUT_US, 0);
 +        g_test_trap_assert_passed();
 +        return false;
 +    }
@@ -250157,84 +250265,279 @@ index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648
 +    destroy_fixture(&lpc);
 +}
 +
-+static GByteArray *exact_producer_stream(unsigned scenario)
++static int produce_exact_stream(unsigned scenario)
 +{
-+    int descriptors[2];
-+    pid_t producer;
 +    uint32_t length;
-+    int status;
-+    GByteArray *bytes;
++    ICH9LPCState lpc = { 0 };
++    GByteArray *output;
 +
-+    g_assert_cmpint(pipe(descriptors), ==, 0);
-+    producer = fork();
-+    g_assert_cmpint(producer, >=, 0);
-+    if (!producer) {
-+        ICH9LPCState lpc = { 0 };
-+        GByteArray *output;
-+
-+        close(descriptors[0]);
-+        initialize_fixture(&lpc, true);
-+        observed_ps = scenario == 1 ? ((__int128)1 << 120) + 357 : 357;
-+        tco_timer_reload(&lpc.pm.tco_regs);
-+        ich9_pm_update_swsmi_timer(&lpc.pm, true);
-+        ich9_pm_update_periodic_timer(&lpc.pm, true);
-+        if (scenario == 2) {
-+            for (unsigned index = 0; index < 3; index++) {
-+                timer_mod_ps_wide(ich9_aux_timer(&lpc.pm, index), -1);
-+            }
++    initialize_fixture(&lpc, true);
++    observed_ps = scenario == 1 ? ((__int128)1 << 120) + 357 : 357;
++    tco_timer_reload(&lpc.pm.tco_regs);
++    ich9_pm_update_swsmi_timer(&lpc.pm, true);
++    ich9_pm_update_periodic_timer(&lpc.pm, true);
++    if (scenario == 2) {
++        for (unsigned index = 0; index < 3; index++) {
++            timer_mod_ps_wide(ich9_aux_timer(&lpc.pm, index), -1);
 +        }
-+        if (scenario == 3) {
-+            /* The actual prior 11-byte field writer, never a legacy reader. */
-+            const VMStateDescription old_timer = {
-+                .name = "ich9_pm/tco-timer-ps",
-+                .version_id = 1,
-+                .minimum_version_id = 1,
-+                .fields = (const VMStateField[]) {
-+                    VMSTATE_TIMER_NS_PHASE_PTR(tco_regs.tco_timer,
-+                                               ICH9LPCPMRegs),
-+                    VMSTATE_END_OF_LIST(),
-+                },
-+            };
-+            const VMStateDescription old_stream = {
-+                .name = auxiliary_stream.name,
-+                .version_id = 1,
-+                .minimum_version_id = 1,
-+                .pre_save = auxiliary_stream.pre_save,
-+                .fields = auxiliary_stream.fields,
-+                .subsections = (const VMStateDescription * const []) {
-+                    &old_timer, NULL,
-+                },
-+            };
-+            output = save_description(&lpc.pm, &old_stream);
-+        } else {
-+            output = save_auxiliary(&lpc.pm);
-+        }
-+        length = output->len;
-+        /* Bounded test IPC only; this is not a process protocol fixture. */
-+        g_assert_cmpint(write(descriptors[1], &length, sizeof(length)), ==,
-+                        sizeof(length));
-+        g_assert_cmpint(write(descriptors[1], output->data, length), ==,
-+                        length);
-+        _exit(0);
 +    }
-+    close(descriptors[1]);
-+    g_assert_cmpint(read(descriptors[0], &length, sizeof(length)), ==,
++    if (scenario == 3) {
++        /* The actual prior 11-byte field writer, never a legacy reader. */
++        const VMStateDescription old_timer = {
++            .name = "ich9_pm/tco-timer-ps",
++            .version_id = 1,
++            .minimum_version_id = 1,
++            .fields = (const VMStateField[]) {
++                VMSTATE_TIMER_NS_PHASE_PTR(tco_regs.tco_timer,
++                                           ICH9LPCPMRegs),
++                VMSTATE_END_OF_LIST(),
++            },
++        };
++        const VMStateDescription old_stream = {
++            .name = auxiliary_stream.name,
++            .version_id = 1,
++            .minimum_version_id = 1,
++            .pre_save = auxiliary_stream.pre_save,
++            .fields = auxiliary_stream.fields,
++            .subsections = (const VMStateDescription * const []) {
++                &old_timer, NULL,
++            },
++        };
++        output = save_description(&lpc.pm, &old_stream);
++    } else {
++        output = save_auxiliary(&lpc.pm);
++    }
++    length = output->len;
++    /* Bounded test IPC only; this is not a process protocol fixture. */
++    g_assert_cmpint(write(STDOUT_FILENO, &length, sizeof(length)), ==,
 +                    sizeof(length));
-+    g_assert_cmpuint(length, >, 0);
-+    g_assert_cmpuint(length, <, 512);
-+    bytes = g_byte_array_sized_new(length);
-+    g_byte_array_set_size(bytes, length);
-+    for (size_t offset = 0; offset < length;) {
-+        ssize_t received = read(descriptors[0], bytes->data + offset,
-+                                 length - offset);
++    g_assert_cmpint(write(STDOUT_FILENO, output->data, length), ==, length);
++    return 0;
++}
 +
-+        g_assert_cmpint(received, >, 0);
++typedef struct FixtureProducer {
++    GPid pid;
++    int output;
++    int status;
++    bool reaped;
++    bool wait_failed;
++} FixtureProducer;
++
++static void producer_failure(GError **error, const char *operation, int code)
++{
++    if (!*error) {
++        g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(code),
++                    "%s: %s", operation, g_strerror(code));
++    }
++}
++
++static ssize_t producer_read(int fd, void *buffer, size_t length,
++                             int64_t deadline, GError **error)
++{
++    for (;;) {
++        int64_t remaining = deadline - g_get_monotonic_time();
++        ssize_t received;
++        struct pollfd descriptor = { .fd = fd, .events = POLLIN };
++        int ready;
++
++        if (remaining <= 0) {
++            producer_failure(error, "producer IPC deadline", ETIMEDOUT);
++            return -1;
++        }
++        received = read(fd, buffer, length);
++        if (received >= 0) {
++            return received;
++        }
++        if (errno == EINTR) {
++            continue;
++        }
++        if (errno != EAGAIN && errno != EWOULDBLOCK) {
++            producer_failure(error, "producer read", errno);
++            return -1;
++        }
++        remaining = deadline - g_get_monotonic_time();
++        if (remaining <= 0) {
++            continue;
++        }
++        ready = poll(&descriptor, 1, (remaining + 999) / 1000);
++        if (ready < 0 && errno != EINTR) {
++            producer_failure(error, "producer poll", errno);
++            return -1;
++        }
++        if (ready > 0 && (descriptor.revents & POLLNVAL)) {
++            producer_failure(error, "producer poll descriptor", EBADF);
++            return -1;
++        }
++    }
++}
++
++static bool producer_read_exact(int fd, void *buffer, size_t length,
++                                int64_t deadline, GError **error)
++{
++    for (size_t offset = 0; offset < length;) {
++        ssize_t received = producer_read(fd, (uint8_t *)buffer + offset,
++                                          length - offset, deadline, error);
++
++        if (received <= 0) {
++            if (!received) {
++                producer_failure(error, "incomplete producer frame", EPIPE);
++            }
++            return false;
++        }
 +        offset += received;
 +    }
-+    close(descriptors[0]);
-+    g_assert_cmpint(waitpid(producer, &status, 0), ==, producer);
-+    g_assert_true(WIFEXITED(status));
-+    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    return true;
++}
++
++static bool producer_observe_exit(FixtureProducer *producer, GError **error)
++{
++    pid_t result = waitpid(producer->pid, &producer->status, WNOHANG);
++
++    if (result == producer->pid) {
++        producer->reaped = true;
++    } else if (result < 0 && errno != EINTR) {
++        /* An uncertain child identity must never become a numeric kill. */
++        producer->wait_failed = true;
++        producer_failure(error, "producer waitpid", errno);
++        return false;
++    }
++    return true;
++}
++
++static bool producer_wait(FixtureProducer *producer, int64_t deadline,
++                          GError **error)
++{
++    while (!producer->reaped) {
++        int64_t remaining = deadline - g_get_monotonic_time();
++
++        if (remaining <= 0) {
++            producer_failure(error, "producer reap deadline", ETIMEDOUT);
++            return false;
++        }
++        if (!producer_observe_exit(producer, error)) {
++            return false;
++        }
++        remaining = deadline - g_get_monotonic_time();
++        if (!producer->reaped && remaining > 0) {
++            g_usleep(MIN(remaining, 1000));
++        }
++    }
++    return true;
++}
++
++static void producer_cleanup(FixtureProducer *producer)
++{
++    GError *error = NULL;
++    const int signals[] = { SIGTERM, SIGKILL };
++
++    if (!producer_observe_exit(producer, &error)) {
++        g_printerr("Producer cleanup: %s\n", error->message);
++        g_clear_error(&error);
++        return;
++    }
++    for (unsigned index = 0; !producer->reaped &&
++                            index < G_N_ELEMENTS(signals); index++) {
++        int64_t deadline = g_get_monotonic_time() + PRODUCER_CLEANUP_US;
++
++        if (kill(producer->pid, signals[index]) < 0 && errno != ESRCH) {
++            producer_failure(&error, "producer cleanup signal", errno);
++        }
++        producer_wait(producer, deadline, &error);
++        if (error) {
++            g_printerr("Producer cleanup: %s\n", error->message);
++            g_clear_error(&error);
++        }
++        if (producer->wait_failed) {
++            break;
++        }
++    }
++}
++
++static GByteArray *exact_producer_stream(unsigned scenario)
++{
++    FixtureProducer producer = { .output = -1 };
++    char helper_mode[] = "--ich9-exact-producer";
++    char scenario_argument[] = { '0' + scenario, '\0' };
++    char *arguments[] = {
++        fixture_executable, helper_mode, scenario_argument, NULL,
++    };
++    int64_t deadline = g_get_monotonic_time() + PRODUCER_TIMEOUT_US;
++    uint32_t length = 0;
++    uint8_t trailing;
++    GPid spawned_pid = 0;
++    int spawned_output = -1;
++    int flags;
++    GByteArray *bytes = NULL;
++    GError *error = NULL;
++    ssize_t received;
++
++    g_assert_cmpuint(scenario, <, 4);
++    if (!g_spawn_async_with_pipes(NULL, arguments, NULL,
++            G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_CLOEXEC_PIPES,
++            NULL, NULL, &spawned_pid, NULL, &spawned_output, NULL, &error)) {
++        goto out;
++    }
++    producer.pid = spawned_pid;
++    producer.output = spawned_output;
++    flags = fcntl(producer.output, F_GETFL);
++    if (flags < 0 || fcntl(producer.output, F_SETFL, flags | O_NONBLOCK) < 0) {
++        producer_failure(&error, "producer pipe nonblocking", errno);
++        goto out;
++    }
++    if (!producer_read_exact(producer.output, &length, sizeof(length),
++                              deadline, &error)) {
++        goto out;
++    }
++    if (!length || length >= 512) {
++        producer_failure(&error, "producer frame length", EINVAL);
++        goto out;
++    }
++    bytes = g_byte_array_sized_new(length);
++    g_byte_array_set_size(bytes, length);
++    if (!producer_read_exact(producer.output, bytes->data, length,
++                              deadline, &error)) {
++        goto out;
++    }
++    received = producer_read(producer.output, &trailing, 1, deadline, &error);
++    if (received != 0) {
++        if (received > 0) {
++            producer_failure(&error, "trailing producer bytes", EINVAL);
++        }
++        goto out;
++    }
++    if (!producer_wait(&producer, deadline, &error)) {
++        goto out;
++    }
++    if (!g_spawn_check_wait_status(producer.status, &error)) {
++        goto out;
++    }
++
++out:
++    if (producer.output >= 0) {
++        int output = producer.output;
++
++        producer.output = -1;
++        if (close(output) < 0) {
++            producer_failure(&error, "producer pipe close", errno);
++        }
++    }
++    if (producer.pid && !producer.reaped && !producer.wait_failed) {
++        producer_cleanup(&producer);
++    }
++    if (producer.reaped) {
++        g_spawn_close_pid(producer.pid);
++    }
++    if (error) {
++        g_clear_pointer(&bytes, g_byte_array_unref);
++        g_error("Exact producer failed: %s%s", error->message,
++                producer.pid && !producer.reaped ?
++                "; producer reap remains unproved" : "");
++    }
++    g_assert_true(producer.reaped);
++    g_assert_cmpuint(length, >, 0);
++    g_assert_cmpuint(length, <, 512);
++    g_assert_true(WIFEXITED(producer.status));
++    g_assert_cmpint(WEXITSTATUS(producer.status), ==, 0);
 +    return bytes;
 +}
 +
@@ -250282,6 +250585,18 @@ index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648
 +
 +int main(int argc, char **argv)
 +{
++    int result;
++
++    /* Exec producers emit only the frame, before TAP or test registration. */
++    if (argc > 1 && strcmp(argv[1], "--ich9-exact-producer") == 0) {
++        if (argc != 3 || argv[2][0] < '0' || argv[2][0] > '3' ||
++            argv[2][1] != '\0') {
++            return EXIT_FAILURE;
++        }
++        return produce_exact_stream(argv[2][0] - '0');
++    }
++    fixture_executable = realpath(argv[0], NULL);
++    g_assert_nonnull(fixture_executable);
 +    g_test_init(&argc, &argv, NULL);
 +    g_test_add_func("/ich9/tco-wide-runtime", test_tco_wide_runtime);
 +    g_test_add_func("/ich9/tco-events", test_tco_events);
@@ -250313,7 +250628,9 @@ index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648
 +                         test_crossmode_stream);
 +    g_test_add_data_func("/ich9/refuse-prior-precise-format",
 +                         GUINT_TO_POINTER(3), test_crossmode_stream);
-+    return g_test_run();
++    result = g_test_run();
++    free(fixture_executable);
++    return result;
 +}
 diff --git a/tests/unit/test-crucible-icount-rate.c b/tests/unit/test-crucible-icount-rate.c
 new file mode 100644
@@ -252789,10 +253106,10 @@ index 0000000000000000000000000000000000000000..515f8cfe9ee34e49ed84f322f91884fc
 +    main()
 diff --git a/tests/unit/test-crucible-lifecycle-projection.py b/tests/unit/test-crucible-lifecycle-projection.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..b0b1eae40ab8e8e8136759a238ecd5eabb75860e
+index 0000000000000000000000000000000000000000..ac4f8c3604a8b4480d7a18453b88ea172b74e9fd
 --- /dev/null
 +++ b/tests/unit/test-crucible-lifecycle-projection.py
-@@ -0,0 +1,483 @@
+@@ -0,0 +1,494 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise actual lifecycle encoders and custody rebind with bounded state.
 +
@@ -252808,6 +253125,7 @@ index 0000000000000000000000000000000000000000..b0b1eae40ab8e8e8136759a238ecd5ea
 +import json
 +import os
 +from pathlib import Path
++import runpy
 +import shlex
 +import subprocess
 +
@@ -252815,6 +253133,8 @@ index 0000000000000000000000000000000000000000..b0b1eae40ab8e8e8136759a238ecd5ea
 +ROOT = Path(__file__).resolve().parents[2]
 +LIFECYCLE = "plugins/crucible-fault-lifecycle.c"
 +STARTUP_SOURCE = "plugins/crucible-startup-source.c"
++EXTRACT = runpy.run_path(str(Path(__file__).with_name(
++    "extract-crucible-startup-source-controls.py")))
 +
 +# Produced by the selected-parent full save with the exact bounded state below.
 +BASELINE_FULL_HEX = (
@@ -252839,6 +253159,14 @@ index 0000000000000000000000000000000000000000..b0b1eae40ab8e8e8136759a238ecd5ea
 +
 +def definition(source, signature, is_type=False):
 +    """Extract one complete production definition for direct compilation."""
++    if not is_type:
++        matches = [body.rstrip("\n") for _, _, _, body in
++                   EXTRACT["function_definitions"](source)
++                   if body.startswith(signature)]
++        if len(matches) != 1:
++            raise AssertionError(f"expected one function definition: {signature}")
++        return matches[0]
++
 +    start = source.index(signature)
 +    opening = source.index("{", start)
 +    depth = 0
@@ -258721,10 +259049,10 @@ index 0000000000000000000000000000000000000000..12350fcba3babc916dcbcfc6bbe60c5b
 +    main()
 diff --git a/tests/unit/test-crucible-net-stop-chain.py b/tests/unit/test-crucible-net-stop-chain.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f019318ca
+index 0000000000000000000000000000000000000000..5e329d08b3a185eba0bc2eaacaa8b05fd47a5343
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-stop-chain.py
-@@ -0,0 +1,476 @@
+@@ -0,0 +1,447 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise native stop admission through the actual next-TB decrementer gate.
 +
@@ -258744,25 +259072,13 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +
 +
 +ROOT = Path(__file__).resolve().parents[2]
-+definition = runpy.run_path(str(Path(__file__).with_name(
-+    "test-crucible-net-output-stop.py")))["definition"]
++NETWORK = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))
++definition = NETWORK["definition"]
++SUPPORT = NETWORK["SUPPORT"]
++GROUPS = ("native", "tx", "stop")
 +
 +PRELUDE = r"""
-+#include <assert.h>
-+#include <errno.h>
-+#include <limits.h>
-+#include <inttypes.h>
-+#include <stdbool.h>
-+#include <stddef.h>
-+#include <stdint.h>
-+#include <stdio.h>
-+#include <string.h>
-+#include <glib.h>
-+#include "qemu/typedefs.h"
-+#define qemu_build_assert(condition) _Static_assert(condition, #condition)
-+#include "qemu/atomic.h"
-+
-+#define CONFIG_PLUGIN
 +#define ICOUNT_PRECISE 1
 +#define CF_USE_ICOUNT 0x00002000
 +#define CF_NOIRQ 0x00010000
@@ -258772,29 +259088,6 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +#define DISAS_TOO_MANY 1
 +#define TB_EXIT_REQUESTED 3
 +#define TCG_COND_LT 0
-+#define CPU_FOREACH(value) for ((value) = first_cpu; (value); (value) = (value)->next)
-+
-+typedef struct CPUState {
-+    struct CPUState *next;
-+    bool running, stop, exit_request;
-+    void *halt_cond;
-+    struct {
-+        union {
-+            uint32_t u32;
-+            struct { uint16_t low; int16_t high; } u16;
-+        } icount_decr;
-+        bool can_do_io;
-+    } neg;
-+    int64_t icount_budget, icount_extra;
-+} CPUState;
-+
-+enum { RUN_STATE_PAUSED };
-+enum {
-+    QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE,
-+    QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED,
-+    QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED,
-+    QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING,
-+};
 +enum {
 +    RR_TCG_EXEC_STARTING, RR_TCG_EXEC_STARTING_WAKE_ARMING,
 +    RR_TCG_EXEC_IDLE, RR_TCG_EXEC_ACTIVE, RR_TCG_EXEC_IDLE_WAKE_ARMING,
@@ -258802,19 +259095,22 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +    RR_TCG_EXEC_ACTIVE_WAKE_ARMING,
 +};
 +
-+static CPUState cpu, *first_cpu = &cpu, *current_cpu;
++static CPUState cpu;
++static QemuCond halt_condition;
++CPUTailQ cpus_queue = QTAILQ_HEAD_INITIALIZER(cpus_queue);
++__thread CPUState *current_cpu;
 +static uint64_t quantum = 1000, rr_wake_publish_generation;
 +static unsigned int rr_tcg_exec_state;
 +static unsigned int qemu_plugin_crucible_exact_boundary_depth;
 +static unsigned int qemu_plugin_crucible_control_boundary_depth;
 +static int qemu_plugin_crucible_vmstop_state;
 +static int qemu_plugin_crucible_vmstop_flush_result;
++static bool qemu_plugin_crucible_vmstop_cold_admitted;
 +static uint64_t qemu_plugin_crucible_vmstop_generation_value;
 +static unsigned stop_requests, event_notifications, halt_broadcasts;
 +static bool locked = true, single_rr = true;
 +static int count_mode = ICOUNT_PRECISE;
 +static struct { int64_t qemu_icount; } timers_state;
-+typedef int (*qemu_plugin_net_tx_cb_t)(const uint8_t *, size_t, uint64_t, void *);
 +static qemu_plugin_net_tx_cb_t crucible_net_tx_cb;
 +static void *crucible_net_tx_userdata;
 +
@@ -258828,23 +259124,22 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +};
 +static void qemu_plugin_trace_stop_context(int phase) { }
 +
-+static bool bql_locked(void) { return locked; }
++bool bql_locked(void) { return locked; }
 +static int icount_enabled(void) { return count_mode; }
-+static int qemu_plugin_crucible_single_threaded_rr(void) { return single_rr; }
++int qemu_plugin_crucible_single_threaded_rr(void) { return single_rr; }
 +static bool rr_crucible_sim_mode(void) { return single_rr; }
 +static uint64_t icount_crucible_rr_switch_quantum(void) { return quantum; }
 +static void icount_crucible_rr_account(CPUState *target, int64_t n) { }
 +static void icount_crucible_rr_pause_handoff(CPUState *target) { }
-+static void cpu_relax(void) { }
-+static void qemu_cond_broadcast(void *condition) { halt_broadcasts++; }
-+static void qemu_plugin_crucible_kick_idle_wait(CPUState *target) { }
-+static void cpus_kick_thread(CPUState *target) { g_assert_not_reached(); }
++void qemu_cond_broadcast(QemuCond *condition) { halt_broadcasts++; }
++void qemu_plugin_crucible_kick_idle_wait(CPUState *target) { }
++void cpus_kick_thread(CPUState *target) { g_assert_not_reached(); }
 +static void rr_crucible_sim_notify_dispatch_ceiling(void) { event_notifications++; }
-+static void qemu_system_vmstop_request_prepare(void) { }
-+static void qemu_system_vmstop_request(int state)
++void qemu_system_vmstop_request_prepare(void) { }
++void qemu_system_vmstop_request(RunState state)
 +{ g_assert_cmpint(state, ==, RUN_STATE_PAUSED); stop_requests++; }
-+static int vm_stop(int state) { g_assert_not_reached(); }
-+static void error_report(const char *message) { g_error("%s", message); }
++int vm_stop(RunState state) { g_assert_not_reached(); }
++void error_report(const char *message, ...) { g_error("%s", message); }
 +
 +void rr_kick_vcpu_thread(CPUState *target);
 +void tcg_kick_vcpu_thread(CPUState *target);
@@ -258869,7 +259164,6 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +
 +/* A bounded IR provider records only operations emitted by gen_tb_start/end. */
 +typedef struct TCGReg *TCGv_i32;
-+typedef uintptr_t vaddr;
 +typedef struct { int kind; int32_t value; } TCGOp;
 +struct TranslationBlock { uint32_t cflags; uintptr_t pc; };
 +struct DisasContextBase {
@@ -258936,7 +259230,10 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +
 +static void reset_case(void)
 +{
-+    cpu = (CPUState){.running = true, .icount_budget = 1000};
++    cpu = (CPUState){.running = true, .icount_budget = 1000,
++                     .halt_cond = &halt_condition};
++    QTAILQ_INIT(&cpus_queue);
++    QTAILQ_INSERT_TAIL(&cpus_queue, &cpu, node);
 +    cpu.neg.icount_decr.u16.low = 983;
 +    cpu.neg.can_do_io = true;
 +    current_cpu = &cpu;
@@ -259137,7 +259434,7 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +        ],
 +        "hw/core/cpu-common.c": ["void cpu_exit(CPUState *cpu)"],
 +        "plugins/api-system.c": [
-+            "static int qemu_plugin_crucible_vmstop_begin(void)",
++            "static int qemu_plugin_crucible_vmstop_begin(bool ordinary)",
 +            "int qemu_plugin_crucible_vmstop_admit_internal(void)",
 +            "static int qemu_plugin_crucible_vmstop_at_control_boundary(void)",
 +            "int qemu_plugin_request_vmstop(void)",
@@ -259160,6 +259457,7 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +    production += "\n\n" + definition(
 +        sources["accel/tcg/tcg-accel-ops-rr.c"],
 +        "static bool rr_crucible_sim_complete_dispatch_boundary(")
++    production = SUPPORT["dependencies"](production, GROUPS) + "\n\n" + production
 +    if arguments.negative_control == "remove-native-kick":
 +        original = definition(sources["plugins/api-system.c"],
 +                              "int qemu_plugin_crucible_vmstop_admit_internal(void)")
@@ -259186,7 +259484,8 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +    assert "dc->jmp_opt = !((cflags & CF_NO_GOTO_TB) ||" in x86
 +
 +    generated = arguments.output_dir / "net-stop-chain.c"
-+    generated.write_text(PRELUDE + production + CHECKS)
++    generated.write_text(SUPPORT["HEADERS"] + SUPPORT["declarations"](GROUPS) +
++                         SUPPORT["LOCK_PRIMITIVES"] + PRELUDE + production + CHECKS)
 +    binary = arguments.output_dir / "net-stop-chain"
 +    command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
 +               "-Wno-missing-prototypes", "-Wno-unused-function", "-Wno-unused-variable",
