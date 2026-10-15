@@ -16,7 +16,8 @@
 //!   first entry of another kind, so the check holds at most one atomic batch
 //!   of lookahead.
 //! - **Finalization.** The terminal prefix is the evaluated prefix extended
-//!   with the remaining entries.
+//!   with the remaining entries. The reproduction trace hash is computed from
+//!   the same streamed entries.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -65,6 +66,7 @@ pub struct AssertionLogCheck {
     offsets: Arc<BTreeMap<u64, EventLogOffset>>,
     require_offsets: bool,
     validation: TerminalValidation,
+    trace: ExternalFormalTraceHash,
     pattern_error: Option<OfflineAssertionCheckError>,
     received: u64,
     last_received_at: Option<VirtualTime>,
@@ -230,6 +232,7 @@ impl AssertionLogCheck {
             offsets,
             require_offsets,
             validation: TerminalValidation::new(shape.final_at),
+            trace: ExternalFormalTraceHash::new(shape.entries),
             pattern_error,
             received: 0,
             last_received_at: None,
@@ -258,6 +261,7 @@ impl AssertionLogCheck {
             return;
         }
         self.validation.observe(&entry);
+        self.trace.update(&entry);
         if self.pattern_error.is_some() || self.evaluation.failure.is_some() {
             return;
         }
@@ -307,9 +311,12 @@ impl AssertionLogCheck {
         if let Some(offset) = terminal_offset {
             evaluation.prefix.set_event_log_offset(offset);
         }
-        Ok(self
-            .evaluator
-            .finalize_prefix_at_end(&evaluation.prefix, oracle, self.prefix_end))
+        Ok(self.evaluator.finalize_prefix_with_trace(
+            &evaluation.prefix,
+            oracle,
+            self.prefix_end,
+            self.trace.finish(),
+        ))
     }
 
     /// Appends and observes the intermediate prefix ending in `entry`.

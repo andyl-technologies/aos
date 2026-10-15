@@ -1490,6 +1490,24 @@ impl HostAssertionEvaluator {
     where
         O: HostAssertionOracle + ?Sized,
     {
+        let reproduction_artifact = assertion_reproduction_artifact_from_prefix(prefix);
+        self.finalize_prefix_with_trace(prefix, oracle, end, reproduction_artifact)
+    }
+
+    /// Finalizes with a reproduction trace hash computed by the caller.
+    ///
+    /// A streamed check hashes the trace as entries arrive, so finalization
+    /// needs no retained copy of the log.
+    pub(super) fn finalize_prefix_with_trace<O>(
+        &mut self,
+        prefix: &ConditionEventLogPrefix,
+        oracle: &mut O,
+        end: AssertionPrefixEnd,
+        reproduction_artifact: ContentHash,
+    ) -> HostAssertionReport
+    where
+        O: HostAssertionOracle + ?Sized,
+    {
         self.observe_prefix(prefix, oracle);
         let once_latches = &mut self.once_latches;
         for state in &mut self.states {
@@ -1531,7 +1549,6 @@ impl HostAssertionEvaluator {
                 )
             })
             .collect::<Vec<_>>();
-        let reproduction_artifact = assertion_reproduction_artifact_from_prefix(prefix);
         let violations =
             host_assertion_violations_from_outcomes(&outcomes, prefix, reproduction_artifact);
         let mut proximities = self

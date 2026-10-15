@@ -806,6 +806,41 @@ where
     lines.join("\n").into_bytes()
 }
 
+/// Hash of [`external_formal_trace_bytes`] computed one entry at a time.
+///
+/// The trace header states the entry count, so the count is fixed up front;
+/// a log streamed from segments knows it from the manifest.
+pub(super) struct ExternalFormalTraceHash {
+    hasher: blake3::Hasher,
+}
+
+impl ExternalFormalTraceHash {
+    pub(super) fn new(entry_count: u64) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"format=crucible.external-formal-trace.v1\n");
+        hasher.update(
+            format!(
+                "scheduler_event_log_previous_prefix={}\nentries={entry_count}",
+                scheduler_event_log_empty_prefix().to_hex()
+            )
+            .as_bytes(),
+        );
+        Self { hasher }
+    }
+
+    pub(super) fn update(&mut self, entry: &SchedulerEventLogEntry) {
+        self.hasher.update(b"\n");
+        self.hasher
+            .update(external_formal_trace_entry_material(entry).as_bytes());
+    }
+
+    pub(super) fn finish(self) -> ContentHash {
+        ContentHash {
+            bytes: *self.hasher.finalize().as_bytes(),
+        }
+    }
+}
+
 pub(super) fn external_formal_trace_entry_material(entry: &SchedulerEventLogEntry) -> String {
     let mut lines = Vec::new();
     lines.push(String::from("entry_begin"));

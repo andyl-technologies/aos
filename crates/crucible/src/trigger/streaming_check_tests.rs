@@ -128,6 +128,20 @@ fn an_atomic_batch_without_its_boundary_is_refused() -> TestResult {
 }
 
 #[test]
+fn streamed_trace_hash_matches_the_exported_trace() {
+    let event_log = atomic_marker_log(2, 3);
+    let mut streamed = ExternalFormalTraceHash::new(event_log.len() as u64);
+    for entry in &event_log {
+        streamed.update(entry);
+    }
+
+    assert_eq!(
+        streamed.finish(),
+        ContentHash::from_bytes(&external_formal_trace_bytes(&event_log))
+    );
+}
+
+#[test]
 fn entries_must_match_the_declared_shape() -> TestResult {
     let world = white_box_world()?;
     let properties = marker_properties(&world)?;
