@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "9fca0b3bd41bf859b05e30e7a0274e4565fe740cc139a23a278233827781d173";
-  subject = "plugins: retain startup ownership and ordinary control paths";
-  body = "Retain current startup and checkpoint custody, align wire fixtures, and preserve ordinary tool and storage-daemon operation without issuing Source ownership.";
-  commit = "fe5b9c08383dc57ea4a880f1820fc97327db7066";
-  tree = "19aa91004c4afe7d2dcd1d9aabf278ebaa469aee";
+  sha256 = "6a3497d640da1bddac18c222c4adcbc6acd68676b2c2d30896ba0c0891251190";
+  subject = "plugins: retain owner lifetimes and ordinary target boundaries";
+  body = "Preserve checkpoint ownership, monitor dispatch and ordinary target absence\nhandling, and keep the hot-fork actor fixture explicit about its unavailable\ndependencies while retaining its existing coordinator cases.";
+  commit = "f71c4caaeb30625f34c2e6b0d06b014920a6ae0a";
+  tree = "9d7204a230add1770fb7fa5b22b5d3d554883627";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/qsd-source-absence-current";
+  branchRef = "dplecki/hot-fork-fixture-current";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "c8821df477355f9ee4f2bffdce167fbc0d26a822810509e5c89f59730f87578e";
+  bundleSha256 = "ce7e152b26f4b23b7d42cb2f160f300916bf44da3c501ed2f3eabe89c2c9963d";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-15T11:20:58-07:00";
+  deterministicPatchDate = "2026-10-15T11:42:20-07:00";
 
   additionalCapabilities = [
     {
