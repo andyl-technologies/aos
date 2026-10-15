@@ -96,7 +96,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "process", "sign
 sha2 = { version = "0.10", features = ["compress"] }
 sha1 = "0.10"
 md-5 = "0.11"
-blake3 = { version = "1", default-features = false, features = ["std", "pure"] }
+blake3 = { version = "1", default-features = false, features = ["std", "prefer_intrinsics"] }
 hmac = "0.12"
 base64 = "0.22"
 aes-gcm = "0.10"
