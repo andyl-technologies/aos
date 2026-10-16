@@ -443,6 +443,33 @@ Python and Nix additions have source review only. This combination is not yet
 committed, linked-test qualified or native qualified. Its result does not resolve
 the constructor failures or complete the production restoration path.
 
+### Integrated Linux profiles and startup barriers
+
+Commits `765dcd657a` and `45d75a9793` integrate the gem5 x86 root profile,
+ARM continuation routing, original Host finalization barrier and separate native
+launch-decoder accounting. Normal six-crate checks and three linked test
+producers pass for that stage. Its focused checks pass 59 gem5 Rust cases, eight
+Python cases, seven Host barrier cases, three launch-projection cases and eight
+measurement cases. These are component results; neither installed model
+binding is present in those test executables, and complete native readiness,
+device parity and preservation remain outstanding.
+
+Commits `2895360302` and `8ef77183ef` give generic executable measurement a
+256 KiB streaming bank while retaining the selected Prepare path's 8 KiB bank.
+Nine normal Provider controls pass, including the exact boundary, interrupted
+read, growth, metadata and cross-bank content-reference cases. Independent
+review qualifies the successful normal Provider Cargo artifact stages; their outer
+postvalidator failures remain failures. The imported worktree matches all
+6,241 captured source bodies and modes, including 1,017 selected roles.
+
+A separate diagnostic still fails both constructor fixtures before their
+intended assertions. At the second Source it requests 892,021,308 bytes against
+the unchanged 805,306,368-byte policy. The third Source is not reached. Native
+Hello and private initial parsing are the dominant quoted arms, at 163,084,470
+and 181,652,752 bytes respectively. These requested allowances are distinct from
+RSS. Parser admission and genuine multi-owner restoration remain in progress;
+neither the hashing improvement nor a smaller component quote establishes fit.
+
 ## Work in progress
 
 Packet startup/report, capture and restoration storage accounting is committed
@@ -523,9 +550,18 @@ including:
 | QEMU/plugin Linux boot, six matched runs | Median 29.50669 to 29.54280 seconds (+0.12%) | Frozen controller, same guest and 50 ps/instruction; effectively flat |
 | Full-file hash stream, 64 to 256 KiB blocks | 23.65% lower mean time | Thirty matched rounds over the same 160.8 MB file; identical framed hashes |
 | Full-file hash stream and runtime-selected BLAKE3 intrinsics | Median 77.11 to 35.56 ms; 53.89% lower time | Thirty balanced three-way rounds; all ninety full hashes and 55 boundary vectors match |
+| Generic executable measurement, whole-file buffer to 256 KiB stream | Mean 74.13 to 37.31 ms; 49.68% lower call time; mean process peak RSS 152 to 19.05 MiB | Thirty alternating pairs through the real public APIs; all sixty complete ContentRefs match |
 | Maximum-frontier component pair | 3.37x improvement | One matched component pair |
 | Immutable-domain component pair | 47.87x wall and 55.92x child CPU improvement | One matched component pair |
 
 Component results do not add up to an overall Linux-boot speedup claim. The final
 comparison must use the same guest bytes, clock policy and workload, preserve
 complete deterministic witnesses, record interventions and retain all samples.
+
+The generic measurement comparison uses the same cached 160,758,800-byte input,
+compiler settings and reachable hash implementation. Whole dependency feature
+graphs differ; independent review checks the reachable source, five BLAKE3
+runtime dependencies and code/data/relocation correspondence. Separately waited
+process CPU falls from 76.67 to 40.14 ms. The earlier 8 KiB streaming experiment
+remains a negative result: mean call time rose from 71.72 to 193.96 ms despite
+lower RSS. All raw samples, compiler evidence and binaries remain local.

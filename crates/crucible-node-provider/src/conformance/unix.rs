@@ -283,7 +283,7 @@ impl Write for DeadlineIo<'_> {
     }
 }
 
-/// Streams exact executable bytes through an 8-KiB bank under a 256-MiB allowance.
+/// Streams exact executable bytes through a 256 KiB bank under a 256 MiB allowance.
 ///
 /// # Errors
 /// Returns an error for inaccessible, oversized or changing files, or a failed
