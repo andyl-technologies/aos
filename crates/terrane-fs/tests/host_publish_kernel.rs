@@ -76,6 +76,19 @@ fn adapter(domain: &str, paths: &[PathBuf; 3]) -> NativePublisher {
     NativePublisher::open(domain.into(), &paths[0], &paths[1], &paths[2]).unwrap()
 }
 
+fn assert_empty_private_staging(root: &Path) {
+    let publishers: Vec<_> = fs::read_dir(root).unwrap().map(Result::unwrap).collect();
+    assert_eq!(
+        publishers.len(),
+        1,
+        "staging holds the publisher-ID directory"
+    );
+    let publisher = &publishers[0];
+    assert!(publisher.file_type().unwrap().is_dir());
+    assert_eq!(publisher.metadata().unwrap().mode() & 0o777, 0o700);
+    assert_eq!(fs::read_dir(publisher.path()).unwrap().count(), 0);
+}
+
 fn source(root: &Path, bytes: &[u8]) -> File {
     let path = root.join("input");
     fs::write(&path, bytes).unwrap();
@@ -131,7 +144,7 @@ fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
             .unwrap()
             .into_handle();
         assert_eq!(second.metadata().unwrap().ino(), original.ino());
-        assert_eq!(fs::read_dir(&paths[1]).unwrap().count(), 0);
+        assert_empty_private_staging(&paths[1]);
 
         let (native, _) = publisher.into_parts();
         drop(native);
@@ -167,7 +180,16 @@ fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
             original.ino()
         );
 
-        let (native, _) = publisher.into_parts();
+        let (mut native, _) = publisher.into_parts();
+        let quarantine = File::open(paths[0].parent().unwrap().join("quarantine")).unwrap();
+        let unrelated = File::open(root.join("input")).unwrap();
+        assert!(
+            native
+                .quarantine_rejected(&claim, &unrelated, &quarantine)
+                .is_err()
+        );
+        assert_eq!(fs::metadata(&canonical).unwrap().ino(), original.ino());
+
         let mut state = State::default();
         state.bindings.insert(
             claim.descriptor().digest().to_vec(),
@@ -215,7 +237,7 @@ fn disk_ext4_seal_noreplace_recovery_and_domain_isolation() {
                 .is_err()
         );
         assert!(!failure_paths[0].join(&hex[..2]).join(&hex).exists());
-        assert_eq!(fs::read_dir(&failure_paths[1]).unwrap().count(), 0);
+        assert_empty_private_staging(&failure_paths[1]);
 
         let unsealed_paths = directories(&root, "unsealed");
         fs::create_dir(unsealed_paths[0].join(&hex[..2])).unwrap();
