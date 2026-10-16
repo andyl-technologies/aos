@@ -64,6 +64,7 @@
       # Root-owned sibling receipt logs must be readable by the later verifier.
       umask 022
       mount -o remount,rw /
+      mkdir -p /var/lib
       # /var is the writable guest ext4 rootfs, not /tmp or /run tmpfs.
       container=/var/lib/terrane-configured-sdk-proof
       [ ! -e "$container" ]
