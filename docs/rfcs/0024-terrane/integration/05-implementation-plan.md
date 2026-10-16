@@ -8785,8 +8785,8 @@ unsupported regular-file user xattrs on the actual Nix fixture filesystem.
 The corrected status gate passes by requiring the unchanged presentation case
 in an actual ext4 guest as UID 840 with empty capabilities: one passed, none
 ignored. Its commit-path gate also passes with unchanged source guards.
-Interface, schema and aggregate qualification remain to be repeated on that
-candidate. A separate native cache proof executable
+Interface and schema now also pass on that unchanged candidate, completing its
+four owning surface gates. Aggregate qualification remains pending. A separate native cache proof executable
 and image/guest selectors are declared but fail until implemented. Remaining
 surface gates and complete trunk qualification remain pending. These source
 reviews and component results do not establish configured role operation,
