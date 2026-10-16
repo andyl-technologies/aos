@@ -5,8 +5,7 @@
 
 use super::*;
 use crate::reference_packet::service::complete_restore::{
-    maximum_complete_restore_held_evidence_bytes,
-    transfer::PacketCompleteRestoreTransferPhase,
+    maximum_complete_restore_held_evidence_bytes, transfer::PacketCompleteRestoreTransferPhase,
 };
 
 pub(in crate::client) struct HeldPrefix {

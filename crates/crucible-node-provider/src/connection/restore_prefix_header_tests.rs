@@ -1,8 +1,8 @@
 //! Exercises the selected pretyped filter on actual portable Envelope values.
 
 use super::*;
-use serde_json::Value;
 use crate::reference_packet::service::complete_restore::transfer::PacketCompleteRestoreTransferPhase as Phase;
+use serde_json::Value;
 
 fn original() -> Envelope {
     serde_json::from_value(serde_json::json!({
