@@ -143,9 +143,16 @@ impl HostDescriptorPartition {
         Ok(())
     }
 
-    /// Repartitions only tables whose actual child/control owners have closed.
-    pub(super) fn close_pool_tables(&mut self, tables: u64) -> Result<(), ServiceBirthError> {
+    /// Returns one assignment's windows and child tables as the same physical cut.
+    pub(super) fn close_pool_assignment(
+        &mut self,
+        peak: u64,
+        tables: u64,
+    ) -> Result<(), ServiceBirthError> {
         self.check()?;
+        let windows = self.pool_window_peak.checked_sub(peak).ok_or_else(|| {
+            ServiceBirthError::policy("landing return exceeds its actual reservation")
+        })?;
         let tables = self.native_tables.checked_sub(tables).ok_or_else(|| {
             ServiceBirthError::policy("native table return exceeds physical assignment")
         })?;
@@ -153,11 +160,13 @@ impl HostDescriptorPartition {
             .original
             .checked_sub(tables)
             .ok_or_else(|| ServiceBirthError::policy("native table return overflows"))?;
+
+        // Validate both counters before either changes. A failed kernel update
+        // seals the same partition; retry cannot subtract either return again.
         self.ready = false;
+        self.pool_window_peak = windows;
         self.native_tables = tables;
         self.host = host;
-        // This restores only the SAME unchanged hard authority after actual
-        // return; an old child's hard limit never changes or receives headroom.
         self.write_soft_limit()?;
         self.ready = true;
         self.check()
@@ -457,6 +466,26 @@ mod tests {
         } else {
             let _pool_controls = result.unwrap();
             partition.check().unwrap();
+            if case == "paired-return" {
+                assert!(partition.close_pool_assignment(9, 48).is_err());
+                assert!(partition.close_pool_assignment(8, 49).is_err());
+                assert_eq!(
+                    (partition.pool_window_peak, partition.native_tables),
+                    (8, 48)
+                );
+                assert_eq!(limits().unwrap().rlim_cur, 16);
+                partition.check().unwrap();
+
+                partition.close_pool_assignment(8, 48).unwrap();
+                assert_eq!(
+                    (partition.pool_window_peak, partition.native_tables),
+                    (0, 0)
+                );
+                assert_eq!(limits().unwrap().rlim_cur, 64);
+                assert!(partition.close_pool_assignment(8, 48).is_err());
+                partition.check().unwrap();
+                return;
+            }
             if case == "dispatcher-terminal" {
                 // Exercise the real refined table, without fabricating a Main
                 // descriptor payer. Permanent occupancy must win first.
@@ -480,7 +509,13 @@ mod tests {
 
     #[test]
     fn kernel_partition_contains_existing_indices_and_retains_hard_authority() {
-        for case in ["positive", "high-index", "cancelled", "dispatcher-terminal"] {
+        for case in [
+            "positive",
+            "high-index",
+            "cancelled",
+            "dispatcher-terminal",
+            "paired-return",
+        ] {
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", HELPER, "--test-threads=1"])
                 .env("CRUCIBLE_FD_PARTITION_HELPER", case)

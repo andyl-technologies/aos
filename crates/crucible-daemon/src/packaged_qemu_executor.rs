@@ -1083,7 +1083,6 @@ impl AttachedPackagedQemuExecutor {
         // The outer owner retains it through any uncertain thread retirement.
         let dispatcher_host_for_owner = guarded_state.host.clone();
         let lifecycle_cleanup_for_owner = guarded_state.lifecycle_cleanup.clone();
-        let main_for_owner = guarded_state.config.normal_executor.clone();
         let completion = Arc::new((Mutex::new(false), Condvar::new()));
         let thread_completion = Arc::clone(&completion);
         let thread = thread::Builder::new()
@@ -1110,27 +1109,20 @@ impl AttachedPackagedQemuExecutor {
                             .and_then(|()| cleanup.verify_empty())
                     })
                     .unwrap_or(Ok(()));
-                let controls_result = main_for_owner
-                    .as_ref()
-                    .map(crate::campaign_process::try_retire_executor_controls_for_main)
-                    .unwrap_or(Ok(()));
                 let report = combine_packaged_qemu_join_results(
                     service_result,
                     materializer_result,
                     hot_fork_result,
                     lifecycle_cleanup_result,
-                    controls_result,
+                    Ok(()),
                 )?;
-                // Retire only after all actual worker and Source owners close,
-                // before publishing this whole owner's completion signal.
-                target_dispatcher_host
-                    .as_ref()
-                    .ok_or_else(|| QemuVmRealizationError::ExecutorUnavailable {
-                        operation: "retire packaged Main Target dispatcher",
-                        message: String::from("actual saved Linux host factory is absent"),
-                    })
-                    .and_then(SharedQemuAttemptHostResourceFactory::finish_target_dispatcher)
-                    .map_err(PackagedQemuExecutorJoinError::TargetDispatcher)?;
+                // This branch has no Main. Component factories may have no
+                // native dispatcher; every saved host still closes its actual
+                // dispatcher after all worker and Source owners have closed.
+                if let Some(host) = target_dispatcher_host.as_ref() {
+                    host.finish_target_dispatcher()
+                        .map_err(PackagedQemuExecutorJoinError::TargetDispatcher)?;
+                }
                 Ok(report)
             })
             .map_err(|source| PackagedQemuExecutorStartError::Spawn { source })?;

@@ -28,6 +28,14 @@ pub(super) struct NodeSlot {
     windows_closed: [bool; 2],
 }
 
+/// Carries checked accounting while the caller retains the same ledger lock.
+pub(super) struct PreparedNodeReturn {
+    pub(super) windows: u64,
+    pub(super) tables: u64,
+    index: usize,
+    used: HostResourceVector,
+}
+
 pub(super) struct PoolLedger {
     ceiling: HostResourceVector,
     used: HostResourceVector,
@@ -535,12 +543,12 @@ impl PoolLedger {
         Ok(unissued)
     }
 
-    pub(super) fn return_node(
-        &mut self,
+    pub(super) fn prepare_node_return(
+        &self,
         epoch: u64,
         assignment: u64,
         index: usize,
-    ) -> Result<(), ServiceBirthError> {
+    ) -> Result<PreparedNodeReturn, ServiceBirthError> {
         let unused_landings = self.returnable_window_peak(epoch, assignment, index)?;
         let node = self.nodes[index]
             .as_ref()
@@ -550,10 +558,19 @@ impl PoolLedger {
             .file_descriptors
             .checked_add(unused_landings)
             .ok_or_else(|| ServiceBirthError::policy("native return descriptor sum overflows"))?;
-        let next = subtract(self.used, returned)?;
-        self.nodes[index] = None;
-        self.used = next;
-        Ok(())
+        let used = subtract(self.used, returned)?;
+        Ok(PreparedNodeReturn {
+            windows: unused_landings,
+            tables: node.request.resources.file_descriptors,
+            index,
+            used,
+        })
+    }
+
+    /// Commits only after physical descriptor return under the same lock.
+    pub(super) fn commit_node_return(&mut self, prepared: PreparedNodeReturn) {
+        self.nodes[prepared.index] = None;
+        self.used = prepared.used;
     }
 
     pub(super) fn window_peak(

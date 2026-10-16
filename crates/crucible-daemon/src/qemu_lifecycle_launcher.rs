@@ -33,8 +33,8 @@ mod pending_construction;
 pub(crate) use pending_construction::retain_source_owner;
 mod failed_launch;
 use failed_launch::RetainedFailedLaunch;
-pub(crate) use pending_construction::PendingSourceConstruction;
 pub use pending_construction::SourceConstructionCustodyFailure;
+pub(crate) use pending_construction::{PendingSourceConstruction, UnbornSourceConstruction};
 
 struct TerminalCheckpointImport {
     checkpoints: Arc<ExactCheckpointStore>,

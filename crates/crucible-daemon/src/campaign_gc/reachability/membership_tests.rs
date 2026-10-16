@@ -4,8 +4,9 @@
 //! account. These controls authenticate bytes and count real Read operations;
 //! they do not certify installed quotas, native admission or CPU/wall parity.
 
+use std::cell::Cell;
 use std::error::Error;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, ByteRange, ObjectKind, PutReceipt, StorePhysicalQuotaGuard,
@@ -61,11 +62,33 @@ fn has_original_cancellation(error: &(dyn Error + 'static)) -> bool {
     false
 }
 
+/// Observes the real delegated read result, independently of progress callbacks.
+#[derive(Default)]
+struct CheckedReadCompletion {
+    returned: AtomicBool,
+    authenticated: AtomicBool,
+    corrupt: AtomicBool,
+}
+
+impl CheckedReadCompletion {
+    fn observe(&self, result: &Result<crucible_cas::content_store::OwnedBlobBytes, StoreError>) {
+        self.authenticated.store(result.is_ok(), Ordering::Release);
+        // Checked SQLite retains its real work error inside diagnostic/scope
+        // custody. Observe that typed source chain without detaching its loan.
+        let corrupt = result.as_ref().err().is_some_and(|error| {
+            has_cause(error, |error| matches!(error, StoreError::Corrupt { .. }))
+        });
+        self.corrupt.store(corrupt, Ordering::Release);
+        self.returned.store(true, Ordering::Release);
+    }
+}
+
 struct CheckedOnly {
     inner: Arc<dyn ImmutableBlobBackend>,
     reads: AtomicUsize,
     cancel_child: Option<HostOperationSupervisor>,
     truncate_after_metadata: Option<std::path::PathBuf>,
+    read_completion: Option<Arc<CheckedReadCompletion>>,
 }
 
 impl ImmutableBlobBackend for CheckedOnly {
@@ -144,8 +167,13 @@ impl ImmutableBlobBackend for CheckedOnly {
         {
             supervisor.cancel().unwrap();
         }
-        self.inner
-            .read_merkle_node_with_boundary(original, id, boundary)
+        let result = self
+            .inner
+            .read_merkle_node_with_boundary(original, id, boundary);
+        if let Some(completion) = &self.read_completion {
+            completion.observe(&result);
+        }
+        result
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
@@ -175,6 +203,7 @@ fn checked_membership_reuses_original_without_new_catalog_read_operations() {
         reads: AtomicUsize::new(0),
         cancel_child: None,
         truncate_after_metadata: None,
+        read_completion: None,
     });
     marks.map = MerkleMap::new(checked.clone());
 
@@ -215,6 +244,7 @@ fn selected_child_cancellation_refuses_without_ordinary_fallback() {
         reads: AtomicUsize::new(0),
         cancel_child: Some(fixture.supervision()),
         truncate_after_metadata: None,
+        read_completion: None,
     });
     marks.map = MerkleMap::new(checked.clone());
     let root = marks.root;
@@ -242,6 +272,7 @@ fn body_shortened_after_checked_metadata_is_not_membership_absence() {
         reads: AtomicUsize::new(0),
         cancel_child: None,
         truncate_after_metadata: Some(fixture.scratch_path().join("objects.sqlite3")),
+        read_completion: None,
     }));
     let operation = fixture.context();
     let error = marks
@@ -345,7 +376,7 @@ fn checked_membership_refuses_actual_original_cancellation_at_every_success_cut(
 #[test]
 fn checked_membership_corrupt_body_precedes_a_later_original_refusal() {
     let mut fixture = ComponentGcOperation::new();
-    let marks = seeded(&mut fixture, 1);
+    let mut marks = seeded(&mut fixture, 1);
     let path = fixture.scratch_path().join("objects.sqlite3");
     let connection = crucible_cas::content_store::fixture_sqlite_heap()
         .unwrap()
@@ -357,36 +388,52 @@ fn checked_membership_corrupt_body_precedes_a_later_original_refusal() {
             [marks.root.content_id().encode()],
         )
         .unwrap();
+    let completion = Arc::new(CheckedReadCompletion::default());
+    marks.map = MerkleMap::new(Arc::new(CheckedOnly {
+        inner: fixture.context().marks(),
+        reads: AtomicUsize::new(0),
+        cancel_child: None,
+        truncate_after_metadata: None,
+        read_completion: Some(Arc::clone(&completion)),
+    }));
     let operation = fixture.context();
     let root = marks.root;
-    let mut observed = 0;
-    {
-        let error = marks
-            .contains_with_boundary(&page(0), &mut || {
-                observed += 1;
-                operation.check()
+    let later_callbacks = Cell::new(0);
+    let mut boundary = || {
+        if completion.returned.load(Ordering::Acquire) {
+            later_callbacks.set(later_callbacks.get() + 1);
+            Err(StoreError::Unsupported {
+                capability: "later-original-refusal",
             })
-            .unwrap_err();
-        assert!(has_cause(
-            &error,
-            |error| matches!(error, StoreError::Corrupt { id } if *id == root.content_id())
-        ));
-    }
+        } else {
+            operation.check()
+        }
+    };
 
-    let mut seen = 0;
     let error = marks
-        .contains_with_boundary(&page(0), &mut || {
-            seen += 1;
-            if seen > observed {
-                Err(StoreError::Unsupported {
-                    capability: "later-original-refusal",
-                })
-            } else {
-                operation.check()
-            }
-        })
+        .contains_with_boundary(&page(0), &mut boundary)
         .unwrap_err();
-    assert_eq!(seen, observed);
+
+    assert!(completion.returned.load(Ordering::Acquire));
+    assert!(completion.corrupt.load(Ordering::Acquire));
+    assert!(!completion.authenticated.load(Ordering::Acquire));
+    assert_eq!(
+        later_callbacks.get(),
+        0,
+        "no success callback follows the actual corrupt read"
+    );
+    assert!(has_cause(&error, |error| matches!(
+        error, StoreError::Corrupt { id } if *id == root.content_id()
+    )));
+    // Establish that a later callback really would refuse, without relying on
+    // another read's variable SQLite progress/locking callback count.
+    assert!(matches!(
+        boundary(),
+        Err(StoreError::Unsupported {
+            capability: "later-original-refusal"
+        })
+    ));
+    assert_eq!(later_callbacks.get(), 1);
     assert!(has_cause(&error, |error| matches!(
         error,
         StoreError::Corrupt { .. }
@@ -437,39 +484,51 @@ fn authenticated_invalid_node_keeps_structural_cause_before_postparse_callback()
         })
     ));
 
-    let mut observed = 0;
-    let error = marks
-        .map
-        .get_with_boundary(id, mark_key(page(0)), &account, &mut || {
-            observed += 1;
+    let completion = Arc::new(CheckedReadCompletion::default());
+    let checked = MerkleMap::new(Arc::new(CheckedOnly {
+        inner: backend,
+        reads: AtomicUsize::new(0),
+        cancel_child: None,
+        truncate_after_metadata: None,
+        read_completion: Some(Arc::clone(&completion)),
+    }));
+    let later_callbacks = Cell::new(0);
+    let mut boundary = || {
+        if completion.returned.load(Ordering::Acquire) {
+            later_callbacks.set(later_callbacks.get() + 1);
+            Err(StoreError::Unsupported {
+                capability: "postparse-original-refusal",
+            })
+        } else {
             operation.check()
-        })
+        }
+    };
+
+    let error = checked
+        .get_with_boundary(id, mark_key(page(0)), &account, &mut boundary)
         .unwrap_err();
+
+    assert!(completion.returned.load(Ordering::Acquire));
+    assert!(completion.authenticated.load(Ordering::Acquire));
+    assert!(!completion.corrupt.load(Ordering::Acquire));
+    // read_checked_node decodes and validates before its success-only callback.
+    // Its real preparse account/liveness checks still use the same live Original.
+    assert_eq!(
+        later_callbacks.get(),
+        0,
+        "structural failure precedes the postparse callback"
+    );
     assert!(matches!(
         error,
         CampaignStoreError::InvalidMerkle {
             reason: "unsupported-node-schema"
         }
     ));
-    let mut seen = 0;
-    let error = marks
-        .map
-        .get_with_boundary(id, mark_key(page(0)), &account, &mut || {
-            seen += 1;
-            if seen > observed {
-                Err(StoreError::Unsupported {
-                    capability: "postparse-original-refusal",
-                })
-            } else {
-                operation.check()
-            }
-        })
-        .unwrap_err();
-    assert_eq!(seen, observed);
     assert!(matches!(
-        error,
-        CampaignStoreError::InvalidMerkle {
-            reason: "unsupported-node-schema"
-        }
+        boundary(),
+        Err(StoreError::Unsupported {
+            capability: "postparse-original-refusal"
+        })
     ));
+    assert_eq!(later_callbacks.get(), 1);
 }
