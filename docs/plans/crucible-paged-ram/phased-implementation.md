@@ -61,7 +61,7 @@ enable native receiver activation or qualify physical resource return. The
 package exit criteria and coordinated release gates below remain required.
 
 The private-feature QEMU test targets also compile independently of the
-test-support feature. A complete private-feature QEMU library run has 1,131
+test-support feature. A complete private-feature QEMU library run has 1,134
 passing tests, six failures and four ignored probes. Its failed-name set matches
 the preceding full private-feature run. The six capture/fault
 fixtures lack the genuine Source-backed control lifecycle, including paired
@@ -162,11 +162,14 @@ the actual retained thread table. The input alias control proves last strong-ali
 closure and credit retention; its test-only Weak witness does not prove Arc
 backing deallocation. Production keeps the body graph free of Weak/raw escapes
 and drops that allocation before its decoder custody. The full private-feature
-library run has 1,662 passes, 18 failures and 43 ignored tests. Seventeen
-failures match the preceding native integration failures. The additional
-cancellation control calibrates progress-callback ordinals on one SQLite read
-and assumes them on another; staging contention makes that assumption invalid.
-Its deterministic semantic-boundary replacement remains under review.
+library run has 1,672 passes, 17 failures and 43 ignored tests. Its failed-name
+set matches the preceding native integration failures. The membership cancellation
+control now selects five actual traversal boundaries instead of calibrating raw
+callback ordinals across independent SQLite reads. It checks the same operation,
+typed cancellation, unchanged root, exactly one selected boundary and no
+post-refusal callback. The positive traversal visits every boundary exactly once;
+all seven membership controls pass. The full suite also passes the 512-MiB
+packed unique-page traversal.
 
 The supplemental service VM checks build the actual private controller into the
 installed Main policy and retain the original guest/request vectors. Ordinary
@@ -184,19 +187,23 @@ receipt controls and two status-ordering controls pass. These include 24 epochs 
 one physical cleanup cell and actual body destruction before expired-operation
 observation. Three constructor finalization controls pass with actual files,
 mutex cells and worker storage, covering late expiry, combined typed reports and
-an unclosed body. The last QEMU library run has 1,045 passes, five capture-related
-failures and three ignored probes. Component results do not qualify deployed
-resource return or VM performance.
+an unclosed body. The complete QEMU result is recorded above. Component results
+do not qualify deployed resource return or VM performance.
 
 All 31 Rust ABI, licensing, crate-layer and scheduler-boundary checks pass, as do
 26 gate-traceability checks, five engineering-hygiene controls, the two production
 effect-matrix checks, the schema-registry control and all three daemon doctests.
-The testing-standards suite has 29 passes and one failure: the broader source
-classifier still requires exact review of operational retry paths. Admission
+The testing-standards suite has 30 passes and one failure: the broader source
+classifier still requires review of operational paths. Six reviewed targets now
+classify only effect-free cleanup declarations and eight exact same-owner
+forwarders. Their mutation controls reject default bodies, changed receivers,
+extra statements, waits and failed-test reruns. Mutation builders preserve raw
+method token boundaries; whitespace compaction is used only for search needles.
+Neither source inventory nor the escape matcher was relaxed. Admission
 checks now bind both existing waits to the same original Setup. Shared Target
 clauses bind saved Cleanup entry and physical return; dispatcher clauses retain
 both fixed five-second bounds, all five polling loops, and same-control recovery.
-All ten actual dispatcher component tests pass. These file-backed mechanisms
+All eleven actual dispatcher component tests pass. These file-backed mechanisms
 establish no native Main/Source issuance. The retired plugin-worker contract and
 two resolved admission-sleep exemptions are removed. Live guards, custody and
 negative mutation controls remain required. The Nix scheduler boundary checks the
@@ -210,16 +217,63 @@ failure in its existing Main. The finite inline report fields enter the actual
 actor size query before structural admission; no report carrier or owner slot
 is allocated on failure. All five new component controls pass, along with the
 existing cleanup-cell controls. Workspace checking and source hygiene pass.
-A temporary stable-compiler layout probe measures the actor at 4,048 bytes, its
-inline attached history at 752 bytes and a temporary report at 504 bytes. The
-probe is removed and the exact tested source hashes are restored. These are
-Rust object extents, not whole-stack, allocator-overhead or policy-fit proofs.
+A temporary stable-compiler layout probe on the joined dispatcher, resource-begin
+and World-return source measures the actor at 5,024 bytes, its inline attached
+history at 1,728 bytes and a temporary report at 1,032 bytes. The initiating/rollback
+report is 1,232 bytes; the concrete shared-Linux Source factory, pending construction
+and launcher occupy 44,080, 1,704 and 8,720 bytes respectively. These inline
+fields enter the actual sizeof-based admission queries. The probe is removed
+and the exact source hashes are restored. These are Rust object extents, not
+whole-stack, allocator-overhead, policy-fit or performance proofs.
 
-Authentic whole-factory recovery for pending World bodies remains unqualified.
-Terminal-parent cleanup still needs same-owner join and debit-return eligibility,
-a retained first admission refusal, and physical closure distinct from historical panic.
-These are implementation obligations before those routes receive source or
-native qualification, not additional allowances for their retry names.
+Dispatcher retirement now retains the first Cleanup admission result once and
+authenticates that exact saved operation without initializing another one.
+Terminal parents do not prevent same-owner worker joins; new work still requires
+live authority. Actual panic payloads remain inline in the retained dispatcher,
+while physical completion is observed independently from diagnostic history.
+The shared factory reports its result and physical-closure fact under the same
+mutex. Attached, original, guarded and component consumers require that fact
+before returning their containing resources. Dispatcher and pool errors remain
+two finite typed leaves; one cannot replace the other.
+
+Resource-begin rollback now moves the initiating error and the actual independent
+cleanup error into an inline report, without reboxing their existing allocations.
+A private rollback record proves quarantine; absence of a selected checkpoint
+claim alone proves nothing. Source construction and retained history preserve
+that report separately from later cleanup and postchecks. The same raw host
+cleanup helper owns both installed-guard cleanup and pre-guard rollback. The
+public generic finish adapter still renders its raw cleanup failure into a
+terminal message; preserving that leaf through the public API remains a separate
+caller migration. Replay binding now uses the same inline rollback report to
+keep its initiating and cleanup errors together, after its existing quarantine
+effects. That narrow bind-error path still needs authentic service-lane coverage;
+the seven new resource-begin component controls all pass. Checkpoint promotion
+still has separate first-cause replacement paths. Replay's retained-service
+fallback still allocates and leaks its containing owner on uncertain cleanup;
+preserving diagnostics alone cannot repair that custody path. Promotion can carry distinct realization,
+closure and restore causes plus multiple cleanup phases. Its follow-up needs a
+finite nonrecursive history representation and an actual containing-body size
+query for the promotion body; the ordinary worker-cell query alone does not
+fund a separate promotion body. Resource ceilings remain unchanged.
+
+World and node returns now verify their exact saved Cleanup, retained family,
+kernel partition and ledger epoch rather than requiring a live preparation
+parent. New work still needs live admission. The first Cleanup admission result
+remains latched, and its actual allocation is priced once per finite World cell.
+The descriptor-return journal records successful setrlimit before any readback;
+a later verification refusal cannot cause a second subtraction and leaves the
+partition sealed against new admission. The real-kernel helper deliberately
+changes the soft limit after observing the successful write, then proves genuine
+readback refusal, retained sealing and no repeated return. All 239 resource
+controls pass, including six new ledger/operation controls and that helper case.
+
+Returning an assignment is distinct from destroying its owning facade. Factory
+closure still requires every canonical node and World entry to be removed. An
+exact preexisting loan can observe an already-committed World through its same
+pool and monotonic publication epoch, without claiming it was never born or
+issuing new work. Authentic whole-factory recovery and native physical return
+remain unqualified; the local ledger and kernel controls do not issue Main or
+Source authority.
 
 The retry-path review also identifies an unqualified debug-replay route: replay
 loops can be dropped after shutdown refusal without a canonical cleanup handoff.
@@ -234,16 +288,18 @@ QEMU build, whose dirty-iterator fixture still fails; no VM lane was executed.
 The required application-target build passes locally for the backend-cutover
 snapshot, including every application's unit and integration target compilation,
 with remote builders disabled. A new local packaged run covers the observation
-and constructor-finalization code; its result remains pending. The workspace,
-feature and full private-library results are recorded above. The pending-aware
-World cohort passes normal all-target workspace checking and all 229 Linux
-resource tests, with one ignored probe. Its six new controls use actual ledger
-transitions and physical resource leases, without claiming authenticated Main
-issuance. ABI, license and scheduler boundary checks and engineering hygiene
+and constructor-finalization code; it also passes, including all application
+unit and integration target compilation. This immutable packaged snapshot
+predates the dispatcher and typed resource-begin changes. A further local
+application-target build now covers the joined World-return and replay source;
+its result remains pending. The workspace, feature and full private-library
+results are recorded above. The pending-aware World and dispatcher cohorts pass
+normal all-target workspace checking and all 239 Linux resource tests, with one ignored probe. The World controls use actual
+ledger transitions and physical resource leases, without claiming authenticated
+Main issuance. ABI, license and scheduler boundary checks and engineering hygiene
 also pass. The complete private QEMU library run has the unchanged six capture/fault
-failures recorded above. A fully
-passing integrated suite and VM
-performance parity are not claimed.
+failures recorded above. Integrated qualification and VM performance parity
+remain outstanding.
 
 ### Canonical native observation gate cutover (required)
 
