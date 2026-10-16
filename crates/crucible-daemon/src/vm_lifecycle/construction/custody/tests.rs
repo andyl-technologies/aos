@@ -340,3 +340,127 @@ fn rejected_two_body_cleanup_keeps_both_leaves_through_actual_queued_destruction
     assert!(!incoming_cause.is_open());
     assert!(!existing_cause.is_open());
 }
+
+struct BoxedLoopOwner(Arc<AtomicUsize>);
+
+impl Drop for BoxedLoopOwner {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn boxed_retirement_lifecycle() -> (Box<ProductionVmLifecycleLoop>, Arc<AtomicUsize>) {
+    let source = crucible::crash_restart_scenario().unwrap().scenario;
+    let mut lifecycle =
+        Box::new(crate::vm_lifecycle::runtime::tests::production_loop_without_backends(&source));
+    let drops = Arc::new(AtomicUsize::new(0));
+    lifecycle
+        .retained_hot_fork_disk_owners
+        .push(Box::new(BoxedLoopOwner(Arc::clone(&drops))));
+    (lifecycle, drops)
+}
+
+fn empty_retirement_carrier() -> Box<ProductionVmConstructionCustody> {
+    Box::new(ProductionVmConstructionCustody {
+        first: None,
+        phase: Mutex::new(Phase::Empty),
+        physically_closed: AtomicBool::new(false),
+        #[cfg(target_os = "linux")]
+        reservation: None,
+    })
+}
+
+#[test]
+fn boxed_retirement_refusal_keeps_same_allocation_carrier_and_contained_owner() {
+    enum CarrierState {
+        Missing,
+        Occupied,
+        Poisoned,
+    }
+
+    for state in [
+        CarrierState::Missing,
+        CarrierState::Occupied,
+        CarrierState::Poisoned,
+    ] {
+        let (mut lifecycle, drops) = boxed_retirement_lifecycle();
+        let (launcher, calls, launcher_drops) = launcher(None);
+        lifecycle.node_launcher = launcher;
+        let carrier = match state {
+            CarrierState::Missing => None,
+            CarrierState::Occupied => Some(Box::new(ProductionVmConstructionCustody::new())),
+            CarrierState::Poisoned => {
+                let carrier = empty_retirement_carrier();
+                let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _phase = carrier.phase.lock().unwrap();
+                    panic!("poison the actual carrier phase");
+                }));
+                assert!(poisoned.is_err());
+                Some(carrier)
+            }
+        };
+        let carrier_address = carrier.as_deref().map(std::ptr::from_ref);
+        lifecycle.construction_custody = carrier;
+        let lifecycle_address = std::ptr::from_ref(&*lifecycle);
+        let owner_address = std::ptr::from_ref(&*lifecycle.retained_hot_fork_disk_owners[0]);
+
+        let lifecycle = match lifecycle.into_construction_custody_from_box() {
+            Ok(_) => panic!("unusable original storage cannot accept the Loop"),
+            Err(lifecycle) => lifecycle,
+        };
+
+        assert_eq!(std::ptr::from_ref(&*lifecycle), lifecycle_address);
+        assert_eq!(
+            lifecycle
+                .construction_custody
+                .as_deref()
+                .map(std::ptr::from_ref),
+            carrier_address,
+        );
+        assert!(std::ptr::addr_eq(
+            std::ptr::from_ref(&*lifecycle.retained_hot_fork_disk_owners[0]),
+            owner_address,
+        ));
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(launcher_drops.load(Ordering::SeqCst), 0);
+        drop(lifecycle);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(launcher_drops.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn boxed_retirement_moves_loop_and_owners_into_the_original_carrier() {
+    let (mut lifecycle, drops) = boxed_retirement_lifecycle();
+    let (launcher, calls, launcher_drops) = launcher(None);
+    lifecycle.node_launcher = launcher;
+    let carrier = empty_retirement_carrier();
+    let carrier_address = std::ptr::from_ref(&*carrier);
+    let owner_address = std::ptr::from_ref(&*lifecycle.retained_hot_fork_disk_owners[0]);
+    lifecycle.construction_custody = Some(carrier);
+
+    let carrier = lifecycle
+        .into_construction_custody_from_box()
+        .unwrap_or_else(|_| panic!("original empty carrier must retain the boxed Loop"));
+
+    assert_eq!(std::ptr::from_ref(&*carrier), carrier_address);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    let phase = carrier.phase.lock().unwrap();
+    let Phase::Complete(lifecycle) = &*phase else {
+        panic!("the original carrier must own the complete Loop");
+    };
+    assert!(lifecycle.construction_custody.is_none());
+    assert!(std::ptr::addr_eq(
+        std::ptr::from_ref(&*lifecycle.retained_hot_fork_disk_owners[0]),
+        owner_address,
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(launcher_drops.load(Ordering::SeqCst), 0);
+    drop(phase);
+    drop(carrier);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(launcher_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}

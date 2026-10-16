@@ -155,9 +155,10 @@ where
     /// Measures selected Source construction before any containing allocation.
     ///
     /// Includes the actual launcher Box, inline guard/factory, shared directory
-    /// and helper controls, selected generation rows, carrier, and temporary
-    /// Pending body. No Target directory is constructed by this Source path;
-    /// its later genuine producer must price its own before-birth peak.
+    /// and helper controls, selected generation rows, carrier, temporary Pending
+    /// body, and overlapping prepared Source Loop Box. No Target directory is
+    /// constructed by this Source path; its later genuine producer must price
+    /// its own before-birth peak.
     ///
     /// # Errors
     /// Refuses an empty/excessive member set or layout/byte arithmetic overflow.
@@ -173,15 +174,18 @@ where
         >()?;
         let helpers = launcher_arc_bytes::<Mutex<ImageHelperCleanupDebt>>()?;
         let pending = pending_construction::PendingSourceConstruction::<F>::control_bytes()?;
-        let retained_launcher = Self::retained_control_bytes()?
+        let source_loop = u64::try_from(std::mem::size_of::<crate::ProductionVmLifecycleLoop>())
+            .map_err(|_| launcher_message("prepared Source lifecycle extent overflows"))?;
+        let retained_source = Self::retained_control_bytes()?
             .checked_add(directories)
             .and_then(|bytes| bytes.checked_add(helpers))
+            .and_then(|bytes| bytes.checked_add(source_loop))
             .ok_or_else(|| launcher_message("retained Source launcher extent overflow"))?;
-        // The emptied Pending Box is destroyed before the concrete launcher
-        // Box and shared controls are built. The same carrier and selected
-        // generation rows remain live across both phases.
+        // Pending ends before launcher birth. The prepared Source's Loop Box
+        // overlaps that launcher, its shared controls and the original carrier;
+        // generation rows and carrier remain live across both phases.
         pending
-            .max(retained_launcher)
+            .max(retained_source)
             .checked_add(generations)
             .and_then(|bytes| {
                 bytes.checked_add(crate::ProductionVmConstructionCustody::allocation_bytes())

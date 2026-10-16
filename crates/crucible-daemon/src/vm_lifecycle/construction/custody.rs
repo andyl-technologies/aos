@@ -271,6 +271,21 @@ impl ProductionVmConstructionCustody {
         }
     }
 
+    /// Borrows only an original empty carrier for a completed Loop move.
+    fn retirement_slot(&mut self) -> Option<&mut Phase> {
+        if self.first.is_some() || self.physically_closed.load(Ordering::Acquire) {
+            return None;
+        }
+        #[cfg(target_os = "linux")]
+        if self.reservation.is_some() {
+            return None;
+        }
+        match self.phase.get_mut() {
+            Ok(phase @ Phase::Empty) => Some(phase),
+            _ => None,
+        }
+    }
+
     pub(super) fn into_loop(mut self: Box<Self>) -> Result<ProductionVmLifecycleLoop, Box<Self>> {
         if self.first.is_some() || self.physically_closed.load(Ordering::Acquire) {
             return Err(self);
@@ -920,25 +935,36 @@ impl ProductionVmLifecycleLoop {
         let Some(mut custody) = self.construction_custody.take() else {
             return Err(self);
         };
-        let reusable = custody.first.is_none()
-            && !custody.physically_closed.load(Ordering::Acquire)
-            && matches!(custody.phase.get_mut(), Ok(Phase::Empty));
-        #[cfg(target_os = "linux")]
-        let reusable = reusable && custody.reservation.is_none();
-        if !reusable {
+        let Some(phase) = custody.retirement_slot() else {
             self.construction_custody = Some(custody);
             return Err(self);
-        }
-        // This empty, exclusively owned mutex was validated above. No callback
-        // runs between validation and the move into the existing carrier.
-        let phase = match custody.phase.get_mut() {
-            Ok(phase) => phase,
-            Err(_) => {
-                self.construction_custody = Some(custody);
-                return Err(self);
-            }
         };
         *phase = Phase::Complete(self);
+        Ok(custody)
+    }
+
+    /// Moves an already boxed lifecycle into its same empty construction carrier.
+    ///
+    /// Validates the carrier before releasing the lifecycle's Box allocation.
+    /// No callbacks, native cleanup or allocations run during the move.
+    /// This prepares custody publication; it does not prove World return.
+    ///
+    /// # Errors
+    /// Returns the same Box and all its owners if the original carrier is
+    /// missing, occupied, poisoned, closed, or already holds a reservation.
+    pub fn into_construction_custody_from_box(
+        mut self: Box<Self>,
+    ) -> Result<Box<ProductionVmConstructionCustody>, Box<Self>> {
+        let Some(mut custody) = self.construction_custody.take() else {
+            return Err(self);
+        };
+        let Some(phase) = custody.retirement_slot() else {
+            self.construction_custody = Some(custody);
+            return Err(self);
+        };
+        // The exclusive slot remains borrowed through the final move. Nothing
+        // can change its validation or fail after the existing Box is released.
+        *phase = Phase::Complete(*self);
         Ok(custody)
     }
 }

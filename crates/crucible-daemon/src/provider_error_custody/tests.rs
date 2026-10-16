@@ -8,6 +8,7 @@ use super::*;
 use crucible_cas::content_store::ProviderDiagnosticStorage;
 use crucible_linux_resource::host_services::HostServiceAllocator;
 use std::error::Error;
+use std::os::unix::fs::MetadataExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -229,8 +230,15 @@ fn source_closes_before_slot_reuse_and_last_alias_retains_service_pin() {
     let descriptor = resident
         .reserve_resources(0, 1, 0)
         .expect("actual retained FD admission");
+    // Keep its inode linked while checking closure: other test threads may
+    // reuse the descriptor number, but cannot reuse this live inode.
+    let (file, retained_path) = tempfile::NamedTempFile::new()
+        .expect("actual component descriptor")
+        .into_parts();
+    let file_metadata = file.metadata().expect("original file identity");
+    let file_identity = (file_metadata.dev(), file_metadata.ino());
     let service = Arc::new(ServicePin {
-        file: tempfile::tempfile().expect("actual component descriptor"),
+        file,
         _descriptor: descriptor,
     });
     let weak_service = Arc::downgrade(&service);
@@ -257,13 +265,27 @@ fn source_closes_before_slot_reuse_and_last_alias_retains_service_pin() {
     drop(slot);
     assert!(!closed.load(Ordering::Acquire));
     assert!(weak_service.upgrade().is_some());
-    assert!(std::path::Path::new(&format!("/proc/self/fd/{fd}")).exists());
+    let descriptor_path = format!("/proc/self/fd/{fd}");
+    let descriptor_metadata =
+        std::fs::metadata(&descriptor_path).expect("retained original descriptor");
+    assert_eq!(
+        (descriptor_metadata.dev(), descriptor_metadata.ino()),
+        file_identity,
+    );
     assert!(resident.reserve_resources(0, 1, 0).is_err());
 
     drop(alias);
     assert!(closed.load(Ordering::Acquire));
     assert!(weak_service.upgrade().is_none());
-    assert!(!std::path::Path::new(&format!("/proc/self/fd/{fd}")).exists());
+    let linked_metadata = std::fs::metadata(&retained_path).expect("original inode remains linked");
+    assert_eq!(
+        (linked_metadata.dev(), linked_metadata.ino()),
+        file_identity
+    );
+    match std::fs::metadata(&descriptor_path) {
+        Ok(metadata) => assert_ne!((metadata.dev(), metadata.ino()), file_identity),
+        Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+    }
     assert!(weak_slot.upgrade().is_none());
     drop(alias_metadata);
     drop(alias_resident);
