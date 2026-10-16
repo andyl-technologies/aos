@@ -21,6 +21,12 @@ pub enum OriginalRestoredSuffixBody<'a> {
     Retire(&'a RetireRequest),
     /// Borrows a fresh current inventory inspection, independently of first Observe.
     Observe(&'a ObserveRequest),
+    /// Borrows the actual bounded authorization/consumption upload declaration.
+    BlobBegin(&'a BlobBeginRequest),
+    /// Borrows one independently debited original upload chunk.
+    BlobChunk(&'a BlobChunkRequest),
+    /// Borrows the exact original upload completion.
+    BlobFinish(&'a BlobFinishRequest),
 }
 
 impl OriginalRestoredSuffixBody<'_> {
@@ -47,6 +53,9 @@ impl OriginalRestoredSuffixBody<'_> {
             {
                 Ok(Method::Observe)
             }
+            Self::BlobBegin(body) if body.extensions.is_empty() => Ok(Method::BlobBegin),
+            Self::BlobChunk(body) if body.extensions.is_empty() => Ok(Method::BlobChunk),
+            Self::BlobFinish(body) if body.extensions.is_empty() => Ok(Method::BlobFinish),
             _ => Err(refused()),
         }
     }
@@ -60,6 +69,9 @@ impl Serialize for OriginalRestoredSuffixBody<'_> {
             Self::Poll(value) => value.serialize(serializer),
             Self::Retire(value) => value.serialize(serializer),
             Self::Observe(value) => value.serialize(serializer),
+            Self::BlobBegin(value) => value.serialize(serializer),
+            Self::BlobChunk(value) => value.serialize(serializer),
+            Self::BlobFinish(value) => value.serialize(serializer),
         }
     }
 }

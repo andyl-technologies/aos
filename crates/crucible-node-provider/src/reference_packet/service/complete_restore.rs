@@ -39,6 +39,9 @@ pub mod activation;
 /// Defines separately signed once observation after complete restored publication.
 pub mod restoration_observe;
 
+/// Validates progressed Producer evidence independently of historical held equality.
+pub mod producer_progress;
+
 pub use assigned::{
     complete_restore_assigned_request_digest, complete_restore_assigned_response_digest,
 };

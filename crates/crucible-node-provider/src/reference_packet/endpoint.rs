@@ -46,8 +46,10 @@ mod restoration_activation;
 mod restoration_observation;
 mod restore;
 mod restore_commit;
+mod restored_producer;
 mod restored_suffix_observation;
 pub(crate) use restore::PacketEndpointRestoreAllocation;
+pub(crate) use restored_producer::original_restored_producer_endpoint_counter_scratch_data;
 
 pub(crate) const EXCHANGES: usize = 256;
 // This is the unchanged retained ordinary endpoint-prefix ceiling. The

@@ -50,12 +50,14 @@ mod fresh_report;
 mod input;
 mod native5;
 mod restoration_activation;
+mod restored_producer;
 mod restored_suffix_observation;
 pub(crate) use native5::{
     authenticate_original_restoration_coordinator_data,
     original_restoration_coordinator_counter_scratch_data,
 };
 pub(crate) use restoration_activation::original_restoration_released_counter_scratch_data;
+pub(crate) use restored_producer::original_restored_producer_control_counter_scratch_data;
 
 pub use native5::{
     PacketCompleteControlBirthFailure, PacketNative5Record, PacketNative5StorageSelection,
@@ -760,6 +762,7 @@ impl PacketControl {
             restoration_activation,
             None,
             None,
+            None,
         )
     }
 
@@ -780,6 +783,7 @@ impl PacketControl {
         suffix_observation: Option<
             &super::service::ack_emitter::OriginalRestoredSuffixObserveRead<'_>,
         >,
+        producer_action: Option<&super::service::ack_emitter::OriginalRestoredProducerRead<'_>>,
     ) -> Result<&PacketControlReply, ProviderError> {
         if self.capture_creator != std::process::id() {
             return Err(ProviderError::Correlation(
@@ -791,9 +795,22 @@ impl PacketControl {
                 "native5 original storage birth is unbound",
             ));
         }
+        if self.restoration_activation_required
+            && self.complete_restored_hold.is_some()
+            && matches!(
+                request.method,
+                Method::Begin | Method::Poll | Method::Retire | Method::Input
+            )
+            && producer_action.is_none()
+        {
+            return Err(ProviderError::Correlation(
+                "restored action requires its spent current Producer scope",
+            ));
+        }
         if selected_observe.is_none()
             && restoration_observation.is_none()
             && suffix_observation.is_none()
+            && producer_action.is_none()
             && request.method == Method::Observe
             && self.complete_capture_allocation_selection.is_some()
         {
@@ -804,7 +821,9 @@ impl PacketControl {
                 "native allocation Observe requires its original producer",
             ));
         }
-        if let Some(permit) = restoration_observation {
+        if let Some(scope) = producer_action {
+            scope.authenticate_control_request_data(request, &self.selection, self)?;
+        } else if let Some(permit) = restoration_observation {
             permit.authenticate_control_request_data(request, &self.selection, self)?;
         } else if let Some(scope) = suffix_observation {
             scope.authenticate_control_request_data(request, &self.selection, self)?;
@@ -936,6 +955,7 @@ impl PacketControl {
             preparation,
             stopped_observe,
             restoration_activation,
+            producer_action,
         );
         match result {
             Ok(mut reply) => {
@@ -960,7 +980,7 @@ impl PacketControl {
                         .ok_or(ProviderError::Frame("packet original reservation absent"))?
                         .1);
                 }
-                if suffix_observation.is_some() {
+                if suffix_observation.is_some() || producer_action.is_some() {
                     // Proof and typed result remain cached even if prefix construction
                     // or publication fails. The held native scope cannot retry them.
                     self.originals
@@ -972,7 +992,9 @@ impl PacketControl {
                         .get(&id)
                         .ok_or(ProviderError::Frame("recurring Observe result absent"))?
                         .1;
-                    if let Err(error) = preparation.prepare(reply, &mut self.fenced) {
+                    if !preparation.attempted
+                        && let Err(error) = preparation.prepare(reply, &mut self.fenced)
+                    {
                         self.fenced = true;
                         return Err(error);
                     }
@@ -994,6 +1016,7 @@ impl PacketControl {
             Err(error) => {
                 if selected_observe.is_some()
                     || suffix_observation.is_some()
+                    || producer_action.is_some()
                     || self.native_effect_attempted
                     || preparation.attempted
                 {
@@ -1082,6 +1105,7 @@ impl PacketControl {
         restoration_activation: Option<
             &super::service::ack_emitter::OriginalRestorationActivationPermit,
         >,
+        producer_action: Option<&super::service::ack_emitter::OriginalRestoredProducerRead<'_>>,
     ) -> Result<PacketControlReply, ProviderError> {
         if request.body.get("extensions").is_some_and(|extensions| {
             extensions
@@ -1184,7 +1208,7 @@ impl PacketControl {
             RequestBody::WorldActivate(activate) => {
                 self.activate_world(request, activate, preparation, restoration_activation)
             }
-            RequestBody::Begin(begin) => self.begin(request, begin, preparation),
+            RequestBody::Begin(begin) => self.begin(request, begin, preparation, producer_action),
             RequestBody::Input(input) => self.input(request, input),
             RequestBody::Poll(_) => self.poll(request),
             RequestBody::Cancel(_) => self.cancel(request),
@@ -1341,6 +1365,7 @@ impl PacketControl {
         request: &Envelope,
         begin: BeginRequest,
         preparation: &mut ReplyPreparation<'_>,
+        producer_action: Option<&super::service::ack_emitter::OriginalRestoredProducerRead<'_>>,
     ) -> Result<PacketControlReply, ProviderError> {
         let operation = request
             .operation_id
@@ -1413,18 +1438,34 @@ impl PacketControl {
                         return Err(ProviderError::Conflict("packet restored model incomplete"));
                     }
                 };
-            super::common::PacketNative5CommonGrant::authenticate_live(
-                super::common::LiveNative5Grant {
-                    bytes: input,
-                    selection: &self.selection,
-                    active,
-                    operation,
-                    begin: &begin,
-                    arguments: &arguments,
-                    installed,
-                    consumed,
-                },
-            )?;
+            if let Some(permit) = producer_action {
+                super::common::PacketNative5CommonGrant::authenticate_restored_producer(
+                    super::common::LiveNative5Grant {
+                        bytes: input,
+                        selection: &self.selection,
+                        active,
+                        operation,
+                        begin: &begin,
+                        arguments: &arguments,
+                        installed,
+                        consumed,
+                    },
+                    permit,
+                )?;
+            } else {
+                super::common::PacketNative5CommonGrant::authenticate_live(
+                    super::common::LiveNative5Grant {
+                        bytes: input,
+                        selection: &self.selection,
+                        active,
+                        operation,
+                        begin: &begin,
+                        arguments: &arguments,
+                        installed,
+                        consumed,
+                    },
+                )?;
+            }
         } else if let NativeProgram::Connected(program) = &self.program {
             let installed =
                 self.connected_coordinator

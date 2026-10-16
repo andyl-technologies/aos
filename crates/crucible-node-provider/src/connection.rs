@@ -1073,3 +1073,6 @@ mod restored_response;
 pub(crate) use restored_response::{
     original_restored_response_counter_scratch_data, original_restored_response_data,
 };
+
+mod restored_producer;
+pub(crate) use restored_producer::original_restored_producer_receive_counter_scratch_data;

@@ -339,3 +339,16 @@ pub use restored_suffix::{
 };
 
 pub(crate) use restored_suffix::original_native_restored_suffix_observation_required_storage_data;
+
+/// Exposes closed borrowed lifecycle projections without enabling native dispatch.
+pub use restored_suffix::{
+    PacketRestoredProducerArgumentsData, PacketRestoredProducerLifecycleInputs,
+    PacketRestoredProducerLifecycleStorageData, PacketRestoredProducerPopulationData,
+    original_restored_producer_lifecycle_counter_scratch_data,
+    original_restored_producer_lifecycle_storage_data,
+};
+
+pub(crate) use restored_suffix::{
+    NativeRestoredProducerAttempt, native_closed_producer_action_counter_scratch_data,
+    native_closed_producer_action_row_data, original_restored_producer_ingress_row_data,
+};

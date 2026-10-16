@@ -23,6 +23,7 @@ pub(in crate::reference_packet::service::ack_emitter::native_boot) struct Native
     reservation: PacketRestoredSuffixReservationData,
     ledger: OriginalRestoredSuffixBudget,
     observe_attempts: Vec<Rc<RefCell<NativeRestoredSuffixObserveAttempt>>>,
+    producer_attempts: Vec<Rc<RefCell<NativeRestoredProducerAttempt>>>,
     raw7: [u8; 32],
     raw7_bytes: usize,
     raw5: [u8; 32],
@@ -212,6 +213,27 @@ impl NativeRestoredSuffixStartupOwner {
         Ok(())
     }
 
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn published_producer_upload_extent_data(
+        &self,
+        transfer: &str,
+    ) -> Result<usize, ProviderError> {
+        self.ensure_current()?;
+        let mut extent = None;
+        for previous in &self.producer_attempts {
+            if let Some(actual) = previous
+                .try_borrow()
+                .map_err(|_| borrowed())?
+                .published_upload_extent_data(transfer)?
+            {
+                if extent.is_some_and(|earlier| earlier != actual) {
+                    return Err(refused());
+                }
+                extent = Some(actual);
+            }
+        }
+        extent.ok_or_else(refused)
+    }
+
     /// Counts the fixed Box even when a failed attempt remains owned.
     ///
     /// # Errors
@@ -235,6 +257,7 @@ impl NativeRestoredSuffixStartupOwner {
             reservation: _,
             ledger: _,
             observe_attempts,
+            producer_attempts,
             raw7: _,
             raw7_bytes,
             raw5: _,
@@ -254,6 +277,15 @@ impl NativeRestoredSuffixStartupOwner {
         )?;
         for attempt in observe_attempts {
             observer.shared_original(crate::retained_metadata::aliases::MetadataSharedKind::NativeRestoredSuffixObservationAttempt, attempt.as_ref())?;
+            attempt
+                .try_borrow()
+                .map_err(|_| borrowed())?
+                .observe_retained_data(observer)?;
+        }
+        observer
+            .vector::<Rc<RefCell<NativeRestoredProducerAttempt>>>(producer_attempts.capacity())?;
+        for attempt in producer_attempts {
+            observer.shared_original(crate::retained_metadata::aliases::MetadataSharedKind::NativeRestoredProducerAttempt, attempt.as_ref())?;
             attempt
                 .try_borrow()
                 .map_err(|_| borrowed())?
@@ -544,6 +576,7 @@ impl NativeAckBoot {
                 reservation: suffix,
                 ledger: OriginalRestoredSuffixBudget::new_data(suffix)?,
                 observe_attempts: Vec::new(),
+                producer_attempts: Vec::new(),
                 raw7: expected.launch_digest,
                 raw7_bytes: raw7.len(),
                 raw5: *blake3::hash(nested).as_bytes(),
@@ -724,7 +757,8 @@ pub(crate) fn original_restored_suffix_native_counter_scratch_data() -> usize {
         + size_of::<std::slice::Iter<'static, usize>>()
         + size_of::<&usize>();
 
-    owner_loans
+    producer::counter_scratch_data()
+        + owner_loans
         + original_native_restored_suffix_observation_counter_scratch_data()
         + size_of::<Rc<RefCell<NativeRestoredSuffixObserveAttempt>>>()
         + size_of::<Option<&Rc<RefCell<NativeRestoredSuffixObserveAttempt>>>>()
@@ -1260,3 +1294,7 @@ mod witness_projection_tests {
         );
     }
 }
+
+#[path = "restored_suffix/producer.rs"]
+mod producer;
+pub(crate) use producer::OriginalRestoredProducerRead;

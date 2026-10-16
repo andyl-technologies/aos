@@ -44,6 +44,12 @@ pub(crate) fn response(
             observer.observe(retired_request_ids)?;
             observer.observe(retired_operation_ids)
         }
+        Some(MethodResult::BlobBegin(value)) => observer.observe(&value.transfer_id),
+        Some(MethodResult::BlobChunk(value)) => observer.observe(&value.transfer_id),
+        Some(MethodResult::BlobFinish(value)) => {
+            observer.observe(&value.transfer_id)?;
+            observer.observe(&value.content)
+        }
         Some(
             MethodResult::Hello(_)
             | MethodResult::Discover(_)
@@ -54,9 +60,6 @@ pub(crate) fn response(
             | MethodResult::QuantumClose(_)
             | MethodResult::WorldActivate(_)
             | MethodResult::Abort(_)
-            | MethodResult::BlobBegin(_)
-            | MethodResult::BlobChunk(_)
-            | MethodResult::BlobFinish(_)
             | MethodResult::Release(_)
             | MethodResult::QuantumBegin(_)
             | MethodResult::Pause(_)
@@ -114,6 +117,9 @@ pub(crate) const fn counter_scratch_data() -> usize {
         + size_of::<&PollResult>()
         + size_of::<&ObserveResult>()
         + size_of::<&InputResult>()
+        + size_of::<&BlobBeginResult>()
+        + size_of::<&BlobChunkResult>()
+        + size_of::<&BlobFinishResult>()
         + size_of::<Result<(), ProviderError>>()
 }
 

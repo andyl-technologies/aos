@@ -214,3 +214,22 @@ pub use observation::{
 };
 
 pub(crate) use observation::original_native_restored_suffix_observation_required_storage_data;
+
+#[path = "restored_suffix/producer_lifecycle.rs"]
+mod producer_lifecycle;
+pub use producer_lifecycle::{
+    PacketRestoredProducerArgumentsData, PacketRestoredProducerLifecycleInputs,
+    PacketRestoredProducerLifecycleStorageData, PacketRestoredProducerPopulationData,
+    original_restored_producer_lifecycle_counter_scratch_data,
+    original_restored_producer_lifecycle_storage_data,
+};
+
+#[path = "restored_suffix/producer_ingress.rs"]
+mod producer_ingress;
+pub(crate) use producer_ingress::{
+    NativeRestoredProducerAttempt, original_restored_producer_ingress_row_data,
+};
+
+pub(crate) use producer_lifecycle::{
+    native_closed_producer_action_counter_scratch_data, native_closed_producer_action_row_data,
+};

@@ -19,6 +19,8 @@ pub enum MetadataSharedKind {
     NativeRestorationObservationAttempt,
     /// Names a separately spent recurring Observe attempt under startup16.
     NativeRestoredSuffixObservationAttempt,
+    /// Names an independently owned closed Producer raw/typed receive partial.
+    NativeRestoredProducerAttempt,
     /// Names an original protocol-capture actor header.
     ProtocolOwner,
     /// Names the original registrar's epoch counter backing.
@@ -82,6 +84,7 @@ impl MetadataSharedKind {
             Self::NativeRestoredSuffixObservationAttempt => {
                 "native-restored-suffix-observe-attempt"
             }
+            Self::NativeRestoredProducerAttempt => "native-restored-producer-attempt",
             Self::ProtocolOwner => "protocol-owner",
             Self::RegistrarEpoch => "registrar-epoch",
             Self::RegistrarGate => "registrar-gate",

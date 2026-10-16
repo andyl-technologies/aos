@@ -161,11 +161,19 @@ pub fn original_native_restored_suffix_startup_storage_data(
     {
         return Err(invalid());
     }
-    let one_ingress = original_restored_suffix_observe_ingress_row_data(frame_bytes)?;
+    let one_ingress = match &launch.program {
+        crate::reference_packet::service::connected::PacketConnectedSourceProgram::Producer {
+            ..
+        } => super::producer_ingress::original_restored_producer_ingress_row_data(frame_bytes)?,
+        crate::reference_packet::service::connected::PacketConnectedSourceProgram::Reactive {
+            ..
+        } => original_restored_suffix_observe_ingress_row_data(frame_bytes)?,
+    };
     let scratch = original_native_restored_suffix_startup_counter_scratch_data();
-    // The new-only closed Observe receive owner is included independently.
-    // Later Begin/Input/retirement shapes remain unsupported until their own
-    // typed-body and current-model rows have been added before startup.
+    // Producer prepays its whole closed raw/typed ingress union before any
+    // method is known. Every actual action still independently debits the old
+    // finite action window; these bytes do not enlarge or renew that window.
+    // Reactive retains its original closed Observe-only ingress exactly.
     let ingress = PacketNativeStartupAllocationRow {
         retained_requested_bytes: u64_data(mul(
             originals,
@@ -389,7 +397,8 @@ fn exhausted() -> ProviderError {
 /// The Core member, 392-byte preamble, new wire/parser/native owner and all
 /// Source/Host callback owners remain independent external obligations.
 pub fn original_native_restored_suffix_startup_counter_scratch_data() -> usize {
-    projection_counter_scratch_data()
+    super::producer_ingress::counter_scratch_data()
+        + projection_counter_scratch_data()
         + crate::reference_packet::service::ack_emitter::original_restored_suffix_native_counter_scratch_data() * 2
 }
 

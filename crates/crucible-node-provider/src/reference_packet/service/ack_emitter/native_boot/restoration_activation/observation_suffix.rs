@@ -614,3 +614,6 @@ impl OriginalRestoredSuffixPostObservation {
         )
     }
 }
+
+#[path = "observation_suffix/producer.rs"]
+mod producer;
