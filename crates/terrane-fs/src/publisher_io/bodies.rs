@@ -21,7 +21,7 @@ pub(super) struct BodyIo {
     uid: u32,
     gid: u32,
     device: u64,
-    #[cfg(test)]
+    #[cfg(feature = "native-test-fixtures")]
     finish_first_unlink: std::sync::Mutex<Option<super::worker::WorkerGate>>,
 }
 
@@ -87,18 +87,18 @@ impl BodyIo {
             uid: config.content_uid,
             gid: config.content_gid,
             device,
-            #[cfg(test)]
+            #[cfg(feature = "native-test-fixtures")]
             finish_first_unlink: std::sync::Mutex::new(None),
         })
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "native-test-fixtures")]
     pub(super) fn with_finish_gate(mut self, gate: Option<super::worker::WorkerGate>) -> Self {
         self.finish_first_unlink = std::sync::Mutex::new(gate);
         self
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "native-test-fixtures")]
     fn wait_finish_gate(&self) -> io::Result<()> {
         let gate = self
             .finish_first_unlink
@@ -483,7 +483,7 @@ impl EncodedUnit {
         for member in &self.members {
             fs::unlinkat(&io.pending, member.pending.as_str(), AtFlags::empty())?;
             io.pending.sync_all()?;
-            #[cfg(test)]
+            #[cfg(feature = "native-test-fixtures")]
             if member.lease_class == 0 && self.members.len() > 1 {
                 // The fixture can now cause a genuine second unlink failure.
                 // It supplies no success result, state acknowledgment or proof.
