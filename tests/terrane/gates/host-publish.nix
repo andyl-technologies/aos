@@ -103,7 +103,8 @@
       mkdir -p /var/lib/terrane-publication /mnt/terrane-publication
       # The loop image lives on the guest's persistent root disk, never /tmp.
       truncate -s 96M /var/lib/terrane-publication/verity.img
-      mkfs.ext4 -F -O verity /var/lib/terrane-publication/verity.img
+      # The production Merkle block is 4096 bytes and must fit one fs block.
+      mkfs.ext4 -F -b 4096 -O verity /var/lib/terrane-publication/verity.img
       trap 'umount /mnt/terrane-publication || true; rm -f /var/lib/terrane-publication/verity.img' EXIT
       umask 077
       mount -t ext4 -o loop /var/lib/terrane-publication/verity.img /mnt/terrane-publication
