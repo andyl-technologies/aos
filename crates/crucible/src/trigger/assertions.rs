@@ -729,8 +729,8 @@ impl OfflineAssertionChecker {
     /// prefix has no recorded offset, or
     /// [`OfflineAssertionCheckError::EventLogOffsetMismatch`] when a supplied
     /// offset's event count does not match the evaluated prefix length, or
-    /// [`OfflineAssertionCheckError::NamedPredicate`] when a named predicate
-    /// failed closed.
+    /// [`OfflineAssertionCheckError::Fold`] when a named predicate or console
+    /// matcher failed closed.
     pub fn check_run_with_oracle<O>(
         &self,
         properties: &Properties,
