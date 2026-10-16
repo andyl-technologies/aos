@@ -2,6 +2,21 @@
 
 use super::*;
 
+/// Copies every scheduler entry `campaign` retained, for assertions.
+pub(super) fn retained_event_log(
+    campaign: &GuardedDefaultCampaignRun,
+) -> Vec<crucible::SchedulerEventLogEntry> {
+    let mut entries = Vec::new();
+    campaign
+        .evidence()
+        .try_for_each_event_log_entry(|entry| {
+            entries.push(entry.clone());
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .or_panic("read retained event evidence");
+    entries
+}
+
 pub(super) fn default_run_plan() -> RunInvocationPlan {
     let cli = Cli::parse_from(["crucible", "run", "builtin:happy-path.scn"]);
     let Commands::Run(args) = &cli.command else {

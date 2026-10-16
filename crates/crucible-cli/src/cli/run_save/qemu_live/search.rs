@@ -744,12 +744,8 @@ fn campaign_search_finding(
         configuration,
     )
     .map_err(|error| backend_error(format!("capture campaign search finding: {error}")))?;
-    let event_log = accepted
-        .evidence()
-        .event_log_entries()
+    let (event_frames, coverage) = accepted_event_frames(accepted.evidence())
         .map_err(|error| backend_error(format!("read campaign search event evidence: {error}")))?;
-    let event_frames = accepted_event_frames(&event_log);
-    let coverage = crucible::EventLogCoverageFeedback::from_event_log(&event_log);
     let evidence = if let Some(timeout) = timeout {
         let timeout = crucible::FailureTimeoutRecord::new(
             crucible::FailureTimeoutBudgetKind::ExecutionQuanta,
@@ -938,20 +934,33 @@ fn timeout_failure_material(
     )
 }
 
-fn accepted_event_frames(event_log: &[crucible::SchedulerEventLogEntry]) -> Vec<Vec<u8>> {
-    event_log
-        .iter()
-        .map(|entry| {
-            canonical_streaming_event_frame_bytes(&campaign_output_api::StreamingEventFrame {
-                generation: 0,
-                cursor: campaign_output_api::EventLogCursor::new(entry.sequence()),
-                next_cursor: campaign_output_api::EventLogCursor::new(
-                    entry.sequence().saturating_add(1),
-                ),
-                event: campaign_output_api::open_set_event_envelope_from_entry(entry),
-            })
+/// Streams the accepted attempt's log once into its event frames and coverage.
+fn accepted_event_frames(
+    evidence: &crucible_daemon::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+) -> Result<(Vec<Vec<u8>>, crucible::EventLogCoverageFeedback), crucible_daemon::AttemptEventLogError>
+{
+    let mut frames = Vec::new();
+    let mut coverage = crucible::EventLogCoverageFold::new();
+    evidence
+        .try_for_each_event_log_entry(|entry| {
+            frames.push(canonical_streaming_event_frame_bytes(
+                &campaign_output_api::StreamingEventFrame {
+                    generation: 0,
+                    cursor: campaign_output_api::EventLogCursor::new(entry.sequence()),
+                    next_cursor: campaign_output_api::EventLogCursor::new(
+                        entry.sequence().saturating_add(1),
+                    ),
+                    event: campaign_output_api::open_set_event_envelope_from_entry(entry),
+                },
+            ));
+            coverage.observe(entry);
+            Ok::<(), std::convert::Infallible>(())
         })
-        .collect()
+        .map_err(|error| match error {
+            crucible_daemon::AttemptEventLogVisitError::Log(error) => error,
+            crucible_daemon::AttemptEventLogVisitError::Visit(never) => match never {},
+        })?;
+    Ok((frames, coverage.finish()))
 }
 
 fn accepted_stop_label(stop: &StopOutcome) -> String {

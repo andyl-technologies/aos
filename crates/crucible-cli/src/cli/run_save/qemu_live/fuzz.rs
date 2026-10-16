@@ -320,17 +320,19 @@ fn authenticate_qemu_fuzz_campaign(
                 .iter()
                 .any(|decision| matches!(decision, crucible::Decision::Override(_))),
         );
-        let event_log = accepted
+        // One streamed pass keeps only the raw entries coverage refers to.
+        let mut coverage = crucible::EventLogCoverageFold::new();
+        let mut coverage_entries = Vec::new();
+        accepted
             .evidence()
-            .event_log_entries()
+            .try_for_each_event_log_entry(|entry| {
+                if coverage.observe(entry) {
+                    coverage_entries.push(entry.clone());
+                }
+                Ok::<(), std::convert::Infallible>(())
+            })
             .map_err(|error| artifact_error(format!("read QEMU fuzz event evidence: {error}")))?;
-        let feedback = crucible::EventLogCoverageFeedback::from_event_log(&event_log);
-        let coverage_entries = feedback
-            .projection()
-            .entries()
-            .iter()
-            .filter_map(|entry| event_log.get(entry.raw_index).cloned())
-            .collect();
+        let feedback = coverage.finish();
         let coverage_ids = feedback
             .projection()
             .entries()

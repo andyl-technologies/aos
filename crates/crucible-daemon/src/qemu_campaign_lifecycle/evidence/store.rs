@@ -4,8 +4,9 @@
 //! for finding replay and exact-failure retention. That copy is retained as
 //! sealed segments plus an open tail ([`AttemptEventLog`]) under the
 //! deployment's `maximum_event_log_bytes`, the same operational bound the
-//! modeled driver applies (RFC-0020 CCOMP-25 through CCOMP-28). Sealed segment
-//! bytes are shared, so a snapshot copies only the open tail.
+//! modeled driver applies (RFC-0020 CCOMP-25 through CCOMP-28). An executor
+//! attempt seals the copy into its own directory, like the driver's log.
+//! Sealed segments are shared, so a snapshot copies only the open tail.
 
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
@@ -19,7 +20,7 @@ use super::{
 use crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES;
 use crate::attempt_event_log::{
     AttemptEventLog, AttemptEventLogError, AttemptEventLogVisitError, AttemptLogSegmentRef,
-    MAX_ATTEMPT_LOG_ENTRY_BYTES, MemorySegmentStore,
+    AttemptLogStore, MAX_ATTEMPT_LOG_ENTRY_BYTES,
 };
 
 /// Scheduler progress and reproduction evidence from one QEMU attempt.
@@ -109,16 +110,11 @@ impl QemuAttemptExecutionEvidenceSnapshot {
         self.event_log.try_for_each_from(0, visit)
     }
 
-    /// Copies every retained scheduler entry into memory.
-    ///
-    /// Prefer [`Self::try_for_each_event_log_entry`] where a single ordered
-    /// pass suffices; this copy is proportional to the whole attempt.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AttemptEventLogError`] when a sealed segment cannot be read
-    /// back.
-    pub fn event_log_entries(&self) -> Result<Vec<SchedulerEventLogEntry>, AttemptEventLogError> {
+    /// Copies every retained scheduler entry into memory, for assertions.
+    #[cfg(test)]
+    pub(crate) fn event_log_entries(
+        &self,
+    ) -> Result<Vec<SchedulerEventLogEntry>, AttemptEventLogError> {
         self.event_log.entries_from(0)
     }
 
@@ -149,12 +145,14 @@ impl QemuAttemptExecutionEvidenceSnapshot {
 #[derive(Clone, Debug)]
 struct RecordedEventLog {
     maximum_bytes: u64,
-    log: Option<AttemptEventLog<MemorySegmentStore>>,
+    /// Store the log seals into, taken when the first entry is recorded.
+    store: Option<AttemptLogStore>,
+    log: Option<AttemptEventLog<AttemptLogStore>>,
 }
 
 impl Default for RecordedEventLog {
     fn default() -> Self {
-        Self::new(DEFAULT_MAXIMUM_EVENT_LOG_BYTES)
+        Self::new(DEFAULT_MAXIMUM_EVENT_LOG_BYTES, None)
     }
 }
 
@@ -169,9 +167,11 @@ impl PartialEq for RecordedEventLog {
 impl Eq for RecordedEventLog {}
 
 impl RecordedEventLog {
-    const fn new(maximum_bytes: u64) -> Self {
+    /// Starts an empty recording that seals into `store`, or into memory.
+    const fn new(maximum_bytes: u64, store: Option<AttemptLogStore>) -> Self {
         Self {
             maximum_bytes,
+            store,
             log: None,
         }
     }
@@ -207,13 +207,11 @@ impl RecordedEventLog {
         let appended = match &mut self.log {
             Some(log) => log.append_all(entries),
             None => {
-                let mut log = AttemptEventLog::new(
-                    MemorySegmentStore::default(),
-                    self.maximum_bytes,
-                    first.sequence(),
-                );
+                let store = self.store.clone().unwrap_or_default();
+                let mut log = AttemptEventLog::new(store, self.maximum_bytes, first.sequence());
                 let appended = log.append_all(entries);
                 if appended.is_ok() {
+                    self.store = None;
                     self.log = Some(log);
                 }
                 appended
@@ -284,10 +282,17 @@ impl QemuAttemptExecutionEvidence {
     }
 
     /// Clears the evidence for a new attempt bounded by `maximum_event_log_bytes`.
-    pub(super) fn reset(&self, maximum_event_log_bytes: u64) -> Result<(), SchedulerError> {
+    ///
+    /// The recorded log seals into `store` when one is given, and into memory
+    /// otherwise.
+    pub(super) fn reset(
+        &self,
+        maximum_event_log_bytes: u64,
+        store: Option<AttemptLogStore>,
+    ) -> Result<(), SchedulerError> {
         let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
         *snapshot = QemuAttemptExecutionEvidenceSnapshot {
-            event_log: RecordedEventLog::new(maximum_event_log_bytes),
+            event_log: RecordedEventLog::new(maximum_event_log_bytes, store),
             ..QemuAttemptExecutionEvidenceSnapshot::default()
         };
         Ok(())
@@ -885,6 +890,53 @@ mod tests {
     }
 
     #[test]
+    fn recordings_under_a_namespace_seal_into_their_own_directory() {
+        let parent = tempfile::tempdir().expect("temporary parent");
+        let namespace = crate::AttemptLogNamespace::create(parent.path().join("event-logs"))
+            .expect("namespace");
+        let evidence = QemuAttemptExecutionEvidence::default();
+        let frontier = VirtualTime { ticks: 19 };
+        let reason = "segment-fixture-".repeat(4096);
+        let entries = (0..200)
+            .map(|sequence| {
+                SchedulerEventLogEntry::execution_budget_exhausted(sequence, frontier, &reason)
+            })
+            .collect::<Vec<_>>();
+        evidence
+            .reset(
+                DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+                Some(namespace.create_store().expect("attempt store")),
+            )
+            .expect("bind the attempt store");
+
+        evidence
+            .record(1, frontier, &entries)
+            .expect("record the attempt");
+        let snapshot = evidence.snapshot().expect("snapshot");
+        let log = snapshot.event_log.log.as_ref().expect("recorded log");
+        let AttemptLogStore::Directory(store) = log.store() else {
+            panic!("namespace recordings seal to disk");
+        };
+        let directory = store.directory().path().to_path_buf();
+        let files = std::fs::read_dir(&directory)
+            .expect("list attempt segments")
+            .count();
+
+        assert!(!log.sealed_segments().is_empty());
+        assert_eq!(files, log.sealed_segments().len());
+        assert_eq!(
+            snapshot.event_log_entries().expect("read evidence"),
+            entries
+        );
+        evidence
+            .reset(DEFAULT_MAXIMUM_EVENT_LOG_BYTES, None)
+            .expect("start the next attempt");
+        assert!(directory.is_dir(), "the snapshot still reads the directory");
+        drop(snapshot);
+        assert!(!directory.exists());
+    }
+
+    #[test]
     fn event_byte_limit_refusal_preserves_the_complete_snapshot() {
         let retained_entry = SchedulerEventLogEntry::execution_budget_exhausted(
             0,
@@ -908,7 +960,9 @@ mod tests {
         // The bound admits exactly the retained entry, so any further entry
         // exceeds it.
         let evidence = QemuAttemptExecutionEvidence::default();
-        evidence.reset(retained_bytes).expect("bound the attempt");
+        evidence
+            .reset(retained_bytes, None)
+            .expect("bound the attempt");
         evidence
             .record(7, VirtualTime { ticks: 19 }, &[retained_entry])
             .expect("seed retained event evidence");

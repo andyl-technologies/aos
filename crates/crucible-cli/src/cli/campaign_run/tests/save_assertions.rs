@@ -47,10 +47,7 @@ pub(super) fn assert_campaign_save_exports_closure(
             else {
                 panic!("expected authenticated campaign marker event proof");
             };
-            let marker_entry = campaign
-                .evidence()
-                .event_log_entries()
-                .or_panic("read retained marker evidence")
+            let marker_entry = retained_event_log(&campaign)
                 .into_iter()
                 .find(|entry| entry.sequence() == *sequence)
                 .or_panic("retained marker proof entry");
@@ -424,10 +421,7 @@ pub(super) fn assert_campaign_save_exports_closure(
         }
 
         let handle = std::fs::read_to_string(&output).or_panic("read v6 handle for tampering");
-        let event_log = campaign
-            .evidence()
-            .event_log_entries()
-            .or_panic("read retained observation evidence");
+        let event_log = retained_event_log(&campaign);
         for (mutation, forged) in recomputed_observation_proof_forgeries(source_proof, &event_log) {
             let forged_handle = handle_with_observation_proof(&handle, &forged);
             let error = decode_savepoint_handle(forged_handle.as_bytes())

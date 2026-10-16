@@ -1682,6 +1682,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   quota-accounted attempt storage with an open tail, remove the whole-log entry
   and byte bounds, enforce the operational `maximum_event_log_bytes` limit,
   publish segments as trace leaves, and resume from chain positions.
+  Executor and observer logs seal into per-attempt directories, and
+  prepared-result journals own copies of the segments their results
+  reference. Checkpoint- and fork-offset seals and chain-position resume
+  remain open.
 - [ ] **T-CAM-4.12** Convert finding replay captures, CLI explanation,
   objective and observation-stop verification, remote resume, hot-fork
   materialization, and the campaign trace protocol to segment-by-segment

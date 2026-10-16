@@ -455,8 +455,13 @@ impl<F> QemuObservedFreshAttemptLifecycleFactory<F> {
         source: &crucible::ScenarioDefForm,
         context: &AttemptExecutionContext,
     ) -> Result<Vec<NodeId>, AttemptWorkerFailure<SchedulerError>> {
+        let store = context.create_event_log_store().map_err(|error| {
+            AttemptWorkerFailure::Terminal(SchedulerError::BoundaryViolation {
+                message: format!("create QEMU execution evidence log directory: {error}"),
+            })
+        })?;
         self.evidence
-            .reset(context.maximum_event_log_bytes())
+            .reset(context.maximum_event_log_bytes(), store)
             .map_err(AttemptWorkerFailure::Retryable)?;
         let vm_nodes = source.world().vm_nodes();
         if vm_nodes.len() > MAX_TERMINAL_FINGERPRINT_SAMPLES {

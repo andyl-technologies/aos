@@ -90,6 +90,21 @@ maximum_event_log_bytes = "4GiB"
   content-addressed trace leaf before publishing any manifest that references
   it, and MUST fail closed when a referenced segment is absent.
 
+The packaged executor's attempt storage is an executor-owned namespace under
+its run-state root. Every attempt log, both the modeled driver's and the
+observer's copy, seals into its own directory there, removed when the last
+log, evidence bundle, or prepared result that reads it is dropped. The
+namespace is retired at daemon startup, before any attempt runs. A prepared
+result names its segments by identity, and its prepared-result journal keeps
+synchronized copies of exactly those segments, so publication after a restart
+never depends on the retired namespace:
+
+```text
+<run-state>/campaign-attempt-event-logs/
+  attempt-<16 hex digits>/<64 hex digits>.segment
+<run-state>/campaign-prepared-results/<journal>/segments/<64 hex digits>.segment
+```
+
 ## 15.4 Bounded evaluation state
 
 The condition prefix seen by triggers and assertions becomes accumulated

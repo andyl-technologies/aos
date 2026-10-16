@@ -10,12 +10,14 @@ pub(super) use backend_loop::HeldDeliveryCeiling;
 pub(super) use backend_loop::HeldRunLineage;
 use causal_digest::causal_projection_entry;
 pub use causal_digest::{EventLogCausalDigest, EventLogCausalSummary, is_causal_event_log_entry};
+mod coverage_fold;
 mod observation_append;
 pub use backend_loop::{
     BackendNetworkOutputInterceptor, BackendNetworkSettlement, BackendQuantumLoop,
     FailedCapNegotiation, FailedDispatchResolution, FailedInputResolution, HeldHostStopKind,
     HeldHostStopWitness, NoopBackendNetworkOutputInterceptor,
 };
+pub use coverage_fold::EventLogCoverageFold;
 
 /// Terminal verdict emitted by a scenario trigger at a quantum boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2150,27 +2152,11 @@ impl EventLogCoverageProjection {
 pub fn event_log_coverage_projection(
     entries: &[SchedulerEventLogEntry],
 ) -> EventLogCoverageProjection {
-    let entries = entries
-        .iter()
-        .enumerate()
-        .filter_map(|(raw_index, entry)| event_log_coverage_entry(raw_index, entry))
-        .collect::<Vec<_>>();
-    let unique_material = entries
-        .iter()
-        .map(|entry| event_log_coverage_observation_material(&entry.observation))
-        .collect::<BTreeSet<_>>();
-    let content_hash = if unique_material.is_empty() {
-        ContentHash::default()
-    } else {
-        ContentHash::from_canonical_material(
-            "crucible.scheduler.event-log.coverage-projection.v1",
-            &unique_material.into_iter().collect::<Vec<_>>().join("\n"),
-        )
-    };
-    EventLogCoverageProjection {
-        entries,
-        content_hash,
+    let mut fold = EventLogCoverageFold::new();
+    for entry in entries {
+        fold.observe(entry);
     }
+    fold.into_projection()
 }
 
 /// Returns the checkpoint coverage fingerprint derived from `entries`.

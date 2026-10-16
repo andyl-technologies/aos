@@ -1205,27 +1205,35 @@ fn campaign_run_report_with_state(
         evidence.execution_fingerprints(),
         evidence.terminal_fingerprints(),
     )?;
-    let event_log = evidence
-        .event_log_entries()
-        .map_err(|error| campaign_run_error("read scheduler event evidence", error))?;
-    let streamed_events = event_log
-        .iter()
-        .map(serde_json::to_string)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| campaign_run_error("encode scheduler event evidence", error))?;
-    let streamed_event_frames = event_log
-        .iter()
-        .map(|entry| {
-            canonical_streaming_event_frame_bytes(&campaign_output_api::StreamingEventFrame {
-                generation: 0,
-                cursor: campaign_output_api::EventLogCursor::new(entry.sequence()),
-                next_cursor: campaign_output_api::EventLogCursor::new(
-                    entry.sequence().saturating_add(1),
-                ),
-                event: campaign_output_api::open_set_event_envelope_from_entry(entry),
-            })
+    // The report carries every event in two encodings plus coverage; build
+    // them in one streamed pass instead of first copying the whole log.
+    let mut streamed_events = Vec::new();
+    let mut streamed_event_frames = Vec::new();
+    let mut coverage = crucible::EventLogCoverageFold::new();
+    evidence
+        .try_for_each_event_log_entry(|entry| {
+            coverage.observe(entry);
+            streamed_events.push(serde_json::to_string(entry)?);
+            streamed_event_frames.push(canonical_streaming_event_frame_bytes(
+                &campaign_output_api::StreamingEventFrame {
+                    generation: 0,
+                    cursor: campaign_output_api::EventLogCursor::new(entry.sequence()),
+                    next_cursor: campaign_output_api::EventLogCursor::new(
+                        entry.sequence().saturating_add(1),
+                    ),
+                    event: campaign_output_api::open_set_event_envelope_from_entry(entry),
+                },
+            ));
+            Ok::<(), serde_json::Error>(())
         })
-        .collect();
+        .map_err(|error| match error {
+            crucible_daemon::AttemptEventLogVisitError::Log(error) => {
+                campaign_run_error("read scheduler event evidence", error)
+            }
+            crucible_daemon::AttemptEventLogVisitError::Visit(error) => {
+                campaign_run_error("encode scheduler event evidence", error)
+            }
+        })?;
     let watch_statuses = if watch_streams_live_status {
         campaign
             .watch_frames()
@@ -1261,7 +1269,7 @@ fn campaign_run_report_with_state(
             .collect(),
         streamed_events,
         streamed_event_frames,
-        coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&event_log),
+        coverage_feedback: coverage.finish(),
         execution_fingerprints,
         resolved_effect_trace: evidence.resolved_effect_trace().map(ToOwned::to_owned),
         acknowledged_commands: Vec::new(),
