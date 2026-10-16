@@ -7,7 +7,8 @@
 use super::{Companion, Contract};
 
 const OWNER_DECLARATION: &str = r#"pub trait ProductionVmCleanupOwner: Send {
-    fn retry_cleanup(&mut self) -> Result<(), SchedulerError>;
+    type Failure: std::error::Error + Send + 'static;
+    fn retry_cleanup(&mut self) -> Result<(), Self::Failure>;
 }"#;
 
 const HANDOFF_SIGNATURE: &str =
@@ -15,8 +16,10 @@ const HANDOFF_SIGNATURE: &str =
 
 const CLEANUP_DECLARATIONS: &[(&str, usize)] = &[
     (OWNER_DECLARATION, 1),
+    ("type Failure: std::error::Error + Send + 'static;", 3),
     (
         r#"pub trait ProductionVmCleanupHandoff: Send {
+    type Failure: std::error::Error + Send + 'static;
     fn retry(&mut self) -> Result<ProductionVmCleanupStage, LifecycleApiError>;"#,
         1,
     ),
@@ -24,9 +27,9 @@ const CLEANUP_DECLARATIONS: &[(&str, usize)] = &[
         "fn stage(&mut self) -> Result<ProductionVmCleanupStage, LifecycleApiError>;",
         1,
     ),
-    ("fn first_failure(&self) -> Option<&SchedulerError>;", 1),
+    ("fn first_failure(&self) -> Option<&Self::Failure>;", 1),
     (
-        "fn take_first_failure(&mut self) -> Option<SchedulerError>;",
+        "fn take_first_failure(&mut self) -> Option<Self::Failure>;",
         1,
     ),
 ];
@@ -45,8 +48,16 @@ const SAME_OWNER_FORWARDER: &str = r#"fn retry_cleanup(&mut self) -> Result<(), 
 // mutation removes its parameters. The expression binds the entire method.
 const FORWARDER_PARAMETERS: &str = "(&mut self) -> Result<(), crucible::SchedulerError>";
 const OWNER_IMPLEMENTATION: &str = "impl crucible_api::ProductionVmCleanupOwner for";
-const ONE_FORWARDER: &[(&str, usize)] = &[(OWNER_IMPLEMENTATION, 1), (FORWARDER_PARAMETERS, 1)];
-const FOUR_FORWARDERS: &[(&str, usize)] = &[(OWNER_IMPLEMENTATION, 4), (FORWARDER_PARAMETERS, 4)];
+const ONE_FORWARDER: &[(&str, usize)] = &[
+    (OWNER_IMPLEMENTATION, 1),
+    (FORWARDER_PARAMETERS, 1),
+    ("type Failure = crucible::SchedulerError;", 1),
+];
+const FOUR_FORWARDERS: &[(&str, usize)] = &[
+    (OWNER_IMPLEMENTATION, 4),
+    (FORWARDER_PARAMETERS, 4),
+    ("type Failure = crucible::SchedulerError;", 4),
+];
 
 const FORWARDING_COMPANIONS: &[Companion] = &[
     Companion {
@@ -57,7 +68,7 @@ const FORWARDING_COMPANIONS: &[Companion] = &[
         path: "crates/crucible-daemon/src/vm_lifecycle.rs",
         required: &[
             (
-                "pub trait ProductionVmNodeLauncher: ProductionVmCleanupOwner {",
+                "pub trait ProductionVmNodeLauncher: ProductionVmCleanupOwner<Failure = crucible::SchedulerError> {",
                 1,
             ),
             (
@@ -81,15 +92,16 @@ pub(super) const CONTRACTS: &[Contract] = &[
         target: "src/cleanup_owner",
         required: &[
             ("pub trait ProductionVmCleanupOwner: Send {", 1),
-            ("(&mut self) -> Result<(), SchedulerError>;", 1),
+            ("type Failure: std::error::Error + Send + 'static;", 3),
+            ("(&mut self) -> Result<(), Self::Failure>;", 1),
             ("pub trait ProductionVmCleanupHandoff: Send {", 1),
             (
                 "(&mut self) -> Result<ProductionVmCleanupStage, LifecycleApiError>;",
                 2,
             ),
-            ("fn first_failure(&self) -> Option<&SchedulerError>;", 1),
+            ("fn first_failure(&self) -> Option<&Self::Failure>;", 1),
             (
-                "fn take_first_failure(&mut self) -> Option<SchedulerError>;",
+                "fn take_first_failure(&mut self) -> Option<Self::Failure>;",
                 1,
             ),
             (
@@ -188,8 +200,8 @@ mod tests {
                         "fn retry(&mut self) -> Result<ProductionVmCleanupStage, LifecycleApiError> { unreviewed_effect(); }",
                     ),
                     (
-                        "fn retry_cleanup(&mut self) -> Result<(), SchedulerError>;",
-                        "fn retry_cleanup(&mut self) -> Result<(), SchedulerError> { unreviewed_effect(); }",
+                        "fn retry_cleanup(&mut self) -> Result<(), Self::Failure>;",
+                        "fn retry_cleanup(&mut self) -> Result<(), Self::Failure> { unreviewed_effect(); }",
                     ),
                 ] {
                     let declaration = super::super::source_pattern(declaration);
@@ -199,8 +211,27 @@ mod tests {
                         "default cleanup body was classified as a declaration"
                     );
                 }
+                for replacement in ["", "type Failure = crucible::SchedulerError;"] {
+                    let changed = code.replacen(
+                        "type Failure: std::error::Error + Send + 'static;",
+                        replacement,
+                        1,
+                    );
+                    assert_ne!(changed, code);
+                    assert!(
+                        rejects(&changed),
+                        "missing/default associated failure passed"
+                    );
+                }
                 continue;
             }
+            let changed = code.replacen(
+                "type Failure = crucible::SchedulerError;",
+                "type Failure = OtherFailure;",
+                1,
+            );
+            assert_ne!(changed, code);
+            assert!(rejects(&changed), "foreign forwarding failure type passed");
             for replacement in [
                 "loop { ProductionVmNodeLauncher::finish(self) }",
                 "{ unreviewed_effect(); ProductionVmNodeLauncher::finish(self) }",

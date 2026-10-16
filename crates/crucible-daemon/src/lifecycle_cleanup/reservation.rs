@@ -22,7 +22,7 @@ impl LifecycleCleanupHandle {
         &self,
         controls: AuthenticatedNativeWorldControlLease,
     ) -> Result<
-        Box<dyn ProductionVmCleanupReservation>,
+        Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
         (AuthenticatedNativeWorldControlLease, LifecycleApiError),
     > {
         self.reserve_with(controls, |cell, controls| cell.controls = Some(controls))
@@ -32,7 +32,10 @@ impl LifecycleCleanupHandle {
         &self,
         input: T,
         attach: impl FnOnce(&mut CleanupCell, T),
-    ) -> Result<Box<dyn ProductionVmCleanupReservation>, (T, LifecycleApiError)> {
+    ) -> Result<
+        Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        (T, LifecycleApiError),
+    > {
         let queue = match self.queue.upgrade() {
             Some(queue) => queue,
             None => return Err((input, refusal("containing Main cleanup owner is absent"))),
@@ -55,14 +58,16 @@ impl LifecycleCleanupHandle {
 }
 
 impl ProductionVmCleanupReservation for CleanupReservation {
+    type Failure = crucible::SchedulerError;
+
     fn retain(
         self: Box<Self>,
-        owner: Box<dyn ProductionVmCleanupOwner>,
+        owner: Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
     ) -> Result<
-        Box<dyn ProductionVmCleanupHandoff>,
+        Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
         (
-            Box<dyn ProductionVmCleanupReservation>,
-            Box<dyn ProductionVmCleanupOwner>,
+            Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+            Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
         ),
     > {
         let Some(queue) = self.queue.upgrade() else {
@@ -71,8 +76,9 @@ impl ProductionVmCleanupReservation for CleanupReservation {
         let Some(slot) = queue.slots.get(self.index) else {
             return Err((self, owner));
         };
-        self.publish_owner(slot, owner)
-            .map(|receipt| receipt as Box<dyn ProductionVmCleanupHandoff>)
+        self.publish_owner(slot, owner).map(|receipt| {
+            receipt as Box<dyn ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>
+        })
     }
 }
 
@@ -120,12 +126,12 @@ impl CleanupReservation {
     fn publish_owner(
         self: Box<Self>,
         slot: &CleanupSlot,
-        owner: Box<dyn ProductionVmCleanupOwner>,
+        owner: Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
     ) -> Result<
         Box<Self>,
         (
-            Box<dyn ProductionVmCleanupReservation>,
-            Box<dyn ProductionVmCleanupOwner>,
+            Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+            Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
         ),
     > {
         if !slot.claim(CleanupPhase::Reserved, CleanupPhase::Publishing) {
@@ -196,6 +202,8 @@ impl CleanupReservation {
 }
 
 impl ProductionVmCleanupHandoff for CleanupReservation {
+    type Failure = crucible::SchedulerError;
+
     fn retry(&mut self) -> Result<ProductionVmCleanupStage, LifecycleApiError> {
         if self.observed == ProductionVmCleanupStage::Complete {
             return Ok(self.observed);

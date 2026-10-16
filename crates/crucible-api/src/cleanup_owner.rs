@@ -5,7 +5,6 @@
 //! A handoff consumes the already allocated owner; it does not allocate one.
 
 use crate::LifecycleApiError;
-use crucible::SchedulerError;
 
 /// Retains an existing backend body while retrying its physical cleanup.
 ///
@@ -13,12 +12,15 @@ use crucible::SchedulerError;
 /// Success permits destruction of that same body outside the queue lock; it
 /// does not return the containing charge until destruction itself completes.
 pub trait ProductionVmCleanupOwner: Send {
+    /// Failure retained in the receiving owner's existing cleanup history.
+    type Failure: std::error::Error + Send + 'static;
+
     /// Retries cleanup through this same owner's existing saved authority.
     ///
     /// # Errors
     /// Preserves the complete owner on physical refusal or uncertain custody.
     /// This operation admits no replacement Original, permit, epoch, or budget.
-    fn retry_cleanup(&mut self) -> Result<(), SchedulerError>;
+    fn retry_cleanup(&mut self) -> Result<(), Self::Failure>;
 }
 
 /// Occupies one authenticated cleanup cell before lifecycle effects begin.
@@ -30,6 +32,9 @@ pub trait ProductionVmCleanupOwner: Send {
 /// The containing Main service drains this queue before retiring its owner.
 /// Dropping a reservation alone must not release an uncertain cell.
 pub trait ProductionVmCleanupReservation: Send {
+    /// Failure retained in the receiving owner's existing cleanup history.
+    type Failure: std::error::Error + Send + 'static;
+
     /// Transfers the actual owner into this reservation's already occupied cell.
     ///
     /// Success returns this same preallocated token as an exact-cell handoff
@@ -44,12 +49,12 @@ pub trait ProductionVmCleanupReservation: Send {
     /// the same retry; refusal certifies neither cleanup nor a reusable cell.
     fn retain(
         self: Box<Self>,
-        owner: Box<dyn ProductionVmCleanupOwner>,
+        owner: Box<dyn ProductionVmCleanupOwner<Failure = Self::Failure>>,
     ) -> Result<
-        Box<dyn ProductionVmCleanupHandoff>,
+        Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure>>,
         (
-            Box<dyn ProductionVmCleanupReservation>,
-            Box<dyn ProductionVmCleanupOwner>,
+            Box<dyn ProductionVmCleanupReservation<Failure = Self::Failure>>,
+            Box<dyn ProductionVmCleanupOwner<Failure = Self::Failure>>,
         ),
     >;
 }
@@ -73,6 +78,9 @@ pub enum ProductionVmCleanupStage {
 /// Publication alone is not physical cleanup. The same token Box is retained
 /// throughout; no new Original, queue selection or allocation is supplied.
 pub trait ProductionVmCleanupHandoff: Send {
+    /// Failure retained in the receiving owner's existing cleanup history.
+    type Failure: std::error::Error + Send + 'static;
+
     /// Performs one bounded cleanup attempt on this exact cell and epoch.
     ///
     /// # Errors
@@ -95,12 +103,12 @@ pub trait ProductionVmCleanupHandoff: Send {
     ///
     /// Earlier refusal remains in the exact cell until completion is observed.
     /// This historical cause does not change a factual `Complete` stage.
-    fn first_failure(&self) -> Option<&SchedulerError>;
+    fn first_failure(&self) -> Option<&Self::Failure>;
 
     /// Moves the actual first cleanup cause from this completed receipt.
     ///
     /// Returns `None` until physical completion has transferred the cause from
     /// its exact cell, or after the same cause has already been taken. Moving
     /// history neither renews cleanup nor changes the completed physical fact.
-    fn take_first_failure(&mut self) -> Option<SchedulerError>;
+    fn take_first_failure(&mut self) -> Option<Self::Failure>;
 }

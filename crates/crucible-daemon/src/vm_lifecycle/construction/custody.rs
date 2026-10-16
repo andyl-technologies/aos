@@ -21,7 +21,9 @@ pub struct ProductionVmConstructionCustody {
     pub(super) phase: Mutex<Phase>,
     physically_closed: AtomicBool,
     #[cfg(target_os = "linux")]
-    pub(super) reservation: Option<Box<dyn crucible_api::ProductionVmCleanupReservation>>,
+    pub(super) reservation: Option<
+        Box<dyn crucible_api::ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+    >,
 }
 
 pub(super) enum Phase {
@@ -346,8 +348,12 @@ pub(super) enum FailureStorage {
         first: LifecycleApiError,
         returned: Mutex<
             Option<(
-                Box<dyn crucible_api::ProductionVmCleanupReservation>,
-                Box<dyn crucible_api::ProductionVmCleanupOwner>,
+                Box<
+                    dyn crucible_api::ProductionVmCleanupReservation<
+                            Failure = crucible::SchedulerError,
+                        >,
+                >,
+                Box<dyn crucible_api::ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
             )>,
         >,
     },
@@ -739,6 +745,8 @@ impl ProductionVmLifecycleLoop {
 }
 
 impl crucible_api::ProductionVmCleanupOwner for ProductionVmConstructionCustody {
+    type Failure = crucible::SchedulerError;
+
     fn retry_cleanup(&mut self) -> Result<(), SchedulerError> {
         ProductionVmConstructionCustody::retry_cleanup(self).map_err(|error| {
             SchedulerError::BoundaryViolation {

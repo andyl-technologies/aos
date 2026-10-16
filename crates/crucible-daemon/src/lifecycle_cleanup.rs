@@ -41,7 +41,7 @@ struct CleanupSlot {
 
 struct CleanupCell {
     epoch: u64,
-    owner: Option<Box<dyn ProductionVmCleanupOwner>>,
+    owner: Option<Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>>,
     controls: Option<AuthenticatedNativeWorldControlLease>,
     first_failure: Option<SchedulerError>,
     handoff: bool,

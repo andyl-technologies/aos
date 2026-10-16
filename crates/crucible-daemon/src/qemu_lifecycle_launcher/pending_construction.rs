@@ -20,7 +20,8 @@ pub(crate) struct PendingSourceConstruction<F: QemuAttemptResourceGuardFactory> 
     generation_storage: Option<crate::QemuAttemptGenerationStorage>,
     factory: Option<F>,
     world: Option<AuthenticatedNativeWorldCleanupLoan>,
-    reservation: Option<Box<dyn ProductionVmCleanupReservation>>,
+    reservation:
+        Option<Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>>,
     construction_custody: Option<Box<crate::ProductionVmConstructionCustody>>,
     // Remains here on genuine cell-admission refusal; no charge is discarded.
     controls: Option<AuthenticatedNativeWorldControlLease>,
@@ -119,7 +120,7 @@ where
             F::Guard,
             crate::QemuAttemptGenerationStorage,
             F,
-            Box<dyn ProductionVmCleanupReservation>,
+            Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
             Box<crate::ProductionVmConstructionCustody>,
         ),
         Box<Self>,
@@ -178,7 +179,10 @@ where
         mut self: Box<Self>,
         source: C,
     ) -> Result<
-        (C, Box<dyn crucible_api::ProductionVmCleanupHandoff>),
+        (
+            C,
+            Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+        ),
         SourceConstructionCustodyFailure<C>,
     > {
         let reservation = self.reservation.take();
@@ -394,6 +398,8 @@ where
     F: QemuAttemptResourceGuardFactory + Send + 'static,
     F::Guard: Send + 'static,
 {
+    type Failure = crucible::SchedulerError;
+
     fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
         ProductionVmNodeLauncher::finish(self).map_err(|error| {
             crucible::SchedulerError::BoundaryViolation {
@@ -408,7 +414,9 @@ where
     F: QemuAttemptResourceGuardFactory + Send + 'static,
     F::Guard: Send + 'static,
 {
-    fn take_cleanup_reservation(&mut self) -> Option<Box<dyn ProductionVmCleanupReservation>> {
+    fn take_cleanup_reservation(
+        &mut self,
+    ) -> Option<Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>> {
         self.reservation.take()
     }
     fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
@@ -510,8 +518,8 @@ pub struct SourceConstructionCustodyFailure<C = QemuVmRealizationError> {
     source: C,
     custody: Mutex<
         Option<(
-            Option<Box<dyn ProductionVmCleanupReservation>>,
-            Box<dyn ProductionVmCleanupOwner>,
+            Option<Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>>,
+            Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
         )>,
     >,
 }
@@ -519,8 +527,10 @@ pub struct SourceConstructionCustodyFailure<C = QemuVmRealizationError> {
 impl<C: std::error::Error + Send + Sync + 'static> SourceConstructionCustodyFailure<C> {
     fn new(
         source: C,
-        reservation: Option<Box<dyn ProductionVmCleanupReservation>>,
-        owner: Box<dyn ProductionVmCleanupOwner>,
+        reservation: Option<
+            Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+        >,
+        owner: Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
     ) -> Self {
         Self {
             source,
@@ -553,7 +563,12 @@ impl<C: std::error::Error + Send + Sync + 'static> SourceConstructionCustodyFail
     /// Expiry never manufactures Cleanup authority and is not consulted here.
     pub fn retry_publication(
         &mut self,
-    ) -> Result<Option<Box<dyn crucible_api::ProductionVmCleanupHandoff>>, &'static str> {
+    ) -> Result<
+        Option<
+            Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+        >,
+        &'static str,
+    > {
         let slot = self
             .custody
             .get_mut()
@@ -615,11 +630,16 @@ fn missing_pending(message: &'static str) -> QemuVmRealizationError {
 
 /// Publishes custody without executing or renewing any operation.
 pub(crate) fn retain_source_owner<C: std::error::Error + Send + Sync + 'static>(
-    reservation: Option<Box<dyn ProductionVmCleanupReservation>>,
-    owner: Box<dyn ProductionVmCleanupOwner>,
+    reservation: Option<
+        Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+    >,
+    owner: Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
     source: C,
 ) -> Result<
-    (C, Box<dyn crucible_api::ProductionVmCleanupHandoff>),
+    (
+        C,
+        Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+    ),
     SourceConstructionCustodyFailure<C>,
 > {
     let Some(reservation) = reservation else {
@@ -792,9 +812,14 @@ mod published_error_tests {
 
 /// Publishes normal disposal without constructing a speculative first error.
 pub(crate) fn publish_source_owner(
-    reservation: Option<Box<dyn ProductionVmCleanupReservation>>,
-    owner: Box<dyn ProductionVmCleanupOwner>,
-) -> Result<Box<dyn crucible_api::ProductionVmCleanupHandoff>, SourceConstructionCustodyFailure> {
+    reservation: Option<
+        Box<dyn ProductionVmCleanupReservation<Failure = crucible::SchedulerError>>,
+    >,
+    owner: Box<dyn ProductionVmCleanupOwner<Failure = crucible::SchedulerError>>,
+) -> Result<
+    Box<dyn crucible_api::ProductionVmCleanupHandoff<Failure = crucible::SchedulerError>>,
+    SourceConstructionCustodyFailure,
+> {
     let Some(reservation) = reservation else {
         return Err(SourceConstructionCustodyFailure::new(
             missing_pending("same Source observation has no authentic reservation"),

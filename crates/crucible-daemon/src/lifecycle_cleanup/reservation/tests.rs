@@ -21,6 +21,8 @@ struct FileOwner {
 }
 
 impl crucible_api::ProductionVmCleanupOwner for FileOwner {
+    type Failure = crucible::SchedulerError;
+
     fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
         ProductionVmNodeLauncher::finish(self).map_err(|error| {
             crucible::SchedulerError::BoundaryViolation {
