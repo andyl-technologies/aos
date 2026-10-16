@@ -218,7 +218,7 @@ crucible.campaign.finding-triage-replay-evidence	2	crucible-campaign::finding_tr
 crucible.campaign.finding-triage-replay-evidence-chunk	1	crucible-campaign::finding_triage_evidence	finding	gate:campaign-replay,gate:content-address
 crucible.campaign.archive-manifest	1	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address
 crucible.campaign.archive-inventory-page	1	crucible-campaign::archive	projection	gate:campaign-store-composition,gate:content-address
-crucible.campaign.finding-bundle	2	crucible-cli::cli_campaign::finding_bundle	export-directory	gate:campaign-replay,gate:campaign-store-composition
+crucible.campaign.finding-bundle	3	crucible-cli::cli_campaign::finding_bundle	export-directory	gate:campaign-replay,gate:campaign-store-composition
 
 # Current campaign component and retained execution records
 crucible.campaign.fresh-lineage-baseline	1	crucible-cas::cas::campaign_codec	physical-record	gate:campaign-store-composition,gate:content-address
@@ -313,7 +313,9 @@ crucible.scenario-family	3	crucible-cli::cli::planning::invocations	deployment-c
 crucible.search-schedule-named-truths	1	crucible-cli::cli::planning::invocations	deployment-config	gate:campaign-replay
 crucible.search-retained-evidence	1	crucible-cli::cli::planning::invocations	deployment-config	gate:campaign-replay
 crucible.lifecycle-artifact-bundle	1	crucible-cli::cli::artifact_capture	physical-record	gate:campaign-replay
-crucible.failure-triage.findings-ledger	4	crucible-cli::cli::triage_debug	finding	gate:campaign-replay
+crucible.failure-triage.findings-ledger	5	crucible-cli::cli::triage_debug	finding	gate:campaign-replay
+crucible.failure-triage.finding-evidence	1	crucible-cli::cli::triage_debug::campaign_evidence	finding	gate:campaign-replay,gate:content-address
+crucible.failure-triage.finding-occurrences	1	crucible-cli::cli::triage_debug::campaign_evidence	finding	gate:campaign-replay,gate:content-address
 
 # Current campaign content-store records
 crucible.campaign-corpus	1	crucible-cas::cas::campaign_codec	physical-record	gate:campaign-store-composition,gate:content-address

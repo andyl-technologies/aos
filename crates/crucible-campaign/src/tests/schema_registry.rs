@@ -567,7 +567,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     let finding_bundle = rows
         .get(finding_bundle_schema)
         .expect("missing portable finding bundle schema");
-    assert_eq!(finding_bundle[1], "2");
+    assert_eq!(finding_bundle[1], "3");
     assert_eq!(
         finding_bundle[2],
         "crucible-cli::cli_campaign::finding_bundle"

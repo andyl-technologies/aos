@@ -2,6 +2,11 @@
 
 use super::*;
 
+#[path = "finding_export/evidence.rs"]
+mod evidence;
+
+use evidence::*;
+
 struct AllowCampaignFindingExport;
 
 impl crucible_campaign::CampaignPrincipalAuthorizer for AllowCampaignFindingExport {
@@ -85,15 +90,15 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
 
     use crucible_campaign::{
         BudgetGrant, CampaignArchivePolicy, CampaignClient, CampaignCommandId,
-        CampaignControlAction, CampaignHash, CampaignLineage, CampaignMode, CampaignName,
-        CampaignPolicy, CampaignPrincipal, CampaignRepository, CampaignSeed, ConfigurationId,
-        ControlRequest, CoverageProjection, ExplorerPolicy, FairnessPolicy, FindingCandidateBundle,
-        FindingCandidateCore, FindingExactPins, FindingExactRetention,
-        FindingExactRetentionDisposition, FindingKind, FindingMinimizationAttempt,
-        FindingMinimizationEvidence, FindingSignature, FindingSignatureMinimizationEvidence,
-        FindingTarget, FindingTriageEvidenceSet, FindingTriageReplayEvidence, MeasurementSet,
-        Observation, PropertyEvidence, PropertyVerdict, PropertyVerdictSet,
-        RepositoryCampaignService, RetentionPolicy, ScenarioDefId, StopOutcome,
+        CampaignControlAction, CampaignHash, CampaignLineage, CampaignMode, CampaignPolicy,
+        CampaignRepository, CampaignSeed, ConfigurationId, ControlRequest, CoverageProjection,
+        ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingCandidateCore,
+        FindingExactPins, FindingExactRetention, FindingExactRetentionDisposition, FindingKind,
+        FindingMinimizationAttempt, FindingMinimizationEvidence, FindingSignature,
+        FindingSignatureMinimizationEvidence, FindingTarget, FindingTriageEvidenceSet,
+        FindingTriageReplayEvidence, MeasurementSet, Observation, PropertyEvidence,
+        PropertyVerdict, PropertyVerdictSet, RepositoryCampaignService, RetentionPolicy,
+        ScenarioDefId, StopOutcome,
     };
     use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
     use crucible_daemon::campaign_store_composition::{
@@ -440,28 +445,34 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         &repository,
         AllowCampaignFindingExport,
     ));
-    let evidence = crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
+    let portable_root = tempfile::tempdir()?;
+    let portable_bundle = portable_root.path().join("finding");
+    let evidence_store = crucible::LocalDagStore::new(portable_bundle.join("evidence"));
+    let record = capture_finding(
         &client,
-        CampaignPrincipal::new("operator:cli-campaign-findings")?,
-        CampaignName::new(CAMPAIGN)?,
+        "operator:cli-campaign-findings",
         published.new_snapshot,
         published.finding,
-        report,
+        Some(report.clone()),
+        &evidence_store,
     )?;
-    let service_evidence =
-        crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding_from_service(
-            &client,
-            CampaignPrincipal::new("operator:cli-campaign-findings")?,
-            CampaignName::new(CAMPAIGN)?,
-            published.new_snapshot,
-            published.finding,
-        )?;
-    assert_eq!(service_evidence.report, evidence.report);
+    // The service-derived report projection is the one supplied above, so both
+    // captures write byte-identical evidence and share one record identity.
+    let service_record = capture_finding(
+        &client,
+        "operator:cli-campaign-findings",
+        published.new_snapshot,
+        published.finding,
+        None,
+        &evidence_store,
+    )?;
+    assert_eq!(service_record, record);
 
     let artifact_dir = tempfile::tempdir()?;
-    let bytes = crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(
-        std::slice::from_ref(&evidence),
-    )?;
+    let bytes = crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(&[(
+        published.finding,
+        record,
+    )])?;
     let executable = repository.plan_campaign_archive(
         published.new_snapshot,
         CampaignArchivePolicy::Executable,
@@ -469,8 +480,6 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         None,
     )?;
     repository.stage_campaign_archive_metadata(&executable)?;
-    let portable_root = tempfile::tempdir()?;
-    let portable_bundle = portable_root.path().join("finding");
     let archive_root = portable_bundle.join("archive");
     let private_archive = CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
@@ -484,16 +493,17 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         &executable,
         DurabilityRequirement::new(1, false)?,
     )?;
-    assert_eq!(
-        private_archive.inspect_archived_finding(executable.manifest_id(), published.finding)?,
-        evidence.finding
-    );
+    let archived_finding =
+        private_archive.inspect_archived_finding(executable.manifest_id(), published.finding)?;
+    let bundle_manifest = |archive: String| {
+        format!(
+            "crucible.campaign.finding-bundle.v3\narchive_manifest={archive}\nledger={}\n",
+            crucible::ContentHash::from_bytes(&bytes).to_hex()
+        )
+    };
     std::fs::write(
         portable_bundle.join("manifest"),
-        format!(
-            "crucible.campaign.finding-bundle.v2\narchive_manifest={}\n",
-            executable.manifest_id()
-        ),
+        bundle_manifest(executable.manifest_id().to_string()),
     )?;
     std::fs::write(portable_bundle.join("ledger"), &bytes)?;
     let child = std::process::Command::new(std::env::current_exe()?)
@@ -514,20 +524,54 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     let external_objects = portable_root.path().join("external-objects");
     std::fs::rename(archive_root.join("objects"), &external_objects)?;
     std::os::unix::fs::symlink(&external_objects, archive_root.join("objects"))?;
-    let cli = <crate::Cli as clap::Parser>::try_parse_from([
+    let verify_cli = <crate::Cli as clap::Parser>::try_parse_from([
         std::ffi::OsString::from("crucible"),
         std::ffi::OsString::from("campaign"),
         std::ffi::OsString::from("finding-bundle"),
         std::ffi::OsString::from("verify"),
         portable_bundle.as_os_str().to_owned(),
     ])?;
-    let crate::Commands::Campaign(campaign) = &cli.command else {
+    let crate::Commands::Campaign(campaign) = &verify_cli.command else {
         return Err(std::io::Error::other("missing parsed campaign command").into());
     };
-    let error = crate::cli_campaign::run_campaign_invocation(&cli, campaign)
+    let error = crate::cli_campaign::run_campaign_invocation(&verify_cli, campaign)
         .err()
         .ok_or_else(|| std::io::Error::other("external archive unexpectedly verified"))?;
     assert!(error.to_string().contains("symlink"));
+    std::fs::remove_file(archive_root.join("objects"))?;
+    std::fs::rename(&external_objects, archive_root.join("objects"))?;
+
+    // A bundle whose ledger file differs from the hash its manifest names, or
+    // whose evidence prefix directory resolves elsewhere, fails closed.
+    std::fs::write(
+        portable_bundle.join("manifest"),
+        bundle_manifest(executable.manifest_id().to_string()).replace(
+            &crucible::ContentHash::from_bytes(&bytes).to_hex(),
+            &record.to_hex(),
+        ),
+    )?;
+    let error = crate::cli_campaign::run_campaign_invocation(&verify_cli, campaign)
+        .err()
+        .ok_or_else(|| std::io::Error::other("mismatched ledger unexpectedly verified"))?;
+    assert!(error.to_string().contains("differs from its manifest"));
+    std::fs::write(
+        portable_bundle.join("manifest"),
+        bundle_manifest(executable.manifest_id().to_string()),
+    )?;
+    let record_prefix = evidence_store
+        .object_path(&record)
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| std::io::Error::other("record object has no prefix directory"))?;
+    let external_prefix = portable_root.path().join("external-prefix");
+    std::fs::rename(&record_prefix, &external_prefix)?;
+    std::os::unix::fs::symlink(&external_prefix, &record_prefix)?;
+    let error = crate::cli_campaign::run_campaign_invocation(&verify_cli, campaign)
+        .err()
+        .ok_or_else(|| std::io::Error::other("external evidence unexpectedly verified"))?;
+    assert!(error.to_string().contains("not a directory"));
+    std::fs::remove_file(&record_prefix)?;
+    std::fs::rename(&external_prefix, &record_prefix)?;
 
     let plan = repository.plan_campaign_archive(
         published.new_snapshot,
@@ -537,12 +581,17 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     )?;
     let invalid_bundle = portable_root.path().join("invalid-finding");
     std::fs::create_dir_all(invalid_bundle.join("archive"))?;
+    capture_finding(
+        &client,
+        "operator:cli-campaign-findings",
+        published.new_snapshot,
+        published.finding,
+        None,
+        &crucible::LocalDagStore::new(invalid_bundle.join("evidence")),
+    )?;
     std::fs::write(
         invalid_bundle.join("manifest"),
-        format!(
-            "crucible.campaign.finding-bundle.v2\narchive_manifest={}\n",
-            plan.manifest_id()
-        ),
+        bundle_manifest(plan.manifest_id().to_string()),
     )?;
     std::fs::write(invalid_bundle.join("ledger"), &bytes)?;
     let child = std::process::Command::new(std::env::current_exe()?)
@@ -559,41 +608,44 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         String::from_utf8_lossy(&child.stdout),
         String::from_utf8_lossy(&child.stderr)
     );
+
     let store_temp = tempfile::tempdir()?;
-    let store = crucible::LocalDagStore::new(store_temp.path().join("store"));
-    let loaded = crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
-        &store,
-        &bytes,
-        std::str::from_utf8(&bytes)?,
-    )?;
-    assert_eq!(loaded.campaign_evidence, vec![evidence.clone()]);
+    let artifact_store = crucible::LocalDagStore::new(store_temp.path().join("store"));
+    let load = |ledger: &[u8]| {
+        crate::cli_triage_debug::campaign_evidence::load_campaign_findings_ledger_bytes(
+            &evidence_store,
+            &artifact_store,
+            ledger,
+        )
+    };
+    let loaded = load(&bytes)?;
+    let loaded_finding = loaded.evidence.finding(0)?;
+    assert_eq!(loaded.evidence.finding_count(), 1);
+    assert_eq!(loaded_finding.finding, archived_finding);
+    assert_eq!(loaded_finding.report, report);
+    assert_eq!(loaded_finding.occurrence_count, 1);
     assert_eq!(loaded.ledger.signed_findings().len(), 1);
     let ledger_text = std::str::from_utf8(&bytes)?;
     for rejected in [
         ledger_text.replacen(
+            "crucible.failure-triage.findings-ledger.v5",
             "crucible.failure-triage.findings-ledger.v4",
-            "crucible.failure-triage.findings-ledger.v3",
             1,
         ),
         ledger_text.replacen("ledger_kind=campaign", "ledger_kind=reproduction", 1),
     ] {
-        assert!(
-            crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
-                &store,
-                rejected.as_bytes(),
-                &rejected,
-            )
-            .is_err()
-        );
+        assert!(load(rejected.as_bytes()).is_err());
     }
     assert_eq!(
         loaded.ledger.signed_findings()[0].signature,
         native_replay.signature().clone()
     );
     assert!(
-        loaded.campaign_evidence[0].occurrence_proofs[0]
-            .triage_evidence
-            .is_some()
+        loaded
+            .evidence
+            .member(model_finding.artifact.id())?
+            .ok_or_else(|| std::io::Error::other("missing clustered member"))?
+            .retains_occurrence_replays()
     );
     let policy = crucible::SignaturePolicy::exact();
     let clustering = crucible::FailureClusteringResult::from_findings(
@@ -630,50 +682,90 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         minimized_native_replay.signature().clone()
     );
 
-    let other_evidence =
-        crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
-            &client,
-            CampaignPrincipal::new("operator:other-cli-campaign-findings")?,
-            CampaignName::new(CAMPAIGN)?,
-            published.new_snapshot,
-            published.finding,
-            evidence.report.clone(),
-        )?;
-    let text = String::from_utf8(bytes)?;
-    let response = ledger_hex(
-        &evidence.occurrence_proofs[0]
-            .triage_evidence
-            .as_ref()
-            .ok_or_else(|| std::io::Error::other("missing native triage evidence"))?
-            .verification_selected
-            .segments
-            .first()
-            .ok_or_else(|| std::io::Error::other("missing selected replay segment"))?
-            .response
-            .canonical_bytes(),
-    );
-    let wrong_response = ledger_hex(
-        &other_evidence.occurrence_proofs[0]
-            .triage_evidence
-            .as_ref()
-            .ok_or_else(|| std::io::Error::other("missing native triage evidence"))?
-            .verification_selected
-            .segments
-            .first()
-            .ok_or_else(|| std::io::Error::other("missing alternate selected replay segment"))?
-            .response
-            .canonical_bytes(),
-    );
+    // Substituting another principal's authenticated segment response, even
+    // under a fully re-hashed chunk, record, and ledger, fails authentication.
+    let other_record = capture_finding(
+        &client,
+        "operator:other-cli-campaign-findings",
+        published.new_snapshot,
+        published.finding,
+        Some(report.clone()),
+        &evidence_store,
+    )?;
+    let segment_field = "occurrence.0.verification_selected.segment.0";
+    let response = stored_field(&evidence_store, record, segment_field)?;
+    let wrong_response = stored_field(&evidence_store, other_record, segment_field)?;
     assert_ne!(response, wrong_response);
-    let tampered = text.replacen(&response, &wrong_response, 1);
-    assert!(
-        crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
-            &store,
-            tampered.as_bytes(),
-            &tampered,
+    let (_, response_hash) = response
+        .split_once(' ')
+        .ok_or_else(|| std::io::Error::other("malformed segment exchange"))?;
+    let (_, wrong_response_hash) = wrong_response
+        .split_once(' ')
+        .ok_or_else(|| std::io::Error::other("malformed segment exchange"))?;
+    let tampered = rewrite_first_chunk(&evidence_store, record, |chunk| {
+        chunk.replacen(response_hash, wrong_response_hash, 1)
+    })?;
+    assert!(load(&ledger_with_record(&bytes, record, tampered)?).is_err());
+
+    // A chunk that lists one more segment exchange than the replay's storage
+    // description requires is rejected even though every hash resolves.
+    let role = "occurrence.0.verification_selected";
+    let segment_count = stored_field(&evidence_store, record, &format!("{role}.segment_count"))?
+        .parse::<usize>()?;
+    let last_field = format!("{role}.segment.{}", segment_count - 1);
+    let last_segment = stored_field(&evidence_store, record, &last_field)?;
+    let extra_segment = rewrite_first_chunk(&evidence_store, record, |chunk| {
+        chunk
+            .replacen(
+                &format!("{role}.segment_count={segment_count}\n"),
+                &format!("{role}.segment_count={}\n", segment_count + 1),
+                1,
+            )
+            .replacen(
+                &format!("{last_field}={last_segment}\n"),
+                &format!(
+                    "{last_field}={last_segment}\n{role}.segment.{segment_count}={last_segment}\n"
+                ),
+                1,
+            )
+    })?;
+    assert!(matches!(
+        load(&ledger_with_record(&bytes, record, extra_segment)?),
+        Err(CliError::Artifact(message)) if message.contains("transfer bounds are invalid")
+    ));
+
+    // Corrupted and missing evidence blobs fail closed.
+    let damaged_store = crucible::LocalDagStore::new(store_temp.path().join("damaged"));
+    let damaged_record = capture_finding(
+        &client,
+        "operator:cli-campaign-findings",
+        published.new_snapshot,
+        published.finding,
+        None,
+        &damaged_store,
+    )?;
+    assert_eq!(damaged_record, record);
+    let page_field = stored_field(&damaged_store, record, "occurrence.0.page")?;
+    let (_, page_response) = page_field
+        .split_once(' ')
+        .ok_or_else(|| std::io::Error::other("malformed page exchange"))?;
+    let page_response = parse_hash(page_response)?;
+    std::fs::write(damaged_store.object_path(&page_response), b"corrupt")?;
+    let load_damaged = || {
+        crate::cli_triage_debug::campaign_evidence::load_campaign_findings_ledger_bytes(
+            &damaged_store,
+            &artifact_store,
+            &bytes,
         )
-        .is_err()
-    );
+    };
+    assert!(load_damaged().is_err());
+    std::fs::remove_file(damaged_store.object_path(&page_response))?;
+    assert!(load_damaged().is_err());
+    std::fs::remove_file(damaged_store.object_path(&record))?;
+    assert!(matches!(
+        load_damaged(),
+        Err(CliError::Artifact(message)) if message.contains("is missing finding evidence record")
+    ));
 
     let mut alternate_selected_entries = minimized_report.causal_entries.clone();
     alternate_selected_entries.push(finding_export_observational_entry(
@@ -718,39 +810,28 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         published.new_snapshot,
         duplicate_bundle,
     )?;
-    let duplicate_evidence =
-        crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
-            &client,
-            CampaignPrincipal::new("operator:cli-campaign-findings")?,
-            CampaignName::new(CAMPAIGN)?,
-            duplicate_published.new_snapshot,
+    let duplicate_record = capture_finding(
+        &client,
+        "operator:cli-campaign-findings",
+        duplicate_published.new_snapshot,
+        duplicate_published.finding,
+        Some(report.clone()),
+        &evidence_store,
+    )?;
+    let duplicate_loaded = load(
+        &crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(&[(
             duplicate_published.finding,
-            evidence.report.clone(),
-        )?;
-    assert_eq!(duplicate_evidence.occurrence_proofs.len(), 2);
-    let duplicate_bytes =
-        crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(
-            std::slice::from_ref(&duplicate_evidence),
-        )?;
-    let duplicate_loaded =
-        crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
-            &store,
-            &duplicate_bytes,
-            std::str::from_utf8(&duplicate_bytes)?,
-        )?;
+            duplicate_record,
+        )])?,
+    )?;
     assert_eq!(duplicate_loaded.ledger.signed_findings().len(), 1);
-    assert_eq!(
-        duplicate_loaded.campaign_evidence[0]
-            .occurrence_proofs
-            .len(),
-        2
-    );
+    assert_eq!(duplicate_loaded.evidence.finding(0)?.occurrence_count, 2);
 
     let frame_distinct_replay = crucible::FailureTriageReplayEvidence::new(
-        evidence.report.finding.clone(),
-        evidence.report.failure.clone(),
-        evidence.report.causal_entries.clone(),
-        evidence.report.recorded_event_log.coverage_fingerprint(),
+        report.finding.clone(),
+        report.failure.clone(),
+        report.causal_entries.clone(),
+        report.recorded_event_log.coverage_fingerprint(),
         vec![b"distinct authenticated event frame".to_vec()],
     )?;
     assert_ne!(frame_distinct_replay.signature(), native_replay.signature());
@@ -782,24 +863,20 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         duplicate_published.new_snapshot,
         conflicting_bundle,
     )?;
-    let conflicting_evidence =
-        crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
-            &client,
-            CampaignPrincipal::new("operator:cli-campaign-findings")?,
-            CampaignName::new(CAMPAIGN)?,
-            conflicting_published.new_snapshot,
-            conflicting_published.finding,
-            evidence.report.clone(),
-        )?;
-    let conflicting_bytes =
-        crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(
-            std::slice::from_ref(&conflicting_evidence),
-        )?;
+    let conflicting_record = capture_finding(
+        &client,
+        "operator:cli-campaign-findings",
+        conflicting_published.new_snapshot,
+        conflicting_published.finding,
+        Some(report.clone()),
+        &evidence_store,
+    )?;
     assert!(matches!(
-        crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
-            &store,
-            &conflicting_bytes,
-            std::str::from_utf8(&conflicting_bytes)?,
+        load(
+            &crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(&[(
+                conflicting_published.finding,
+                conflicting_record,
+            )])?
         ),
         Err(CliError::Artifact(message))
             if message.contains("conflicting authenticated native signatures")
@@ -848,17 +925,22 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         conflicting_published.new_snapshot,
         foreign_bundle,
     )?;
-    let foreign_capture =
-        crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding(
-            &client,
-            CampaignPrincipal::new("operator:cli-campaign-findings")?,
-            CampaignName::new(CAMPAIGN)?,
-            foreign_published.new_snapshot,
-            foreign_published.finding,
-            evidence.report,
-        );
+    // Capture only records exchanges; the ledger load authenticates them.
+    let foreign_record = capture_finding(
+        &client,
+        "operator:cli-campaign-findings",
+        foreign_published.new_snapshot,
+        foreign_published.finding,
+        Some(report),
+        &evidence_store,
+    )?;
     assert!(matches!(
-        foreign_capture,
+        load(
+            &crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(&[(
+                foreign_published.finding,
+                foreign_record,
+            )])?
+        ),
         Err(CliError::Artifact(message))
             if message.contains("disagrees with its observed campaign signature")
     ));

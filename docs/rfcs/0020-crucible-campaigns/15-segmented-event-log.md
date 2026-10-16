@@ -262,8 +262,8 @@ index, or per-sample evidence survives its entry.
 
 ## 15.8 Readers, findings, and resume
 
-Finding production replay captures, CLI explanation, campaign objective
-verification, observation-stop verification, remote observation resume, hot-fork
+Finding production replay captures, triage findings evidence, CLI
+explanation, campaign objective verification, observation-stop verification, remote observation resume, hot-fork
 materialization, and the campaign trace protocol all consume the attempt log.
 Each reads segments by reference.
 
@@ -282,6 +282,11 @@ segments.
   service response that carries log content MUST carry at most one segment and
   remain within the ordinary 64 MiB component-message bound. Digests, density
   checks, replay comparisons, and projections MUST stream segments in order.
+- **[CMEAS-24]** Finding evidence ledgers MUST reference every captured
+  service exchange by content address and MUST be authenticated as a fold over
+  findings and, within a finding, over occurrences. No writer, loader, or
+  verifier may materialize the occurrence proofs of a complete finding or
+  ledger; at most one triage replay is reassembled at a time.
 - **[CCOMP-30]** Resume from a checkpoint MUST continue from the checkpoint's
   chain position and bounded fold state. Resume proofs MUST compare the
   checkpoint's chain position, not a retained entry vector.

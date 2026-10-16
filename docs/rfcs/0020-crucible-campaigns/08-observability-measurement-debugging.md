@@ -699,17 +699,23 @@ before decoding or exposing the replay. Missing, reordered, substituted,
 mixed-snapshot, wrong-role, stale-description, or corrupt segments fail closed.
 A partial manifest or chunk sequence reveals no replay bytes.
 
-Failure-findings ledger v4 retains the exact ordered request/response transcript
-for every replay role. Offline import revalidates each request binding, proof,
-description, canonical range, envelope content ID, manifest, chunk, and final
-logical identity before model-specific replay decoding. The complete ledger is
-bounded at 1 GiB. The encoder charges every fixed field, request, response,
-canonical object, projected report field, line terminator, and hexadecimal byte
-to that one bound. The four-role maximum segmented transcript is larger than
-512 MiB after hexadecimal expansion but remains below 1 GiB; fixed and
-non-exchange fields consume the remaining allowance. Construction stops before
-crossing the complete-artifact bound, and parsing rejects an oversized input
-before decoding its fields.
+Failure-findings ledger v5 retains the exact ordered request/response transcript
+for every replay role by content address. Capture stores each canonical request
+and response as its own blob in an evidence store as it arrives. A per-finding
+evidence record names the finding-level exchanges, the report projection, and
+occurrence chunks of at most 1,024 occurrences; each chunk entry names its page
+exchange, its three object exchanges, and the ordered segment exchanges of all
+four replay roles. The ledger itself is a manifest of `(finding, record)` pairs
+in canonical finding-ID order, bounded at 16 MiB, whose content address is the
+triage result's stored-ledger key. Offline import authenticates one finding and
+one occurrence at a time: a store-backed service answers only requests whose
+canonical bytes hash to an exchange the current record names, and it
+revalidates each request binding, proof, description, canonical range,
+envelope content ID, manifest, chunk, and final logical identity before
+model-specific replay decoding. Every blob read is bounded and verifies its
+content address; a record, chunk, or manifest is accepted only in its exact
+canonical encoding. A portable finding bundle carries the one-finding manifest,
+its evidence store, and the executable archive ([CMEAS-24]).
 
 The checked `ExplainCampaignAttempt` capability authenticates one attempt and
 its unique execution-basis admission in `roots.accounting`, its branch proposal
