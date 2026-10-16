@@ -16,7 +16,10 @@ pub(super) struct DecodedStorage {
 
 impl DecodedStorage {
     pub(super) fn total(self, maximum: usize) -> Result<usize, ProviderError> {
-        sum(&[self.value_backing, self.typed_backing, self.work], maximum)
+        sum(
+            &[self.value_backing, self.typed_backing, self.work],
+            maximum,
+        )
     }
 }
 
@@ -90,7 +93,10 @@ pub(super) fn quote(
                 let encoded = cursor - start - 1;
                 // This also covers growable base64 Bytes decoding from the
                 // borrowed string, and preserves both key/value string banks.
-                strings = sum(&[strings, encoded.checked_mul(8).ok_or_else(refused)?, 32], maximum)?;
+                strings = sum(
+                    &[strings, encoded.checked_mul(8).ok_or_else(refused)?, 32],
+                    maximum,
+                )?;
                 let mut next = cursor;
                 while bytes.get(next).is_some_and(u8::is_ascii_whitespace) {
                     next += 1;
@@ -102,12 +108,17 @@ pub(super) fn quote(
                         crate::retained_metadata::serialization_storage::original_serialization_tree_node_requested_bytes_data::<Vec<u16>, (&str, &Value)>()?,
                         16], maximum)?;
                 }
-                canonical = sum(&[canonical,
-                    encoded.checked_mul(24).ok_or_else(refused)?, 264], maximum)?;
+                canonical = sum(
+                    &[canonical, encoded.checked_mul(24).ok_or_else(refused)?, 264],
+                    maximum,
+                )?;
             }
             _ => {
                 let start = cursor;
-                while bytes.get(cursor).is_some_and(|byte| !b" \t\r\n,:]}".contains(byte)) {
+                while bytes
+                    .get(cursor)
+                    .is_some_and(|byte| !b" \t\r\n,:]}".contains(byte))
+                {
                     cursor += 1;
                 }
                 if cursor == start {
@@ -120,14 +131,35 @@ pub(super) fn quote(
         return Err(refused());
     }
     let map_backing = maps.checked_mul(tree_node()?).ok_or_else(refused)?;
-    let value_backing = sum(&[strings, map_backing,
-        slots.checked_mul(size_of::<Value>()).ok_or_else(refused)?, size_of::<Value>()], maximum)?;
-    let typed_backing = sum(&[strings, map_backing,
-        slots.checked_mul(element).ok_or_else(refused)?, root], maximum)?;
+    let value_backing = sum(
+        &[
+            strings,
+            map_backing,
+            slots.checked_mul(size_of::<Value>()).ok_or_else(refused)?,
+            size_of::<Value>(),
+        ],
+        maximum,
+    )?;
+    let typed_backing = sum(
+        &[
+            strings,
+            map_backing,
+            slots.checked_mul(element).ok_or_else(refused)?,
+            root,
+        ],
+        maximum,
+    )?;
     // Container rebuilding from owned Value can coexist with the original
     // subtree. Keep both DOMs; canonical sorting/output is separate work.
-    let work = sum(&[value_backing, value_backing, typed_backing, canonical, 4096], maximum)?;
-    let result = DecodedStorage { value_backing, typed_backing, work };
+    let work = sum(
+        &[value_backing, value_backing, typed_backing, canonical, 4096],
+        maximum,
+    )?;
+    let result = DecodedStorage {
+        value_backing,
+        typed_backing,
+        work,
+    };
     result.total(maximum)?;
     Ok(result)
 }
@@ -143,7 +175,11 @@ mod tests {
 
     #[test]
     fn native_value_backing_covers_empty_maps_dense_arrays_and_independent_clones() -> TestResult {
-        for input in [b"{}".as_slice(), b"[]", br#"{"a":{},"b":[{},{},"x",1,2],"c":"\uD834\uDD1E"}"#] {
+        for input in [
+            b"{}".as_slice(),
+            b"[]",
+            br#"{"a":{},"b":[{},{},"x",1,2],"c":"\uD834\uDD1E"}"#,
+        ] {
             let actual: Value = serde_json::from_slice(input)?;
             let independent = actual.clone();
             let mut observer = MetadataObserver::new();
@@ -156,7 +192,10 @@ mod tests {
             assert!(row.value_backing >= backing);
             assert!(row.typed_backing >= clone_backing);
             let exact = row.total(usize::MAX)?;
-            assert_eq!(quote(input, size_of::<Value>(), size_of::<Value>(), exact)?.total(exact)?, exact);
+            assert_eq!(
+                quote(input, size_of::<Value>(), size_of::<Value>(), exact)?.total(exact)?,
+                exact
+            );
             assert!(quote(input, size_of::<Value>(), size_of::<Value>(), exact - 1).is_err());
         }
         Ok(())
@@ -165,8 +204,10 @@ mod tests {
     #[test]
     fn actual_coordinator_backing_covers_the_retained_dto_without_validator_work() -> TestResult {
         use crate::reference_packet::coordinator::PacketNative5CoordinatorInstallation;
-        let (_, _, local, original) = crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
-        let actual = PacketNative5CoordinatorInstallation::decode(original.bytes.as_slice(), &local)?;
+        let (_, _, local, original) =
+            crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+        let actual =
+            PacketNative5CoordinatorInstallation::decode(original.bytes.as_slice(), &local)?;
         let facts = crate::retained_metadata::observe_retained_native_coordinator(&actual)?;
         let observed = requested_metadata_backing_storage_data(&facts)?;
         let backing = coordinator_decode::backing(original.bytes.as_slice(), usize::MAX)?;

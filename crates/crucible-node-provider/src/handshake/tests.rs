@@ -657,6 +657,5 @@ fn native5_original_negotiation_view_tiny_credit_keeps_same_live_issuer() {
     original.validate_registration(&authority).unwrap();
 }
 
-
 #[path = "original_native_reuse_tests.rs"]
 mod original_native_reuse_tests;

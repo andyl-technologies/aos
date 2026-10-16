@@ -136,7 +136,13 @@ pub(super) fn project(
 ) -> Result<AdmitStorage, ProviderError> {
     let source = private.source_requested_bytes;
     let host = decode_value(input.host_registration, maximum)?;
-    let host_backing = decoded::quote(input.host_registration, size_of::<serde_json::Value>(), size_of::<serde_json::Value>(), maximum)?.value_backing;
+    let host_backing = decoded::quote(
+        input.host_registration,
+        size_of::<serde_json::Value>(),
+        size_of::<serde_json::Value>(),
+        maximum,
+    )?
+    .value_backing;
     let source_backing = private.source_value_backing_bytes;
     let [association, kernel, policy] = normalized_outer_storage(input, maximum)?;
     // Native registration changes only the connection ID. Keep the complete
@@ -151,26 +157,69 @@ pub(super) fn project(
         sum(&[source, host, association.requested_total()?], maximum)?,
         kernel.requested_total()?,
         sum(&[source, host, policy.requested_total()?], maximum)?,
-        sum(
-            &[host, native_id.requested_total()?],
-            maximum,
-        )?,
+        sum(&[host, native_id.requested_total()?], maximum)?,
         assigned_admit,
     ];
     // Every normalization keeps its own Value and canonical Vec. Source
     // and host insertions are independent copies, never aliases. Canonical
     // child banks are conservatively summed even within one outer bank.
-    let source_bank = private.maximum_source_bytes.checked_mul(4).and_then(|n| n.checked_add(256)).ok_or_else(refused)?;
-    let host_bank = input.host_registration.len().checked_mul(4).and_then(|n| n.checked_add(256)).ok_or_else(refused)?;
+    let source_bank = private
+        .maximum_source_bytes
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(256))
+        .ok_or_else(refused)?;
+    let host_bank = input
+        .host_registration
+        .len()
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(256))
+        .ok_or_else(refused)?;
     let normalized_backing = [
-        sum(&[source_backing, host_backing, source_bank, host_bank,
-            association.retained_value_backing_bytes, association.canonical_output_requested_bytes], maximum)?,
-        sum(&[kernel.retained_value_backing_bytes, kernel.canonical_output_requested_bytes], maximum)?,
-        sum(&[source_backing, host_backing, source_bank, host_bank,
-            policy.retained_value_backing_bytes, policy.canonical_output_requested_bytes], maximum)?,
-        sum(&[host_backing, host_bank, native_id.retained_value_backing_bytes,
-            native_id.canonical_output_requested_bytes], maximum)?,
-        sum(&[assigned.retained_value_backing_bytes, assigned.canonical_output_requested_bytes], maximum)?,
+        sum(
+            &[
+                source_backing,
+                host_backing,
+                source_bank,
+                host_bank,
+                association.retained_value_backing_bytes,
+                association.canonical_output_requested_bytes,
+            ],
+            maximum,
+        )?,
+        sum(
+            &[
+                kernel.retained_value_backing_bytes,
+                kernel.canonical_output_requested_bytes,
+            ],
+            maximum,
+        )?,
+        sum(
+            &[
+                source_backing,
+                host_backing,
+                source_bank,
+                host_bank,
+                policy.retained_value_backing_bytes,
+                policy.canonical_output_requested_bytes,
+            ],
+            maximum,
+        )?,
+        sum(
+            &[
+                host_backing,
+                host_bank,
+                native_id.retained_value_backing_bytes,
+                native_id.canonical_output_requested_bytes,
+            ],
+            maximum,
+        )?,
+        sum(
+            &[
+                assigned.retained_value_backing_bytes,
+                assigned.canonical_output_requested_bytes,
+            ],
+            maximum,
+        )?,
     ];
     let mut retained = sum(&normalized_backing, maximum)?;
     // All five Values/banks above are present; only the temporary complete

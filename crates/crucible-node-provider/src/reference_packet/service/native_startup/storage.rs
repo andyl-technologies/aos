@@ -231,9 +231,22 @@ pub fn original_native_birth_startup_storage_data(
     // known structure with the worst possible arbitrary JSON of equal length.
     let source_decode = source_shape.source_requested_bytes;
     let source_backing = source_shape.source_value_backing_bytes;
-    let launch_backing = decoded::quote(input.encoded_launch, size_of::<PacketNative5SourceLaunch>(), native_element_slot(), maximum)?.typed_backing;
-    let coordinator_backing = coordinator_decode::backing(launch.initial_coordinator.bytes.as_slice(), maximum)?;
-    let registration_backing = decoded::quote(input.host_registration, size_of::<serde_json::Value>(), size_of::<serde_json::Value>(), maximum)?.value_backing;
+    let launch_backing = decoded::quote(
+        input.encoded_launch,
+        size_of::<PacketNative5SourceLaunch>(),
+        native_element_slot(),
+        maximum,
+    )?
+    .typed_backing;
+    let coordinator_backing =
+        coordinator_decode::backing(launch.initial_coordinator.bytes.as_slice(), maximum)?;
+    let registration_backing = decoded::quote(
+        input.host_registration,
+        size_of::<serde_json::Value>(),
+        size_of::<serde_json::Value>(),
+        maximum,
+    )?
+    .value_backing;
     let registration_decode = decode_value(input.host_registration, maximum)?;
 
     let selection = metadata_backing(&launch.selection)?;
@@ -249,26 +262,26 @@ pub fn original_native_birth_startup_storage_data(
     // assignments, rather than a numeric multiplier over an arbitrary maximum.
     let retained_copies = sum(
         &[
-            launch_backing,                    // Actual typed launch moved into native service; private owns its separate Value.
-            input.encoded_launch.len(),        // Bootstrap.launch_bytes.
-            input.encoded_launch.len(),        // NativeAckBoot.launch_body.
-            source_backing,                    // Bootstrap.boot_value.source_birth.
-            source_backing,                    // NativeAckBoot.data.source_birth.
-            source_backing,                    // NativeAckBoot.normalized source binding.
+            launch_backing, // Actual typed launch moved into native service; private owns its separate Value.
+            input.encoded_launch.len(), // Bootstrap.launch_bytes.
+            input.encoded_launch.len(), // NativeAckBoot.launch_body.
+            source_backing, // Bootstrap.boot_value.source_birth.
+            source_backing, // NativeAckBoot.data.source_birth.
+            source_backing, // NativeAckBoot.normalized source binding.
             source_shape.maximum_source_bytes, // NativeAckBoot.source_body after finalization.
-            registration_backing,              // Bootstrap.boot_value registration.
-            registration_backing,              // NativeAckBoot.data registration.
-            registration_backing,              // NativeAckBoot.normalized registration.
-            input.host_registration.len(),     // NativeAckBoot.host_body.
-            selection,                         // Native5Policy.selection.
-            selection,                         // PacketControl.selection.
-            coordinator_bytes,                 // Native5Policy installed coordinator bytes.
-            coordinator_backing,               // Native5Policy decoded common coordinator.
-            coordinator_backing,               // PacketControl complete coordinator.
-            model_definition,                  // Producer events or reactive definition.
-            provider,                          // Handshake.TrustedInstallation.
-            provider,                          // Actual retained native Hello response identity.
-            realization,                       // Actual retained Realize terminal.
+            registration_backing, // Bootstrap.boot_value registration.
+            registration_backing, // NativeAckBoot.data registration.
+            registration_backing, // NativeAckBoot.normalized registration.
+            input.host_registration.len(), // NativeAckBoot.host_body.
+            selection,      // Native5Policy.selection.
+            selection,      // PacketControl.selection.
+            coordinator_bytes, // Native5Policy installed coordinator bytes.
+            coordinator_backing, // Native5Policy decoded common coordinator.
+            coordinator_backing, // PacketControl complete coordinator.
+            model_definition, // Producer events or reactive definition.
+            provider,       // Handshake.TrustedInstallation.
+            provider,       // Actual retained native Hello response identity.
+            realization,    // Actual retained Realize terminal.
         ],
         maximum,
     )?;
@@ -316,13 +329,25 @@ pub fn original_native_birth_startup_storage_data(
     // The explicit Hello scope has ended before either retained coordinator
     // is constructed. Earlier private Source/host decoding likewise returns
     // before CompleteBirth starts. Their actual permanent owners are above.
-    let birth_work = launch_decode.max(coordinator_decode)
-        .max(source_decode).max(registration_decode).max(hello.transient);
-    let lifecycle_work = sum(&[lifecycle.transient, definitions.transient,
-        model_definition, model_definition], maximum)?;
-    let maximum_simultaneous_transient_bytes = birth_work.max(lifecycle_work)
-        .max(admit.transient)
-        .max(super::super::ack_emitter::original_prepare_executable_measurement_counter_scratch_data());
+    let birth_work = launch_decode
+        .max(coordinator_decode)
+        .max(source_decode)
+        .max(registration_decode)
+        .max(hello.transient);
+    let lifecycle_work = sum(
+        &[
+            lifecycle.transient,
+            definitions.transient,
+            model_definition,
+            model_definition,
+        ],
+        maximum,
+    )?;
+    let maximum_simultaneous_transient_bytes =
+        birth_work.max(lifecycle_work).max(admit.transient).max(
+            super::super::ack_emitter::original_prepare_executable_measurement_counter_scratch_data(
+            ),
+        );
     let scratch = original_native_birth_startup_counter_scratch_data();
     if lifecycle.scratch > scratch || admit.scratch > scratch || hello.scratch > scratch {
         return Err(refused());
@@ -345,7 +370,9 @@ pub fn original_native_birth_startup_storage_data(
 fn native_element_slot() -> usize {
     coordinator_decode::typed_slot()
         .max(size_of::<crate::reference_packet::PacketEvent>())
-        .max(size_of::<crate::reference_packet::connected::PacketInputConnection>())
+        .max(size_of::<
+            crate::reference_packet::connected::PacketInputConnection,
+        >())
         .max(size_of::<u8>())
 }
 

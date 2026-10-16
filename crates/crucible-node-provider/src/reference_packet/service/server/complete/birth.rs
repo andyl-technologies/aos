@@ -248,20 +248,20 @@ impl CompleteBirth {
         // construction. All original journals/authority/handshake fields stay
         // on self, including every failed-partial owner.
         {
-        let value = self
-            .exchange
-            .as_mut()
-            .ok_or_else(absent)?
-            .receive()?
-            .ok_or(ProviderError::Frame("native5 original Hello missing"))?;
-        let request = Envelope::decode(&canonical::canonical_json(&value)?, 65_536)?;
-        let RequestBody::Hello(hello_request) = decode_request(request.method, &request.body)?
-        else {
-            return Err(ProviderError::Frame(
-                "native5 original initial frame is not Hello",
-            ));
-        };
-        let mut selected = vec![
+            let value = self
+                .exchange
+                .as_mut()
+                .ok_or_else(absent)?
+                .receive()?
+                .ok_or(ProviderError::Frame("native5 original Hello missing"))?;
+            let request = Envelope::decode(&canonical::canonical_json(&value)?, 65_536)?;
+            let RequestBody::Hello(hello_request) = decode_request(request.method, &request.body)?
+            else {
+                return Err(ProviderError::Frame(
+                    "native5 original initial frame is not Hello",
+                ));
+            };
+            let mut selected = vec![
             Id::new("cnp.control-evidence/1")?,
             Id::new("cnp.core/1")?,
             Id::new(
@@ -269,36 +269,38 @@ impl CompleteBirth {
             )?,
             Id::new(super::super::super::super::input::PACKET_INPUT_FEATURE)?,
         ];
-        let mut envelope_extensions = std::collections::BTreeMap::from([(
-            super::super::super::super::input::PACKET_INPUT_FEATURE.into(),
-            Id::new(super::super::super::super::input::PACKET_INPUT_FEATURE)?,
-        )]);
-        if self.launch.confirmation_selection.is_some() {
-            selected.push(Id::new(
-                super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE,
-            )?);
-            envelope_extensions.insert(
-                super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION
-                    .into(),
-                Id::new(
+            let mut envelope_extensions = std::collections::BTreeMap::from([(
+                super::super::super::super::input::PACKET_INPUT_FEATURE.into(),
+                Id::new(super::super::super::super::input::PACKET_INPUT_FEATURE)?,
+            )]);
+            if self.launch.confirmation_selection.is_some() {
+                selected.push(Id::new(
                     super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE,
-                )?,
-            );
-        }
-        if self.launch.ack_emitter_selection.is_some() {
-            selected.push(Id::new(
-                super::super::super::ack_emitter::PACKET_NATIVE_CANONICAL_ACK_FEATURE,
-            )?);
-            selected.push(Id::new(
-                super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE,
-            )?);
-            envelope_extensions.insert(
-                super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE.into(),
-                Id::new(super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE)?,
-            );
-        }
-        if self.launch.complete_restore_selection.is_some() {
-            for key in [
+                )?);
+                envelope_extensions.insert(
+                    super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION
+                        .into(),
+                    Id::new(
+                        super::super::super::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_FEATURE,
+                    )?,
+                );
+            }
+            if self.launch.ack_emitter_selection.is_some() {
+                selected.push(Id::new(
+                    super::super::super::ack_emitter::PACKET_NATIVE_CANONICAL_ACK_FEATURE,
+                )?);
+                selected.push(Id::new(
+                    super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE,
+                )?);
+                envelope_extensions.insert(
+                    super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE.into(),
+                    Id::new(
+                        super::super::super::ack_emitter::PACKET_CANONICAL_ACK_ADMISSION_FEATURE,
+                    )?,
+                );
+            }
+            if self.launch.complete_restore_selection.is_some() {
+                for key in [
                 super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_FEATURE,
                 super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_PROOF_EXTENSION,
                 super::super::super::complete_restore::PACKET_COMPLETE_RESTORE_RECEIPT_EXTENSION,
@@ -306,8 +308,8 @@ impl CompleteBirth {
                 selected.push(Id::new(key)?);
                 envelope_extensions.insert(key.into(), Id::new(key)?);
             }
-        }
-        if self.launch.complete_restore_selection == Some(
+            }
+            if self.launch.complete_restore_selection == Some(
             super::super::super::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
         {
             use super::super::super::complete_restore::{*, transfer::*};
@@ -320,89 +322,74 @@ impl CompleteBirth {
                 }
             }
         }
-        if self.boot.is_some() {
-            selected.push(Id::new(EXTENSION_NEGOTIATION_V1)?);
-            envelope_extensions.insert(
-                EXTENSION_NEGOTIATION_V1.into(),
-                Id::new(EXTENSION_NEGOTIATION_V1)?,
-            );
-        }
-        selected.sort();
-        let binding = &self.launch.selection.realization.bindings[0];
-        let mut token = [0; 32];
-        token.copy_from_slice(self.launch.admission_token.as_slice());
-        self.handshake = Some(Handshake::new(
-            TrustedInstallation {
+            if self.boot.is_some() {
+                selected.push(Id::new(EXTENSION_NEGOTIATION_V1)?);
+                envelope_extensions.insert(
+                    EXTENSION_NEGOTIATION_V1.into(),
+                    Id::new(EXTENSION_NEGOTIATION_V1)?,
+                );
+            }
+            selected.sort();
+            let binding = &self.launch.selection.realization.bindings[0];
+            let mut token = [0; 32];
+            token.copy_from_slice(self.launch.admission_token.as_slice());
+            self.handshake = Some(Handshake::new(
+                TrustedInstallation {
+                    session_id: binding.authority.session_id.clone(),
+                    incarnation_id: binding.authority.incarnation_id.clone(),
+                    measured_implementation: self.launch.selection.provider.implementation.clone(),
+                    launch_receipt: self.launch.selection.admission_receipt.clone(),
+                    admission_token: token,
+                },
+                NegotiationPolicy {
+                    supported_features: selected.clone(),
+                    required_features: selected.clone(),
+                    provider_limits: self.launch.limits,
+                    required_schemas: Vec::new(),
+                    required_guarantees: binding.compatibility.guarantees_ref.clone(),
+                    envelope_extension_features: envelope_extensions,
+                },
+            )?);
+            let mut nonce = vec![0; 32];
+            std::io::Read::read_exact(&mut fs::File::open("/dev/urandom")?, &mut nonce)?;
+            let result = HelloResult {
+                version: "CNP/1".into(),
                 session_id: binding.authority.session_id.clone(),
                 incarnation_id: binding.authority.incarnation_id.clone(),
-                measured_implementation: self.launch.selection.provider.implementation.clone(),
-                launch_receipt: self.launch.selection.admission_receipt.clone(),
-                admission_token: token,
-            },
-            NegotiationPolicy {
-                supported_features: selected.clone(),
-                required_features: selected.clone(),
-                provider_limits: self.launch.limits,
-                required_schemas: Vec::new(),
-                required_guarantees: binding.compatibility.guarantees_ref.clone(),
-                envelope_extension_features: envelope_extensions,
-            },
-        )?);
-        let mut nonce = vec![0; 32];
-        std::io::Read::read_exact(&mut fs::File::open("/dev/urandom")?, &mut nonce)?;
-        let result = HelloResult {
-            version: "CNP/1".into(),
-            session_id: binding.authority.session_id.clone(),
-            incarnation_id: binding.authority.incarnation_id.clone(),
-            controller_nonce: hello_request.controller_nonce.clone(),
-            provider_nonce: Bytes::new(nonce),
-            selected_features: selected.clone(),
-            limits: self.launch.limits.intersection(hello_request.limits)?,
-            resume_token: Nullable(None),
-            provider_identity: self.launch.selection.provider.clone(),
-            resumed_operations: Vec::new(),
-        };
-        let mut response = request.clone();
-        response.message = MessageKind::Response;
-        response.incarnation_id = Nullable(Some(binding.authority.incarnation_id.clone()));
-        response.body = body(ResponseShape::Completed {
-            operation_state: OperationState::Completed,
-            result: body(&result)?,
-            extensions: Extensions::new(),
-        })?;
-        self.cut.ensure_current()?;
-        if self.boot.is_some() {
-            response.extensions.insert(
-                EXTENSION_NEGOTIATION_V1.into(),
-                serde_json::to_value(ExtensionSelectionV1 {
-                    format: U64::new(1),
-                    selected: Vec::new(),
-                })
-                .map_err(ContractError::from)?,
-            );
-            self.selected_registry = Some(Rc::new(EmptyBootExtensions));
-            self.selected_handshake = Some(ExtensionHandshake::from_original_empty_retained(
-                &mut self.handshake,
-                self.selected_registry.as_ref().ok_or_else(absent)?,
-            )?);
-        }
-        self.authority = Some(if let Some(handshake) = self.selected_handshake.as_mut() {
-            handshake.admit_original_envelopes(
-                &request,
-                &response,
-                &hello_request,
-                &result,
-                Id::new("packet-native5-original-connection")?,
-                &mut CompleteVerifier {
-                    launch: &self.launch,
-                    selected: &selected,
-                },
-            )?
-        } else {
-            self.handshake
-                .as_mut()
-                .ok_or_else(absent)?
-                .admit_original_envelopes(
+                controller_nonce: hello_request.controller_nonce.clone(),
+                provider_nonce: Bytes::new(nonce),
+                selected_features: selected.clone(),
+                limits: self.launch.limits.intersection(hello_request.limits)?,
+                resume_token: Nullable(None),
+                provider_identity: self.launch.selection.provider.clone(),
+                resumed_operations: Vec::new(),
+            };
+            let mut response = request.clone();
+            response.message = MessageKind::Response;
+            response.incarnation_id = Nullable(Some(binding.authority.incarnation_id.clone()));
+            response.body = body(ResponseShape::Completed {
+                operation_state: OperationState::Completed,
+                result: body(&result)?,
+                extensions: Extensions::new(),
+            })?;
+            self.cut.ensure_current()?;
+            if self.boot.is_some() {
+                response.extensions.insert(
+                    EXTENSION_NEGOTIATION_V1.into(),
+                    serde_json::to_value(ExtensionSelectionV1 {
+                        format: U64::new(1),
+                        selected: Vec::new(),
+                    })
+                    .map_err(ContractError::from)?,
+                );
+                self.selected_registry = Some(Rc::new(EmptyBootExtensions));
+                self.selected_handshake = Some(ExtensionHandshake::from_original_empty_retained(
+                    &mut self.handshake,
+                    self.selected_registry.as_ref().ok_or_else(absent)?,
+                )?);
+            }
+            self.authority = Some(if let Some(handshake) = self.selected_handshake.as_mut() {
+                handshake.admit_original_envelopes(
                     &request,
                     &response,
                     &hello_request,
@@ -413,16 +400,31 @@ impl CompleteBirth {
                         selected: &selected,
                     },
                 )?
-        });
-        // Their complete body/identity/feature/registry guards have finished;
-        // publication needs the encoded response, not independent typed claims.
-        drop(hello_request);
-        drop(result);
-        self.cut.ensure_current()?;
-        self.exchange
-            .as_mut()
-            .ok_or_else(absent)?
-            .publish(&serde_json::to_value(&response).map_err(ContractError::from)?)?;
+            } else {
+                self.handshake
+                    .as_mut()
+                    .ok_or_else(absent)?
+                    .admit_original_envelopes(
+                        &request,
+                        &response,
+                        &hello_request,
+                        &result,
+                        Id::new("packet-native5-original-connection")?,
+                        &mut CompleteVerifier {
+                            launch: &self.launch,
+                            selected: &selected,
+                        },
+                    )?
+            });
+            // Their complete body/identity/feature/registry guards have finished;
+            // publication needs the encoded response, not independent typed claims.
+            drop(hello_request);
+            drop(result);
+            self.cut.ensure_current()?;
+            self.exchange
+                .as_mut()
+                .ok_or_else(absent)?
+                .publish(&serde_json::to_value(&response).map_err(ContractError::from)?)?;
         }
         let policy = if let Some(restoration) = self.launch.complete_restore_selection {
             Native5Policy::from_original_launch_with_complete_restore(

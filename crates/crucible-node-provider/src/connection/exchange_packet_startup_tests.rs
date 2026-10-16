@@ -200,9 +200,9 @@ fn startup_containment_charges_both_fresh_keys_for_one_feature() -> TestResult {
     Ok(())
 }
 
-
 #[test]
-fn native_retained_prefix_counts_real_independent_dom_copies_without_replacing_legacy_work() -> TestResult {
+fn native_retained_prefix_counts_real_independent_dom_copies_without_replacing_legacy_work()
+-> TestResult {
     let (_handshake, authority, selection, _) =
         crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
     let actual = serde_json::to_value(crate::handshake::tests::original_hello_envelope())?;
@@ -216,18 +216,41 @@ fn native_retained_prefix_counts_real_independent_dom_copies_without_replacing_l
         observer.observe(value)?;
         owned = add(owned, requested_facts(&observer.finish())?)?;
     }
-    let objects = [OriginalContinuationContentExtent { maximum_payload_bytes: 128, media_type: "application/json" }; 2];
-    let quote = |baseline| quote_startup_parts(
-        (authority.session_id(), authority.incarnation_id()), authority.limits(),
-        selection.provider.extensions_supported.len(),
-        OriginalPacketPrefixProjectionInput { original: &shape, terminal: &shape,
-            objects: &objects, maximum_requested_bytes: MAXIMUM }, baseline);
+    let objects = [OriginalContinuationContentExtent {
+        maximum_payload_bytes: 128,
+        media_type: "application/json",
+    }; 2];
+    let quote = |baseline| {
+        quote_startup_parts(
+            (authority.session_id(), authority.incarnation_id()),
+            authority.limits(),
+            selection.provider.extensions_supported.len(),
+            OriginalPacketPrefixProjectionInput {
+                original: &shape,
+                terminal: &shape,
+                objects: &objects,
+                maximum_requested_bytes: MAXIMUM,
+            },
+            baseline,
+        )
+    };
     let native = quote(true)?;
     let legacy = quote(false)?;
-    assert!(native.exchange.native_retained_backing_bytes.ok_or_else(credit)?
-        >= add(owned, shape.canonical_output_requested_bytes)?);
-    assert_eq!(native.exchange.requested_bytes()?, legacy.exchange.requested_bytes()?);
-    assert_eq!(native.source_owner_requested_bytes, legacy.source_owner_requested_bytes);
+    assert!(
+        native
+            .exchange
+            .native_retained_backing_bytes
+            .ok_or_else(credit)?
+            >= add(owned, shape.canonical_output_requested_bytes)?
+    );
+    assert_eq!(
+        native.exchange.requested_bytes()?,
+        legacy.exchange.requested_bytes()?
+    );
+    assert_eq!(
+        native.source_owner_requested_bytes,
+        legacy.source_owner_requested_bytes
+    );
     assert!(native.native_source_backing_bytes.is_some());
     assert!(legacy.native_source_backing_bytes.is_none());
     Ok(())

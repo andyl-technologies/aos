@@ -506,10 +506,16 @@ fn charge_frame(
     if let Some(retained) = data.native_retained_backing_bytes.as_mut() {
         // Plan, outgoing guard and containment own three independent DOMs.
         // The canonical frame bank is another persistent allocation.
-        *retained = sum(&[*retained,
+        *retained = sum(&[
+            *retained,
             mul(3, projected.retained_value_backing_bytes)?,
             projected.canonical_output_requested_bytes,
-            if request { add(128, growth(128)?)? } else { 128 }])?;
+            if request {
+                add(128, growth(128)?)?
+            } else {
+                128
+            },
+        ])?;
     }
     let deep_copy = projected.dom_and_canonical_scratch_bytes;
     data.original_plan_requested_bytes = add(data.original_plan_requested_bytes, deep_copy)?;

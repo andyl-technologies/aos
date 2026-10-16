@@ -44,12 +44,19 @@ pub(crate) fn counter_scratch_data() -> usize {
 }
 
 pub(crate) fn matches<T: Serialize + ?Sized>(actual: &Value, expected: &T) -> bool {
-    expected.serialize(Compare(View::Value(actual))).unwrap_or(false)
+    expected
+        .serialize(Compare(View::Value(actual)))
+        .unwrap_or(false)
 }
 
 /// Borrows an object root without constructing or cloning a Value wrapper.
-pub(crate) fn matches_object<T: Serialize + ?Sized>(actual: &Map<String, Value>, expected: &T) -> bool {
-    expected.serialize(Compare(View::Object(actual))).unwrap_or(false)
+pub(crate) fn matches_object<T: Serialize + ?Sized>(
+    actual: &Map<String, Value>,
+    expected: &T,
+) -> bool {
+    expected
+        .serialize(Compare(View::Object(actual)))
+        .unwrap_or(false)
 }
 
 enum View<'a> {
@@ -59,20 +66,40 @@ enum View<'a> {
 
 impl<'a> View<'a> {
     fn value(&self) -> Option<&'a Value> {
-        match self { Self::Value(value) => Some(value), Self::Object(_) => None }
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Object(_) => None,
+        }
     }
 
     fn as_object(&self) -> Option<&'a Map<String, Value>> {
-        match self { Self::Value(value) => value.as_object(), Self::Object(value) => Some(value) }
+        match self {
+            Self::Value(value) => value.as_object(),
+            Self::Object(value) => Some(value),
+        }
     }
 
-    fn as_bool(&self) -> Option<bool> { self.value().and_then(Value::as_bool) }
-    fn as_i64(&self) -> Option<i64> { self.value().and_then(Value::as_i64) }
-    fn as_u64(&self) -> Option<u64> { self.value().and_then(Value::as_u64) }
-    fn as_f64(&self) -> Option<f64> { self.value().and_then(Value::as_f64) }
-    fn as_str(&self) -> Option<&'a str> { self.value().and_then(Value::as_str) }
-    fn as_array(&self) -> Option<&'a Vec<Value>> { self.value().and_then(Value::as_array) }
-    fn is_null(&self) -> bool { self.value().is_some_and(Value::is_null) }
+    fn as_bool(&self) -> Option<bool> {
+        self.value().and_then(Value::as_bool)
+    }
+    fn as_i64(&self) -> Option<i64> {
+        self.value().and_then(Value::as_i64)
+    }
+    fn as_u64(&self) -> Option<u64> {
+        self.value().and_then(Value::as_u64)
+    }
+    fn as_f64(&self) -> Option<f64> {
+        self.value().and_then(Value::as_f64)
+    }
+    fn as_str(&self) -> Option<&'a str> {
+        self.value().and_then(Value::as_str)
+    }
+    fn as_array(&self) -> Option<&'a Vec<Value>> {
+        self.value().and_then(Value::as_array)
+    }
+    fn is_null(&self) -> bool {
+        self.value().is_some_and(Value::is_null)
+    }
 }
 
 struct Compare<'a>(View<'a>);

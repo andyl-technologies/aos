@@ -315,13 +315,16 @@ pub(in crate::reference_packet::service::ack_emitter::native_boot) fn measure_or
     ))
 }
 
-
 fn original_requote_maximum(
     native: &PacketNativeStartupAllocationRow,
     private: &PacketNativeStartupAllocationRow,
 ) -> Result<usize, ProviderError> {
-    usize::try_from(native.requested_peak_data()?.max(private.requested_peak_data()?))
-        .map_err(|_| ProviderError::ResourceExhausted("native startup native extent"))
+    usize::try_from(
+        native
+            .requested_peak_data()?
+            .max(private.requested_peak_data()?),
+    )
+    .map_err(|_| ProviderError::ResourceExhausted("native startup native extent"))
 }
 
 #[cfg(test)]
@@ -331,7 +334,8 @@ mod requote_tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     #[test]
-    fn asymmetric_private_parser_requote_does_not_redistribute_native_or_private_grants() -> TestResult {
+    fn asymmetric_private_parser_requote_does_not_redistribute_native_or_private_grants()
+    -> TestResult {
         // The actual unchanged arbitrary parser constructs this data extent;
         // no permission/boot/preamble or fake successful Source is created.
         let raw = crate::retained_metadata::serialization_storage::original_json_value_storage_extent_data(168899)?;
@@ -347,7 +351,10 @@ mod requote_tests {
             declared_counter_scratch_bytes: U64::new(1024),
         };
         assert!(native.requested_peak_data()? < parser);
-        assert_eq!(u64::try_from(original_requote_maximum(&native, &private)?)?, private.requested_peak_data()?);
+        assert_eq!(
+            u64::try_from(original_requote_maximum(&native, &private)?)?,
+            private.requested_peak_data()?
+        );
         native.authenticate_actual_data(&native)?;
         private.authenticate_actual_data(&private)?;
         // A generous DATA scan ceiling does not admit transferring one byte

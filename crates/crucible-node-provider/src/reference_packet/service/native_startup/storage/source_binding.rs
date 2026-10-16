@@ -179,9 +179,20 @@ pub(super) fn project(bytes: &[u8], maximum: usize) -> Result<SourceBindingStora
     let mut backing = 0usize;
     for (key, value) in BASE.into_iter().zip(values) {
         encoded = sum(&[encoded, key.len() + 2, value.len()], maximum)?;
-        backing = sum(&[backing,
-            decoded::quote(value, size_of::<serde_json::Value>(), size_of::<serde_json::Value>(), maximum)?.value_backing,
-            key.len()], maximum)?;
+        backing = sum(
+            &[
+                backing,
+                decoded::quote(
+                    value,
+                    size_of::<serde_json::Value>(),
+                    size_of::<serde_json::Value>(),
+                    maximum,
+                )?
+                .value_backing,
+                key.len(),
+            ],
+            maximum,
+        )?;
         decoded = sum(
             &[decoded, decode_value(value, maximum)?, key.len()],
             maximum,

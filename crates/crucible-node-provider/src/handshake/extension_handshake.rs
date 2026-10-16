@@ -112,7 +112,13 @@ impl ExtensionHandshake {
         connection: Id,
         verifier: &mut impl TrustedHandshakeVerifier,
     ) -> Result<ConnectionAuthority, ProviderError> {
-        self.admit_envelopes_with_original(request, response, connection, verifier, Some((hello, result)))
+        self.admit_envelopes_with_original(
+            request,
+            response,
+            connection,
+            verifier,
+            Some((hello, result)),
+        )
     }
 
     fn admit_envelopes_with_original(
@@ -159,9 +165,20 @@ impl ExtensionHandshake {
         };
         let mut authority = match original {
             Some(original) => self.handshake.admit_envelopes_with_original(
-                request, response, connection, &mut bridge, true, Some(original))?,
+                request,
+                response,
+                connection,
+                &mut bridge,
+                true,
+                Some(original),
+            )?,
             None => self.handshake.admit_envelopes_versioned(
-                request, response, connection, &mut bridge, true)?,
+                request,
+                response,
+                connection,
+                &mut bridge,
+                true,
+            )?,
         };
         authority.extensions = Some(Arc::clone(&retained));
         self.selected = Some(retained);

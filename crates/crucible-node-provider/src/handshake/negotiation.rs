@@ -393,7 +393,8 @@ impl Handshake {
     pub(crate) fn original_native_hello_reuse_counter_scratch_data() -> usize {
         std::mem::size_of::<OriginalCompletedHello<'static>>()
             + std::mem::size_of::<Option<(&HelloRequest, &HelloResult)>>()
-            + crate::reference_packet::service::native_startup::data_equality::counter_scratch_data()
+            + crate::reference_packet::service::native_startup::data_equality::counter_scratch_data(
+            )
             + 6 * 43
     }
 
@@ -421,7 +422,14 @@ impl Handshake {
         verifier: &mut impl TrustedHandshakeVerifier,
         typed_extensions: bool,
     ) -> Result<ConnectionAuthority, ProviderError> {
-        self.admit_envelopes_with_original(request, response, connection, verifier, typed_extensions, None)
+        self.admit_envelopes_with_original(
+            request,
+            response,
+            connection,
+            verifier,
+            typed_extensions,
+            None,
+        )
     }
 
     /// Reuses the actual native constructor's first decoded request and generated
@@ -435,7 +443,14 @@ impl Handshake {
         connection: Id,
         verifier: &mut impl TrustedHandshakeVerifier,
     ) -> Result<ConnectionAuthority, ProviderError> {
-        self.admit_envelopes_with_original(request, response, connection, verifier, false, Some((hello, result)))
+        self.admit_envelopes_with_original(
+            request,
+            response,
+            connection,
+            verifier,
+            false,
+            Some((hello, result)),
+        )
     }
 
     pub(super) fn admit_envelopes_with_original(
@@ -515,30 +530,33 @@ impl Handshake {
                 extensions: Extensions::new(),
             };
             if !data_equality::matches_object(&request.body, hello)
-                || !data_equality::matches_object(&response.body, &shape) {
-                return Err(ProviderError::Correlation("original native Hello bodies changed"));
+                || !data_equality::matches_object(&response.body, &shape)
+            {
+                return Err(ProviderError::Correlation(
+                    "original native Hello bodies changed",
+                ));
             }
             (hello, result)
         } else {
-        let RequestBody::Hello(hello) =
-            crate::bodies::decode_request(Method::Hello, &request.body)?
-        else {
-            return Err(ProviderError::Frame(
-                "hello request did not select hello schema",
-            ));
-        };
-        let decoded =
-            crate::bodies::decode_response(&RequestBody::Hello(hello.clone()), &response.body)?;
-        if !matches!(decoded.shape, ResponseShape::Completed { .. }) {
-            return Err(ProviderError::Correlation(
-                "hello did not complete negotiation",
-            ));
-        }
-        let Some(MethodResult::Hello(result)) = decoded.result else {
-            return Err(ProviderError::Frame(
-                "hello response has no negotiated result",
-            ));
-        };
+            let RequestBody::Hello(hello) =
+                crate::bodies::decode_request(Method::Hello, &request.body)?
+            else {
+                return Err(ProviderError::Frame(
+                    "hello request did not select hello schema",
+                ));
+            };
+            let decoded =
+                crate::bodies::decode_response(&RequestBody::Hello(hello.clone()), &response.body)?;
+            if !matches!(decoded.shape, ResponseShape::Completed { .. }) {
+                return Err(ProviderError::Correlation(
+                    "hello did not complete negotiation",
+                ));
+            }
+            let Some(MethodResult::Hello(result)) = decoded.result else {
+                return Err(ProviderError::Frame(
+                    "hello response has no negotiated result",
+                ));
+            };
             owned = (hello, result);
             (&owned.0, &owned.1)
         };

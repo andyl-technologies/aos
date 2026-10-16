@@ -328,11 +328,12 @@ pub(crate) fn actual_serialization_storage_data(
     Ok(result)
 }
 
-
 /// Keeps growable decoded strings/arrays and every map root/entry separate
 /// from canonical key ordering, escaping, parser work and output banks.
 fn retained_value_backing(credit: &Credit) -> Result<usize, ProviderError> {
-    credit.object_roots.checked_mul(map_node_bytes().map_err(|_| projection_excess())?)
+    credit
+        .object_roots
+        .checked_mul(map_node_bytes().map_err(|_| projection_excess())?)
         .and_then(|roots| roots.checked_add(credit.parser_requested))
         .and_then(|bytes| bytes.checked_add(size_of::<serde_json::Value>()))
         .ok_or_else(projection_excess)
@@ -751,7 +752,7 @@ impl OriginalSerializationStorageProjection {
                 sequence_containers: 0,
                 serialized_value_nodes: 0,
                 serialized_capacity_records: 0,
-        object_roots: 0,
+                object_roots: 0,
             },
         })
     }
@@ -791,7 +792,11 @@ impl OriginalSerializationStorageProjection {
 
     /// Adds the braces of one fixed object; its fields are counted separately.
     pub(crate) fn add_object(&mut self) -> Result<(), ProviderError> {
-        self.credit.object_roots = self.credit.object_roots.checked_add(1).ok_or_else(projection_excess)?;
+        self.credit.object_roots = self
+            .credit
+            .object_roots
+            .checked_add(1)
+            .ok_or_else(projection_excess)?;
         self.credit
             .serialized_node(true)
             .map_err(|_| projection_excess())?;
@@ -915,12 +920,17 @@ mod logical_event_tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     #[test]
-    fn split_retained_value_backing_covers_real_objects_and_has_no_canonical_bank_alias() -> TestResult {
-        for value in [serde_json::json!({}), serde_json::json!([{}, {"nested": ["value", 1]}, []])] {
+    fn split_retained_value_backing_covers_real_objects_and_has_no_canonical_bank_alias()
+    -> TestResult {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!([{}, {"nested": ["value", 1]}, []]),
+        ] {
             let mut observer = crate::retained_metadata::MetadataObserver::new();
             observer.observe(&value)?;
             let facts = observer.finish();
-            let observed = crate::retained_metadata::requested_metadata_backing_storage_data(&facts)?;
+            let observed =
+                crate::retained_metadata::requested_metadata_backing_storage_data(&facts)?;
             let row = actual_serialization_storage_data(&value, facts, usize::MAX)?;
             assert!(row.retained_value_backing_bytes >= observed + size_of::<serde_json::Value>());
             assert!(row.canonical_output_requested_bytes >= 256);
@@ -929,7 +939,12 @@ mod logical_event_tests {
             let clone = value.clone();
             let mut clone_observer = crate::retained_metadata::MetadataObserver::new();
             clone_observer.observe(&clone)?;
-            assert!(row.retained_value_backing_bytes >= crate::retained_metadata::requested_metadata_backing_storage_data(&clone_observer.finish())?);
+            assert!(
+                row.retained_value_backing_bytes
+                    >= crate::retained_metadata::requested_metadata_backing_storage_data(
+                        &clone_observer.finish()
+                    )?
+            );
         }
         Ok(())
     }

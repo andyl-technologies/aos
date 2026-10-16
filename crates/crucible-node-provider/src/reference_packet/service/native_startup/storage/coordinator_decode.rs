@@ -63,14 +63,30 @@ pub(super) fn backing(bytes: &[u8], maximum: usize) -> Result<usize, ProviderErr
     // participants and the four actual host DTO fields own typed Vec elements.
     // Price a complete independent Value row as well, conservatively covering
     // every opaque subtree and owned-deserializer container rebuild.
-    let mut retained = decoded::quote(bytes, size_of::<serde_json::Value>(),
-        size_of::<serde_json::Value>(), maximum)?.value_backing;
+    let mut retained = decoded::quote(
+        bytes,
+        size_of::<serde_json::Value>(),
+        size_of::<serde_json::Value>(),
+        maximum,
+    )?
+    .value_backing;
     let mut peers = Fields::array(field(bytes, "participants")?)?;
     let mut count = 0usize;
     while let Some(peer) = peers.next()? {
         count = count.checked_add(1).ok_or_else(refused)?;
-        retained = sum(&[retained, decoded::quote(peer,
-            size_of::<PacketControlSelection>(), typed_slot(), maximum)?.typed_backing], maximum)?;
+        retained = sum(
+            &[
+                retained,
+                decoded::quote(
+                    peer,
+                    size_of::<PacketControlSelection>(),
+                    typed_slot(),
+                    maximum,
+                )?
+                .typed_backing,
+            ],
+            maximum,
+        )?;
     }
     peers.finish()?;
     let host = field(bytes, "host")?;
@@ -80,15 +96,29 @@ pub(super) fn backing(bytes: &[u8], maximum: usize) -> Result<usize, ProviderErr
         ("owner", size_of::<OwnerBinding>()),
         ("prepared_token", size_of::<Id>()),
     ] {
-        retained = sum(&[retained, decoded::quote(field(host, name)?, root,
-            typed_slot(), maximum)?.typed_backing], maximum)?;
+        retained = sum(
+            &[
+                retained,
+                decoded::quote(field(host, name)?, root, typed_slot(), maximum)?.typed_backing,
+            ],
+            maximum,
+        )?;
     }
-    let slots = count.checked_mul(4).and_then(|n| n.checked_add(4)).ok_or_else(refused)?;
-    sum(&[retained,
-        slots.checked_mul(size_of::<PacketControlSelection>()).ok_or_else(refused)?,
-        size_of::<PacketNative5CoordinatorInstallation>(),
-        size_of::<PacketConnectedHostSelection>(),
-    ], maximum)
+    let slots = count
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(4))
+        .ok_or_else(refused)?;
+    sum(
+        &[
+            retained,
+            slots
+                .checked_mul(size_of::<PacketControlSelection>())
+                .ok_or_else(refused)?,
+            size_of::<PacketNative5CoordinatorInstallation>(),
+            size_of::<PacketConnectedHostSelection>(),
+        ],
+        maximum,
+    )
 }
 
 fn typed(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError> {

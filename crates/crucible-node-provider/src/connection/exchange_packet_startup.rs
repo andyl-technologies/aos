@@ -158,7 +158,8 @@ fn quote_startup_parts(
         // The legacy containment projection mixes the original DOM and
         // canonical work. Replace that one named component by backing only;
         // all other actual guard/authority/map/root banks remain unchanged.
-        let containment_backing = data.containment_requested_bytes
+        let containment_backing = data
+            .containment_requested_bytes
             .checked_sub(input.original.dom_and_canonical_scratch_bytes)
             .and_then(|bytes| bytes.checked_add(input.original.retained_value_backing_bytes))
             .ok_or_else(credit)?;
@@ -174,7 +175,10 @@ fn quote_startup_parts(
     let mut native_source_backing = sum(&[
         input.terminal.retained_value_backing_bytes,
         payload,
-        mul(add(mul(2, input.objects.len())?, 4)?, size_of::<(ContentRef, Vec<u8>)>())?,
+        mul(
+            add(mul(2, input.objects.len())?, 4)?,
+            size_of::<(ContentRef, Vec<u8>)>(),
+        )?,
         size_of::<crate::reference_packet::control::PacketControlReply>(),
     ])?;
     let mut source_owner = sum(&[
@@ -193,9 +197,15 @@ fn quote_startup_parts(
     for object in objects.iter().flatten() {
         let reference = continuation::reference_projection(object, input.maximum_requested_bytes)?;
         source_owner = add(source_owner, reference.dom_and_canonical_scratch_bytes)?;
-        native_source_backing = add(native_source_backing, reference.retained_value_backing_bytes)?;
+        native_source_backing = add(
+            native_source_backing,
+            reference.retained_value_backing_bytes,
+        )?;
         if let Some(retained) = data.native_retained_backing_bytes.as_mut() {
-            *retained = add(*retained, add(reference.retained_value_backing_bytes, growth(transfer)?)?)?;
+            *retained = add(
+                *retained,
+                add(reference.retained_value_backing_bytes, growth(transfer)?)?,
+            )?;
         }
 
         data.acknowledgement_index_requested_bytes = add(

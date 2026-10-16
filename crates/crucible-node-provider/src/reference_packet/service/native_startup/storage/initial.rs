@@ -439,7 +439,10 @@ pub(super) fn project(
         retained = sum(
             &[
                 retained,
-                prefix.exchange.native_retained_backing_bytes.ok_or_else(refused)?,
+                prefix
+                    .exchange
+                    .native_retained_backing_bytes
+                    .ok_or_else(refused)?,
                 prefix.native_source_backing_bytes.ok_or_else(refused)?,
                 terminal.retained_value_backing_bytes,
                 original.retained_value_backing_bytes,

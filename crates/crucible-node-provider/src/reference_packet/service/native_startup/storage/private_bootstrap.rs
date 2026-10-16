@@ -188,10 +188,28 @@ pub(super) fn project(
         &[base.base_decoded_bytes, additions.requested_total()?],
         maximum,
     )?;
-    let source_backing = sum(&[base.base_value_backing_bytes, additions.retained_value_backing_bytes], maximum)?;
+    let source_backing = sum(
+        &[
+            base.base_value_backing_bytes,
+            additions.retained_value_backing_bytes,
+        ],
+        maximum,
+    )?;
     let registration = decode_value(input.host_registration, maximum)?;
-    let registration_backing = decoded::quote(input.host_registration, size_of::<serde_json::Value>(), size_of::<serde_json::Value>(), maximum)?.value_backing;
-    let launch_backing = decoded::quote(input.encoded_launch, size_of::<PacketNative5SourceLaunch>(), native_element_slot(), maximum)?.value_backing;
+    let registration_backing = decoded::quote(
+        input.host_registration,
+        size_of::<serde_json::Value>(),
+        size_of::<serde_json::Value>(),
+        maximum,
+    )?
+    .value_backing;
+    let launch_backing = decoded::quote(
+        input.encoded_launch,
+        size_of::<PacketNative5SourceLaunch>(),
+        native_element_slot(),
+        maximum,
+    )?
+    .value_backing;
     let launch = decode(
         input.encoded_launch,
         size_of::<PacketNative5SourceLaunch>(),
@@ -216,7 +234,9 @@ pub(super) fn project(
             fields.requested_total()?,
             super::super::super::ack_emitter::original_native_private_bootstrap_layout(),
             2 * 32,
-        ], maximum)?);
+        ],
+        maximum,
+    )?);
     // Original launch/source/registration/boot DOM children survive successful
     // service birth in the original private bootstrap holder. These independent
     // owners are not released merely because policy retains equivalent values.
@@ -232,7 +252,9 @@ pub(super) fn project(
             additions.retained_value_backing_bytes,
             fields.retained_value_backing_bytes,
             super::super::super::ack_emitter::original_native_private_bootstrap_layout(),
-        ], maximum)?;
+        ],
+        maximum,
+    )?;
     let maximum_source_bytes = sum(&[base.base_encoded_bytes, added_encoded], maximum)?;
     Ok(PrivateBootstrapStorage {
         retained,
