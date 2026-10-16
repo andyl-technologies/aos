@@ -27,6 +27,8 @@ pub(crate) fn scripted_node_with_live_host_runtime(
             hot_fork_ring_image: None,
         },
         ScriptedQmpMachineControl {
+            #[cfg(target_os = "linux")]
+            checkpoint: None,
             log,
             track_process_endpoint_retirement: false,
             fail_stop: false,

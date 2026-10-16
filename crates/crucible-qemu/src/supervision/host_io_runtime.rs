@@ -42,6 +42,7 @@ use super::ninep_io_servicer::{NinepIoDiagnostics, QemuLive9pIoServicer};
 use crate::console_observation::QemuConsoleObservationReader;
 use crate::quantum::idle_state_from_snapshot;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
+#[cfg(any(test, feature = "test-support"))]
 use crate::supervision::HostSupervisionDeadline;
 use crate::{
     QemuAdvanceCompletionFence, QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome,
@@ -1103,14 +1104,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             "publish current execution fingerprint",
         )?;
 
-        let request = self
-            .region
-            .as_ref()
-            .ok_or_else(region_missing)?
-            .fingerprint_sample(self.vm_slot)
-            .map_err(map_slot_error)?
-            .request_capture_v1();
-        self.capture_execution_fingerprint(&deadline, timeout, request)
+        self.capture_execution_fingerprint(&deadline, timeout)
     }
 
     fn publish_current_execution_fingerprint_under_original(
@@ -1123,15 +1117,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         let remaining = deadline.remaining(operation)?.ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(operation, "original operation has expired")
         })?;
-        let request = self
-            .region
-            .as_ref()
-            .ok_or_else(region_missing)?
-            .fingerprint_sample(self.vm_slot)
-            .map_err(map_slot_error)?
-            .request_fresh_capture_v1()
-            .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
-        self.capture_execution_fingerprint(&deadline, remaining, request)
+        self.capture_execution_fingerprint(&deadline, remaining)
     }
 
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
@@ -1146,15 +1132,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         let remaining = deadline.remaining(operation)?.ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(operation, "paired original operation has expired")
         })?;
-        let request = self
-            .region
-            .as_ref()
-            .ok_or_else(region_missing)?
-            .fingerprint_sample(self.vm_slot)
-            .map_err(map_slot_error)?
-            .request_fresh_capture_v1()
-            .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
-        self.capture_execution_fingerprint(&deadline, remaining, request)
+        self.capture_execution_fingerprint(&deadline, remaining)
     }
 
     /// Requests an exact plugin boundary and hands QEMU's execution path to QMP.

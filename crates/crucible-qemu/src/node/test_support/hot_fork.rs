@@ -21,7 +21,9 @@ use crucible_shmem::{
 };
 
 use super::super::*;
+use super::checkpoint_ownership::{Ownership, fixture_budgets};
 use crate::{QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome};
+use std::sync::Arc;
 
 const TEMPLATE_GENERATION: u64 = 1;
 const PROCESS_CONTRACT_GENERATION: u64 = 13;
@@ -162,6 +164,7 @@ struct ScriptedPluginControl;
 
 #[derive(Clone, Default)]
 struct ScriptedHostIoRuntime {
+    checkpoint: Option<Arc<Ownership>>,
     // This fixture implements no block/9p queues or native timer/input source.
     // Binding validates the immutable World instead of guessing absence.
     io_world: Option<(crucible::model::World, NodeId)>,
@@ -190,6 +193,7 @@ struct ScriptedRetainedChild {
 type RetainedStream = (crate::QmpDescriptorName, u64, bool);
 
 struct ScriptedQmpMachineControl {
+    checkpoint: Arc<Ownership>,
     supervisor: Option<crucible_linux_resource::host_supervision::HostOperationSupervisor>,
     #[cfg(feature = "test-support")]
     process_id: u32,
@@ -287,6 +291,17 @@ pub fn scripted_hot_fork_source_with_script_for_test(
     let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
     let plugin_barrier =
         crate::QmpHotForkPluginBarrierState::one_quiescent(15, host_barrier.ring_count());
+    let supervisor = crucible_linux_resource::host_supervision::HostOperationSupervisor::new(
+        fixture_budgets(),
+        Some(Duration::from_secs(600)),
+    )
+    .map_err(|source| QemuTestHotForkSourceError::new("scripted original service cap", source))?;
+    let checkpoint = Ownership::with_supervisor(supervisor.clone(), false).map_err(|source| {
+        QemuTestHotForkSourceError::new("scripted checkpoint custody", source.as_ref())
+    })?;
+    let cancellation = checkpoint.cancellation().map_err(|source| {
+        QemuTestHotForkSourceError::new("scripted checkpoint cancellation", source)
+    })?;
     let child = spawn_scripted_process()
         .map_err(|source| QemuTestHotForkSourceError::new("spawn scripted source", source))?;
     #[cfg(feature = "test-support")]
@@ -305,6 +320,7 @@ pub fn scripted_hot_fork_source_with_script_for_test(
             quantum_completed: false,
         },
         ScriptedQmpMachineControl {
+            checkpoint: checkpoint.clone(),
             supervisor: None,
             #[cfg(feature = "test-support")]
             process_id,
@@ -338,14 +354,13 @@ pub fn scripted_hot_fork_source_with_script_for_test(
         shutdown_policy,
         QemuAsyncDriverPolicy::fast_test(),
         QemuCrashDetector::new("scripted-hot-fork-source"),
-        ScriptedHostIoRuntime::default(),
+        ScriptedHostIoRuntime {
+            checkpoint: Some(checkpoint),
+            ..ScriptedHostIoRuntime::default()
+        },
         2,
     );
-    let supervisor = crucible_linux_resource::host_supervision::HostOperationSupervisor::new(
-        crucible_linux_resource::host_supervision::HostOperationBudgets::default(),
-        Some(Duration::from_secs(600)),
-    )
-    .map_err(|source| QemuTestHotForkSourceError::new("scripted original service cap", source))?;
+    node.install_checkpoint_cancellation(cancellation);
     // Scripted processes still retain a finite original source cap. Reuse must
     // restore this exact handle after borrowing a child's operation roster.
     node.attach_host_operation_supervisor(supervisor)
@@ -754,6 +769,25 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
 }
 
 impl QemuHostIoRuntime for ScriptedHostIoRuntime {
+    fn ram_control_registration(&self) -> Option<&crate::ram_control::RamControlRegistration> {
+        self.checkpoint.as_ref().map(|owner| &owner.registration)
+    }
+
+    fn quiesce_for_checkpoint_under_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.checkpoint
+            .as_ref()
+            .ok_or_else(|| {
+                QemuAsyncDriverRuntimeError::new(
+                    "scripted checkpoint pause",
+                    "missing source original",
+                )
+            })?
+            .check(original)
+    }
+
     fn host_operation_supervisor(
         &self,
     ) -> Option<&crucible_linux_resource::host_supervision::HostOperationSupervisor> {
@@ -852,7 +886,10 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         _region_len: u64,
         _console: Option<crate::QemuHotForkChildConsoleObservation>,
     ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
-        Ok(Box::new(self.clone()))
+        let mut continuation = self.clone();
+        // A child borrows scripted I/O state; it receives no source registration.
+        continuation.checkpoint = None;
+        Ok(Box::new(continuation))
     }
 
     fn publish_current_execution_fingerprint(
@@ -884,6 +921,33 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
 }
 
 impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
+    fn bind_checkpoint_original(
+        &mut self,
+        original: crate::CheckpointOriginalLoan,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.checkpoint.bind(original)
+    }
+
+    fn begin_checkpoint_receiving(
+        &mut self,
+        receipt: crate::ram_control::CheckpointArmReceipt,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.checkpoint.begin(receipt)
+    }
+
+    fn resume_after_checkpoint_under_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.checkpoint.check(original).map_err(|source| {
+            QemuNodeChannelError::new("scripted original resume", source.to_string())
+        })?;
+        self.resume_after_checkpoint()?;
+        self.checkpoint.check(original).map_err(|source| {
+            QemuNodeChannelError::new("scripted original resume", source.to_string())
+        })
+    }
+
     fn set_host_operation_supervisor(
         &mut self,
         supervisor: crucible_linux_resource::host_supervision::HostOperationSupervisor,
@@ -955,11 +1019,13 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                 "a stopped scripted source cannot publish another execution pause",
             ));
         }
+        self.checkpoint.stop()?;
         self.paused = true;
         Ok(())
     }
 
     fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.checkpoint.resume()?;
         self.paused = false;
         Ok(())
     }

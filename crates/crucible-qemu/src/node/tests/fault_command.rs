@@ -103,6 +103,8 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 hot_fork_ring_image: None,
             },
             ScriptedQmpMachineControl {
+                #[cfg(target_os = "linux")]
+                checkpoint: None,
                 log: Arc::clone(&log),
                 track_process_endpoint_retirement: false,
                 fail_stop: false,
@@ -136,6 +138,8 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
             QemuAsyncDriverPolicy::fast_test(),
             QemuCrashDetector::new("vm-a"),
             ScriptedHostIoRuntime {
+                #[cfg(target_os = "linux")]
+                checkpoint: None,
                 log,
                 outcomes: VecDeque::new(),
                 fault_results: VecDeque::from([result.clone()]),

@@ -13,6 +13,7 @@ pub(crate) enum OperationPollBudget<'a> {
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     BorrowedPair(&'a HostOperationGuard, &'a HostOperationGuard),
     Supervised(HostOperationGuard),
+    #[cfg(any(test, feature = "test-support"))]
     Fixture(HostSupervisionDeadline),
 }
 
@@ -28,6 +29,7 @@ impl<'a> OperationPollBudget<'a> {
             Self::Supervised(guard) => Ok(Some([Some(guard), None])),
             #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
             Self::BorrowedPair(actor, family) => Ok(Some([Some(actor), Some(family)])),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Fixture(_) => Ok(None),
         }
     }
@@ -98,7 +100,7 @@ impl<'a> OperationPollBudget<'a> {
     pub(crate) fn begin(
         supervisor: Option<&HostOperationSupervisor>,
         class: HostOperationClass,
-        timeout: Duration,
+        _fixture_timeout: Duration,
         operation: &'static str,
     ) -> Result<Self, QemuAsyncDriverRuntimeError> {
         if let Some(supervisor) = supervisor {
@@ -107,13 +109,27 @@ impl<'a> OperationPollBudget<'a> {
                 .map(Self::Supervised)
                 .map_err(|source| Self::failure(operation, source));
         }
-        if timeout.is_zero() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                operation,
-                "fixture timeout is zero",
-            ));
+
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            if _fixture_timeout.is_zero() {
+                return Err(QemuAsyncDriverRuntimeError::new(
+                    operation,
+                    "fixture timeout is zero",
+                ));
+            }
+            Ok(Self::Fixture(HostSupervisionDeadline::start(
+                _fixture_timeout,
+            )))
         }
-        Ok(Self::Fixture(HostSupervisionDeadline::start(timeout)))
+
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            Err(QemuAsyncDriverRuntimeError::new(
+                operation,
+                "operation requires original supervision",
+            ))
+        }
     }
 
     pub(crate) fn remaining(
@@ -134,13 +150,14 @@ impl<'a> OperationPollBudget<'a> {
                 .wait_slice()
                 .map(Some)
                 .map_err(|source| Self::failure(operation, source)),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Fixture(deadline) => Ok(deadline.remaining()),
         }
     }
 
     pub(crate) fn wait(
         &self,
-        poll_interval: Duration,
+        _fixture_poll_interval: Duration,
         operation: &'static str,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         match self {
@@ -161,9 +178,10 @@ impl<'a> OperationPollBudget<'a> {
             Self::Supervised(guard) => guard
                 .wait_for_change()
                 .map_err(|source| Self::failure(operation, source)),
+            #[cfg(any(test, feature = "test-support"))]
             Self::Fixture(deadline) => {
                 if let Some(remaining) = deadline.remaining() {
-                    thread::sleep(poll_interval.min(remaining));
+                    thread::sleep(_fixture_poll_interval.min(remaining));
                 }
                 Ok(())
             }
@@ -206,6 +224,57 @@ impl<'a> OperationPollBudget<'a> {
 mod tests {
     use super::*;
     use crucible_linux_resource::host_supervision::HostOperationBudgets;
+
+    #[test]
+    fn ownerless_fixture_budget_keeps_its_explicit_timeout_without_producers() {
+        let budget = OperationPollBudget::begin(
+            None,
+            HostOperationClass::FingerprintUpdate,
+            Duration::from_secs(2),
+            "fixture fingerprint",
+        )
+        .unwrap();
+
+        assert!(matches!(budget, OperationPollBudget::Fixture(_)));
+        assert!(budget.action_producers().unwrap().is_none());
+        budget.complete("fixture fingerprint").unwrap();
+        assert!(
+            OperationPollBudget::begin(
+                None,
+                HostOperationClass::FingerprintUpdate,
+                Duration::ZERO,
+                "fixture fingerprint",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn refused_supervisor_never_falls_back_to_a_fixture_budget() {
+        let supervisor = HostOperationSupervisor::new(
+            HostOperationBudgets::default(),
+            Some(Duration::from_secs(2)),
+        )
+        .unwrap();
+        supervisor.cancel().unwrap();
+
+        let result = OperationPollBudget::begin(
+            Some(&supervisor),
+            HostOperationClass::FingerprintUpdate,
+            Duration::from_secs(2),
+            "cancelled fingerprint",
+        );
+
+        let error = result.err().unwrap();
+        assert_eq!(
+            error.operational_supervision_source(),
+            Some(
+                crucible_linux_resource::host_supervision::HostSupervisionError::Terminal {
+                    state: crucible_linux_resource::host_supervision::HostOperationState::Canceled,
+                }
+            ),
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

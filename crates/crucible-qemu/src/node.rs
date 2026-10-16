@@ -452,7 +452,7 @@ impl QemuNodeChild {
         if let Some(original) = self.checkpoint_original.as_mut() {
             original.retire_after_reap();
         }
-        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        #[cfg(target_os = "linux")]
         if let Some(startup) = self.original_plugin_startup.as_mut() {
             startup.retire_workspace_after_reap();
         }
