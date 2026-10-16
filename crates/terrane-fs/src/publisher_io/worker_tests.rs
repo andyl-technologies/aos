@@ -772,3 +772,100 @@ fn staged_writer_retains_root_exclusion_after_adapter_drop() {
     assert_eq!(directories.len(), 1);
     assert_eq!(fs::read_dir(directories[0].path()).unwrap().count(), 0);
 }
+
+#[test]
+#[ignore = "requires explicitly provisioned disk-backed verity-enabled ext4 in the AOS VM"]
+fn actual_binding_path_failure_rolls_back_before_backing_acknowledgment() {
+    let paths = fixture("worker-binding-path-failure");
+    let root = paths[0].parent().unwrap();
+    let (arrived_sender, arrived) = mpsc::sync_channel(1);
+    let (release, released) = mpsc::sync_channel(1);
+    let gate = WorkerGate {
+        arrived: arrived_sender,
+        release: Mutex::new(released),
+    };
+    let (worker, owner) = NativePublicationWorker::start_thread(
+        configuration(root, NativeWipePolicy::None),
+        Some(gate),
+        None,
+    )
+    .unwrap();
+    let requester = worker.clone();
+    let input = source(root);
+    let expected = claim();
+    let pending_claim = expected.clone();
+    let waiting = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(requester.publish(pending_claim, input))
+    });
+    arrived.recv_timeout(Duration::from_secs(20)).unwrap();
+    let digest: String = expected
+        .descriptor()
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let canonical = paths[0].join(&digest[..2]).join(&digest);
+    assert!(
+        canonical.exists(),
+        "the actual canonical link and parent sync precede state binding"
+    );
+    let actual = File::open(&canonical).unwrap();
+    crate::verity::measure(&actual).unwrap();
+
+    // Force a real LocalFs metadata/open failure after the publication effects.
+    // The fixture hook supplies no Result, acknowledgment or success receipt.
+    let saved_state = root.join("saved-publication-state");
+    fs::rename(&paths[3], &saved_state).unwrap();
+    fs::write(&paths[3], b"not a directory").unwrap();
+    release.send(()).unwrap();
+    assert!(waiting.join().unwrap().is_err());
+    assert!(
+        !canonical.exists(),
+        "failed real binding cannot acknowledge a backing inode"
+    );
+    assert_eq!(
+        actual.metadata().unwrap().nlink(),
+        0,
+        "rollback removes canonical and private staging aliases"
+    );
+    drop(actual);
+    assert!(
+        NativePublisher::open("public".into(), &paths[0], &paths[1], &paths[2]).is_err(),
+        "the physical owner still retains its exclusions"
+    );
+    drop(worker);
+    owner.join().unwrap();
+
+    fs::remove_file(&paths[3]).unwrap();
+    fs::rename(saved_state, &paths[3]).unwrap();
+    let (worker, owner) = NativePublicationWorker::start_thread(
+        configuration(root, NativeWipePolicy::None),
+        None,
+        None,
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let result = runtime
+        .block_on(worker.publish(expected.clone(), source(root)))
+        .unwrap();
+    assert_eq!(
+        result.into_handle().metadata().unwrap().len(),
+        expected.plaintext_size()
+    );
+    drop(worker);
+    owner.join().unwrap();
+    let state = FsPublicationState::new(TokioLocalFs, paths[3].clone());
+    assert!(
+        runtime
+            .block_on(state.binding(&expected))
+            .unwrap()
+            .is_some()
+    );
+}
