@@ -39,7 +39,8 @@ pub use ack_emitter::OriginalCanonicalBlobAckEmitter;
 pub use assigned_admit::{CompletedOriginalCanonicalAckAdmit, PreparedOriginalCanonicalAckAdmit};
 pub use assigned_restore::{CompletedOriginalCompleteRestore, PreparedOriginalCompleteRestore};
 pub use assigned_transfer::{
-    CompletedOriginalCompleteRestoreTransfer, PreparedOriginalCompleteRestoreTransfer,
+    CompletedOriginalCompleteRestoreTransfer, OriginalFreshRestorePrepareBindingStorageData,
+    PreparedOriginalCompleteRestoreTransfer,
 };
 pub use fresh_restore_query::{OriginalFreshRestoreQuery, OriginalFreshRestoreQueryStorageData};
 pub use input_emitter::OriginalCanonicalRestoreInputEmitter;

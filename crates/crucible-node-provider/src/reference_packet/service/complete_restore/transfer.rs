@@ -14,10 +14,14 @@ use super::*;
 use crate::envelope::Envelope;
 
 mod assigned;
+pub(crate) use assigned::authenticate_fresh_prepare_shape;
 mod contract;
 mod crypto;
 mod owner_state;
 pub use assigned::{
+    complete_restore_fresh_prepare_assigned_request_digest,
+    complete_restore_fresh_prepare_assigned_response_digest,
+    complete_restore_fresh_prepare_digest_counter_scratch_data,
     complete_restore_transfer_assigned_request_digest,
     complete_restore_transfer_assigned_response_digest, complete_restore_transfer_original_digest,
 };

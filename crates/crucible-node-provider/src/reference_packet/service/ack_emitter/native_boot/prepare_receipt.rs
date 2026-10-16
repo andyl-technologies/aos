@@ -74,12 +74,20 @@ impl VerifiedCompleteRestorePrepare {
         )?;
         let maximum =
             usize::try_from(self.authority.limits().frame_bytes.get()).map_err(|_| refused())?;
-        let assigned = complete_restore_transfer_assigned_response_digest(
-            flight.original.as_ref().ok_or_else(refused)?,
-            response,
-            PacketCompleteRestoreTransferPhase::Prepare,
-            maximum,
-        )?;
+        let assigned = if self.policy.fresh_restore_allocation_selection()
+            == Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
+            && flight.original.as_ref().ok_or_else(refused)?.extensions.contains_key(
+                PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING)
+        {
+            complete_restore_fresh_prepare_assigned_response_digest(
+                flight.original.as_ref().ok_or_else(refused)?, response, maximum,
+            )?
+        } else {
+            complete_restore_transfer_assigned_response_digest(
+                flight.original.as_ref().ok_or_else(refused)?, response,
+                PacketCompleteRestoreTransferPhase::Prepare, maximum,
+            )?
+        };
         let boot = self.boot.try_borrow().map_err(|_| borrowed())?;
         boot.ensure_origin()?;
         let key: &[u8; 32] = boot

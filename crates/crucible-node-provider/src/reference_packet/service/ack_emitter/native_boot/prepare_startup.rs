@@ -319,6 +319,7 @@ pub fn original_native_prepare_startup_counter_scratch_data() -> usize {
         original_json_value_storage_extent_counter_scratch_data(),
         original_prepare_executable_measurement_counter_scratch_data(),
         super::prepare_bindings::declared_counter_scratch_data(),
+        crate::reference_packet::service::complete_restore::transfer::complete_restore_fresh_prepare_digest_counter_scratch_data(),
         ConnectionAuthority::independent_clone_counter_scratch_data(),
         8 * size_of::<OriginalJsonValueStorageExtentData>(),
         size_of::<shapes::PrepareStartupShapes>(),

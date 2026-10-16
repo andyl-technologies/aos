@@ -6,10 +6,19 @@
 
 use super::assigned_restore::{AssignedOriginalCompleteRestore, Phase};
 use super::*;
+use crate::reference_packet::service::fresh_restore_allocation::{
+    PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING,
+    PacketNative5FreshRestoreAllocationSelection,
+    PacketNativeFreshRestoreAllocationPrepareBinding,
+};
+
 use crate::protocol_snapshot::PreparedArchivedProtocolMapping;
 use crate::reference_packet::service::complete_restore::transfer::*;
 use serde::Deserialize;
 use serde_json::Map;
+
+mod fresh_prepare;
+pub use fresh_prepare::OriginalFreshRestorePrepareBindingStorageData;
 
 /// Borrows one actual phase-assigned restore original without moving its owners.
 #[must_use = "the exact original remains in its controller when this loan ends"]
@@ -46,6 +55,12 @@ struct TransferPreparation {
     value: Value,
     phase: PacketCompleteRestoreTransferPhase,
     reference: ContentRef,
+    extensions: TransferExtensions,
+}
+
+enum TransferExtensions {
+    PhaseOnly,
+    FreshPrepare(PacketNativeFreshRestoreAllocationPrepareBinding),
 }
 
 impl CnpController {
@@ -105,6 +120,7 @@ impl CnpController {
                 value,
                 phase: PacketCompleteRestoreTransferPhase::Prepare,
                 reference: request.restoration.mapping,
+                extensions: TransferExtensions::PhaseOnly,
             },
         )
     }
@@ -176,6 +192,7 @@ impl CnpController {
                 value,
                 phase: PacketCompleteRestoreTransferPhase::Commit,
                 reference: mapping_reference,
+                extensions: TransferExtensions::PhaseOnly,
             },
         )
     }
@@ -192,6 +209,7 @@ impl CnpController {
             value,
             phase,
             reference,
+            extensions: selected_extensions,
         } = preparation;
         emitter.authenticate_original(self)?;
         self.ensure_no_pending_original_ack_admit()?;
@@ -227,6 +245,21 @@ impl CnpController {
         };
         let mut extensions = Extensions::new();
         extensions.insert(phase.request_extension().into(), value);
+        if let TransferExtensions::FreshPrepare(binding) = selected_extensions {
+            if phase != PacketCompleteRestoreTransferPhase::Prepare
+                || self.original_native5_fresh_restore_allocation_selection()?
+                    != Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
+                || !self.authority().envelope_extensions().contains(
+                    PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING)
+            {
+                return Err(refused());
+            }
+            binding.validate_data()?;
+            extensions.insert(
+                PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING.into(),
+                serde_json::to_value(binding).map_err(crucible_node_contract::ContractError::from)?,
+            );
+        }
         // This reset belongs only to creation of this previously absent phase.
         // Resume/seal/publish authenticate the stored cut and never call reset.
         let (sequence, cut) = self.session.begin_original_ack_admit(self.budget)?;
@@ -434,6 +467,17 @@ impl PreparedOriginalCompleteRestoreTransfer<'_> {
     ) -> Result<(), ProviderError> {
         self.authenticate_original_emitter(emitter)?;
         proof.validate_data(self.phase)?;
+        let selected_fresh = self.phase == PacketCompleteRestoreTransferPhase::Prepare
+            && self.state()?.original.extensions.contains_key(
+                PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING);
+        if selected_fresh {
+            if self.controller.original_native5_fresh_restore_allocation_selection()?
+                != Some(PacketNative5FreshRestoreAllocationSelection::CompletedAdmit13)
+            {
+                return Err(refused());
+            }
+            fresh_prepare::authenticate_unsigned_fresh_prepare(&self.state()?.original)?;
+        }
         let slot = match self.phase {
             PacketCompleteRestoreTransferPhase::Prepare => {
                 &mut self.controller.original_complete_restore_prepare
@@ -444,7 +488,7 @@ impl PreparedOriginalCompleteRestoreTransfer<'_> {
         };
         let state = slot.as_mut().ok_or_else(refused)?;
         if state.phase != Phase::Unsigned
-            || state.original.extensions.len() != 1
+            || (!selected_fresh && state.original.extensions.len() != 1)
             || !state
                 .original
                 .extensions
