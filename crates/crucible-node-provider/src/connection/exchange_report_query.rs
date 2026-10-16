@@ -113,8 +113,11 @@ impl<S: ProviderStream> Connection<S> {
     ///
     /// # Errors
     /// Refuses invalid negotiated limits or checked layout overflow.
-    pub(crate) fn original_observe_returned_query_storage_data(&self) -> Result<usize, ProviderError> {
-        let receive = query_receive_storage_from_limits(self.authority.limits(),Purpose::OriginalObserve12)?;
+    pub(crate) fn original_observe_returned_query_storage_data(
+        &self,
+    ) -> Result<usize, ProviderError> {
+        let receive =
+            query_receive_storage_from_limits(self.authority.limits(), Purpose::OriginalObserve12)?;
         OriginalPacketPrefixStorageData::native_observe_returned_query_storage_data(&receive)
     }
 }

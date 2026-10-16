@@ -477,12 +477,12 @@ fn within_exchange(
 
 #[path = "exchange_native_observe_prepare.rs"]
 mod native_observe_prepare;
+#[cfg(test)]
+pub(super) use native_observe_prepare::for_test as native_observe_preparation_for_test;
 pub(crate) use native_observe_prepare::{
     OriginalNativeObservePreparationStorageData,
     original_native_observe_preparation_counter_scratch_data,
     quote_original_native_observe_prefix_startup_storage_data,
 };
-#[cfg(test)]
-pub(super) use native_observe_prepare::for_test as native_observe_preparation_for_test;
 #[cfg(test)]
 pub(super) use startup::native_observe_projection_for_test;

@@ -146,10 +146,7 @@ impl PacketEndpoint<DeadlineStream> {
             let additional = original_invocation_capture_report_additional_scratch_data();
             startup.authenticate_compiled_headers(
                 connection,
-                checked_sum(&[
-                    original_capture_report_quote_layout_data(),
-                    additional,
-                ])?,
+                checked_sum(&[original_capture_report_quote_layout_data(), additional])?,
                 super::capture_allocation::original_capture_report_owner_layout_data(),
             )?;
             additional
@@ -569,8 +566,7 @@ pub(crate) fn original_capture_report_quote_layout_data() -> usize {
         crate::connection::OriginalPacketPrefixProjectionStorageData,
         crate::connection::OriginalNativeObservePreparationStorageData,
         crate::connection::OriginalPacketCompletedRecordEncodingData,
-    )>()
-        + std::mem::size_of::<[usize; 6]>()
+    )>() + std::mem::size_of::<[usize; 6]>()
         + std::mem::size_of::<std::array::IntoIter<usize, 6>>()
         + std::mem::size_of::<Option<usize>>()
         + std::mem::size_of::<usize>();

@@ -136,15 +136,16 @@ fn original(
             media_type: PACKET_NATIVE_CAPTURE_ALLOCATION_MEDIA,
         },
     ];
-    let (prefix, preparation) = crate::connection::quote_original_native_observe_prefix_startup_storage_data(
-        launch,
-        OriginalPacketPrefixProjectionInput {
-            terminal: &shapes.terminal,
-            original: &shapes.original,
-            objects: &objects,
-            maximum_requested_bytes: MAXIMUM_COMPILED_PROJECTION_BYTES,
-        },
-    )?;
+    let (prefix, preparation) =
+        crate::connection::quote_original_native_observe_prefix_startup_storage_data(
+            launch,
+            OriginalPacketPrefixProjectionInput {
+                terminal: &shapes.terminal,
+                original: &shapes.original,
+                objects: &objects,
+                maximum_requested_bytes: MAXIMUM_COMPILED_PROJECTION_BYTES,
+            },
+        )?;
     // authenticate_tuple selected the actual OriginalObserve12 constructor.
     // Its incoming query returns before reply/control/prefix construction. Keep
     // every original/failed owner below; the complete old prefix peak is merely

@@ -31,11 +31,11 @@ pub(crate) use continuation::{
 #[path = "exchange_packet_projection.rs"]
 mod packet_projection;
 pub(crate) use packet_projection::{
-    OriginalNativeObservePreparationStorageData,
+    OriginalNativeObservePreparationStorageData, OriginalPacketPrefixProjectionInput,
+    OriginalPacketPrefixProjectionStorageData,
     original_native_observe_preparation_counter_scratch_data,
-    quote_original_native_observe_prefix_startup_storage_data,
-    OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData,
     original_packet_prefix_startup_counter_scratch_data,
+    quote_original_native_observe_prefix_startup_storage_data,
     quote_original_packet_baseline_prefix_startup_storage_data,
     quote_original_packet_prefix_startup_storage_data,
 };

@@ -105,25 +105,45 @@ fn actual_native_observe_preparation_and_partial_failure_keep_original_children(
     Ok(())
 }
 
-
 #[test]
 fn original_observe_ack_split_preserves_full_error_owners_and_old_quote() -> TestResult {
     let (_handshake, connection, request) = fixture()?;
     let payload = b"same actual retained proof".to_vec();
-    let evidence = vec![(canonical::content_ref(&payload,"application/json")?, payload)];
+    let evidence = vec![(
+        canonical::content_ref(&payload, "application/json")?,
+        payload,
+    )];
     let quote = connection.quote_original_packet_prefix_storage_data(
-        2,&request,&Map::new(),&evidence,MAXIMUM)?;
+        2,
+        &request,
+        &Map::new(),
+        &evidence,
+        MAXIMUM,
+    )?;
     let maximum_frame = allowance(connection.authority.limits().frame_bytes.get())?;
     let old = quote.native_observe_lifetime_storage_data(MAXIMUM)?;
-    let split = quote.native_original_observe_lifetime_storage_data(maximum_frame,MAXIMUM)?;
+    let split = quote.native_original_observe_lifetime_storage_data(maximum_frame, MAXIMUM)?;
     let ack = acknowledgements::open_ack_lifetime_storage_data(maximum_frame)?;
 
-    assert_eq!(ack.retained + ack.returning,quote.one_open_ack_requested_bytes);
-    assert_eq!(split.retained_requested_bytes + ack.returning,old.retained_requested_bytes);
-    assert_eq!(split.encoding_work_requested_bytes()?,old.work_requested_bytes()?);
+    assert_eq!(
+        ack.retained + ack.returning,
+        quote.one_open_ack_requested_bytes
+    );
+    assert_eq!(
+        split.retained_requested_bytes + ack.returning,
+        old.retained_requested_bytes
+    );
+    assert_eq!(
+        split.encoding_work_requested_bytes()?,
+        old.work_requested_bytes()?
+    );
     assert!(split.retained_requested_bytes >= quote.successful_ack_cache_requested_bytes);
     assert!(split.retained_requested_bytes >= ack.retained);
-    assert!(quote.native_original_observe_lifetime_storage_data(maximum_frame-1,MAXIMUM).is_err());
+    assert!(
+        quote
+            .native_original_observe_lifetime_storage_data(maximum_frame - 1, MAXIMUM)
+            .is_err()
+    );
     assert!(connection.reader.stream_ref().output.is_empty());
     Ok(())
 }
@@ -132,19 +152,35 @@ fn original_observe_ack_split_preserves_full_error_owners_and_old_quote() -> Tes
 fn terminating_error_details_remain_covered_by_ack_retained_axis() -> TestResult {
     let (_handshake, connection, _) = fixture()?;
     let mut details = Map::new();
-    details.insert("dense".into(),serde_json::json!([[[1.25,1e-100]],{"retained":"escaped\\\"bytes"}]));
-    let error = ErrorRecord { code:"PROTOCOL_ERROR".into(),message:"original refusal".into(),
-        effect:EffectCertainty::Unknown,retryable:false,details };
-    let mut incoming = envelope(&connection.authority,Method::BlobFinish)?;
+    details.insert(
+        "dense".into(),
+        serde_json::json!([[[1.25,1e-100]],{"retained":"escaped\\\"bytes"}]),
+    );
+    let error = ErrorRecord {
+        code: "PROTOCOL_ERROR".into(),
+        message: "original refusal".into(),
+        effect: EffectCertainty::Unknown,
+        retryable: false,
+        details,
+    };
+    let mut incoming = envelope(&connection.authority, Method::BlobFinish)?;
     incoming.message = MessageKind::Response;
-    incoming.body = object(&ResponseShape::Error { operation_state:OperationState::Unknown,
-        error,extensions:Extensions::new() })?;
+    incoming.body = object(&ResponseShape::Error {
+        operation_state: OperationState::Unknown,
+        error,
+        extensions: Extensions::new(),
+    })?;
     let raw = canonical::canonical_json(&serde_json::to_value(&incoming)?)?;
-    let envelope = Envelope::decode(&raw,raw.len())?;
+    let envelope = Envelope::decode(&raw, raw.len())?;
     let request = RequestBody::BlobFinish(BlobFinishRequest {
-        transfer_id:Id::new("same-transfer")?,extensions:Extensions::new() });
-    let response = decode_response(&request,&envelope.body)?;
-    let ResponseShape::Error { error,extensions,.. } = &response.shape else {
+        transfer_id: Id::new("same-transfer")?,
+        extensions: Extensions::new(),
+    });
+    let response = decode_response(&request, &envelope.body)?;
+    let ResponseShape::Error {
+        error, extensions, ..
+    } = &response.shape
+    else {
         return Err("actual Error response absent".into());
     };
     let mut retained = MetadataObserver::new();
@@ -160,8 +196,14 @@ fn terminating_error_details_remain_covered_by_ack_retained_axis() -> TestResult
 
     assert!(actual <= split.retained);
     assert!(split.returning > 0);
-    assert_eq!(split.retained + split.returning,acknowledgements::open_ack_storage(raw.len())?);
+    assert_eq!(
+        split.retained + split.returning,
+        acknowledgements::open_ack_storage(raw.len())?
+    );
     assert!(acknowledgements::open_ack_lifetime_storage_data(0).is_err());
-    assert_eq!(raw,canonical::canonical_json(&serde_json::to_value(&envelope)?)?);
+    assert_eq!(
+        raw,
+        canonical::canonical_json(&serde_json::to_value(&envelope)?)?
+    );
     Ok(())
 }

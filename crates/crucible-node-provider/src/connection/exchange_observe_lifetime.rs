@@ -213,7 +213,6 @@ impl OriginalPacketPrefixStorageData {
     }
 }
 
-
 impl OriginalPacketPrefixStorageData {
     /// Separates the selected preparation loop without releasing retained owners.
     ///
@@ -232,10 +231,8 @@ impl OriginalPacketPrefixStorageData {
         maximum_frame: usize,
         maximum: usize,
     ) -> Result<NativeOriginalObservePrefixLifetimeStorageData, ProviderError> {
-        let mut lifetime = self.native_original_observe_lifetime_storage_data(
-            maximum_frame,
-            maximum,
-        )?;
+        let mut lifetime =
+            self.native_original_observe_lifetime_storage_data(maximum_frame, maximum)?;
         let preparation = preparation.maximum_simultaneous_transient_bytes_data(self, maximum)?;
         if preparation > self.preparation_transient_requested_bytes {
             return Err(credit());

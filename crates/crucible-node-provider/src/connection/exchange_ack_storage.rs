@@ -192,7 +192,9 @@ pub(super) struct OpenAckLifetimeStorageData {
     pub(super) returning: usize,
 }
 
-pub(super) fn open_ack_lifetime_storage_data(bytes: usize) -> Result<OpenAckLifetimeStorageData, ProviderError> {
+pub(super) fn open_ack_lifetime_storage_data(
+    bytes: usize,
+) -> Result<OpenAckLifetimeStorageData, ProviderError> {
     if bytes == 0 || bytes > crate::transport::MAX_FRAME_BYTES {
         return Err(credit());
     }
@@ -234,16 +236,22 @@ pub(super) fn open_ack_lifetime_storage_data(bytes: usize) -> Result<OpenAckLife
     // Keep raw/growth, error formatting/box, response and incident-facing
     // headers too. Only canonical output/sort work is returned by validation.
     let retained = sum(&[
-        bytes, parser, mul(4, dom)?,
+        bytes,
+        parser,
+        mul(4, dom)?,
         growth(add(mul(6, bytes)?, 2)?)?,
-        size_of::<ResponseBody>(), size_of::<ReceivedFrame>(),
+        size_of::<ResponseBody>(),
+        size_of::<ReceivedFrame>(),
         serde_error_storage(bytes)?,
     ])?;
     let returning = sum(&[mul(2, growth(canonical)?)?, sort_keys, sort_tree])?;
     if add(retained, returning)? != open_ack_storage(bytes)? {
         return Err(credit());
     }
-    Ok(OpenAckLifetimeStorageData { retained, returning })
+    Ok(OpenAckLifetimeStorageData {
+        retained,
+        returning,
+    })
 }
 
 pub(super) const fn open_ack_lifetime_counter_scratch_data() -> usize {
