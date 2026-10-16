@@ -11,6 +11,7 @@ use super::{
     recovery_accounting::{self, SynchronizedAllocation},
     recovery_namespace::SharedNamespaceObservation,
     recovery_state,
+    recovery_state_parent::StateParentObservation,
     retention::{Command, Custody, NativeMetadataOwner},
 };
 use crate::{
@@ -36,6 +37,7 @@ pub struct CompletedRecovery {
     session: Arc<Client<HostDomainLocation>>,
     context: PublisherRecoveryContext<HostDomainLocation>,
     shared: SharedNamespaceObservation,
+    state_parent: StateParentObservation,
     inventory: NativeRecoveryInspection,
     generation: u64,
     recovery_id: [u8; 16],
@@ -113,6 +115,7 @@ impl CompletedRecovery {
             &self.recovery_id,
         )?;
         self.shared.check_current()?;
+        self.state_parent.check_current()?;
         self.inventory.check_current()?;
         require_empty_inventory(&self.inventory)
     }
@@ -157,7 +160,7 @@ impl NativeMetadataOwner {
 /// custody, failed durability, unknown quota or excessive actual charge. After
 /// the first snapshot attempt, failures retain the owner's hold and fault state.
 pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRecovery> {
-    let (session, inspector, shared) = {
+    let (session, inspector, shared, state_parent) = {
         let mut owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
@@ -171,6 +174,7 @@ pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRe
         owner.recovery_required = true;
         owner.recovery_id = None;
         recovery_state::require_empty(&owner.state)?;
+        let state_parent = StateParentObservation::inspect(&owner.preparation)?;
         let shared = SharedNamespaceObservation::inspect(&owner.preparation)?;
         if !shared.only_empty_scaffolds() {
             return Err(unresolved(
@@ -181,6 +185,7 @@ pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRe
             owner.preparation.publisher_session(),
             owner.preparation.recovery_inspector()?,
             shared,
+            state_parent,
         )
     };
     // No embedded guard is held while acquiring the actual client RPC mutex.
@@ -191,6 +196,7 @@ pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRe
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
         owner.check_current()?;
         shared.check_current()?;
+        state_parent.check_current()?;
         owner.preparation.recheck()?;
         let bootstrap = recovery_state::bootstrap(&owner.preparation.config, &owner.state)?;
         check_charge(&owner)?;
@@ -210,10 +216,11 @@ pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRe
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
         shared.check_current()?;
+        state_parent.check_current()?;
         inventory.check_current()?;
         recovery_state::check_bootstrap(&owner.preparation.config, &owner.state, &id)?;
         owner.persist().await?;
-        let allocation = recovery_accounting::observe(&owner, &shared)?;
+        let allocation = recovery_accounting::observe(&owner, &shared, &state_parent)?;
         owner.snapshot_allocated_bytes = owner
             .snapshot
             .as_ref()
@@ -223,6 +230,7 @@ pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRe
         owner.preparation.recheck()?;
         check_charge(&owner)?;
         shared.check_current()?;
+        state_parent.check_current()?;
         owner.check_current()?;
         owner.recovery_id = Some(id);
         owner.recovery_required = false;
@@ -253,6 +261,7 @@ pub(super) async fn run(custody: &Arc<Mutex<Custody>>) -> io::Result<CompletedRe
         session,
         context,
         shared,
+        state_parent,
         inventory,
         generation,
         recovery_id: id,

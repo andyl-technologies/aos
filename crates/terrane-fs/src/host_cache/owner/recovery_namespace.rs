@@ -245,7 +245,11 @@ fn reopen_directory(inode: &File, before: &Metadata) -> io::Result<File> {
     Ok(file)
 }
 
-fn read_names(directory: &File, remaining: usize) -> io::Result<Vec<OsString>> {
+/// Enumerates every raw child name with a finite allocation/count policy.
+///
+/// # Errors
+/// Refuses native enumeration failure or the configured name budget.
+pub(super) fn read_names(directory: &File, remaining: usize) -> io::Result<Vec<OsString>> {
     let mut names = Vec::new();
     for entry in Dir::read_from(directory)? {
         let entry = entry?;
