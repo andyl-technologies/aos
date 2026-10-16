@@ -238,3 +238,76 @@ fn admission_digest_binds_the_exact_schedule_without_rehashing_it() {
         .admission_digest()
     );
 }
+
+#[test]
+fn memoized_configuration_id_matches_a_fresh_hash_across_appends_and_clones() {
+    let def = ScenarioDef::from_canonical_material("configuration-id-memo", "fixture");
+    let mut configuration = Configuration::genesis(def.clone());
+    let fresh = |configuration: &Configuration| canonical::configuration_hash(configuration);
+
+    // Each append must discard the id memoized for the shorter schedule.
+    for ticks in 0..8 {
+        assert_eq!(configuration.id(), fresh(&configuration));
+        configuration.schedule = configuration.schedule.appended(delivery_at(ticks));
+        assert_eq!(configuration.id(), fresh(&configuration));
+    }
+
+    // A clone shares the memo while it matches and drops it once it appends;
+    // the original keeps answering for its own decisions.
+    let original_id = configuration.id();
+    let mut extended = configuration.clone();
+    assert_eq!(extended.id(), original_id);
+    extended.schedule = extended.schedule.appended(delivery_at(99));
+    assert_ne!(extended.id(), original_id);
+    assert_eq!(extended.id(), fresh(&extended));
+    assert_eq!(configuration.id(), original_id);
+    assert_eq!(configuration.id(), fresh(&configuration));
+
+    // A memo computed for one definition never answers for another.
+    let other_def = ScenarioDef::from_canonical_material("configuration-id-memo", "other");
+    let paired_elsewhere = Configuration {
+        def: other_def,
+        schedule: configuration.schedule.clone(),
+    };
+    assert_ne!(paired_elsewhere.id(), original_id);
+    assert_eq!(paired_elsewhere.id(), fresh(&paired_elsewhere));
+    assert_eq!(configuration.id(), original_id);
+
+    // Rebuilt and prefix schedules agree with a fresh hash.
+    let rebuilt = Configuration {
+        def: def.clone(),
+        schedule: Schedule::from_decisions(
+            configuration.schedule.decision_history().iter().cloned(),
+        ),
+    };
+    assert_eq!(rebuilt.id(), original_id);
+    let prefix = Configuration {
+        def,
+        schedule: configuration.schedule.prefix(3).expect("prefix"),
+    };
+    assert_eq!(prefix.id(), fresh(&prefix));
+}
+
+#[test]
+fn memoized_configuration_id_leaves_schedule_bytes_and_equality_unchanged() {
+    let def = ScenarioDef::from_canonical_material("configuration-id-memo", "codec");
+    let schedule = Schedule::from_decisions([delivery_at(1), delivery_at(2), delivery_at(3)]);
+    let unmemoized_bytes = schedule.to_compact_binary();
+    let configuration = Configuration {
+        def: def.clone(),
+        schedule: schedule.clone(),
+    };
+
+    let id = configuration.id();
+    assert_eq!(configuration.schedule.to_compact_binary(), unmemoized_bytes);
+    assert_eq!(configuration.schedule, schedule);
+
+    let decoded = Schedule::from_compact_binary(&unmemoized_bytes).expect("decode schedule");
+    assert_eq!(decoded, schedule);
+    let decoded_configuration = Configuration {
+        def,
+        schedule: decoded,
+    };
+    assert_eq!(decoded_configuration.id(), id);
+    assert_eq!(decoded_configuration, configuration);
+}

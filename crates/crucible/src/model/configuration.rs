@@ -326,9 +326,31 @@ impl Configuration {
     /// The configuration identity is a pure function of the immutable scenario
     /// definition and the recorded schedule prefix. Runtime caches and
     /// materialized checkpoints do not contribute to this identity.
+    ///
+    /// The hash rereads every recorded decision, so the schedule memoizes the
+    /// result: repeated calls on an unchanged configuration, or on clones of
+    /// it, cost O(1) after the first.
     #[must_use]
     pub fn content_hash(&self) -> ContentHash {
-        canonical::configuration_hash(self)
+        let def = self.def.id();
+        let seed = self.def.seed();
+        let memo = self
+            .schedule
+            .configuration_id
+            .get_or_init(|| ConfigurationIdMemo {
+                def,
+                seed,
+                id: canonical::configuration_hash(self),
+            });
+
+        // `def` is a public field, so the same schedule can be paired with
+        // another definition. The memo answers only for the definition it
+        // was computed with; any other pairing hashes afresh.
+        if memo.def == def && memo.seed == seed {
+            memo.id
+        } else {
+            canonical::configuration_hash(self)
+        }
     }
 
     /// Computes the RFC-named content-addressed configuration id.
@@ -559,10 +581,26 @@ pub struct Schedule {
     // Contiguous copy of `decisions` for slice readers. Clones share it until
     // one of them appends, which discards its own handle.
     contiguous: Arc<OnceLock<Vec<Decision>>>,
+    // Canonical configuration id computed over exactly `decisions`, shared
+    // and reset on append like `contiguous`. It never leaves the process:
+    // equality, hashing, and every codec ignore it.
+    configuration_id: Arc<OnceLock<ConfigurationIdMemo>>,
+}
+
+/// A memoized [`Configuration::id`] for one schedule value.
+///
+/// The definition id and seed are the only definition inputs of the
+/// configuration hash, so they key the memo.
+#[derive(Clone, Copy, Debug)]
+struct ConfigurationIdMemo {
+    def: ContentHash,
+    seed: Seed,
+    id: ContentHash,
 }
 
 // Equality, hashing, and debug output cover the decisions alone; the count,
-// the decision chain, and the contiguous copy are derived from them.
+// the decision chain, the contiguous copy, and the memoized configuration id
+// are derived from them.
 impl PartialEq for Schedule {
     fn eq(&self, other: &Self) -> bool {
         self.decisions == other.decisions
@@ -725,14 +763,9 @@ impl Schedule {
         self.decision_chain = canonical::decision_chain_step(&self.decision_chain, &decision);
         self.decisions.push(decision);
 
-        // The contiguous copy no longer matches. Reuse an unshared cell;
-        // leave a shared one to the clones that still match it.
-        match Arc::get_mut(&mut self.contiguous) {
-            Some(cell) => {
-                cell.take();
-            }
-            None => self.contiguous = Arc::default(),
-        }
+        // Derived caches no longer match the decisions.
+        reset_derived_cell(&mut self.contiguous);
+        reset_derived_cell(&mut self.configuration_id);
     }
 
     /// Computes the canonical identity of this schedule.
@@ -763,6 +796,19 @@ impl Schedule {
         let schedule = read_schedule_binary(&mut reader)?;
         reader.finish()?;
         Ok(schedule)
+    }
+}
+
+/// Empties a schedule-derived cache after the schedule changed.
+///
+/// An unshared cell is reused; a shared one is left to the clones whose
+/// decisions it still matches.
+fn reset_derived_cell<T>(cell: &mut Arc<OnceLock<T>>) {
+    match Arc::get_mut(cell) {
+        Some(cell) => {
+            cell.take();
+        }
+        None => *cell = Arc::default(),
     }
 }
 
