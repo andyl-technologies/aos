@@ -96,6 +96,18 @@
         };
       }) ["image" "unit" "native"]);
 
+  hostCacheProof =
+    if builtins.pathExists ./host-cache-proof.nix
+    then import ./host-cache-proof.nix {inherit pkgs lib sourceGateWithInputs;}
+    else
+      builtins.listToAttrs (map (name: {
+        inherit name;
+        value = pendingGate {
+          name = "native-host-cache-${name}";
+          requirements = "HOST-23/HOST-31 native host owner proof";
+        };
+      }) ["image" "native"]);
+
   algebraFormatVectors = import ./algebra-models.nix {inherit sourceGate;};
 
   # Share compilation of one immutable native test image, while every gate
@@ -338,6 +350,8 @@ in {
   integration.configured-sdk-image = configuredSdkProof.image;
   integration.configured-sdk-unit = configuredSdkProof.unit;
   integration.native-configured-sdk = configuredSdkProof.native;
+  integration.host-cache-image = hostCacheProof.image;
+  integration.native-host-cache = hostCacheProof.native;
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};
   integration.retirement-reference-generator = import ./retirement-reference.nix {inherit sourceGate;};
   integration.retirement-reference-models = import ./retirement-models.nix {inherit sourceGate;};
