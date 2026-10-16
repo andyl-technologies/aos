@@ -323,6 +323,16 @@ fn validate_guarantees(value: &Value) -> Result<(), ProviderError> {
 mod tests;
 
 #[cfg(test)]
+pub(crate) fn original_native5_controller_scope() -> (
+    crate::handshake::Handshake,
+    crate::handshake::ConnectionAuthority,
+    PacketControlSelection,
+    crate::reference_service::InstalledContent,
+) {
+    tests::original_native5_controller_scope()
+}
+
+#[cfg(test)]
 pub(crate) fn original_canonical_ack_controller_scope() -> (
     crate::handshake::Handshake,
     crate::handshake::ConnectionAuthority,

@@ -364,6 +364,9 @@ fn refused() -> ProviderError {
 }
 
 #[cfg(test)]
+pub(crate) use continuation::original_native5_controller_scope;
+
+#[cfg(test)]
 pub(crate) use continuation::original_canonical_ack_controller_scope;
 
 #[cfg(test)]

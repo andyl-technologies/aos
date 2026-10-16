@@ -566,6 +566,15 @@ fn selected_canonical_ack_declaration_binds_all_original_tuples_before_hashes() 
     }
 }
 
+pub(super) fn original_native5_controller_scope() -> (
+    crate::handshake::Handshake,
+    crate::handshake::ConnectionAuthority,
+    PacketControlSelection,
+    crate::reference_service::InstalledContent,
+) {
+    native5_codec_tests::original_native5_controller_scope()
+}
+
 pub(super) fn original_canonical_ack_controller_scope() -> (
     crate::handshake::Handshake,
     crate::handshake::ConnectionAuthority,

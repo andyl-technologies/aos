@@ -79,6 +79,15 @@ fn scope(
     scope_named(feature, None, 0)
 }
 
+pub(super) fn original_native5_controller_scope() -> (
+    Handshake,
+    ConnectionAuthority,
+    PacketControlSelection,
+    InstalledContent,
+) {
+    scope(true)
+}
+
 fn scope_named(
     feature: bool,
     suffix: Option<&str>,

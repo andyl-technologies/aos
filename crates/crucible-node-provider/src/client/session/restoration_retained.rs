@@ -177,8 +177,9 @@ impl ClientSession {
         OriginalProtocolSupervisor,
         std::os::unix::net::UnixStream,
     ) {
+        // Raw census needs the real base codec owner, not ACK-specific metadata.
         let (handshake, authority, selection, coordinator) =
-            crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+            crate::reference_packet::coordinator::original_native5_controller_scope();
         let (stream, peer) = std::os::unix::net::UnixStream::pair().unwrap();
         let (stream, deadline) = DeadlineStream::new(stream, Duration::from_secs(30)).unwrap();
         let (operational, owner) = OriginalRetainedSupervisor::reserve().unwrap();
