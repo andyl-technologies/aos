@@ -10,6 +10,7 @@
 
   image =
     sourceGateWithInputs {
+      preserveArtifactBytes = true;
       runtimeDeps = [pkgs.rust pkgs.rust.dev pkgs.binutils] ++ (pkgs.rust.runtimeDeps or []);
       nukeRefsKeep = [pkgs.terrane.src];
     } "publisher-local-proof-image" ''
