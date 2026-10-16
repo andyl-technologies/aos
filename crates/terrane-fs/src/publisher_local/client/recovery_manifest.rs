@@ -7,15 +7,15 @@
 
 use std::{fs::File, io, os::fd::AsFd, sync::Arc};
 
-use rustix::fs::{Mode, OFlags, ResolveFlags};
+use rustix::fs::{FileType, Mode, OFlags, ResolveFlags};
 use terrane::host::{
     cache::HostDomainLocation,
     publication::{PublicationClaim, PublicationRecipe},
 };
 
 use super::{
-    BodyIncarnationObservation, Client, Error, PeerPublishedObject, RequestPayload, invalidate,
-    receipt,
+    BodyIncarnationObservation, Client, Error, PeerPublishedObject, PublisherRecoveryContext,
+    RequestPayload, invalidate, receipt,
 };
 use crate::{
     host_cache::{
@@ -65,6 +65,33 @@ pub(crate) enum RecoveryManifestError {
 }
 
 impl Client<HostDomainLocation> {
+    /// Rechecks a genuine manifest body against the Inspector's original barrier.
+    ///
+    /// The caller supplies the retained original opaque context, never a fresh
+    /// capture. This borrows the actual body/pin pair without transferring or
+    /// releasing resources, including on failure. Native inode, seal and charge
+    /// owner checks take no embedded-state lock. Current durable policy/holds
+    /// remain the physical owner's separate checks before entering this method.
+    /// No prior scanned-inode equality or completed recovery is asserted.
+    ///
+    /// # Errors
+    /// Rejects a different body/metadata claim, session, original epoch, root,
+    /// key, token or native project; stale inode, access or seal custody; a
+    /// poisoned mutex; and a non-recovery or uncertain client. Failed checks
+    /// invalidate this client's phase while leaving all retained resources owned.
+    pub(crate) fn check_recovery_manifest_body(
+        &self,
+        body: &RecoveryManifestBody,
+        original: &PublisherRecoveryContext<HostDomainLocation>,
+    ) -> Result<(), Error> {
+        self.correlate_manifest_body(
+            original,
+            body.observation(),
+            body.retained().body(),
+            Some(body.retained()),
+        )
+    }
+
     /// Adopts pinned manifest content within its genuine original recovery phase.
     ///
     /// Native adoption can persist bindings or quarantine conflicting content.
@@ -245,42 +272,93 @@ impl Client<HostDomainLocation> {
         accepted: &AcceptedRecoveryManifestEffect<'_, '_>,
         observation: &BodyIncarnationObservation<HostDomainLocation>,
     ) -> Result<(), Error> {
+        self.correlate_manifest_body(
+            accepted.live_context().publisher_context(),
+            observation,
+            accepted.body(),
+            None,
+        )
+    }
+
+    fn correlate_manifest_body(
+        &self,
+        original: &PublisherRecoveryContext<HostDomainLocation>,
+        observation: &BodyIncarnationObservation<HostDomainLocation>,
+        body: &PeerPublishedObject<HostDomainLocation>,
+        retained: Option<&RecoveryManifestBodyRetention>,
+    ) -> Result<(), Error> {
         let mut state = self.lock()?;
         let result = (|| {
-            self.correlate_sealed_response(
-                &state,
-                accepted.live_context().publisher_context(),
-                observation,
-                accepted.body(),
-            )?;
-            self.layout.recheck()?;
-            let root = File::from(rustix::fs::openat2(
-                rustix::fs::CWD,
-                self.layout.layout().root(),
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-                Mode::empty(),
-                ResolveFlags::NO_SYMLINKS,
-            )?);
-            let root_project = NativeProject::inspect(&root)?;
-            let body = NativeProject::inspect(accepted.body().handle())?;
-            let root_stat = rustix::fs::fstat(&root)?;
-            let body_stat = rustix::fs::fstat(accepted.body().handle())?;
-            if (root_stat.st_dev, root_stat.st_ino)
-                != self.layout.directory_binding("layout-root")?
-                || (body.device, body.inode) != (body_stat.st_dev, body_stat.st_ino)
-                || body.device != root_project.device
-                || body.project_id != root_project.project_id
-            {
-                return Err(Error::Invalid("canonical response native project or inode"));
+            self.correlate_sealed_response(&state, original, observation, body)?;
+            if let Some(retained) = retained {
+                // These getters borrow immutable genuine resource custody;
+                // they never consult the embedded owner or release pins.
+                let backing = retained.backing();
+                require_same_claim(body.claim(), backing.claim())?;
+                if !Arc::ptr_eq(body.layout(), backing.layout())
+                    || &self.cache_incarnation != backing.cache_incarnation()
+                    || backing.synchronized_source_and_body_bytes().is_none()
+                    || backing.charged_reserved_bytes().is_none()
+                {
+                    return Err(Error::Invalid("manifest body metadata custody differs"));
+                }
             }
-            self.layout.recheck()?;
-            Ok(())
+            self.check_manifest_native_body(body)
         })();
         if result.is_err() {
             invalidate(&mut state);
         }
         result
     }
+
+    fn check_manifest_native_body(
+        &self,
+        body: &PeerPublishedObject<HostDomainLocation>,
+    ) -> Result<(), Error> {
+        self.layout.recheck()?;
+        let root = File::from(rustix::fs::openat2(
+            rustix::fs::CWD,
+            self.layout.layout().root(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS,
+        )?);
+        let root_project = NativeProject::inspect(&root)?;
+        let body_project = NativeProject::inspect(body.handle())?;
+        let root_stat = rustix::fs::fstat(&root)?;
+        let body_stat = rustix::fs::fstat(body.handle())?;
+        let flags = rustix::fs::fcntl_getfl(body.handle())?;
+        if (root_stat.st_dev, root_stat.st_ino) != self.layout.directory_binding("layout-root")?
+            || (body_project.device, body_project.inode) != (body_stat.st_dev, body_stat.st_ino)
+            || body_project.device != root_project.device
+            || body_project.project_id != root_project.project_id
+            || flags.intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH)
+            || FileType::from_raw_mode(body_stat.st_mode) != FileType::RegularFile
+            || body_stat.st_uid != self.config.identities.publish_uid
+            || body_stat.st_nlink == 0
+            || u64::try_from(body_stat.st_size).ok() != Some(body.claim().plaintext_size())
+            || &crate::verity::measure(body.handle())? != body.binding()
+        {
+            return Err(Error::Invalid(
+                "canonical response native inode or seal custody",
+            ));
+        }
+        self.layout.recheck()?;
+        Ok(())
+    }
+}
+
+fn require_same_claim(body: &PublicationClaim, metadata: &PublicationClaim) -> Result<(), Error> {
+    if body.domain() != metadata.domain()
+        || body.descriptor() != metadata.descriptor()
+        || body.plaintext_size() != metadata.plaintext_size()
+        || body.canonical_manifest() != metadata.canonical_manifest()
+    {
+        return Err(Error::Invalid(
+            "manifest body differs from retained metadata claim",
+        ));
+    }
+    Ok(())
 }
 
 fn require_candidate_key(expected: &BodyKey, requested: &BodyKey) -> Result<(), Error> {
@@ -325,5 +403,30 @@ mod tests {
         ] {
             assert!(require_candidate_key(&changed, &requested).is_err());
         }
+    }
+
+    #[test]
+    fn retained_claim_comparison_rejects_other_domains_and_content() {
+        use terrane_core::{
+            chunking::ChunkProfile,
+            identity::{Descriptor, IdentityKind, TERRANE_V1},
+        };
+
+        // Real claim parsing exercises only the equality policy; this creates
+        // no root, peer response, native receipt, pin or recovery context.
+        let claim = |domain: &str, bytes: &[u8]| {
+            let identity = TERRANE_V1.calculate(IdentityKind::Chunk, bytes).unwrap();
+            let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, bytes).unwrap();
+            PublicationClaim::new(
+                domain.to_owned(),
+                PublicationRecipe::Inline { chunk: descriptor },
+                ChunkProfile::cdc_1m([0; 32]),
+            )
+            .unwrap()
+        };
+        let original = claim("public", b"same bytes");
+        assert!(require_same_claim(&original, &original).is_ok());
+        assert!(require_same_claim(&original, &claim("private:other", b"same bytes")).is_err());
+        assert!(require_same_claim(&original, &claim("public", b"other bytes")).is_err());
     }
 }
