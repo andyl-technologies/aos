@@ -280,11 +280,7 @@ pub(super) fn project(
         native_element_slot(),
         maximum,
     )?;
-    let launch_work = decode(
-        input.encoded_launch,
-        size_of::<PacketNative5SourceLaunch>(),
-        maximum,
-    )?;
+    let launch_work = launch_validation_work(input, maximum)?;
     transient = sum(
         &[launch_local.typed_backing, transient.max(launch_work)],
         maximum,
@@ -295,6 +291,7 @@ pub(super) fn project(
             size_of::<decoded::DecodedStorage>(),
             size_of::<[usize; 3]>(),
             decoded::counter_scratch_data(),
+            launch_validation_counter_scratch_data(),
             size_of::<[usize; 5]>(),
             size_of::<[usize; 3]>(),
             // The three outer projections coexist before finishing; their
