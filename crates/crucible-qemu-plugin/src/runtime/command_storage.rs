@@ -210,9 +210,9 @@ impl Adapter {
         if self.physical_use.is_some() {
             return Err(physical_error(-libc::EBUSY));
         }
+        let owner_pointer = self.owner;
         // SAFETY: creation binds the actual pinned Runtime; its failure and
         // registration retention keep this owner live through every child use.
-        let owner_pointer = self.owner;
         let owner = unsafe { owner_pointer.as_ref() };
         let (api, storage) = owner.projection()?;
         let mut loan = RetainedUse {

@@ -9,7 +9,7 @@ use crucible_linux_resource::host_supervision::HostOperationGuard;
 use crucible_linux_resource::ram_policy::{HostRamPolicyError, HostRamTarget};
 
 use super::{QemuNodeSet, QemuNodeSetPreparedHotForkSource, QemuNodeSetPreparedHotForkTemplate};
-use crate::qmp::parent_park_drain::QmpParentParkDrainReceipt;
+use crate::qmp::parent_park_drain::QmpParentParkResult;
 use crate::{
     LinuxQemuAttemptHostOwner, OriginalActorParkCaller, OriginalActorParkImportError,
     OriginalActorParkImports, OriginalActorParkQuiescence, OriginalActorParkQuiescenceError,
@@ -196,54 +196,50 @@ impl QemuNodeSetPreparedHotForkSource<'_> {
         self.source.pause_for_parent_park(actor, family)
     }
 
-    /// Imports the retained pair and invokes the actual acquire command once.
+    /// Imports the retained pair and invokes the actual begin command once.
     ///
     /// # Errors
     /// Refuses process replacement, pair cuts, imports or native receipt.
-    pub fn acquire_parent_park_under_originals(
+    pub fn begin_parent_park_under_originals(
         &mut self,
         imports: &OriginalActorParkImports,
         correlation: u64,
         stopped: u64,
         actor: &HostOperationGuard,
         family: &HostOperationGuard,
-    ) -> Result<QmpParentParkDrainReceipt, OriginalParkSourceError> {
+    ) -> Result<QmpParentParkResult, OriginalParkSourceError> {
         self.verify_park_process()?;
         Ok(self
             .source
-            .acquire_parent_park(imports, correlation, stopped, actor, family)?)
+            .begin_parent_park(imports, correlation, stopped, actor, family)?)
     }
 
-    /// Queries the retained owner using its exact acquisition coordinates.
+    /// Observes the same return during ordinary progress under both saved originals.
     ///
     /// # Errors
-    /// Refuses changed process, originals, receipt or native owner identity.
-    pub fn query_parent_park_under_originals(
+    /// Refuses process replacement, either actual original or uncertain transport.
+    pub fn return_parent_park_under_originals(
         &mut self,
-        retained: &QmpParentParkDrainReceipt,
         actor: &HostOperationGuard,
         family: &HostOperationGuard,
-    ) -> Result<QmpParentParkDrainReceipt, OriginalParkSourceError> {
+    ) -> Result<QmpParentParkResult, OriginalParkSourceError> {
         self.verify_park_process()?;
         Ok(self
             .source
-            .retained_parent_park(retained, false, actor, family)?)
+            .return_parent_park_under_originals(actor, family)?)
     }
 
-    /// Relinquishes only the owner established by the retained acquisition.
+    /// Settles the saved request on its original channel under actual Cleanup.
     ///
     /// # Errors
-    /// Refuses changed process, either original, native refusal or uncertainty.
-    pub fn relinquish_parent_park_under_originals(
+    /// Refuses process replacement, foreign cleanup, transport uncertainty or
+    /// incomplete Host membership retirement. Semantic failures stay retained.
+    pub fn return_parent_park_under_cleanup(
         &mut self,
-        retained: &QmpParentParkDrainReceipt,
-        actor: &HostOperationGuard,
-        family: &HostOperationGuard,
-    ) -> Result<QmpParentParkDrainReceipt, OriginalParkSourceError> {
+        cleanup: &crate::OriginalParentParkCleanup,
+    ) -> Result<QmpParentParkResult, OriginalParkSourceError> {
         self.verify_park_process()?;
-        Ok(self
-            .source
-            .retained_parent_park(retained, true, actor, family)?)
+        Ok(self.source.return_parent_park(cleanup)?)
     }
 }
 

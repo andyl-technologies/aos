@@ -308,8 +308,8 @@ fn actor_status_snapshots_reject_intervening_ownership_changes() {
     assert!(!successive_actor_snapshots(&stable, &changed));
 }
 
-// crucible-lint: allow lint-attribute-intent -- this genuine lifecycle driver waits for an authenticated normal Main Source fixture, rather than substituting a scripted issuer.
 #[cfg(target_os = "linux")]
+// crucible-lint: allow rust-allow -- this genuine lifecycle driver waits for an authenticated normal Main Source fixture, rather than substituting a scripted issuer.
 #[allow(
     dead_code,
     reason = "The authentic normal Main Source fixture remains unqualified."

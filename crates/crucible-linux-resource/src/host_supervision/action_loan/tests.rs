@@ -206,3 +206,101 @@ fn no_capture_preserves_preparation_class_and_original_clock() {
     assert_eq!(decoded.parents[0].origin_ns, initial.origin_ns);
     assert_eq!(guard.status().unwrap().state, HostOperationState::Running);
 }
+
+fn unissued_park_receipt(owner: &HostOperationGuard) -> HostParentParkReturnReceipt {
+    let mut parked = binding();
+    parked.capture = None;
+    parked.park_request = Some(9);
+    HostParentParkReturnReceipt {
+        shared: Arc::clone(&owner.supervisor.shared),
+        operation: owner.id,
+        row: 0,
+        publisher: Arc::new(UnissuedPublisher),
+        journal: ParentParkReturn {
+            binding: parked,
+            first: -5,
+            post: -110,
+            physical_resolution_mask: 255,
+            publication_count: 2,
+            pair_view_return_mask: 3,
+            original_statuses: [-125, -110],
+            operation_status: -5,
+            return_status: 0,
+            stopped_generation: 11,
+            native_generation: 13,
+        },
+    }
+}
+
+#[test]
+fn complete_native_views_do_not_construct_a_host_membership() {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let guard = supervisor.begin(HostOperationClass::Quiescence).unwrap();
+    let receipt = unissued_park_receipt(&guard);
+    let mut unissued = HostActionLoan {
+        supervisor,
+        operation: guard.id,
+        binding: receipt.journal.binding,
+        row: 0,
+        returned: false,
+    };
+
+    assert!(unissued.observe_parent_park_return().is_err());
+    assert!(unissued.return_parent_park_physical(&receipt).is_err());
+    assert!(!unissued.returned);
+    assert_eq!(guard.status().unwrap().state, HostOperationState::Running);
+    assert_eq!(guard.status().unwrap().completed_work_units, 0);
+}
+
+#[test]
+fn park_receipt_from_another_real_supervisor_cannot_unlink_equal_operation_id() {
+    let first = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let second = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let first_guard = first.begin(HostOperationClass::Quiescence).unwrap();
+    let second_guard = second.begin(HostOperationClass::Quiescence).unwrap();
+    let foreign = unissued_park_receipt(&second_guard);
+    let mut unissued = HostActionLoan {
+        supervisor: first,
+        operation: first_guard.id,
+        binding: foreign.journal.binding,
+        row: 0,
+        returned: false,
+    };
+    assert_eq!(first_guard.id, second_guard.id);
+
+    assert!(unissued.return_parent_park_physical(&foreign).is_err());
+
+    assert!(!unissued.returned);
+    assert_eq!(
+        first_guard.status().unwrap().state,
+        HostOperationState::Running
+    );
+    assert_eq!(
+        second_guard.status().unwrap().state,
+        HostOperationState::Running
+    );
+}
+
+#[test]
+fn unsupported_publisher_and_control_selectors_never_return_park_memberships() {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let guard = supervisor.begin(HostOperationClass::Quiescence).unwrap();
+    let mut receipt = unissued_park_receipt(&guard);
+    assert!(
+        UnissuedPublisher
+            .parent_park_return(receipt.journal.binding, 0)
+            .is_err()
+    );
+    let mut unissued = HostActionLoan {
+        supervisor,
+        operation: guard.id,
+        binding: binding(),
+        row: 0,
+        returned: false,
+    };
+    receipt.journal.binding = binding();
+
+    assert!(unissued.observe_parent_park_return().is_err());
+    assert!(unissued.return_parent_park_physical(&receipt).is_err());
+    assert!(!unissued.returned);
+}

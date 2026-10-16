@@ -540,6 +540,7 @@ struct VolumeStage {
     started: Option<std::time::Instant>,
 }
 
+// crucible-lint: allow clippy-disallowed-method -- fixture stage timing reports progress without supplying operational time.
 #[allow(
     clippy::disallowed_methods,
     reason = "Reports fixture stage durations without supplying guest or operational time."

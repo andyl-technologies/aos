@@ -1,6 +1,38 @@
 //! Exact original-operation custody for physical native retirement waits.
 
-use super::Contract;
+use super::{Companion, Contract};
+
+// The target helper must retain its one actual cleanup before physical finish.
+const TARGET_RETIREMENT_OBLIGATIONS: &[&str] = &[
+    "pub(super) fn retry_unsettled_target(slot: &mut NativeSlot) -> Result<(), QemuVmRealizationError>",
+    "let target = &mut slot.fork_target; if target.unsettled.is_none() { return Ok(()); }",
+    r#"if target.cleanup.is_none() {
+        target.cleanup = Some(Arc::new(
+            target.preparation.as_ref()
+                .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?
+                .begin_original_cleanup_control()
+                .map_err(|source| original_error(source.into()))?,
+        ));
+    }"#,
+    r#"let cleanup = target.cleanup.as_ref()
+        .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?;
+    target.unsettled.as_mut()
+        .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?
+        .finish(cleanup)?;
+    target.unsettled = None;
+    target.envelope = None;
+    target.physical_closed = true;"#,
+    r#"if let Some(pin) = target.control.as_mut() {
+        pin.close().map_err(|source| {
+            original_error(OriginalActorAccountError::NativeControlBoundary {
+                source,
+                original: cleanup.wait_slice().err(),
+            })
+        })?;
+    }
+    target.control = None;
+    close_target_slot(slot).map_err(original_error)"#,
+];
 
 pub(super) const CONTRACTS: &[Contract] = &[
     Contract {
@@ -9,7 +41,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
         required: &[
             "pub fn retry_unsettled(&mut self) -> Result<(), QemuVmRealizationError>",
             "for slot in &mut state.slots",
-            "if slot.unsettled.is_none() { continue; }",
+            "fork_target::retry_unsettled_target(slot)?; if slot.fork_target.is_owned() || slot.unsettled.is_none() { continue; }",
             "let cleanup = retain_cleanup(slot).map_err(original_error)?;",
             ".finish(&cleanup)?;",
             "close_slot(slot).map_err(original_error)?;",
@@ -28,7 +60,24 @@ pub(super) const CONTRACTS: &[Contract] = &[
                 1,
             ),
         ],
-        companions: &[],
+        companions: &[Companion {
+            path: "crates/crucible-qemu/src/linux_attempt_host/original_roster/fork_target.rs",
+            required: TARGET_RETIREMENT_OBLIGATIONS,
+            counts: &[("fn retry_unsettled_target(", 1)],
+        }],
+    },
+    Contract {
+        package: "crucible-qemu",
+        target: "src/linux_attempt_host/original_roster/fork_target",
+        required: TARGET_RETIREMENT_OBLIGATIONS,
+        expressions: &[("retry_unsettled_target", 1)],
+        companions: &[Companion {
+            path: "crates/crucible-qemu/src/linux_attempt_host/original_roster.rs",
+            required: &[
+                "for slot in &mut state.slots { fork_target::retry_unsettled_target(slot)?; if slot.fork_target.is_owned() || slot.unsettled.is_none() { continue; }",
+            ],
+            counts: &[("pub fn retry_unsettled(", 1)],
+        }],
     },
     Contract {
         package: "crucible-qemu",
@@ -60,7 +109,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
 mod tests {
     use super::super::super::super::scrub_comments_and_strings;
     use super::super::super::expression_offsets;
-    use super::super::{mask_with_companions, pattern};
+    use super::super::{mask_with_companions, pattern, read_companions};
     use super::*;
 
     // Scanner offsets address compact bytes; mutations retain the original
@@ -89,7 +138,8 @@ mod tests {
                     .join(format!("{}.rs", contract.target)),
             )?;
             let code = scrub_comments_and_strings(&source);
-            let masked = mask_with_companions(contract, &code, &[]);
+            let companions = read_companions(contract)?;
+            let masked = mask_with_companions(contract, &code, &companions);
             assert_ne!(masked, code, "{}", contract.target);
 
             for requirement in contract.required {
@@ -98,7 +148,10 @@ mod tests {
                 assert!(!occurrences.is_empty(), "{requirement}");
                 for occurrence in occurrences {
                     let changed = replace_occurrence(&code, &requirement, occurrence);
-                    assert_eq!(mask_with_companions(contract, &changed, &[]), changed);
+                    assert_eq!(
+                        mask_with_companions(contract, &changed, &companions),
+                        changed
+                    );
                 }
             }
             for (expression, count) in contract.expressions {
@@ -107,17 +160,47 @@ mod tests {
                 assert_eq!(occurrences.len(), *count, "{expression}");
                 for occurrence in occurrences {
                     let changed = replace_occurrence(&code, &expression, occurrence);
-                    assert_eq!(mask_with_companions(contract, &changed, &[]), changed);
+                    assert_eq!(
+                        mask_with_companions(contract, &changed, &companions),
+                        changed
+                    );
                 }
                 let changed = format!("{code}\n{expression}");
-                assert_eq!(mask_with_companions(contract, &changed, &[]), changed);
+                assert_eq!(
+                    mask_with_companions(contract, &changed, &companions),
+                    changed
+                );
+            }
+            if !companions.is_empty() {
+                assert_eq!(mask_with_companions(contract, &code, &[]), code);
+            }
+            for (index, binding) in contract.companions.iter().enumerate() {
+                let helper = scrub_comments_and_strings(&companions[index]);
+                for requirement in binding.required {
+                    let requirement = pattern(requirement);
+                    let occurrences = expression_offsets(&helper, &requirement);
+                    assert!(!occurrences.is_empty(), "{requirement}");
+                    for occurrence in occurrences {
+                        let mut changed = companions.clone();
+                        changed[index] = replace_occurrence(&helper, &requirement, occurrence);
+                        assert_eq!(mask_with_companions(contract, &code, &changed), code);
+                    }
+                }
+                for (expression, count) in binding.counts {
+                    let expression = pattern(expression);
+                    let occurrences = expression_offsets(&helper, &expression);
+                    assert_eq!(occurrences.len(), *count, "{expression}");
+                    let mut changed = companions.clone();
+                    changed[index] = format!("{}\n{expression}", companions[index]);
+                    assert_eq!(mask_with_companions(contract, &code, &changed), code);
+                }
             }
             for extra in [
                 "fn conceal() { retry(); }",
                 "fn conceal() { std::thread::sleep(unbounded); }",
             ] {
                 let changed = format!("{code}{extra}");
-                let masked = mask_with_companions(contract, &changed, &[]);
+                let masked = mask_with_companions(contract, &changed, &companions);
                 assert!(
                     !super::super::super::super::flaky_escape_failures(
                         contract.package,

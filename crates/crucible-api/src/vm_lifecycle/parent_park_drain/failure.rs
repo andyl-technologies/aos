@@ -9,8 +9,7 @@ use crucible_linux_resource::host_supervision::HostSupervisionError;
 use crucible_linux_resource::ram_policy::HostRamPolicyError;
 use crucible_qemu::{
     OriginalActorParkImportError, OriginalActorParkQuiescenceError, OriginalParkSourceError,
-    QemuProcessStageIdentityError, QemuSpawnError, QemuVmRealizationError,
-    QmpParentParkDrainReceipt,
+    QemuProcessStageIdentityError, QemuSpawnError, QemuVmRealizationError, QmpParentParkResult,
 };
 
 use super::super::LifecycleApiError;
@@ -20,6 +19,10 @@ use super::super::LifecycleApiError;
 pub struct ProductionVmParentParkDrainFailure<'a> {
     /// Actual first cause; absent while the phase has no initiating refusal.
     pub first: Option<ProductionVmParentParkDrainCause<'a>>,
+    /// Independent typed Host membership-return refusal.
+    pub host_return_after: Option<&'a HostSupervisionError>,
+    /// Independent same-account Cleanup observation after physical QMP response.
+    pub cleanup_after: Option<&'a HostSupervisionError>,
     /// Independent actor Preparation observation.
     pub actor_original_after: Option<&'a HostSupervisionError>,
     /// Independent entered actor Quiescence observation.
@@ -49,8 +52,10 @@ pub enum ProductionVmParentParkDrainCause<'a> {
     Original(&'a HostSupervisionError),
     /// Exact containing attempt refusal.
     Attempt(&'a LifecycleApiError),
+    /// Actual same-account Cleanup owner refusal.
+    Cleanup(&'a QemuVmRealizationError),
     /// Actual native receipt that initiated containment.
-    Native(&'a QmpParentParkDrainReceipt),
+    Native(&'a QmpParentParkResult),
 }
 
 /// Distinguishes each owning stage carrier while borrowing its typed causes.

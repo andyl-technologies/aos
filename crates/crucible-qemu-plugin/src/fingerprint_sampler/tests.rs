@@ -210,8 +210,8 @@ fn detached_capture_refuses_incomplete_component_material() {
     );
     assert_eq!(captured.device.progress.consumed, 1);
     assert_eq!(captured.device.file.metadata().unwrap().len(), 1);
-    // SAFETY: the retained File still owns this descriptor after read refusal.
     assert_eq!(
+        // SAFETY: the retained File still owns this descriptor after read refusal.
         unsafe { libc::lseek(captured.device.file.as_raw_fd(), 0, libc::SEEK_CUR) },
         1
     );

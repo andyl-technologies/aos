@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 use self::deadline::{OperationDecision, decide_operation, operation_status_from_decision};
 
 mod action_loan;
-pub use action_loan::{HostActionLoan, HostActionPublisher, HostActionReturnReceipt};
+pub use action_loan::{
+    HostActionLoan, HostActionPublisher, HostActionReturnReceipt, HostParentParkReturnReceipt,
+};
 
 mod bootstrap;
 mod deadline;

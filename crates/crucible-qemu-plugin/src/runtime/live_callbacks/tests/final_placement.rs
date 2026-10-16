@@ -250,6 +250,11 @@ unsafe impl<'a> super::super::initialization::CallbackAllocation for ObservedSpa
         self.span.as_mut_ptr()
     }
 
+    /// Borrows the complete fixture span without transferring its external Box.
+    ///
+    /// # Safety
+    /// Every field is initialized, prefix cleanup has ended, and the unique span
+    /// and its external allocation owner remain live for the returned lifetime.
     unsafe fn initialized(self) -> Self::Initialized {
         // SAFETY: the common guard has recorded all forty complete fields.
         unsafe { self.span.assume_init_mut() }

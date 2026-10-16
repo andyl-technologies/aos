@@ -2059,7 +2059,7 @@ pub trait ProductionVmNodeLauncher: Send {
         &mut self,
         _source: &mut crucible_qemu::QemuNodeSetPreparedHotForkSource<'_>,
         _request: ProductionVmParentParkDrainRequest<'_>,
-    ) -> Result<crucible_qemu::QmpParentParkDrainReceipt, ProductionVmParentParkDrainRefusal> {
+    ) -> Result<crucible_qemu::QmpParentParkResult, ProductionVmParentParkDrainRefusal> {
         Err(ProductionVmParentParkDrainRefusal::Unavailable(
             "launcher has no original park issuer",
         ))

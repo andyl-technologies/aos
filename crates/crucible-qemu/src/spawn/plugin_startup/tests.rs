@@ -147,7 +147,7 @@ fn startup_outside_request_keeps_the_actual_body_and_subscriber_extents() {
             + 1,
     )
     .unwrap()
-        + HostServiceLease::metadata_bytes();
+        + std::mem::size_of::<SourceHostControlLease>() as u64;
 
     let requested = OriginalPluginStartup::host_allocation_extent().unwrap();
 

@@ -7,7 +7,7 @@
 //! Each entry in `hostOperationBudgets` has this required JSON shape; an
 //! explicit null selects no allowance, while an omitted field refuses:
 //!
-//! ```json
+//! ```text
 //! {"pollMillis": 10, "progressMillis": null, "totalMillis": 30000}
 //! ```
 

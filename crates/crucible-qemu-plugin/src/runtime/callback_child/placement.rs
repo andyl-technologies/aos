@@ -75,6 +75,11 @@ unsafe impl<'a> CallbackAllocation for EnteredAllocation<'a, '_> {
         self.span.as_mut_ptr()
     }
 
+    /// Converts the complete entered span without changing its backing owner.
+    ///
+    /// # Safety
+    /// The common initializer has written every field, no prefix cleanup remains,
+    /// and this unique entered borrow remains live through conversion.
     unsafe fn initialized(self) -> Self::Initialized {
         // SAFETY: the common initializer recorded all forty valid unique fields.
         unsafe { self.span.assume_init_mut() }

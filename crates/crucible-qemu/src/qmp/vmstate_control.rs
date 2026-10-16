@@ -54,14 +54,47 @@ where
     }
 
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    pub(crate) fn parent_park_command(
+    pub(crate) fn prepare_parent_park_begin(
         &mut self,
-        request: super::parent_park_drain::ParentParkDrainRequest<'_>,
+        binding: crucible_protocol::boundary_action::ActionBinding,
+        stopped: u64,
         actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
         family: &crucible_linux_resource::host_supervision::HostOperationGuard,
-    ) -> Result<super::parent_park_drain::QmpParentParkDrainReceipt, QmpError> {
+    ) -> Result<(), crate::QmpError> {
         self.client
-            .parent_park_drain_under_originals(&request, actor, family)
+            .prepare_parent_park_begin(binding, stopped, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn parent_park_begin(
+        &mut self,
+        request: super::parent_park_drain::ParentParkRequest<'_>,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<super::parent_park_drain::QmpParentParkResult, QmpError> {
+        self.client
+            .parent_park_begin_under_originals(&request, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn parent_park_return_under_originals(
+        &mut self,
+        binding: crucible_protocol::boundary_action::ActionBinding,
+        actor: &crucible_linux_resource::host_supervision::HostOperationGuard,
+        family: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpParentParkResult, crate::QmpError> {
+        self.client
+            .parent_park_return_under_originals(binding, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn parent_park_return(
+        &mut self,
+        binding: crucible_protocol::boundary_action::ActionBinding,
+        cleanup: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<super::parent_park_drain::QmpParentParkResult, QmpError> {
+        self.client
+            .parent_park_return_under_cleanup(binding, cleanup)
     }
 
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]

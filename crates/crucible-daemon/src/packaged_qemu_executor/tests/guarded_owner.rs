@@ -82,8 +82,8 @@ fn guarded_owner_refuses_missing_main_before_any_namespace_publication() {
     assert!(!run_state.join("guarded-campaign").exists());
 }
 
-// crucible-lint: allow lint-attribute-intent -- the genuine Main quota control waits for authenticated producer admission rather than a component Main substitute.
 #[cfg(target_os = "linux")]
+// crucible-lint: allow rust-allow -- the genuine Main quota control waits for authenticated producer admission rather than a component Main substitute.
 #[allow(
     dead_code,
     reason = "The authentic normal Main quota fixture remains unqualified."
@@ -125,8 +125,8 @@ fn genuine_guarded_owner_refuses_uninstalled_quota_before_publication(
     assert!(!run_state.join("guarded-campaign").exists());
 }
 
-// crucible-lint: allow lint-attribute-intent -- this lifecycle control awaits a genuine Main Source fixture; no scripted or scalar authority issues the opaque target permit.
 #[cfg(target_os = "linux")]
+// crucible-lint: allow rust-allow -- this lifecycle control awaits a genuine Main Source fixture; no scripted or scalar authority issues the opaque target permit.
 #[allow(
     dead_code,
     reason = "The authentic standalone normal Main Source fixture remains unqualified."
@@ -198,8 +198,8 @@ fn genuine_standalone_main_retirement_retains_busy_custody_and_closes_once(
     assert_eq!(Arc::as_ptr(&owner.inner), original_owner);
 }
 
-// crucible-lint: allow lint-attribute-intent -- this deterministic final-release control requires an authenticated Main owner and exercises its actual facade Drop path.
 #[cfg(target_os = "linux")]
+// crucible-lint: allow rust-allow -- this deterministic final-release control requires an authenticated Main owner and exercises its actual facade Drop path.
 #[allow(
     dead_code,
     reason = "The authentic standalone Main final-release fixture remains unqualified."
@@ -236,8 +236,8 @@ fn genuine_concurrent_final_releases_retain_the_same_uncertain_owner(
     assert!(std::ptr::eq(Arc::as_ptr(&retained), weak.as_ptr()));
 }
 
-// crucible-lint: allow lint-attribute-intent -- actual poisoned factory custody must retain its genuine Main owner, not a component success substitute.
 #[cfg(target_os = "linux")]
+// crucible-lint: allow rust-allow -- actual poisoned factory custody must retain its genuine Main owner, not a component success substitute.
 #[allow(
     dead_code,
     reason = "The authentic standalone Main poison fixture remains unqualified."
@@ -261,8 +261,8 @@ fn genuine_poisoned_factory_retains_the_same_final_owner(mut owner: guarded::Gua
     assert!(retained.facades.is_quarantined());
 }
 
-// crucible-lint: allow lint-attribute-intent -- corrupted facade accounting is tested only as a refusal on the real retained Main owner.
 #[cfg(target_os = "linux")]
+// crucible-lint: allow rust-allow -- corrupted facade accounting is tested only as a refusal on the real retained Main owner.
 #[allow(
     dead_code,
     reason = "The authentic standalone Main counter fixture remains unqualified."
@@ -287,8 +287,8 @@ fn genuine_corrupt_final_release_accounting_retains_the_same_owner(
     assert!(retained.facades.is_quarantined());
 }
 
-// crucible-lint: allow lint-attribute-intent -- counter overflow is a negative custody control on the authentic Main owner and creates no native authority.
 #[cfg(target_os = "linux")]
+// crucible-lint: allow rust-allow -- counter overflow is a negative custody control on the authentic Main owner and creates no native authority.
 #[allow(
     dead_code,
     reason = "The authentic standalone Main overflow fixture remains unqualified."

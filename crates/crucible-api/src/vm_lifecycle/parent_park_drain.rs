@@ -9,10 +9,7 @@ use std::sync::Arc;
 use crucible::NodeId;
 use crucible::owned_decode::{DecodeAdmissionError, DecodeScratch};
 use crucible_linux_resource::host_supervision::{HostOperationGuard, HostSupervisionError};
-use crucible_qemu::{
-    OriginalActorParkCaller, OriginalActorParkCallerLease, QmpParentParkDrainReceipt,
-    QmpParentParkDrainState,
-};
+use crucible_qemu::{OriginalActorParkCaller, OriginalActorParkCallerLease, QmpParentParkResult};
 
 use super::ProductionVmHotForkSourceWorld;
 
@@ -27,7 +24,7 @@ pub use failure::{
 /// Selects a fixed operation on the launcher's retained phase.
 pub enum ProductionVmParentParkDrainRequest<'a> {
     /// Enters the fixed actor and factory-issued family phase exactly once.
-    Acquire {
+    Begin {
         /// Already-retained authentic actor Preparation.
         original: &'a Arc<HostOperationGuard>,
         /// Same actor's independently retained decoder and original accounts.
@@ -35,10 +32,8 @@ pub enum ProductionVmParentParkDrainRequest<'a> {
         /// Correlates the actual acquisition without issuing authority.
         correlation: u64,
     },
-    /// Checks the retained owner without exporting another basis.
-    Query,
-    /// Requests explicit native disposition under both retained originals.
-    Relinquish,
+    /// Returns the same retained request through its actual Cleanup owner.
+    Return,
 }
 
 /// Reports refusal while the complete source and typed first cause stay owned.
@@ -69,16 +64,16 @@ struct ParentParkWorldState {
     node: NodeId,
     original: Arc<HostOperationGuard>,
     decoder: OriginalActorParkCallerLease,
-    acquired: bool,
+    begin_attempted: bool,
     refused: bool,
 }
 
 /// Owns the entire world while a later original phase excludes other operations.
 ///
-/// Explicit relinquishment and both original postcuts are required before the
+/// Explicit physical return and both original postcuts are required before the
 /// world can be returned. Uncertainty or facade abandonment retains the whole
 /// lifecycle, its NodeSet/pending ledger, boxed launcher and original credits.
-#[must_use = "relinquish explicitly or retain the whole world for containment"]
+#[must_use = "return explicitly or retain the whole world for containment"]
 pub struct ProductionVmParentParkDrain {
     state: Option<Box<ParentParkWorldState>>,
     // State, including the physical world, closes before this external credit.
@@ -119,7 +114,7 @@ impl ProductionVmParentParkDrain {
             node,
             original,
             decoder,
-            acquired: false,
+            begin_attempted: false,
             refused: false,
         });
         // The world moves only after the body and its external credit exist.
@@ -130,21 +125,21 @@ impl ProductionVmParentParkDrain {
         })
     }
 
-    /// Acquires using the fixed factory and same retained actor exactly once.
+    /// Begins using the fixed factory and same retained actor exactly once.
     ///
     /// # Errors
     /// Refuses reuse, an absent used route or the actual retained first cause.
-    pub fn acquire(
+    pub fn begin(
         &mut self,
         correlation: u64,
-    ) -> Result<QmpParentParkDrainReceipt, ProductionVmParentParkDrainRefusal> {
+    ) -> Result<QmpParentParkResult, ProductionVmParentParkDrainRefusal> {
         let state = self
             .state
             .as_mut()
             .ok_or(ProductionVmParentParkDrainRefusal::Unavailable(
                 "phase consumed",
             ))?;
-        if state.acquired || state.refused {
+        if state.begin_attempted || state.refused {
             return Err(ProductionVmParentParkDrainRefusal::Unavailable(
                 "phase already entered",
             ));
@@ -155,8 +150,8 @@ impl ProductionVmParentParkDrain {
             ));
         }
         // Mark the handover before the first possible native or Pause effect.
-        state.acquired = true;
-        let request = ProductionVmParentParkDrainRequest::Acquire {
+        state.begin_attempted = true;
+        let request = ProductionVmParentParkDrainRequest::Begin {
             original: &state.original,
             decoder: state.decoder.caller(),
             correlation,
@@ -174,45 +169,14 @@ impl ProductionVmParentParkDrain {
         result
     }
 
-    /// Queries only the retained phase; no replacement original can be supplied.
-    ///
-    /// # Errors
-    /// Refuses absent acquisition or any sticky retained phase refusal.
-    pub fn query(
-        &mut self,
-    ) -> Result<QmpParentParkDrainReceipt, ProductionVmParentParkDrainRefusal> {
-        let state = self
-            .state
-            .as_mut()
-            .ok_or(ProductionVmParentParkDrainRefusal::Unavailable(
-                "phase consumed",
-            ))?;
-        if !state.acquired || state.refused {
-            return Err(ProductionVmParentParkDrainRefusal::Unavailable(
-                "phase is not held",
-            ));
-        }
-        let result = state
-            .world
-            .as_mut()
-            .ok_or(ProductionVmParentParkDrainRefusal::Unavailable(
-                "world consumed",
-            ))?
-            .parent_park_drain_step(&state.node, ProductionVmParentParkDrainRequest::Query);
-        if result.is_err() {
-            state.refused = true;
-        }
-        result
-    }
-
-    /// Relinquishes and returns the actual complete world only after acceptance.
+    /// Returns the actual complete world only after physical and semantic settlement.
     ///
     /// On refusal this facade still owns everything; callers retain it for
     /// containment. No successful scalar or Drop path restores a mutable world.
     ///
     /// # Errors
     /// Refuses absent acquisition, native uncertainty or either actual original.
-    pub fn relinquish(
+    pub fn return_world(
         &mut self,
     ) -> Result<ProductionVmHotForkSourceWorld, ProductionVmParentParkDrainRefusal> {
         let state = self
@@ -221,7 +185,7 @@ impl ProductionVmParentParkDrain {
             .ok_or(ProductionVmParentParkDrainRefusal::Unavailable(
                 "phase consumed",
             ))?;
-        if !state.acquired || state.refused {
+        if !state.begin_attempted {
             return Err(ProductionVmParentParkDrainRefusal::Unavailable(
                 "phase is not held",
             ));
@@ -232,7 +196,7 @@ impl ProductionVmParentParkDrain {
             .ok_or(ProductionVmParentParkDrainRefusal::Unavailable(
                 "world consumed",
             ))?
-            .parent_park_drain_step(&state.node, ProductionVmParentParkDrainRequest::Relinquish);
+            .parent_park_drain_step(&state.node, ProductionVmParentParkDrainRequest::Return);
         let receipt = match result {
             Ok(receipt) => receipt,
             Err(first) => {
@@ -240,7 +204,11 @@ impl ProductionVmParentParkDrain {
                 return Err(first);
             }
         };
-        if receipt.state != QmpParentParkDrainState::Relinquished || receipt.retained {
+        if receipt.closed_request.is_none()
+            || !receipt.host_memberships_returned
+            || receipt.has_operation_failure()
+            || state.refused
+        {
             state.refused = true;
             return Err(ProductionVmParentParkDrainRefusal::Retained);
         }
@@ -307,20 +275,20 @@ impl Drop for ProductionVmParentParkDrain {
 }
 
 impl ProductionVmHotForkSourceWorld {
-    /// Acquires the fixed original phase while the managed pool retains this world.
+    /// Begins the fixed original phase while the managed pool retains this world.
     ///
     /// The daemon's pool-issued session owns exclusion against other checkouts;
     /// this method neither moves the world nor authenticates a pool lease.
     ///
     /// # Errors
     /// Refuses changed installed source, actual original or used factory custody.
-    pub fn acquire_parent_park_retained(
+    pub fn begin_parent_park_retained(
         &mut self,
         node: &NodeId,
         original: &Arc<HostOperationGuard>,
         decoder: &OriginalActorParkCaller,
         correlation: u64,
-    ) -> Result<QmpParentParkDrainReceipt, ProductionVmParentParkDrainRefusal> {
+    ) -> Result<QmpParentParkResult, ProductionVmParentParkDrainRefusal> {
         decoder.verify_parent_park_preparation(original)?;
         if correlation == 0 || correlation == u64::MAX {
             return Err(ProductionVmParentParkDrainRefusal::Unavailable(
@@ -329,7 +297,7 @@ impl ProductionVmHotForkSourceWorld {
         }
         self.parent_park_drain_step(
             node,
-            ProductionVmParentParkDrainRequest::Acquire {
+            ProductionVmParentParkDrainRequest::Begin {
                 original,
                 decoder,
                 correlation,
@@ -337,26 +305,15 @@ impl ProductionVmHotForkSourceWorld {
         )
     }
 
-    /// Queries the same installed phase without replacing either original.
-    ///
-    /// # Errors
-    /// Refuses absent retained ownership or the actual sticky first cause.
-    pub fn query_parent_park_retained(
-        &mut self,
-        node: &NodeId,
-    ) -> Result<QmpParentParkDrainReceipt, ProductionVmParentParkDrainRefusal> {
-        self.parent_park_drain_step(node, ProductionVmParentParkDrainRequest::Query)
-    }
-
     /// Requests explicit disposition from the same installed native phase.
     ///
     /// # Errors
     /// Refuses uncertain disposal or either original's actual independent postcut.
-    pub fn relinquish_parent_park_retained(
+    pub fn return_parent_park_retained(
         &mut self,
         node: &NodeId,
-    ) -> Result<QmpParentParkDrainReceipt, ProductionVmParentParkDrainRefusal> {
-        self.parent_park_drain_step(node, ProductionVmParentParkDrainRequest::Relinquish)
+    ) -> Result<QmpParentParkResult, ProductionVmParentParkDrainRefusal> {
+        self.parent_park_drain_step(node, ProductionVmParentParkDrainRequest::Return)
     }
 
     /// Transfers the actual containing owner to quarantine without attesting reap.
@@ -373,7 +330,7 @@ impl ProductionVmHotForkSourceWorld {
         &mut self,
         node: &NodeId,
         request: ProductionVmParentParkDrainRequest<'_>,
-    ) -> Result<QmpParentParkDrainReceipt, ProductionVmParentParkDrainRefusal> {
+    ) -> Result<QmpParentParkResult, ProductionVmParentParkDrainRefusal> {
         let prepared = self
             .prepared
             .iter()

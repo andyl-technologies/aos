@@ -831,6 +831,11 @@ pub(crate) struct OriginalNativeNodeBinding {
     >,
 }
 
+#[cfg(feature = "private-measurement-domain")]
+mod parent_park_cleanup;
+#[cfg(feature = "private-measurement-domain")]
+pub use parent_park_cleanup::OriginalParentParkCleanup;
+
 pub(crate) struct NativeAccountAttempt {
     roster: Weak<Mutex<NativeRoster>>,
     index: usize,

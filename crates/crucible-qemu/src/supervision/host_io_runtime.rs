@@ -1199,8 +1199,18 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
     }
 
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    fn finish_parent_park_action(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
-        self.return_parent_park_request()
+    fn retained_parent_park_action(
+        &self,
+    ) -> Option<crucible_protocol::boundary_action::ActionBinding> {
+        self.parent_park_action
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn finish_parent_park_action(
+        &mut self,
+        closed: &crate::QmpParentParkClosedRequest,
+    ) -> Result<bool, crucible_linux_resource::host_supervision::HostSupervisionError> {
+        self.return_parent_park_request(closed)
     }
 
     fn clear_checkpoint_pause_while_stopped(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {

@@ -119,6 +119,20 @@ pub trait QemuAttemptHostResourceOwner {
         })
     }
 
+    /// Lends the actual retained account's Cleanup only when disposition begins.
+    ///
+    /// # Errors
+    /// Refuses unavailable original account custody or its finite Cleanup policy.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn retain_parent_park_cleanup(
+        &self,
+    ) -> Result<crucible_qemu::OriginalParentParkCleanup, QemuVmRealizationError> {
+        Err(QemuVmRealizationError::Executor {
+            operation: "retain parent Park Cleanup",
+            message: String::from("host has no original Cleanup owner"),
+        })
+    }
+
     /// Checks actual Node, host and Preparation custody before publication.
     ///
     /// # Errors
@@ -396,8 +410,8 @@ impl<H> SharedQemuAttemptHostResourceFactory<H> {
 }
 
 impl SharedQemuAttemptHostResourceFactory<LinuxQemuAttemptHostResourceFactory> {
-    // crucible-lint: allow panic-shortcut -- the causal fixture intentionally poisons the same retained native factory mutex.
     #[cfg(test)]
+    // crucible-lint: allow panic-shortcut -- the causal fixture intentionally poisons the same retained native factory mutex.
     #[allow(
         clippy::expect_used,
         reason = "The causal fixture poisons real factory custody."
@@ -771,6 +785,13 @@ impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
         self.host
             .prepare_fork_target_run_directory(target_contract, requirements)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn retain_parent_park_cleanup(
+        &self,
+    ) -> Result<crucible_qemu::OriginalParentParkCleanup, QemuVmRealizationError> {
+        self.host.retain_parent_park_cleanup()
     }
 
     /// Checks actual Node, host and Preparation custody before publication.
@@ -1232,6 +1253,13 @@ where
     ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
         self.host
             .prepare_fork_target_run_directory(target_contract, requirements)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn retain_parent_park_cleanup(
+        &self,
+    ) -> Result<crucible_qemu::OriginalParentParkCleanup, QemuVmRealizationError> {
+        self.host.retain_parent_park_cleanup()
     }
 
     /// Checks actual Node, host and Preparation custody before publication.

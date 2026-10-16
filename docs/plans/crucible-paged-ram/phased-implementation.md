@@ -50,8 +50,14 @@ constructor, role lender and installed-artifact proof are joined. Native kernel
 and participant custody, the controller's standing-owner consumption and the
 whole-Source Root adapter remain incomplete or unqualified. Source review and
 local evaluation do not establish Rust integration compilation, live native or
-VM behavior, physical resource floors, or CPU/elapsed-time parity. The package
-exit criteria and coordinated release gates below remain required.
+VM behavior, physical resource floors, or CPU/elapsed-time parity. Local normal
+Cargo compilation covers all 496 default workspace targets, and the daemon's
+production code checks with the private measurement feature. The matching native
+integration compiles and links; 25 of its 26 configured fixtures pass. The
+remaining dirty-iterator fixture still assumes capture ownership that must come
+from the real Root, Source and writer lifecycle. These build results do not
+enable native receiver activation or qualify physical resource return. The
+package exit criteria and coordinated release gates below remain required.
 
 The dependency graph below distinguishes foundations from separately enabled
 capabilities. `A -> B` means B requires A's accepted contract and evidence.
@@ -223,6 +229,18 @@ Exit evidence includes dense distinct pages beyond former flat limits,
 small-object overhead measurements, packed-object corruption, quota failure,
 crash during publication, concurrent GC, and retained source/child/transfer
 leases. An ordinary spill write is not accepted as durable publication.
+
+The current packed read view retains only the most recently used authenticated
+manifest. A local 32 MiB, 8192-page diagnostic performed the same 24,575 object
+lookups before and after repacking. Manifest authentication increased from 769
+operations over 18,438,337 encoded bytes to 23,246 operations over 3,878,963,049
+bytes. This measures excess work, not an isolated throughput comparison. A
+bounded retention fix remains required: metadata must be prepaid by the same
+operation, evicted within that allowance, and bound to the authenticated
+placement generation and immutable pack identity. Reuse must preserve inode
+stamp and selected-entry checks, complete object authentication and EOF checks,
+and the initiating operation's failures. A failed reservation cannot be hidden
+by falling back to an uncached read. Performance parity remains unqualified.
 
 ## 8 Package G: custom pager and authority lifecycle
 

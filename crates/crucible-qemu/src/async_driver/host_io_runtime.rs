@@ -450,17 +450,27 @@ pub trait QemuHostIoRuntime: Send {
         ))
     }
 
+    /// Lends the saved selector by identity for already-owned physical cleanup.
+    ///
+    /// This creates no new work and performs no live Original admission.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn retained_parent_park_action(
+        &self,
+    ) -> Option<crucible_protocol::boundary_action::ActionBinding> {
+        None
+    }
+
     /// Consumes only the same mapped native physical-return journal.
     ///
     /// # Errors
     /// Refuses changed binding or physical/semantic uncertainty. An ACK or
     /// local callback disposition cannot clear the retained pair.
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    fn finish_parent_park_action(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
-        Err(QemuAsyncDriverRuntimeError::new(
-            "return parent Park action",
-            "runtime has no retained canonical paired action",
-        ))
+    fn finish_parent_park_action(
+        &mut self,
+        _closed: &crate::QmpParentParkClosedRequest,
+    ) -> Result<bool, crucible_linux_resource::host_supervision::HostSupervisionError> {
+        Err(crucible_linux_resource::host_supervision::HostSupervisionError::Unavailable)
     }
 
     /// Clears a coordinated plugin pause while QEMU is already stopped.

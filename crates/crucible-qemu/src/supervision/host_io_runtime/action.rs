@@ -72,58 +72,34 @@ impl QemuLiveHostIoRuntime {
         Ok(binding)
     }
 
-    /// Consumes only the actual mapped Park return, retaining negative custody.
+    /// Returns Host memberships only after the same QMP client proves local closure.
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     pub(super) fn return_parent_park_request(
         &mut self,
-    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
-        let binding = self.parent_park_action.ok_or_else(|| {
-            QemuAsyncDriverRuntimeError::new("return parent Park action", "pair absent")
-        })?;
-        let source = self.source_supervision.as_ref().ok_or_else(|| {
-            QemuAsyncDriverRuntimeError::new(
-                "return parent Park action",
-                "actual standing Source publisher is unavailable",
-            )
-        })?;
-        let mapping = self.region.as_ref().ok_or_else(region_missing)?;
-        let journal = source
-            .observe_action_return(mapping, self.vm_slot)
-            .map_err(|error| {
-                QemuAsyncDriverRuntimeError::operational_supervision(
-                    "observe parent Park physical return",
-                    error,
-                )
-            })?;
-        let Some(journal) = journal else {
+        closed: &crate::QmpParentParkClosedRequest,
+    ) -> Result<bool, crucible_linux_resource::host_supervision::HostSupervisionError> {
+        use crucible_linux_resource::host_supervision::HostSupervisionError;
+        let binding = self
+            .parent_park_action
+            .ok_or(HostSupervisionError::Unavailable)?;
+        let source = self
+            .source_supervision
+            .as_ref()
+            .ok_or(HostSupervisionError::Unavailable)?;
+        let mapping = self
+            .region
+            .as_ref()
+            .ok_or(HostSupervisionError::Unavailable)?;
+        let Some(settled) =
+            source.settle_parent_park_from_mapping(mapping, self.vm_slot, closed)?
+        else {
             return Ok(false);
         };
-        if journal.binding != binding {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "return parent Park action",
-                "another request's physical journal cannot retire this pair",
-            ));
+        if settled.binding != binding {
+            return Err(HostSupervisionError::Unavailable);
         }
-        let settled = source
-            .settle_action_from_mapping(mapping, self.vm_slot)
-            .map_err(|error| {
-                QemuAsyncDriverRuntimeError::operational_supervision(
-                    "return canonical parent Park memberships",
-                    error,
-                )
-            })?;
-        let Some(settled) = settled else {
-            return Ok(false);
-        };
-        if settled.first < 0 || settled.post < 0 {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "return canonical parent Park memberships",
-                format!(
-                    "physical return retained first/post {}/{}",
-                    settled.first, settled.post,
-                ),
-            ));
-        }
+        // Actual Host unlink/publication/frontier return precedes semantic
+        // reporting. Negative dispositions remain in Source and the receipt.
         self.parent_park_action = None;
         Ok(true)
     }

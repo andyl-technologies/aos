@@ -106,7 +106,10 @@ where
 }
 
 /// Commits one already-checked typed body after the real placement journal.
-/// The caller supplies unique live storage/output of the exact T geometry.
+///
+/// # Safety
+/// The caller retains unique aligned writable storage of the exact T geometry
+/// and a valid nonoverlapping u32 output through the synchronous marker/write.
 unsafe fn write_body<T>(
     address: *mut c_void,
     initialized: *mut u32,

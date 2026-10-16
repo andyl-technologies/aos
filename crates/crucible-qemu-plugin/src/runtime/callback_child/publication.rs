@@ -176,11 +176,12 @@ impl Publication {
                 {
                     Err(super::status_error(-libc::EPROTO))
                 } else {
-                    // SAFETY: actual successful current lends this full initialized
-                    // span until return. No other private child access is active;
-                    // the closure cannot return a borrowed typed projection.
-                    let typed =
-                        unsafe { &mut *self.span.address.cast::<LiveVcpuTimeCallbackState>() };
+                    let typed = unsafe {
+                        // SAFETY: actual successful current lends this full initialized
+                        // span until return. No other private child access is active;
+                        // the closure cannot return a borrowed typed projection.
+                        &mut *self.span.address.cast::<LiveVcpuTimeCallbackState>()
+                    };
                     preparation(typed)
                 }
             }

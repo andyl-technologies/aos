@@ -320,3 +320,34 @@ fn an_actual_json_primary_survives_a_later_recorded_original_refusal() {
     assert_eq!(actual.to_string(), expected);
     assert_eq!(budget.failure().unwrap(), Some(later));
 }
+
+#[test]
+fn bounded_diagnostic_query_covers_actual_escaped_input_geometry() {
+    let labels = &["WireResult", "field-name", "fixed custom refusal"];
+    let samples: &[&[u8]] = &[
+        b"",
+        b"plain ASCII",
+        b"\x00\x1f\x7f",
+        b"\\u0000\\u007f",
+        b"\\uDBFF\\uDFFF",
+        "mixed \u{7f} \u{10ffff}".as_bytes(),
+        b"\xff\\u0000\xfe",
+    ];
+    if !cfg!(all(
+        target_arch = "x86_64",
+        target_os = "linux",
+        target_pointer_width = "64"
+    )) {
+        assert!(bounded_json_diagnostic_extent(0, labels).is_none());
+        return;
+    }
+    for bytes in samples {
+        let actual = diagnostic_extent(bytes, labels).unwrap();
+        let bounded = bounded_json_diagnostic_extent(bytes.len(), labels).unwrap();
+        assert!(
+            bounded >= actual,
+            "bounded diagnostic underpriced {bytes:?}"
+        );
+    }
+    assert!(bounded_json_diagnostic_extent(usize::MAX, labels).is_none());
+}

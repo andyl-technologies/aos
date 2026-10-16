@@ -85,24 +85,73 @@ const CONTRACTS: &[Contract] = &[
             "assert!(matches!(result,Err(RamError::Io(error))iferror.kind()==io::ErrorKind::TimedOut));",
             "-libc::ENOTSUP",
             "ifstatus==-libc::ENOTSUP",
+            "fn pending_record_cannot_publish_census_or_renew_expired_setup()",
+            "assert_eq!(attempts, 1);",
             "assert_eq!(controller.operations.capacity.load(Ordering::Acquire),0);",
         ],
-        expressions: &[("std::thread::sleep(Duration::from_millis(120));", 2)],
+        expressions: &[("std::thread::sleep(Duration::from_millis(120));", 3)],
         companions: &[Companion {
             path: "crates/crucible-qemu-plugin/src/paged_ram/controller/admission.rs",
             required: &[
-                "Arc::from(controller.begin(SourceOperationClass::ControlSetup)?);operation.wait_slice()?;",
+                "let operation: Arc<dyn SourceOperation> = Arc::from(controller.begin(SourceOperationClass::ControlSetup)?);",
                 "operation.wait_slice()?;",
-                "letstatus=export(&mutinventory);",
-                "ifstatus!=0{",
-                "}operation.wait_slice()?;Ok((inventory,operation))",
+                "loop { operation.wait_slice()?; let status = export(&mut inventory); if status == 0 { break; }",
+                "if status != NATIVE_INVENTORY_PENDING_RECORD { return Err(RamError::Native",
+                "} operation.wait_slice()?; if inventory.existing_tasks == 0",
+                "Ok((inventory, operation))",
                 "letstatus=(controller.native_grant)(generation,metadata_bytes,&mutallowance);",
                 "ifallowance<rust_metadata_required_bytes{controller.mark_failed();",
                 "}operation.wait_slice()?;Ok(allowance)",
             ],
-            // Inventory publication and the native grant retain the same
-            // original operation alongside the two export boundaries.
-            counts: &[("operation.wait_slice()?;", 6)],
+            // Pending-record sleep adds one boundary on the same setup start;
+            // export, completed census and native grant preserve their cuts.
+            counts: &[("operation.wait_slice()?;", 7)],
+        }],
+    },
+    // Only the explicit pre-census pending record can repeat native observation.
+    // It retains the same setup owner and refuses any prematurely published census.
+    Contract {
+        package: "crucible-qemu-plugin",
+        target: "src/paged_ram/controller/admission",
+        required: &[
+            "const NATIVE_INVENTORY_PENDING_RECORD: c_int = 1;",
+            "pub(super) fn export_owner_inventory(",
+            "mut export: impl FnMut(&mut RamControlOwnerInventory) -> c_int",
+            "let operation: Arc<dyn SourceOperation> = Arc::from(controller.begin(SourceOperationClass::ControlSetup)?);",
+            "loop { operation.wait_slice()?; let status = export(&mut inventory); if status == 0 { break; }",
+            "if status != NATIVE_INVENTORY_PENDING_RECORD { return Err(RamError::Native",
+            r#"if inventory.existing_tasks != 0
+                || inventory.existing_file_descriptors != 0
+                || inventory.registered_service_tasks != 0
+            { return Err(RamError::Invariant("pending native inventory contains census output",)); }"#,
+            "let slice = operation.wait_slice()?;",
+            "} operation.wait_slice()?; if inventory.existing_tasks == 0 || inventory.existing_file_descriptors == 0 || inventory.registered_service_tasks > inventory.existing_tasks",
+            "Ok((inventory, operation))",
+        ],
+        expressions: &[(
+            "std::thread::sleep(slice.min(Duration::from_millis(10)));",
+            1,
+        )],
+        companions: &[Companion {
+            path: "crates/crucible-qemu-plugin/src/paged_ram/controller/tests/admission.rs",
+            required: &[
+                "fn pending_record_cannot_publish_census_or_renew_expired_setup()",
+                r#"let result = super::super::admission::export_owner_inventory(&controller, |_| {
+                    attempts += 1;
+                    std::thread::sleep(Duration::from_millis(120));
+                    1
+                });"#,
+                "assert_eq!(attempts, 1);",
+                "assert!(matches!(result, Err(RamError::Io(error)) if error.kind() == io::ErrorKind::TimedOut));",
+                "fn negative_or_unknown_inventory_status_never_retries_as_record_pending()",
+                "for status in [-libc::EAGAIN, -libc::EBUSY, -libc::EIO, 2]",
+                "fn pending_inventory_with_output_or_success_without_census_refuses_publication()",
+                "assert!(controller.state.lock().unwrap().inventory.is_none());",
+            ],
+            counts: &[(
+                "fn pending_record_cannot_publish_census_or_renew_expired_setup(",
+                1,
+            )],
         }],
     },
     // Production startup observation polls one supplied original Setup receipt before every

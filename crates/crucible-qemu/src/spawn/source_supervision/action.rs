@@ -30,6 +30,8 @@ pub(super) struct PendingAction {
     pub(super) clearing: bool,
     pub(super) refused: bool,
     pub(super) verified_return: Option<ActionReturn>,
+    pub(super) verified_park_return: Option<parent_park_return::VerifiedParkReturn>,
+    pub(super) park_members_returned_mask: u32,
 }
 
 impl PendingAction {
@@ -443,6 +445,8 @@ impl OriginalSourceSupervision {
                 clearing: false,
                 refused: false,
                 verified_return: None,
+                verified_park_return: None,
+                park_members_returned_mask: 0,
             });
             binding
         };
@@ -824,6 +828,14 @@ impl HostActionPublisher for SourcePublisher {
         action
             .verified_return
             .ok_or(HostSupervisionError::Unavailable)
+    }
+
+    fn parent_park_return(
+        &self,
+        binding: ActionBinding,
+        row: u32,
+    ) -> Result<crucible_protocol::parent_park_return::ParentParkReturn, HostSupervisionError> {
+        self.verified_parent_park_member_return(binding, row)
     }
 
     fn invalidate_action(&self, binding: ActionBinding) {

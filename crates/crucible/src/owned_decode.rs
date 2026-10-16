@@ -24,7 +24,9 @@ pub use serde_budget::{from_json_slice, from_json_slice_closed};
 pub mod json_profiles;
 
 mod json_diagnostic;
-pub use json_diagnostic::{ClosedJsonError, JsonProfileRefusal, PaidJsonError};
+pub use json_diagnostic::{
+    ClosedJsonError, JsonProfileRefusal, PaidJsonError, bounded_json_diagnostic_extent,
+};
 
 mod cbor_encode;
 pub use cbor_encode::{CborEncodeError, to_cbor_vec_prefixed};

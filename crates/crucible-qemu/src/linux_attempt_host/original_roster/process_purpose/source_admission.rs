@@ -312,19 +312,29 @@ fn source_host_peak() -> Result<(u64, u64, u64), InstalledProcessPurposeError> {
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::QemuNodeChild>() as u64))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::QemuSpawnError>() as u64))
         .ok_or(InstalledProcessPurposeError::Capacity)?;
+    let qmp_extent = crate::QemuQmpExactSnapshotControlChannel::<
+        std::os::unix::net::UnixStream,
+    >::host_allocation_extent()
+    .ok_or(InstalledProcessPurposeError::Capacity)?;
+
     let peak = crate::spawn::OriginalPluginStartup::host_allocation_extent()
-            .map_err(|_| InstalledProcessPurposeError::Capacity)?
-            .checked_add(
-                crate::spawn::preexec_setup::PreparedPreexecSetup::host_allocation_extent()
-                    .ok_or(InstalledProcessPurposeError::Capacity)?,
+        .map_err(|_| InstalledProcessPurposeError::Capacity)?
+        .checked_add(
+            crate::spawn::preexec_setup::PreparedPreexecSetup::host_allocation_extent()
+                .ok_or(InstalledProcessPurposeError::Capacity)?,
+        )
+        .and_then(|bytes| {
+            bytes.checked_add(crate::launch_cleanup::LaunchCleanup::retained_control_bytes()?)
+        })
+        .and_then(|bytes| bytes.checked_add(qmp_extent))
+        .and_then(|bytes| bytes.checked_add(source_extent))
+        .and_then(|bytes| {
+            bytes.checked_add(
+                crate::spawn::source_supervision::OriginalSourceSupervision::host_allocation_extent()?,
             )
-            .and_then(|bytes| {
-                bytes.checked_add(crate::launch_cleanup::LaunchCleanup::retained_control_bytes()?)
-            })
-            .and_then(|bytes| bytes.checked_add(source_extent))
-            .and_then(|bytes| bytes.checked_add(crate::spawn::source_supervision::OriginalSourceSupervision::host_allocation_extent()?))
-            .and_then(|bytes| bytes.checked_add(crate::artifact_identity::installer_verifier_extent()))
-            .ok_or(InstalledProcessPurposeError::Capacity)?;
+        })
+        .and_then(|bytes| bytes.checked_add(crate::artifact_identity::installer_verifier_extent()))
+        .ok_or(InstalledProcessPurposeError::Capacity)?;
     Ok((
         source_extent,
         peak,

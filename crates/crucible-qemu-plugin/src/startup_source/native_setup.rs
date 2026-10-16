@@ -201,9 +201,10 @@ fn validate_output(output: &NativeBorrow) -> Result<NativeSetupBorrow, StartupSo
     // SAFETY: the exact matched native ABI publishes these initialized fixed
     // extents only after authenticating its retained process-lifetime owner.
     let frame: [u8; 61] = unsafe { *output.frame.cast::<[u8; 61]>() };
-    // SAFETY: the same accepted ABI guarantees descriptor_count initialized ints.
-    let descriptors =
-        unsafe { std::slice::from_raw_parts(output.descriptors, output.descriptor_count) };
+    let descriptors = unsafe {
+        // SAFETY: the same accepted ABI guarantees descriptor_count initialized ints.
+        std::slice::from_raw_parts(output.descriptors, output.descriptor_count)
+    };
     if descriptors
         .iter()
         .enumerate()

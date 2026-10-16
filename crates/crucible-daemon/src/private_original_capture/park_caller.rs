@@ -99,17 +99,15 @@ impl OriginalPackagedParkCaller {
             .map_err(OriginalActorAccountError::Decode)
     }
 
-    pub(crate) fn acquire_retained_world(
+    pub(crate) fn begin_retained_world(
         &self,
         world: &mut crucible_api::ProductionVmHotForkSourceWorld,
         node: &crucible::NodeId,
         correlation: u64,
-    ) -> Result<
-        crucible_qemu::QmpParentParkDrainReceipt,
-        crucible_api::ProductionVmParentParkDrainRefusal,
-    > {
+    ) -> Result<crucible_qemu::QmpParentParkResult, crucible_api::ProductionVmParentParkDrainRefusal>
+    {
         self.verify_original()?;
-        world.acquire_parent_park_retained(
+        world.begin_parent_park_retained(
             node,
             &self.state.original.original,
             self.state.decoder.caller(),

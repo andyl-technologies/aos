@@ -223,6 +223,25 @@ impl LinuxQemuAttemptHostFactory {
 }
 
 impl LinuxQemuAttemptHostOwner {
+    /// Retains this actual account's once-entered finite Cleanup phase.
+    ///
+    /// The original slot remains the owner. The first call starts Cleanup at
+    /// disposition, and retries lend the same guard without restarting it.
+    ///
+    /// # Errors
+    /// Refuses absent, changed or unsettled original custody, insufficient
+    /// assigned control storage, or expiration of the saved Cleanup phase.
+    #[cfg(feature = "private-measurement-domain")]
+    pub fn retain_parent_park_cleanup(
+        &self,
+    ) -> Result<OriginalParentParkCleanup, QemuVmRealizationError> {
+        self.original_account
+            .as_ref()
+            .ok_or_else(|| missing_authority("retain parent Park Cleanup"))?
+            .retain_parent_park_cleanup()
+            .map_err(original_roster::original_error)
+    }
+
     /// Pins an already-created native control for private original retirement.
     ///
     /// This method clones only the same existing allocation. It does not

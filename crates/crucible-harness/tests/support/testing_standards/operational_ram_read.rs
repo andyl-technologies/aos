@@ -127,7 +127,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
         companions: &[Companion {
             path: "crates/crucible-cas/src/ram/bounded_read/publication.rs",
             required: &[
-                "if let Some(first) = work.account.read_failure() { return Err(first.into()); } if receipts.len() != expected.iter().flatten().count()",
+                "if let Some(first) = work.account.read_failure() { return Err(first.into()); } if expected.len() > MAX_PUBLICATION_BATCH_OBJECTS || receipts.len() != expected.iter().flatten().count()",
                 "let _credit = work.original().reserve_scratch_bytes(bytes).map_err(crate::ram::codec_ownership::admission)?;",
                 "self.state.phase = ReadPhase::Failed; Err(self.work.account.fail_read(error))",
                 "let result = result.and_then(|()| { self.work.checked(|original, boundary| { crate::content_store::checked_reader::check(original, boundary)?; verify_physical(original, physical) }) });",
@@ -334,7 +334,8 @@ pub(super) const CONTRACTS: &[Contract] = &[
                 required: &[
                     r#"if let Some(error) = self.state.as_ref().and_then(|state| state.read_failure()) { return Err(error.into()); }"#,
                     r#"if let Err(error) = self.check_state() { return Err(self.seal_transport_error(error)); }"#,
-                    r#"work: Some(Work::from_retained(self.store.limits, &self.original, boundary, state, self.visits, self.io_bytes,))"#,
+                    r#"let mut work = Work::from_retained(self.store.limits, &self.original, boundary, state, self.visits, self.io_bytes,); work.canonical_session_enabled = true; work.canonical_session = self.canonical_session.take(); let mut turn = Turn { work: Some(work), canonical_session: &mut self.canonical_session,"#,
+                    r#"if result.is_err() || *self.terminal { work.canonical_session = None; } *self.canonical_session = work.canonical_session.take();"#,
                     r#"Err(error) if work.account.read_failure().is_none() => { Err(work.account.fail_read(error).into()) }"#,
                     r#"*self.visits = work.visits; *self.io_bytes = work.io_bytes; *self.state = Some(work.account.into_retained());"#,
                 ],
