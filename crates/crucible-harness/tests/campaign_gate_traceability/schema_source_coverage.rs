@@ -119,6 +119,8 @@ crucible.production-network-adapter-checkpoint|crates/crucible-api/src/vm_lifecy
 crucible.production-run-lock|crates/crucible-api/src/vm_lifecycle.rs|number|PRODUCTION_RUN_LOCK_VERSION
 crucible.production-run-state|crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs|number|PRODUCTION_RUN_STATE_VERSION
 crucible.shmem.region|crates/crucible-shmem/src/lib.rs|number|ABI_VERSION
+crucible.qemu-plugin.source-supervision|crates/crucible-protocol/src/source_supervision.rs|number|SCHEMA
+crucible.qemu-plugin.parent-park-return|crates/crucible-protocol/src/parent_park_return.rs|number|SCHEMA
 crucible.shmem.fault-clock-evidence|crates/crucible-shmem/src/shmem/fault_clock_evidence.rs|magic|FAULT_CLOCK_EVIDENCE_MAGIC_V2
 crucible.shmem.fault-clock-manifest|crates/crucible-shmem/src/shmem/fault_target_manifest.rs|number|FAULT_CLOCK_MANIFEST_VERSION_V2
 crucible.executor.crucible-scenario-payload|crates/crucible-daemon/src/crucible_artifact.rs|number|CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5

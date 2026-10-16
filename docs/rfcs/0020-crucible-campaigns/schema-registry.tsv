@@ -367,7 +367,7 @@ crucible.shmem.node-event-envelope	1	crucible-qemu-plugin::fault_command::event_
 crucible.shmem.node-fault-evidence	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-payload	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-policy-json	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
-crucible.shmem.region	31	crucible-shmem::region	process-protocol-message	gate:abi-conformance
+crucible.shmem.region	33	crucible-shmem::region	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.frame	3	crucible-protocol::doorbell_frame	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.instruction	4	crucible-protocol::doorbell_abi	process-protocol-message	gate:abi-conformance
 
@@ -471,4 +471,5 @@ crucible.qemu.selectable-reset	1	crucible-qemu::qmp::selectable_reset	process-pr
 crucible.qemu-plugin.fixed-process-family	1	crucible-protocol::plugin_setup_plan	process-protocol-message	gate:abi-conformance,gate:license-boundary
 crucible.host-operational.frame	4	crucible-api::host_operational::codec	process-protocol-message	gate:ram-runtime-policy
 crucible.host-operational.history	2	crucible-daemon::host_operational_registry::history	operational-record	gate:ram-policy-history
-crucible.qemu-plugin.source-supervision	1	crucible-protocol::source_supervision	process-protocol-message	gate:abi-conformance,gate:license-boundary
+crucible.qemu-plugin.source-supervision	3	crucible-protocol::source_supervision	process-protocol-message	gate:abi-conformance,gate:license-boundary
+crucible.qemu-plugin.parent-park-return	2	crucible-protocol::parent_park_return	process-protocol-message	gate:abi-conformance,gate:license-boundary
