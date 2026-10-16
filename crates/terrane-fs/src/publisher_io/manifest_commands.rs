@@ -18,7 +18,6 @@ impl CommandOwner {
         }
         witness.recheck(&self.domain, &self.profile)?;
         self.body_io.check_manifest_pack(witness.file())?;
-        self.validate_claim(witness.claim())?;
         if let Some(key) = key {
             key.validate()?;
             if key
@@ -32,32 +31,52 @@ impl CommandOwner {
             }
         }
 
-        // This is native memory policy, not a new accepted-format maximum.
-        // Retained canonical metadata is bounded across the entire owner, not
-        // merely once per packet. Exhaustion refuses this resource policy
-        // without changing the set of accepted immutable formats.
-        let used = self.bodies.iter().try_fold(0usize, |used, body| {
-            used.checked_add(
-                body.manifest
-                    .as_ref()
-                    .map_or(0, |manifest| manifest.canonical_size()),
-            )
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::OutOfMemory,
-                    "retained manifest budget overflow",
-                )
-            })
-        })?;
-        if used
+        // Separate resource policies bound canonical payload and decoded
+        // payload capacities. These are not a claim about total allocator/RSS
+        // overhead: at most 4096 rows separately bound fixed structs, Arc headers
+        // and the small registered-hash BTreeMap node overhead.
+        let limit = HostReadLimits::default().max_allocation_bytes;
+        let (canonical, decoded) =
+            self.bodies
+                .iter()
+                .try_fold((0usize, 0usize), |(canonical, decoded), body| {
+                    let Some(manifest) = &body.manifest else {
+                        return Ok((canonical, decoded));
+                    };
+                    Ok::<_, io::Error>((
+                        canonical
+                            .checked_add(manifest.canonical_size())
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::OutOfMemory,
+                                    "canonical manifest capacity overflow",
+                                )
+                            })?,
+                        decoded
+                            .checked_add(manifest.decoded_payload_size()?)
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::OutOfMemory,
+                                    "decoded manifest capacity overflow",
+                                )
+                            })?,
+                    ))
+                })?;
+        if canonical
             .checked_add(witness.canonical_size())
-            .is_none_or(|size| size > HostReadLimits::default().max_allocation_bytes)
+            .is_none_or(|size| size > limit)
+            || decoded
+                .checked_add(witness.decoded_payload_size()?)
+                .is_none_or(|size| size > limit)
         {
             return Err(io::Error::new(
                 io::ErrorKind::OutOfMemory,
-                "retained manifest memory budget exhausted",
+                "canonical or decoded manifest payload budget exhausted",
             ));
         }
+        // Recheck uses one separate fixed 64 KiB stack buffer. Initial receiver
+        // verification has its own bounded full-pack/decoder scratch policy;
+        // neither temporary cost is charged as retained canonical payload.
         if self.bodies.len() >= 4096 {
             return Err(io::Error::new(
                 io::ErrorKind::OutOfMemory,
@@ -66,7 +85,7 @@ impl CommandOwner {
         }
 
         let witness = Arc::new(witness);
-        let claim = witness.claim().clone();
+        let claim = witness.shared_claim();
         // The accepted worker owns this local witness and source throughout the
         // actual async engine, including rollback after late durable-state error.
         // A dropped client waiter cannot drop this future or metadata descriptor.

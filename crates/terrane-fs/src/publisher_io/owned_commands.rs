@@ -129,7 +129,7 @@ pub enum NativeOperation {
         /// The requested registered body key.
         key: NativeBodyKey,
         /// Required only for sealed-body independent adoption.
-        claim: Option<PublicationClaim>,
+        claim: Option<Arc<PublicationClaim>>,
     },
     /// Retains pending namespace custody without content or serving authority.
     InspectPending {
@@ -340,12 +340,13 @@ impl CommandOwner {
         claim: PublicationClaim,
         object: NativePublishedObject,
     ) -> io::Result<NativeCommandResult> {
-        self.retain_with_manifest(claim, object, None).await
+        self.retain_with_manifest(Arc::new(claim), object, None)
+            .await
     }
 
     async fn retain_with_manifest(
         &mut self,
-        claim: PublicationClaim,
+        claim: Arc<PublicationClaim>,
         object: NativePublishedObject,
         manifest: Option<Arc<NativeManifestWitness>>,
     ) -> io::Result<NativeCommandResult> {

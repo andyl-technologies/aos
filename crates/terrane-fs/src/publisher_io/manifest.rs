@@ -8,6 +8,7 @@
 use std::fs::{File, Metadata};
 use std::io;
 use std::os::unix::fs::{FileExt, MetadataExt};
+use std::sync::Arc;
 
 use rustix::fs::{OFlags, fcntl_getfl};
 use terrane::host::cache::HostReadLimits;
@@ -39,7 +40,8 @@ pub(crate) struct ReceivedManifest {
 /// grants no durable-pin, quota, reservation, publication or serving authority.
 /// Its constructor is private to the native crate's registered receiver path.
 pub struct NativeManifestWitness {
-    claim: PublicationClaim,
+    claim: Arc<PublicationClaim>,
+    profile: ChunkProfile,
     pack: File,
     observed: Metadata,
     pack_id: [u8; 16],
@@ -69,7 +71,12 @@ impl NativeManifestWitness {
     ///
     /// Reads use positioned I/O; the received open description can have any
     /// cursor and its offset is never modified. Limits come from trusted native
-    /// composition, never from a packet's requested allocation size.
+    /// composition, never from a packet's requested allocation size. The limit
+    /// bounds each full-pack buffer and decoded retained payload independently.
+    /// During verification the canonical copy and structural pack index also
+    /// coexist; core decoding bounds their allocations by the supplied bytes.
+    /// These are separate temporary costs, not an all-heap canonical-byte cap.
+    /// The receiver must separately bound concurrent verification jobs.
     ///
     /// # Errors
     /// Rejects writable/nonregular descriptors, overflow, allocation exhaustion,
@@ -149,13 +156,21 @@ impl NativeManifestWitness {
                 "received metadata pack changed during verification",
             ));
         }
-        Ok(Self {
-            claim,
+        let witness = Self {
+            claim: Arc::new(claim),
+            profile: profile.clone(),
             pack_id: *view.header().id(),
             pack: metadata_pack,
             observed,
             offset,
-        })
+        };
+        if witness.decoded_payload_size()? > limits.max_allocation_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "decoded manifest payload exceeds configured verification budget",
+            ));
+        }
+        Ok(witness)
     }
 
     /// Borrows the authenticated canonical manifest claim without pin authority.
@@ -172,33 +187,75 @@ impl NativeManifestWitness {
         &self.pack
     }
 
+    pub(super) fn shared_claim(&self) -> Arc<PublicationClaim> {
+        Arc::clone(&self.claim)
+    }
+
     pub(super) fn canonical_size(&self) -> usize {
         self.claim.canonical_manifest().map_or(0, <[u8]>::len)
     }
 
+    pub(super) fn decoded_payload_size(&self) -> io::Result<usize> {
+        let manifest = self
+            .claim
+            .manifest()
+            .ok_or_else(|| invalid("missing decoded manifest"))?;
+        let chunks = manifest
+            .chunks
+            .capacity()
+            .checked_mul(std::mem::size_of::<terrane_core::manifest::ChunkRef>())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::OutOfMemory, "decoded manifest size overflow")
+            })?;
+        manifest.hashes.iter().try_fold(
+            chunks
+                .checked_add(manifest.media_type.as_ref().map_or(0, String::capacity))
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::OutOfMemory, "decoded manifest size overflow")
+                })?,
+            |used, (name, digest)| {
+                used.checked_add(name.capacity())
+                    .and_then(|used| used.checked_add(digest.capacity()))
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::OutOfMemory, "decoded manifest size overflow")
+                    })
+            },
+        )
+    }
+
     pub(super) fn recheck(&self, domain: &str, profile: &ChunkProfile) -> io::Result<()> {
-        if self.claim.domain() != domain || !unchanged(&self.observed, &self.pack.metadata()?) {
+        if self.claim.domain() != domain
+            || profile != &self.profile
+            || !unchanged(&self.observed, &self.pack.metadata()?)
+        {
             return Err(invalid(
-                "manifest witness domain or actual metadata inode changed",
+                "manifest witness domain/profile or actual metadata inode changed",
             ));
         }
         let canonical = self
             .claim
             .canonical_manifest()
             .ok_or_else(|| invalid("manifest witness lacks canonical metadata"))?;
-        let mut actual = vec![0; canonical.len()];
-        self.pack.read_exact_at(&mut actual, self.offset)?;
-        if actual != canonical || !unchanged(&self.observed, &self.pack.metadata()?) {
-            return Err(invalid("retained manifest range changed before native use"));
+        // The private immutable claim was decoded under this exact profile.
+        // Compare actual FD bytes with that authenticated copy in fixed scratch;
+        // rechecking never clones canonical bytes or decodes a second manifest.
+        let mut scratch = [0u8; 65536];
+        for (index, expected) in canonical.chunks(scratch.len()).enumerate() {
+            let offset = self
+                .offset
+                .checked_add((index as u64) * scratch.len() as u64)
+                .ok_or_else(|| invalid("manifest positioned-read offset overflow"))?;
+            self.pack
+                .read_exact_at(&mut scratch[..expected.len()], offset)?;
+            if &scratch[..expected.len()] != expected {
+                return Err(invalid("retained manifest range changed before native use"));
+            }
         }
-        PublicationClaim::new(
-            domain.to_owned(),
-            PublicationRecipe::Manifest {
-                object: self.claim.descriptor().clone(),
-                canonical_manifest: actual,
-            },
-            profile,
-        )?;
+        if !unchanged(&self.observed, &self.pack.metadata()?) {
+            return Err(invalid(
+                "retained manifest inode changed during native recheck",
+            ));
+        }
         Ok(())
     }
 }
