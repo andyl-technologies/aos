@@ -31,12 +31,7 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
                 crucible_daemon::campaign_process::CampaignProcessAdmissionError::Store(source) => {
                     CliError::SqliteStartup(source)
                 }
-                crucible_daemon::campaign_process::CampaignProcessAdmissionError::ExecutorPurpose(source) => serve_error(source.to_string()),
-                #[cfg(any(feature = "private-parent-fixture", feature = "private-native-observation"))]
-                source @ (crucible_daemon::campaign_process::CampaignProcessAdmissionError::ParentAdmission(_)
-                | crucible_daemon::campaign_process::CampaignProcessAdmissionError::Parent(_)) => {
-                    serve_error(source.to_string())
-                }
+                source => serve_error(source.to_string()),
             }
         })?;
     #[cfg(feature = "private-parent-fixture")]
