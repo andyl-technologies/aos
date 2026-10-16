@@ -61,6 +61,30 @@ impl Drop for ObservedLoan {
 
 #[test]
 fn actual_packed_inventory_box_keeps_original_credit_through_free_and_unwind() {
+    // The allocator roster is process-wide. Other test threads must not add
+    // allocations or contend with this control's before-free observations.
+    const CHILD: &str = "CRUCIBLE_CHECKED_PACKED_FENCE_CONTROL_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "content_store::admin::checked_fence::tests::actual_packed_inventory_box_keeps_original_credit_through_free_and_unwind",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let observed = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && observed.contains("checked_fence_geometry outer=true "),
+            "isolated checked-fence control failed: {}\n{observed}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        );
+        return;
+    }
+
     let directory = tempfile::tempdir().unwrap();
     let backend =
         Arc::new(PackedBlobBackend::open("fence-control", directory.path(), 65_536).unwrap());
