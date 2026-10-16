@@ -145,11 +145,11 @@ crucible.campaign.gc-candidate-manifest	1	crucible-daemon::campaign_gc	administr
 crucible.campaign.gc-journal-state	1	crucible-daemon::campaign_gc	administrative-record	gate:campaign-store-composition
 crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:campaign-component-contract
 crucible.executor.attempt-state-record	15	crucible-daemon::assignment_ledger	operational-record	gate:campaign-component-contract
-crucible.executor.prepared-semantic-attempt-result	7	crucible-daemon::crucible_artifact::prepared_result	operational-record	gate:campaign-component-contract,gate:campaign-replay
+crucible.executor.prepared-semantic-attempt-result	9	crucible-daemon::crucible_artifact::prepared_result	operational-record	gate:campaign-component-contract,gate:campaign-replay
 crucible.executor.finding-production-replay-capture	3	crucible-daemon::finding_production_replay	trace	gate:campaign-replay,gate:content-address
 crucible.executor.finding-replay-capture-manifest	1	crucible-daemon::finding_replay_capture_store	exact-manifest	gate:campaign-replay,gate:content-address
 crucible.executor.finding-replay-capture-chunk	1	crucible-daemon::finding_replay_capture_store	trace	gate:campaign-replay,gate:content-address
-crucible.executor.prepared-result-journal-state	2	crucible-daemon::prepared_result_journal	operational-record	gate:campaign-component-contract,gate:campaign-replay
+crucible.executor.prepared-result-journal-state	3	crucible-daemon::prepared_result_journal	operational-record	gate:campaign-component-contract,gate:campaign-replay
 crucible.executor.measurement-replay-evidence	2	crucible-daemon::crucible_measurement::evidence	trace	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.executor.assignment-retention-state	1	crucible-daemon::assignment_ledger	administrative-record	gate:campaign-store-composition
 crucible.executor.exact-pin-materialization-selection	1	crucible-daemon::exact_pin_retention	administrative-record	gate:campaign-store-composition
@@ -227,6 +227,7 @@ crucible.campaign.query-campaign-request-attempts-response	2	crucible-campaign::
 crucible.campaign.state-identity	1	crucible-daemon::campaign_bootstrap	administrative-record	gate:campaign-component-contract
 crucible.execution.dequeued-fault-event	1	crucible-shmem::fault_event::checkpoint	checkpoint	gate:campaign-replay
 crucible.execution.event-log-segment	6	crucible::scheduler::event_codec	trace	gate:campaign-replay,gate:exact-closure-streaming
+crucible.attempt.event-log-segment	1	crucible-daemon::attempt_event_log	trace	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.backend-network-output	2	crucible::backend::io::network_checkpoint	device-state	gate:exact-closure-streaming
 crucible.execution.device-scheduling-subnode	1	crucible::device_subnode::checkpoint	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.scheduler-network	2	crucible::scheduler::runtime_state::network_checkpoint	checkpoint	gate:campaign-replay,gate:exact-closure-streaming

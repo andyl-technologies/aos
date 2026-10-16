@@ -844,12 +844,15 @@ where
     )?;
     let (replay_measurements, replay_segments) = replay_measurements.finish();
     result
-        .attach_finding(prepared, replay_measurements, replay_segments)
+        .attach_finding(prepared, replay_measurements, replay_segments.into())
         .map_err(AutomaticFindingPreparationError::PreparedResult)
 }
 
 /// Accumulates finding replay leaves and their segments under the
 /// prepared-result record and byte bounds.
+///
+/// Segments are referenced, not encoded, by the prepared result, so only the
+/// leaves count toward its byte bound.
 struct BoundedReplayMeasurementEvidence<'a> {
     existing: BTreeMap<ContentId, &'a crate::CrucibleMeasurementReplayEvidence>,
     additional: BTreeMap<ContentId, crate::CrucibleMeasurementReplayEvidence>,
@@ -867,8 +870,7 @@ impl<'a> BoundedReplayMeasurementEvidence<'a> {
             additional: BTreeMap::new(),
             segments: crate::MemorySegmentStore::default(),
             records: 0,
-            canonical_bytes: usize::try_from(result.log_segments().total_bytes())
-                .map_err(|_| PreparedSemanticResultCodecError::LimitExceeded)?,
+            canonical_bytes: 0,
         };
         for leaf in result.measurement_replay_evidence() {
             let id = leaf.id()?;
@@ -907,15 +909,6 @@ impl<'a> BoundedReplayMeasurementEvidence<'a> {
             }
 
             self.charge(&leaf)?;
-            for (segment, bytes) in segments.iter() {
-                if !self.segments.contains(segment) {
-                    self.canonical_bytes = self
-                        .canonical_bytes
-                        .checked_add(bytes.len() + std::mem::size_of::<u32>())
-                        .filter(|total| *total <= MAX_PREPARED_SEMANTIC_RESULT_BYTES)
-                        .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
-                }
-            }
             self.segments.extend(segments);
             self.additional.insert(id, leaf);
         }

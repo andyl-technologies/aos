@@ -5,12 +5,15 @@
 //! ```text
 //! <namespace>/.lock-runtime-owner
 //! <namespace>/.lock-<execution-key-digest>
-//! <namespace>/<execution-key-digest>/result-v2
-//! <namespace>/<execution-key-digest>/state-v2
+//! <namespace>/<execution-key-digest>/result-v3
+//! <namespace>/<execution-key-digest>/state-v3
+//! <namespace>/<execution-key-digest>/segments/<segment-digest>.segment
 //! <namespace>/.staged-<execution-key-digest>/...
 //! ```
 //!
-//! The result contains the complete typed observation/finding closure. State
+//! The result contains the complete typed observation/finding closure and
+//! names its attempt-log segments by identity; the journal holds its own
+//! authenticated copy of each referenced segment. State
 //! binds its hash and exact publication IDs to the lineage, attempt, and
 //! versioned execution scope. The complete pair remains hidden until the
 //! operational ledger grants `Publishing`, then one rename makes it visible.
@@ -20,11 +23,12 @@
 //! orphan may be removed.
 //!
 //! ```text
-//! state-v2 := magic, key-digest, lineage, attempt, scope, execution,
+//! state-v3 := magic, key-digest, lineage, attempt, scope, execution,
 //!             payload-limit, observation, measurement-evidence-count,
-//!             measurement-evidence-set-hash, finding-present, [finding],
-//!             payload-length, payload-hash, state-checksum
-//! result-v2 := prepared-semantic-attempt-result-v7
+//!             measurement-evidence-set-hash, segment-count, segment-set-hash,
+//!             finding-present, [finding], payload-length, payload-hash,
+//!             state-checksum
+//! result-v3 := prepared-semantic-attempt-result-v9
 //! ```
 //!
 //! State is bounded at 16 KiB. The result has both the format ceiling and the
@@ -50,17 +54,20 @@ use crate::{
 const JOURNAL_LOCK_PREFIX: &str = ".lock-";
 const JOURNAL_OWNER_LOCK: &str = ".lock-runtime-owner";
 const JOURNAL_STAGED_PREFIX: &str = ".staged-";
-const JOURNAL_RESULT_FILE: &str = "result-v2";
-const JOURNAL_STATE_FILE: &str = "state-v2";
-const JOURNAL_STATE_MAGIC_V2: &[u8] = b"crucible.executor.prepared-result-journal-state.v2\0";
-const JOURNAL_STATE_HASH_DOMAIN_V2: &str = "crucible.executor.prepared-result-journal-state.v2";
+const JOURNAL_RESULT_FILE: &str = "result-v3";
+const JOURNAL_STATE_FILE: &str = "state-v3";
+const JOURNAL_STATE_MAGIC_V3: &[u8] = b"crucible.executor.prepared-result-journal-state.v3\0";
+const JOURNAL_STATE_HASH_DOMAIN_V3: &str = "crucible.executor.prepared-result-journal-state.v3";
 const JOURNAL_MEASUREMENT_EVIDENCE_HASH_DOMAIN: &str =
     "crucible.executor.prepared-result-journal-measurement-evidence.v1";
 const MAX_JOURNAL_STATE_BYTES: usize = 16 * 1024;
-const MAX_ORPHAN_DIRECTORY_ENTRIES: usize = 4;
+// Result, state, their two staging temporaries, and the segment directory.
+const MAX_ORPHAN_DIRECTORY_ENTRIES: usize = 5;
 const MAX_RUNTIME_JOURNAL_ENTRIES: usize = 1_000_000;
 
 static JOURNAL_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+mod segments;
 
 /// Descriptor-bound process authority for one prepared-result namespace.
 ///
@@ -258,6 +265,9 @@ impl DirectoryPreparedResultJournal {
         let payload = result.canonical_bytes_with_limit(maximum_payload_bytes)?;
         let state = encode_state(key, execution, maximum_payload_bytes, &result, &payload)?;
         let root_authority = create_staging_directory(namespace, key)?;
+        // Segments land before the result and state, so a journal with both
+        // files always owns every segment its result references.
+        let result = segments::stage_segments(&root_authority, result)?;
         initialize_new(&root_authority, &payload, &state)?;
         namespace.verify()?;
         Ok((
@@ -531,9 +541,11 @@ impl DirectoryPreparedResultJournal {
             "read-journal-result",
         )?;
         envelope.validate_payload(&payload)?;
+        let log_segments = segments::open_segments(&root_authority, envelope.segments.0)?;
         let result = PreparedSemanticAttemptResult::from_canonical_bytes_with_limit(
             &payload,
             maximum_payload_bytes,
+            log_segments,
         )?;
         envelope.validate_result(&result)?;
         validate_result_key(key, &result)?;
@@ -701,6 +713,15 @@ pub enum PreparedResultJournalError {
     /// The operational payload ceiling is zero or exceeds the format ceiling.
     #[error("prepared-result journal payload limit is invalid")]
     InvalidPayloadLimit,
+    /// A referenced attempt-log segment could not be staged into the journal.
+    #[error("prepared-result journal cannot stage log segment {segment}: {source}")]
+    Segment {
+        /// Content identity of the referenced segment.
+        segment: crucible_cas::content_store::ContentId,
+        /// Read or authentication failure.
+        #[source]
+        source: crate::AttemptEventLogError,
+    },
 }
 
 fn journal_path(namespace: &Path, key: AttemptExecutionKey) -> PathBuf {
@@ -769,8 +790,10 @@ fn encode_state(
         .transpose()?;
     let (measurement_evidence_count, measurement_evidence_hash) =
         measurement_evidence_identity(result)?;
+    let (segment_count, segment_hash) =
+        segments::segment_set_identity(&result.referenced_log_segments());
     let mut state = Vec::new();
-    state.extend_from_slice(JOURNAL_STATE_MAGIC_V2);
+    state.extend_from_slice(JOURNAL_STATE_MAGIC_V3);
     state.extend_from_slice(&key.storage_digest().as_bytes());
     push_text(&mut state, &key.lineage().content_id().encode())?;
     push_text(&mut state, &key.attempt().content_id().encode())?;
@@ -788,6 +811,8 @@ fn encode_state(
             .to_be_bytes(),
     );
     state.extend_from_slice(&measurement_evidence_hash);
+    state.extend_from_slice(&segment_count.to_be_bytes());
+    state.extend_from_slice(&segment_hash);
     match finding {
         Some(finding) => {
             state.push(1);
@@ -801,7 +826,7 @@ fn encode_state(
             .to_be_bytes(),
     );
     state.extend_from_slice(blake3::hash(payload).as_bytes());
-    let checksum_key = blake3::derive_key(JOURNAL_STATE_HASH_DOMAIN_V2, JOURNAL_STATE_MAGIC_V2);
+    let checksum_key = blake3::derive_key(JOURNAL_STATE_HASH_DOMAIN_V3, JOURNAL_STATE_MAGIC_V3);
     let checksum = blake3::keyed_hash(&checksum_key, &state);
     state.extend_from_slice(checksum.as_bytes());
     if state.len() > MAX_JOURNAL_STATE_BYTES {
@@ -814,6 +839,7 @@ struct JournalStateEnvelope<'a> {
     execution: ExecutionId,
     observation: &'a [u8],
     measurement_evidence: Option<(usize, [u8; 32])>,
+    segments: (u64, [u8; 32]),
     finding: Option<&'a [u8]>,
     payload_length: usize,
     payload_hash: [u8; 32],
@@ -853,6 +879,10 @@ impl JournalStateEnvelope<'_> {
             _ => {}
         }
 
+        if segments::segment_set_identity(&result.referenced_log_segments()) != self.segments {
+            return Err(PreparedResultJournalError::InvalidState);
+        }
+
         let finding = result
             .finding()
             .map(|finding| {
@@ -880,13 +910,13 @@ fn decode_state<'a>(
         .checked_sub(32)
         .ok_or(PreparedResultJournalError::InvalidState)?;
     let (body, checksum) = state.split_at(checksum_offset);
-    let checksum_key = blake3::derive_key(JOURNAL_STATE_HASH_DOMAIN_V2, JOURNAL_STATE_MAGIC_V2);
+    let checksum_key = blake3::derive_key(JOURNAL_STATE_HASH_DOMAIN_V3, JOURNAL_STATE_MAGIC_V3);
     if blake3::keyed_hash(&checksum_key, body).as_bytes() != checksum {
         return Err(PreparedResultJournalError::InvalidState);
     }
 
     let mut decoder = JournalStateDecoder::new(body);
-    decoder.expect_exact(JOURNAL_STATE_MAGIC_V2)?;
+    decoder.expect_exact(JOURNAL_STATE_MAGIC_V3)?;
     decoder.expect_exact(key.storage_digest().as_bytes().as_slice())?;
     decoder.expect_bytes(key.lineage().content_id().encode().as_bytes())?;
     decoder.expect_bytes(key.attempt().content_id().encode().as_bytes())?;
@@ -913,6 +943,11 @@ fn decode_state<'a>(
         .try_into()
         .map_err(|_| PreparedResultJournalError::InvalidState)?;
     let measurement_evidence = Some((count, hash));
+    let segment_count = decoder.u64()?;
+    let segment_hash = decoder
+        .take(32)?
+        .try_into()
+        .map_err(|_| PreparedResultJournalError::InvalidState)?;
     let finding = match decoder.byte()? {
         0 => None,
         1 => Some(decoder.bytes()?),
@@ -933,6 +968,7 @@ fn decode_state<'a>(
         execution,
         observation,
         measurement_evidence,
+        segments: (segment_count, segment_hash),
         finding,
         payload_length,
         payload_hash,
@@ -1088,6 +1124,7 @@ fn remove_orphan_directory(
     if expected_identity.is_some_and(|expected| expected != root_authority.identity()) {
         return Err(PreparedResultJournalError::RecoveryRequired);
     }
+    segments::remove_segments_directory(&root_authority, root)?;
     let mut entries = Vec::new();
     for name in root_authority
         .entry_names(MAX_ORPHAN_DIRECTORY_ENTRIES + 1, "read-journal-orphan")
@@ -1301,6 +1338,7 @@ fn validate_runtime_journal_directory(
     let root = journal.path().to_owned();
     let mut result_present = false;
     let mut state_present = false;
+    let mut segments_present = false;
     let mut local_entries = 0usize;
     for entry_name in journal
         .entry_names(
@@ -1321,6 +1359,11 @@ fn validate_runtime_journal_directory(
         let name = entry_name
             .into_string()
             .map_err(|_| PreparedResultJournalError::InvalidDirectory)?;
+        if name == segments::JOURNAL_SEGMENTS_DIRECTORY {
+            segments_present = true;
+            segments::validate_segments_directory(journal, incomplete, total_entries)?;
+            continue;
+        }
         let maximum = if name == JOURNAL_RESULT_FILE {
             result_present = true;
             MAX_PREPARED_SEMANTIC_RESULT_BYTES
@@ -1346,7 +1389,8 @@ fn validate_runtime_journal_directory(
             return Err(PreparedResultJournalError::InvalidState);
         }
     }
-    if !incomplete && (!result_present || !state_present || local_entries != 2) {
+    if !incomplete && (!result_present || !state_present || !segments_present || local_entries != 3)
+    {
         return Err(PreparedResultJournalError::Incomplete);
     }
     Ok(())
@@ -1414,7 +1458,7 @@ mod tests {
 
     use super::*;
 
-    const TEST_PAYLOAD_LIMIT: usize = 1024 * 1024;
+    pub(super) const TEST_PAYLOAD_LIMIT: usize = 1024 * 1024;
 
     #[test]
     fn journal_create_reopen_authenticate_and_remove_are_exact() {
@@ -1539,7 +1583,7 @@ mod tests {
     }
 
     #[test]
-    fn journal_v2_owns_raw_measurement_leaf() {
+    fn journal_v3_owns_raw_measurement_leaf() {
         let namespace = TempDir::new().expect("journal namespace");
         let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
         let key = semantic_key(b"measurement-evidence");
@@ -1547,7 +1591,7 @@ mod tests {
         let result = measurement_result(0x64, key.attempt());
         let payload = result
             .canonical_bytes_with_limit(TEST_PAYLOAD_LIMIT)
-            .expect("v2 prepared result");
+            .expect("v3 prepared result");
 
         let (journal, disposition) = DirectoryPreparedResultJournal::create(
             &runtime,
@@ -1556,24 +1600,24 @@ mod tests {
             TEST_PAYLOAD_LIMIT,
             result.clone(),
         )
-        .expect("create v2 journal");
+        .expect("create v3 journal");
         assert_eq!(disposition, PreparedResultJournalCreateDisposition::Created);
         assert_eq!(journal.result(), &result);
         assert_eq!(journal.result().measurement_replay_evidence().len(), 1);
         assert_eq!(
-            fs::read(journal.root().join(JOURNAL_RESULT_FILE)).expect("v2 payload"),
+            fs::read(journal.root().join(JOURNAL_RESULT_FILE)).expect("v3 payload"),
             payload
         );
         assert_eq!(
             blake3::hash(&payload).to_hex().as_str(),
-            "8bd73a91864b9a513b0aac4310a1d836e938bac177e9170771121bb5a2ae0658"
+            "0721c3cae13267791d3a755fc84413ba6ad871735d80e78476c0f8f070020f2e"
         );
-        let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v2 state");
+        let state = fs::read(journal.root().join(JOURNAL_STATE_FILE)).expect("v3 state");
         assert_eq!(
             blake3::hash(&state).to_hex().as_str(),
-            "4242d32c378d83873eebd061c591e6c314552eb07b3b3218f3f429a0316c9007"
+            "a191dfe83c8f2760139a26446ebeb3d74f2fcc146a1a23ac414c6e9e20e70b65"
         );
-        journal.remove().expect("remove v2 journal");
+        journal.remove().expect("remove v3 journal");
     }
 
     #[test]
@@ -1670,7 +1714,7 @@ mod tests {
         let staged = staged_path(namespace.path(), key);
         fs::create_dir(&staged).expect("partial staging directory");
         fs::write(staged.join(JOURNAL_RESULT_FILE), b"partial").expect("partial result");
-        fs::write(staged.join(".state-v2.123.0"), b"partial")
+        fs::write(staged.join(".state-v3.123.0"), b"partial")
             .expect("partial atomic state temporary");
         let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
         assert!(matches!(
@@ -1856,7 +1900,7 @@ mod tests {
         }
     }
 
-    fn semantic_key(marker: &[u8]) -> AttemptExecutionKey {
+    pub(super) fn semantic_key(marker: &[u8]) -> AttemptExecutionKey {
         let lineage = CampaignLineageId::parse(&typed_content_text(
             "crucible.campaign.lineage",
             ObjectKind::CampaignFact,
@@ -1933,14 +1977,17 @@ mod tests {
             .canonical_bytes()
             .expect("encoded measurement result");
         assert_eq!(
-            PreparedSemanticAttemptResult::from_canonical_bytes(&encoded)
-                .expect("decoded measurement result"),
+            PreparedSemanticAttemptResult::from_canonical_bytes(
+                &encoded,
+                crate::AttemptLogSegmentSources::default()
+            )
+            .expect("decoded measurement result"),
             result
         );
         result
     }
 
-    fn observation_candidate(
+    pub(super) fn observation_candidate(
         marker: u8,
         attempt: AttemptId,
         measurements: MeasurementSet,

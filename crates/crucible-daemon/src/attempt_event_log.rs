@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 mod store;
 
 pub(crate) use store::AttemptLogSegmentStore;
-pub use store::{AttemptLogSegmentSource, MemorySegmentStore};
+pub use store::{AttemptLogSegmentSource, AttemptLogSegmentSources, MemorySegmentStore};
 
 /// Trace payload schema of an encoded attempt-log segment.
 pub const ATTEMPT_LOG_SEGMENT_SCHEMA: u32 = 1;

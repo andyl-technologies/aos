@@ -2372,8 +2372,11 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     let durable_bytes = prepared
         .canonical_bytes()
         .expect("encode rich prepared result");
-    let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(&durable_bytes)
-        .expect("decode rich prepared result after restart");
+    let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(
+        &durable_bytes,
+        prepared.log_segments().clone(),
+    )
+    .expect("decode rich prepared result after restart");
     let finding = decoded.finding().expect("decoded rich finding");
     let triage_ids = finding
         .bundle()

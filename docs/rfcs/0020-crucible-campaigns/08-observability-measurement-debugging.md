@@ -425,12 +425,15 @@ The daemon's local prepared-publication formats use this closed registry:
 
 | Schema name | Current version | Contract |
 |---|---:|---|
-| `crucible.executor.prepared-semantic-attempt-result` | 7 | Contains the observation, optional canonical resolved-effect trace, content-ordered raw measurement replay leaves, and optional finding closure. |
-| `crucible.executor.prepared-result-journal-state` | 2 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, payload limit, length, and hash. |
+| `crucible.executor.prepared-semantic-attempt-result` | 9 | Contains the observation, optional canonical resolved-effect trace, content-ordered raw measurement replay leaves, and optional finding closure. Leaves name their attempt-log segments by identity; the payload carries no segment bytes. |
+| `crucible.executor.prepared-result-journal-state` | 3 | Binds the execution key, observation/finding IDs, raw-leaf count and ordered-ID-set hash, referenced-segment count and ordered-reference hash, payload limit, length, and hash. |
+| `crucible.attempt.event-log-segment` | 1 | One sealed, content-addressed run of attempt-log entries. The journal owns a copy of every segment its result references. |
 
-Readers accept only prepared-result version 7 and journal-state version 2. A
+Readers accept only prepared-result version 9 and journal-state version 3. A
 state file and its result payload must use those exact current versions;
-mismatches fail closed.
+mismatches fail closed. Decoding a prepared result reads and authenticates
+every referenced segment from the stores it is given, one segment at a time;
+a missing, substituted, or corrupt segment fails closed.
 
 The prepared-result codec validates raw-leaf closure ownership without claiming
 measurement semantics. It checks each singleton edge and its trace ID, scenario,

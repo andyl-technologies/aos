@@ -397,7 +397,7 @@ pub(super) fn prepare_finding_exact_retention(
                 // The checkpoint authenticator reads the leaf's segments from
                 // the campaign store, so they are published first; they are
                 // immutable content-addressed leaves either way.
-                crate::executor_worker::publish_log_segments(store, result.log_segments())
+                crate::executor_worker::publish_log_segments(store, result)
                     .map(|()| boundary)
                     .map_err(|_| CampaignCodecError::InvalidValue {
                         reason: "finding assertion log segments could not be published",

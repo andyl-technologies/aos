@@ -69,12 +69,13 @@ use super::{
     prepare_original_reproduction, replay_recorded_signature_pass,
 };
 use crate::{
+    AttemptLogSegmentSource, AttemptLogSegmentSources,
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3, CrucibleMeasurementError,
-    CrucibleMeasurementReplayEvidence, MemorySegmentStore, measurement_replay_leaf_id,
+    CrucibleMeasurementReplayEvidence, measurement_replay_leaf_id,
     verify_crucible_measurement_publication,
 };
 
-const PREPARED_RESULT_MAGIC_V8: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v8\0";
+const PREPARED_RESULT_MAGIC_V9: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v9\0";
 pub(super) const MAX_PREPARED_RESULT_RECORDS: usize = 200_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPLAY_VALIDATION_REFERENCES: usize = 4 * 1024 * 1024;
@@ -83,14 +84,32 @@ const MAX_REPLAY_VALIDATION_REFERENCES: usize = 4 * 1024 * 1024;
 pub const MAX_PREPARED_SEMANTIC_RESULT_BYTES: usize = 1024 * 1024 * 1024;
 
 /// Complete immutable semantic result retained across publication retries.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// The result references its attempt-log segments by identity through its
+/// measurement leaves and holds only read handles to the stores containing
+/// them, so neither its memory nor its encoding grows with the attempt log.
+/// Equality compares the recorded content, never the store handles.
+#[derive(Clone, Debug)]
 pub struct PreparedSemanticAttemptResult {
     observation: ObservationCandidate,
     measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
-    log_segments: MemorySegmentStore,
+    log_segments: AttemptLogSegmentSources,
     terminal_fingerprints: Option<Vec<FingerprintSample>>,
     finding: Option<PreparedCrucibleFindingCandidate>,
 }
+
+impl PartialEq for PreparedSemanticAttemptResult {
+    fn eq(&self, other: &Self) -> bool {
+        // Segments are content-addressed and named by the leaves, so equal
+        // leaves reference equal segments wherever their bytes are stored.
+        self.observation == other.observation
+            && self.measurement_replay_evidence == other.measurement_replay_evidence
+            && self.terminal_fingerprints == other.terminal_fingerprints
+            && self.finding == other.finding
+    }
+}
+
+impl Eq for PreparedSemanticAttemptResult {}
 
 impl PreparedSemanticAttemptResult {
     /// Binds an observation and finding to all required raw measurement leaves.
@@ -98,7 +117,7 @@ impl PreparedSemanticAttemptResult {
     /// The leaves are retained in content-identity order, and duplicates are
     /// rejected. The supplied set must exactly cover every Crucible measurement
     /// payload v2 referenced by the observation and both finding replay passes,
-    /// and `log_segments` must hold exactly the segments those leaves reference.
+    /// and `log_segments` must yield every segment those leaves reference.
     /// This authenticates closure ownership and any observation-stop proof;
     /// callers must separately run [`crate::verify_crucible_measurement_publication`]
     /// with the authenticated scenario definitions before publication.
@@ -107,15 +126,15 @@ impl PreparedSemanticAttemptResult {
     ///
     /// Returns [`PreparedSemanticResultCodecError`] when a leaf is duplicated,
     /// unowned, absent, or bound to a different scenario, configuration, or
-    /// measurement definition, when a referenced segment is absent or an
-    /// unreferenced one is supplied, or when the finding does not belong to
-    /// the observation.
+    /// measurement definition, when a referenced segment is absent or fails
+    /// authentication, or when the finding does not belong to the observation.
     pub fn new(
         observation: ObservationCandidate,
         measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
-        log_segments: MemorySegmentStore,
+        log_segments: impl Into<AttemptLogSegmentSources>,
         finding: Option<PreparedCrucibleFindingCandidate>,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
+        let log_segments = log_segments.into();
         validate_measurement_evidence_order(&measurement_replay_evidence)?;
         validate_log_segments(&measurement_replay_evidence, &log_segments)?;
         validate_pair(&observation, finding.as_ref())?;
@@ -169,12 +188,26 @@ impl PreparedSemanticAttemptResult {
         &self.measurement_replay_evidence
     }
 
-    /// Returns every log segment the retained leaves reference.
+    /// Returns the stores that yield every log segment the leaves reference.
     ///
     /// Publication stores each segment before any leaf that references it.
     #[must_use]
-    pub const fn log_segments(&self) -> &MemorySegmentStore {
+    pub const fn log_segments(&self) -> &AttemptLogSegmentSources {
         &self.log_segments
+    }
+
+    /// Rebinds the result to read its log segments from `log_segments` only.
+    ///
+    /// The caller must already have copied every referenced segment there;
+    /// later reads authenticate each segment against its reference.
+    pub(crate) fn with_log_segments(mut self, log_segments: AttemptLogSegmentSources) -> Self {
+        self.log_segments = log_segments;
+        self
+    }
+
+    /// Returns each referenced log segment once, in leaf order.
+    pub fn referenced_log_segments(&self) -> Vec<crate::AttemptLogSegmentRef> {
+        referenced_segments(&self.measurement_replay_evidence)
     }
 
     /// Checks the retained attempt trace against the authenticated scenario contract.
@@ -257,7 +290,7 @@ impl PreparedSemanticAttemptResult {
         self,
         finding: PreparedCrucibleFindingCandidate,
         replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
-        replay_segments: MemorySegmentStore,
+        replay_segments: AttemptLogSegmentSources,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
         if self.finding.is_some() {
             return Err(inconsistent("duplicate finding attachment"));
@@ -275,8 +308,7 @@ impl PreparedSemanticAttemptResult {
         let mut log_segments = self.log_segments;
         log_segments.extend(replay_segments);
         let mut evidence = BTreeMap::new();
-        let mut evidence_bytes = usize::try_from(log_segments.total_bytes())
-            .map_err(|_| PreparedSemanticResultCodecError::LimitExceeded)?;
+        let mut evidence_bytes = 0_usize;
         for leaf in self
             .measurement_replay_evidence
             .into_iter()
@@ -303,11 +335,6 @@ impl PreparedSemanticAttemptResult {
 
         let terminal_fingerprints = self.terminal_fingerprints;
         let evidence = evidence.into_values().collect::<Vec<_>>();
-        let referenced = evidence
-            .iter()
-            .flat_map(|leaf| leaf.segments().iter().map(|segment| segment.id))
-            .collect::<BTreeSet<_>>();
-        log_segments.retain(|id| referenced.contains(&id));
         let result = Self::new(self.observation, evidence, log_segments, Some(finding))?;
         match terminal_fingerprints {
             Some(terminal_fingerprints) => result.with_terminal_fingerprints(terminal_fingerprints),
@@ -489,10 +516,9 @@ impl PreparedSemanticAttemptResult {
         }
 
         let mut encoder = Encoder::new(maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES));
-        encoder.raw(PREPARED_RESULT_MAGIC_V8)?;
+        encoder.raw(PREPARED_RESULT_MAGIC_V9)?;
         encode_observation(&mut encoder, &self.observation)?;
         encode_measurement_evidence(&mut encoder, &self.measurement_replay_evidence)?;
-        encode_log_segments(&mut encoder, &self.log_segments)?;
         match &self.terminal_fingerprints {
             Some(terminal_fingerprints) => {
                 encoder.byte(1)?;
@@ -526,37 +552,51 @@ impl PreparedSemanticAttemptResult {
 
     /// Decodes and revalidates strict journal payload bytes.
     ///
+    /// The payload names its log segments only by identity; `log_segments`
+    /// must yield every one of them.
+    ///
     /// # Errors
     ///
     /// Returns [`PreparedSemanticResultCodecError`] for truncated, trailing,
-    /// oversized, noncanonical, or semantically inconsistent bytes.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, PreparedSemanticResultCodecError> {
-        Self::from_canonical_bytes_with_limit(bytes, MAX_PREPARED_SEMANTIC_RESULT_BYTES)
+    /// oversized, noncanonical, or semantically inconsistent bytes, or when a
+    /// referenced segment is absent from `log_segments` or fails
+    /// authentication.
+    pub fn from_canonical_bytes(
+        bytes: &[u8],
+        log_segments: impl Into<AttemptLogSegmentSources>,
+    ) -> Result<Self, PreparedSemanticResultCodecError> {
+        Self::from_canonical_bytes_with_limit(
+            bytes,
+            MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+            log_segments,
+        )
     }
 
     /// Decodes strict journal bytes under a caller-selected operational limit.
     ///
     /// # Errors
     ///
-    /// Returns [`PreparedSemanticResultCodecError`] for invalid input or when
-    /// its length exceeds the smaller of `maximum_bytes` and the format ceiling.
+    /// Returns [`PreparedSemanticResultCodecError`] for invalid input, when
+    /// its length exceeds the smaller of `maximum_bytes` and the format
+    /// ceiling, or when a referenced segment is absent from `log_segments` or
+    /// fails authentication.
     pub fn from_canonical_bytes_with_limit(
         bytes: &[u8],
         maximum_bytes: usize,
+        log_segments: impl Into<AttemptLogSegmentSources>,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
         let maximum_bytes = maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES);
         if bytes.len() > maximum_bytes {
             return Err(PreparedSemanticResultCodecError::LimitExceeded);
         }
 
-        if !bytes.starts_with(PREPARED_RESULT_MAGIC_V8) {
+        if !bytes.starts_with(PREPARED_RESULT_MAGIC_V9) {
             return Err(PreparedSemanticResultCodecError::Version);
         }
         let mut decoder = Decoder::new(bytes);
-        decoder.magic(PREPARED_RESULT_MAGIC_V8)?;
+        decoder.magic(PREPARED_RESULT_MAGIC_V9)?;
         let observation = decode_observation(&mut decoder)?;
         let measurement_replay_evidence = decode_measurement_evidence(&mut decoder)?;
-        let log_segments = decode_log_segments(&mut decoder)?;
         let terminal_fingerprints = match decoder.byte()? {
             0 => None,
             1 => Some(decode_terminal_fingerprints(&mut decoder)?),
@@ -608,8 +648,8 @@ pub struct PreparedSemanticAttemptResultParts {
     pub observation: ObservationCandidate,
     /// Raw measurement leaves in content-identity order.
     pub measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
-    /// Every log segment the leaves reference.
-    pub log_segments: MemorySegmentStore,
+    /// The stores that yield every log segment the leaves reference.
+    pub log_segments: AttemptLogSegmentSources,
     /// The terminal fingerprint set, when terminal capture completed.
     pub terminal_fingerprints: Option<Vec<FingerprintSample>>,
     /// The prepared finding closure, when execution found one.
@@ -651,6 +691,15 @@ pub enum PreparedSemanticResultCodecError {
     Inconsistent {
         /// Stable component label.
         component: &'static str,
+    },
+    /// A referenced attempt-log segment is absent or fails authentication.
+    #[error("prepared semantic result log segment {segment} is unavailable: {source}")]
+    LogSegment {
+        /// Content identity of the referenced segment.
+        segment: crucible_cas::content_store::ContentId,
+        /// Read or authentication failure.
+        #[source]
+        source: crate::AttemptEventLogError,
     },
 }
 
@@ -758,17 +807,39 @@ fn validate_measurement_evidence_order(
     Ok(())
 }
 
-/// Requires `log_segments` to hold exactly the segments the leaves reference.
+/// Returns each segment the leaves reference once, in first-reference order.
+fn referenced_segments(
+    evidence: &[CrucibleMeasurementReplayEvidence],
+) -> Vec<crate::AttemptLogSegmentRef> {
+    let mut seen = BTreeSet::new();
+    evidence
+        .iter()
+        .flat_map(|leaf| leaf.segments().iter().copied())
+        .filter(|segment| seen.insert(segment.id))
+        .collect()
+}
+
+/// Requires `log_segments` to yield every referenced segment, authenticated.
+///
+/// Segments are read one at a time, so validation holds at most one segment
+/// in memory regardless of the attempt log's length.
 fn validate_log_segments(
     evidence: &[CrucibleMeasurementReplayEvidence],
-    log_segments: &MemorySegmentStore,
+    log_segments: &dyn AttemptLogSegmentSource,
 ) -> Result<(), PreparedSemanticResultCodecError> {
-    let referenced = evidence
-        .iter()
-        .flat_map(|leaf| leaf.segments().iter().map(|segment| segment.id))
-        .collect::<BTreeSet<_>>();
-    if !log_segments.ids().eq(referenced.iter().copied()) {
-        return Err(inconsistent("measurement log segments"));
+    for segment in referenced_segments(evidence) {
+        let bytes = log_segments.segment(segment.id).map_err(|source| {
+            PreparedSemanticResultCodecError::LogSegment {
+                segment: segment.id,
+                source: crate::AttemptEventLogError::Store { source },
+            }
+        })?;
+        crate::decode_segment(&segment, &bytes).map_err(|source| {
+            PreparedSemanticResultCodecError::LogSegment {
+                segment: segment.id,
+                source,
+            }
+        })?;
     }
     Ok(())
 }
@@ -796,7 +867,7 @@ fn validate_terminal_fingerprints(
 fn validate_measurement_evidence(
     observation: &ObservationCandidate,
     evidence: &[CrucibleMeasurementReplayEvidence],
-    log_segments: &MemorySegmentStore,
+    log_segments: &dyn AttemptLogSegmentSource,
     finding: Option<&PreparedCrucibleFindingCandidate>,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let observation_requires_evidence =
@@ -943,7 +1014,7 @@ fn validate_observation_stop_evidence(
         crucible_cas::content_store::ContentId,
         &CrucibleMeasurementReplayEvidence,
     >,
-    log_segments: &MemorySegmentStore,
+    log_segments: &dyn AttemptLogSegmentSource,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let StopOutcome::ObservationReached(proof) = candidate.observation().stop() else {
         return Ok(());
@@ -979,7 +1050,7 @@ fn verify_measurement_record(
         crucible_cas::content_store::ContentId,
         &CrucibleMeasurementReplayEvidence,
     >,
-    log_segments: &MemorySegmentStore,
+    log_segments: &dyn AttemptLogSegmentSource,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let evaluation = measurement.evaluation();
     if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3 {
@@ -1077,34 +1148,6 @@ fn encode_measurement_evidence(
         encoder.record(&leaf.canonical_bytes()?)?;
     }
     Ok(())
-}
-
-fn encode_log_segments(
-    encoder: &mut Encoder,
-    log_segments: &MemorySegmentStore,
-) -> Result<(), PreparedSemanticResultCodecError> {
-    encoder.count(log_segments.len())?;
-    for (_, bytes) in log_segments.iter() {
-        encoder.record(bytes)?;
-    }
-    Ok(())
-}
-
-fn decode_log_segments(
-    decoder: &mut Decoder<'_>,
-) -> Result<MemorySegmentStore, PreparedSemanticResultCodecError> {
-    let count = decoder.count()?;
-    decoder.preflight_collection(count, size_of::<u32>())?;
-    let mut log_segments = MemorySegmentStore::default();
-    for _ in 0..count {
-        log_segments
-            .insert(decoder.record()?.to_vec())
-            .map_err(CrucibleMeasurementError::from)?;
-    }
-    if log_segments.len() != count {
-        return Err(inconsistent("duplicate measurement log segment"));
-    }
-    Ok(log_segments)
 }
 
 fn decode_measurement_evidence(

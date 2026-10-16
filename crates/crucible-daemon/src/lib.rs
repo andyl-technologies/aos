@@ -192,8 +192,8 @@ pub use assignment_ledger::{
 pub use attempt_event_log::{
     ATTEMPT_LOG_SEGMENT_SCHEMA, ATTEMPT_LOG_SEGMENT_TARGET_BYTES, AttemptEventLogError,
     AttemptEventLogVisitError, AttemptLogManifest, AttemptLogSegmentRef, AttemptLogSegmentSource,
-    MAX_ATTEMPT_LOG_ENTRY_BYTES, MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS, MAX_ATTEMPT_LOG_SEGMENT_BYTES,
-    MemorySegmentStore, decode_segment,
+    AttemptLogSegmentSources, MAX_ATTEMPT_LOG_ENTRY_BYTES, MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS,
+    MAX_ATTEMPT_LOG_SEGMENT_BYTES, MemorySegmentStore, decode_segment,
 };
 pub use automatic_finding_runner::{
     AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,

@@ -322,6 +322,78 @@ impl AttemptLogSegmentSource for MemorySegmentStore {
     }
 }
 
+/// Shared read handles to every store that may hold a result's segments.
+///
+/// A prepared result references its log segments by identity and keeps these
+/// handles instead of the bytes, so its size does not grow with the attempt
+/// log. Lookups try each store in order. Every reader authenticates the bytes
+/// it receives against the referencing [`AttemptLogSegmentRef`], so a store
+/// that lacks a segment, or holds foreign bytes under its name, can only make
+/// a read fail.
+#[derive(Clone, Default)]
+pub struct AttemptLogSegmentSources {
+    sources: Vec<Arc<dyn AttemptLogSegmentSource + Send + Sync>>,
+}
+
+impl AttemptLogSegmentSources {
+    /// Adds `source` after every store already held.
+    pub fn push(&mut self, source: Arc<dyn AttemptLogSegmentSource + Send + Sync>) {
+        self.sources.push(source);
+    }
+
+    /// Adds every store of `other` after the stores already held.
+    pub fn extend(&mut self, other: Self) {
+        self.sources.extend(other.sources);
+    }
+
+    /// Returns whether no store is held.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+
+    /// Reads through one attempt's segment directory.
+    pub(crate) fn from_directory(store: DirectorySegmentStore) -> Self {
+        let mut sources = Self::default();
+        sources.push(Arc::new(store));
+        sources
+    }
+}
+
+impl std::fmt::Debug for AttemptLogSegmentSources {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AttemptLogSegmentSources")
+            .field("stores", &self.sources.len())
+            .finish()
+    }
+}
+
+impl From<MemorySegmentStore> for AttemptLogSegmentSources {
+    fn from(store: MemorySegmentStore) -> Self {
+        let mut sources = Self::default();
+        if !store.is_empty() {
+            sources.push(Arc::new(store));
+        }
+        sources
+    }
+}
+
+impl AttemptLogSegmentSource for AttemptLogSegmentSources {
+    fn segment(&self, id: ContentId) -> io::Result<Vec<u8>> {
+        let mut last_error = None;
+        for source in &self.sources {
+            match source.segment(id) {
+                Ok(bytes) => return Ok(bytes),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "attempt log segment absent")
+        }))
+    }
+}
+
 /// Formats a segment identity's digest as lowercase hex.
 fn digest_hex(id: ContentId) -> String {
     id.digest()

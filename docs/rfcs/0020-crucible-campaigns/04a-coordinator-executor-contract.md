@@ -2129,8 +2129,9 @@ capture and exact-checkpoint children and binds the full prepared payload. For
 a Complete v6 finding it authenticates the bounded full candidate inventory,
 copies only selected checkpoint closures into the campaign CAS, and publishes
 the semantic candidate and observation while that same guard still protects
-the unselected inventory. It then fsyncs the payload and digest into a hidden
-prepared-result journal. A short actor CAS changes `running` to
+the unselected inventory. It then fsyncs every referenced attempt-log
+segment, the payload, and its digest into a hidden prepared-result journal, so
+recovery never depends on the attempt's own segment directory. A short actor CAS changes `running` to
 `publishing(observation_id, candidate_id, exact_roots,
 prepared_result_digest)`, and the journal is promoted into its visible recovery
 namespace before the guard is released. Later publication outside the actor is
@@ -2143,7 +2144,7 @@ without materializing history.
 After restart, a complete publishing observation is reauthenticated and
 promoted without guest execution. If its closure is incomplete, a fresh daemon
 may recover publication under a new execution identity, but the committed
-observation ID remains fixed. Readers and writers use version 2.
+observation ID remains fixed. Readers and writers use journal-state version 3.
 
 The local Crucible execution adapter owns nested payload schemas. Scenario
 scenario payload version 3 is the strict `ScenarioDefForm` compact-binary V7

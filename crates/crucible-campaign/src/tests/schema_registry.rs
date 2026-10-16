@@ -290,12 +290,12 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     for (schema, version, owner) in [
         (
             "crucible.executor.prepared-semantic-attempt-result",
-            "7",
+            "9",
             "crucible-daemon::crucible_artifact::prepared_result",
         ),
         (
             "crucible.executor.prepared-result-journal-state",
-            "2",
+            "3",
             "crucible-daemon::prepared_result_journal",
         ),
     ] {
@@ -306,6 +306,13 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         assert_eq!(record[2], owner);
         assert_eq!(record[3], "operational-record");
     }
+    let attempt_segment = rows
+        .get("crucible.attempt.event-log-segment")
+        .unwrap_or_else(|| panic!("missing attempt event-log segment schema"));
+    assert_eq!(
+        (attempt_segment[1], attempt_segment[2], attempt_segment[3]),
+        ("1", "crucible-daemon::attempt_event_log", "trace")
+    );
     for (schema, version, owner, kind) in [
         (
             "crucible.qemu.vm-snapshot",

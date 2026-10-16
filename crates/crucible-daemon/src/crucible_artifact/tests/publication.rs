@@ -350,12 +350,18 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let mut invalid_magic = observation_bytes.clone();
     invalid_magic[0] ^= 1;
     assert!(matches!(
-        PreparedSemanticAttemptResult::from_canonical_bytes(&invalid_magic),
+        PreparedSemanticAttemptResult::from_canonical_bytes(
+            &invalid_magic,
+            crate::AttemptLogSegmentSources::default()
+        ),
         Err(PreparedSemanticResultCodecError::Version)
     ));
     assert_eq!(
-        PreparedSemanticAttemptResult::from_canonical_bytes(&observation_bytes)
-            .expect("decode observation result"),
+        PreparedSemanticAttemptResult::from_canonical_bytes(
+            &observation_bytes,
+            crate::AttemptLogSegmentSources::default()
+        )
+        .expect("decode observation result"),
         observation_result
     );
 
@@ -402,7 +408,8 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         PreparedSemanticAttemptResult::from_canonical_bytes(
             &trace_result
                 .canonical_bytes()
-                .expect("trace result encoding")
+                .expect("trace result encoding"),
+            trace_result.log_segments().clone(),
         )
         .expect("trace result decoding"),
         trace_result
@@ -434,14 +441,20 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .canonical_bytes()
         .expect("encode terminal observation result");
     assert_eq!(
-        PreparedSemanticAttemptResult::from_canonical_bytes(&terminal_bytes)
-            .expect("decode terminal observation result"),
+        PreparedSemanticAttemptResult::from_canonical_bytes(
+            &terminal_bytes,
+            crate::AttemptLogSegmentSources::default()
+        )
+        .expect("decode terminal observation result"),
         terminal_result
     );
     let mut truncated_terminal_bytes = terminal_bytes.clone();
     truncated_terminal_bytes.pop();
     assert!(matches!(
-        PreparedSemanticAttemptResult::from_canonical_bytes(&truncated_terminal_bytes),
+        PreparedSemanticAttemptResult::from_canonical_bytes(
+            &truncated_terminal_bytes,
+            crate::AttemptLogSegmentSources::default()
+        ),
         Err(PreparedSemanticResultCodecError::Truncated)
     ));
 
@@ -589,9 +602,11 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let incompatibility_bytes = incompatibility_result
         .canonical_bytes()
         .expect("encode typed incompatibility result");
-    let decoded_incompatibility =
-        PreparedSemanticAttemptResult::from_canonical_bytes(&incompatibility_bytes)
-            .expect("decode typed incompatibility result");
+    let decoded_incompatibility = PreparedSemanticAttemptResult::from_canonical_bytes(
+        &incompatibility_bytes,
+        crate::AttemptLogSegmentSources::default(),
+    )
+    .expect("decode typed incompatibility result");
     assert_eq!(decoded_incompatibility, incompatibility_result);
     decoded_incompatibility
         .verify_measurement_publications(&scenario)
@@ -908,8 +923,11 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         .canonical_bytes()
         .expect("encode observed finding result");
     assert_eq!(
-        PreparedSemanticAttemptResult::from_canonical_bytes(&observed_finding_bytes)
-            .expect("decode observed finding result"),
+        PreparedSemanticAttemptResult::from_canonical_bytes(
+            &observed_finding_bytes,
+            crate::AttemptLogSegmentSources::default()
+        )
+        .expect("decode observed finding result"),
         observed_finding_result
     );
 
@@ -1043,13 +1061,19 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
     let durable_bytes = durable_result
         .canonical_bytes()
         .expect("encode prepared semantic result");
-    let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(&durable_bytes)
-        .expect("decode prepared semantic result");
+    let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(
+        &durable_bytes,
+        crate::AttemptLogSegmentSources::default(),
+    )
+    .expect("decode prepared semantic result");
     assert_eq!(decoded, durable_result);
     let mut trailing = durable_bytes.clone();
     trailing.push(0);
     assert!(matches!(
-        PreparedSemanticAttemptResult::from_canonical_bytes(&trailing),
+        PreparedSemanticAttemptResult::from_canonical_bytes(
+            &trailing,
+            crate::AttemptLogSegmentSources::default()
+        ),
         Err(PreparedSemanticResultCodecError::TrailingBytes)
     ));
 
