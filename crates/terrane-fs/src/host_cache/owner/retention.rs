@@ -52,6 +52,8 @@ struct Custody {
     snapshot: Option<(File, Metadata)>,
     sources: BTreeMap<[u8; 16], Arc<NativeManifestSource>>,
     faulted: bool,
+    snapshot_allocated_bytes: u64,
+    directory_allocated_bytes: u64,
 }
 
 /// Proves actual synchronized metadata retention under one native owner.
@@ -222,6 +224,32 @@ impl RetainedManifest {
         self.synchronized_source_bytes
     }
 
+    /// Returns the owner's latest synchronized snapshot and cache-directory allocation.
+    ///
+    /// This counts only those two native inodes. It excludes source packs,
+    /// filesystem-wide metadata, publisher allocation and kernel reservations;
+    /// shared policy allocation must not be counted again for each receipt.
+    ///
+    /// # Errors
+    /// Refuses stale/faulted custody or an overflowing measured allocation sum.
+    pub fn synchronized_policy_bytes(&self) -> io::Result<u64> {
+        self.check_current()?;
+        let custody = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+        custody.check_current()?;
+        if custody.faulted {
+            return Err(invalid(
+                "metadata allocation requires failed-operation recovery",
+            ));
+        }
+        custody
+            .snapshot_allocated_bytes
+            .checked_add(custody.directory_allocated_bytes)
+            .ok_or_else(|| invalid("policy allocation sum overflow"))
+    }
+
     /// Checks current native source and the actual durable pin-owner custody.
     ///
     /// This checks pin state before publication, never on an already sealed read.
@@ -236,6 +264,7 @@ impl RetainedManifest {
             .map_err(|_| io::Error::other("metadata custody poisoned"))?;
         custody.check_current()?;
         if custody.faulted
+            || custody.snapshot.is_none()
             || !custody
                 .sources
                 .get(&self.retention_id)
@@ -319,6 +348,8 @@ impl Custody {
             snapshot: None,
             sources: BTreeMap::new(),
             faulted: false,
+            snapshot_allocated_bytes: 0,
+            directory_allocated_bytes: 0,
         };
         custody.capture_snapshot()?;
         let path = custody
@@ -444,6 +475,9 @@ impl Custody {
         )?)
         .sync_all()?;
         self.capture_snapshot()?;
+        if self.snapshot.is_none() {
+            return Err(invalid("synchronized metadata pin snapshot is absent"));
+        }
         self.check_current()
     }
 }
@@ -550,10 +584,13 @@ async fn retain(custody: &Arc<Mutex<Custody>>, identity: Identity) -> io::Result
             .checked_add(*bytes)
             .ok_or_else(|| invalid("source allocation overflow"))
     })?;
-    if let Some((file, _)) = &owner.snapshot {
-        synchronized_allocated_bytes(file)?;
-    }
-    owner.directory.sync_all()?;
+    let snapshot_bytes = owner
+        .snapshot
+        .as_ref()
+        .ok_or_else(|| invalid("completed metadata pin snapshot is absent"))
+        .and_then(|(file, _)| synchronized_allocated_bytes(file))?;
+    owner.snapshot_allocated_bytes = snapshot_bytes;
+    owner.directory_allocated_bytes = synchronized_allocated_bytes(&owner.directory)?;
     owner.preparation.recheck()?;
     if owner
         .preparation
@@ -570,7 +607,7 @@ async fn retain(custody: &Arc<Mutex<Custody>>, identity: Identity) -> io::Result
     }
     source.recheck()?;
     owner.check_current()?;
-    // The conservative hold remains durable for the dependent metadata's entire
+    // The policy hold remains durable for the dependent metadata's entire
     // lifetime. Only actual retirement/recovery can release it; waiter or receipt
     // destruction never does. Allocation and kernel charge remain separate.
     owner.faulted = false;

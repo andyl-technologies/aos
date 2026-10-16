@@ -257,6 +257,13 @@ impl NativeManifestSource {
         Ok(())
     }
 
+    /// Synchronizes actual metadata files and their fixed canonical parents.
+    ///
+    /// The caller must retain native quota and future-capacity custody. This
+    /// operation alone creates neither a durable policy pin nor a receipt.
+    ///
+    /// # Errors
+    /// Returns any synchronization error or refuses changed sources or parents.
     pub(super) fn synchronize(&self) -> io::Result<()> {
         self.recheck()?;
         self.pack.sync_all()?;
@@ -274,10 +281,12 @@ impl NativeManifestSource {
         self.recheck()
     }
 
+    /// Borrows the actual read-only pack and index while retaining source custody.
     pub(super) fn files(&self) -> (&File, &File) {
         (&self.pack, &self.index)
     }
 
+    /// Borrows the actual domain root and provisioning guard behind this source.
     pub(super) fn layout(&self) -> &Arc<NativeHostLayout<HostDomainLocation>> {
         &self.layout
     }

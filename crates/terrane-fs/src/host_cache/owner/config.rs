@@ -51,10 +51,14 @@ pub struct NativeCacheOwnerConfig {
     pub inventory_entries: usize,
     /// Maximum queued commands, from one through 1024, excluding the active command.
     pub queued_commands: usize,
-    /// Conservative future hold for state replacement and metadata synchronization.
+    /// Operator-selected future policy hold for metadata synchronization and state writes.
     ///
-    /// This covers simultaneous old/new snapshots and synchronization overhead;
-    /// it is not measured allocation or a guarantee that allocation succeeds.
+    /// The policy floor is twice the maximum serialized snapshot length for
+    /// old/new payload overlap. This is not a bound on filesystem allocation
+    /// rounding, inode/directory growth or synchronization metadata. Actual
+    /// charged-and-reserved usage is reconciled before acknowledgment; excess
+    /// charge faults the operation while retaining its hold and source custody.
+    /// The hold is neither measured allocation nor an allocation guarantee.
     pub metadata_sync_hold_bytes: u64,
 }
 
