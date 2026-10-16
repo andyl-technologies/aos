@@ -556,12 +556,21 @@ failures or ignored tests in 7.70 seconds.
 The unchanged constructor pair still reports two `ResourceLimit` failures at
 fixture finalization under its original 768 MiB policy, before its boundary
 assertions. This run also records a descriptor-census permission error and a
-SIGTERM intervention in the test harness; those remain separate from the
-literal assertion failures and require investigation. The accounting change
+SIGTERM cancellation request in the test harness; signal delivery is not
+established. Those observations remain separate from the literal assertion
+failures and require investigation. The accounting change
 does not establish constructor success or native readiness. Separately, the
 connected activation/upload provider passes all-feature/all-target checking
 after compiler corrections; the combined restored-world route remains under
 integration and review.
+
+A temporary probe of the unchanged fixture identifies an initial admission
+failure while adding the third member: 803,938,934 plus 206,716,469 requested
+bytes exceeds the unchanged 805,306,368-byte policy by 205,349,035 bytes, without
+integer overflow. Its original failure remains a failure; the probe reaches no
+SDK constructor assertions. These are requested-storage accounting values,
+not physical RAM measurements. Phase lifetimes and projection bounds are under
+investigation. Probe sources, binaries and raw evidence remain outside Git.
 
 ## Known gaps and exit criteria
 
