@@ -67,6 +67,14 @@ pins and the complete production source filter over sixty local dependencies.
 This gate compiles tests without executing them; daemon and native qualification
 remain separate.
 
+The gate also passes for the inactive-runtime checkpoint at `cda23fd9ec`.
+It freshly compiles all 167 test targets across the 48 application roots,
+including 69 integration targets, in 21 minutes 29 seconds. Independent
+verification checks the installed Cargo messages, normal compiler profiles,
+captured source, sixty-package local dependency closure and registered output.
+The separate constructor failures below remain failures; this compilation gate
+does not exercise inactive construction, activation or native preservation.
+
 ### QEMU package
 
 The ordinary QEMU package passes 589 upstream TAP checks, 44 project model/cost
