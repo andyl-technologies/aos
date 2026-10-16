@@ -79,6 +79,10 @@ impl NativePublicationWorker {
     /// waiter cannot release the worker's inodes or directory exclusions.
     pub async fn publish(&self, claim: PublicationClaim, source: File)
         -> io::Result<PublishedObject<File>> {
+        if claim.manifest().is_some() {
+            return Err(io::Error::new(io::ErrorKind::Unsupported,
+                "manifest publication requires a durable cache retention receipt"));
+        }
         let (response, received) = oneshot::channel();
         self.sender.send(Command::Publish { claim, source, response }).await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "publisher worker stopped"))?;
@@ -91,6 +95,10 @@ impl NativePublicationWorker {
     /// # Errors
     /// Returns worker shutdown, failed verification or failed durable binding.
     pub async fn adopt(&self, claim: PublicationClaim) -> io::Result<PublishedObject<File>> {
+        if claim.manifest().is_some() {
+            return Err(io::Error::new(io::ErrorKind::Unsupported,
+                "manifest adoption requires a durable cache retention receipt"));
+        }
         let (response, received) = oneshot::channel();
         self.sender.send(Command::Adopt { claim, response }).await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "publisher worker stopped"))?;
