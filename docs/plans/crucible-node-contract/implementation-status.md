@@ -219,13 +219,42 @@ generic refusal; its cause remains under investigation. These failed phases
 remain recorded. The missing object-root term needs a correction and fresh
 qualification.
 
-The original two constructor tests still fail with `ResourceLimit` during
+At that checkpoint, both constructor tests fail with `ResourceLimit` during
 fixture preparation at this revision, before reaching their constructor
 assertions. Both complete in a combined 6.14 seconds without exceeding their
 execution limits. Their test phase stops at that failure before dispatching the
 twelve new controls. The remaining constructor refusal is under investigation;
 the earlier diagnostic does not identify its cause. Application compilation
 remains held while this constructor failure is unresolved.
+
+Commit `5a8c208928` corrects the missing object-root term for both Value-only
+and native DTO decoding. It counts an independent tree root in each DOM phase,
+including nested empty objects. Existing generic quote formulas, assertions
+and resource limits remain unchanged; the counter's larger header is also
+accounted. Formatting is separate in `9f2a3f84d8`.
+
+Normal standalone Provider test compilation and sixteen focused controls pass:
+the original nine controls, two nested-object controls and five related
+metadata/layout/schema regressions. Independent review checks the actual
+executable, dependency/source correspondence, original waits and unchanged
+limits. These results cover that standalone dependency feature set; they do
+not qualify the complete workspace or native startup.
+
+A separately compiled diagnostic reproduces the two constructor and two
+installer failures, with one source-drift control passing. The first Source's
+SDK quote refuses at its final peak sum: 389,315,095 retained plus 646,573,512
+transient requested bytes exceeds the unchanged 805,306,368-byte ceiling before
+adding scratch. Hello handling contributes 418,418,084 transient requested
+bytes. No full Source quote returns and the three-participant sum is not
+reached. These are conservative requested-layout allowances, not measured
+physical memory. The next refinement is reviewing their actual owner lifetimes.
+
+Both installer diagnostics identify the private-parent-directory check.
+The fixture uses default temporary-directory permissions rather than requesting
+the required `0700` mode. Historical directory metadata was not captured, so
+no actual mode is inferred from the diagnostic alone. A fixture correction
+will request and assert the required private directory without changing the
+production guard. Diagnostic instrumentation remains outside the repository.
 
 ## Work in progress
 
