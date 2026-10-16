@@ -124,7 +124,7 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress; twelve of twenty-two T1 tasks are complete.
+**Status:** In progress; thirteen of twenty-two T1 tasks are complete.
 
 The qualified source checkpoint `1d7451dd75` has independently reviewed passing
 outputs for all 89 current gates. Gate producers completed 6,662 selected Rust
@@ -5289,7 +5289,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   satisfies TREE-19 to TREE-24;
   `checks.terrane.gates.tree-boundaries`,
   `checks.terrane.gates.tree-history-independence`.
-- [ ] **T-ALG-1** `graft`, `split`, `flatten`, `overlay`, `diff`. The 17-path
+- [x] **T-ALG-1** `graft`, `split`, `flatten`, `overlay`, `diff`. The 17-path
   reviewed algebra source is adopted without changing manifests, lockfiles,
   identities or shared native interfaces. All 435 combined core tests, strict
   all-target Clippy, strict rustdoc and mandatory repository formatting pass.
