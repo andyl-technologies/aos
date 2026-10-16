@@ -544,6 +544,25 @@ backend. The restoration controls do not establish constructor success, native
 readiness, complete preservation or device parity. Connected native activation,
 content upload and common restored-world installation remain in progress.
 
+The follow-up through `06c951db24` counts three shared private-bootstrap/native
+retained owners once in the combined startup sum. It authenticates the actual
+inputs and complete rows, preserves the private launch buffer's spare capacity
+and keeps independent native copies and Invocation additions fully charged.
+Missing intersection metadata keeps the full sum; foreign metadata refuses.
+Six-crate checking and three fresh library-test producers pass. All 39 selected
+restoration controls pass, including the three new accounting controls, with no
+failures or ignored tests in 7.70 seconds.
+
+The unchanged constructor pair still reports two `ResourceLimit` failures at
+fixture finalization under its original 768 MiB policy, before its boundary
+assertions. This run also records a descriptor-census permission error and a
+SIGTERM intervention in the test harness; those remain separate from the
+literal assertion failures and require investigation. The accounting change
+does not establish constructor success or native readiness. Separately, the
+connected activation/upload provider passes all-feature/all-target checking
+after compiler corrections; the combined restored-world route remains under
+integration and review.
+
 ## Known gaps and exit criteria
 
 Completion requires the full [qualification plan](qualification-plan.md),
