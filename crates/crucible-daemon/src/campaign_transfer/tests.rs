@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::*;
+use crate::build_authenticated_production_checkpoint_codec_fixture;
 use crate::{
     ExactPinMaterializationSelection, ExecutionCancellation,
     encode_crucible_configuration_artifact, encode_crucible_scenario_artifact,
@@ -16,7 +17,6 @@ use crate::{
     prepare_attempt_production_replay_oracle_promotion,
 };
 use crucible::{Configuration, ContentHash};
-use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
 use crucible_campaign::{
     CampaignArchivePlan, CampaignArchivePolicy, CampaignCommandId, CampaignHash, CampaignLineage,
     CampaignMode, CampaignName, CampaignPolicy, CampaignRepository, CampaignRepositoryError,

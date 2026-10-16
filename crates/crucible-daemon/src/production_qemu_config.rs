@@ -3,7 +3,7 @@
 //! Control-plane callers choose process-neutral policy. This module translates
 //! that policy into the QEMU launch types confined to the daemon boundary.
 
-use crucible_api::ProductionVmLifecycleConfig;
+use crate::ProductionVmLifecycleConfig;
 use crucible_qemu::{QemuLaunchPluginSwitch, QemuRootImageFormat};
 
 /// Selects a raw immutable root image for a production QEMU lifecycle.

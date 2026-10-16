@@ -7,7 +7,7 @@
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, OnceLock};
 
-use crucible_api::vm_lifecycle::HostRamProcessFamilyPartition;
+use crucible_api::host_operational::HostRamProcessFamilyPartition;
 use crucible_linux_resource::host_services::{
     HostServiceAllocator, HostServiceError, HostServiceLease,
 };
@@ -116,8 +116,8 @@ pub(crate) enum StagePrepareError {
 
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 impl StageEarlyRefusal {
-    fn failure(&self) -> crucible_api::ProductionVmParentParkStageEarlyCause<'_> {
-        use crucible_api::ProductionVmParentParkStageEarlyCause as Cause;
+    fn failure(&self) -> crate::ProductionVmParentParkStageEarlyCause<'_> {
+        use crate::ProductionVmParentParkStageEarlyCause as Cause;
         match self {
             Self::IssuerBusy => Cause::IssuerBusy,
             Self::IssuerPoisoned => Cause::IssuerPoisoned,
@@ -130,8 +130,8 @@ impl StageEarlyRefusal {
 
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 impl StagePrepareError {
-    pub(crate) fn failure(&self) -> crucible_api::ProductionVmParentParkStageFailure<'_> {
-        use crucible_api::{
+    pub(crate) fn failure(&self) -> crate::ProductionVmParentParkStageFailure<'_> {
+        use crate::{
             ProductionVmParentParkStageEnteredCause as Entered,
             ProductionVmParentParkStageFailure as Failure,
             ProductionVmParentParkStageReborrowCause as Reborrow,
@@ -522,7 +522,7 @@ impl ConfiguredStageOperation {
 #[cfg(all(test, target_os = "linux", feature = "private-measurement-domain"))]
 mod failure_tests {
     use super::*;
-    use crucible_api::{
+    use crate::{
         ProductionVmParentParkStageEarlyCause as Early,
         ProductionVmParentParkStageFailure as Failure,
     };

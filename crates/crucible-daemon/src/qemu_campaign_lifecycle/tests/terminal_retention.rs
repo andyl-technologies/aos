@@ -7,9 +7,8 @@ fn failed_observation_retains_terminal_boundary_without_replacing_semantic_resul
     let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
 
     let directory = tempfile::tempdir().expect("terminal checkpoint fixture directory");
-    let fixture =
-        crucible_api::build_exact_ram_production_checkpoint_codec_fixture(directory.path())
-            .expect("terminal checkpoint fixture");
+    let fixture = crate::build_exact_ram_production_checkpoint_codec_fixture(directory.path())
+        .expect("terminal checkpoint fixture");
     let input = modeled_fresh_runner_input_for_scenario(
         fixture.source().clone(),
         StopCondition::ExecutionQuanta(1),
@@ -86,9 +85,8 @@ fn passed_trigger_retains_checker_failed_observation_boundary() {
     let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
 
     let directory = tempfile::tempdir().expect("terminal checkpoint fixture directory");
-    let fixture =
-        crucible_api::build_exact_ram_production_checkpoint_codec_fixture(directory.path())
-            .expect("terminal checkpoint fixture");
+    let fixture = crate::build_exact_ram_production_checkpoint_codec_fixture(directory.path())
+        .expect("terminal checkpoint fixture");
     let node = fixture
         .source()
         .world()

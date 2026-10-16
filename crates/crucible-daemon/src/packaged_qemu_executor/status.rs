@@ -19,7 +19,7 @@ use crucible::{ScenarioDefForm, SchedulerError, SchedulerEventLogEntry, VirtualT
 // crucible-lint: allow host-nondeterminism-state -- These engine types are forwarded only through scheduler-owned lifecycle traits; operational observations never influence engine state.
 use crucible::{QuantumOutcome, QuantumRequest, QuantumTerminalVerdict};
 // crucible-lint: allow host-nondeterminism-state -- The wrapper preserves the validated production lifecycle boundary and observes only ownership phases.
-use crucible_api::{
+use crate::{
     ProductionFaultEvidenceSnapshot, ProductionVmLifecycleResumeState,
     ProductionVmNodeReplayLaunchProfile,
 };

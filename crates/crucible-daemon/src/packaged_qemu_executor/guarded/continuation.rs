@@ -7,6 +7,7 @@
 //! the completed source execution's capability.
 
 use super::*;
+use crate::ProductionVmLifecycleConfig;
 use crate::paused_checkpoint_promotion::{
     PausedCheckpointPromotionStageOutcome, PreparedPausedCheckpointPromotionRestart,
     prepare_production_paused_checkpoint_promotion_restart,
@@ -21,7 +22,6 @@ use crate::{
     ProductionBakedGenesisReplayCatalogFactory, QemuAttemptProductionVmLifecycleFactory,
     capture_production_baked_genesis,
 };
-use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{AttemptExecutionScope, ExactCheckpointId};
 use crucible_linux_resource::host_supervision::{
     HostOperationClass, HostOperationGuard, HostOperationSupervisor,

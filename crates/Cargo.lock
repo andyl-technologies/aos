@@ -2543,7 +2543,6 @@ dependencies = [
  "crucible-device",
  "crucible-linux-resource",
  "crucible-protocol",
- "crucible-qemu",
  "crucible-ram",
  "crucible-session",
  "crucible-shmem",

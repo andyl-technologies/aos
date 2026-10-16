@@ -8,11 +8,11 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
 
+use crate::{ProductionVmLifecycleConfig, ProductionVmLifecycleLoop};
 use crucible::{Checkpoint, Configuration, ScenarioDef, ScenarioDefForm};
 use crucible_api::{
-    InProcessLifecycleClient, LifecycleApiError, ProductionVmLifecycleConfig,
-    ProductionVmLifecycleLoop, ResumeSessionResponse, SessionLifetimeRetention, SessionRef,
-    SessionRetentionUpdateError,
+    InProcessLifecycleClient, LifecycleApiError, ResumeSessionResponse, SessionLifetimeRetention,
+    SessionRef, SessionRetentionUpdateError,
 };
 use crucible_campaign::{
     CampaignFindingObject, CampaignHash, CampaignName, CampaignRepository, CampaignServiceFailure,

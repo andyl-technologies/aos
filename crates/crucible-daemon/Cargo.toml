@@ -9,7 +9,7 @@ publish = false
 default = []
 destructive-recovery-faults = ["crucible-campaign/destructive-recovery-faults"]
 test-support = ["crucible-api/test-support", "crucible-qemu/test-support"]
-private-measurement-domain = ["crucible-api/private-measurement-domain", "crucible-linux-resource/private-measurement-domain", "crucible-qemu/private-measurement-domain", "dep:crucible-ram"]
+private-measurement-domain = ["crucible-api/private-measurement-domain", "crucible-linux-resource/private-measurement-domain", "crucible-qemu/private-measurement-domain"]
 
 [lints]
 workspace = true
@@ -18,13 +18,14 @@ workspace = true
 blake3 = { workspace = true }
 ciborium = { workspace = true }
 crucible = { path = "../crucible" }
+crucible-device = { path = "../crucible-device" }
 crucible-api = { path = "../crucible-api" }
 crucible-campaign = { path = "../crucible-campaign" }
 crucible-cas = { workspace = true }
 crucible-linux-resource = { workspace = true }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
-crucible-ram = { workspace = true, optional = true }
+crucible-ram = { workspace = true }
 crucible-shmem = { path = "../crucible-shmem" }
 crucible-s3-store = { workspace = true }
 crucible-session = { path = "../crucible-session" }
@@ -33,6 +34,7 @@ rand = { workspace = true }
 rustix = { workspace = true, features = ["event", "net", "time", "process", "param"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
@@ -45,11 +47,10 @@ crucible-linux-resource = { workspace = true, features = ["test-support"] }
 crucible-device = { path = "../crucible-device" }
 crucible-ram = { workspace = true }
 rusqlite = { workspace = true }
-crucible = { path = "../crucible", features = ["test-double"] }
+crucible = { path = "../crucible", features = ["test-double", "test-support"] }
 crucible-api = { path = "../crucible-api", features = ["test-support"] }
 crucible-guest = { path = "../crucible-guest" }
 crucible-qemu = { path = "../crucible-qemu", features = ["test-support"] }
-sha2 = { workspace = true }
 
 [[test]]
 name = "gate_campaign_component_contract"

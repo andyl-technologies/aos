@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use crucible_api::ProductionVmLifecycleConfig;
+use crate::ProductionVmLifecycleConfig;
 use crucible_campaign::{
     AttemptResourceLimits, CampaignArchivePolicy, CampaignClient, CampaignClientError,
     CampaignExecutorStore, CampaignLineage, CampaignLineageId, CampaignMode, CampaignName,

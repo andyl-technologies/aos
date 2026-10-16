@@ -174,7 +174,7 @@ where
             "crucible-cli-qemu-daemon",
             Vec::new(),
             move |_scenario, _source, _seed| -> Result<
-                crucible_api::ProductionVmLifecycleLoop,
+                crucible_daemon::ProductionVmLifecycleLoop,
                 crucible_api::LifecycleApiError,
             > {
                 Err(crucible_api::LifecycleApiError::LoopFactory {
@@ -287,9 +287,9 @@ fn announce_campaign_service(cli: &Cli, service: Option<&PreparedLocalCampaignSe
 }
 
 pub(crate) fn production_session_lifecycle_config(
-    campaign_config: crucible_api::ProductionVmLifecycleConfig,
+    campaign_config: crucible_daemon::ProductionVmLifecycleConfig,
     debug_authorization: &DebugAuthorizationPolicy,
-) -> crucible_api::ProductionVmLifecycleConfig {
+) -> crucible_daemon::ProductionVmLifecycleConfig {
     campaign_config.with_authorized_debug_gdbstubs_for_all_nodes("127.0.0.1:0", debug_authorization)
 }
 
@@ -304,7 +304,7 @@ pub(crate) struct PreparedLocalCampaignService {
 }
 
 struct CliCampaignDebugLifecycleAdmission<F> {
-    lifecycle: InProcessLifecycleClient<crucible_api::ProductionVmLifecycleLoop, F>,
+    lifecycle: InProcessLifecycleClient<crucible_daemon::ProductionVmLifecycleLoop, F>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -315,7 +315,7 @@ where
             Option<&crucible::ScenarioDefForm>,
             crucible::Seed,
         )
-            -> Result<crucible_api::ProductionVmLifecycleLoop, crucible_api::LifecycleApiError>
+            -> Result<crucible_daemon::ProductionVmLifecycleLoop, crucible_api::LifecycleApiError>
         + Send
         + Sync
         + 'static,
@@ -342,7 +342,7 @@ impl PreparedLocalCampaignService {
 
 fn open_local_campaign_service_with_heap(
     args: &ServeArgs,
-    production_qemu: Option<crucible_api::ProductionVmLifecycleConfig>,
+    production_qemu: Option<crucible_daemon::ProductionVmLifecycleConfig>,
     campaign_debug_lifecycle: Option<Arc<dyn crucible_daemon::CampaignDebugLifecycleAdmission>>,
     private_target_attempt: Option<crucible_campaign::AttemptId>,
     process_heap: Option<&crucible_daemon::campaign_store_composition::SqliteProcessHeap>,
@@ -1146,7 +1146,7 @@ where
 #[cfg(test)]
 pub(crate) fn open_local_campaign_service(
     args: &ServeArgs,
-    production_qemu: Option<crucible_api::ProductionVmLifecycleConfig>,
+    production_qemu: Option<crucible_daemon::ProductionVmLifecycleConfig>,
     campaign_debug_lifecycle: Option<Arc<dyn crucible_daemon::CampaignDebugLifecycleAdmission>>,
     private_target_attempt: Option<crucible_campaign::AttemptId>,
 ) -> Result<Option<PreparedLocalCampaignService>, CliError> {

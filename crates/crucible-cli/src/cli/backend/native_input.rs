@@ -83,7 +83,7 @@ pub(crate) fn admit_native_command_input(
     } else {
         std::env::current_dir()?.join(state)
     };
-    let lifecycle = crucible_api::ProductionVmLifecycleConfig::for_artifact_authentication(
+    let lifecycle = crucible_daemon::ProductionVmLifecycleConfig::for_artifact_authentication(
         qemu, plugin, &state,
     );
     let campaign = crucible_campaign::CampaignName::new("native-command-input")

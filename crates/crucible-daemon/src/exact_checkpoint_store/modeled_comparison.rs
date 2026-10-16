@@ -7,9 +7,9 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 
+use crate::OriginalCheckpointDecodeError;
 use crucible::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeCustody};
 use crucible::{Configuration, Decision, ScenarioDefForm};
-use crucible_api::OriginalCheckpointDecodeError;
 
 use super::CapturedAttemptCheckpoint;
 use crate::qemu_campaign_lifecycle::{
@@ -391,8 +391,8 @@ impl CapturedAttemptCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::build_authenticated_production_checkpoint_codec_fixture;
     use crucible::{ContentHash, ScenarioDef};
-    use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
 
     #[test]
     fn captured_consumer_authenticates_owners_and_preserves_choice_presence()

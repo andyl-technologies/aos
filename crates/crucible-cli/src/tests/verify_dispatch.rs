@@ -732,7 +732,7 @@ pub(super) fn cli_replay_reports_campaign_owned_guest_identity() -> Result<(), B
             fingerprint_stream_digest: expected_fingerprint_stream.clone(),
             controls: 3,
             host_scheduler_preemption: Some(
-                crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot {
+                crucible_daemon::BoundedSchedulerPreemptionEvidenceSnapshot {
                     applied: true,
                     pending_quantum_certified: true,
                     perturbations: 6,

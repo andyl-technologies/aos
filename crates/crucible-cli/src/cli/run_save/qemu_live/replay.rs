@@ -10,7 +10,7 @@ pub(crate) struct LiveQemuReplayResources {
     pub(crate) effect_trace: Option<crucible::ResolvedEffectTrace>,
     pub(crate) lifecycle_artifacts: Option<std::sync::Arc<crucible::MemoryDagStore>>,
     pub(crate) bounded_scheduler_preemption:
-        Option<crucible_api::BoundedSchedulerPreemptionEvidence>,
+        Option<crucible_daemon::BoundedSchedulerPreemptionEvidence>,
 }
 
 /// Re-executes an artifact through a fresh packaged-QEMU lifecycle session.
@@ -192,7 +192,7 @@ fn run_interactive_control_artifact_replay(
     scenario: &crucible::ScenarioDefForm,
     terminal_schedule: &crucible::Schedule,
     contract: &LiveQemuReplayContract,
-    config: crucible_api::ProductionVmLifecycleConfig,
+    config: crucible_daemon::ProductionVmLifecycleConfig,
     owner: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner,
 ) -> Result<RunWorkflowReport, CliError> {
     let deployment = load_guarded_campaign_deployment(campaign_deployment)?;

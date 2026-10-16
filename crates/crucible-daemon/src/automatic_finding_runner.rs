@@ -97,7 +97,7 @@ mod private {
 
 /// Owns immutable deployment inputs and process-local evidence for private replay capture.
 pub(crate) struct QemuFindingReplayCaptureProducer {
-    lifecycle: Arc<crucible_api::ProductionVmLifecycleConfig>,
+    lifecycle: Arc<crate::ProductionVmLifecycleConfig>,
     evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
     static_byte_limit: u64,
     shared_context: OneEntryCache<
@@ -164,7 +164,7 @@ impl<K: PartialEq, V: Clone> OneEntryCache<K, V> {
 impl QemuFindingReplayCaptureProducer {
     /// Creates a capture owner before the production replay runner takes lifecycle authority.
     pub(crate) fn new(
-        lifecycle: impl Into<Arc<crucible_api::ProductionVmLifecycleConfig>>,
+        lifecycle: impl Into<Arc<crate::ProductionVmLifecycleConfig>>,
         evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
         static_byte_limit: u64,
     ) -> Self {

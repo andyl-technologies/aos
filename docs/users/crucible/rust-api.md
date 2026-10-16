@@ -10,8 +10,9 @@ This guide maps those surfaces and their support boundaries.
 | Crate | Owns | Use it when |
 |---|---|---|
 | `crucible` | Model types, canonical forms, scheduler contracts, stores, checkpoints, properties, traces | Building and validating scenarios or consuming typed execution data. |
-| `crucible-api` | Versioned lifecycle/control API, in-process and RPC clients, streaming, daemon server, production VM lifecycle facade | Embedding sessions or writing a control-plane client. |
-| `crucible-qemu` | Production patched-QEMU lifecycle implementation | Normally reached through `crucible-api`; examples/gates may use it directly. |
+| `crucible-api` | Versioned lifecycle/control API, in-process and RPC clients, streaming, daemon server, operational contracts | Embedding sessions or writing a control-plane client. |
+| `crucible-daemon` | Production VM construction, runtime, checkpoints, and retained backend cleanup | Composing a local production backend for the generic lifecycle API. |
+| `crucible-qemu` | Production patched-QEMU lifecycle implementation | Normally reached through `crucible-daemon`; examples/gates may use it directly. |
 | `crucible-protocol` / `crucible-shmem` | Versioned process-boundary protocols | Infrastructure integration, not ordinary scenario authoring. |
 
 Do not link QEMU implementation details into Apache-side model code. The Unix
@@ -55,10 +56,14 @@ needed. `ScenarioDefForm` is the canonical exchange form used by the CLI.
 
 ## Artifact injection and production lifecycle
 
-`ProductionVmLifecycleConfig` configures the matched QEMU/plugin processes and
-accepts world and signal artifact stores. Direct integrations use it for inputs
+`crucible_daemon::ProductionVmLifecycleConfig` configures the matched
+QEMU/plugin processes and accepts world and signal artifact stores. Direct integrations use it for inputs
 that ordinary `run`/`verify` do not obtain from `--store`, including normalized
 recordings and spatial/sampler objects.
+
+The production constructors and artifact helpers below are exported by
+`crucible_daemon`; `crucible_api` retains the backend-independent session and
+control contracts.
 
 `build_production_vm_lifecycle_loop_with_launcher` constructs a fresh live
 session through a caller-supplied production node launcher.

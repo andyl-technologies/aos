@@ -410,8 +410,14 @@ fn inventory_requires_live_kernel_authority_and_ledger_subsets_remain_bounded() 
         .unwrap();
     registry
         .configure_bootstrap_limits(
-            crucible_api::vm_lifecycle::HostRamBootstrapLimits::new(4, 10, 1, 1, 8 * 1024 * 1024)
-                .unwrap(),
+            crucible_api::host_operational::HostRamBootstrapLimits::new(
+                4,
+                10,
+                1,
+                1,
+                8 * 1024 * 1024,
+            )
+            .unwrap(),
         )
         .unwrap();
     let main_bytes = 1024 * 1024;

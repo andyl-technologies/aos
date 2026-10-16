@@ -27,8 +27,8 @@ use std::fmt;
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 
+use crate::ProductionExactCheckpointClosure;
 use crucible::ContentHash;
-use crucible_api::ProductionExactCheckpointClosure;
 pub use crucible_campaign::ExactCheckpointId;
 use crucible_campaign::{
     AuthenticatedFindingExactCheckpoint, CampaignExecutorStore, CampaignHash, ConfigurationId,
@@ -144,9 +144,7 @@ impl PreparedAttemptCheckpoint {
         self.0.configuration()
     }
 
-    pub(crate) fn native_retirement(
-        &self,
-    ) -> Option<crucible_api::ProductionExactCheckpointRetirement> {
+    pub(crate) fn native_retirement(&self) -> Option<crate::ProductionExactCheckpointRetirement> {
         self.0.native_retirement()
     }
 
@@ -350,7 +348,7 @@ impl ExactCheckpointStore {
         loaded: &Arc<LoadedProductionExactCheckpoint>,
         source: &crucible::ScenarioDefForm,
         cancellation: &ExecutionCancellation,
-    ) -> Result<crucible_api::DecodedProductionExactCheckpoint, ExactCheckpointStoreError> {
+    ) -> Result<crate::DecodedProductionExactCheckpoint, ExactCheckpointStoreError> {
         if cancellation.is_canceled() {
             return Err(ExactCheckpointStoreError::Canceled);
         }
@@ -760,7 +758,7 @@ pub enum ExactCheckpointStoreError {
     Production(#[from] crucible_api::LifecycleApiError),
     /// Attempt-local native checkpoint retirement failed.
     #[error(transparent)]
-    NativeRetirement(#[from] crucible_api::ProductionExactCheckpointRetirementError),
+    NativeRetirement(#[from] crate::ProductionExactCheckpointRetirementError),
     /// A paged RAM root failed bounded authenticated publication or lookup.
     #[error(transparent)]
     Ram(#[from] crucible_cas::ram::RamStoreError),

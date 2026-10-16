@@ -53,7 +53,7 @@ fn admitted_service_context(
     let registry = crate::HostOperationalRegistry::default();
     registry
         .configure_bootstrap_limits(
-            crucible_api::vm_lifecycle::HostRamBootstrapLimits::new(
+            crucible_api::host_operational::HostRamBootstrapLimits::new(
                 128,
                 4096,
                 16,
@@ -148,11 +148,13 @@ fn genuine_budget_owner_without_component_facts_requires_native_kernel_controlle
         crate::qemu_campaign_lifecycle::create_host_ram_registration_factory(&registry_context)
             .expect("genuine service and finite cap");
     factory
-        .configure_world(&[crucible_api::vm_lifecycle::ProductionHostRamLaunchShape {
-            node: "component-node".into(),
-            declared_ram_bytes: 16 * 1024 * 1024,
-            vcpus: 1,
-        }])
+        .configure_world(&[
+            crucible_api::host_operational::ProductionHostRamLaunchShape {
+                node: "component-node".into(),
+                declared_ram_bytes: 16 * 1024 * 1024,
+                vcpus: 1,
+            },
+        ])
         .expect("complete admitted partition");
     assert!(
         factory

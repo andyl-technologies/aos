@@ -4,7 +4,7 @@
 //! alias. Cache, descriptor and retirement loans use this same budget and quota;
 //! no provider allocator, service reservation or replacement supervisor is made.
 
-use crucible_api::vm_lifecycle::ProductionRamCatalogProvider;
+use crate::vm_lifecycle::ProductionRamCatalogProvider;
 use crucible_linux_resource::host_supervision::HostOperationClass;
 use std::path::{Component, Path};
 

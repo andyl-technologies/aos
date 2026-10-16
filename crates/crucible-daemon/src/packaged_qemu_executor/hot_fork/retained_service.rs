@@ -721,17 +721,19 @@ fn validate_world_floor(
         .vm_nodes()
         .iter()
         .map(|node| {
-            Ok(crucible_api::vm_lifecycle::ProductionHostRamLaunchShape {
-                node: node.id.name.clone(),
-                declared_ram_bytes: u64::from(node.memory_mib)
-                    .checked_mul(1024 * 1024)
-                    .ok_or(HostOperationalError::Unavailable)?,
-                vcpus: u32::from(node.smp_vcpus),
-            })
+            Ok(
+                crucible_api::host_operational::ProductionHostRamLaunchShape {
+                    node: node.id.name.clone(),
+                    declared_ram_bytes: u64::from(node.memory_mib)
+                        .checked_mul(1024 * 1024)
+                        .ok_or(HostOperationalError::Unavailable)?,
+                    vcpus: u32::from(node.smp_vcpus),
+                },
+            )
         })
         .collect::<Result<Vec<_>, HostOperationalError>>()?;
     let requirements = crate::qemu_campaign_lifecycle::host_ram_launch_requirements(&shapes)?;
-    let partition = crucible_api::vm_lifecycle::partition_host_ram_launch_resources(
+    let partition = crucible_api::host_operational::partition_host_ram_launch_resources(
         &shapes,
         resources,
         bootstrap,
@@ -784,7 +786,7 @@ impl Drop for RetainedTemplateService {
     }
 }
 
-impl crucible_api::vm_lifecycle::ProductionHotForkCleanupObserver for RetainedTemplateService {
+impl crate::vm_lifecycle::ProductionHotForkCleanupObserver for RetainedTemplateService {
     fn after_world_cleanup(&self) -> Result<(), HostOperationalError> {
         self.release_after_world_cleanup()
     }

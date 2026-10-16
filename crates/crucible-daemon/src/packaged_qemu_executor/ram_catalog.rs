@@ -4,7 +4,7 @@
 //! The operator installs the project's inherited physical byte and inode quota
 //! before the provider authenticates and opens its backend.
 
-use crucible_api::vm_lifecycle::ProductionRamCatalogProvider;
+use crate::vm_lifecycle::ProductionRamCatalogProvider;
 use crucible_cas::content_store::{StoreError, StorePhysicalQuotaGuard};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -319,7 +319,7 @@ impl ProductionRamCatalogProvider for AdmittedCatalogProvider {
     fn open_catalog(
         &self,
         directory: &Path,
-    ) -> Result<crucible_api::vm_lifecycle::ProductionRamCatalogStorage, StoreError> {
+    ) -> Result<crate::vm_lifecycle::ProductionRamCatalogStorage, StoreError> {
         self.admitted
             .get()
             .ok_or(StoreError::Quota)?
@@ -329,8 +329,7 @@ impl ProductionRamCatalogProvider for AdmittedCatalogProvider {
     fn begin_catalog_retirement(
         &self,
         directory: &Path,
-    ) -> Result<Arc<dyn crucible_api::vm_lifecycle::ProductionRamCatalogRetirement>, StoreError>
-    {
+    ) -> Result<Arc<dyn crate::vm_lifecycle::ProductionRamCatalogRetirement>, StoreError> {
         self.admitted
             .get()
             .ok_or(StoreError::Quota)?

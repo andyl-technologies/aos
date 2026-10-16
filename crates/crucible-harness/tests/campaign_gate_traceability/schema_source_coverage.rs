@@ -115,9 +115,9 @@ const VERSION_ANCHORS: &str = r#"
 crucible.api.rpc|crates/crucible-api/src/rpc_abi.rs|number|RPC_PROTOCOL_MAJOR
 crucible.host-operational.frame|crates/crucible-api/src/host_operational/codec.rs|number|SCHEMA
 crucible.host-operational.history|crates/crucible-daemon/src/host_operational_registry/history.rs|magic|MAGIC
-crucible.production-network-adapter-checkpoint|crates/crucible-api/src/vm_lifecycle/network_faults.rs|number|NETWORK_ADAPTER_CHECKPOINT_VERSION
-crucible.production-run-lock|crates/crucible-api/src/vm_lifecycle.rs|number|PRODUCTION_RUN_LOCK_VERSION
-crucible.production-run-state|crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs|number|PRODUCTION_RUN_STATE_VERSION
+crucible.production-network-adapter-checkpoint|crates/crucible-daemon/src/vm_lifecycle/network_faults.rs|number|NETWORK_ADAPTER_CHECKPOINT_VERSION
+crucible.production-run-lock|crates/crucible-daemon/src/vm_lifecycle.rs|number|PRODUCTION_RUN_LOCK_VERSION
+crucible.production-run-state|crates/crucible-daemon/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs|number|PRODUCTION_RUN_STATE_VERSION
 crucible.shmem.region|crates/crucible-shmem/src/lib.rs|number|ABI_VERSION
 crucible.qemu-plugin.source-supervision|crates/crucible-protocol/src/source_supervision.rs|number|SCHEMA
 crucible.qemu-plugin.parent-park-return|crates/crucible-protocol/src/parent_park_return.rs|number|SCHEMA

@@ -41,7 +41,7 @@ struct CleanupSlot {
 
 struct CleanupCell {
     epoch: u64,
-    owner: Option<ProductionVmCleanupOwner>,
+    owner: Option<Box<dyn ProductionVmCleanupOwner>>,
     controls: Option<AuthenticatedNativeWorldControlLease>,
     first_failure: Option<SchedulerError>,
     handoff: bool,
@@ -188,7 +188,7 @@ fn retry_slot(slot: &CleanupSlot, expected_epoch: Option<u64>) -> Result<(), Lif
             return Err(refusal("cleanup charge-return ownership is poisoned"));
         }
         let returned = close_controls_retaining_failure(&mut cell);
-        publish_return(slot, &cell, returned.is_ok());
+        publish_return(slot, returned.is_ok());
         return returned;
     }
     if !slot.claim(CleanupPhase::Queued, CleanupPhase::Retrying) {
@@ -261,19 +261,16 @@ fn retry_slot(slot: &CleanupSlot, expected_epoch: Option<u64>) -> Result<(), Lif
     }
     slot.body_destroyed_epoch.store(epoch, Ordering::Release);
     let returned = close_controls_retaining_failure(&mut cell);
-    publish_return(slot, &cell, returned.is_ok());
+    publish_return(slot, returned.is_ok());
     returned
 }
 
 /// Keeps handoff history occupied until its same receipt takes custody of it.
-fn publish_return(slot: &CleanupSlot, cell: &CleanupCell, returned: bool) {
+fn publish_return(slot: &CleanupSlot, returned: bool) {
     if !returned {
         slot.publish(CleanupPhase::OwnerDestroyed);
-    } else if cell.handoff {
-        slot.publish(CleanupPhase::Closed);
     } else {
-        slot.completed_epoch.store(cell.epoch, Ordering::Release);
-        slot.publish(CleanupPhase::Free);
+        slot.publish(CleanupPhase::Closed);
     }
 }
 

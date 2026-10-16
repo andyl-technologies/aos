@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 
+use crate::ProductionVmLifecycleConfig;
 use crucible::ScenarioDefForm;
-use crucible_api::ProductionVmLifecycleConfig;
 use crucible_campaign::{
     AttemptId, AttemptResourceLimits, CampaignCodecError, CampaignExecutorStore, CampaignHash,
     CampaignLineageId, CampaignName, CampaignOperationalStatusProvider, CampaignRepository,
@@ -2776,7 +2776,7 @@ pub enum PackagedQemuExecutorError {
     ProviderServiceAdmission(#[from] crate::ProviderServiceAdmissionError),
     /// A required mutable lifecycle copy lacks its original allocation custody.
     #[error(transparent)]
-    LifecycleConfiguration(#[from] crucible_api::vm_lifecycle::ProductionVmLifecycleConfigCloneError),
+    LifecycleConfiguration(#[from] crate::vm_lifecycle::ProductionVmLifecycleConfigCloneError),
     /// The original catalog refused lifecycle metadata allocation.
     #[error(transparent)]
     DecodedMetadata(#[from] crucible::owned_decode::DecodeAdmissionError),
@@ -2791,7 +2791,7 @@ pub enum PackagedQemuExecutorError {
     HostOperational(#[from] crucible_api::host_operational::HostOperationalError),
     /// The complete retained world cannot satisfy its actual RAM launch contract.
     #[error("host RAM launch admission failed: {0}")]
-    HostRamAdmission(#[from] crucible_api::vm_lifecycle::HostRamAdmissionError),
+    HostRamAdmission(#[from] crucible_api::host_operational::HostRamAdmissionError),
     /// Private preparation refused its same original derivation boundary.
     #[cfg(feature = "private-measurement-domain")]
     #[error(transparent)]

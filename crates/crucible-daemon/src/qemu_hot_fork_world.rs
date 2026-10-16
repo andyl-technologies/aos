@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use crucible::{ContentHash, EventLogOffset, NodeId};
 // crucible-lint: allow host-nondeterminism-state -- assembly authenticates an unchanged captured world against its exact child roster; host timing cannot edit the continuation.
-use crucible_api::vm_lifecycle::{
+use crate::vm_lifecycle::{
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkWorldContinuation,
 };
 use crucible_qemu::QemuProcessIdentity;

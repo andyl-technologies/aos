@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use crate::ProductionVmNodeLauncher;
 use crucible::ContentHash;
-use crucible_api::ProductionVmNodeLauncher;
 use crucible_campaign::ExactCheckpointId;
 use crucible_cas::content_store::{ContentId, ObjectKind};
 

@@ -120,8 +120,14 @@ fn lifecycle_retains_live_watchdog_owner_and_independent_operation_roster() {
     let registry = crate::HostOperationalRegistry::default();
     registry
         .configure_bootstrap_limits(
-            crucible_api::vm_lifecycle::HostRamBootstrapLimits::new(8, 32, 4, 32, 8 * 1024 * 1024)
-                .expect("explicit startup ownership"),
+            crucible_api::host_operational::HostRamBootstrapLimits::new(
+                8,
+                32,
+                4,
+                32,
+                8 * 1024 * 1024,
+            )
+            .expect("explicit startup ownership"),
         )
         .expect("install startup ownership");
     let ceiling = crucible_linux_resource::ram_policy::HostResourceVector {
@@ -193,13 +199,8 @@ fn lifecycle_retains_live_watchdog_owner_and_independent_operation_roster() {
     context.host_operational_registry = Some(registry);
     context.host_outer_cap_owner = Some(owner);
     context.host_daemon_epoch = daemon;
-    let default = crucible_api::ProductionVmLifecycleConfig::new(
-        "qemu",
-        "plugin",
-        "kernel",
-        "root",
-        "run-state",
-    );
+    let default =
+        crate::ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
     assert_eq!(default.completion_timeout(), Duration::from_secs(240));
 
     let (configured, _park_drain_registration) =
@@ -235,13 +236,8 @@ fn detached_context_cannot_install_a_production_operational_controller() {
     );
     assert_eq!(context.host_ram_owner_id(), None);
     assert_eq!(context.host_outer_cap_owner(), None);
-    let default = crucible_api::ProductionVmLifecycleConfig::new(
-        "qemu",
-        "plugin",
-        "kernel",
-        "root",
-        "run-state",
-    );
+    let default =
+        crate::ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state");
 
     assert!(matches!(
         crate::qemu_campaign_lifecycle::config_for_assignment_host_watchdog(default, &context),
@@ -691,8 +687,14 @@ fn preparation_context_keeps_real_service_identity_and_original_cap_across_clone
     let registry = crate::HostOperationalRegistry::default();
     registry
         .configure_bootstrap_limits(
-            crucible_api::vm_lifecycle::HostRamBootstrapLimits::new(8, 32, 4, 32, 8 * 1024 * 1024)
-                .expect("bootstrap ceiling"),
+            crucible_api::host_operational::HostRamBootstrapLimits::new(
+                8,
+                32,
+                4,
+                32,
+                8 * 1024 * 1024,
+            )
+            .expect("bootstrap ceiling"),
         )
         .expect("install bootstrap");
     let epoch = DaemonEpoch::from_bytes([0x71; 16]).expect("daemon");

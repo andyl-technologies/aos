@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use crucible_api::vm_lifecycle::HostRamAdmissionError;
+use crucible_api::host_operational::HostRamAdmissionError;
 #[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
 use crucible_linux_resource::host_services::{
     HostServiceAllocator, HostServiceError, HostServiceLease,
@@ -81,8 +81,8 @@ struct StageAdmissionFailureData {
 #[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
 impl PreparedStageAdmissionFailure {
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
-    pub(crate) fn failure(&self) -> crucible_api::ProductionVmParentParkStageFailure<'_> {
-        use crucible_api::{
+    pub(crate) fn failure(&self) -> crate::ProductionVmParentParkStageFailure<'_> {
+        use crate::{
             ProductionVmParentParkStageAdmissionCause as Cause,
             ProductionVmParentParkStageFailure as Failure,
         };
@@ -388,7 +388,7 @@ mod tests {
         assert_eq!(data.original_after, Some(HostSupervisionError::Unavailable));
         #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
         {
-            use crucible_api::{
+            use crate::{
                 ProductionVmParentParkStageAdmissionCause as Cause,
                 ProductionVmParentParkStageFailure as Failure,
                 ProductionVmParentParkStageOwnerCause as Owner,

@@ -240,7 +240,7 @@ impl FindingProductionReplayDeployment {
 /// bounded validation fails.
 pub fn capture_finding_replay_shared_context(
     finding: &FindingReproductionArtifact,
-    config: &crucible_api::ProductionVmLifecycleConfig,
+    config: &crate::ProductionVmLifecycleConfig,
     static_byte_limit: u64,
     limits: FindingProductionReplayCaptureLimits,
 ) -> Result<
@@ -364,7 +364,7 @@ fn unique_static_bytes(
 /// the scenario's declared content references.
 pub fn capture_finding_replay_deployment(
     scenario: &crucible::ScenarioDefForm,
-    paths: &crucible_api::ProductionVmPortableReplayAssetPaths,
+    paths: &crate::ProductionVmPortableReplayAssetPaths,
     runtime: FindingProductionReplayRuntimeIdentity,
     limits: FindingProductionReplayCaptureLimits,
 ) -> Result<FindingProductionReplayDeployment, FindingProductionReplayCaptureError> {
@@ -380,7 +380,7 @@ pub(super) struct CapturedDeployment {
 
 pub(super) fn capture_finding_replay_deployment_with_static_limit(
     scenario: &crucible::ScenarioDefForm,
-    paths: &crucible_api::ProductionVmPortableReplayAssetPaths,
+    paths: &crate::ProductionVmPortableReplayAssetPaths,
     runtime: FindingProductionReplayRuntimeIdentity,
     limits: FindingProductionReplayCaptureLimits,
     static_byte_limit: u64,

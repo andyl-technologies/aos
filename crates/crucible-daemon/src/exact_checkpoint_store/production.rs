@@ -6,13 +6,14 @@ use std::io::{self, Read};
 #[cfg(feature = "destructive-recovery-faults")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crucible::SchedulerOperationalFailureClass;
-use crucible_api::{
-    DecodedProductionExactCheckpoint, LifecycleApiError, PreparedProductionReplayOraclePromotion,
+use crate::{
+    DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
     ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
     ProductionExactCheckpointRetirement, decode_authenticated_production_exact_checkpoint,
     retire_production_exact_checkpoint_catalog,
 };
+use crucible::SchedulerOperationalFailureClass;
+use crucible_api::LifecycleApiError;
 use crucible_cas::content_store::BlobSource;
 use crucible_cas::ram::{
     LeasedRamRoot, RamRetention, RamRootLease, RamStore, RamStoreError, RamStoreLimits,
@@ -412,7 +413,7 @@ impl LoadedProductionExactCheckpoint {
         owned_byte_limit: u64,
         retention: &dyn RamRetention,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
-    ) -> Result<Vec<crucible_api::ProductionPagedRamSource>, ExactCheckpointStoreError> {
+    ) -> Result<Vec<crate::ProductionPagedRamSource>, ExactCheckpointStoreError> {
         let original = if self.ram_root_ids.is_empty() {
             None
         } else {
@@ -426,10 +427,9 @@ impl LoadedProductionExactCheckpoint {
         } else {
             Some(reserve_ram_root_decode(self.ram_root_resources.as_ref())?)
         };
-        let source_bytes =
-            array_bytes::<crucible_api::ProductionPagedRamSource>(self.ram_root_ids.len())?
-                .checked_add(array_bytes::<ChargedRamRootLease>(self.ram_root_ids.len())?)
-                .ok_or_else(|| invalid_root("RAM source inventory allocation bound overflow"))?;
+        let source_bytes = array_bytes::<crate::ProductionPagedRamSource>(self.ram_root_ids.len())?
+            .checked_add(array_bytes::<ChargedRamRootLease>(self.ram_root_ids.len())?)
+            .ok_or_else(|| invalid_root("RAM source inventory allocation bound overflow"))?;
         let inventory_credit = reserve_metadata(self.ram_root_resources.as_ref(), source_bytes)?;
         let mut sources = Vec::new();
         sources
@@ -466,7 +466,7 @@ impl LoadedProductionExactCheckpoint {
                 binding
                     .authenticate_source(&root)
                     .map_err(|_| invalid_root("RAM source differs from whole-world target"))?;
-                crucible_api::ProductionPagedRamSource::new(
+                crate::ProductionPagedRamSource::new(
                     crucible::NodeId {
                         name: node.to_owned(),
                     },
@@ -757,7 +757,7 @@ impl LoadedProductionExactCheckpoint {
         self: &Arc<Self>,
         source: &crucible::ScenarioDefForm,
         cancellation: &ExecutionCancellation,
-        ram_sources: Vec<crucible_api::ProductionPagedRamSource>,
+        ram_sources: Vec<crate::ProductionPagedRamSource>,
     ) -> Result<DecodedProductionExactCheckpoint, ExactCheckpointStoreError> {
         let byte_limit = source
             .plan()
@@ -787,7 +787,7 @@ impl LoadedProductionExactCheckpoint {
                 check_cancellation(Some(&boundary_cancellation))
                     .map_err(|error| io::Error::other(error.to_string()))
             },
-            crucible_api::ProductionExactCheckpointReadSources { open, ram_sources },
+            crate::ProductionExactCheckpointReadSources { open, ram_sources },
         )
         .map_err(|_| invalid_root("production semantic checkpoint authentication failed"))?;
         check_cancellation(Some(cancellation))?;
@@ -1635,7 +1635,7 @@ mod tests {
     mod choice_closure;
     mod root_credit;
 
-    use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
+    use crate::build_authenticated_production_checkpoint_codec_fixture;
     use crucible_campaign::{AttemptId, CampaignLineageId};
     use crucible_cas::content_store::{
         BackendCapabilities, ByteRange, DirectoryBlobBackend, MemoryBlobBackend, PlacementReceipt,

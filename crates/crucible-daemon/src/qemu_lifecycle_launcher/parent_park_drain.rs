@@ -6,11 +6,11 @@
 
 use std::sync::Arc;
 
-use crucible::NodeId;
-use crucible::owned_decode::DecodeScratch;
-use crucible_api::{
+use crate::{
     ProductionVmParentParkDrainRefusal as Refusal, ProductionVmParentParkDrainRequest as Request,
 };
+use crucible::NodeId;
+use crucible::owned_decode::DecodeScratch;
 use crucible_linux_resource::host_supervision::{HostOperationGuard, HostSupervisionError};
 use crucible_qemu::{
     OriginalActorParkImportError, OriginalActorParkImports, OriginalActorParkQuiescence,
@@ -48,8 +48,8 @@ enum PhaseCause {
 }
 
 impl PhaseCause {
-    fn failure(&self) -> crucible_api::ProductionVmParentParkDrainCause<'_> {
-        use crucible_api::ProductionVmParentParkDrainCause as Cause;
+    fn failure(&self) -> crate::ProductionVmParentParkDrainCause<'_> {
+        use crate::ProductionVmParentParkDrainCause as Cause;
         match self {
             Self::Invariant(reason) => Cause::Invariant(reason),
             Self::Stage(first) => Cause::Stage(first.failure()),
@@ -176,9 +176,9 @@ impl<T> PairedOutcome<T> {
 }
 
 impl OriginalParkDrainPhase {
-    pub(super) fn failure(&self) -> crucible_api::ProductionVmParentParkDrainFailure<'_> {
+    pub(super) fn failure(&self) -> crate::ProductionVmParentParkDrainFailure<'_> {
         let first = self.body.first.as_ref().map(PhaseCause::failure);
-        crucible_api::ProductionVmParentParkDrainFailure {
+        crate::ProductionVmParentParkDrainFailure {
             first,
             cleanup_after: self.body.cleanup_after.as_ref(),
             host_return_after: self.body.host_return_after.as_ref(),
@@ -650,7 +650,7 @@ impl<G: QemuAttemptProcessResourceGuard> QemuAttemptProductionVmNodeLauncher<G> 
 #[cfg(test)]
 mod failure_tests {
     use super::*;
-    use crucible_api::ProductionVmParentParkDrainCause as Cause;
+    use crate::ProductionVmParentParkDrainCause as Cause;
 
     #[test]
     fn typed_failure_view_borrows_same_original_and_native_receipt() {

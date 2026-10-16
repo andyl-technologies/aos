@@ -77,7 +77,7 @@
       ])
     ];
     checkpoint = component "gate:ram-continuation" "model" [
-      (group "crucible-api" "lib" ["test-support"] [
+      (group "crucible-daemon" "lib" ["test-support"] [
         (case "vm_lifecycle::checkpoint_store::tests::paged_exact_fixture_retains_independent_complete_images" "positive" ["CHECK-1" "CHECK-3" "CHECK-5"] "Published host fixture contains a complete authenticated changed image, partial page and immutable image; no live restore qualification.")
         (case "vm_lifecycle::checkpoint_store::tests::paged_catalog_rejects_substituted_authenticated_root" "adversarial" ["STORE-2" "CHECK-6"] "A valid catalog identity cannot authorize a different logical image.")
         (case "vm_lifecycle::checkpoint_store::tests::paged_catalog_cancellation_refuses_capture_and_preserves_existing_root" "adversarial" ["CHECK-5" "STORE-10"] "Canceled host capture cannot publish a successor or overwrite prior bytes.")
@@ -165,7 +165,7 @@
         (case "identical_layout_cannot_relabel_predecessor_ram_semantics" "adversarial" ["CUT-1" "TEST-14"] "An unchanged physical layout cannot disguise predecessor semantics.")
         (case "predecessor_is_refused_before_geometry_or_clock_admission" "adversarial" ["CUT-1" "TEST-14"] "Version refusal precedes hostile geometry or clock validation.")
       ])
-      (group "crucible-api" "lib" ["test-support"] [
+      (group "crucible-daemon" "lib" ["test-support"] [
         (case "vm_lifecycle::checkpoint_store::tests::closure_manifest_round_trip_is_canonical" "positive" ["CUT-1" "TEST-14"] "Current host closure codec admission.")
         (case "vm_lifecycle::checkpoint_store::tests::predecessor_closure_is_refused_before_payload_decoding" "adversarial" ["CUT-1" "TEST-14"] "Prior closure prefix is refused before any current payload decoding.")
       ])

@@ -99,7 +99,7 @@ struct RegistryState {
 
 struct Shared {
     retained_catalogs: Mutex<BTreeMap<[u8; 32], Arc<dyn Send + Sync>>>,
-    bootstrap: Mutex<Option<crucible_api::vm_lifecycle::HostRamBootstrapLimits>>,
+    bootstrap: Mutex<Option<crucible_api::host_operational::HostRamBootstrapLimits>>,
     native_resources: Mutex<BTreeMap<NativeWorldIdentity, native_resources::NativeWorldResources>>,
     state: Mutex<RegistryState>,
     history: Option<Mutex<history::History>>,
@@ -380,7 +380,7 @@ impl HostOperationalRegistry {
     /// Returns the explicitly configured complete node bootstrap entitlement.
     pub(crate) fn bootstrap_limits(
         &self,
-    ) -> Option<crucible_api::vm_lifecycle::HostRamBootstrapLimits> {
+    ) -> Option<crucible_api::host_operational::HostRamBootstrapLimits> {
         *self.shared.bootstrap.lock().ok()?
     }
 
@@ -390,7 +390,7 @@ impl HostOperationalRegistry {
     /// Refuses replacement or installation after any owner becomes visible.
     pub(crate) fn configure_bootstrap_limits(
         &self,
-        limits: crucible_api::vm_lifecycle::HostRamBootstrapLimits,
+        limits: crucible_api::host_operational::HostRamBootstrapLimits,
     ) -> Result<(), HostOperationalError> {
         let _mutation = self.shared.mutation.lock().map_err(unavailable)?;
         let state = self.shared.state.lock().map_err(unavailable)?;

@@ -14,7 +14,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
-use crucible_api::build_streaming_production_checkpoint_codec_fixture;
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, BlobInventoryRecord, BlobSource, ByteRange, CheckedBlobReader,
     CheckedReadAccess, CheckedReader, ContentId, DirectoryBlobBackend, DurabilityRequirement,
@@ -23,6 +22,7 @@ use crucible_cas::content_store::{
 };
 use crucible_cas::owned_decode::{DecodeBudget, DecodeScratch};
 use crucible_daemon::ExactCheckpointStore;
+use crucible_daemon::build_streaming_production_checkpoint_codec_fixture;
 
 #[path = "gate_exact_closure_streaming/metadata.rs"]
 mod metadata;

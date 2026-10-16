@@ -219,14 +219,11 @@ impl OriginalPreparation {
     /// Refuses an absent world, original liveness, decoder identity or credit.
     pub fn prepare_parent_park_under_original(
         &self,
-        source: &mut Option<crucible_api::ProductionVmHotForkSourceWorld>,
+        source: &mut Option<crate::ProductionVmHotForkSourceWorld>,
         node: crucible::NodeId,
         decoder: crucible_qemu::OriginalActorParkCallerLease,
-    ) -> Result<
-        crucible_api::ProductionVmParentParkDrain,
-        crucible_api::ProductionVmParentParkDrainRefusal,
-    > {
-        crucible_api::ProductionVmParentParkDrain::prepare(
+    ) -> Result<crate::ProductionVmParentParkDrain, crate::ProductionVmParentParkDrainRefusal> {
+        crate::ProductionVmParentParkDrain::prepare(
             source,
             node,
             Arc::clone(&self.original),

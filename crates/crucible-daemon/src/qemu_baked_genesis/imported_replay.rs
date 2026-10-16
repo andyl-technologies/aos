@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::imported_checkpoint::{AuthenticatedImportedCheckpoint, ImportedCheckpointBasis};
-use crucible_api::vm_lifecycle::ProductionVmLifecycleLoop;
+use crate::vm_lifecycle::ProductionVmLifecycleLoop;
 
 /// Native receiver lifecycle and its independently charged original Service.
 ///

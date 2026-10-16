@@ -151,17 +151,17 @@ const CAMPAIGN_CONTROL_RESPONSIVENESS_SELECTORS: &[ExactSelector] = &[ExactSelec
     name: "executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy",
 }];
 
-const EXACT_CLOSURE_STREAMING_API_SELECTORS: &[ExactSelector] = &[
+const EXACT_CLOSURE_STREAMING_DAEMON_SELECTORS: &[ExactSelector] = &[
     ExactSelector {
-        source: "crates/crucible-api/src/vm_lifecycle/checkpoint_store/tests.rs",
+        source: "crates/crucible-daemon/src/vm_lifecycle/checkpoint_store/tests.rs",
         name: "vm_lifecycle::checkpoint_store::tests::portable_closure_inventory_streams_only_authenticated_manifest_objects",
     },
     ExactSelector {
-        source: "crates/crucible-api/src/vm_lifecycle/checkpoint_store/tests.rs",
+        source: "crates/crucible-daemon/src/vm_lifecycle/checkpoint_store/tests.rs",
         name: "vm_lifecycle::checkpoint_store::tests::file_artifact_stream_authenticates_sparse_file_contents",
     },
     ExactSelector {
-        source: "crates/crucible-api/src/vm_lifecycle/checkpoint_store/tests.rs",
+        source: "crates/crucible-daemon/src/vm_lifecycle/checkpoint_store/tests.rs",
         name: "vm_lifecycle::checkpoint_store::tests::chunked_artifact_stream_recreates_sparse_zero_extents",
     },
 ];
@@ -707,12 +707,12 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     ),
     automated(
         "gate:exact-closure-streaming",
-        "crucible-api",
+        "crucible-daemon",
         &[
             CampaignGateTarget {
-                package: "crucible-api",
+                package: "crucible-daemon",
                 kind: CampaignGateTargetKind::LibExact {
-                    selectors: EXACT_CLOSURE_STREAMING_API_SELECTORS,
+                    selectors: EXACT_CLOSURE_STREAMING_DAEMON_SELECTORS,
                     nix_source: "tests/crucible/phase5-exact-closure-streaming.nix",
                     ignored: false,
                 },

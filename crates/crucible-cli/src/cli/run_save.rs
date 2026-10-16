@@ -1,7 +1,6 @@
 //! Local run/save workflows and remote resume control setup.
 
 use super::*;
-use crucible_api as production_api;
 
 // Live QEMU quanta can spend most of the backend completion window outside the
 // actor. Polling by yield count races the VM and can report a false timeout.
@@ -247,7 +246,7 @@ pub(super) struct VerifyRunWitness {
     pub(super) fingerprint_stream: Vec<u8>,
     pub(super) live_event_evidence: VerifyLiveEventEvidence,
     pub(super) host_scheduler_preemption:
-        Option<crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot>,
+        Option<crucible_daemon::BoundedSchedulerPreemptionEvidenceSnapshot>,
     pub(super) state_dump: String,
     pub(super) artifact: Option<Vec<u8>>,
     pub(super) _input_custody: Option<crucible_session::engine::owned_decode::DecodeCustody>,

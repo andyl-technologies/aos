@@ -101,11 +101,10 @@ impl OriginalPackagedParkCaller {
 
     pub(crate) fn begin_retained_world(
         &self,
-        world: &mut crucible_api::ProductionVmHotForkSourceWorld,
+        world: &mut crate::ProductionVmHotForkSourceWorld,
         node: &crucible::NodeId,
         correlation: u64,
-    ) -> Result<crucible_qemu::QmpParentParkResult, crucible_api::ProductionVmParentParkDrainRefusal>
-    {
+    ) -> Result<crucible_qemu::QmpParentParkResult, crate::ProductionVmParentParkDrainRefusal> {
         self.verify_original()?;
         world.begin_parent_park_retained(
             node,

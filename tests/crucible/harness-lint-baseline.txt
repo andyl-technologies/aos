@@ -38,9 +38,9 @@ error-logging	crates/crucible-api/src/server.rs	stringly error	Result<_, String>
 error-logging	crates/crucible-api/src/server/debug_reposition.rs	stringly error	Result<_, String>		4
 error-logging	crates/crucible-api/src/server/debug_wire.rs	stringly error	Result<_, String>		10
 error-logging	crates/crucible-api/src/server/query_wire.rs	stringly error	Result<_, String>		1
-error-logging	crates/crucible-api/src/vm_lifecycle/checkpoint_store.rs	stringly error	Result<_, String>		1
-error-logging	crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs	stringly error	Result<_, String>		2
-error-logging	crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persistence/recovery.rs	stringly error	Result<_, String>		2
+error-logging	crates/crucible-daemon/src/vm_lifecycle/checkpoint_store.rs	stringly error	Result<_, String>		1
+error-logging	crates/crucible-daemon/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs	stringly error	Result<_, String>		2
+error-logging	crates/crucible-daemon/src/vm_lifecycle/quantum_loop/lifecycle/persistence/recovery.rs	stringly error	Result<_, String>		2
 error-logging	crates/crucible-daemon/src/assignment_ledger.rs	erased error	dyn Error		3
 error-logging	crates/crucible-daemon/src/qemu_campaign_lifecycle/app_random_branch_replay.rs	stringly error	Result<_, String>		1
 error-logging	crates/crucible-daemon/src/qemu_hot_fork_world_factory.rs	stringly error	Result<_, String>		7

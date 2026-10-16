@@ -24,7 +24,7 @@
   };
   apiVmLifecycle = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/src/vm_lifecycle.rs;
+    entry = ../../crates/crucible-daemon/src/vm_lifecycle.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -146,7 +146,7 @@
         needle = "build_production_vm_exact_resume_lifecycle(";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle.rs" apiVmLifecycle [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle.rs" apiVmLifecycle [
       {
         label = "authenticated exact-resume lifecycle";
         needle = "pub fn build_production_vm_exact_resume_lifecycle";

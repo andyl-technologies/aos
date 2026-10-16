@@ -38,21 +38,20 @@ pub(super) fn install_configuration_fixture(
     path: &std::path::Path,
     run_state_root: &std::path::Path,
 ) {
-    let configuration =
-        crucible_api::ProductionVmLifecycleConfig::try_from_guest_asset_paths_admitted(
-            crucible_api::vm_lifecycle::ProductionVmGuestAssetPaths {
-                executable: path,
-                plugin: path,
-                architecture: crucible::model::VmArchitecture::X86_64,
-                kernel: path,
-                root_image: path,
-                initrd: None,
-                root_image_format: crucible_qemu::QemuRootImageFormat::Raw,
-                run_state_root,
-            },
-            &owner.budget,
-        )
-        .unwrap();
+    let configuration = crate::ProductionVmLifecycleConfig::try_from_guest_asset_paths_admitted(
+        crate::vm_lifecycle::ProductionVmGuestAssetPaths {
+            executable: path,
+            plugin: path,
+            architecture: crucible::model::VmArchitecture::X86_64,
+            kernel: path,
+            root_image: path,
+            initrd: None,
+            root_image_format: crucible_qemu::QemuRootImageFormat::Raw,
+            run_state_root,
+        },
+        &owner.budget,
+    )
+    .unwrap();
     owner.lifecycle = Some(std::sync::Arc::new(configuration));
 }
 

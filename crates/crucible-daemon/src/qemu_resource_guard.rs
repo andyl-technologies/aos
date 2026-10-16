@@ -11,8 +11,9 @@ use std::fmt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use crate::{ProductionVmNodeGeneration, ProductionVmNodeLease};
 use crucible::{NodeId, SchedulerOperationalFailureClass};
-use crucible_api::{LifecycleApiError, ProductionVmNodeGeneration, ProductionVmNodeLease};
+use crucible_api::LifecycleApiError;
 use crucible_campaign::AttemptResourceLimits;
 use crucible_qemu::{
     LinuxQemuAttemptCancellationSignal, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
@@ -518,7 +519,7 @@ pub(crate) trait QemuAttemptSelectedHostResourceFactory:
         resources: AttemptResourceLimits,
         selected_checkpoint: Option<SelectedExactCheckpointRoot>,
         _consumer_control_bytes: u64,
-        _registration: &dyn crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory,
+        _registration: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
         _before_effects: &mut NativeWorldBeforeEffects<'_>,
     ) -> Result<
         (Self::Owner, Option<SelectedExactCheckpointRoot>),
@@ -800,7 +801,7 @@ where
         resources: AttemptResourceLimits,
         selected_checkpoint: Option<SelectedExactCheckpointRoot>,
         consumer_control_bytes: u64,
-        registration: &dyn crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory,
+        registration: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
         before_effects: &mut NativeWorldBeforeEffects<'_>,
     ) -> Result<
         (Self::Owner, Option<SelectedExactCheckpointRoot>),
@@ -1116,7 +1117,7 @@ impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFact
         resources: AttemptResourceLimits,
         selected_checkpoint: Option<SelectedExactCheckpointRoot>,
         consumer_control_bytes: u64,
-        registration: &dyn crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory,
+        registration: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
         before_effects: &mut NativeWorldBeforeEffects<'_>,
     ) -> Result<
         (Self::Owner, Option<SelectedExactCheckpointRoot>),
@@ -1148,7 +1149,7 @@ impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFact
         let mut node_count = 0_usize;
         let count = registration.visit_native_nodes(&mut |_name, _row| {
             node_count = node_count.checked_add(1).ok_or_else(|| {
-                crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
+                crucible_api::host_operational::HostRamAdmissionError::contract(
                     "native World node count overflows",
                 )
             })?;
@@ -1194,7 +1195,7 @@ impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFact
                             target_host_descriptors: row.target_host_descriptors,
                         })
                         .map_err(|source| {
-                            crucible_api::vm_lifecycle::HostRamAdmissionError::contract(
+                            crucible_api::host_operational::HostRamAdmissionError::contract(
                                 source.to_string(),
                             )
                         })
@@ -1737,7 +1738,7 @@ where
         cancellation: ExecutionCancellation,
         selected_checkpoint: Option<SelectedExactCheckpointRoot>,
         consumer_control_bytes: u64,
-        registration: &dyn crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory,
+        registration: &dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory,
         before_effects: &mut NativeWorldBeforeEffects<'_>,
     ) -> Result<Self::Guard, QemuAttemptResourceGuardBeginFailure> {
         let (host, selected_checkpoint) = self.host.begin_world(

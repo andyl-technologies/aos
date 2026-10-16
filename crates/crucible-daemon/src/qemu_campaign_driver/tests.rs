@@ -353,7 +353,7 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
 
     fn replay_launch_profiles(
         &self,
-    ) -> Result<Vec<crucible_api::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+    ) -> Result<Vec<crate::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("fake lifecycle has no replay launch profiles"),
         })
@@ -361,7 +361,7 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
 
     fn fault_evidence_snapshot(
         &self,
-    ) -> Result<crucible_api::ProductionFaultEvidenceSnapshot, SchedulerError> {
+    ) -> Result<crate::ProductionFaultEvidenceSnapshot, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("fake lifecycle has no fault evidence"),
         })
@@ -489,7 +489,7 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
 
     fn replay_launch_profiles(
         &self,
-    ) -> Result<Vec<crucible_api::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
+    ) -> Result<Vec<crate::ProductionVmNodeReplayLaunchProfile>, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("selectable lifecycle has no replay launch profiles"),
         })
@@ -497,7 +497,7 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
 
     fn fault_evidence_snapshot(
         &self,
-    ) -> Result<crucible_api::ProductionFaultEvidenceSnapshot, SchedulerError> {
+    ) -> Result<crate::ProductionFaultEvidenceSnapshot, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("selectable lifecycle has no fault evidence"),
         })

@@ -12,6 +12,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use crate::vm_lifecycle::{
+    hot_fork_adoption_count_for_test,
+    prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
+    prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test,
+    reset_hot_fork_adoption_count_for_test,
+};
+use crate::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible::model::MeasurementTerminalState;
 use crucible::{
     Configuration, ContentHash, Decision, EventLog, ExecutionFingerprint, FingerprintSample,
@@ -19,13 +26,6 @@ use crucible::{
     ScenarioSelectables, SchedulerEventLogEntry, SchedulerNodeActivity, SchedulerQuiescence,
     SelectionDecision, World, WorldNodeDef,
 };
-use crucible_api::vm_lifecycle::{
-    hot_fork_adoption_count_for_test,
-    prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
-    prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test,
-    reset_hot_fork_adoption_count_for_test,
-};
-use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_campaign::{
     AlternativeId, AssignmentId, Attempt, AttemptResourceLimits, AttemptStart, AttemptStartMode,
     BooleanDomain, BranchPath, BranchPathSegment, BudgetGrant, CampaignCommandId,
@@ -1390,8 +1390,8 @@ fn prepared_test_source_world(
     source_nodes: Vec<crucible_qemu::QemuNode>,
 ) -> Result<
     (
-        Vec<(NodeId, crucible_api::ProductionVmNodeGeneration)>,
-        crucible_api::ProductionVmHotForkSourceWorld,
+        Vec<(NodeId, crate::ProductionVmNodeGeneration)>,
+        crate::ProductionVmHotForkSourceWorld,
     ),
     crucible_api::LifecycleApiError,
 > {

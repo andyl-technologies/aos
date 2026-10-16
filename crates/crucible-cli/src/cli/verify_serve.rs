@@ -18,7 +18,7 @@ pub(crate) use packaged_executor::GuardedCampaignRunDeployment;
 /// ceiling, or failed real actor, namespace, registry, and quota admission.
 pub(crate) fn open_guarded_campaign_owner(
     deployment: &GuardedCampaignRunDeployment,
-    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
     seed: crucible_session::engine::Seed,
     resources: crucible_campaign::AttemptResourceLimits,
 ) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner, CliError> {
@@ -60,7 +60,7 @@ pub(crate) fn configured_guarded_campaign_request(
     scenario: crucible_session::engine::ScenarioDefForm,
     seed: crucible_session::engine::Seed,
     qemu_build_id: String,
-    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
     resources: crucible_campaign::AttemptResourceLimits,
 ) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest, CliError> {
     let owner = open_guarded_campaign_owner(deployment, lifecycle, seed, resources)?;
@@ -175,7 +175,7 @@ pub(crate) fn run_local_qemu_campaign_save_workflow(
 pub(crate) fn run_local_qemu_campaign_replay(
     backend: &ResolvedLocalBackend,
     run_plan: &RunInvocationPlan,
-    lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
     schedule: crucible::Schedule,
     replay_closure: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
     owner: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignOwner,

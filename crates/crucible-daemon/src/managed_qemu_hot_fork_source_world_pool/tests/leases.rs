@@ -620,7 +620,7 @@ fn managed_parent_park_refusal_keeps_exact_pool_record_and_reservation() {
     )
     .expect("same fixture seed and application draw ceiling");
     let (_, mut source) =
-        crucible_api::vm_lifecycle::prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
+        crate::vm_lifecycle::prepared_multi_node_hot_fork_source_world_for_scenario_for_test(
             &scenario,
             vec![source_node],
         )
@@ -787,7 +787,7 @@ fn declared_multi_node_parent_park_refuses_before_pool_publication() {
         matches!(
             &refusal,
             parent_park::ManagedParentParkError::Early(
-                crucible_api::ProductionVmParentParkDrainRefusal::Unavailable(
+                crate::ProductionVmParentParkDrainRefusal::Unavailable(
                     "managed park requires one declared parent process"
                 )
             )

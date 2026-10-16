@@ -9,12 +9,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crucible_api::vm_lifecycle::{
+use crate::vm_lifecycle::ProductionHostRamRegistrationFactory;
+use crucible_api::host_operational::{
     HostRamAdmissionError, HostRamBootstrapLimits, HostRamProcessFamilyPartition,
     ProductionHostRamLaunchRequirements, ProductionHostRamLaunchShape,
     ProductionHostRamNativeNodeLimits, ProductionHostRamNativeWorldIdentity,
     ProductionHostRamNativeWorldLimits, ProductionHostRamPartition,
-    ProductionHostRamRegistrationFactory, partition_host_ram_launch_resources,
+    partition_host_ram_launch_resources,
 };
 use crucible_campaign::AttemptResourceLimits;
 use crucible_linux_resource::host_supervision::HostOperationSupervisor;

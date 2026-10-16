@@ -42,10 +42,10 @@
 # Block and 9p `Retry` variants retain one original request after an injected
 # guest-delivery or ring-settlement refusal; every test runs once and fails on
 # its first unmet assertion. These exact targets expose modeled transport states.
-crucible-api	src/vm_lifecycle/checkpoint_store/tests	retry	1
-crucible-api	src/vm_lifecycle/checkpoint_store/storage/tests	std::thread::sleep	1
-crucible-api	src/vm_lifecycle/checkpoint_store/storage/tests	thread::sleep	1
-crucible-api	src/vm_lifecycle/quantum_loop/checkpoint_capture	retry	1
+crucible-daemon	src/vm_lifecycle/checkpoint_store/tests	retry	1
+crucible-daemon	src/vm_lifecycle/checkpoint_store/storage/tests	std::thread::sleep	1
+crucible-daemon	src/vm_lifecycle/checkpoint_store/storage/tests	thread::sleep	1
+crucible-daemon	src/vm_lifecycle/quantum_loop/checkpoint_capture	retry	1
 crucible-campaign	src/campaign_service	retry	1
 crucible-campaign	src/campaign_service/tests	retry	1
 crucible-campaign	src/execution/submit	retry	1
@@ -116,10 +116,10 @@ crucible-qemu	src/linux_cgroup	thread::sleep	1
 crucible-qemu	src/spawn	thread::sleep	1
 crucible-api	src/debug_gateway	std::thread::sleep	1
 crucible-api	src/debug_gateway	thread::sleep	1
-crucible-api	src/vm_lifecycle/network_faults/route/custody_and_payload	retry	1
-crucible-api	src/vm_lifecycle/network_faults/route_tests/medium	retry	1
-crucible-api	src/vm_lifecycle/network_faults/route_tests/medium/protocol	retry	1
-crucible-api	src/vm_lifecycle/network_faults/route_tests/resource_limits	retry	1
+crucible-daemon	src/vm_lifecycle/network_faults/route/custody_and_payload	retry	1
+crucible-daemon	src/vm_lifecycle/network_faults/route_tests/medium	retry	1
+crucible-daemon	src/vm_lifecycle/network_faults/route_tests/medium/protocol	retry	1
+crucible-daemon	src/vm_lifecycle/network_faults/route_tests/resource_limits	retry	1
 crucible-cli	tests/serve_process	thread::sleep	1
 crucible-device	src/block/fault	retry	1
 crucible-device	src/block/fault/state_admission	retry	1
@@ -137,8 +137,8 @@ crucible-qemu	src/async_driver_test	retry	1
 crucible-qemu	src/block_realization_gate	thread::sleep	1
 crucible-qemu	src/supervision/bounded_scheduler_preemption	thread::sleep	1
 crucible-qemu	src/supervision/bounded_scheduler_preemption/tests	thread::sleep	1
-crucible-api	src/vm_lifecycle/hot_fork	std::thread::sleep	1
-crucible-api	src/vm_lifecycle/hot_fork	thread::sleep	1
+crucible-daemon	src/vm_lifecycle/hot_fork	std::thread::sleep	1
+crucible-daemon	src/vm_lifecycle/hot_fork	thread::sleep	1
 crucible-qemu	src/crash_detection	retry	1
 crucible-qemu	src/live_plugin_gate/support	thread::sleep	1
 crucible-qemu	src/node	std::thread::sleep	1

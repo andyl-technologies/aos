@@ -9,7 +9,7 @@ use crate::provider_error_custody::{
     ProviderServiceAdmissionError, arc_allocation_bytes, check_provider_error_path,
     lease_control_bytes, provider_diagnostic_bytes, retain_provider_cause,
 };
-use crucible_api::vm_lifecycle::{
+use crate::vm_lifecycle::{
     ProductionRamCatalogProvider, ProductionRamCatalogRetirement, ProductionRamCatalogStorage,
 };
 use crucible_cas::content_store::{

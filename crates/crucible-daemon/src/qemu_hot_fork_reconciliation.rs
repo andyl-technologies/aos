@@ -24,10 +24,11 @@ use std::time::Duration;
 
 use crucible::{ContentHash, EventLog, EventLogOffset, NodeId};
 // crucible-lint: allow host-nondeterminism-state -- node generations authenticate exact process ownership and carry no host timing into execution.
-use crucible_api::{
-    LifecycleApiError, ProductionVmHotForkNodeAdoption, ProductionVmHotForkSourceWorld,
-    ProductionVmNodeGeneration, ProductionVmNodeLease,
+use crate::{
+    ProductionVmHotForkNodeAdoption, ProductionVmHotForkSourceWorld, ProductionVmNodeGeneration,
+    ProductionVmNodeLease,
 };
+use crucible_api::LifecycleApiError;
 use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_qemu::{
     LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuChildWait, QemuCrashDetector,

@@ -57,12 +57,12 @@ impl LifecycleCleanupHandle {
 impl ProductionVmCleanupReservation for CleanupReservation {
     fn retain(
         self: Box<Self>,
-        owner: ProductionVmCleanupOwner,
+        owner: Box<dyn ProductionVmCleanupOwner>,
     ) -> Result<
         Box<dyn ProductionVmCleanupHandoff>,
         (
             Box<dyn ProductionVmCleanupReservation>,
-            ProductionVmCleanupOwner,
+            Box<dyn ProductionVmCleanupOwner>,
         ),
     > {
         let Some(queue) = self.queue.upgrade() else {
@@ -73,39 +73,6 @@ impl ProductionVmCleanupReservation for CleanupReservation {
         };
         self.publish_owner(slot, owner)
             .map(|receipt| receipt as Box<dyn ProductionVmCleanupHandoff>)
-    }
-
-    fn complete(self: Box<Self>) -> Result<(), LifecycleApiError> {
-        let queue = self
-            .queue
-            .upgrade()
-            .ok_or_else(|| refusal("containing Main cleanup owner is absent"))?;
-        let slot = queue
-            .slots
-            .get(self.index)
-            .ok_or_else(|| refusal("cleanup reservation cell is absent"))?;
-        if !slot.claim(CleanupPhase::Reserved, CleanupPhase::Completing) {
-            return Err(refusal(
-                "cleanup completion is stale or already transferred",
-            ));
-        }
-        let mut cell = match slot.cell.lock() {
-            Ok(cell) => cell,
-            Err(_) => {
-                slot.publish(CleanupPhase::DestructionRefused);
-                return Err(refusal("cleanup completion ownership is poisoned"));
-            }
-        };
-        if cell.epoch != self.epoch || cell.owner.is_some() {
-            slot.publish(CleanupPhase::DestructionRefused);
-            return Err(refusal("cleanup completion has unknown containing custody"));
-        }
-        // The caller destroyed its actual owner outside every queue lock.
-        slot.body_destroyed_epoch
-            .store(cell.epoch, Ordering::Release);
-        let returned = close_controls_retaining_failure(&mut cell);
-        publish_return(slot, &cell, returned.is_ok());
-        returned
     }
 }
 
@@ -153,12 +120,12 @@ impl CleanupReservation {
     fn publish_owner(
         self: Box<Self>,
         slot: &CleanupSlot,
-        owner: ProductionVmCleanupOwner,
+        owner: Box<dyn ProductionVmCleanupOwner>,
     ) -> Result<
         Box<Self>,
         (
             Box<dyn ProductionVmCleanupReservation>,
-            ProductionVmCleanupOwner,
+            Box<dyn ProductionVmCleanupOwner>,
         ),
     > {
         if !slot.claim(CleanupPhase::Reserved, CleanupPhase::Publishing) {

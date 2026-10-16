@@ -1,7 +1,7 @@
 //! Exercises exact-cell isolation and real file destruction without Main issuance.
 
 use super::*;
-use crucible_api::{
+use crate::{
     ProductionVmExactNodeRestoreAdmission, ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest,
     ProductionVmNodeLauncher,
 };
@@ -18,6 +18,16 @@ struct FileOwner {
     dropped: Arc<AtomicBool>,
     drop_outside_lock: Arc<AtomicBool>,
     refuse_once: bool,
+}
+
+impl crucible_api::ProductionVmCleanupOwner for FileOwner {
+    fn retry_cleanup(&mut self) -> Result<(), crucible::SchedulerError> {
+        ProductionVmNodeLauncher::finish(self).map_err(|error| {
+            crucible::SchedulerError::BoundaryViolation {
+                message: error.to_string(),
+            }
+        })
+    }
 }
 
 impl ProductionVmNodeLauncher for FileOwner {
@@ -107,7 +117,7 @@ fn fixture(epoch: u64, refuse_once: bool) -> Result<CellFixture, std::io::Error>
         drop_outside_lock: Arc::clone(&drop_outside_lock),
         refuse_once,
     };
-    slot.cell.lock().unwrap().owner = Some(ProductionVmCleanupOwner::Launcher(Box::new(owner)));
+    slot.cell.lock().unwrap().owner = Some(Box::new(owner));
     Ok(CellFixture {
         descriptor,
         identity,
@@ -258,11 +268,10 @@ fn one_cell_reuses_actual_reservation_and_owner_for_twenty_four_epochs()
             drop_outside_lock: Arc::clone(&outside_lock),
             refuse_once,
         };
-        let mut handoff =
-            match token.publish_owner(&slot, ProductionVmCleanupOwner::Launcher(Box::new(owner))) {
-                Ok(handoff) => handoff,
-                Err(_) => panic!("the exact unused reservation must accept its file owner"),
-            };
+        let mut handoff = match token.publish_owner(&slot, Box::new(owner)) {
+            Ok(handoff) => handoff,
+            Err(_) => panic!("the exact unused reservation must accept its file owner"),
+        };
         assert_eq!(
             handoff.observe_slot(&slot)?,
             ProductionVmCleanupStage::BodyRetained

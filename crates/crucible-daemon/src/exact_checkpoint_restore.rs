@@ -9,11 +9,12 @@
 
 use std::sync::Arc;
 
-use crucible::{Configuration, ContentHash, Decision, ScenarioDefForm, SingleSchedulerCheckpoint};
-use crucible_api::{
-    DecodedProductionExactCheckpoint, LifecycleApiError, PreparedProductionReplayOraclePromotion,
+use crate::{
+    DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
     ProductionVmExactHotForkSourceBoundary, ProductionVmExactNodeRestoreAdmissions,
 };
+use crucible::{Configuration, ContentHash, Decision, ScenarioDefForm, SingleSchedulerCheckpoint};
+use crucible_api::LifecycleApiError;
 use thiserror::Error;
 
 use crate::{

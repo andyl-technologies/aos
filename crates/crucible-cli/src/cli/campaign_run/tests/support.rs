@@ -152,7 +152,7 @@ pub(super) fn resume_evidence_with_assertion(frontier: VirtualTime) -> ResumeHan
 
 pub(super) fn fixed_checkpoint_scenario_form() -> crucible::ScenarioDefForm {
     let directory = TempDir::new().or_panic("fixed checkpoint scenario workspace");
-    crucible_api::build_exact_ram_production_checkpoint_codec_fixture(directory.path())
+    crucible_daemon::build_exact_ram_production_checkpoint_codec_fixture(directory.path())
         .or_panic("fixed authenticated checkpoint scenario")
         .source()
         .clone()

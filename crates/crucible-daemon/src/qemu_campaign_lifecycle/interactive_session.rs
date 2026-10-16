@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
+use crate::{ProductionVmLifecycleConfig, ProductionVmLifecycleLoop};
 use crucible::{ScenarioDef, ScenarioDefForm};
-use crucible_api::{ProductionVmLifecycleConfig, ProductionVmLifecycleLoop};
 use crucible_campaign::AttemptResourceLimits;
 use crucible_linux_resource::host_supervision::HostOperationClass;
 use thiserror::Error;
@@ -48,7 +48,7 @@ pub enum InteractiveQemuSessionError {
     ExecutionLimitsExceedAdmission,
     /// An active lifecycle projection could not retain its original credit.
     #[error("interactive QEMU lifecycle projection: {0}")]
-    ConfigurationCopy(#[source] crucible_api::vm_lifecycle::ProductionVmLifecycleConfigCloneError),
+    ConfigurationCopy(#[source] crate::vm_lifecycle::ProductionVmLifecycleConfigCloneError),
     /// The original actor refused independent complete Service admission.
     #[error("interactive QEMU Service admission: {0}")]
     Admission(#[source] Box<crate::PackagedQemuExecutorError>),

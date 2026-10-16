@@ -239,7 +239,7 @@ impl AttemptExecutionModel for RestoreModel<'_> {
 pub(super) fn capture(
     lifecycle: &mut ProductionVmLifecycleLoop,
     context: &AttemptExecutionContext,
-) -> crucible_api::vm_lifecycle::ProductionExactCheckpointClosure {
+) -> crate::vm_lifecycle::ProductionExactCheckpointClosure {
     let operation = context
         .host_operation_supervisor()
         .expect("original Service cap")

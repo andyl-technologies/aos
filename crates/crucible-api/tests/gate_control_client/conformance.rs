@@ -402,11 +402,6 @@ where
     .with_decode_budget(crate::output_support::budget())
 }
 
-pub(super) fn assert_qemu_node_implements_simulation_backend_contract() {
-    fn assert_backend<T: SimulationBackend>() {}
-    assert_backend::<crucible_qemu::QemuNode>();
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ApiDeterminismTraffic {
     Quiet,

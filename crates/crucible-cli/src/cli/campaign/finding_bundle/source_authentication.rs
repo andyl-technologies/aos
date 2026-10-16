@@ -43,14 +43,14 @@ impl FindingSourceAuthentication {
         qemu: PathBuf,
         plugin: PathBuf,
         build_id: String,
-        lifecycle: Option<crucible_api::ProductionVmLifecycleConfig>,
+        lifecycle: Option<crucible_daemon::ProductionVmLifecycleConfig>,
     ) -> Result<Self, CliError> {
         let deployment = crate::cli_verify_serve::load_guarded_campaign_deployment(
             cli.campaign_deployment.as_deref(),
         )?;
         let input = std::fs::canonicalize(input)?;
         let lifecycle = lifecycle.unwrap_or_else(|| {
-            crucible_api::ProductionVmLifecycleConfig::for_artifact_authentication(
+            crucible_daemon::ProductionVmLifecycleConfig::for_artifact_authentication(
                 &qemu, &plugin, &input,
             )
         });

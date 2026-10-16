@@ -435,7 +435,7 @@ fn actual_lazy_source_keeps_each_page_account_independent_and_response_owned() {
     let response_store = store.clone();
     let response_root = root.clone();
     let response_original = storage.original.clone();
-    let source = crucible_api::ProductionPagedRamSource::new(
+    let source = crate::ProductionPagedRamSource::new(
         crucible::NodeId {
             name: "component".to_owned(),
         },

@@ -11,8 +11,8 @@
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   scheduler = builtins.readFile ../../crates/crucible/src/scheduler/event_log/backend_loop/host_concurrent.rs;
-  lifecycle = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
-  lifecycleConfig = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/config.rs;
+  lifecycle = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
+  lifecycleConfig = builtins.readFile ../../crates/crucible-daemon/src/vm_lifecycle/config.rs;
   nodeSet = builtins.readFile ../../crates/crucible-qemu/src/node_set.rs;
   concurrentNodeSet = builtins.readFile ../../crates/crucible-qemu/src/node_set/concurrent.rs;
   taskList = builtins.concatStringsSep "," taskIds;
@@ -37,13 +37,13 @@
         needle = "self.network_output_interceptor = staged_interceptor;";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop.rs" lifecycle [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle/quantum_loop.rs" lifecycle [
       {
         label = "production lifecycle concurrent dispatch";
         needle = "crucible_session::drive_engine_concurrent_quantum(";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/config.rs" lifecycleConfig [
+    ++ failuresFor "crates/crucible-daemon/src/vm_lifecycle/config.rs" lifecycleConfig [
       {
         label = "operational host dispatch ceiling";
         needle = "pub const fn maximum_host_workers";

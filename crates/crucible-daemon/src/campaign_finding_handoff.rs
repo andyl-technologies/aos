@@ -4,10 +4,11 @@
 //! and replay capture closure. This module reuses the live capture decoder and
 //! keeps the imported store read-only while preparing a fresh private replay.
 
+use crate::ProductionVmLifecycleLoop;
 use crucible::{Checkpoint, Configuration, ReproductionArtifact, ScenarioDefForm};
 use crucible_api::{
     ControlClient, DestroySessionRequest, InProcessLifecycleClient, LifecycleApiError,
-    LifecycleControlPlane, LifecycleLoopFactory, ProductionVmLifecycleLoop, SessionRef,
+    LifecycleControlPlane, LifecycleLoopFactory, SessionRef,
 };
 use crucible_campaign::{
     CampaignArchiveManifestId, CampaignFindingTriageReplayRole, CampaignRepository,

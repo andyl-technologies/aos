@@ -27,7 +27,7 @@ pub(crate) struct ReplayLiveQemuProof {
     pub(crate) fingerprint_stream_digest: String,
     pub(crate) controls: usize,
     pub(crate) host_scheduler_preemption:
-        Option<crucible_api::BoundedSchedulerPreemptionEvidenceSnapshot>,
+        Option<crucible_daemon::BoundedSchedulerPreemptionEvidenceSnapshot>,
 }
 
 #[derive(Debug)]

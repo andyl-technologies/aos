@@ -832,7 +832,7 @@ fn retire_staged_native_source<L, V>(
 
 fn retire_promotion_native_source<L, V>(
     shared: &SharedExecutor<L, V>,
-    retirement: Option<crucible_api::ProductionExactCheckpointRetirement>,
+    retirement: Option<crate::ProductionExactCheckpointRetirement>,
 ) where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
@@ -841,7 +841,7 @@ fn retire_promotion_native_source<L, V>(
         return;
     };
     loop {
-        match crucible_api::retire_production_exact_checkpoint_catalog(&retirement) {
+        match crate::retire_production_exact_checkpoint_catalog(&retirement) {
             Ok(_) => return,
             Err(error) if error.is_retryable() => {
                 increment(&shared.counters.promotion_retries);

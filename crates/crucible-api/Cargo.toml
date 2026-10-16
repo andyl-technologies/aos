@@ -7,8 +7,8 @@ publish = false
 
 [features]
 default = []
-private-measurement-domain = ["crucible-qemu/private-measurement-domain"]
-test-support = ["crucible/test-support", "crucible-qemu/test-support", "crucible-cas/test-support"]
+private-measurement-domain = []
+test-support = ["crucible/test-support", "crucible-cas/test-support"]
 
 [lints]
 workspace = true
@@ -25,7 +25,6 @@ crucible-linux-resource = { workspace = true }
 crucible-campaign = { path = "../crucible-campaign" }
 crucible-device = { path = "../crucible-device" }
 crucible-protocol = { path = "../crucible-protocol" }
-crucible-qemu = { path = "../crucible-qemu" }
 crucible-session = { path = "../crucible-session" }
 futures-util = { workspace = true }
 hyper-util = { workspace = true }
@@ -47,6 +46,5 @@ uuid = { workspace = true }
 crucible-cas = { workspace = true, features = ["test-support"] }
 rusqlite = { workspace = true }
 crucible = { path = "../crucible", features = ["test-double", "test-support"] }
-crucible-qemu = { path = "../crucible-qemu", features = ["test-support"] }
 crucible-session = { path = "../crucible-session", features = ["test-support"] }
 crucible-shmem = { path = "../crucible-shmem" }

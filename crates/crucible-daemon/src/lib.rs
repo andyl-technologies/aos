@@ -669,3 +669,57 @@ pub use qemu_resource_guard::{
     SharedQemuAttemptHostResourceFactory,
 };
 pub use repository_admission::RepositoryAttemptAdmission;
+
+/// Owns concrete local-VM construction, runtime, and retained cleanup.
+#[cfg(target_os = "linux")]
+pub mod vm_lifecycle;
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+pub use vm_lifecycle::{
+    AuthenticatedProductionCheckpointCodecFixture, AuthenticatedProductionExactRamCodecFixture,
+    build_authenticated_production_checkpoint_codec_fixture,
+    build_exact_ram_production_checkpoint_codec_fixture,
+    build_streaming_production_checkpoint_codec_fixture,
+};
+#[cfg(target_os = "linux")]
+pub use vm_lifecycle::{
+    BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
+    DecodedProductionExactCheckpoint, OriginalCheckpointDecodeError,
+    OriginalDecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
+    ProductionBakedSnapshotCatalog, ProductionBakedSnapshotSet, ProductionBlockFaultEvidence,
+    ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
+    ProductionExactCheckpointReadSources, ProductionExactCheckpointRetirement,
+    ProductionExactCheckpointRetirementError, ProductionExactCheckpointRetirementReport,
+    ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
+    ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionPagedRamSource,
+    ProductionStoppedLifecycleError, ProductionVmConstructionCleanupError,
+    ProductionVmConstructionCustody, ProductionVmConstructionFailure,
+    ProductionVmExactNodeRestoreAdmission, ProductionVmExactNodeRestoreAdmissions,
+    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState,
+    ProductionVmNodeGeneration, ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest,
+    ProductionVmNodeLauncher, ProductionVmNodeLease, ProductionVmNodeReplayLaunchProfile,
+    ProductionVmPortableReplayAssetPaths, ProductionVmPortableReplayGuestAssetPaths,
+    ProductionVmReplayExactNodeRestoreAdmission, ProductionVmStoppedLifecycle,
+    build_production_vm_exact_resume_lifecycle, build_production_vm_exact_stopped_lifecycle,
+    build_production_vm_lifecycle_loop_with_launcher, collect_signal_artifact_objects,
+    collect_signal_artifact_objects_bounded, collect_signal_artifact_objects_with_budget,
+    decode_authenticated_production_exact_checkpoint,
+    decode_authenticated_production_exact_checkpoint_under_original, open_exact_checkpoint_closure,
+    production_vm_search_frontier, retire_production_exact_checkpoint_catalog,
+};
+#[cfg(target_os = "linux")]
+pub use vm_lifecycle::{
+    ProductionVmExactHotForkSourceBoundary, ProductionVmHotForkNodeAdoption,
+    ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld,
+    ProductionVmHotForkWorldContinuation,
+    authenticate_production_vm_exact_hot_fork_source_boundary,
+    build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
+};
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use vm_lifecycle::{
+    ProductionVmParentParkDrain, ProductionVmParentParkDrainCause,
+    ProductionVmParentParkDrainFailure, ProductionVmParentParkDrainRefusal,
+    ProductionVmParentParkDrainRequest, ProductionVmParentParkStageAdmissionCause,
+    ProductionVmParentParkStageEarlyCause, ProductionVmParentParkStageEnteredCause,
+    ProductionVmParentParkStageFailure, ProductionVmParentParkStageOwnerCause,
+    ProductionVmParentParkStageReborrowCause,
+};

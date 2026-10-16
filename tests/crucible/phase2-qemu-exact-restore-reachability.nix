@@ -53,14 +53,6 @@ in
             printf '%s' "$count" | ${pkgs.coreutils}/bin/tr -d '[:space:]'
           }
 
-          count_daemon_production_occurrences() {
-            needle="$1"
-            count="$(${pkgs.grep}/bin/grep -RhoF --include='*.rs' \
-              --exclude='tests.rs' --exclude-dir=tests --exclude-dir=examples \
-              -- "$needle" crates/crucible-daemon/src 2>/dev/null \
-              | ${pkgs.coreutils}/bin/wc -l)"
-            printf '%s' "$count" | ${pkgs.coreutils}/bin/tr -d '[:space:]'
-          }
 
           require_count() {
             expected="$1"
@@ -79,18 +71,18 @@ in
               || fail "expected $expected occurrence(s) of '$needle' in $file, found $actual"
           }
 
-          # The API is the sole authority that can construct the complete request.
+          # The concrete backend alone constructs the complete request.
           require_count 1 'QemuProductionExactRestoreRequest::new('
           require_file_count 1 \
-            crates/crucible-api/src/vm_lifecycle.rs \
+            crates/crucible-daemon/src/vm_lifecycle.rs \
             'QemuProductionExactRestoreRequest::new('
           require_file_count 1 \
-            crates/crucible-api/src/vm_lifecycle.rs \
+            crates/crucible-daemon/src/vm_lifecycle.rs \
             'pub fn into_atomic_restore('
           exact_resume_builder='build_production_vm_exact_resume_lifecycle('
           require_count 1 "$exact_resume_builder"
           require_file_count 1 \
-            crates/crucible-api/src/vm_lifecycle.rs \
+            crates/crucible-daemon/src/vm_lifecycle.rs \
             'pub fn build_production_vm_exact_resume_lifecycle<'
           require_file_count 1 \
             crates/crucible-daemon/src/qemu_campaign_lifecycle.rs \
@@ -105,43 +97,59 @@ in
           require_file_count 1 \
             crates/crucible-daemon/src/qemu_lifecycle_launcher.rs \
             'fn launch_restored('
-          daemon_restored_impls="$(count_daemon_production_occurrences 'fn launch_restored(')"
-          [ "$daemon_restored_impls" = 1 ] \
-            || fail "expected one production daemon launch_restored implementation, found $daemon_restored_impls"
-          # Across the workspace, the remaining definitions are one API trait
-          # declaration and seven implementations in closed test-only regions.
-          require_count 9 'fn launch_restored('
-          require_file_count 2 \
-            crates/crucible-api/src/vm_lifecycle.rs \
+          # One trait, the actual atomic launcher, one cleanup-only partial
+          # owner, and eleven closed component implementations exist. Every
+          # implementation is accounted below; custody does not mint launch.
+          require_count 14 'fn launch_restored('
+          require_file_count 1 \
+            crates/crucible-daemon/src/qemu_lifecycle_launcher/pending_construction.rs \
             'fn launch_restored('
           require_file_count 1 \
-            crates/crucible-api/src/vm_lifecycle/helpers.rs \
+            crates/crucible-daemon/src/qemu_lifecycle_launcher/pending_construction.rs \
+            'pending Source construction grants no restore'
+          require_file_count 1 \
+            crates/crucible-daemon/src/lifecycle_cleanup/reservation/tests.rs \
+            'fn launch_restored('
+          require_file_count 1 \
+            crates/crucible-daemon/src/vm_lifecycle/construction/custody/tests.rs \
+            'fn launch_restored('
+          require_file_count 1 \
+            crates/crucible-daemon/src/vm_lifecycle/hot_fork/tests.rs \
+            'fn launch_restored('
+          require_file_count 1 \
+            crates/crucible-daemon/src/vm_lifecycle/hot_fork/tests/retained_continuation.rs \
+            'fn launch_restored('
+          require_file_count 2 \
+            crates/crucible-daemon/src/vm_lifecycle.rs \
+            'fn launch_restored('
+          require_file_count 1 \
+            crates/crucible-daemon/src/vm_lifecycle/helpers.rs \
             'fn launch_restored('
           require_file_count 4 \
-            crates/crucible-api/src/vm_lifecycle/runtime/tests.rs \
+            crates/crucible-daemon/src/vm_lifecycle/runtime/tests.rs \
             'fn launch_restored('
           require_file_count 1 \
-            crates/crucible-api/src/vm_lifecycle/runtime/tests/held_stop.rs \
+            crates/crucible-daemon/src/vm_lifecycle/runtime/tests/held_stop.rs \
             'fn launch_restored('
           require_file_count 1 \
-            crates/crucible-api/src/vm_lifecycle.rs \
+            crates/crucible-daemon/src/vm_lifecycle.rs \
             'impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher'
           require_file_count 1 \
-            crates/crucible-api/src/vm_lifecycle/helpers.rs \
+            crates/crucible-daemon/src/vm_lifecycle/helpers.rs \
             'mod tests {'
 
           # The held-stop mock is reachable only through the gated runtime tests.
           require_file_count 1 \
-            crates/crucible-api/src/vm_lifecycle/runtime/tests.rs \
+            crates/crucible-daemon/src/vm_lifecycle/runtime/tests.rs \
             '#[path = "tests/held_stop.rs"]'
           require_file_count 1 \
-            crates/crucible-api/src/vm_lifecycle/runtime/tests.rs \
+            crates/crucible-daemon/src/vm_lifecycle/runtime/tests.rs \
             'mod held_stop;'
           require_file_count 1 \
-            crates/crucible-api/src/vm_lifecycle/runtime.rs \
+            crates/crucible-daemon/src/vm_lifecycle/runtime.rs \
             '#[path = "runtime/tests.rs"]'
           ${pkgs.grep}/bin/grep -F -A2 '#[cfg(test)]' \
-            crates/crucible-api/src/vm_lifecycle/runtime.rs \
+            crates/crucible-daemon/src/vm_lifecycle/runtime.rs \
             | ${pkgs.grep}/bin/grep -Fqx 'pub(super) mod tests;' \
             || fail "runtime launcher mocks are not gated by cfg(test)"
 

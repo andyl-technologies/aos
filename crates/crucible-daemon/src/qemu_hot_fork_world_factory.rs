@@ -16,11 +16,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 // crucible-lint: allow host-nondeterminism-state -- The factory authenticates and forwards an unchanged captured scheduler continuation; operational source availability cannot mutate it.
-use crucible::{ContentHash, ScenarioDef, SchedulerError, SchedulerOperationalFailureClass};
-use crucible_api::vm_lifecycle::ProductionVmHotForkNodeBoundary;
-use crucible_api::{
+use crate::vm_lifecycle::ProductionVmHotForkNodeBoundary;
+use crate::{
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld, ProductionVmNodeGeneration,
 };
+use crucible::{ContentHash, ScenarioDef, SchedulerError, SchedulerOperationalFailureClass};
 use crucible_campaign::{
     AttemptResourceLimits, CampaignCodecError, CampaignLineageId, ExactCheckpointId,
     ExecutorCompatibilityProfile,
@@ -189,7 +189,7 @@ pub(crate) struct QemuHotForkSourceWorldCheckoutIdentity {
 impl QemuHotForkSourceWorldCheckoutIdentity {
     pub(crate) fn capture(
         source: &ProductionVmHotForkSourceWorld,
-    ) -> Result<Self, crucible_api::vm_lifecycle::ProductionVmHotForkContinuationUnavailable> {
+    ) -> Result<Self, crate::vm_lifecycle::ProductionVmHotForkContinuationUnavailable> {
         let continuation = source.continuation()?;
         Ok(Self {
             scenario: continuation.configuration().def.id(),
@@ -1018,11 +1018,13 @@ where
                 let launch = world
                     .prepared_launch_resources(node)
                     .map_err(|error| error.to_string())?;
-                shapes.push(crucible_api::vm_lifecycle::ProductionHostRamLaunchShape {
-                    node: node.name.clone(),
-                    declared_ram_bytes: launch.guest_memory_bytes(),
-                    vcpus: launch.virtual_cpus(),
-                });
+                shapes.push(
+                    crucible_api::host_operational::ProductionHostRamLaunchShape {
+                        node: node.name.clone(),
+                        declared_ram_bytes: launch.guest_memory_bytes(),
+                        vcpus: launch.virtual_cpus(),
+                    },
+                );
             }
             factory
                 .configure_world(&shapes)
@@ -1233,10 +1235,10 @@ where
         checkout_identity: QemuHotForkSourceWorldCheckoutIdentity,
         source_lease: QemuHotForkSourceWorldLease,
         source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-        continuation: crucible_api::ProductionVmHotForkWorldContinuation,
+        continuation: crate::ProductionVmHotForkWorldContinuation,
         mut resources: QemuHotForkWorldResourceOwner<R::Guard>,
         runtime_basis: crate::AttemptExecutionRuntimeBasis,
-        ram_factory: Arc<dyn crucible_api::vm_lifecycle::ProductionHostRamRegistrationFactory>,
+        ram_factory: Arc<dyn crate::vm_lifecycle::ProductionHostRamRegistrationFactory>,
     ) -> ProductionLifecycleStartOutcome<R::Guard, S::Error> {
         let mut source_lease = Some(source_lease);
         let boundaries = continuation

@@ -8,6 +8,7 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   apiSource = sourceFor "crucible-api";
+  daemonSource = sourceFor "crucible-daemon";
   sessionManifest = builtins.fromTOML (builtins.readFile (cratesDir + "/crucible-session/Cargo.toml"));
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
@@ -96,8 +97,8 @@
     ++ lib.optionals (hasInfix "pub trait QuantumLoop" apiSource) [
       "crucible-api: must consume, not redefine, the L3 QuantumLoop boundary"
     ]
-    ++ lib.optionals (!(hasInfix "impl QuantumLoop for ProductionVmLifecycleLoop" apiSource)) [
-      "crucible-api: production VM lifecycle must adapt to the L3 QuantumLoop boundary"
+    ++ lib.optionals (!(hasInfix "impl QuantumLoop for ProductionVmLifecycleLoop" daemonSource)) [
+      "crucible-daemon: production VM lifecycle must adapt to the L3 QuantumLoop boundary"
     ]
     ++ lowerPackageFailures;
 in

@@ -73,8 +73,14 @@ fn preparation_handoff_preserves_complete_service_charges_and_one_admission_auth
     let registry = crate::HostOperationalRegistry::default();
     registry
         .configure_bootstrap_limits(
-            crucible_api::vm_lifecycle::HostRamBootstrapLimits::new(2, 8, 2, 8, 8 * 1024 * 1024)
-                .expect("bootstrap"),
+            crucible_api::host_operational::HostRamBootstrapLimits::new(
+                2,
+                8,
+                2,
+                8,
+                8 * 1024 * 1024,
+            )
+            .expect("bootstrap"),
         )
         .expect("bootstrap owner");
     let supervisor = LocalExecutorSupervisor::new(
@@ -264,8 +270,14 @@ fn failed_preparation_handoff_keeps_the_original_ledger_available_for_cleanup() 
     let registry = crate::HostOperationalRegistry::default();
     registry
         .configure_bootstrap_limits(
-            crucible_api::vm_lifecycle::HostRamBootstrapLimits::new(2, 8, 2, 8, 8 * 1024 * 1024)
-                .expect("bootstrap"),
+            crucible_api::host_operational::HostRamBootstrapLimits::new(
+                2,
+                8,
+                2,
+                8,
+                8 * 1024 * 1024,
+            )
+            .expect("bootstrap"),
         )
         .expect("bootstrap owner");
     let supervisor = LocalExecutorSupervisor::new(
@@ -354,8 +366,14 @@ fn preparation_service_headroom_checks_all_dimensions_without_partial_reservatio
     let registry = crate::HostOperationalRegistry::default();
     registry
         .configure_bootstrap_limits(
-            crucible_api::vm_lifecycle::HostRamBootstrapLimits::new(2, 8, 2, 8, 8 * 1024 * 1024)
-                .expect("bootstrap"),
+            crucible_api::host_operational::HostRamBootstrapLimits::new(
+                2,
+                8,
+                2,
+                8,
+                8 * 1024 * 1024,
+            )
+            .expect("bootstrap"),
         )
         .expect("bootstrap owner");
     let assignment = HostResourceVector {

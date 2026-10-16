@@ -12,12 +12,12 @@ mod isolation;
 use super::invalid_files::{ChildFileFault, InvalidChildFileFactory};
 use super::*;
 use crate::AttemptExecutionDisposition;
+use crate::vm_lifecycle::{
+    hot_fork_adoption_count_for_test, reset_hot_fork_adoption_count_for_test,
+};
 use crucible::{
     AssertionId, AssertionPhase, ObservableEventPayload, SchedulerEventLogPayload,
     SchedulingNodeKind,
-};
-use crucible_api::vm_lifecycle::{
-    hot_fork_adoption_count_for_test, reset_hot_fork_adoption_count_for_test,
 };
 use crucible_campaign::SubmitAttemptDisposition;
 use crucible_qemu::linux_process_identity;
@@ -112,7 +112,7 @@ pub(crate) fn run(
 struct MixedBoundary {
     configuration: Configuration,
     fingerprints: BTreeMap<crucible::NodeId, crucible::FingerprintSample>,
-    faults: crucible_api::ProductionFaultEvidenceSnapshot,
+    faults: crate::ProductionFaultEvidenceSnapshot,
 }
 
 struct CaptureMixedWorld {

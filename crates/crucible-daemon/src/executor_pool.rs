@@ -15,9 +15,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::executor_supervisor::LocalExecutionActivity;
-use crucible_api::{
-    ProductionExactCheckpointRetirement, retire_production_exact_checkpoint_catalog,
-};
+use crate::{ProductionExactCheckpointRetirement, retire_production_exact_checkpoint_catalog};
 use crucible_campaign::{
     AttemptExecutionScope, CampaignExecutorStore, CampaignRepositoryGcExclusionGuard,
     CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,

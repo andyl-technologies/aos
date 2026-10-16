@@ -5,7 +5,7 @@
 //! not physical cleanup. Staged CPU and I/O activation need the lower native
 //! quiescence, drain and common-controller witnesses; none is inferred here.
 
-use crucible_api::vm_lifecycle::{HostRamAdmissionError, HostRamProcessFamilyPartition};
+use crucible_api::host_operational::{HostRamAdmissionError, HostRamProcessFamilyPartition};
 use crucible_linux_resource::host_supervision::HostOperationSupervisor;
 use crucible_linux_resource::ram_policy::{HostRamTarget, HostResourceVector};
 

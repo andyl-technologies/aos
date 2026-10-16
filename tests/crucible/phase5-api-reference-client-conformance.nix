@@ -10,7 +10,8 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiCargo = builtins.readFile ../../crates/crucible-api/Cargo.toml;
+  backendCargo = builtins.readFile ../../crates/crucible-daemon/Cargo.toml;
+  backendContractTest = builtins.readFile ../../crates/crucible-daemon/tests/production_effect_matrix.rs;
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-api/tests/gate_control_client.rs;
@@ -42,9 +43,9 @@
         needle = "`T-API-13` is green through";
       }
     ]
-    ++ failuresFor "crates/crucible-api/Cargo.toml" apiCargo [
+    ++ failuresFor "crates/crucible-daemon/Cargo.toml" backendCargo [
       {
-        label = "QEMU backend contract dev dependency";
+        label = "concrete backend contract dependency";
         needle = ''crucible-qemu = { path = "../crucible-qemu" }'';
       }
     ]
@@ -84,14 +85,6 @@
       {
         label = "SimDouble backend stepping";
         needle = "SimulationBackend::step_to(&mut self.backend";
-      }
-      {
-        label = "QEMU backend trait assertion";
-        needle = "assert_qemu_node_implements_simulation_backend_contract";
-      }
-      {
-        label = "QemuNode implements SimulationBackend";
-        needle = "assert_qemu_node_implements_simulation_backend_contract";
       }
       {
         label = "scenario-ref create session";
@@ -196,6 +189,16 @@
       {
         label = "typed RPC error wire snapshot";
         needle = "rpc-error";
+      }
+    ]
+    ++ failuresFor "crates/crucible-daemon/tests/production_effect_matrix.rs" backendContractTest [
+      {
+        label = "registered concrete backend trait assertion";
+        needle = "fn assert_qemu_node_implements_simulation_backend_contract()";
+      }
+      {
+        label = "actual backend implements the engine contract";
+        needle = "assert_backend::<crucible_qemu::QemuNode>()";
       }
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" abiTest [
@@ -340,6 +343,25 @@ in
             cd source
           fi
           cd crates
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+            -p crucible-daemon \
+            --test production_effect_matrix \
+            -- --list \
+            > "$TMPDIR/backend-contract-tests.list"
+          grep -Fxq \
+            'assert_qemu_node_implements_simulation_backend_contract: test' \
+            "$TMPDIR/backend-contract-tests.list"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+            -p crucible-daemon \
+            --test production_effect_matrix \
+            assert_qemu_node_implements_simulation_backend_contract \
+            -- --exact --test-threads=1
           cargo test \
             --frozen \
             --offline \
