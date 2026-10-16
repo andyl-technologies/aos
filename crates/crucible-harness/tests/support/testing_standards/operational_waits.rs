@@ -7,9 +7,13 @@
 #[path = "operational_inputs.rs"]
 mod operational_inputs;
 
+#[path = "operational_recovery.rs"]
+mod operational_recovery;
+
 pub(super) fn mask_operational_waits(package: &str, target: &str, code: &str) -> String {
     let operational = operational_inputs::mask(package, target, code);
-    let code = operational.as_str();
+    let recovery = operational_recovery::mask(package, target, &operational);
+    let code = recovery.as_str();
     let (requirements, expressions): (&[&str], &[(&str, usize)]) = match (package, target) {
         ("crucible-daemon", "src/executor_pool/checkpoint") => (
             &[
