@@ -498,7 +498,7 @@ fn actual_cell_failure_survives_same_original_refusal_before_dispatch()
     let dispatch = retire_dispatcher(&original, true, &mut physically_closed, || {
         attempts += 1;
         drop(dispatcher_file.take());
-        Ok(())
+        (Ok(()), dispatcher_file.is_none())
     });
     let report = PackagedQemuExecutorRetirementError::new();
     report.retain(AttachedRetirementReport::new(
@@ -568,11 +568,14 @@ fn dispatcher_refusal_and_independent_post_preserve_actual_cell_history()
         attempts += 1;
         drop(dispatcher_file.take());
         expire_component_cleanup(&supervisor, &original);
-        // The real local effect ran, but this injected component refusal does
-        // not certify completion of a native dispatcher or any other resource.
-        Err(crucible_qemu::QemuVmRealizationError::Canceled {
-            operation: "component dispatcher refusal",
-        })
+        // The local file is actually gone despite this historical component
+        // refusal. This observes no native dispatcher or other resource.
+        (
+            Err(crucible_qemu::QemuVmRealizationError::Canceled {
+                operation: "component dispatcher refusal",
+            }),
+            dispatcher_file.is_none(),
+        )
     });
     // A later phase augments the same inline history, rather than replacing
     // the earlier real cleanup cause with a whole-attempt snapshot.
@@ -581,7 +584,7 @@ fn dispatcher_refusal_and_independent_post_preserve_actual_cell_history()
     ));
 
     assert_eq!(attempts, 1);
-    assert!(!physically_closed);
+    assert!(physically_closed);
     assert_eq!(
         loop_failure_message(report.lifecycle().unwrap()).as_ptr(),
         first_message
@@ -603,6 +606,11 @@ fn dispatcher_refusal_and_independent_post_preserve_actual_cell_history()
     ));
     assert!(selected.dropped.load(Ordering::Acquire));
     assert!(selected.slot.is(CleanupPhase::Free));
+    let repeated = retire_dispatcher(&original, true, &mut physically_closed, || {
+        panic!("physical closure beside a historical error must not replay")
+    });
+    assert!(repeated.post.is_some());
+    assert!(physically_closed);
     Ok(())
 }
 
@@ -637,7 +645,7 @@ fn successful_file_retirement_latches_before_post_without_erasing_history()
     let dispatch = retire_dispatcher(&original, true, &mut physically_closed, || {
         drop(dispatcher_file.take());
         expire_component_cleanup(&supervisor, &original);
-        Ok(())
+        (Ok(()), dispatcher_file.is_none())
     });
     let report = PackagedQemuExecutorRetirementError::new();
     report.retain(AttachedRetirementReport::new(
@@ -672,5 +680,47 @@ fn successful_file_retirement_latches_before_post_without_erasing_history()
     });
     assert!(repeated.post.is_some());
     assert!(physically_closed);
+    Ok(())
+}
+
+#[test]
+fn successful_dispatch_without_actual_file_return_does_not_latch_closure()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::packaged_qemu_executor::retirement::retire_dispatcher;
+    use crucible_linux_resource::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(std::time::Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::Cleanup)?;
+    let mut dispatcher_file = Some(tempfile::tempfile()?);
+    let mut physically_closed = false;
+    let mut attempts = 0;
+
+    let incomplete = retire_dispatcher(&original, true, &mut physically_closed, || {
+        attempts += 1;
+        (Ok(()), dispatcher_file.is_none())
+    });
+
+    assert!(!physically_closed);
+    assert!(dispatcher_file.is_some());
+    assert!(incomplete.failure.is_none());
+    assert!(incomplete.post.is_none());
+    assert_eq!(attempts, 1);
+
+    let complete = retire_dispatcher(&original, true, &mut physically_closed, || {
+        attempts += 1;
+        drop(dispatcher_file.take());
+        (Ok(()), dispatcher_file.is_none())
+    });
+
+    assert!(physically_closed);
+    assert!(dispatcher_file.is_none());
+    assert!(complete.failure.is_none());
+    assert!(complete.post.is_none());
+    assert_eq!(attempts, 2);
     Ok(())
 }

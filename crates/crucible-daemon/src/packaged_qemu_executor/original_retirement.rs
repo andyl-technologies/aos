@@ -136,11 +136,16 @@ impl PackagedQemuExecutor {
             prerequisites_closed,
             &mut self.original_physically_retired,
             || {
-                host.ok_or_else(|| QemuVmRealizationError::ExecutorUnavailable {
-                    operation: "retire original Main Target dispatcher",
-                    message: String::from("actual saved Linux host factory is absent"),
-                })
-                .and_then(SharedQemuAttemptHostResourceFactory::finish_target_dispatcher)
+                let Some(host) = host else {
+                    return (
+                        Err(QemuVmRealizationError::ExecutorUnavailable {
+                            operation: "retire original Main Target dispatcher",
+                            message: String::from("actual saved Linux host factory is absent"),
+                        }),
+                        false,
+                    );
+                };
+                host.finish_target_dispatcher()
             },
         );
         if !self.original_physically_retired

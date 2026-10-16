@@ -106,6 +106,24 @@ impl AuthenticatedServiceFamily {
         if !self.owner.is_live() {
             return Err(ServiceBirthError::policy("normal family original expired"));
         }
+        self.check_retained_custody()?;
+        if !self.owner.is_live() {
+            return Err(ServiceBirthError::policy(
+                "normal family original expired after check",
+            ));
+        }
+        Ok(())
+    }
+
+    // Physical return checks the same pins and limits without renewing work
+    // or requiring the birth interval to remain live. The caller must hold its
+    // already-entered Cleanup before and after this structural observation.
+    pub(super) fn check_retained_custody(&self) -> Result<(), ServiceBirthError> {
+        if self.owner.birth.invocation == [0; 16] {
+            return Err(ServiceBirthError::policy(
+                "normal family invocation is absent",
+            ));
+        }
         let root = self.owner.birth._cgroup.as_fd();
         require_identity(
             self.guardian.as_fd(),
@@ -153,11 +171,6 @@ impl AuthenticatedServiceFamily {
         {
             return Err(ServiceBirthError::policy(
                 "normal family host is outside its original guardian",
-            ));
-        }
-        if !self.owner.is_live() {
-            return Err(ServiceBirthError::policy(
-                "normal family original expired after check",
             ));
         }
         Ok(())

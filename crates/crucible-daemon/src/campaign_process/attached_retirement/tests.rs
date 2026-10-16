@@ -25,7 +25,7 @@ fn inline_history_keeps_initial_cause_and_later_cleanup_phases_independent()
     history.record_cleanup(AttachedRetirementReport::from_admission(refused.into()));
     let cleanup = std::ptr::from_ref(history.cleanup.admission().unwrap());
 
-    history.record_post(refused);
+    history.record_cleanup(AttachedRetirementReport::from_post(refused));
     history.record_first(PackagedQemuExecutorJoinError::OwnerUnavailable);
     history.record_cleanup(AttachedRetirementReport::from_post(refused));
 
@@ -38,7 +38,6 @@ fn inline_history_keeps_initial_cause_and_later_cleanup_phases_independent()
         matches!(history.cleanup.admission(), Some(crucible_linux_resource::host_services::process_birth::ServiceBirthError::Supervision(error)) if *error == refused)
     );
     assert_eq!(history.cleanup.original_post(), Some(refused));
-    assert_eq!(history.post.get().copied(), Some(refused));
     Ok(())
 }
 
@@ -54,10 +53,41 @@ fn post_only_history_retains_a_typed_cleanup_cause_without_a_service_failure()
     original.complete()?;
     let post = original.wait_slice().unwrap_err();
 
-    history.record_post(post);
+    history.record_cleanup(AttachedRetirementReport::from_post(post));
 
     assert!(history.first.get().is_none());
     assert_eq!(history.cleanup.original_post(), Some(post));
-    assert_eq!(history.post.get().copied(), Some(post));
+    Ok(())
+}
+
+#[test]
+fn first_body_post_is_shared_without_reordering_the_initiating_phase()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_linux_resource::host_services::process_birth::ServiceBirthError;
+    use crucible_linux_resource::host_supervision::HostSupervisionError;
+
+    let history = AttachedRetirementHistory::new();
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::Cleanup)?;
+    original.complete()?;
+    let first_post = original.wait_slice().unwrap_err();
+    let report = AttachedRetirementReport::from_admission(first_post.into())
+        .with_first_post(Some(first_post));
+
+    history.record_cleanup(report);
+    // This later injected diagnostic must not replace the actual body post.
+    history.record_cleanup(AttachedRetirementReport::from_post(
+        HostSupervisionError::Unavailable,
+    ));
+
+    assert_eq!(history.cleanup.original_post(), Some(first_post));
+    let first = std::error::Error::source(&history.cleanup)
+        .unwrap()
+        .downcast_ref::<ServiceBirthError>()
+        .unwrap();
+    assert!(matches!(first, ServiceBirthError::Supervision(error) if *error == first_post));
     Ok(())
 }

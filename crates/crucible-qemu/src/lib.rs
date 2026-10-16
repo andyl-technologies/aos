@@ -396,6 +396,8 @@ pub use quantum::{
     QemuQuantumReport, QemuQuantumShmemConfig, QemuQuantumShmemHotPath, QemuQuantumShmemView,
     assert_qemu_quantum_hot_path_is_shmem_only,
 };
+#[cfg(target_os = "linux")]
+pub use realization::QemuTargetDispatcherRetirementError;
 pub use realization::{
     QemuBakedGenesisSnapshot, QemuReplayOracleEvidence, QemuReplayOracleMatch,
     QemuVmRealizationError, QemuVmReplayRequest, QemuVmSnapshot, QemuVmSnapshotCodecError,

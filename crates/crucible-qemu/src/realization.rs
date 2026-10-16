@@ -563,9 +563,98 @@ fn validate_baked_genesis_node_set(
     Ok(())
 }
 
+/// Preserves independent dispatcher and native-pool retirement refusals.
+///
+/// The production return path moves both actual errors without issuing a new
+/// native claim. The containing factory retains its existing physical owners
+/// and the original worker-panic payload. This finite report has no recursive
+/// realization error, new allocation, or authority-bearing scalar.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct QemuTargetDispatcherRetirementError {
+    dispatcher: Option<crate::linux_cgroup::LinuxQemuCgroupError>,
+    pool: Option<crate::OriginalActorAccountError>,
+}
+
+#[cfg(target_os = "linux")]
+impl QemuTargetDispatcherRetirementError {
+    pub(crate) fn combine(
+        dispatcher: Result<(), crate::linux_cgroup::LinuxQemuCgroupError>,
+        pool: Result<(), crate::OriginalActorAccountError>,
+    ) -> Result<(), QemuVmRealizationError> {
+        let dispatcher = dispatcher.err();
+        let pool = pool.err();
+        if dispatcher.is_none() && pool.is_none() {
+            return Ok(());
+        }
+        Err(QemuVmRealizationError::TargetDispatcherRetirement {
+            source: Self { dispatcher, pool },
+        })
+    }
+
+    /// Borrows the original dispatcher error without exposing raw cgroup control.
+    #[must_use]
+    pub fn dispatcher_error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.dispatcher
+            .as_ref()
+            .map(|error| error as &dyn std::error::Error)
+    }
+
+    /// Borrows the independent actual native-pool return refusal.
+    #[must_use]
+    pub fn pool_error(&self) -> Option<&crate::OriginalActorAccountError> {
+        self.pool.as_ref()
+    }
+
+    /// Preserves the prior dispatcher-first operational failure classification.
+    ///
+    /// Pool-only refusal previously used the retryable model-copy category.
+    /// When dispatcher history is present, its original I/O/namespace category
+    /// remains retryable; its other errors retain terminal classification.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        self.dispatcher.as_ref().is_none_or(|error| {
+            matches!(
+                error,
+                crate::linux_cgroup::LinuxQemuCgroupError::Io { .. }
+                    | crate::linux_cgroup::LinuxQemuCgroupError::NamespaceLocked { .. }
+            )
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::fmt::Display for QemuTargetDispatcherRetirementError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Main Target retirement refused: dispatcher={:?}; pool={:?}",
+            self.dispatcher, self.pool
+        )
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::error::Error for QemuTargetDispatcherRetirementError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.dispatcher_error().or_else(|| {
+            self.pool
+                .as_ref()
+                .map(|error| error as &dyn std::error::Error)
+        })
+    }
+}
+
 /// Errors returned by QEMU VM realization coordination.
 #[derive(Debug, Error)]
 pub enum QemuVmRealizationError {
+    /// Retains independent physical-return reports without replacing either.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    TargetDispatcherRetirement {
+        /// Moved dispatcher and pool errors; physical custody remains elsewhere.
+        source: QemuTargetDispatcherRetirementError,
+    },
     /// Actual kernel event counters recorded a contained family OOM kill.
     ///
     /// The associated physical process owner already completed empty-group

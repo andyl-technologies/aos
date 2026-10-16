@@ -661,16 +661,25 @@ impl SharedQemuAttemptHostResourceFactory<LinuxQemuAttemptHostResourceFactory> {
     /// Retires the same concrete factory's permanent Main Target dispatcher.
     ///
     /// # Errors
-    /// Refuses unavailable allocator custody or uncertain physical dispatcher
-    /// retirement. The same factory remains retained by this shared facade.
-    pub(crate) fn finish_target_dispatcher(&self) -> Result<(), QemuVmRealizationError> {
-        self.host
-            .try_lock()
-            .map_err(|_| QemuVmRealizationError::ExecutorUnavailable {
-                operation: "retire shared Main Target dispatcher",
-                message: String::from("actual host-resource allocator is unobservable"),
-            })?
-            .finish_target_dispatcher()
+    /// Returns the existing typed outcome and actual physical closure observed
+    /// under the same allocator lock. A historical failure can coexist with
+    /// closure; unavailable custody returns a failure and never asserts closure.
+    pub(crate) fn finish_target_dispatcher(&self) -> (Result<(), QemuVmRealizationError>, bool) {
+        let mut host = match self.host.try_lock() {
+            Ok(host) => host,
+            Err(_) => {
+                return (
+                    Err(QemuVmRealizationError::ExecutorUnavailable {
+                        operation: "retire shared Main Target dispatcher",
+                        message: String::from("actual host-resource allocator is unobservable"),
+                    }),
+                    false,
+                );
+            }
+        };
+        let work = host.finish_target_dispatcher();
+        let physically_closed = host.target_dispatcher_physically_retired();
+        (work, physically_closed)
     }
 }
 
@@ -909,6 +918,13 @@ impl LinuxQemuAttemptHostResourceFactory {
     /// Refuses live jobs or uncertain saved-cleanup, worker or alias retirement.
     pub(crate) fn finish_target_dispatcher(&mut self) -> Result<(), QemuVmRealizationError> {
         self.host.finish_target_dispatcher()
+    }
+
+    /// Observes the same factory's actual dispatcher, debit and World closure.
+    ///
+    /// This fact does not enter Cleanup or permit another return or birth.
+    pub(crate) fn target_dispatcher_physically_retired(&self) -> bool {
+        self.host.target_dispatcher_physically_retired()
     }
 
     pub(crate) fn bind_normal_pool(
@@ -2409,6 +2425,14 @@ fn attempt_operational_error(
     let class = match &error {
         QemuVmRealizationError::ExecutorUnavailable { .. }
         | QemuVmRealizationError::ModelCopy { .. } => SchedulerOperationalFailureClass::Retryable,
+        #[cfg(target_os = "linux")]
+        QemuVmRealizationError::TargetDispatcherRetirement { source } => {
+            if source.is_retryable() {
+                SchedulerOperationalFailureClass::Retryable
+            } else {
+                SchedulerOperationalFailureClass::Terminal
+            }
+        }
         QemuVmRealizationError::Canceled { .. } => SchedulerOperationalFailureClass::Canceled,
         #[cfg(target_os = "linux")]
         QemuVmRealizationError::HostMemoryLimit { .. } => {

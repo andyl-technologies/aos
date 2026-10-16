@@ -493,6 +493,12 @@ const CONTRACTS: &[Contract] = &[
             .iter()
             .all(|slot| slot.phase == JobPhase::Idle)
     );"#,
+            r#"assert!(
+        !dispatcher.is_physically_retired(),
+        "actual join alone is not a paid Main return"
+    );
+    drop(dispatcher);
+    assert_descriptor_closed(descriptor, &expected);"#,
         ],
         identifiers: &[
             (

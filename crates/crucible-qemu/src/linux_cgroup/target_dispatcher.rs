@@ -66,9 +66,9 @@ pub(crate) struct TargetDispatcher {
     state: Option<Arc<DispatcherState>>,
     worker: Option<JoinHandle<()>>,
     failed: bool,
-    cleanup: Option<HostOperationGuard>,
+    cleanup: Option<Arc<HostOperationGuard>>,
     phase: WorkerPhase,
-    join_panicked: bool,
+    worker_panic: Mutex<Option<Box<dyn std::any::Any + Send>>>,
     path: PathBuf,
 }
 
@@ -159,7 +159,7 @@ impl TargetDispatcher {
             failed: false,
             cleanup: None,
             phase: WorkerPhase::Reserved,
-            join_panicked: false,
+            worker_panic: Mutex::new(None),
             path: PathBuf::from("/"),
         }
     }
@@ -368,7 +368,7 @@ impl TargetDispatcher {
     /// Retains live jobs, aliases, expired Cleanup, failed join or window close.
     pub(crate) fn finish(&mut self) -> Result<(), LinuxQemuCgroupError> {
         if self.phase == WorkerPhase::Complete {
-            return Ok(());
+            return self.report_retirement_history();
         }
         let path = self.path.clone();
         self.retry_abandoned_jobs()?;
@@ -412,7 +412,7 @@ impl TargetDispatcher {
                 self.purpose
                     .as_ref()
                     .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
-                    .begin_cleanup()
+                    .retained_cleanup()
                     .map_err(|source| failure(&path, source))?,
             );
         }
@@ -420,8 +420,10 @@ impl TargetDispatcher {
             .cleanup
             .as_ref()
             .ok_or_else(|| failure(&path, "Target dispatcher Cleanup is absent"))?;
-        cleanup
-            .wait_slice()
+        self.purpose
+            .as_ref()
+            .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+            .verify_cleanup(cleanup)
             .map_err(|source| failure(&path, source))?;
 
         if matches!(self.phase, WorkerPhase::Reserved | WorkerPhase::Running) {
@@ -447,6 +449,11 @@ impl TargetDispatcher {
                     failure(&path, "Target dispatcher has surviving queue aliases")
                 })?;
             }
+            self.purpose
+                .as_ref()
+                .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+                .verify_cleanup(cleanup)
+                .map_err(|source| failure(&path, source))?;
             // This physical close is irreversible. Retry retains the same
             // finished handle and Cleanup, without reconstructing a queue.
             drop(self.state.take());
@@ -458,9 +465,15 @@ impl TargetDispatcher {
                     .purpose
                     .as_mut()
                     .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
-                    .try_join_worker(worker);
+                    .try_join_worker(worker, cleanup);
                 match joined {
-                    Ok(joined) => self.join_panicked = joined.is_err(),
+                    Ok(joined) => {
+                        let history = match self.worker_panic.get_mut() {
+                            Ok(history) => history,
+                            Err(poison) => poison.into_inner(),
+                        };
+                        *history = joined.err();
+                    }
                     Err((worker, source)) => {
                         self.worker = Some(worker);
                         return Err(failure(&path, source));
@@ -472,24 +485,49 @@ impl TargetDispatcher {
         self.purpose
             .as_mut()
             .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
-            .retire_worker_debits()
+            .retire_worker_debits(cleanup)
             .map_err(|source| failure(&path, source))?;
-        if self.join_panicked {
-            self.failed = true;
-            return Err(failure(
-                &path,
-                "Target dispatcher physically joined after worker panic",
-            ));
-        }
         cleanup
             .wait_slice()
             .map_err(|source| failure(&path, source))?;
-        cleanup
-            .complete()
+        self.purpose
+            .as_mut()
+            .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+            .complete_cleanup(cleanup)
             .map_err(|source| failure(&path, source))?;
         self.cleanup = None;
-        self.purpose = None;
         self.phase = WorkerPhase::Complete;
+        self.report_retirement_history()
+    }
+
+    /// Observes actual resource closure independently of retirement history.
+    pub(crate) fn is_physically_retired(&self) -> bool {
+        self.state.is_none()
+            && self.worker.is_none()
+            && self
+                .purpose
+                .as_ref()
+                .is_some_and(|purpose| purpose.is_physically_retired())
+    }
+
+    /// Borrows the actual join payload through containing-factory retirement.
+    pub(crate) fn worker_panic(&mut self) -> Option<&(dyn std::any::Any + Send)> {
+        // Exclusive access needs no wait. Poison cannot discard diagnostic
+        // custody or turn history into a physical-return decision.
+        let history = match self.worker_panic.get_mut() {
+            Ok(history) => history,
+            Err(poison) => poison.into_inner(),
+        };
+        history.as_deref()
+    }
+
+    fn report_retirement_history(&mut self) -> Result<(), LinuxQemuCgroupError> {
+        if self.worker_panic().is_some() {
+            return Err(failure(
+                &self.path,
+                "Target dispatcher physically joined after worker panic",
+            ));
+        }
         Ok(())
     }
 

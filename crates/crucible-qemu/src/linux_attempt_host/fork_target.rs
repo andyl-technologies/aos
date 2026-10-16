@@ -324,13 +324,46 @@ impl LinuxQemuAttemptHostFactory {
         // retries after an irreversible worker join or roster free.
         self.poisoned = true;
         self.verify_native_quiescent()?;
-        self.process.finish_target_dispatcher()?;
+        let dispatcher = self.process.finish_target_dispatcher();
+        if !self.process.target_dispatcher_physically_retired() {
+            return crate::QemuTargetDispatcherRetirementError::combine(dispatcher, Ok(()));
+        }
         drop(self.original_accounts.take());
-        self.normal_pool
+        let pool = self
+            .normal_pool
             .as_mut()
-            .ok_or_else(|| missing_authority("retain normal QEMU node pool retirement"))?
-            .finish()
-            .map_err(original_roster::original_error)
+            .ok_or(OriginalActorAccountError::Unavailable)
+            .and_then(|pool| pool.finish());
+        // Return both actual leaf refusals. A historical dispatcher panic
+        // neither skips pool return nor replaces its independent failure.
+        crate::QemuTargetDispatcherRetirementError::combine(dispatcher, pool)
+    }
+
+    /// Observes the actual dispatcher, original accounts and node/World closure.
+    ///
+    /// This read-only fact grants no join, debit return, or new work authority.
+    #[must_use]
+    pub fn target_dispatcher_physically_retired(&self) -> bool {
+        self.process.target_dispatcher_physically_retired()
+            && self.original_accounts.is_none()
+            && self
+                .normal_pool
+                .as_ref()
+                .is_some_and(|pool| pool.is_physically_retired())
+    }
+
+    /// Borrows the existing panic payload until this containing factory drops.
+    #[must_use]
+    pub fn target_dispatcher_worker_panic(&mut self) -> Option<&(dyn std::any::Any + Send)> {
+        self.process.target_dispatcher_worker_panic()
+    }
+
+    /// Borrows the first dispatcher Cleanup admission refusal, without entry.
+    #[must_use]
+    pub fn target_dispatcher_cleanup_admission_failure(
+        &self,
+    ) -> Option<&crucible_linux_resource::host_supervision::HostSupervisionError> {
+        self.process.target_dispatcher_cleanup_admission_failure()
     }
 
     /// Creates the separately contained target of this factory's retained Source.

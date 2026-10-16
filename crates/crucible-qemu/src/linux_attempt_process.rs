@@ -574,15 +574,37 @@ impl LinuxQemuAttemptProcessFactory {
     ///
     /// # Errors
     /// Retains actual job, queue, worker and Cleanup custody on every refusal.
-    pub(crate) fn finish_target_dispatcher(&mut self) -> Result<(), QemuVmRealizationError> {
+    pub(crate) fn finish_target_dispatcher(&mut self) -> Result<(), LinuxQemuCgroupError> {
         self.target_dispatcher_terminal = true;
         if let Some(dispatcher) = self.target_dispatcher.as_mut() {
-            dispatcher.finish().map_err(|source| {
-                map_cgroup_error("retire actual Main Target dispatcher", &source)
-            })?;
+            dispatcher.finish()?;
         }
-        self.target_dispatcher = None;
+        // Retain the same dispatcher and typed join payload until this actual
+        // containing factory retires; success is not permission for rebirth.
         Ok(())
+    }
+
+    pub(crate) fn target_dispatcher_physically_retired(&self) -> bool {
+        self.target_dispatcher_terminal
+            && self
+                .target_dispatcher
+                .as_ref()
+                .is_none_or(|dispatcher| dispatcher.is_physically_retired())
+    }
+
+    pub(crate) fn target_dispatcher_worker_panic(&mut self) -> Option<&(dyn std::any::Any + Send)> {
+        self.target_dispatcher
+            .as_mut()
+            .and_then(|dispatcher| dispatcher.worker_panic())
+    }
+
+    pub(crate) fn target_dispatcher_cleanup_admission_failure(
+        &self,
+    ) -> Option<&crucible_linux_resource::host_supervision::HostSupervisionError> {
+        self.target_dispatcher
+            .as_ref()
+            .and_then(|dispatcher| dispatcher.purpose())
+            .and_then(|purpose| purpose.cleanup_admission_failure())
     }
 
     fn verify_ready_target_dispatcher(
