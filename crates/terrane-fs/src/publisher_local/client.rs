@@ -6,6 +6,11 @@
 //! custody; it does not prove cache reconciliation or authorize resume.
 
 mod receipt;
+mod recovery;
+
+pub(crate) use recovery::{
+    BodyIncarnationObservation, InventoryCursor, InventoryPage, RecoveryBody, UnverifiedBody,
+};
 
 pub use receipt::{PeerPublishedObject, PeerSealProbe};
 
@@ -62,6 +67,7 @@ struct State {
     connection: Option<Connection>,
     next_request_id: u64,
     drained: bool,
+    recovery_epoch: u64,
 }
 
 impl<L: HostReadLocation> Client<L> {
@@ -92,6 +98,7 @@ impl<L: HostReadLocation> Client<L> {
                 connection: Some(connection),
                 next_request_id: 1,
                 drained: false,
+                recovery_epoch: 0,
             }),
         })
     }
@@ -109,6 +116,10 @@ impl<L: HostReadLocation> Client<L> {
     pub fn drain(&self) -> Result<(), Error> {
         let mut state = self.lock()?;
         state.drained = false;
+        state.recovery_epoch = state
+            .recovery_epoch
+            .checked_add(1)
+            .ok_or(Error::Invalid("publisher recovery epoch exhausted"))?;
         if state.connection.is_none() {
             state.connection = Some(connect(&self.config)?);
         }
@@ -219,6 +230,23 @@ impl<L: HostReadLocation> Client<L> {
         claim: Option<Claim>,
         body: Option<BodyKey>,
     ) -> Result<ReceivedPacket, Error> {
+        self.exchange_payload(
+            state,
+            operation,
+            RequestPayload {
+                claim,
+                body,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn exchange_payload(
+        &self,
+        state: &mut State,
+        operation: Operation,
+        payload: RequestPayload,
+    ) -> Result<ReceivedPacket, Error> {
         self.layout.recheck()?;
         let request_id = state.next_request_id;
         state.next_request_id = request_id
@@ -231,8 +259,10 @@ impl<L: HostReadLocation> Client<L> {
             domain: self.layout.layout().domain().to_owned(),
             cache_incarnation: self.cache_incarnation.to_vec(),
             wait_budget_ms: self.config.wait_budget_ms,
-            claim,
-            body,
+            claim: payload.claim,
+            body: payload.body,
+            inventory_cursor: payload.cursor,
+            body_incarnation: payload.incarnation,
             ..Default::default()
         };
         let policy = ValidationPolicy {
@@ -267,6 +297,14 @@ impl<L: HostReadLocation> Client<L> {
         }
         Ok(received)
     }
+}
+
+#[derive(Default)]
+struct RequestPayload {
+    claim: Option<Claim>,
+    body: Option<BodyKey>,
+    cursor: Vec<u8>,
+    incarnation: Vec<u8>,
 }
 
 fn connect(config: &ClientConfig) -> Result<Connection, Error> {

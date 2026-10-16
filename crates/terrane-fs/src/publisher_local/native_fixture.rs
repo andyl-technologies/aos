@@ -675,6 +675,47 @@ fn check_authenticated_client(root: &Path, expected_inode: u64) {
         layout.layout().chunk_profile(),
     )
     .unwrap();
+    let mut cursor = None;
+    let mut keys = Vec::new();
+    for page in 0..64 {
+        let inventory = client.inventory(cursor).unwrap();
+        assert!(inventory.keys.len() <= 64);
+        keys.extend(inventory.keys);
+        cursor = inventory.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+        assert!(page < 63, "bounded inventory did not finish");
+    }
+    let key = keys
+        .into_iter()
+        .find(|key| key.kind == BodyKind::Sealed as i32 && key.descriptor == descriptor.encode())
+        .expect("actual canonical inventory entry");
+    let observation = match client
+        .inspect_body(key.clone(), Some(claim.clone()))
+        .unwrap()
+    {
+        super::client::RecoveryBody::Sealed {
+            object,
+            observation,
+        } => {
+            assert_eq!(object.handle().metadata().unwrap().ino(), expected_inode);
+            observation
+        }
+        super::client::RecoveryBody::Encoded { .. } => {
+            panic!("sealed inspection returned unverified encoded data")
+        }
+    };
+    assert_eq!(observation.key(), &key);
+    assert!(
+        client.inspect_pending(key).is_err(),
+        "canonical data has no pending-only token"
+    );
+    client.drain().unwrap();
+    assert!(
+        client.restore(&observation).is_err(),
+        "a new drain invalidates prior epoch observations"
+    );
     let adopted = client.adopt_inline(claim).unwrap();
     assert!(Arc::ptr_eq(adopted.layout(), &layout));
     assert_eq!(adopted.handle().metadata().unwrap().ino(), expected_inode);
