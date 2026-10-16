@@ -16,6 +16,8 @@
     "manifest_identity_remains_distinct_from_all_verified_plaintext_hashes"
     "one_chunk_above_inline_threshold_retains_manifest_identity"
     "manifest_and_claim_domain_are_checked_before_plaintext"
+    "retained_descriptor_failure_precedes_canonical_publication"
+    "retained_descriptor_failure_precedes_adoption_state_effects"
   ];
   nativeNames = [
     "disk_ext4_seal_noreplace_recovery_and_domain_isolation"

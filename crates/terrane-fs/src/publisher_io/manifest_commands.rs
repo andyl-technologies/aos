@@ -86,14 +86,14 @@ impl CommandOwner {
 
         let witness = Arc::new(witness);
         let claim = witness.shared_claim();
+        let prepared = self.prepare_retention(Arc::clone(&claim)).await?;
         // The accepted worker owns this local witness and source throughout the
         // actual async engine, including rollback after late durable-state error.
         // A dropped client waiter cannot drop this future or metadata descriptor.
         let object = match source {
-            Some(source) => self.publisher()?.publish(&claim, source).await?,
-            None => self.publisher()?.adopt(&claim).await?,
+            Some(source) => self.publisher()?.publish_retained(&claim, source).await?,
+            None => self.publisher()?.adopt_retained(&claim).await?,
         };
-        self.retain_with_manifest(claim, NativePublishedObject { object }, Some(witness))
-            .await
+        Ok(self.commit_retention(prepared, object, Some(witness)))
     }
 }
