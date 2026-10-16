@@ -7,9 +7,9 @@
 mod report_startup;
 mod retained;
 pub use report_startup::{
-    PacketCompleteNativeLaunchInputs, PacketCompleteOriginalSceneInputs,
-    PacketCompleteOriginalSceneSupervisor, PacketCompletePreparationConnection,
-    PacketCompleteReportStartupHolder,
+    PacketCompleteFreshRestorationInputs, PacketCompleteNativeLaunchInputs,
+    PacketCompleteOriginalSceneInputs, PacketCompleteOriginalSceneSupervisor,
+    PacketCompletePreparationConnection, PacketCompleteReportStartupHolder,
 };
 
 use super::super::scope;

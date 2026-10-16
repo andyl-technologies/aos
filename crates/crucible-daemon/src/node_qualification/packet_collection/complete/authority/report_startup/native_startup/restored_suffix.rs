@@ -9,7 +9,7 @@ use crucible_node_provider::reference_packet::service::native_startup::PacketNat
 use std::mem::size_of;
 
 impl PacketCompleteReportStartupHolder {
-    pub(super) fn restored_suffix_startup_selected_data(&self) -> Result<bool, RuntimeError> {
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn restored_suffix_startup_selected_data(&self) -> Result<bool, RuntimeError> {
         self.authenticate_native_origin_data()?;
         let fixed = Self::restored_suffix_selection_counter_scratch_data();
         let maximum = usize::try_from(self.resources.memory_bytes.get())

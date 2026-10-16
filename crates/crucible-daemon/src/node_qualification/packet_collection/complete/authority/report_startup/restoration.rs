@@ -584,3 +584,8 @@ impl PacketCompleteReportStartupHolder {
 
 #[path = "restoration/installed.rs"]
 mod installed;
+
+#[path = "restoration/fresh_lifecycle.rs"]
+mod fresh_lifecycle;
+pub(super) use fresh_lifecycle::FreshLifecycleOwners;
+pub use fresh_lifecycle::PacketCompleteFreshRestorationInputs;

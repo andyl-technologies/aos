@@ -521,8 +521,14 @@ impl PacketCompleteReportStartupHolder {
         // guard, Scope/ticket and SDK/Source observers. Reuse that exact getter
         // instead of allowing unrelated daemon scratch to hide a missing term.
         let core = InstalledConformancePlan::original_fresh_restore_host_counter_scratch_data()?;
+        let fresh = if matches!(&self.purpose, StartupHolderPurpose::FreshRestoration(_)) {
+            super::restoration::FreshLifecycleOwners::counter_scratch_data()?
+        } else {
+            0
+        };
         let declared_observer_scratch_bytes = counter_bytes
-            .checked_add(core)
+            .checked_add(fresh)
+            .and_then(|bytes| bytes.checked_add(core))
             .and_then(|bytes| bytes.checked_add(OriginalRetainedSupervisor::metadata_counter_scratch_data()))
             .and_then(|bytes| bytes.checked_add(crucible_node_provider::retained_metadata::RetainedCommonProtocolData::admit_response_counter_scratch_data()))
             .and_then(|bytes| bytes.checked_add(crucible::node_admission::CompleteArchiveCodeGraph::retained_requested_storage_scratch_bytes()))

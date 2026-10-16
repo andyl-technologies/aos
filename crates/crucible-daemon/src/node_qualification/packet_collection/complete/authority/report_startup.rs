@@ -16,6 +16,7 @@ pub use scene::PacketCompleteOriginalSceneInputs;
 mod preparation;
 mod restoration;
 pub use preparation::PacketCompletePreparationConnection;
+pub use restoration::PacketCompleteFreshRestorationInputs;
 
 use super::super::retained::Counter;
 use super::super::{PacketCompleteGraphOwner, capture_factory::PacketCompleteRestorationPrebirth};
@@ -71,6 +72,7 @@ pub struct PacketCompleteReportStartupHolder {
     host_sdk_completed: Cell<bool>,
     preparations: RefCell<preparation::PreparationOwners>,
     original_scene: OnceCell<RefCell<scene::OriginalSceneOwners>>,
+    fresh_lifecycle: OnceCell<RefCell<restoration::FreshLifecycleOwners>>,
     installed_host_owner: OnceCell<crucible::node_contract::HostSchedulingOwner>,
     original_scene_retired: Cell<bool>,
     restoration_attempted: Cell<bool>,
@@ -256,6 +258,7 @@ impl PacketCompleteReportStartupHolder {
             host_sdk_completed: Cell::new(false),
             preparations: RefCell::new(preparation::PreparationOwners::new()),
             original_scene: OnceCell::new(),
+            fresh_lifecycle: OnceCell::new(),
             installed_host_owner: OnceCell::new(),
             original_scene_retired: Cell::new(false),
             restoration_attempted: Cell::new(false),

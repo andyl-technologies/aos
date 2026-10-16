@@ -127,3 +127,5 @@ pub use packet_collection::{
 pub(crate) use packet_collection::complete::retained::{
     Counter as RetainedMetadataCounter, Owned as RetainedMetadataOwned,
 };
+
+pub use packet_collection::PacketCompleteFreshRestorationInputs;

@@ -60,3 +60,5 @@ pub use witness::{PacketCompleteNativeOracle, PacketCompleteOracleRequest};
 pub use authority::PacketCompleteOriginalSceneSupervisor;
 
 mod construction_diagnostics;
+
+pub use authority::PacketCompleteFreshRestorationInputs;

@@ -30,19 +30,14 @@ impl PacketCompleteReportStartupHolder {
         self.graph_owner
             .authenticate_original_report_policy_data(&authority.graph_policy)
             .map_err(|_| RuntimeError::ForeignAuthority)?;
-        let scene = self
-            .original_scene
-            .get()
-            .ok_or(RuntimeError::OwnerUnavailable)?
-            .try_borrow()
-            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let scene = self.host_initial_lifecycle_owner_data()?;
         let selected = scope.selected();
         if selected >= 3
-            || !scene.staged
-            || !scene.launched.get()
-            || !scene.initial_attempted[selected].get()
-            || !scene.initial_in_flight[selected].get()
-            || scene.initial_completed[selected].get()
+            || !scene.staged()
+            || !scene.launched().get()
+            || !scene.initial_attempted()[selected].get()
+            || !scene.initial_in_flight()[selected].get()
+            || scene.initial_completed()[selected].get()
         {
             return Err(RuntimeError::OutstandingObligations);
         }
@@ -77,7 +72,7 @@ impl PacketCompleteReportStartupHolder {
             preparations.authenticate_original_initial_preparation_data(selected, scope)?;
         } else {
             let roles = scene
-                .roles
+                .roles()
                 .try_borrow()
                 .map_err(|_| RuntimeError::OwnerBusy)?;
             let role = roles[selected]
@@ -204,17 +199,12 @@ impl InstalledPacketCompleteCollectionAuthority {
         {
             return Err(RuntimeError::ForeignAuthority);
         }
-        let scene = held
-            .original_scene
-            .get()
-            .ok_or(RuntimeError::OwnerUnavailable)?
-            .try_borrow()
-            .map_err(|_| RuntimeError::OwnerBusy)?;
-        if !scene.staged
-            || !scene.launched.get()
-            || !scene.initial_attempted[selected].get()
-            || (!scene.initial_in_flight[selected].get()
-                && !scene.initial_completed[selected].get())
+        let scene = held.host_initial_lifecycle_owner_data()?;
+        if !scene.staged()
+            || !scene.launched().get()
+            || !scene.initial_attempted()[selected].get()
+            || (!scene.initial_in_flight()[selected].get()
+                && !scene.initial_completed()[selected].get())
         {
             return Err(RuntimeError::OutstandingObligations);
         }
@@ -240,26 +230,33 @@ impl PacketCompleteReportStartupHolder {
     pub fn complete_original_scene_initial_lifecycle(
         original: &Rc<RefCell<Self>>,
     ) -> Result<(), RuntimeError> {
+        {
+            let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+            if !matches!(&held.purpose, StartupHolderPurpose::OriginalScene) {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+        }
+        Self::complete_retained_host_initial_lifecycle(original)
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn complete_retained_host_initial_lifecycle(
+        original: &Rc<RefCell<Self>>,
+    ) -> Result<(), RuntimeError> {
         let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
         held.authenticate_native_origin_data()?;
-        let scene = held
-            .original_scene
-            .get()
-            .ok_or(RuntimeError::OwnerUnavailable)?
-            .try_borrow()
-            .map_err(|_| RuntimeError::OwnerBusy)?;
-        if !scene.staged || !scene.launched.get() {
+        let scene = held.host_initial_lifecycle_owner_data()?;
+        if !scene.staged() || !scene.launched().get() {
             return Err(RuntimeError::OwnerUnavailable);
         }
         for selected in 0..3 {
-            if scene.initial_attempted[selected].replace(true)
-                || scene.initial_completed[selected].get()
-                || scene.windows[selected].get().is_some()
+            if scene.initial_attempted()[selected].replace(true)
+                || scene.initial_completed()[selected].get()
+                || scene.windows()[selected].get().is_some()
             {
                 return Err(RuntimeError::DuplicateOperation);
             }
-            scene.initial_in_flight[selected].set(true);
-            let _loan = StartupLoan(&scene.initial_in_flight[selected]);
+            scene.initial_in_flight()[selected].set(true);
+            let _loan = StartupLoan(&scene.initial_in_flight()[selected]);
             {
                 let outputs = held
                     .host_sdk_outputs
@@ -276,7 +273,7 @@ impl PacketCompleteReportStartupHolder {
                     .map_err(|_| RuntimeError::OwnerBusy)?;
                 let (guard, socket) = launches.original_guard_and_socket_data(selected)?;
                 let roles = scene
-                    .roles
+                    .roles()
                     .try_borrow()
                     .map_err(|_| RuntimeError::OwnerBusy)?;
                 let role = roles[selected]
@@ -297,7 +294,7 @@ impl PacketCompleteReportStartupHolder {
                     preparations.original_known_supervisor_data(selected)?,
                     preparations.original_hello_slot_data(selected)?,
                 )?;
-                scene.windows[selected]
+                scene.windows()[selected]
                     .set(RefCell::new(window))
                     .map_err(|_| RuntimeError::DuplicateOperation)?;
             }
@@ -309,7 +306,7 @@ impl PacketCompleteReportStartupHolder {
                 return Err(RuntimeError::DuplicateOperation);
             }
             let _callback_loan = StartupLoan(&held.authority.original_initial_callback_active);
-            let mut window = scene.windows[selected]
+            let mut window = scene.windows()[selected]
                 .get()
                 .ok_or(RuntimeError::OwnerUnavailable)?
                 .try_borrow_mut()
@@ -370,7 +367,7 @@ impl PacketCompleteReportStartupHolder {
                     .map_err(|_| RuntimeError::OwnerBusy)?;
                 let guard = launches.original_guard_slot_for_initial_lifecycle(selected)?;
                 let mut roles = scene
-                    .roles
+                    .roles()
                     .try_borrow_mut()
                     .map_err(|_| RuntimeError::OwnerBusy)?;
                 let mut outputs = held
@@ -386,13 +383,13 @@ impl PacketCompleteReportStartupHolder {
                     sdk,
                     guard,
                     &mut roles[selected],
-                    &scene.inputs.admit_ids[selected],
+                    &scene.admit_ids()?[selected],
                 )?;
             }
             // All mutable output loans end before Core repeats the actual
             // complete owning conjunction over the resulting preparation.
             drop(window);
-            let window = scene.windows[selected]
+            let window = scene.windows()[selected]
                 .get()
                 .ok_or(RuntimeError::OwnerUnavailable)?
                 .try_borrow()
@@ -414,7 +411,7 @@ impl PacketCompleteReportStartupHolder {
                 ];
                 held.recheck_original_scene_peer_data(selected, &window, sdks, socket)?;
             }
-            scene.initial_completed[selected].set(true);
+            scene.initial_completed()[selected].set(true);
         }
         Ok(())
     }
@@ -461,16 +458,9 @@ impl InstalledPacketCompleteCollectionAuthority {
             .ok_or_else(refused)?;
         let held = original.try_borrow().map_err(|_| refused())?;
         let selected = held.runtime_in_flight.get().is_some()
-            || if let Some(scene) = held.original_scene.get() {
-                scene
-                    .try_borrow()
-                    .map_err(|_| refused())?
-                    .initial_in_flight
-                    .iter()
-                    .any(Cell::get)
-            } else {
-                false
-            };
+            || held
+                .host_initial_lifecycle_in_flight_data()
+                .map_err(|_| refused())?;
         if !selected {
             return Err(refused());
         }
@@ -587,12 +577,21 @@ impl PacketCompleteReportStartupHolder {
         &self,
     ) -> Result<usize, RuntimeError> {
         self.authenticate_native_origin_data()?;
-        let scene = self
-            .original_scene
-            .get()
-            .ok_or(RuntimeError::OwnerUnavailable)?
-            .try_borrow()
-            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let scene = match &self.purpose {
+            StartupHolderPurpose::OriginalScene => Some(
+                self.original_scene
+                    .get()
+                    .ok_or(RuntimeError::OwnerUnavailable)?
+                    .try_borrow()
+                    .map_err(|_| RuntimeError::OwnerBusy)?,
+            ),
+            StartupHolderPurpose::FreshRestoration(_) => {
+                if self.fresh_lifecycle.get().is_none() {
+                    return Err(RuntimeError::OwnerUnavailable);
+                }
+                None
+            }
+        };
         let mut total = self
             .authority
             .graph_policy
@@ -603,30 +602,63 @@ impl PacketCompleteReportStartupHolder {
                     .retained_descriptor_views_precredit_data()?,
             )
             .ok_or(RuntimeError::ResourceLimit)?;
-        total = total
-            .checked_add(
-                scene
-                    .inputs
-                    .supervisor
-                    .original_data()?
-                    .retained_descriptor_count_data()?,
-            )
-            .ok_or(RuntimeError::ResourceLimit)?;
-        // Incoming owners exist before staging; successful staging moves each
-        // original into the native fixed bank, leaving only genuinely empty slots.
-        for inputs in scene.inputs.launches.iter().flatten() {
-            if let Some(slot) = &inputs.slot {
+        if let Some(scene) = &scene {
+            total = total
+                .checked_add(
+                    scene
+                        .inputs
+                        .supervisor
+                        .original_data()?
+                        .retained_descriptor_count_data()?,
+                )
+                .ok_or(RuntimeError::ResourceLimit)?;
+            // Incoming owners exist before staging; successful staging moves each
+            // original into the native fixed bank, leaving only genuinely empty slots.
+            for inputs in scene.inputs.launches.iter().flatten() {
+                if let Some(slot) = &inputs.slot {
+                    total = total
+                        .checked_add(
+                            slot.retained_descriptor_views_precredit_data()?
+                                .ok_or(RuntimeError::UnsupportedFacet)?,
+                        )
+                        .ok_or(RuntimeError::ResourceLimit)?;
+                }
                 total = total
-                    .checked_add(
-                        slot.retained_descriptor_views_precredit_data()?
-                            .ok_or(RuntimeError::UnsupportedFacet)?,
-                    )
+                    .checked_add(usize::from(inputs.bootstrap_reader.is_some()))
+                    .and_then(|sum| sum.checked_add(usize::from(inputs.bootstrap_writer.is_some())))
                     .ok_or(RuntimeError::ResourceLimit)?;
             }
+        }
+        if scene.is_none() {
+            let fresh = self
+                .fresh_lifecycle
+                .get()
+                .ok_or(RuntimeError::OwnerUnavailable)?
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let inputs = fresh
+                .inputs
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable)?;
             total = total
-                .checked_add(usize::from(inputs.bootstrap_reader.is_some()))
-                .and_then(|sum| sum.checked_add(usize::from(inputs.bootstrap_writer.is_some())))
+                .checked_add(fresh.supervisor_descriptor_data()?)
                 .ok_or(RuntimeError::ResourceLimit)?;
+            for input in inputs.launches.iter().flatten() {
+                if let Some(slot) = &input.slot {
+                    total = total
+                        .checked_add(
+                            slot.retained_descriptor_views_precredit_data()?
+                                .ok_or(RuntimeError::UnsupportedFacet)?,
+                        )
+                        .ok_or(RuntimeError::ResourceLimit)?;
+                }
+                total = total
+                    .checked_add(usize::from(input.bootstrap_reader.is_some()))
+                    .and_then(|value| {
+                        value.checked_add(usize::from(input.bootstrap_writer.is_some()))
+                    })
+                    .ok_or(RuntimeError::ResourceLimit)?;
+            }
         }
         total = total
             .checked_add(
@@ -676,4 +708,123 @@ impl PacketCompleteReportStartupHolder {
 // or constructing the future hash/hex bank merely to quote its size.
 fn returned_layout_bytes<T>(_: impl FnOnce() -> T) -> usize {
     std::mem::size_of::<T>()
+}
+
+// Both families use the same installed baseline protocol. These borrowed views
+// never change the holder purpose or create an original-scene runtime actor.
+enum HostInitialLifecycleOwner<'a> {
+    Original(std::cell::Ref<'a, OriginalSceneOwners>),
+    Fresh(std::cell::Ref<'a, super::super::restoration::FreshLifecycleOwners>),
+}
+
+impl HostInitialLifecycleOwner<'_> {
+    fn staged(&self) -> bool {
+        match self {
+            Self::Original(owner) => owner.staged,
+            Self::Fresh(owner) => owner.staged,
+        }
+    }
+
+    fn launched(&self) -> &Cell<bool> {
+        match self {
+            Self::Original(owner) => &owner.launched,
+            Self::Fresh(owner) => &owner.launched,
+        }
+    }
+
+    fn initial_attempted(&self) -> &[Cell<bool>; 3] {
+        match self {
+            Self::Original(owner) => &owner.initial_attempted,
+            Self::Fresh(owner) => &owner.initial_attempted,
+        }
+    }
+
+    fn initial_in_flight(&self) -> &[Cell<bool>; 3] {
+        match self {
+            Self::Original(owner) => &owner.initial_in_flight,
+            Self::Fresh(owner) => &owner.initial_in_flight,
+        }
+    }
+
+    fn initial_completed(&self) -> &[Cell<bool>; 3] {
+        match self {
+            Self::Original(owner) => &owner.initial_completed,
+            Self::Fresh(owner) => &owner.initial_completed,
+        }
+    }
+
+    fn roles(&self) -> &RefCell<[Option<InstalledCnpConformanceRole>; 3]> {
+        match self {
+            Self::Original(owner) => &owner.roles,
+            Self::Fresh(owner) => &owner.roles,
+        }
+    }
+
+    fn windows(
+        &self,
+    ) -> &[OnceCell<RefCell<crucible::node_admission::CompleteOriginalHostInitialLifecycleWindow>>; 3]
+    {
+        match self {
+            Self::Original(owner) => &owner.windows,
+            Self::Fresh(owner) => &owner.windows,
+        }
+    }
+
+    fn admit_ids(&self) -> Result<&[Id; 3], RuntimeError> {
+        match self {
+            Self::Original(owner) => Ok(&owner.inputs.admit_ids),
+            Self::Fresh(owner) => owner
+                .admit_ids
+                .as_ref()
+                .ok_or(RuntimeError::OwnerUnavailable),
+        }
+    }
+}
+
+impl PacketCompleteReportStartupHolder {
+    fn host_initial_lifecycle_owner_data(
+        &self,
+    ) -> Result<HostInitialLifecycleOwner<'_>, RuntimeError> {
+        match &self.purpose {
+            StartupHolderPurpose::OriginalScene => self
+                .original_scene
+                .get()
+                .ok_or(RuntimeError::OwnerUnavailable)?
+                .try_borrow()
+                .map(HostInitialLifecycleOwner::Original)
+                .map_err(|_| RuntimeError::OwnerBusy),
+            StartupHolderPurpose::FreshRestoration(_) => self
+                .fresh_lifecycle
+                .get()
+                .ok_or(RuntimeError::OwnerUnavailable)?
+                .try_borrow()
+                .map(HostInitialLifecycleOwner::Fresh)
+                .map_err(|_| RuntimeError::OwnerBusy),
+        }
+    }
+
+    fn host_initial_lifecycle_in_flight_data(&self) -> Result<bool, RuntimeError> {
+        if self.original_scene.get().is_none() && self.fresh_lifecycle.get().is_none() {
+            return Ok(false);
+        }
+        Ok(self
+            .host_initial_lifecycle_owner_data()?
+            .initial_in_flight()
+            .iter()
+            .any(Cell::get))
+    }
+}
+
+pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn fresh_view_counter_scratch_data()
+-> usize {
+    use std::mem::size_of;
+    size_of::<HostInitialLifecycleOwner<'static>>()
+        + size_of::<Result<HostInitialLifecycleOwner<'static>, RuntimeError>>()
+        + size_of::<&HostInitialLifecycleOwner<'static>>()
+        + size_of::<Option<std::cell::Ref<'static, OriginalSceneOwners>>>()
+        + size_of::<&RefCell<[Option<InstalledCnpConformanceRole>; 3]>>()
+        + size_of::<&[Cell<bool>; 3]>()
+        + size_of::<Result<bool, QualificationError>>()
+        + size_of::<Result<bool, RuntimeError>>()
+        + size_of::<Result<&[Id; 3], RuntimeError>>()
 }

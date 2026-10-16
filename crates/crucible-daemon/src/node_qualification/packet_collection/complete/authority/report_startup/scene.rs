@@ -6,6 +6,7 @@
 //! native admission; no proposal, content digest or data count grants effects.
 
 mod initial_lifecycle;
+pub(super) use initial_lifecycle::fresh_view_counter_scratch_data;
 
 use super::*;
 use crate::node_qualification::packet_collection::{
@@ -262,9 +263,17 @@ impl PacketCompleteReportStartupHolder {
     /// # Errors
     /// Refuses checked layout arithmetic overflow.
     pub(super) fn original_scene_counter_scratch_data(&self) -> Result<usize, RuntimeError> {
+        if matches!(&self.purpose, StartupHolderPurpose::FreshRestoration(_)) {
+            return super::restoration::FreshLifecycleOwners::counter_scratch_data();
+        }
         if self.original_scene.get().is_none() {
             return Ok(0);
         }
+        Self::shared_initial_lifecycle_counter_scratch_data()
+    }
+
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn shared_initial_lifecycle_counter_scratch_data()
+    -> Result<usize, RuntimeError> {
         [
             std::mem::size_of::<Counter>() * 2,
             super::runtime::lifecycle_counter_scratch_data()?,
@@ -299,6 +308,7 @@ impl PacketCompleteReportStartupHolder {
         counter: &mut Counter,
     ) -> Result<(), RuntimeError> {
         self.authenticate_native_origin_data()?;
+        self.charge_fresh_lifecycle_storage_data(counter)?;
         if self.installed_host_owner.get().is_some() {
             // The installed actor's actual outer slot remains inline in its
             // catalog. Its input bank has moved here before this first walk;
@@ -551,7 +561,7 @@ impl PacketCompleteReportStartupHolder {
 }
 
 impl PacketCompleteReportStartupHolder {
-    fn current_original_scene_peak_data(
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn current_original_scene_peak_data(
         original: &Rc<RefCell<Self>>,
         held: &Self,
     ) -> Result<usize, RuntimeError> {

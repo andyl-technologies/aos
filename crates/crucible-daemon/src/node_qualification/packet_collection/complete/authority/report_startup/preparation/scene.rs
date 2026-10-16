@@ -256,3 +256,38 @@ impl PreparationOwners {
         Ok(total)
     }
 }
+
+impl PacketCompleteReportStartupHolder {
+    // Fresh installation already reserves the known supervisors. It may stage
+    // IDs only while those exact peer slots are empty and no HOST attempt began.
+    pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn stage_original_fresh_query_ids_data(
+        &self,
+        incoming: &mut [Option<Id>; 3],
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_native_origin_data()?;
+        if !matches!(&self.purpose, StartupHolderPurpose::FreshRestoration(_)) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let mut owners = self
+            .preparations
+            .try_borrow_mut()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        if !owners.attempted
+            || incoming.iter().any(Option::is_none)
+            || owners.peers.iter().any(|peer| {
+                peer.planned_id.is_some()
+                    || peer.host_attempted
+                    || peer.preparation.is_some()
+                    || peer.ticket.get().is_some()
+                    || peer.operational.is_none()
+                    || peer.supervisor.is_none()
+            })
+        {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        for (peer, id) in owners.peers.iter_mut().zip(incoming) {
+            peer.planned_id = id.take();
+        }
+        Ok(())
+    }
+}
