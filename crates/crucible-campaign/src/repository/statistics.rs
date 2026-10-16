@@ -7,28 +7,23 @@
 //! total population. Callers should not treat the current projection path as a
 //! constant-time scheduler operation.
 //!
-//! Internal estimates never assemble a portable evidence bundle. They read one
+//! Internal estimates never assemble portable evidence. They read one
 //! execution at a time from the pinned roots and feed it to the same
 //! incremental replay that verifies portable evidence, so their live memory is
-//! one execution plus `O(particle_count)` replay state, and the 64 MiB
-//! portable-bundle bound applies only when a caller asks for that bundle.
+//! one execution plus `O(particle_count)` replay state. The `evidence` child
+//! module collects those executions and packs the portable chunked form.
 
 use super::*;
 use crate::statistics::{EvidenceBasis, FiniteEvidenceReplay, SmcEvidenceReplay};
 use crate::{
-    FiniteStatisticalEvidence, MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_ITEMS,
-    SequentialMonteCarloEstimateReport, SequentialMonteCarloEvidence, SmcTransitionEvidence,
-    StatisticalChoiceEvidence, StatisticalDrawEvidence, StatisticalEstimateReport,
-    StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence, StatisticalGeneration,
-    StatisticalOpportunityEvidence, StatisticalParticleOutcome, StatisticalProposalEvidence,
-    StatisticalRational, verify_finite_statistical_evidence,
-    verify_sequential_monte_carlo_evidence,
+    SequentialMonteCarloEstimateReport, StatisticalEstimateReport, StatisticalGeneration,
+    StatisticalParticleOutcome, StatisticalProposalEvidence, StatisticalRational,
 };
 
-/// Wrapper bytes around one draw (`u64` coordinate) in portable evidence.
-const DRAW_WRAPPER_BYTES: usize = std::mem::size_of::<u64>();
-/// Wrapper bytes around one transition (`u32` stage and slot) in portable evidence.
-const TRANSITION_WRAPPER_BYTES: usize = std::mem::size_of::<u32>() * 2;
+mod evidence;
+
+#[cfg(test)]
+pub(in crate::repository) use evidence::ChunkLimits;
 
 impl CampaignRepository {
     pub(super) fn statistical_request_basis(
@@ -565,95 +560,7 @@ impl CampaignRepository {
         Ok(Some(outcomes))
     }
 
-    /// Collects complete owner-authenticated evidence for a finite estimate.
-    ///
-    /// Collection reads every policy-declared coordinate from the pinned roots,
-    /// resolves each immutable record closure, and applies the same pure
-    /// semantic verifier used by checked clients before returning.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a stale or incomplete snapshot, invalid root
-    /// membership, malformed record closure, semantic replay failure, or an
-    /// aggregate evidence body larger than the public transport bound.
-    pub fn collect_finite_statistical_evidence(
-        &self,
-        name: &str,
-        expected_snapshot: CampaignSnapshotId,
-    ) -> Result<FiniteStatisticalEvidence, CampaignRepositoryError> {
-        let snapshot = self.load_statistical_snapshot(name, expected_snapshot)?;
-        let policy = self.read_policy(snapshot.snapshot.active_policy().content_id())?;
-        let evidence =
-            self.collect_finite_statistical_evidence_from_loaded(&snapshot, &policy, false)?;
-        verify_finite_statistical_evidence(&evidence)?;
-        Ok(evidence)
-    }
-
-    /// Collects complete owner-authenticated evidence for a finished SMC run.
-    ///
-    /// Every stage and slot is read in policy order. Missing transitions fail
-    /// closed, and the common pure verifier checks all stage barriers,
-    /// selectors, support, genealogy, and exact weights before return.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a stale or incomplete snapshot, invalid root
-    /// membership, malformed record closure, semantic replay failure, or an
-    /// aggregate evidence body larger than the public transport bound.
-    pub fn collect_sequential_monte_carlo_evidence(
-        &self,
-        name: &str,
-        expected_snapshot: CampaignSnapshotId,
-    ) -> Result<SequentialMonteCarloEvidence, CampaignRepositoryError> {
-        let snapshot = self.load_statistical_snapshot(name, expected_snapshot)?;
-        let policy = self.read_policy(snapshot.snapshot.active_policy().content_id())?;
-        let initial =
-            self.collect_finite_statistical_evidence_from_loaded(&snapshot, &policy, true)?;
-        let design = policy
-            .sequential_monte_carlo_design()
-            .ok_or_else(|| integrity("SMC evidence requires an SMC policy"))?;
-
-        let mut charged_bytes = initial
-            .canonical_bytes()
-            .len()
-            .checked_add(std::mem::size_of::<u64>())
-            .ok_or_else(|| integrity("SMC evidence byte accounting overflows"))?;
-        charge_statistical_evidence(&mut charged_bytes, 0)?;
-        let transition_count =
-            checked_smc_evidence_transition_count(design.stages().len(), design.particle_count())?;
-        let minimum_transition_bytes = transition_count
-            .checked_mul(std::mem::size_of::<u32>() * 2)
-            .ok_or_else(|| integrity("SMC evidence minimum byte count overflows"))?;
-        if charged_bytes
-            .checked_add(minimum_transition_bytes)
-            .is_none_or(|bytes| bytes > MAX_STATISTICAL_EVIDENCE_BYTES)
-        {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "statistical-evidence-bytes",
-            }
-            .into());
-        }
-        let mut transitions = Vec::with_capacity(transition_count);
-        for stage in design.stages().keys().copied() {
-            for slot in 0..design.particle_count() {
-                let remaining_bytes =
-                    remaining_statistical_evidence_bytes(charged_bytes, TRANSITION_WRAPPER_BYTES)?;
-                let transition =
-                    self.collect_smc_transition_evidence(&snapshot, stage, slot, remaining_bytes)?;
-                charge_statistical_evidence(
-                    &mut charged_bytes,
-                    crate::codec::encode(&transition).len(),
-                )?;
-                transitions.push(transition);
-            }
-        }
-
-        let evidence = SequentialMonteCarloEvidence::new(initial, transitions);
-        verify_sequential_monte_carlo_evidence(&evidence)?;
-        Ok(evidence)
-    }
-
-    fn load_statistical_snapshot(
+    pub(super) fn load_statistical_snapshot(
         &self,
         name: &str,
         expected_snapshot: CampaignSnapshotId,
@@ -670,104 +577,7 @@ impl CampaignRepository {
         Ok(snapshot)
     }
 
-    fn collect_finite_statistical_evidence_from_loaded(
-        &self,
-        snapshot: &LoadedSnapshot,
-        policy: &CampaignPolicy,
-        allow_smc: bool,
-    ) -> Result<FiniteStatisticalEvidence, CampaignRepositoryError> {
-        let design = statistical_report_design(policy, allow_smc)?;
-        let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
-        let mut charged_bytes = crate::codec::encode(&snapshot.snapshot)
-            .len()
-            .checked_add(crate::codec::encode(&snapshot.snapshot.planning_view()).len())
-            .and_then(|bytes| bytes.checked_add(crate::codec::encode(policy).len()))
-            .and_then(|bytes| bytes.checked_add(crate::codec::encode(&lineage).len()))
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<u64>()))
-            .ok_or_else(|| integrity("finite evidence byte accounting overflows"))?;
-        charge_statistical_evidence(&mut charged_bytes, 0)?;
-        let mut draws = Vec::with_capacity(design.draws().len());
-
-        for coordinate in design.draws().keys().copied() {
-            let remaining_bytes =
-                remaining_statistical_evidence_bytes(charged_bytes, DRAW_WRAPPER_BYTES)?;
-            let draw =
-                self.collect_statistical_draw_evidence(snapshot, coordinate, remaining_bytes)?;
-            charge_statistical_evidence(&mut charged_bytes, crate::codec::encode(&draw).len())?;
-            draws.push(draw);
-        }
-
-        Ok(FiniteStatisticalEvidence::new(
-            snapshot.snapshot.clone(),
-            snapshot.snapshot.planning_view(),
-            policy.clone(),
-            lineage,
-            draws,
-        ))
-    }
-
-    /// Collects one stage-zero draw bounded to `maximum_bytes` of execution.
-    fn collect_statistical_draw_evidence(
-        &self,
-        snapshot: &LoadedSnapshot,
-        coordinate: u64,
-        maximum_bytes: usize,
-    ) -> Result<StatisticalDrawEvidence, CampaignRepositoryError> {
-        let request_content = self
-            .merkle
-            .get(
-                snapshot.snapshot.roots().exploration,
-                statistical_draw_request_key(coordinate),
-            )?
-            .ok_or_else(|| integrity("statistical-report-draw-request-is-missing"))?;
-        let proposal_content = self
-            .merkle
-            .get(
-                snapshot.snapshot.roots().accounting,
-                statistical_draw_proposal_key(coordinate),
-            )?
-            .ok_or_else(|| integrity("statistical-report-draw-proposal-is-missing"))?;
-        let execution = self.collect_statistical_execution_evidence(
-            snapshot,
-            request_content,
-            proposal_content,
-            maximum_bytes,
-        )?;
-        Ok(StatisticalDrawEvidence::new(coordinate, execution))
-    }
-
-    /// Collects one SMC transition bounded to `maximum_bytes` of execution.
-    fn collect_smc_transition_evidence(
-        &self,
-        snapshot: &LoadedSnapshot,
-        stage: u32,
-        slot: u32,
-        maximum_bytes: usize,
-    ) -> Result<SmcTransitionEvidence, CampaignRepositoryError> {
-        let request_content = self
-            .merkle
-            .get(
-                snapshot.snapshot.roots().exploration,
-                smc_transition_request_key(stage, slot),
-            )?
-            .ok_or_else(|| integrity("SMC evidence transition request is missing"))?;
-        let proposal_content = self
-            .merkle
-            .get(
-                snapshot.snapshot.roots().accounting,
-                smc_transition_proposal_key(stage, slot),
-            )?
-            .ok_or_else(|| integrity("SMC evidence transition proposal is missing"))?;
-        let execution = self.collect_statistical_execution_evidence(
-            snapshot,
-            request_content,
-            proposal_content,
-            maximum_bytes,
-        )?;
-        Ok(SmcTransitionEvidence::new(stage, slot, execution))
-    }
-
-    /// Replays a finite flight one draw at a time without assembling a bundle.
+    /// Replays a finite flight one draw at a time without assembling evidence.
     fn replay_finite_statistical_estimate(
         &self,
         snapshot: &LoadedSnapshot,
@@ -781,17 +591,13 @@ impl CampaignRepository {
 
         let mut replay = FiniteEvidenceReplay::new(basis, allow_smc)?;
         for coordinate in design.draws().keys().copied() {
-            let draw = self.collect_statistical_draw_evidence(
-                snapshot,
-                coordinate,
-                MAX_STATISTICAL_EVIDENCE_BYTES - DRAW_WRAPPER_BYTES,
-            )?;
+            let draw = self.collect_statistical_draw_evidence(snapshot, coordinate)?;
             replay.push(&draw)?;
         }
         replay.finish().map_err(Into::into)
     }
 
-    /// Replays a finished SMC run one execution at a time without a bundle.
+    /// Replays a finished SMC run one execution at a time without assembling evidence.
     fn replay_sequential_monte_carlo_estimate(
         &self,
         snapshot: &LoadedSnapshot,
@@ -807,194 +613,16 @@ impl CampaignRepository {
 
         let mut replay = SmcEvidenceReplay::new(basis)?;
         for coordinate in initial_design.draws().keys().copied() {
-            let draw = self.collect_statistical_draw_evidence(
-                snapshot,
-                coordinate,
-                MAX_STATISTICAL_EVIDENCE_BYTES - DRAW_WRAPPER_BYTES,
-            )?;
+            let draw = self.collect_statistical_draw_evidence(snapshot, coordinate)?;
             replay.push_initial_draw(&draw)?;
         }
         for stage in design.stages().keys().copied() {
             for slot in 0..design.particle_count() {
-                let transition = self.collect_smc_transition_evidence(
-                    snapshot,
-                    stage,
-                    slot,
-                    MAX_STATISTICAL_EVIDENCE_BYTES - TRANSITION_WRAPPER_BYTES,
-                )?;
+                let transition = self.collect_smc_transition_evidence(snapshot, stage, slot)?;
                 replay.push_transition(&transition)?;
             }
         }
         replay.finish().map_err(Into::into)
-    }
-
-    fn collect_statistical_execution_evidence(
-        &self,
-        snapshot: &LoadedSnapshot,
-        request_content: ContentId,
-        proposal_content: ContentId,
-        maximum_bytes: usize,
-    ) -> Result<StatisticalExecutionEvidence, CampaignRepositoryError> {
-        let mut charged_bytes = std::mem::size_of::<u64>();
-        let request = self.read_branch_request(request_content)?;
-        charge_statistical_execution_evidence(
-            &mut charged_bytes,
-            crate::codec::encode(&request).len(),
-            maximum_bytes,
-        )?;
-        let parent = self.read_configuration_artifact(request.parent().content_id())?;
-        charge_statistical_execution_evidence(
-            &mut charged_bytes,
-            crate::codec::encode(&parent).len(),
-            maximum_bytes,
-        )?;
-        let request_opportunity =
-            self.collect_statistical_opportunity_evidence(request.opportunity())?;
-        charge_statistical_execution_evidence(
-            &mut charged_bytes,
-            crate::codec::encode(&request_opportunity).len(),
-            maximum_bytes,
-        )?;
-        let proposal = self.read_proposal(proposal_content)?;
-        charge_statistical_execution_evidence(
-            &mut charged_bytes,
-            crate::codec::encode(&proposal).len(),
-            maximum_bytes,
-        )?;
-
-        let proposal_admission_content = self
-            .merkle
-            .get(
-                snapshot.snapshot.roots().accounting,
-                map_key_content("accounting.proposal-admission", proposal_content),
-            )?
-            .ok_or_else(|| integrity("statistical evidence proposal admission is missing"))?;
-        let proposal_admission = self.read_attempt_admission(proposal_admission_content)?;
-        charge_statistical_execution_evidence(
-            &mut charged_bytes,
-            crate::codec::encode(&proposal_admission).len(),
-            maximum_bytes,
-        )?;
-        let attempt_id = proposal_admission.attempt();
-        let attempt = self.read_attempt(attempt_id.content_id())?;
-        charge_statistical_execution_evidence(
-            &mut charged_bytes,
-            crate::codec::encode(&attempt).len(),
-            maximum_bytes,
-        )?;
-        let AttemptStart::Branch { selection, .. } = attempt.start() else {
-            return Err(integrity("statistical evidence attempt is not a branch"));
-        };
-        let selection = self.resolve_selection(selection)?;
-        let choice = StatisticalChoiceEvidence::new(
-            selection.selection().clone(),
-            StatisticalOpportunityEvidence::new(
-                selection.opportunity().clone(),
-                selection.declaration().clone(),
-                selection.domain().clone(),
-            ),
-        );
-        charge_statistical_execution_evidence(
-            &mut charged_bytes,
-            crate::codec::encode(&choice).len(),
-            maximum_bytes,
-        )?;
-        let path = self.read_branch_path(attempt.path().content_id())?;
-        charge_statistical_execution_evidence(
-            &mut charged_bytes,
-            crate::codec::encode(&path).len(),
-            maximum_bytes,
-        )?;
-
-        let observation_content = self
-            .merkle
-            .get(
-                snapshot.snapshot.roots().observations,
-                map_key_content("observations.attempt", attempt_id.content_id()),
-            )?
-            .ok_or_else(|| integrity("statistical-report-draw-observation-is-missing"))?;
-        let observation = self.read_observation(observation_content)?;
-        charge_statistical_execution_evidence(
-            &mut charged_bytes,
-            crate::codec::encode(&observation).len(),
-            maximum_bytes,
-        )?;
-        let child = self.read_configuration_artifact(observation.child_content().content_id())?;
-        charge_statistical_execution_evidence(
-            &mut charged_bytes,
-            crate::codec::encode(&child).len(),
-            maximum_bytes,
-        )?;
-        let mut discovered_opportunities = Vec::new();
-        for opportunity in observation.discovered_choices().iter().copied() {
-            let opportunity = self.collect_statistical_opportunity_evidence(opportunity)?;
-            charge_statistical_execution_evidence(
-                &mut charged_bytes,
-                crate::codec::encode(&opportunity).len(),
-                maximum_bytes,
-            )?;
-            discovered_opportunities.push(opportunity);
-        }
-
-        let basis_content = self
-            .merkle
-            .get(
-                snapshot.snapshot.roots().accounting,
-                map_key_content(
-                    "accounting.attempt-execution-basis",
-                    attempt_id.content_id(),
-                ),
-            )?
-            .ok_or_else(|| integrity("statistical evidence execution basis is missing"))?;
-        let basis_admission = self.read_attempt_admission(basis_content)?;
-        let AttemptAdmissionRole::ExecutionBasis {
-            proposal: Some(basis_proposal),
-            ..
-        } = basis_admission.role()
-        else {
-            return Err(integrity(
-                "statistical evidence execution basis has no proposal",
-            ));
-        };
-        let basis_proposal = self.read_proposal(basis_proposal.content_id())?;
-        let basis_request = self.read_branch_request(basis_proposal.request().content_id())?;
-        let execution_basis =
-            StatisticalExecutionBasisEvidence::new(basis_admission, basis_proposal, basis_request);
-        charge_statistical_execution_evidence(
-            &mut charged_bytes,
-            crate::codec::encode(&execution_basis).len(),
-            maximum_bytes,
-        )?;
-
-        let evidence = StatisticalExecutionEvidence::new(
-            request,
-            parent,
-            request_opportunity,
-            proposal,
-            proposal_admission,
-            execution_basis,
-            attempt,
-            choice,
-            path,
-            observation,
-            child,
-            discovered_opportunities,
-        );
-        debug_assert_eq!(charged_bytes, crate::codec::encode(&evidence).len());
-        Ok(evidence)
-    }
-
-    fn collect_statistical_opportunity_evidence(
-        &self,
-        opportunity: ChoiceOpportunityId,
-    ) -> Result<StatisticalOpportunityEvidence, CampaignRepositoryError> {
-        let (opportunity, declaration, domain) =
-            self.load_choice_opportunity_dependencies(opportunity)?;
-        Ok(StatisticalOpportunityEvidence::new(
-            opportunity,
-            declaration,
-            domain,
-        ))
     }
 
     /// Projects exact importance weights for a complete pinned sampling design.
@@ -1055,7 +683,7 @@ impl CampaignRepository {
     /// recomputed from the active policy and authenticated roots. Resampling is
     /// replayed from the policy seed at each completed stage; the final stage is
     /// not redundantly resampled. Records are read and verified one execution at
-    /// a time, so the run is not limited by the portable evidence bundle size.
+    /// a time, so the run is not limited by the portable evidence chunk size.
     ///
     /// # Errors
     ///
@@ -1144,85 +772,4 @@ fn statistical_proposal_probability(
         u128::from(evidence.proposal_total()),
     )
     .map_err(Into::into)
-}
-
-fn charge_statistical_evidence(
-    charged_bytes: &mut usize,
-    additional_bytes: usize,
-) -> Result<(), CampaignRepositoryError> {
-    *charged_bytes = charged_bytes
-        .checked_add(additional_bytes)
-        .ok_or_else(|| integrity("statistical evidence byte accounting overflows"))?;
-    if *charged_bytes > MAX_STATISTICAL_EVIDENCE_BYTES {
-        return Err(CampaignCodecError::LimitExceeded {
-            limit: "statistical-evidence-bytes",
-        }
-        .into());
-    }
-    Ok(())
-}
-
-fn remaining_statistical_evidence_bytes(
-    charged_bytes: usize,
-    wrapper_bytes: usize,
-) -> Result<usize, CampaignRepositoryError> {
-    charged_bytes
-        .checked_add(wrapper_bytes)
-        .and_then(|bytes| MAX_STATISTICAL_EVIDENCE_BYTES.checked_sub(bytes))
-        .ok_or_else(|| {
-            CampaignCodecError::LimitExceeded {
-                limit: "statistical-evidence-bytes",
-            }
-            .into()
-        })
-}
-
-fn charge_statistical_execution_evidence(
-    charged_bytes: &mut usize,
-    additional_bytes: usize,
-    maximum_bytes: usize,
-) -> Result<(), CampaignRepositoryError> {
-    *charged_bytes = charged_bytes
-        .checked_add(additional_bytes)
-        .ok_or_else(|| integrity("statistical execution evidence byte accounting overflows"))?;
-    if *charged_bytes > maximum_bytes {
-        return Err(CampaignCodecError::LimitExceeded {
-            limit: "statistical-evidence-bytes",
-        }
-        .into());
-    }
-    Ok(())
-}
-
-fn checked_smc_evidence_transition_count(
-    stage_count: usize,
-    particle_count: u32,
-) -> Result<usize, CampaignRepositoryError> {
-    let transition_count = stage_count
-        .checked_mul(particle_count as usize)
-        .ok_or_else(|| integrity("SMC evidence transition count overflows"))?;
-    if transition_count > MAX_STATISTICAL_EVIDENCE_ITEMS {
-        return Err(CampaignCodecError::LimitExceeded {
-            limit: "SMC-evidence-transition-count",
-        }
-        .into());
-    }
-    Ok(transition_count)
-}
-
-#[cfg(test)]
-mod evidence_bounds_tests {
-    use super::*;
-
-    #[test]
-    fn smc_collector_rejects_oversized_transition_count_before_allocation() {
-        assert!(matches!(
-            checked_smc_evidence_transition_count(MAX_STATISTICAL_EVIDENCE_ITEMS, 2),
-            Err(CampaignRepositoryError::Codec(
-                CampaignCodecError::LimitExceeded {
-                    limit: "SMC-evidence-transition-count"
-                }
-            ))
-        ));
-    }
 }

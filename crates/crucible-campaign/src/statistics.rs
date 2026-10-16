@@ -21,13 +21,16 @@ mod smc;
 
 #[cfg(test)]
 pub(crate) use evidence::verify_smc_source_selector;
-pub(crate) use evidence::{EvidenceBasis, FiniteEvidenceReplay, SmcEvidenceReplay};
+pub(crate) use evidence::{
+    EvidenceBasis, FiniteEvidenceReplay, SmcEvidenceReplay, statistical_evidence_item_count,
+};
 pub use evidence::{
-    FiniteStatisticalEvidence, MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_ITEMS,
-    SequentialMonteCarloEvidence, SmcTransitionEvidence, StatisticalChoiceEvidence,
-    StatisticalDrawEvidence, StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence,
+    MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_CHUNKS,
+    MAX_STATISTICAL_EVIDENCE_ITEMS, SmcTransitionEvidence, StatisticalChoiceEvidence,
+    StatisticalDrawEvidence, StatisticalEvidenceChunk, StatisticalEvidenceChunkDescriptor,
+    StatisticalEvidenceItem, StatisticalEvidenceManifest, StatisticalEvidenceReport,
+    StatisticalEvidenceVerifier, StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence,
     StatisticalOpportunityEvidence, StatisticalRoot, StatisticalRootLookup,
-    verify_finite_statistical_evidence, verify_sequential_monte_carlo_evidence,
 };
 
 pub use smc::{

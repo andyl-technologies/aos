@@ -10,7 +10,7 @@ its on-wire magic may use a shorter or older spelling. For example,
 
 | Source family | Formats assigned in the registry |
 | --- | --- |
-| `crucible-campaign` object, choice, exploration, observation, finding, archive, authority, planner, execution, and service modules | Content records and independently versioned component requests and responses. The request-attempts page pair is version 2. |
+| `crucible-campaign` object, choice, exploration, observation, finding, archive, authority, planner, execution, and service modules | Content records and independently versioned component requests and responses. The request-attempts page pair is version 2. Portable statistical evidence is a version-2 manifest with version-1 chunks; the earlier unversioned bundle is retired. |
 | `crucible-cas` content envelope, content-store, and `cas::campaign_codec` modules | Envelope, mutable refs, graph configuration, physical objects, inventory, quota, key, pack, transfer, corpus, coverage, findings, manifest, and frontier records. The pre-RFC campaign CAS records are still current and have their own rows. |
 | `crucible-daemon` campaign, planner, executor, checkpoint, and loopback modules | Component frames, operational journals, campaign state identity, exact checkpoint records, and replay evidence. The campaign loopback frame is version 21. |
 | `crucible-cli` campaign, store-repair, and verify-serve modules | Input schemas, durable deployment configuration, bundle exports, and versioned machine-readable reports. The store-repair placement report uses `crucible.cli.store-repair.v1`. The general campaign-object report uses the `crucible.cli.campaign-object.v1` tag; its choice-object variant uses the `v2` tag. |

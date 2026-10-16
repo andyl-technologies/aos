@@ -285,15 +285,16 @@ pub use repository::{
     SavepointCaptureResult, SavepointContinuationResult, SavepointContinuationSource, WorkerSlotId,
 };
 pub use statistics::{
-    FiniteStatisticalEvidence, MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_ITEMS,
-    SequentialMonteCarloEstimateReport, SequentialMonteCarloEvidence, SmcEstimateLabel,
+    MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_CHUNKS,
+    MAX_STATISTICAL_EVIDENCE_ITEMS, SequentialMonteCarloEstimateReport, SmcEstimateLabel,
     SmcSupportValidation, SmcTransitionEvidence, SmcUncertaintyStatement,
     StatisticalChoiceEvidence, StatisticalDrawEvidence, StatisticalEndpointEstimate,
-    StatisticalEstimateReport, StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence,
+    StatisticalEstimateReport, StatisticalEvidenceChunk, StatisticalEvidenceChunkDescriptor,
+    StatisticalEvidenceItem, StatisticalEvidenceManifest, StatisticalEvidenceReport,
+    StatisticalEvidenceVerifier, StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence,
     StatisticalGeneration, StatisticalGenerationSummary, StatisticalOpportunityEvidence,
     StatisticalParticleOutcome, StatisticalParticleSlot, StatisticalRational, StatisticalRoot,
-    StatisticalRootLookup, StatisticalWeightDiagnostics, verify_finite_statistical_evidence,
-    verify_sequential_monte_carlo_evidence,
+    StatisticalRootLookup, StatisticalWeightDiagnostics,
 };
 
 #[cfg(test)]

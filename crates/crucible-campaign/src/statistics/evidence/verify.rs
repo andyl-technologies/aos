@@ -10,15 +10,18 @@
 //! stage's outcomes. Live memory is therefore `O(particle_count)`, not
 //! proportional to the number of completed transitions.
 //!
-//! The whole-bundle verifiers below feed a bundle through the same replay, and
+//! The chunked portable verifier feeds chunk items through these replays, and
 //! the repository's internal estimates feed records read one execution at a
-//! time from snapshot roots, so both paths apply identical checks.
+//! time from snapshot roots, so both paths apply identical checks. Proposal
+//! membership and its content envelope authenticate the historical guidance and
+//! planner-invocation identities; replay does not reconstruct historical
+//! planner ranking decisions.
 
 use std::collections::{BTreeMap, BTreeSet, btree_map};
 
 use super::{
-    FiniteStatisticalEvidence, SequentialMonteCarloEvidence, SmcTransitionEvidence,
-    StatisticalDrawEvidence, StatisticalExecutionEvidence, StatisticalOpportunityEvidence,
+    SmcTransitionEvidence, StatisticalDrawEvidence, StatisticalExecutionEvidence,
+    StatisticalOpportunityEvidence,
 };
 use crate::{
     AttemptAdmissionRole, AttemptId, AttemptStart, BranchBudget, BranchPath, BranchPathId,
@@ -37,53 +40,6 @@ mod smc_replay;
 
 pub(crate) use smc_replay::SmcEvidenceReplay;
 use smc_replay::{SmcSource, SmcSourceKey};
-
-/// Replays the semantics of a complete finite statistical evidence bundle.
-///
-/// The caller must first authenticate the snapshot and every membership from
-/// [`FiniteStatisticalEvidence::required_root_lookups`].
-/// Proposal membership and its content envelope authenticate the historical
-/// guidance and planner-invocation identities; this estimator replay does not
-/// reconstruct historical planner ranking decisions.
-///
-/// # Errors
-///
-/// Returns [`CampaignCodecError`] when any identity, cross-record binding,
-/// coordinate, ancestry edge, probability, or report invariant is invalid.
-pub fn verify_finite_statistical_evidence(
-    evidence: &FiniteStatisticalEvidence,
-) -> Result<StatisticalEstimateReport, CampaignCodecError> {
-    let mut replay = FiniteEvidenceReplay::new(EvidenceBasis::of_finite(evidence), false)?;
-    for draw in evidence.draws() {
-        replay.push(draw)?;
-    }
-    replay.finish()
-}
-
-/// Replays the semantics of a complete sequential Monte Carlo evidence bundle.
-///
-/// The caller must first authenticate the snapshot and every membership from
-/// [`SequentialMonteCarloEvidence::required_root_lookups`].
-/// Proposal membership and its content envelope authenticate the historical
-/// guidance and planner-invocation identities; this estimator replay does not
-/// reconstruct historical planner ranking decisions.
-///
-/// # Errors
-///
-/// Returns [`CampaignCodecError`] when any initial draw, transition, selector,
-/// support, genealogy, probability, or report invariant is invalid.
-pub fn verify_sequential_monte_carlo_evidence(
-    evidence: &SequentialMonteCarloEvidence,
-) -> Result<SequentialMonteCarloEstimateReport, CampaignCodecError> {
-    let mut replay = SmcEvidenceReplay::new(EvidenceBasis::of_finite(evidence.initial()))?;
-    for draw in evidence.initial().draws() {
-        replay.push_initial_draw(draw)?;
-    }
-    for transition in evidence.transitions() {
-        replay.push_transition(transition)?;
-    }
-    replay.finish()
-}
 
 /// Snapshot-bound records shared by every item of one evidence stream.
 #[derive(Clone, Copy)]
@@ -107,15 +63,6 @@ impl<'a> EvidenceBasis<'a> {
             policy,
             lineage,
         }
-    }
-
-    fn of_finite(evidence: &'a FiniteStatisticalEvidence) -> Self {
-        Self::new(
-            evidence.snapshot(),
-            evidence.planning_view(),
-            evidence.policy(),
-            evidence.lineage(),
-        )
     }
 }
 

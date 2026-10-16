@@ -23,7 +23,7 @@ pub(super) struct SelectedOpportunity {
 ///
 /// The selector outcome is computed eagerly against the consuming stage's
 /// selector, but a mismatch is reported only when a particle actually extends
-/// this source, matching whole-bundle replay where resampling may drop it.
+/// this source, because resampling may drop it before the next stage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct SmcSource {
     pub(super) observation_path: BranchPathId,

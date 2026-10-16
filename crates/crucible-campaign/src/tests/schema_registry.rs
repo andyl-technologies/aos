@@ -614,6 +614,18 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             "component-message",
         ),
         (
+            "crucible.campaign.statistical-evidence",
+            "2",
+            "crucible-campaign::statistics::evidence",
+            "projection",
+        ),
+        (
+            "crucible.campaign.statistical-evidence-chunk",
+            "1",
+            "crucible-campaign::statistics::evidence",
+            "projection",
+        ),
+        (
             "crucible.campaign.state-identity",
             "1",
             "crucible-daemon::campaign_bootstrap",

@@ -1020,7 +1020,7 @@ generation's particle slots, it records one compact summary per consumed
 generation: the generation identity, its completed and next stage, whether it
 resampled, and its normalization factor. Internal estimates and planner
 request derivation fold executions read from the snapshot roots and never
-assemble the portable evidence bundle, so they are not limited by its size. It also exposes the
+assemble portable evidence. It also exposes the
 realized-weight self-normalized estimate with an explicit finite-sample-bias
 label. Exact effective sample size and maximum-weight concentration are
 descriptive diagnostics; shared genealogy precludes an IID uncertainty
@@ -1042,6 +1042,23 @@ that select the same semantic outcome retain their sampling multiplicity even
 when semantic attempt deduplication reuses one canonical observation, while
 shared ancestry keeps weight diagnostics descriptive rather than an IID
 confidence claim.
+
+Portable statistical evidence lets a client replay a finished report without
+repository access. It is a transport form, never production identity, and is
+split so that no single message carries a campaign's complete evidence. The
+version-2 manifest binds the snapshot, planning view, policy, lineage, total
+item count, and an ordered list of chunk descriptors (index, first item, item
+count, and chunk digest). Each version-1 chunk carries a contiguous run of
+items in replay order: every stage-zero draw in coordinate order, then every
+SMC transition in stage and slot order. A chunk or manifest is at most 64 MiB
+and a chunk carries at most 65,536 items; a manifest names at most 262,144
+chunks, which must tile the policy's item range exactly. The owner derives the
+manifest by replaying every item once and serves each chunk by rebuilding it
+deterministically from its descriptor, so neither side retains the complete
+evidence. A verifier accepts chunks only complete, in manifest order, and
+matching their descriptors, and replays them through the same incremental
+replay the owner uses. The earlier unversioned single-message bundle is no
+longer accepted.
 
 An operator or debugger proposal used as an attempt's `ExecutionBasis` is an
 intervention, not a draw from the campaign's proposal distribution. Its
