@@ -25,6 +25,14 @@ struct CatalogEvidenceCredit {
 }
 
 impl CatalogService {
+    pub(in crate::packaged_qemu_executor::ram_catalog) fn create_root_evidence_spool(
+        &self,
+        maximum_bytes: u64,
+        original: &HostOperationSupervisor,
+    ) -> Result<CatalogEvidenceSpool, StoreError> {
+        self.create_evidence_spool(self.authority.policy.root(), maximum_bytes, original)
+    }
+
     pub(in crate::packaged_qemu_executor::ram_catalog) fn reserve_evidence_resident(
         &self,
         bytes: u64,

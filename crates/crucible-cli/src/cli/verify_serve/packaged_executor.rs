@@ -96,10 +96,30 @@ struct PackagedExecutorDeployment {
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticsDeployment>,
     #[serde(default)]
     verify_determinism_findings: bool,
+    #[cfg(feature = "private-native-observation")]
+    native_plugin_flight: Option<NativePluginFlightDeployment>,
 }
 
 #[path = "host_operation_budgets.rs"]
 pub(super) mod host_operation_budgets;
+
+#[cfg(feature = "private-native-observation")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativePluginFlightDeployment {
+    kind: NativePluginFlightKindDeployment,
+    kernel: PathBuf,
+    initrd: PathBuf,
+    firmware: PathBuf,
+}
+
+#[cfg(feature = "private-native-observation")]
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum NativePluginFlightKindDeployment {
+    FourVcpu,
+    BlockRecovery,
+}
 
 /// Independently authored modeled request limits, separate from physical backing.
 #[derive(Debug, Deserialize)]
@@ -422,6 +442,29 @@ pub(super) fn prepare_cli_packaged_executor(
     let config = config
         .with_sqlite_process_heap(process_heap)
         .map_err(|error| serve_error(format!("campaign process heap binding: {error}")))?;
+    #[cfg(feature = "private-native-observation")]
+    let config = if let Some(inputs) = &deployment.native_plugin_flight {
+        let decoding = crate::cli_input_resources::original_budget()?;
+        let kind = match inputs.kind {
+            NativePluginFlightKindDeployment::FourVcpu => {
+                crucible_daemon::NativePluginFlightKind::FourVcpu
+            }
+            NativePluginFlightKindDeployment::BlockRecovery => {
+                crucible_daemon::NativePluginFlightKind::BlockRecovery
+            }
+        };
+        let inputs = crucible_daemon::NativePluginFlightInputs::new_admitted(
+            kind,
+            &inputs.kernel,
+            &inputs.initrd,
+            &inputs.firmware,
+            &decoding,
+        )
+        .map_err(|first| serve_error(format!("native observation inputs: {first}")))?;
+        config.with_native_plugin_flight(inputs)
+    } else {
+        config
+    };
     let config = config
         .with_process_owner(process_owner)
         .map_err(|error| serve_error(format!("campaign original executor binding: {error}")))?;

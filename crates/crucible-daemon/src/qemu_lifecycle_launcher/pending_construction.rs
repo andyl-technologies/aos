@@ -791,3 +791,25 @@ mod published_error_tests {
         );
     }
 }
+
+/// Publishes normal disposal without constructing a speculative first error.
+pub(crate) fn publish_source_owner(
+    reservation: Option<Box<dyn ProductionVmCleanupReservation>>,
+    owner: Box<dyn ProductionVmCleanupOwner>,
+) -> Result<Box<dyn crucible_api::ProductionVmCleanupHandoff>, SourceConstructionCustodyFailure> {
+    let Some(reservation) = reservation else {
+        return Err(SourceConstructionCustodyFailure::new(
+            missing_pending("same Source observation has no authentic reservation"),
+            None,
+            owner,
+        ));
+    };
+    match reservation.retain(owner) {
+        Ok(handoff) => Ok(handoff),
+        Err((reservation, owner)) => Err(SourceConstructionCustodyFailure::new(
+            missing_pending("same Source observation publication remains refused"),
+            Some(reservation),
+            owner,
+        )),
+    }
+}

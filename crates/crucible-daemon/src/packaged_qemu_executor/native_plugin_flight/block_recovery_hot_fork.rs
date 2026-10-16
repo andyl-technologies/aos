@@ -11,7 +11,7 @@ use crucible_device::block::{
     BlockTransitionUnadmitted, BlockTransitionUndelivered, BlockTransportRequestIds,
     ResolvedBlockControllerTransition,
 };
-use crucible_qemu::{QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig};
+use crucible_qemu::QemuLiveNodeStepGateConfig;
 
 use super::{DISK_BYTES, MEMORY_BYTES, RR_SWITCH_QUANTUM, prepare_live_hot_fork_template};
 
@@ -45,7 +45,7 @@ pub(super) struct BlockRecoveryHotForkEvidence {
 // crucible-lint: allow rust-allow -- the production subflight receives each authenticated executable and guest artifact explicitly.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run(
-    factory: &mut super::super::admission::AdmittedFlightFactory<'_>,
+    factory: &mut dyn super::super::admission::FlightAdmission,
     qemu: &Path,
     plugin: &Path,
     kernel: &Path,
@@ -80,17 +80,10 @@ pub(super) fn run(
         config
     };
     let mut owner = factory.begin(1, MEMORY_BYTES, DISK_BYTES)?;
-    let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
-    owner.prepare_fresh_artifacts(&mut directory, qemu)?;
-    let launch = owner.configure_launch(config.with_run_directory(directory.path()))?;
     let mut node = owner.launch(
-        &launch,
-        &directory,
-        QemuLiveNodeIdentity::new(
-            "block-recovery-hot-fork-node",
-            "block-recovery-hot-fork-router",
-            "block-recovery-hot-fork-crash",
-        ),
+        &config,
+        "block-recovery-hot-fork-router",
+        "block-recovery-hot-fork-crash",
     )?;
 
     // Apply recovery only after the guest has opened the device. This makes
@@ -98,13 +91,11 @@ pub(super) fn run(
     // cross a transition that the host has not started yet.
     let primary = (|| {
         let recovery_started_tick = await_recovery_readiness(&mut node)?;
-        let block = node
-            .shared_block_device()
-            .ok_or("block recovery subflight omitted its live device")?;
-        block.apply_storage_boundary_mutations(
+        node.apply_storage_boundary_mutations(
             &[],
             &[(recovery_transition(), recovery_started_tick)],
-        )?;
+        )
+        .ok_or("block recovery subflight omitted its live device")??;
         let recovery_deadline_tick = recovery_started_tick
             .checked_add(virtual_nanos_to_ticks(RECOVERY_NANOS)?)
             .ok_or("block recovery deadline overflowed virtual time")?;
@@ -115,17 +106,14 @@ pub(super) fn run(
     let shutdown = node.shutdown_child().map_err(|error| error.to_string());
     drop(node);
     let trace = match &shutdown {
-        Ok(report) if diagnostic_liveness_trace && report.reaped && !report.leaked => Some(
-            directory
-                .retain_runtime_liveness_trace_tail_after_reap()
-                .map_err(|error| error.to_string()),
-        ),
+        Ok(report) if diagnostic_liveness_trace && report.reaped && !report.leaked => {
+            Some(owner.liveness_tail().map_err(|error| error.to_string()))
+        }
         _ if diagnostic_liveness_trace => Some(Err(String::from(
             "trace unavailable because clean QEMU reap was not proven",
         ))),
         _ => None,
     };
-    drop(directory);
     let finish = owner.finish().map_err(|error| error.to_string());
 
     let (recovery_started_tick, primary) = primary.map_err(|error| {
@@ -156,7 +144,9 @@ pub(super) fn run(
     })
 }
 
-fn await_recovery_readiness(node: &mut super::QemuNode) -> Result<u64, Box<dyn Error>> {
+fn await_recovery_readiness(
+    node: &mut super::ObservedNativeNode<'_>,
+) -> Result<u64, Box<dyn Error>> {
     let readiness_slice_ticks = virtual_nanos_to_ticks(READINESS_SLICE_NANOS)?;
     let mut console = Vec::new();
     let mut last_reached = node.now().ticks;
@@ -258,7 +248,7 @@ struct PrimaryEvidence {
 }
 
 fn exercise_recovery_and_prepare_hot_fork(
-    node: &mut super::QemuNode,
+    node: &mut super::ObservedNativeNode<'_>,
     recovery_deadline_tick: u64,
 ) -> Result<PrimaryEvidence, Box<dyn Error>> {
     let mut console = Vec::new();
@@ -324,9 +314,8 @@ fn exercise_recovery_and_prepare_hot_fork(
         return Err(format!("block recovery did not settle exactly: {diagnostics:?}").into());
     }
     let visible = node
-        .shared_block_device()
-        .ok_or("block recovery device disappeared")?
-        .inspect_storage_visible(0, 512)?;
+        .inspect_storage_visible(0, 512)
+        .ok_or("block recovery device disappeared")??;
     let expected = (0..512)
         .map(|index| (index as u8) ^ 0x37)
         .collect::<Vec<_>>();

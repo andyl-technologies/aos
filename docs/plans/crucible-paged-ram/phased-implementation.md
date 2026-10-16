@@ -127,6 +127,34 @@ Independent default-feature library builds now include their own unit fixtures
 without depending on workspace-wide feature unification. External fixtures
 remain opt-in, and native permission requirements are unchanged.
 
+Private native observations now retain the real Source factory in the paid Main
+worker. The shared four-vCPU and block drivers borrow operation-only views; no
+node, guard, mapping or channel owner is returned. Launch uses the ordinary
+keyed constructor and saved supervision. Publication consumes the same owner and
+cleanup receipt, and diagnostic loans remain held until physical closure. The
+worker size query includes the new inline fields before construction; immutable
+input paths and their shared body are admitted before allocation.
+
+The default workspace/all-targets check and the separate private observation and
+Parent feature checks pass. The focused private suite has 29 passes and one
+ignored legacy native entry; all four original-retirement controls pass against
+the actual retained thread table. The input alias control proves last strong-alias
+closure and credit retention; its test-only Weak witness does not prove Arc
+backing deallocation. Production keeps the body graph free of Weak/raw escapes
+and drops that allocation before its decoder custody. The full private-feature
+library run has 1,655 passes, the same 17 native integration failures and
+43 ignored tests; its complete failed-name set matches the prior default run.
+
+The supplemental service VM checks build the actual private controller into the
+installed Main policy and retain the original guest/request vectors. Ordinary
+deployment TOML values are unchanged. Deployment files now use the source-built
+text helper so guest artifact derivation references are valid. Source/guest-only
+backreferences to the old canonical gate have been replaced with direct owning
+imports; the guest derivation is identical and the shared Cargo source retains
+its required embedded scenario. The four-vCPU VM build reaches the unchanged
+QEMU dirty-iterator fixture failure before execution. Neither service flight nor
+VM performance is qualified by the compile and component results.
+
 The normal Cargo workspace check passes with all targets. The current API
 library has 119 passes; the full daemon run has 1,541 passes, 17 failures and
 43 ignored tests. All 17 failing names match the preceding native lifecycle and
@@ -161,6 +189,50 @@ integration targets. Its successor for the backend cutover is running locally
 with remote builders disabled. All 148 Linux resource tests passed in the
 preceding never-born return cohort. A fully passing integrated suite and VM
 performance parity are not claimed.
+
+### Canonical native observation gate cutover (required)
+
+The supplemental service flights do not yet replace the canonical plugin gate.
+Its complete result contract also owns trace framing, scheduler equations,
+host-parallel recovery, diagnostic programs and mode-specific execution. The
+cutover must preserve all existing predicates and perform these steps:
+
+1. Use the direct source/guest imports already introduced, so composing the
+   canonical gate from real service consumers cannot recurse through a borrowed
+   source artifact. Retain every compiler-visible crate and embedded fixture.
+2. Share the existing complete evidence validator and normalizer. Preserve the
+   unique result and reference-summary frames, raw UART versus normalized copies,
+   regular nonsymlink trace checks, positive bounded byte/row counts, raw and
+   normalized digests, timer/RR relations and block-recovery ordering. Missing,
+   duplicate or conflicting evidence must fail; deduplication cannot establish
+   canonical provenance.
+3. Orchestrate both real Main-backed plugin programs under their original shared
+   1,800-second watchdog. Two independent 1,800-second checks are supplemental,
+   not an equivalent combined bound. Preserve the existing six-CPU, 12-GiB outer
+   policy, 6,000-second watchdog and disk envelopes. Authenticate each program's
+   own cleanup and result before constructing canonical singleton metadata.
+4. Migrate the actual two-node host-parallel/recovery assertions to genuine Main
+   ownership under their separate 3,600-second bound. Four-vCPU round robin does
+   not establish two-node parallelism; all 13 existing lifecycle/recovery markers
+   and their causal checks remain required.
+5. Deliver block-only and coarse/fine partition diagnostic selection to the real
+   worker before startup. A parent-shell environment setting does not configure
+   a systemd-owned worker. Retain the 2,100-second diagnostic bounds, malformed
+   selector refusal, exact partition relation and trace summary.
+6. Preserve raw result, transcript, rootfs dependency and executable-script
+   contracts for fingerprint, scheduler, offload and campaign-mode consumers.
+   Disabled-mode execution must still prove the production service/socket/command
+   absent; enabling that service or relabeling an enabled-mode result is not a
+   substitute. Supply a genuine observation owner compatible with that test's
+   declared composition before changing its adapter.
+7. Cut over the canonical gate and every consumer together, then remove the
+   obsolete positive ignored entry and its sole model/worker route. Retain shared
+   admission helpers only while live performance/write-oracle consumers need
+   them, and migrate those consumers through their actual owners. No accepting
+   component fallback is permitted.
+
+These are pending implementation and runtime obligations. The new component
+controls, source-closure equality and supplemental checks do not discharge them.
 
 The dependency graph below distinguishes foundations from separately enabled
 capabilities. `A -> B` means B requires A's accepted contract and evidence.

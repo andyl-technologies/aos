@@ -23,7 +23,12 @@ fn original_retirement_joins_actual_idle_workers_before_returning() {
 
     pool.try_retire_original(&original).expect("physical join");
 
-    assert!(pool.workers.is_empty());
+    assert_eq!(
+        pool.worker_custody
+            .retained_thread_count()
+            .expect("actual handles"),
+        0
+    );
     assert!(pool.service.shared.completion.is_finished());
     assert_eq!(pool.service().report().expect("stopped report").active(), 0);
     assert!(pool.try_retire_original(&original).is_ok());
@@ -49,7 +54,12 @@ fn canceled_original_refuses_before_pool_shutdown_or_handle_removal() {
         pool.try_retire_original(&original),
         Err(OriginalPoolRetirementError::Original(_))
     ));
-    assert_eq!(pool.workers.len(), 1);
+    assert_eq!(
+        pool.worker_custody
+            .retained_thread_count()
+            .expect("actual handles"),
+        1
+    );
     assert_eq!(
         pool.service.shared.state.load(Ordering::Acquire),
         POOL_RUNNING
@@ -92,8 +102,13 @@ fn running_work_refuses_retirement_without_canceling_or_losing_its_owner() {
         pool.try_retire_original(&original),
         Err(OriginalPoolRetirementError::Occupied { .. })
     ));
-    assert_eq!(pool.workers.len(), 1);
-    assert!(!pool.workers[0].is_finished());
+    assert_eq!(
+        pool.worker_custody
+            .retained_thread_count()
+            .expect("actual handles"),
+        1
+    );
+    assert!(!pool.worker_custody.threads_finished());
     assert_eq!(
         pool.service().report().expect("retained report").active(),
         1

@@ -7,17 +7,13 @@
 }: let
   nativeQemu = pkgs.qemu-crucible;
   nativePlugin = pkgs.crucible-qemu-plugin;
-  productionFlight = import ./phase7-production-rust-plugin-flight.nix {
-    inherit pkgs lib;
-    attrPath = "checks.crucible.phase7.raw.productionPluginFlight";
-  };
-  guest = productionFlight.passthru.idleGuest;
+  guest = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
   rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
   inputs = import ./_ram-normal-service-inputs.nix {
     inherit pkgs lib nativeQemu nativePlugin guest rootImage;
   };
   quotaInstaller = import ./_catalog-quota-installer.nix {inherit pkgs lib;};
-  deployment = import ./_ram-normal-service-deployment.nix {inherit lib;};
+  deployment = import ./_ram-normal-service-deployment.nix {inherit pkgs lib;};
   installedInputs = "/var/lib/crucible-campaign/normal-inputs";
   store = builtins.toFile "normal-ram-semantic-store.toml" ''
     schema = "crucible.campaign-repository-store"

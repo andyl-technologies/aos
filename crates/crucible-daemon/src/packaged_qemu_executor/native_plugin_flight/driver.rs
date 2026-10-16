@@ -13,13 +13,13 @@
 //! Setting `CRUCIBLE_PHASE4_PARTITION_PROBE=1` compares coarse and fine
 //! post-selection scheduler steps across an exact virtual-timer wake.
 //!
-//! The ignored daemon selector supplies trusted guest artifacts and genuine
-//! accepted-worker admission. Full normalized trace spools live under the
-//! independently admitted catalog quota until comparison has completed.
+//! The deployed service supplies immutable guest artifacts and the authentic
+//! Main-held factory. A component selector cannot issue that owner. Full
+//! normalized trace spools remain under the admitted catalog quota through comparison.
 
 #![forbid(unsafe_code)]
 
-use super::admission::AdmittedFlightNode as QemuNode;
+use crate::qemu_lifecycle_launcher::ObservedNativeNode;
 
 use std::error::Error;
 use std::path::Path;
@@ -36,9 +36,8 @@ use crucible_protocol::selectable_catalog_plan::{
 };
 use crucible_protocol::{SelectionReply, SelectionReplyStatus};
 use crucible_qemu::{
-    BoundedSchedulerPreemptionEvidence, QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig,
-    QemuLogicalTimeCalibration, QemuNodeIdleState, QemuShutdownReport, QemuVirtualTimerFireWitness,
-    QmpHotForkTemplateOutcome,
+    BoundedSchedulerPreemptionEvidence, QemuLiveNodeStepGateConfig, QemuLogicalTimeCalibration,
+    QemuNodeIdleState, QemuShutdownReport, QemuVirtualTimerFireWitness, QmpHotForkTemplateOutcome,
 };
 use crucible_shmem::FingerprintSample;
 
@@ -50,6 +49,10 @@ mod runtime_trace;
 
 #[path = "partition_probe.rs"]
 mod partition_probe;
+
+#[path = "evidence.rs"]
+mod evidence;
+use evidence::*;
 
 const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_BYTES: u64 = 1024 * 1024 * 1024;
@@ -86,8 +89,8 @@ const BLOCK_RECOVERY_ONLY_ENVIRONMENT: &str =
     "CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY";
 const PHASE4_PARTITION_PROBE_ENVIRONMENT: &str = "CRUCIBLE_PHASE4_PARTITION_PROBE";
 
-pub(super) fn run_four(
-    factory: &mut super::admission::AdmittedFlightFactory<'_>,
+pub(in crate::packaged_qemu_executor) fn run_four(
+    factory: &mut dyn super::admission::FlightAdmission,
     qemu: &Path,
     plugin: &Path,
     kernel: &Path,
@@ -115,17 +118,10 @@ pub(super) fn run_four(
         let coarse = run_once(
             factory,
             &config,
-            qemu,
             false,
             Some(partition_probe::POST_SELECTION_SPAN_PS),
         )?;
-        let fine = run_once(
-            factory,
-            &config,
-            qemu,
-            false,
-            Some(partition_probe::FINE_STEP_PS),
-        )?;
+        let fine = run_once(factory, &config, false, Some(partition_probe::FINE_STEP_PS))?;
         publish_trace_summary(&coarse.diagnostics.trace.report());
         compare_boundaries("partitioned replay", &coarse.boundaries, &fine.boundaries)?;
         if !idle_evidence_matches_across_runs(&coarse.idle, &fine.idle) {
@@ -151,8 +147,8 @@ pub(super) fn run_four(
         return Ok(());
     }
 
-    let reference = run_once(factory, &config, qemu, false, None)?;
-    let hostile = run_once(factory, &config, qemu, true, None)?;
+    let reference = run_once(factory, &config, false, None)?;
+    let hostile = run_once(factory, &config, true, None)?;
     publish_trace_summary(&reference.diagnostics.trace.report());
     compare_boundaries(
         "host-preempted restart",
@@ -347,7 +343,8 @@ pub(super) fn run_four(
     Ok(())
 }
 
-pub(super) fn block_recovery_only_requested() -> Result<bool, Box<dyn Error>> {
+pub(in crate::packaged_qemu_executor) fn block_recovery_only_requested()
+-> Result<bool, Box<dyn Error>> {
     let value = std::env::var_os(BLOCK_RECOVERY_ONLY_ENVIRONMENT);
     parse_block_recovery_only(value.as_deref())
 }
@@ -388,441 +385,14 @@ fn print_block_recovery_evidence(hot_fork: block_recovery_hot_fork::BlockRecover
     println!("hot_fork_preparation_order=block-recovery-settled,draining,prepared");
 }
 
-struct FlightRun {
-    boundaries: Vec<BoundaryEvidence>,
-    instruction_exact: InstructionExactEvidence,
-    idle: IdleEvidence,
-    partition_probe: Option<partition_probe::PartitionProbe>,
-    on_demand_acknowledgements: usize,
-    shutdown: QemuShutdownReport,
-    diagnostics: RuntimeDeterminismDiagnostics,
-}
-
-#[derive(Debug)]
-struct RuntimeDeterminismDiagnostics {
-    baseline: RuntimeDeterminismBaseline,
-    trace: runtime_trace::RuntimeTraceSummary,
-}
-
-#[derive(Debug)]
-struct RuntimeDeterminismBaseline {
-    calibration: Result<QemuLogicalTimeCalibration, String>,
-    idle_state: Result<QemuNodeIdleState, String>,
-    timer_witness: Result<Option<QemuVirtualTimerFireWitness>, String>,
-    rr_current_vcpu: u32,
-    rr_position_in_quantum: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct BoundaryEvidence {
-    target: u64,
-    outcome: AdvanceOutcome,
-    fingerprint: ExecutionFingerprint,
-    sample: FingerprintSample,
-    calibration: QemuLogicalTimeCalibration,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct InstructionExactEvidence {
-    lower_target: u64,
-    upper_target: u64,
-    lower_rr_vcpu: u32,
-    upper_rr_vcpu: u32,
-    lower_rr_position: u64,
-    upper_rr_position: u64,
-    first_differing_state_component: String,
-    owning_vcpu_state_projection: String,
-    changed_components: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct IdleEvidence {
-    setup_marker_icount: u64,
-    halted_at: u64,
-    deadline: u64,
-    halted_fingerprint: ExecutionFingerprint,
-    halted_sample: FingerprintSample,
-    wake_outcome: AdvanceOutcome,
-    wake_fingerprint: ExecutionFingerprint,
-    wake_sample: FingerprintSample,
-    timer_fire: VirtualTimerFireEvidence,
-    on_demand_acknowledgements: usize,
-}
-
-/// Numeric certificate for the plugin-validated native timer callback.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct VirtualTimerFireEvidence {
-    generation: u64,
-    armed_deadline_ps: u64,
-    armed_deadline_tick: u64,
-    retirement_step_ps: u64,
-    armed_raw_icount: u64,
-    fired_expire_ps: u64,
-    fired_virtual_ps: u64,
-    fired_raw_icount: u64,
-    published_wake_tick: u64,
-    post_wake_tick: u64,
-    completed: u32,
-    reserved: u32,
-}
-
-fn idle_evidence_matches_across_runs(reference: &IdleEvidence, candidate: &IdleEvidence) -> bool {
-    let mut normalized_reference = reference.clone();
-
-    // Generation identifies one process-local publication, not guest state.
-    normalized_reference.timer_fire.generation = candidate.timer_fire.generation;
-    normalized_reference == *candidate
-}
-
-fn compare_boundaries(
-    variant: &str,
-    reference: &[BoundaryEvidence],
-    candidate: &[BoundaryEvidence],
-) -> Result<(), String> {
-    if reference.len() != candidate.len() {
-        return Err(format!(
-            "{variant}: boundary count differs: {} != {}",
-            reference.len(),
-            candidate.len()
-        ));
-    }
-    for (index, (left, right)) in reference.iter().zip(candidate).enumerate() {
-        let lower_bound = index
-            .checked_sub(1)
-            .and_then(|previous| reference.get(previous))
-            .map_or(0, |boundary| boundary.target);
-        if left.target != right.target {
-            return Err(format!(
-                "{variant}: boundary {index} window ({lower_bound},{}]: target differs",
-                left.target
-            ));
-        }
-        if left.outcome != right.outcome {
-            return Err(format!(
-                "{variant}: boundary {index} window ({lower_bound},{}]: outcome differs",
-                left.target
-            ));
-        }
-        if left.fingerprint != right.fingerprint {
-            return Err(format!(
-                "{variant}: boundary {index} window ({lower_bound},{}]: execution_fingerprint differs",
-                left.target
-            ));
-        }
-        if let Some(component) = first_sample_difference(&left.sample, &right.sample) {
-            return Err(format!(
-                "{variant}: boundary {index} window ({lower_bound},{}]: {component} differs",
-                left.target
-            ));
-        }
-        if left.calibration != right.calibration {
-            return Err(format!(
-                "{variant}: boundary {index} window ({lower_bound},{}]: logical/raw calibration differs",
-                left.target
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn instruction_exact_evidence(
-    boundaries: &[BoundaryEvidence],
-) -> Result<InstructionExactEvidence, String> {
-    let lower = boundaries
-        .iter()
-        .find(|boundary| boundary.target == INSTRUCTION_EXACT_LOWER_TARGET)
-        .ok_or_else(|| String::from("instruction-exact lower boundary is absent"))?;
-    let upper = boundaries
-        .iter()
-        .find(|boundary| boundary.target == INSTRUCTION_EXACT_UPPER_TARGET)
-        .ok_or_else(|| String::from("instruction-exact upper boundary is absent"))?;
-    let fractional_lower = boundaries
-        .iter()
-        .find(|boundary| boundary.target == FRACTIONAL_PHASE_LOWER_TARGET)
-        .ok_or_else(|| String::from("fractional-phase lower boundary is absent"))?;
-
-    if upper.target != lower.target + FLIGHT_TICKS_PER_INSTRUCTION
-        || lower.sample.sample_icount != lower.target
-        || fractional_lower.sample.sample_icount != fractional_lower.target
-        || upper.sample.sample_icount != upper.target
-        || lower.calibration.logical_icount != lower.target
-        || upper.calibration.logical_icount != upper.target
-        || fractional_lower.calibration.logical_icount != fractional_lower.target
-    {
-        return Err(format!(
-            "instruction-exact samples do not bind adjacent requested coordinates: lower={lower:?}, upper={upper:?}"
-        ));
-    }
-    let fractional_differences = sample_differences(&fractional_lower.sample, &lower.sample);
-    let mut expected_fractional_sample = fractional_lower.sample;
-    expected_fractional_sample.sample_icount = lower.target;
-    expected_fractional_sample.device_state_digest = lower.sample.device_state_digest;
-    if lower.target != fractional_lower.target + 1
-        || fractional_differences.len() != 2
-        || fractional_differences[0] != "sample_icount"
-        || fractional_differences[1] != "device_state_digest"
-        || lower.sample != expected_fractional_sample
-        || lower.calibration.raw_icount != fractional_lower.calibration.raw_icount
-        || lower.fingerprint == fractional_lower.fingerprint
-    {
-        return Err(format!(
-            "fractional-phase sample changed retired state or omitted timer projection: lower={fractional_lower:?}, upper={lower:?}, changed_components={fractional_differences:?}"
-        ));
-    }
-    if Some(upper.calibration.raw_icount) != lower.calibration.raw_icount.checked_add(1) {
-        return Err(format!(
-            "instruction-exact samples do not advance raw retirement by one: lower={lower:?}, upper={upper:?}"
-        ));
-    }
-    if lower.sample.rr_switch_quantum != RR_SWITCH_QUANTUM
-        || upper.sample.rr_switch_quantum != RR_SWITCH_QUANTUM
-        || !is_exact_rr_successor(&lower.sample, &upper.sample)
-    {
-        return Err(format!(
-            "instruction-exact samples do not describe one exact RR successor: lower={lower:?}, upper={upper:?}"
-        ));
-    }
-    if lower.fingerprint == upper.fingerprint {
-        return Err(
-            "adjacent instruction coordinates produced the same execution fingerprint".into(),
-        );
-    }
-    let changed_components = sample_differences(&lower.sample, &upper.sample);
-    let first_differing_state_component = changed_components
-        .iter()
-        .find(|component| {
-            !matches!(
-                component.as_str(),
-                "sample_icount" | "rr_current_vcpu" | "rr_position_in_quantum"
-            )
-        })
-        .cloned()
-        .ok_or_else(|| {
-            String::from("adjacent instruction samples have no differing state component")
-        })?;
-    let owner_index = usize::try_from(lower.sample.rr_current_vcpu)
-        .map_err(|_| String::from("instruction-exact owner index does not fit usize"))?;
-    let expected_register_projection =
-        format!("vcpu[{}].register_digest", lower.sample.rr_current_vcpu);
-    let lower_owner = lower
-        .sample
-        .vcpus
-        .get(owner_index)
-        .ok_or_else(|| format!("instruction-exact owner vCPU {owner_index} is absent"))?;
-    let upper_owner = upper
-        .sample
-        .vcpus
-        .get(owner_index)
-        .ok_or_else(|| format!("instruction-exact owner vCPU {owner_index} is absent"))?;
-    if lower_owner.register_digest == upper_owner.register_digest {
-        return Err(format!(
-            "adjacent instruction samples did not change the owning {expected_register_projection}"
-        ));
-    }
-    validate_instruction_exact_shape_stability(&lower.sample, &upper.sample, owner_index)?;
-    let owning_vcpu_state_projection = expected_register_projection;
-
-    Ok(InstructionExactEvidence {
-        lower_target: lower.target,
-        upper_target: upper.target,
-        lower_rr_vcpu: lower.sample.rr_current_vcpu,
-        upper_rr_vcpu: upper.sample.rr_current_vcpu,
-        lower_rr_position: lower.sample.rr_position_in_quantum,
-        upper_rr_position: upper.sample.rr_position_in_quantum,
-        first_differing_state_component,
-        owning_vcpu_state_projection,
-        changed_components,
-    })
-}
-
-fn validate_instruction_exact_shape_stability(
-    lower: &FingerprintSample,
-    upper: &FingerprintSample,
-    owner_index: usize,
-) -> Result<(), String> {
-    if lower.vcpu_count != upper.vcpu_count
-        || lower.component_failures != upper.component_failures
-        || lower.ram_bytes != upper.ram_bytes
-        || lower.device_state_bytes != upper.device_state_bytes
-        || lower.device_state_sections != upper.device_state_sections
-        || lower.device_state_schema_digest != upper.device_state_schema_digest
-    {
-        return Err(format!(
-            "adjacent instruction samples changed invariant fingerprint shape: {:?}",
-            sample_differences(lower, upper)
-        ));
-    }
-
-    for (index, (lower_vcpu, upper_vcpu)) in lower.vcpus.iter().zip(&upper.vcpus).enumerate() {
-        if lower_vcpu.register_file_bytes != upper_vcpu.register_file_bytes
-            || lower_vcpu.retired_instruction_count != upper_vcpu.retired_instruction_count
-            || (index != owner_index && lower_vcpu.register_digest != upper_vcpu.register_digest)
-        {
-            return Err(format!(
-                "adjacent instruction samples changed invariant vCPU {index} state"
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn is_exact_rr_successor(lower: &FingerprintSample, upper: &FingerprintSample) -> bool {
-    let quantum = lower.rr_switch_quantum;
-    if quantum == 0
-        || upper.rr_switch_quantum != quantum
-        || lower.vcpu_count == 0
-        || upper.vcpu_count != lower.vcpu_count
-        || lower.rr_current_vcpu >= lower.vcpu_count
-        || upper.rr_current_vcpu >= upper.vcpu_count
-        || lower.rr_position_in_quantum >= quantum
-        || upper.rr_position_in_quantum >= quantum
-    {
-        return false;
-    }
-
-    if lower.rr_position_in_quantum + 1 < quantum {
-        upper.rr_current_vcpu == lower.rr_current_vcpu
-            && upper.rr_position_in_quantum == lower.rr_position_in_quantum + 1
-    } else {
-        upper.rr_current_vcpu == (lower.rr_current_vcpu + 1) % lower.vcpu_count
-            && upper.rr_position_in_quantum == 0
-    }
-}
-
-fn first_sample_difference(left: &FingerprintSample, right: &FingerprintSample) -> Option<String> {
-    sample_differences(left, right).into_iter().next()
-}
-
-fn sample_differences(left: &FingerprintSample, right: &FingerprintSample) -> Vec<String> {
-    let scalar_components = [
-        ("sample_icount", left.sample_icount != right.sample_icount),
-        ("vcpu_count", left.vcpu_count != right.vcpu_count),
-        (
-            "rr_current_vcpu",
-            left.rr_current_vcpu != right.rr_current_vcpu,
-        ),
-        (
-            "rr_position_in_quantum",
-            left.rr_position_in_quantum != right.rr_position_in_quantum,
-        ),
-        (
-            "rr_switch_quantum",
-            left.rr_switch_quantum != right.rr_switch_quantum,
-        ),
-        (
-            "component_failures",
-            left.component_failures != right.component_failures,
-        ),
-        ("ram_bytes", left.ram_bytes != right.ram_bytes),
-        ("ram_digest", left.ram_digest != right.ram_digest),
-        (
-            "device_state_bytes",
-            left.device_state_bytes != right.device_state_bytes,
-        ),
-        (
-            "device_state_sections",
-            left.device_state_sections != right.device_state_sections,
-        ),
-        (
-            "device_state_digest",
-            left.device_state_digest != right.device_state_digest,
-        ),
-        (
-            "device_state_schema_digest",
-            left.device_state_schema_digest != right.device_state_schema_digest,
-        ),
-    ];
-    let mut differences = scalar_components
-        .into_iter()
-        .filter(|(_, differs)| *differs)
-        .map(|(name, _)| String::from(name))
-        .collect::<Vec<_>>();
-    for (index, (left, right)) in left.vcpus.iter().zip(&right.vcpus).enumerate() {
-        if left.register_digest != right.register_digest {
-            differences.push(format!("vcpu[{index}].register_digest"));
-        }
-        if left.register_file_bytes != right.register_file_bytes {
-            differences.push(format!("vcpu[{index}].register_file_bytes"));
-        }
-        if left.retired_instruction_count != right.retired_instruction_count {
-            differences.push(format!("vcpu[{index}].retired_instruction_count"));
-        }
-    }
-    differences
-}
-
-fn compare_runtime_determinism_diagnostics(
-    variants: [(&str, &RuntimeDeterminismDiagnostics); 2],
-) -> String {
-    let baselines = variants
-        .iter()
-        .map(|(name, diagnostics)| {
-            format!(
-                "{name}={}",
-                describe_runtime_baseline(&diagnostics.baseline)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    let [(reference_name, reference), (candidate_name, candidate)] = variants;
-    format!(
-        "baselines=[{baselines}]; {}",
-        runtime_trace::compare(
-            reference_name,
-            &reference.trace,
-            candidate_name,
-            &candidate.trace,
-        )
-        .unwrap_or_else(|error| format!("runtime_trace_comparison_error={error}"))
-    )
-}
-
-fn describe_runtime_baseline(baseline: &RuntimeDeterminismBaseline) -> String {
-    format!(
-        "calibration={:?},idle_state={:?},timer_witness={:?},rr_current_vcpu={},rr_position_in_quantum={}",
-        baseline.calibration,
-        baseline.idle_state,
-        baseline.timer_witness,
-        baseline.rr_current_vcpu,
-        baseline.rr_position_in_quantum,
-    )
-}
-
-fn final_busy_raw_boundary(baseline: &RuntimeDeterminismBaseline) -> Result<u64, String> {
-    let calibration = baseline
-        .calibration
-        .as_ref()
-        .map_err(|error| format!("boundary_calibration_error={error}"))?;
-    if calibration.logical_icount != TARGETS[TARGETS.len() - 1] {
-        return Err(format!(
-            "boundary_logical_picoseconds={} expected={}",
-            calibration.logical_icount,
-            TARGETS[TARGETS.len() - 1]
-        ));
-    }
-    Ok(calibration.raw_icount)
-}
-
 fn run_once(
-    factory: &mut super::admission::AdmittedFlightFactory<'_>,
+    factory: &mut dyn super::admission::FlightAdmission,
     config: &QemuLiveNodeStepGateConfig,
-    qemu: &Path,
     hostile: bool,
     partition_step_ps: Option<u64>,
 ) -> Result<FlightRun, Box<dyn Error>> {
     let mut owner = factory.begin(4, MEMORY_BYTES, DISK_BYTES)?;
-    let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
-    owner.prepare_fresh_artifacts(&mut directory, qemu)?;
-    let launch = owner.configure_launch(config.clone().with_run_directory(directory.path()))?;
-    let mut node = owner.launch(
-        &launch,
-        &directory,
-        QemuLiveNodeIdentity::new(
-            "plugin-flight-node",
-            "plugin-flight-router",
-            "plugin-flight-crash",
-        ),
-    )?;
+    let mut node = owner.launch(config, "plugin-flight-router", "plugin-flight-crash")?;
     let preemption = hostile.then(BoundedSchedulerPreemptionEvidence::default);
     let mut boundaries = Vec::with_capacity(TARGETS.len());
 
@@ -932,14 +502,13 @@ fn run_once(
             let shutdown = node.shutdown_child();
             drop(node);
             let trace = match &shutdown {
-                Ok(report) if report.reaped && !report.leaked => directory
-                    .retain_runtime_liveness_trace_tail_after_reap()
-                    .map_err(|error| error.to_string()),
+                Ok(report) if report.reaped && !report.leaked => {
+                    owner.liveness_tail().map_err(|error| error.to_string())
+                }
                 _ => Err(String::from(
                     "trace unavailable because clean QEMU reap was not proven",
                 )),
             };
-            drop(directory);
             let finish = owner.finish();
 
             return Err(format!(
@@ -959,7 +528,6 @@ fn run_once(
         Err(error) => {
             let shutdown = node.shutdown_child();
             drop(node);
-            drop(directory);
             let finish = owner.finish();
             return Err(format!(
                 "post-selection partition probe failed: {error}; shutdown={shutdown:?}; finish={finish:?}"
@@ -977,18 +545,15 @@ fn run_once(
         .into());
     }
     let raw_boundary = final_busy_raw_boundary(&runtime_baseline)?;
-    let trace_result = directory.inspect_runtime_determinism_trace_after_reap(
-        PRODUCTION_RUNTIME_TRACE_BYTES,
-        |reader| {
-            runtime_trace::summarize(
-                reader,
-                raw_boundary,
-                TARGETS[TARGETS.len() - 1] as i64,
-                factory.create_trace_spool()?,
-            )
-        },
-    );
-    drop(directory);
+    let spool = owner.create_trace_spool()?;
+    let trace_result = owner.inspect_trace(PRODUCTION_RUNTIME_TRACE_BYTES, |reader| {
+        runtime_trace::summarize(
+            reader,
+            raw_boundary,
+            TARGETS[TARGETS.len() - 1] as i64,
+            spool,
+        )
+    });
     let finish_result = owner.finish();
     let trace = match (trace_result, finish_result) {
         (Ok(trace), Ok(())) => trace,
@@ -1015,7 +580,9 @@ fn run_once(
     })
 }
 
-fn prepare_live_hot_fork_template(node: &mut QemuNode) -> Result<u64, Box<dyn Error>> {
+fn prepare_live_hot_fork_template(
+    node: &mut ObservedNativeNode<'_>,
+) -> Result<u64, Box<dyn Error>> {
     node.pause_at_exact_checkpoint_boundary()?;
 
     let draining = node.prepare_hot_fork_template(&[])?;
@@ -1050,7 +617,7 @@ fn prepare_live_hot_fork_template(node: &mut QemuNode) -> Result<u64, Box<dyn Er
 }
 
 fn node_state_failure(
-    node: &mut QemuNode,
+    node: &mut ObservedNativeNode<'_>,
     phase: &str,
     source: impl std::fmt::Display,
 ) -> Box<dyn Error> {
@@ -1069,7 +636,7 @@ fn node_state_failure(
     .into()
 }
 
-fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> {
+fn probe_idle_wake(node: &mut ObservedNativeNode<'_>) -> Result<IdleEvidence, Box<dyn Error>> {
     let readiness = match SimulationBackend::step_to(
         node,
         VirtualTime {
@@ -1125,7 +692,6 @@ fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> 
     )?;
     node.enqueue_selectable_reply(pending, &reply)?;
 
-    node.charge_quantum()?;
     let halted = match node.advance_to_next_idle(Icount {
         retired: READINESS_ADMISSION_CEILING,
     }) {
@@ -1296,7 +862,7 @@ fn readiness_selectable_catalog_plan() -> Result<SelectableCatalogPlan, Box<dyn 
 }
 
 fn install_preemption(
-    node: &mut QemuNode,
+    node: &mut ObservedNativeNode<'_>,
     kind: PreemptionKind,
     at: u64,
 ) -> Result<(), Box<dyn Error>> {
@@ -1316,7 +882,7 @@ fn install_preemption(
 }
 
 fn aligned_preemption_tick(
-    node: &mut QemuNode,
+    node: &mut ObservedNativeNode<'_>,
     requested: u64,
     horizon: u64,
 ) -> Result<u64, Box<dyn Error>> {
@@ -1384,8 +950,8 @@ fn publish_trace_summary(report: &str) {
     println!("PRODUCTION_PLUGIN_REFERENCE_TRACE_SUMMARY_END");
 }
 
-pub(super) fn run_block(
-    factory: &mut super::admission::AdmittedFlightFactory<'_>,
+pub(in crate::packaged_qemu_executor) fn run_block(
+    factory: &mut dyn super::admission::FlightAdmission,
     qemu: &Path,
     plugin: &Path,
     kernel: &Path,
@@ -1411,7 +977,7 @@ pub(super) fn run_block(
 /// Console collection, both fingerprint streams, and bounded trace/partition
 /// localization retain separate credit. Native pager metadata is admitted by
 /// the production inventory handshake, independently of this diagnostic loan.
-pub(super) fn evidence_resident_bound() -> Result<u64, Box<dyn Error>> {
+pub(in crate::packaged_qemu_executor) fn evidence_resident_bound() -> Result<u64, Box<dyn Error>> {
     let bytes = (3 * MAXIMUM_HOT_FORK_RING_IMAGE_BYTES)
         .checked_add(2 * 4 * 1024 * 1024)
         .and_then(|bytes| bytes.checked_add(4 * std::mem::size_of::<FlightRun>()))

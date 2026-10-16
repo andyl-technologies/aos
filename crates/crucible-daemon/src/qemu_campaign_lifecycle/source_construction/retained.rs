@@ -7,6 +7,8 @@ use crucible_api::{ProductionVmCleanupHandoff, ProductionVmCleanupStage};
 pub(in crate::qemu_campaign_lifecycle) enum RetainedSourceInstall<
     F: QemuAttemptResourceGuardFactory,
 > {
+    #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+    NativeObservation(Box<dyn super::native_observation::NativeObservationOwner>),
     Unborn(crate::qemu_lifecycle_launcher::UnbornSourceConstruction<F>),
     Api {
         owner: crate::ProductionVmConstructionFailure,
@@ -42,6 +44,10 @@ where
     /// Returns true only after physical closure without a queue receipt.
     fn retry_publication(&mut self) -> Result<bool, &'static str> {
         let (slot, published) = match self {
+            #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+            Self::NativeObservation(_) => {
+                return Err("same observation owner requires canonical publication");
+            }
             Self::Unborn(owner) => return owner.retry(),
             Self::Api { owner, handoff } => (handoff, owner.retry_reserved_publication()?),
             Self::Begin { owner, handoff } => (handoff, owner.retry_publication()?),
@@ -81,6 +87,8 @@ where
             | Self::Begin { handoff, .. }
             | Self::Storage { handoff, .. }
             | Self::Post { handoff, .. } => handoff.as_mut(),
+            #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+            Self::NativeObservation(_) => None,
             Self::Unborn(_)
             | Self::MissingRetirementCarrier { .. }
             | Self::MissingCallback { .. } => None,
@@ -95,6 +103,8 @@ where
             return Err(self);
         }
         let history = match self {
+            #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+            Self::NativeObservation(owner) => return Err(Self::NativeObservation(owner)),
             Self::Unborn(owner) => match owner.into_causes() {
                 Ok((first, cleanup, cleanup_post)) => SourceCleanupHistory {
                     first: Some(SourceInstallationFirst::Native(first)),
@@ -204,6 +214,10 @@ where
 
     pub(super) fn report(&self) -> QemuAttemptProductionVmLifecycleError {
         let diagnostic = match self {
+            #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+            Self::NativeObservation(_) => {
+                "same Main-worker observation still retains its Source launcher".to_owned()
+            }
             Self::Unborn(owner) => match owner.cleanup_failure() {
                 Some(cleanup) => format!("{}; cleanup: {cleanup}", owner.first()),
                 None => owner.first().to_string(),
@@ -304,6 +318,14 @@ where
     pub(crate) fn retry_retained_source_installation(
         &mut self,
     ) -> Result<(), QemuAttemptProductionVmLifecycleError> {
+        #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+        if matches!(
+            self.retained_install,
+            Some(RetainedSourceInstall::NativeObservation(_))
+        ) {
+            return self.retire_native_observation();
+        }
+
         if self.lifecycle_outstanding {
             return Err(
                 QemuAttemptProductionVmLifecycleError::SourceInstallRetained {

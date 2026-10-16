@@ -6,6 +6,7 @@
   nativePlugin,
   guest,
   rootImage,
+  nativeFlightKind ? null,
 }: let
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   artifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
@@ -52,7 +53,7 @@ in
           ${tool}/bin/normal-ram-fixture "$out" "$selected_kernel" \
             ${rootImage}/root.ext4 ${guest}/initrd.img \
             ${nativeQemu}/bin/qemu-system-x86_64 \
-            ${nativePlugin}/lib/libcrucible_qemu_plugin.so
+            ${nativePlugin}/lib/libcrucible_qemu_plugin.so ${lib.optionalString (nativeFlightKind != null) (lib.escapeShellArg nativeFlightKind)}
           ln -s "$selected_kernel" "$out/kernel"
 
           # These keys authorize only the authored disposable test campaign. They

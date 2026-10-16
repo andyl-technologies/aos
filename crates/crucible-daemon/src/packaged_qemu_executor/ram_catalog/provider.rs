@@ -32,12 +32,12 @@ mod funding;
 use funding::{CatalogDescriptors, CatalogFunding, CatalogSupervision};
 #[cfg(test)]
 mod retirement_tests;
-#[cfg(test)]
+#[cfg(any(test, feature = "private-measurement-domain"))]
 mod spool;
 mod sqlite_heap;
 
 pub(in crate::packaged_qemu_executor) use directory_storage::GuardedCampaignStorage;
-#[cfg(test)]
+#[cfg(any(test, feature = "private-measurement-domain"))]
 pub(crate) use spool::CatalogEvidenceSpool;
 
 // The two SQL connections and rollback-journal work fit six descriptors. The

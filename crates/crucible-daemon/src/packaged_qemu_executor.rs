@@ -92,6 +92,13 @@ use crate::{
     reconcile_pending_finding_candidates,
 };
 
+#[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+mod native_plugin_flight;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use native_plugin_flight::{
+    NativePluginFlightInputError, NativePluginFlightInputs, NativePluginFlightKind,
+};
+
 mod exact_pin_materializer;
 mod hot_fork;
 pub(crate) use hot_fork::retained_service::{
@@ -340,6 +347,8 @@ pub struct PackagedQemuExecutorConfig {
     >,
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticConfig>,
     verify_determinism_findings: bool,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    native_plugin_flight: Option<NativePluginFlightInputs>,
     #[cfg(feature = "private-measurement-domain")]
     original_preparation: Option<crate::private_original_capture::OriginalPreparation>,
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
@@ -347,6 +356,18 @@ pub struct PackagedQemuExecutorConfig {
 }
 
 impl PackagedQemuExecutorConfig {
+    /// Selects an immutable private native assertion workload.
+    ///
+    /// The input body is already charged by its original decoder. This request
+    /// grants no Source role; the actual Main worker still owns admission and
+    /// cleanup. Ordinary builds have no observation selector.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    #[must_use]
+    pub fn with_native_plugin_flight(mut self, inputs: NativePluginFlightInputs) -> Self {
+        self.native_plugin_flight = Some(inputs);
+        self
+    }
+
     /// Debits this executor beneath the authenticated normal service main.
     ///
     /// Publication is once-only and precedes ledger or registry effects. The
@@ -503,6 +524,8 @@ impl PackagedQemuExecutorConfig {
             normal_executor: None,
             guest_selectable_boundary_diagnostics: None,
             verify_determinism_findings: false,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            native_plugin_flight: None,
             #[cfg(feature = "private-measurement-domain")]
             original_preparation: None,
             #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
@@ -2287,6 +2310,21 @@ where
             .lifecycle
             .try_clone_admitted()?
             .with_run_state_root(worker_state_root.join(format!("worker-{slot:03}")));
+        let lifecycle = Arc::new(lifecycle);
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        let fresh = native_plugin_flight::runner::NativeFlightRunner::new(
+            fresh,
+            QemuAttemptProductionVmLifecycleFactory::new(
+                Arc::clone(&lifecycle),
+                ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
+            ),
+            Arc::clone(&lifecycle),
+            config
+                .ram_catalog
+                .as_ref()
+                .map(PackagedRamCatalogConfig::evidence_catalog),
+            config.native_plugin_flight.clone(),
+        );
         let resume_lifecycles = PackagedStatusLifecycleFactory {
             inner: QemuAttemptProductionVmLifecycleFactory::new(
                 lifecycle,

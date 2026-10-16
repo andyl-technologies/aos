@@ -47,17 +47,13 @@
       && normalService.processResources.startupTimeoutSeconds <= outerTimeoutSeconds
       && innerInvocation != null
     );
-  productionFlight = import ./phase7-production-rust-plugin-flight.nix {
-    inherit pkgs lib;
-    attrPath = "checks.crucible.phase7.raw.productionPluginFlight";
-  };
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
   artifactContract = controllerArtifacts.passthru.cargoArtifactContract;
   flight = pkgs.mkCargoPackage {
     pname = "crucible-managed-paging-native-flight";
     version = "0";
     LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    src = productionFlight.passthru.flight.src;
+    src = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
     cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
     cargoArtifacts = controllerArtifacts;
     cargoArtifactContract = artifactContract;
@@ -79,7 +75,7 @@
     '';
   };
   deviceProbe = import ./_ram-userfaultfd-device.nix {inherit pkgs;};
-  guest = productionFlight.passthru.idleGuest;
+  guest = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
   rootImage = import ./_ram-native-root-image.nix {inherit pkgs;};
   buildGraph = builtins.hashString "sha256" (builtins.concatStringsSep "\n" [
     pkgs.linux.drvPath
@@ -145,7 +141,7 @@
         # Observe the actual installed Main, never a renamed test executable.
         main_pid="$(${pkgs.systemd}/bin/systemctl show --property=MainPID --value crucible-campaign.service)"
         test "$main_pid" -gt 1
-        test "$(${pkgs.coreutils}/bin/readlink "/proc/$main_pid/exe")" = ${pkgs.crucible.passthru.controller}/bin/crucible
+        test "$(${pkgs.coreutils}/bin/readlink "/proc/$main_pid/exe")" = ${normalService.package.passthru.controller}/bin/crucible
         service_group="$(${pkgs.systemd}/bin/systemctl show --property=ControlGroup --value crucible-campaign.service)"
         test -n "$service_group"
         service_root="/sys/fs/cgroup$service_group"

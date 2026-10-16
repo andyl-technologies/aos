@@ -134,6 +134,14 @@ impl ExecutorWorkerCustody {
             .is_ok_and(|threads| threads.iter().all(JoinHandle::is_finished))
     }
 
+    #[cfg(test)]
+    pub(super) fn retained_thread_count(&self) -> Result<usize, WorkerRetirementRefusal> {
+        self.threads
+            .try_lock()
+            .map(|threads| threads.len())
+            .map_err(|_| WorkerRetirementRefusal::Pending)
+    }
+
     pub(super) fn join_finished(
         &self,
         original: &HostOperationGuard,

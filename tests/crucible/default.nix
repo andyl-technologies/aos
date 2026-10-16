@@ -124,6 +124,16 @@ in rec {
       inherit pkgs lib mkSystem;
       attrPath = "checks.crucible.ram.normalService";
     };
+    nativePluginFlightFour = import ./ram-normal-plugin-flight.nix {
+      inherit pkgs lib mkSystem;
+      attrPath = "checks.crucible.ram.nativePluginFlightFour";
+      kind = "four-vcpu";
+    };
+    nativePluginFlightBlock = import ./ram-normal-plugin-flight.nix {
+      inherit pkgs lib mkSystem;
+      attrPath = "checks.crucible.ram.nativePluginFlightBlock";
+      kind = "block-recovery";
+    };
     normalServiceFullMeasurements = import ./_ram-normal-full-measurements.nix {
       inherit pkgs;
       operationalFlight = ram.normalService;
