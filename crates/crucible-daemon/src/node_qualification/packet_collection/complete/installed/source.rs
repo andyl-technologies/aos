@@ -370,9 +370,11 @@ fn launch_declarations(
             capture_allocation_selection: Some(
                 PacketNative5CaptureAllocationSelection::OriginalObserve12,
             ),
-            fresh_restore_allocation_selection: mechanism.map(|selected| selected.fresh_restore_allocation),
+            fresh_restore_allocation_selection: mechanism
+                .map(|selected| selected.fresh_restore_allocation),
             complete_restore_selection: mechanism.map(|selected| selected.complete_restore),
-            restore_input_emitter_selection: mechanism.map(|selected| selected.restore_input_emitter),
+            restore_input_emitter_selection: mechanism
+                .map(|selected| selected.restore_input_emitter),
             effects: paths[member].clone(),
         });
     }
@@ -408,10 +410,13 @@ fn ready_sources(
                     .into_iter().map(str::to_owned),
             );
         }
-        if launches[member].fresh_restore_allocation_selection.is_some() {
+        if launches[member]
+            .fresh_restore_allocation_selection
+            .is_some()
+        {
             use crucible_node_provider::reference_packet::service::fresh_restore_allocation::{
-                PACKET_FRESH_RESTORE_ALLOCATION_QUERY,
                 PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING,
+                PACKET_FRESH_RESTORE_ALLOCATION_QUERY,
             };
             envelope_extensions.extend([
                 PACKET_FRESH_RESTORE_ALLOCATION_QUERY.into(),

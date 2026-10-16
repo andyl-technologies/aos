@@ -22,14 +22,22 @@ fn full_mechanism_is_explicit_and_older_installations_cannot_be_upgraded() {
     let full = serde_json::json!({"schema":"crucible.complete-scene.installation/2","mechanism":selected()});
     assert!(authenticate_edition_data(&full).is_ok());
     let tuple: CompleteMechanism = serde_json::from_value(full["mechanism"].clone()).unwrap();
-    assert!(authenticate_selection_data("crucible.complete-scene.installation/2", Some(tuple)).is_ok());
-    assert!(authenticate_selection_data("crucible.complete-scene.installation/1", Some(tuple)).is_err());
+    assert!(
+        authenticate_selection_data("crucible.complete-scene.installation/2", Some(tuple)).is_ok()
+    );
+    assert!(
+        authenticate_selection_data("crucible.complete-scene.installation/1", Some(tuple)).is_err()
+    );
     assert!(authenticate_selection_data("crucible.complete-scene.installation/2", None).is_err());
 }
 
 #[test]
 fn incomplete_foreign_and_weaker_restore_tuples_refuse() {
-    for field in ["complete_restore", "restore_input_emitter", "fresh_restore_allocation"] {
+    for field in [
+        "complete_restore",
+        "restore_input_emitter",
+        "fresh_restore_allocation",
+    ] {
         let mut missing = selected();
         missing.as_object_mut().unwrap().remove(field);
         assert!(serde_json::from_value::<CompleteMechanism>(missing).is_err());
