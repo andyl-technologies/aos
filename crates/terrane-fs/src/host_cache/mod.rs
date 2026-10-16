@@ -7,10 +7,12 @@
 use rustix::fs::{Mode, OFlags, fstat, fstatfs, open, openat};
 mod quota;
 mod reassembly;
+mod residency;
 mod source;
 
 pub use quota::ProjectQuota;
 pub use reassembly::NativeReassemblyPlan;
+pub use residency::{NativeChunkSpan, NativeResidencePlan};
 pub use source::NativeChunkSource;
 
 use std::{
