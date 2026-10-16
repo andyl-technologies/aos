@@ -3,13 +3,16 @@
 //! A client retains one cache incarnation across reconnects. Lost replies never
 //! trigger automatic retries: a new authenticated connection must explicitly
 //! drain before another readonly operation. Drain acknowledges ordered publisher
-//! custody; it does not prove cache reconciliation or authorize resume.
+//! custody; it does not prove cache reconciliation. Resume additionally requires
+//! genuine completed recovery and the concrete physical owner's exclusive turn.
 
 mod context;
 #[cfg(feature = "tokio")]
 mod manifest;
 mod receipt;
 mod recovery;
+#[cfg(feature = "tokio")]
+mod running;
 
 pub(crate) use recovery::{
     BodyIncarnationObservation, InventoryCursor, InventoryPage, RecoveryBody, UnverifiedBody,
@@ -18,6 +21,8 @@ pub(crate) use recovery::{
 pub(crate) use context::PublisherRecoveryContext;
 #[cfg(feature = "tokio")]
 pub use manifest::PeerManifestPublishedObject;
+#[cfg(feature = "tokio")]
+pub(crate) use running::{PublisherRunningContext, ResumeFailure, ResumeFailureStage};
 
 pub use receipt::{PeerPublishedObject, PeerSealProbe};
 
@@ -61,9 +66,10 @@ pub struct ClientConfig {
 /// Both repository-bound layouts and host-only locations use the sealed
 /// location interface; host-only clients require no repository routing facts.
 ///
-/// This client exposes readonly probe and inline adoption. Manifest adoption,
-/// writable cache admission and resume require separate durable cache-owner
-/// authority and are deliberately unavailable here.
+/// This client exposes readonly probe and inline adoption. Private manifest
+/// adoption and Resume additionally require genuine durable cache-owner
+/// receipts. Writable admission and running operations require their separate
+/// concrete owner integration and are unavailable through this public API.
 pub struct Client<L: HostReadLocation = DomainHostLayout> {
     config: ClientConfig,
     layout: Arc<NativeHostLayout<L>>,
@@ -74,8 +80,16 @@ pub struct Client<L: HostReadLocation = DomainHostLayout> {
 struct State {
     connection: Option<Connection>,
     next_request_id: u64,
-    drained: bool,
+    phase: Phase,
     recovery_epoch: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Undrained,
+    Recovery,
+    Running,
+    Uncertain,
 }
 
 impl<L: HostReadLocation> Client<L> {
@@ -105,7 +119,7 @@ impl<L: HostReadLocation> Client<L> {
             state: Mutex::new(State {
                 connection: Some(connection),
                 next_request_id: 1,
-                drained: false,
+                phase: Phase::Undrained,
                 recovery_epoch: 0,
             }),
         })
@@ -123,7 +137,7 @@ impl<L: HostReadLocation> Client<L> {
     /// authentication, transport uncertainty or a registered publisher failure.
     pub fn drain(&self) -> Result<(), Error> {
         let mut state = self.lock()?;
-        state.drained = false;
+        state.phase = Phase::Undrained;
         state.recovery_epoch = state
             .recovery_epoch
             .checked_add(1)
@@ -132,7 +146,7 @@ impl<L: HostReadLocation> Client<L> {
             state.connection = Some(connect(&self.config)?);
         }
         self.exchange(&mut state, Operation::Drain, None, None)?;
-        state.drained = true;
+        state.phase = Phase::Recovery;
         Ok(())
     }
 
@@ -225,7 +239,7 @@ impl<L: HostReadLocation> Client<L> {
     }
 
     fn require_drained(&self, state: &State) -> Result<(), Error> {
-        if !state.drained {
+        if state.phase != Phase::Recovery {
             return Err(Error::Invalid("publisher recovery drain required"));
         }
         Ok(())
@@ -334,5 +348,5 @@ fn connect(config: &ClientConfig) -> Result<Connection, Error> {
 
 fn invalidate(state: &mut State) {
     state.connection = None;
-    state.drained = false;
+    state.phase = Phase::Uncertain;
 }
