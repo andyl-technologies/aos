@@ -145,13 +145,38 @@ pub(super) struct CoordinatorView<'a> {
 }
 
 impl CoordinatorView<'_> {
+    // The full private installation repeats source schema rosters. Its actual
+    // Control template stays separately bounded before semantic validation.
+    pub(super) fn validate_installation_extent_data(
+        &self,
+        maximum: usize,
+    ) -> Result<(), ProviderError> {
+        crate::connection::serialized_credit(self, maximum)?;
+        if self.edition == CoordinatorEdition::CompleteFive {
+            for participant in self.participants {
+                crate::connection::serialized_credit(participant, LIMIT)?;
+            }
+            crate::connection::serialized_credit(self.host, LIMIT)?;
+            crate::connection::serialized_credit(
+                self.template,
+                PACKET_CONNECTED_COORDINATOR_BYTES,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Verifies full static ownership and exact local source membership.
     ///
     /// # Errors
     /// Refuses predicted preparation, unsupported topology or initial state,
     /// omitted/duplicate nodes or owners, foreign local scope or exhausted bytes.
     pub(super) fn validate(&self, local: &PacketControlSelection) -> Result<(), ProviderError> {
-        crate::connection::serialized_credit(self, PACKET_CONNECTED_COORDINATOR_BYTES)?;
+        self.validate_installation_extent_data(match self.edition {
+            CoordinatorEdition::ConnectedFour => PACKET_CONNECTED_COORDINATOR_BYTES,
+            CoordinatorEdition::CompleteFive => {
+                super::continuation::PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES
+            }
+        })?;
         crate::connection::serialized_credit(local, LIMIT)?;
         if self.schema != self.edition.schema()
             || self.participants.len() != PARTICIPANTS

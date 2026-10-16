@@ -74,7 +74,8 @@ pub fn original_packet_host_initial_lifecycle_counter_scratch_data() -> usize {
         OriginalSerializationStorageProjection,
         original_json_value_storage_extent_counter_scratch_data,
     };
-    size_of::<PacketNativeHostInitialLifecycleStorageData>()
+    crate::reference_packet::coordinator::packet_native5_coordinator_installation_counter_scratch_data()
+        + size_of::<PacketNativeHostInitialLifecycleStorageData>()
         + size_of::<crate::reference_packet::service::native_startup::OriginalHostInitialLifecycleShapes>()
         + 4 * size_of::<MetadataObserver<'static>>() + 4 * size_of::<RetainedProtocolMetadataFacts>()
         + 10 * size_of::<Data>() + 2 * size_of::<OriginalSerializationStorageProjection>()
@@ -100,7 +101,7 @@ pub(super) fn quote(
         || launch.selection.provider.supported_profiles.len() != 1
         || launch.limits.frame_bytes.get() == 0 || launch.limits.frame_bytes.get() > 65_536
         || launch.limits.blob_chunk_bytes.get() == 0 || launch.limits.blob_chunk_bytes.get() > 4096
-        || launch.initial_coordinator.bytes.as_slice().len() > crate::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES
+        || launch.initial_coordinator.bytes.as_slice().len() > crate::reference_packet::coordinator::PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES
     { return Err(refused()); }
     let shapes = crate::reference_packet::service::native_startup::original_host_initial_lifecycle_shapes_data(launch, maximum)?;
     let (schema_phase, schema_refs) = crate::reference_packet::service::native_startup::original_host_initial_codec_schema_storage_data(launch, maximum)?;

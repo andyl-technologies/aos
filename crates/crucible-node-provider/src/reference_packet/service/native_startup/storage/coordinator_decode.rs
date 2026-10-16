@@ -309,7 +309,8 @@ fn host_configuration_storage(
 /// Quotes complete selected data and all named validator phases before parsing.
 pub(super) fn quote(bytes: &[u8], maximum: usize) -> Result<usize, ProviderError> {
     if bytes.is_empty()
-        || bytes.len() > crate::reference_packet::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES
+        || bytes.len()
+            > crate::reference_packet::coordinator::PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES
     {
         return Err(refused());
     }
@@ -437,6 +438,7 @@ pub(super) fn counter_scratch_data() -> usize {
     // Actual compiled type census, raw field/array cursors, live quote totals,
     // borrowed result references and nested collection/projection observers.
     typed_backing::counter_scratch_data()
+        + crate::reference_packet::coordinator::packet_native5_coordinator_installation_counter_scratch_data()
         + size_of::<[usize; 29]>()
         + size_of::<[usize; 13]>()
         + size_of::<[&[u8]; 8]>()

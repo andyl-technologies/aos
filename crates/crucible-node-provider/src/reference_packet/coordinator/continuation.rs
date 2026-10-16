@@ -25,6 +25,36 @@ use crate::{
     reference_packet::{continuation_contracts as contracts, control::PacketControlSelection},
 };
 
+/// Bounds the complete immutable installation independently of its Control template.
+///
+/// The installation contains three independently bounded native selections, one
+/// Host selection and one template. Its extra full schema rosters are private
+/// startup data, not a single socket frame or a larger Control content object.
+/// The exact wrapper extent accounts for its fixed schema/keys and separators.
+/// Connected edition four and all published template limits remain unchanged.
+pub const PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES: usize = 4 * super::LIMIT
+    + PACKET_CONNECTED_COORDINATOR_BYTES
+    + b"{\"schema\":\"source-owned.packet-complete-coordinator-installation/5\",\"participants\":["
+        .len()
+    + 2
+    + b"],\"host\":".len()
+    + b",\"template\":".len()
+    + 1;
+
+/// Names fixed borrowed views of the complete installation extent checks.
+pub fn packet_native5_coordinator_installation_counter_scratch_data() -> usize {
+    use std::mem::size_of;
+    size_of::<&super::connected::CoordinatorView<'static>>()
+        + size_of::<&[PacketControlSelection]>()
+        + size_of::<std::slice::Iter<'static, PacketControlSelection>>()
+        + size_of::<&PacketControlSelection>()
+        + size_of::<&PacketConnectedHostSelection>()
+        + size_of::<&Value>()
+        + 2 * size_of::<usize>()
+        + size_of::<Result<usize, ProviderError>>()
+        + size_of::<Result<(), ProviderError>>()
+}
+
 /// Retains the distinct complete continuation's original four-owner static roster.
 ///
 /// This closed data type supplies neither a capture ticket nor restored native
@@ -48,7 +78,7 @@ impl PacketNative5CoordinatorInstallation {
     /// # Errors
     /// Refuses malformed, oversized, noncanonical or foreign complete scope.
     pub fn decode(bytes: &[u8], local: &PacketControlSelection) -> Result<Self, ProviderError> {
-        let value = canonical::parse_json(bytes, PACKET_CONNECTED_COORDINATOR_BYTES)?;
+        let value = canonical::parse_json(bytes, PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES)?;
         if canonical::canonical_json(&value)? != bytes {
             return Err(refused());
         }

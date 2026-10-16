@@ -979,10 +979,14 @@ impl crate::blob::BlobSchemaVerifier for Native5Policy {
                 "native5 source media unsupported",
             ));
         }
-        let value = canonical::parse_json(
-            bytes,
-            super::super::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES,
-        )?;
+        // Only this exact retained initial installation has the component-derived
+        // startup extent. Ordinary Control/template objects keep their old cap.
+        let maximum = if content == &self.coordinator.reference {
+            super::super::coordinator::PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES
+        } else {
+            super::super::coordinator::PACKET_CONNECTED_COORDINATOR_BYTES
+        };
+        let value = canonical::parse_json(bytes, maximum)?;
         if canonical::canonical_json(&value)? != bytes {
             return Err(ProviderError::Frame(
                 "native5 source object canonical bytes",

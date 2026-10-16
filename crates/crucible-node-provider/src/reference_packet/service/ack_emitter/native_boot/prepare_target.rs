@@ -46,7 +46,10 @@ pub(super) fn authenticate_verified_prepare_target(
 fn decode_immutable_coordinator(
     bytes: &[u8],
 ) -> Result<PacketNative5CoordinatorInstallation, ProviderError> {
-    let value = canonical::parse_json(bytes, 384 * 1024)?;
+    let value = canonical::parse_json(
+        bytes,
+        crate::reference_packet::coordinator::PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES,
+    )?;
     PacketNative5CoordinatorInstallation::deserialize(value)
         .map_err(ContractError::from)
         .map_err(Into::into)

@@ -595,3 +595,96 @@ pub(super) fn original_canonical_ack_controller_scope_with_identity_suffix(
 ) {
     native5_codec_tests::original_canonical_ack_controller_scope_with_identity_suffix(suffix)
 }
+
+#[test]
+fn complete_installation_extent_counts_full_rosters_without_widening_old_blob_limits() {
+    let mut installation = five();
+    // Exercise the actual typed serializer and component guards. Repeated rows
+    // make this size-only DATA fixture semantically invalid; the full validator
+    // must still independently reject them. No native authority is constructed.
+    for peer in &mut installation.participants {
+        let formats = peer.provider.implementation.formats.clone();
+        for _ in 0..8 {
+            peer.provider.implementation.formats.extend(formats.clone());
+        }
+        peer.realization.bindings[0].compatibility.implementation =
+            peer.provider.implementation.clone();
+    }
+    let actual = crate::connection::serialized_credit(&installation, usize::MAX).unwrap();
+    assert!(actual > PACKET_CONNECTED_COORDINATOR_BYTES);
+    assert!(actual <= PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES);
+    installation
+        .view()
+        .validate_installation_extent_data(actual)
+        .unwrap();
+    assert!(matches!(
+        installation
+            .view()
+            .validate_installation_extent_data(actual - 1),
+        Err(ProviderError::ResourceExhausted(
+            "prepared whole frame bytes"
+        ))
+    ));
+    assert!(
+        installation
+            .validate(&installation.participants[0])
+            .is_err()
+    );
+
+    let legacy = super::super::PacketConnectedCoordinatorInstallation {
+        schema: "source-owned.packet-connected-coordinator-installation/4".into(),
+        participants: installation.participants.clone(),
+        host: installation.host.clone(),
+        template: installation.template.clone(),
+    };
+    assert!(matches!(
+        legacy.validate(&legacy.participants[0]),
+        Err(ProviderError::ResourceExhausted(
+            "prepared whole frame bytes"
+        ))
+    ));
+    assert_eq!(PACKET_CONNECTED_COORDINATOR_BYTES, 131_072);
+}
+
+#[test]
+fn complete_installation_keeps_each_foreign_component_and_control_template_bounded() {
+    let mut foreign = five();
+    let feature = Id::new("x".repeat(128)).unwrap();
+    foreign.participants[1].provider.extensions_supported = vec![feature; 600];
+    assert!(
+        crate::connection::serialized_credit(
+            &foreign,
+            PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES
+        )
+        .is_ok()
+    );
+    assert!(matches!(
+        foreign
+            .view()
+            .validate_installation_extent_data(PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES),
+        Err(ProviderError::ResourceExhausted(
+            "prepared whole frame bytes"
+        ))
+    ));
+
+    let mut host = five();
+    host.host.initial_node = Value::String("x".repeat(super::super::LIMIT));
+    assert!(matches!(
+        host.view()
+            .validate_installation_extent_data(PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES),
+        Err(ProviderError::ResourceExhausted(
+            "prepared whole frame bytes"
+        ))
+    ));
+
+    let mut template = five();
+    template.template = Value::String("x".repeat(PACKET_CONNECTED_COORDINATOR_BYTES));
+    assert!(matches!(
+        template
+            .view()
+            .validate_installation_extent_data(PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES),
+        Err(ProviderError::ResourceExhausted(
+            "prepared whole frame bytes"
+        ))
+    ));
+}

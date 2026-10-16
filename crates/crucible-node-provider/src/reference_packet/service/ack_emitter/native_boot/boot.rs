@@ -325,8 +325,10 @@ impl NativeAckBoot {
         {
             return Err(ProviderError::Correlation("native source binding grammar"));
         }
-        let coordinator =
-            canonical::parse_json(launch.initial_coordinator.bytes.as_slice(), 384 * 1024)?;
+        let coordinator = canonical::parse_json(
+            launch.initial_coordinator.bytes.as_slice(),
+            crate::reference_packet::coordinator::PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES,
+        )?;
         let mut expected_source = serde_json::json!({"schema":schema, "selection":launch.selection,"program":launch.program,"coordinator":coordinator,"limits":launch.limits,"storage":launch.storage,"capture_profile":launch.capture_profile,"confirmation_selection":launch.confirmation_selection,"ack_emitter_selection":launch.ack_emitter_selection,"codec_metadata_extent":"CanonicalAck512KiB"});
         if let Some(extent) = launch.native_codec_metadata_extent {
             expected_source["native_codec_metadata_extent"] =

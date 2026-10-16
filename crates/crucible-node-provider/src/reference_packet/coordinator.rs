@@ -24,7 +24,10 @@ pub use connected::{
     PACKET_CONNECTED_COORDINATOR_BYTES, PacketConnectedCoordinatorInstallation,
     PacketConnectedHostSelection,
 };
-pub use continuation::PacketNative5CoordinatorInstallation;
+pub use continuation::{
+    PACKET_NATIVE5_COORDINATOR_INSTALLATION_BYTES, PacketNative5CoordinatorInstallation,
+    packet_native5_coordinator_installation_counter_scratch_data,
+};
 pub use world::PacketWorldCoordinatorInstallation;
 
 const LIMIT: usize = 65_536;
