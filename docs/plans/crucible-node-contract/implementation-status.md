@@ -252,9 +252,49 @@ physical memory. The next refinement is reviewing their actual owner lifetimes.
 Both installer diagnostics identify the private-parent-directory check.
 The fixture uses default temporary-directory permissions rather than requesting
 the required `0700` mode. Historical directory metadata was not captured, so
-no actual mode is inferred from the diagnostic alone. A fixture correction
-will request and assert the required private directory without changing the
-production guard. Diagnostic instrumentation remains outside the repository.
+no actual mode is inferred from the diagnostic alone. Commit `29fd85764c` makes the fixture request and assert the required private
+directory without changing the production guard. It adds a paired public-parent
+refusal and private-parent acceptance control; these controls have not run yet.
+Diagnostic instrumentation remains outside the repository.
+
+### Complete construction, capture archives and Fresh bindings
+
+The next committed stage adds exact construction-storage helpers for Host nodes,
+the common runtime, Oracle, scene and actor owners. The installed manifest
+selects the explicit transfer, input-emitter and Fresh-allocation mechanisms.
+Source bank reservation consumes its genuine original startup member before
+allocation and retains partially created banks on failure.
+
+Selected startup archives preserve the original allocation Report as a separate
+content owner and evidence leaf. Their explicit outer version 13 and full native
+version 14 readers authenticate both original cuts and the actual Report; legacy
+archive framing remains available. Fresh-query binding follows the same completed
+query and protocol frontier through assigned Prepare and receipt digests. These
+helpers do not supply the missing installed restoration action or Source signer.
+The ordinary Clock programme also retains real publication and damaged-archive
+failure experiments without promoting an unexecuted conformance class.
+
+Normal six-crate, all-feature/all-target checking passes for the combined stage.
+Independent review verifies all 6,085 captured files, 841 selected roles and the
+actual compiler dependency coverage of all eighty changed Rust files. Two prior
+compilation failures remain recorded: a snapshot validator tuple mismatch, then
+two stale storage getter calls and one test error conversion. Their narrow
+corrections are included in the passing source. Formatting commits are separate.
+
+The stage adds 38 test bodies and changes six existing bodies. One added native
+Clock case remains ignored pending genuine enrollment; the other 43 new or
+changed controls remain unrun while fresh test executables build. No application
+test-target, native Capture or complete restoration success is inferred.
+
+Shared campaign APIs now use neutral replay-closure and fingerprint-bound names.
+The lineage authoring key is `backend_build_identity`; legacy `qemu_build` remains
+accepted, and conflicting dual values refuse before output creation. Persisted
+lineage bytes and implementation-specific QEMU adapters are unchanged.
+
+The next runtime work must also resolve Fresh launch chronology. The current
+Fresh-selected receive window requires Query before the ordinary Arm path can
+proceed. Snapshot data helpers alone do not establish a reachable original
+Capture or a settled restoration path.
 
 ## Work in progress
 
