@@ -146,6 +146,7 @@ struct PackagedDemandedQemuHotForkSourceProvider<D, R, G>
 where
     D: crate::HotCheckpointTemplateDemotionSink<crate::ManagedQemuHotForkSourceWorld>,
     R: crate::HotCheckpointFallbackRetentionStore,
+    G: QemuAttemptResourceGuardFactory + Send + 'static,
 {
     pool: SharedManagedQemuHotForkSourceWorldPool<D, R>,
     provider: SharedQemuHotForkSourceWorldProvider<D, R>,
@@ -163,6 +164,7 @@ impl<D, R, G> crate::qemu_hot_fork_world_factory::source_world_provider_sealed::
 where
     D: crate::HotCheckpointTemplateDemotionSink<crate::ManagedQemuHotForkSourceWorld>,
     R: crate::HotCheckpointFallbackRetentionStore,
+    G: QemuAttemptResourceGuardFactory + Send + 'static,
 {
 }
 
@@ -210,7 +212,7 @@ where
             Error = PackagedQemuHotForkDemotionError,
         > + Send,
     R: crate::HotCheckpointFallbackRetentionStore + Send,
-    G: QemuAttemptResourceGuardFactory,
+    G: QemuAttemptResourceGuardFactory + Send + 'static,
     G::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
     type Error = PackagedDemandedQemuHotForkSourceProviderError;
@@ -338,6 +340,7 @@ where
             Error = PackagedQemuHotForkDemotionError,
         > + Send,
     R: crate::HotCheckpointFallbackRetentionStore + Send,
+    G: QemuAttemptResourceGuardFactory + Send + 'static,
 {
     fn reconcile_exact_admission_failure(
         &mut self,

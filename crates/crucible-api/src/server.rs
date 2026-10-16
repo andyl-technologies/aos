@@ -1890,6 +1890,7 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
         | LifecycleApiError::LoopFactory { .. }
+        | LifecycleApiError::ConstructionCustodyUnavailable
         | LifecycleApiError::BackendConstruction { .. }
         | LifecycleApiError::ConfigurationCopy(_)
         | LifecycleApiError::AttemptOperational { .. }

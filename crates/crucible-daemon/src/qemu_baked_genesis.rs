@@ -504,7 +504,7 @@ impl ProductionBakedGenesisReplayFactory {
 
 impl<R> ProductionPausedCheckpointReplayFactory for ProductionBakedGenesisReplayCatalogFactory<R>
 where
-    R: QemuAttemptResourceGuardFactory + Clone,
+    R: QemuAttemptResourceGuardFactory + Clone + Send + 'static,
     R::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
     type Guard = ProductionCheckpointReplayGuard<R::Guard>;

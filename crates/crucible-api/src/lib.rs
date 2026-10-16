@@ -109,7 +109,6 @@ pub use rpc_abi::{
     encode_rpc_hello_request, encode_rpc_hello_response, encode_rpc_message,
     negotiate_rpc_protocol, rpc_status_code_from_wire_name, rpc_status_code_wire_name,
 };
-#[cfg(all(feature = "test-support", target_os = "linux"))]
 pub use vm_lifecycle::{
     AuthenticatedProductionCheckpointCodecFixture, AuthenticatedProductionExactRamCodecFixture,
     build_authenticated_production_checkpoint_codec_fixture,
@@ -127,18 +126,26 @@ pub use vm_lifecycle::{
     ProductionExactCheckpointRetirementError, ProductionExactCheckpointRetirementReport,
     ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
     ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionPagedRamSource,
-    ProductionStoppedLifecycleError, ProductionVmExactNodeRestoreAdmission,
-    ProductionVmExactNodeRestoreAdmissions, ProductionVmLifecycleConfig, ProductionVmLifecycleLoop,
-    ProductionVmLifecycleResumeState, ProductionVmNodeGeneration, ProductionVmNodeLaunch,
-    ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher, ProductionVmNodeLease,
-    ProductionVmNodeReplayLaunchProfile, ProductionVmPortableReplayAssetPaths,
-    ProductionVmPortableReplayGuestAssetPaths, ProductionVmReplayExactNodeRestoreAdmission,
-    ProductionVmStoppedLifecycle, build_production_vm_exact_resume_lifecycle,
-    build_production_vm_exact_stopped_lifecycle, build_production_vm_lifecycle_loop_with_launcher,
-    collect_signal_artifact_objects, collect_signal_artifact_objects_bounded,
-    collect_signal_artifact_objects_with_budget, decode_authenticated_production_exact_checkpoint,
+    ProductionStoppedLifecycleError, ProductionVmConstructionCleanupError,
+    ProductionVmConstructionCustody, ProductionVmConstructionFailure,
+    ProductionVmExactNodeRestoreAdmission, ProductionVmExactNodeRestoreAdmissions,
+    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState,
+    ProductionVmNodeGeneration, ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest,
+    ProductionVmNodeLauncher, ProductionVmNodeLease, ProductionVmNodeReplayLaunchProfile,
+    ProductionVmPortableReplayAssetPaths, ProductionVmPortableReplayGuestAssetPaths,
+    ProductionVmReplayExactNodeRestoreAdmission, ProductionVmStoppedLifecycle,
+    build_production_vm_exact_resume_lifecycle, build_production_vm_exact_stopped_lifecycle,
+    build_production_vm_lifecycle_loop_with_launcher, collect_signal_artifact_objects,
+    collect_signal_artifact_objects_bounded, collect_signal_artifact_objects_with_budget,
+    decode_authenticated_production_exact_checkpoint,
     decode_authenticated_production_exact_checkpoint_under_original, open_exact_checkpoint_closure,
     production_vm_search_frontier, retire_production_exact_checkpoint_catalog,
+};
+#[cfg(all(feature = "test-support", target_os = "linux"))]
+#[cfg(target_os = "linux")]
+pub use vm_lifecycle::{
+    ProductionVmCleanupHandoff, ProductionVmCleanupOwner, ProductionVmCleanupReservation,
+    ProductionVmCleanupStage,
 };
 #[cfg(target_os = "linux")]
 pub use vm_lifecycle::{

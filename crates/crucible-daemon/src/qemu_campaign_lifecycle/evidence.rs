@@ -558,6 +558,20 @@ where
     type Lifecycle = QemuObservedFreshAttemptLifecycle<F::Lifecycle>;
     type Error = QemuObservedFreshAttemptLifecycleFactoryError<F::Error>;
 
+    fn retire_lifecycle(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Error> {
+        let (lifecycle, _, _) = lifecycle.into_recovery_parts();
+        QemuFreshAttemptLifecycleFactory::retire_lifecycle(&mut self.inner, lifecycle)
+            .map_err(QemuObservedFreshAttemptLifecycleFactoryError::Inner)
+    }
+
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        QemuFreshAttemptLifecycleFactory::try_retire_original(&mut self.inner, original)
+            .map_err(QemuObservedFreshAttemptLifecycleFactoryError::Inner)
+    }
+
     fn configure_attempt_continuation(
         &mut self,
         continuation: Option<QemuAttemptContinuation<'_>>,

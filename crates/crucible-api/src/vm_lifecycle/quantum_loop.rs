@@ -1061,6 +1061,7 @@ impl ProductionVmLifecycleLoop {
                     message: format!("shutdown production debugger gateway: {error}"),
                 })
         });
+        let construction_shutdown = self.retry_retained_debug_construction();
         let prior_node_lease_cleanup_failure = self.node_lease_cleanup_failed;
         let shutdown = self.inner.shutdown();
         let lease_shutdown = if shutdown.is_ok() {
@@ -1068,23 +1069,29 @@ impl ProductionVmLifecycleLoop {
         } else {
             Ok(())
         };
-        let launcher_shutdown =
-            if shutdown.is_ok() && lease_shutdown.is_ok() && !self.node_lease_cleanup_failed {
-                // Reaped processes no longer need their pinned backing files.
-                // Close those owners before aggregate storage cleanup checks
-                // quota usage: unlinked open inodes remain charged to it.
-                self.retained_hot_fork_disk_owners.clear();
+        let launcher_shutdown = if shutdown.is_ok()
+            && lease_shutdown.is_ok()
+            && construction_shutdown.is_ok()
+            && !self.node_lease_cleanup_failed
+        {
+            // Reaped processes no longer need their pinned backing files.
+            // Close those owners before aggregate storage cleanup checks
+            // quota usage: unlinked open inodes remain charged to it.
+            self.retained_hot_fork_disk_owners.clear();
 
-                self.node_launcher
-                    .finish()
-                    .map_err(|error| SchedulerError::BoundaryViolation {
-                        message: format!("finish production node-launch authority: {error}"),
-                    })
-            } else {
-                Ok(())
-            };
+            self.node_launcher
+                .finish()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("finish production node-launch authority: {error}"),
+                })
+        } else {
+            Ok(())
+        };
 
         let mut failures = Vec::new();
+        if let Err(error) = construction_shutdown {
+            failures.push(error);
+        }
         if let Some(Err(error)) = gateway_shutdown {
             failures.push(error);
         }

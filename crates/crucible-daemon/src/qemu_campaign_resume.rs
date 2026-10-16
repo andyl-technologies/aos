@@ -104,6 +104,27 @@ pub(crate) trait QemuProductionExactResumeLifecycleFactory {
     /// Factory-specific installation or guarded-construction failure.
     type Error;
 
+    /// Returns the complete lifecycle to its actual retained cleanup owner.
+    ///
+    /// # Errors
+    /// Operational implementations retain the same owner if publication refuses.
+    /// The default consumes only resource-free component lifecycle values.
+    fn retire_lifecycle(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Error> {
+        drop(lifecycle);
+        Ok(())
+    }
+
+    /// Retries only cleanup already retained by this factory.
+    ///
+    /// # Errors
+    /// Returns the actual retained-owner refusal without replacing its guards.
+    fn try_retire_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     /// Authenticates the checkpoint's modeled boundary without launching QEMU.
     ///
     /// # Errors
@@ -140,11 +161,22 @@ pub(crate) trait QemuProductionExactResumeLifecycleFactory {
 
 impl<R> QemuProductionExactResumeLifecycleFactory for QemuAttemptProductionVmLifecycleFactory<R>
 where
-    R: QemuAttemptResourceGuardFactory,
+    R: QemuAttemptResourceGuardFactory + Send + 'static,
     R::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
     type Lifecycle = ProductionVmLifecycleLoop;
     type Error = crate::QemuAttemptProductionVmLifecycleError;
+
+    fn retire_lifecycle(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Error> {
+        self.retain_returned_lifecycle(lifecycle)
+    }
+
+    fn try_retire_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.retry_retained_source_installation()
+    }
 
     fn authenticate_resume_boundary(
         &mut self,
@@ -190,6 +222,20 @@ where
 {
     type Lifecycle = QemuObservedFreshAttemptLifecycle<F::Lifecycle>;
     type Error = QemuObservedFreshAttemptLifecycleFactoryError<F::Error>;
+
+    fn retire_lifecycle(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Error> {
+        let (lifecycle, _, _) = lifecycle.into_recovery_parts();
+        QemuProductionExactResumeLifecycleFactory::retire_lifecycle(self.inner_mut(), lifecycle)
+            .map_err(QemuObservedFreshAttemptLifecycleFactoryError::Inner)
+    }
+
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        QemuProductionExactResumeLifecycleFactory::try_retire_original(self.inner_mut(), original)
+            .map_err(QemuObservedFreshAttemptLifecycleFactoryError::Inner)
+    }
 
     fn authenticate_resume_boundary(
         &mut self,
@@ -410,6 +456,15 @@ where
 {
     type Error = QemuProductionExactResumeExecutionRunnerError<F::Error, D::Error>;
 
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.lifecycles
+            .try_retire_original(original)
+            .map_err(QemuProductionExactResumeExecutionRunnerError::Lifecycle)
+    }
+
     fn execute(
         &mut self,
         input: &CrucibleAttemptExecution,
@@ -588,6 +643,7 @@ where
                 .map_err(map_resume_terminal_fingerprint_capture_failure)
         });
         let cleanup = lifecycle.shutdown();
+        let retirement = self.lifecycles.retire_lifecycle(lifecycle);
         let (pending, final_events) = match (driven, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
             (Err(failure), Ok(_)) => return Err(failure),
@@ -610,6 +666,11 @@ where
                 ));
             }
         };
+        retirement.map_err(|error| {
+            AttemptWorkerFailure::Terminal(
+                QemuProductionExactResumeExecutionRunnerError::Lifecycle(error),
+            )
+        })?;
         let product = match pending {
             ResumeRunnerResult::Observation(pending) => self
                 .driver

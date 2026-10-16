@@ -19,7 +19,7 @@ use crate::linux_attempt_storage::LinuxQemuAttemptStorageOwner;
 
 pub(crate) mod device_digest;
 mod fork_target;
-mod process_purpose;
+pub(super) mod process_purpose;
 mod target_dispatcher;
 pub(in crate::linux_attempt_host) use fork_target::ForkTargetReservation;
 pub(crate) use target_dispatcher::TargetWatcherOriginal;
@@ -903,7 +903,7 @@ pub(super) fn after_cleanup<T>(
     after_boundary(result, cleanup.wait_slice().map(|_| ()).map_err(Into::into))
 }
 
-fn after_boundary<T>(
+pub(in crate::linux_attempt_host) fn after_boundary<T>(
     result: Result<T, QemuVmRealizationError>,
     original: Result<(), OriginalActorAccountError>,
 ) -> Result<T, QemuVmRealizationError> {
@@ -938,6 +938,8 @@ struct NativeSlot {
     issuer_controls_bytes: u64,
     family_constructor_bytes: u64,
     installed_process: Option<process_purpose::InstalledProcessState>,
+    source_control_payer:
+        Option<crucible_linux_resource::host_services::process_birth::WeakSourceHostPurpose>,
     launch_in_flight: bool,
     launch_abandoned: bool,
     launch_refusal: Option<Arc<super::original_node::OriginalNativeFreshLaunchError>>,
@@ -1063,28 +1065,23 @@ impl std::fmt::Debug for NativeAccountAttempt {
 }
 
 impl OriginalNativeAccountRoster {
-    /// Publishes the sole checked normal native subdivision before factory use.
+    /// Consumes one genuine node subdivision into its width-one normal roster.
     ///
-    /// The original main permanently assigns this request alongside its registry
-    /// Services. Roster storage stays outside the process envelope within the
-    /// same subdivision; it is never another independently spendable bank.
+    /// The moved node claim retains its disjoint original Main reservation;
+    /// roster storage is assigned before Arc birth. Node count and private
+    /// worker width are independent, and this method never repeats a root claim.
     ///
     /// # Errors
-    /// Refuses repeated native publication, insufficient original capacity,
-    /// invalid preparation identity or target control overflow before Arc birth.
-    pub fn publish_normal(
-        purpose: &Arc<
-            crucible_linux_resource::host_services::process_birth::AuthenticatedNativeSlotPurpose,
-        >,
-        request: crucible_linux_resource::ram_policy::HostResourceVector,
+    /// Retains refused birth custody; rejects foreign/inactive Preparation or
+    /// insufficient node metadata before allocating the actual roster.
+    pub(super) fn publish_normal_node(
+        node: crucible_linux_resource::host_services::process_birth::AuthenticatedNativeNodeClaim,
         preparation: &Arc<HostOperationGuard>,
     ) -> Result<(Self, OriginalNativeAccountFactoryBinding), OriginalActorAccountError> {
-        purpose.verify_native_preparation(preparation)?;
-        let subdivision = purpose.claim_native_roster(request)?;
-        let credit = OriginalNativeAccountCredit::from_normal(
-            subdivision,
+        let credit = OriginalNativeAccountCredit::from_normal_node(
+            node,
             preparation,
-            Self::allocation_extent()?,
+            Self::shared_allocation_extent()?,
         )?;
         Self::publish([Some(credit), None, None, None], 1)
     }
@@ -1118,6 +1115,7 @@ impl OriginalNativeAccountRoster {
                 cleanup_controls_bytes: 0,
                 process_binding_bytes: 0,
                 installed_process: None,
+                source_control_payer: None,
                 launch_in_flight: false,
                 launch_abandoned: false,
                 launch_refusal: None,
@@ -1140,6 +1138,13 @@ impl OriginalNativeAccountRoster {
             },
             binding,
         ))
+    }
+
+    // The normal pool's fixed node array already pays the external facade.
+    fn shared_allocation_extent() -> Result<u64, OriginalActorAccountError> {
+        Self::allocation_extent()?
+            .checked_sub(std::mem::size_of::<Self>() as u64)
+            .ok_or(OriginalActorAccountError::Unavailable)
     }
 
     pub(super) fn allocation_extent() -> Result<u64, OriginalActorAccountError> {
@@ -1836,6 +1841,7 @@ fn close_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
     // The host calls this only after actual process/descendant and storage
     // containment. Drop the family witness before allowing another generation.
     slot.installed_process = None;
+    slot.source_control_payer = None;
     // Paired credit remains fully charged after genuine vector closure.
     slot.active = None;
     Ok(())
@@ -1893,5 +1899,49 @@ impl Drop for OriginalNativeNodeBinding {
         {
             slot.node_bindings_live -= 1;
         }
+    }
+}
+
+impl NativeAccountAttempt {
+    pub(super) fn reserve_contract_controls(
+        &self,
+        contract: &crate::QemuChildProcessContract,
+        descriptors: u64,
+        bytes: u64,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::SourceHostControlLease,
+        OriginalActorAccountError,
+    > {
+        self.require_original()?;
+        let held = self
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let state = held
+            .lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state
+            .slots
+            .get(self.index)
+            .filter(|slot| {
+                slot.active == Some(self.generation)
+                    && slot.unsettled.is_none()
+                    && !slot.launch_abandoned
+            })
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let source = slot
+            .installed_process
+            .as_ref()
+            .is_some_and(|purpose| purpose.matches_launch_contract(contract));
+        if !source && !slot.fork_target.matches_live_contract(contract) {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        let payer = slot
+            .source_control_payer
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        payer
+            .reserve_controls(descriptors, bytes)
+            .map_err(Into::into)
     }
 }

@@ -233,10 +233,12 @@ struct RecordingFinishLauncher {
 type PreparationObservation = (&'static str, bool, u64);
 
 struct PreparationBoundaryLauncher {
+    construction: Option<Box<ProductionVmConstructionCustody>>,
     observations: Arc<std::sync::Mutex<Vec<PreparationObservation>>>,
 }
 
 struct SelectablePlanRecordingLauncher {
+    construction: Option<Box<ProductionVmConstructionCustody>>,
     plans: Arc<std::sync::Mutex<Vec<SelectableCatalogPlan>>>,
 }
 
@@ -280,6 +282,10 @@ impl ProductionVmNodeLauncher for RecordingFinishLauncher {
 }
 
 impl ProductionVmNodeLauncher for PreparationBoundaryLauncher {
+    fn take_construction_custody(&mut self) -> Option<Box<ProductionVmConstructionCustody>> {
+        self.construction.take()
+    }
+
     fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
         Ok(())
     }
@@ -335,6 +341,10 @@ impl ProductionVmNodeLauncher for PreparationBoundaryLauncher {
 }
 
 impl ProductionVmNodeLauncher for SelectablePlanRecordingLauncher {
+    fn take_construction_custody(&mut self) -> Option<Box<ProductionVmConstructionCustody>> {
+        self.construction.take()
+    }
+
     fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
         Ok(())
     }
@@ -754,9 +764,10 @@ fn production_lifecycle_lends_generation_preparation_before_path_access() {
         &scenario,
         &source,
         &config,
-        PreparationBoundaryLauncher {
+        Box::new(PreparationBoundaryLauncher {
+            construction: Some(Box::new(ProductionVmConstructionCustody::new())),
             observations: Arc::clone(&observations),
-        },
+        }),
     )
     .err()
     .unwrap_or_else(|| panic!("preparation-boundary launcher should reject construction"));
@@ -824,9 +835,10 @@ fn production_lifecycle_derives_node_local_selectable_catalog_from_scenario() {
         &scenario,
         &source,
         &config,
-        SelectablePlanRecordingLauncher {
+        Box::new(SelectablePlanRecordingLauncher {
+            construction: Some(Box::new(ProductionVmConstructionCustody::new())),
             plans: Arc::clone(&plans),
-        },
+        }),
     )
     .err()
     .unwrap_or_else(|| panic!("recording launcher should reject construction"));
@@ -1089,6 +1101,8 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         debug_attach: None,
         debug_gateway_teardown_required: false,
         indeterminate_debug_candidate: None,
+        retained_debug_construction: std::sync::Mutex::new(None),
+        construction_custody: None,
         debug_runtime_evidence: Vec::new(),
         node_launcher: Box::new(PackagedProductionVmNodeLauncher),
         _run_directory: run_directory,

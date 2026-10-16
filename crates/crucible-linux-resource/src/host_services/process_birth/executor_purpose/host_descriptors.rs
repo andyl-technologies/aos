@@ -1,9 +1,10 @@
-//! Conserves the authenticated Main table and two issued native tables.
+//! Conserves the authentic Main table and every live node's native tables.
 //!
-//! The Main soft limit is lowered inside its unchanged hard authority before
-//! native effects. A fixed-buffer census rejects every surviving descriptor
-//! outside that soft limit. Actual children set their own finite soft and hard
-//! limits; they never receive a fresh aggregate descriptor allowance.
+//! Main's original hard limit never changes. A selected World reserves its
+//! actual native table ceilings and Main landing peaks together before effects.
+//! Its live native-table sum determines Main's current soft limit. Existing
+//! native children retain their own issued limits; another World cannot change
+//! those already-born tables or their immutable Source/Target family relation.
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{HostOperationGuard, HostServiceLease, ServiceBirthError};
@@ -13,10 +14,16 @@ pub(super) const CENSUS_BYTES: usize = 4096;
 pub(super) struct HostDescriptorPartition {
     original: u64,
     host: u64,
+    pool_ceiling: u64,
+    shared_peak: u64,
+    native_tables: u64,
+    pool_window_peak: u64,
     ready: bool,
-    _remainder: Option<HostServiceLease>,
+    // Both are existing paid parent owners. Cloning a window only retains
+    // these same counters; the joint ledger prevents spending either twice.
+    native: HostServiceLease,
+    _external: Option<HostServiceLease>,
     target_window: Option<(u64, u64)>,
-    source_window: Option<(u64, u64)>,
     next_window: u64,
     dispatcher_claimed: bool,
 }
@@ -24,25 +31,31 @@ pub(super) struct HostDescriptorPartition {
 impl HostDescriptorPartition {
     pub(super) fn new(
         original: u64,
-        local: u64,
-        remainder: Option<HostServiceLease>,
+        pool_ceiling: u64,
+        shared_peak: u64,
+        native: HostServiceLease,
+        external: Option<HostServiceLease>,
     ) -> Result<Self, ServiceBirthError> {
-        let host = local
-            .checked_mul(2)
-            .and_then(|children| original.checked_sub(children))
-            .filter(|host| *host > 0 && local > 0 && local <= original)
-            .ok_or_else(|| {
-                ServiceBirthError::policy(
-                    "host and two child descriptor tables do not fit the original",
-                )
-            })?;
+        if shared_peak == 0
+            || shared_peak >= pool_ceiling
+            || pool_ceiling > original
+            || native.file_descriptors() < pool_ceiling
+        {
+            return Err(ServiceBirthError::policy(
+                "Main/native descriptor geometry has no paid parent",
+            ));
+        }
         Ok(Self {
             original,
-            host,
+            host: original,
+            pool_ceiling,
+            shared_peak,
+            native_tables: 0,
+            pool_window_peak: 0,
             ready: false,
-            _remainder: remainder,
+            native,
+            _external: external,
             target_window: None,
-            source_window: None,
             next_window: 0,
             dispatcher_claimed: false,
         })
@@ -54,92 +67,100 @@ impl HostDescriptorPartition {
         original: &HostOperationGuard,
     ) -> Result<(u64, HostServiceLease), ServiceBirthError> {
         self.check()?;
-        if self.dispatcher_claimed || self.target_window.is_some() || peak == 0 || peak >= self.host
+        if self.dispatcher_claimed
+            || self.target_window.is_some()
+            || peak == 0
+            || peak > self.shared_peak
         {
             return Err(ServiceBirthError::policy(
-                "Target host descriptor window is occupied or invalid",
-            ));
-        }
-        let paid = self
-            ._remainder
-            .as_ref()
-            .filter(|paid| paid.file_descriptors() >= peak)
-            .ok_or_else(|| {
-                ServiceBirthError::policy("Target host window has no authentic descriptor payer")
-            })?;
-        let observed = census_count(self.host, self.original, original)?;
-        let held_source = self.source_window.map_or(0, |(_, peak)| peak);
-        if observed
-            .checked_add(held_source)
-            .and_then(|count| count.checked_add(peak))
-            .is_none_or(|needed| needed > self.host)
-        {
-            return Err(ServiceBirthError::policy(
-                "Target host descriptor landing exceeds Main table",
-            ));
-        }
-        let epoch = self.next_window.checked_add(1).ok_or_else(|| {
-            ServiceBirthError::policy("Target descriptor window epoch is exhausted")
-        })?;
-        let loan = paid.clone();
-        self.next_window = epoch;
-        self.target_window = Some((epoch, peak));
-        self.dispatcher_claimed = true;
-        Ok((epoch, loan))
-    }
-
-    /// Reserves Source landing from the same paid Main table remainder.
-    pub(super) fn reserve_source_window(
-        &mut self,
-        peak: u64,
-        original: &HostOperationGuard,
-    ) -> Result<(u64, HostServiceLease), ServiceBirthError> {
-        self.check()?;
-        if self.source_window.is_some() || peak == 0 || peak >= self.host {
-            return Err(ServiceBirthError::policy(
-                "Source host window is occupied or invalid",
-            ));
-        }
-        let paid = self
-            ._remainder
-            .as_ref()
-            .filter(|paid| paid.file_descriptors() >= peak)
-            .ok_or_else(|| ServiceBirthError::policy("Source host window has no actual payer"))?;
-        let observed = census_count(self.host, self.original, original)?;
-        let held_target = self.target_window.map_or(0, |(_, peak)| peak);
-        if observed
-            .checked_add(held_target)
-            .and_then(|count| count.checked_add(peak))
-            .is_none_or(|needed| needed > self.host)
-        {
-            return Err(ServiceBirthError::policy(
-                "Source and Target landing exceed Main table",
+                "Target dispatcher landing is occupied or exceeds its prepaid Main bound",
             ));
         }
         let epoch = self
             .next_window
             .checked_add(1)
-            .ok_or_else(|| ServiceBirthError::policy("Source host window epoch is exhausted"))?;
+            .ok_or_else(|| ServiceBirthError::policy("Target descriptor epoch exhausted"))?;
+        // Occupy before census/post: an uncertain shared-worker birth cannot
+        // retry the same descriptor role as a second fresh dispatcher.
         self.next_window = epoch;
-        self.source_window = Some((epoch, peak));
-        Ok((epoch, paid.clone()))
+        self.target_window = Some((epoch, peak));
+        self.dispatcher_claimed = true;
+        self.corroborate_census(original)?;
+        Ok((epoch, self.native.clone()))
     }
 
-    pub(super) fn check_source_window(&self, epoch: u64) -> Result<(), ServiceBirthError> {
+    /// Reserves actual node tables and Main landings in one physical split.
+    pub(super) fn reserve_pool_windows(
+        &mut self,
+        peak: u64,
+        tables: u64,
+        original: &HostOperationGuard,
+    ) -> Result<HostServiceLease, ServiceBirthError> {
         self.check()?;
-        if !self
-            .source_window
-            .is_some_and(|(current, _)| current == epoch)
-        {
-            return Err(ServiceBirthError::policy("Source host window is stale"));
-        }
+        let windows = self
+            .pool_window_peak
+            .checked_add(peak)
+            .filter(|_| peak != 0 && tables != 0)
+            .ok_or_else(|| ServiceBirthError::policy("node descriptor assignment overflows"))?;
+        let tables = self
+            .native_tables
+            .checked_add(tables)
+            .ok_or_else(|| ServiceBirthError::policy("native descriptor tables overflow"))?;
+        tables
+            .checked_add(windows)
+            .and_then(|sum| sum.checked_add(self.shared_peak))
+            .filter(|sum| *sum <= self.pool_ceiling)
+            .ok_or_else(|| {
+                ServiceBirthError::policy("native tables and Main landings exceed their SAME pool")
+            })?;
+        let host = self
+            .original
+            .checked_sub(tables)
+            .ok_or_else(|| ServiceBirthError::policy("native tables exceed original Main"))?;
+        // Publish the attempted split before setrlimit/census. Refusal retains
+        // it and seals admission; no rollback can silently restore broader work.
+        self.ready = false;
+        self.native_tables = tables;
+        self.pool_window_peak = windows;
+        self.host = host;
+        self.write_soft_limit()?;
+        self.corroborate_census(original)?;
+        self.ready = true;
+        self.check()?;
+        Ok(self.native.clone())
+    }
+
+    pub(super) fn retain_pool_remainder(&self) -> Result<HostServiceLease, ServiceBirthError> {
+        self.check()?;
+        Ok(self.native.clone())
+    }
+
+    pub(super) fn close_pool_windows(&mut self, peak: u64) -> Result<(), ServiceBirthError> {
+        self.check()?;
+        self.pool_window_peak = self.pool_window_peak.checked_sub(peak).ok_or_else(|| {
+            ServiceBirthError::policy("landing return exceeds its actual reservation")
+        })?;
         Ok(())
     }
 
-    pub(super) fn close_source_window(&mut self, epoch: u64) -> Result<(), ServiceBirthError> {
-        self.check_source_window(epoch)?;
-        self.source_window = None;
-        Ok(())
+    /// Repartitions only tables whose actual child/control owners have closed.
+    pub(super) fn close_pool_tables(&mut self, tables: u64) -> Result<(), ServiceBirthError> {
+        self.check()?;
+        let tables = self.native_tables.checked_sub(tables).ok_or_else(|| {
+            ServiceBirthError::policy("native table return exceeds physical assignment")
+        })?;
+        let host = self
+            .original
+            .checked_sub(tables)
+            .ok_or_else(|| ServiceBirthError::policy("native table return overflows"))?;
+        self.ready = false;
+        self.native_tables = tables;
+        self.host = host;
+        // This restores only the SAME unchanged hard authority after actual
+        // return; an old child's hard limit never changes or receives headroom.
+        self.write_soft_limit()?;
+        self.ready = true;
+        self.check()
     }
 
     pub(super) fn check_target_window(&self, epoch: u64) -> Result<(), ServiceBirthError> {
@@ -149,7 +170,7 @@ impl HostDescriptorPartition {
             .is_some_and(|(current, _)| current == epoch)
         {
             return Err(ServiceBirthError::policy(
-                "Target descriptor window is stale",
+                "Target dispatcher landing is stale",
             ));
         }
         Ok(())
@@ -168,23 +189,8 @@ impl HostDescriptorPartition {
         original
             .verify_retained_phase()
             .map_err(ServiceBirthError::from)?;
-        let actual = limits()?;
-        if actual.rlim_cur != self.original || actual.rlim_max != self.original {
-            return Err(ServiceBirthError::policy(
-                "Main descriptor limits differ from its authenticated original",
-            ));
-        }
-        let refined = libc::rlimit {
-            rlim_cur: self.host,
-            rlim_max: self.original,
-        };
-        // SAFETY: setrlimit reads one initialized fixed-size value. Only the
-        // soft limit decreases; original child hard authority is retained.
-        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &refined) } != 0 {
-            return Err(kernel_error("refine or inspect Main descriptor partition"));
-        }
         self.check_limits()?;
-        census(self.host, self.original, original)?;
+        self.corroborate_census(original)?;
         self.ready = true;
         original
             .verify_retained_phase()
@@ -195,8 +201,43 @@ impl HostDescriptorPartition {
     pub(super) fn check(&self) -> Result<(), ServiceBirthError> {
         if !self.ready {
             return Err(ServiceBirthError::policy(
-                "Main descriptor refinement is incomplete",
+                "Main descriptor split is incomplete",
             ));
+        }
+        self.check_limits()
+    }
+
+    fn corroborate_census(&self, original: &HostOperationGuard) -> Result<(), ServiceBirthError> {
+        self.check_limits()?;
+        let accounted_main = self
+            .original
+            .checked_sub(self.pool_ceiling)
+            .and_then(|bytes| bytes.checked_add(self.shared_peak))
+            .and_then(|bytes| bytes.checked_add(self.pool_window_peak))
+            .filter(|main| *main <= self.host)
+            .ok_or_else(|| {
+                ServiceBirthError::policy("Main descriptor accounting exceeds its split")
+            })?;
+        let observed = census_count(self.host, self.original, original)?;
+        // Live windows may already be materialized in this count. Compare to
+        // their total assigned bound; never add old windows on top of observed.
+        if observed > accounted_main {
+            return Err(ServiceBirthError::policy(
+                "actual Main descriptors exceed retained Main owners",
+            ));
+        }
+        Ok(())
+    }
+
+    fn write_soft_limit(&self) -> Result<(), ServiceBirthError> {
+        let limits = libc::rlimit {
+            rlim_cur: self.host,
+            rlim_max: self.original,
+        };
+        // SAFETY: setrlimit copies this initialized value. The original hard
+        // limit is unchanged; only the jointly reserved live split is applied.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limits) } != 0 {
+            return Err(kernel_error("apply conserved Main/native descriptor split"));
         }
         self.check_limits()
     }
@@ -205,7 +246,7 @@ impl HostDescriptorPartition {
         let actual = limits()?;
         if actual.rlim_cur != self.host || actual.rlim_max != self.original {
             return Err(ServiceBirthError::policy(
-                "Main descriptor partition changed",
+                "Main original descriptor partition changed",
             ));
         }
         Ok(())
@@ -227,10 +268,6 @@ fn limits() -> Result<libc::rlimit, ServiceBirthError> {
     }
     // SAFETY: the successful syscall initialized the complete value.
     Ok(unsafe { value.assume_init() })
-}
-
-fn census(host: u64, maximum: u64, original: &HostOperationGuard) -> Result<(), ServiceBirthError> {
-    census_count(host, maximum, original).map(|_| ())
 }
 
 fn census_count(
@@ -340,6 +377,14 @@ mod tests {
     // must not alter this test executable's other cases or its parent process.
     const HELPER: &str = "host_services::process_birth::executor_purpose::host_descriptors::tests::host_partition_kernel_helper";
 
+    fn paid_descriptors(count: u64) -> HostServiceLease {
+        // A local accounting mechanism, not an authenticated Main/Source issuer.
+        crate::host_services::HostServiceAllocator::new(1, count, 1)
+            .unwrap()
+            .reserve_resources(0, count, 0)
+            .unwrap()
+    }
+
     #[test]
     fn host_partition_kernel_helper() {
         let Ok(case) = std::env::var("CRUCIBLE_FD_PARTITION_HELPER") else {
@@ -376,7 +421,8 @@ mod tests {
         let original = supervisor
             .begin(crate::host_supervision::HostOperationClass::Preparation)
             .unwrap();
-        let mut partition = HostDescriptorPartition::new(64, 24, None).unwrap();
+        let mut partition =
+            HostDescriptorPartition::new(64, 64, 8, paid_descriptors(64), None).unwrap();
         if case == "cancelled" {
             supervisor.cancel().unwrap();
             assert!(partition.install(&original).is_err());
@@ -384,6 +430,9 @@ mod tests {
             assert!(!partition.ready);
             return;
         }
+        partition.install(&original).unwrap();
+        assert_eq!(limits().unwrap().rlim_cur, 64);
+
         let descriptor = std::fs::File::open("/dev/null").unwrap();
         let high = if case == "high-index" {
             // SAFETY: fcntl duplicates this retained file descriptor, which is
@@ -394,7 +443,7 @@ mod tests {
         } else {
             None
         };
-        let result = partition.install(&original);
+        let result = partition.reserve_pool_windows(8, 48, &original);
         assert_eq!(limits().unwrap().rlim_cur, 16);
         assert_eq!(limits().unwrap().rlim_max, 64);
         if let Some(high) = high {
@@ -406,7 +455,7 @@ mod tests {
             // Removing the offending descriptor cannot mint the failed owner.
             assert!(partition.check().is_err());
         } else {
-            result.unwrap();
+            let _pool_controls = result.unwrap();
             partition.check().unwrap();
             if case == "dispatcher-terminal" {
                 // Exercise the real refined table, without fabricating a Main
@@ -442,12 +491,16 @@ mod tests {
     }
 
     #[test]
-    fn original_descriptor_partition_rejects_overflow_or_no_host_table() {
-        assert!(HostDescriptorPartition::new(64, 32, None).is_err());
-        assert!(HostDescriptorPartition::new(64, 0, None).is_err());
-        assert!(HostDescriptorPartition::new(u64::MAX, u64::MAX, None).is_err());
-        let accepted = HostDescriptorPartition::new(64, 16, None).unwrap();
-        assert_eq!(accepted.host + 2 * 16, accepted.original);
+    fn original_descriptor_partition_requires_one_paid_dynamic_pool() {
+        assert!(HostDescriptorPartition::new(64, 64, 0, paid_descriptors(64), None).is_err());
+        assert!(HostDescriptorPartition::new(64, 64, 64, paid_descriptors(64), None).is_err());
+        assert!(HostDescriptorPartition::new(64, 65, 8, paid_descriptors(65), None).is_err());
+        assert!(HostDescriptorPartition::new(64, 64, 8, paid_descriptors(63), None).is_err());
+
+        let accepted = HostDescriptorPartition::new(64, 64, 8, paid_descriptors(64), None).unwrap();
+        assert_eq!(accepted.host, accepted.original);
+        assert_eq!(accepted.native_tables, 0);
+        assert_eq!(accepted.pool_window_peak, 0);
         assert!(!accepted.ready);
     }
 }

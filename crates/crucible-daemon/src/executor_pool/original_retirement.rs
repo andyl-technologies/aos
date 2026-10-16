@@ -36,6 +36,10 @@ where
     L: AssignmentLedger + Send + 'static,
     V: AttemptAdmissionValidator + Send + Sync + 'static,
 {
+    pub(crate) fn physically_retired(&self) -> bool {
+        self.original_retired
+    }
+
     /// Stops drained workers using only the same original wait slices.
     ///
     /// The caller retains the entire pool on refusal. No join is entered while
@@ -49,12 +53,10 @@ where
         original: &HostOperationGuard,
     ) -> Result<(), OriginalPoolRetirementError> {
         original.wait_slice()?;
-        if self.service.shared.completion.is_retained() {
-            return Err(OriginalPoolRetirementError::Pool {
-                cause: LocalExecutorPoolShutdownError::CleanupPending,
-                post: original.wait_slice().err(),
-            });
+        if self.original_retired {
+            return Ok(());
         }
+        let retained_history = self.service.shared.completion.is_retained();
         let executor = self.service.shared.executor.try_lock().map_err(|_| {
             OriginalPoolRetirementError::Occupied {
                 post: original.wait_slice().err(),
@@ -81,7 +83,7 @@ where
         drop(executor);
 
         while !self.service.shared.completion.is_finished()
-            || self.workers.iter().any(|worker| !worker.is_finished())
+            || !self.worker_custody.threads_finished()
         {
             if self.service.shared.completion.is_retained() {
                 return Err(OriginalPoolRetirementError::Pool {
@@ -92,22 +94,23 @@ where
             thread::park_timeout(original.wait_slice()?);
         }
 
-        let mut panicked = false;
-        for worker in self.workers.drain(..) {
-            if worker.join().is_err() {
-                panicked = true;
-            }
-        }
-        let cause = if panicked {
+        // The same Main directory retains handles across failed construction.
+        let resources = self.worker_custody.try_retire_original(original);
+        let panicked = self.worker_custody.thread_panicked();
+        let history = if panicked {
             Some(LocalExecutorPoolShutdownError::ThreadPanicked)
         } else if self.service.shared.state.load(Ordering::Acquire) == POOL_POISONED {
             Some(LocalExecutorPoolShutdownError::WorkerPanicked)
+        } else if retained_history {
+            Some(LocalExecutorPoolShutdownError::CleanupPending)
+        } else if resources.is_err() {
+            Some(LocalExecutorPoolShutdownError::WorkerResources)
         } else {
             None
         };
-        if let Some(cause) = cause {
+        if self.worker_custody.verify_retired().is_err() {
             return Err(OriginalPoolRetirementError::Pool {
-                cause,
+                cause: history.unwrap_or(LocalExecutorPoolShutdownError::WorkerResources),
                 post: original.wait_slice().err(),
             });
         }
@@ -134,7 +137,10 @@ where
         match (work, post) {
             (Ok(()), None) => {
                 self.original_retired = true;
-                Ok(())
+                match history {
+                    Some(cause) => Err(OriginalPoolRetirementError::Pool { cause, post: None }),
+                    None => Ok(()),
+                }
             }
             (Ok(_), Some(cause)) => Err(cause.into()),
             (Err(OriginalPoolRetirementError::Occupied { .. }), post) => {

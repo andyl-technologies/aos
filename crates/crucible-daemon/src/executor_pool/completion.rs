@@ -101,7 +101,6 @@ impl PoolCompletionState {
     }
 
     /// Reports cleanup containment without transferring its resources.
-    #[cfg(feature = "private-measurement-domain")]
     pub(super) fn is_retained(&self) -> bool {
         self.retained.load(Ordering::Acquire)
     }
@@ -110,7 +109,6 @@ impl PoolCompletionState {
     ///
     /// # Errors
     /// Refuses an occupied or poisoned completion lock before state mutation.
-    #[cfg(feature = "private-measurement-domain")]
     pub(super) fn try_signal_quiescent_stop(
         &self,
         state: &std::sync::atomic::AtomicU8,

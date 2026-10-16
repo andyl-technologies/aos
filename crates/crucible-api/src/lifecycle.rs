@@ -334,6 +334,9 @@ use session_contract::{
 /// Error returned by lifecycle unary API methods.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LifecycleApiError {
+    /// The launcher cannot lend empty storage admitted before its first effects.
+    #[error("prepaid lifecycle construction custody is unavailable")]
+    ConstructionCustodyUnavailable,
     /// The actual retained parent park phase excludes this lifecycle effect.
     #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
     #[error("parent park owns the source")]

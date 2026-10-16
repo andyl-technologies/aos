@@ -8,6 +8,11 @@ use super::*;
 use crucible_linux_resource::LinuxProjectQuotaController;
 use std::sync::Weak;
 
+mod logical_reservation;
+pub use logical_reservation::QemuForkTargetLogicalReservation;
+mod ram_admission;
+pub use ram_admission::QemuForkTargetRamAdmission;
+
 /// Lends the one separately admitted target of an actual retained Source.
 ///
 /// Only the genuine Source host can construct this move-only permit. It
@@ -321,10 +326,10 @@ impl LinuxQemuAttemptHostFactory {
         self.verify_native_quiescent()?;
         self.process.finish_target_dispatcher()?;
         drop(self.original_accounts.take());
-        self.normal_roster
+        self.normal_pool
             .as_mut()
-            .ok_or_else(|| missing_authority("retain normal QEMU roster retirement"))?
-            .try_close()
+            .ok_or_else(|| missing_authority("retain normal QEMU node pool retirement"))?
+            .finish()
             .map_err(original_roster::original_error)
     }
 
@@ -349,12 +354,13 @@ impl LinuxQemuAttemptHostFactory {
             .reservation
             .take()
             .ok_or_else(|| missing_authority("consume QEMU fork target permit"))?;
+        let binding = match self.normal_pool.as_ref() {
+            Some(pool) => pool.binding_for_target(&reservation),
+            None => self.original_accounts.as_ref(),
+        }
+        .ok_or_else(|| missing_authority("retain exact QEMU node fork-target factory"))?;
         reservation
-            .verify_factory(
-                self.original_accounts
-                    .as_ref()
-                    .ok_or_else(|| missing_authority("retain QEMU fork target factory"))?,
-            )
+            .verify_factory(binding)
             .map_err(original_roster::original_error)?;
         let ceilings = reservation.ceilings;
         if self.poisoned

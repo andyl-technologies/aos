@@ -652,6 +652,20 @@ pub trait AttemptExecutionModel {
     ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
+
+    /// Retires permanently retained model resources under the same outer Original.
+    ///
+    /// This is independent of the active execution tier or reconciliation state.
+    /// Implementations without retained resources use the no-resource default.
+    ///
+    /// # Errors
+    /// Retains the same physical owners and returns their actual cleanup cause.
+    fn try_retire_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 /// Canonical completion or exact paused capture returned by an execution model.
@@ -767,6 +781,20 @@ pub trait LocalAttemptWorker {
         _disposition: AttemptExecutionDisposition,
     ) -> Result<AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
         Ok(AttemptExecutionReconciliationStep::Complete)
+    }
+
+    /// Retires permanently retained model resources under the same outer Original.
+    ///
+    /// This is independent of the active execution tier or reconciliation state.
+    /// Implementations without retained resources use the no-resource default.
+    ///
+    /// # Errors
+    /// Retains the same physical owners and returns their actual cleanup cause.
+    fn try_retire_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        Ok(())
     }
 }
 
@@ -1093,6 +1121,15 @@ where
     M: AttemptExecutionModel,
 {
     type Error = RepositoryAttemptWorkerError<M::Error>;
+
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.model
+            .try_retire_original(original)
+            .map_err(RepositoryAttemptWorkerError::Model)
+    }
 
     fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
         RepositoryAttemptWorker::execute(self, queued)

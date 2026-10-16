@@ -3728,6 +3728,7 @@ fn pool<W>(
 ) -> LocalExecutorWorkerPool<MemoryAssignmentLedger, AllowAllAttemptAdmission>
 where
     W: LocalAttemptWorker + Send + 'static,
+    W::Error: Send + 'static,
 {
     let store = store();
     LocalExecutorWorkerPool::start(

@@ -567,11 +567,11 @@ fn production_lifecycle_launcher_charges_the_attempt_quantum_ceiling() {
     let resources = resources(2);
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, counters);
+    let storage = test_generation_storage(&["vm-a"]);
     let guard = factory
         .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
-    let owner =
-        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("generation resource owner");
+    let owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
     let mut launcher = crate::QemuAttemptProductionVmNodeLauncher::new(owner);
 
     assert!(launcher.begin_execution_quantum().is_ok());
@@ -593,11 +593,11 @@ fn production_lifecycle_launcher_preserves_cancellation_class() {
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, counters);
     let cancellation = ExecutionCancellation::default();
+    let storage = test_generation_storage(&["vm-a"]);
     let guard = factory
         .begin(resources, cancellation.clone(), None)
         .expect("composed resource guard");
-    let owner =
-        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("generation resource owner");
+    let owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
     let mut launcher = crate::QemuAttemptProductionVmNodeLauncher::new(owner);
 
     cancellation.cancel_for_test();
@@ -743,6 +743,16 @@ fn dropping_a_live_guard_transfers_all_host_resources_to_quarantine() {
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
 }
 
+fn test_generation_storage(names: &[&str]) -> QemuAttemptGenerationStorage {
+    let nodes = names
+        .iter()
+        .map(|name| NodeId {
+            name: String::from(*name),
+        })
+        .collect::<Vec<_>>();
+    QemuAttemptGenerationStorage::prepare(nodes.iter()).expect("selected generation storage")
+}
+
 fn generation(node: &str, generation: u64) -> ProductionVmNodeGeneration {
     ProductionVmNodeGeneration::new(
         NodeId {
@@ -758,11 +768,11 @@ fn generation_owner_releases_only_after_exact_monotone_leases_finish() {
     let resources = resources(4);
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
+    let storage = test_generation_storage(&["vm-a", "vm-b"]);
     let guard = factory
         .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
-    let mut owner =
-        QemuAttemptGenerationResourceOwner::new(guard, 2).expect("bounded generation owner");
+    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
 
     let mut first_a = owner
         .register_generation(generation("vm-a", 1))
@@ -799,15 +809,49 @@ fn generation_owner_releases_only_after_exact_monotone_leases_finish() {
 }
 
 #[test]
+fn unselected_node_refusal_cannot_spend_a_selected_nodes_slot_or_fence() {
+    let resources = resources(4);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let storage = test_generation_storage(&["vm-a", "vm-b"]);
+    let guard = factory
+        .begin(resources, ExecutionCancellation::default(), None)
+        .expect("composed resource guard");
+    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
+
+    assert!(
+        owner
+            .register_generation(generation("foreign", 100))
+            .is_err()
+    );
+    let mut first = owner.register_generation(generation("vm-a", 1)).unwrap();
+    let mut second = owner.register_generation(generation("vm-b", 1)).unwrap();
+    assert!(
+        owner
+            .register_generation(generation("foreign", 101))
+            .is_err()
+    );
+    first.finish().unwrap();
+    second.finish().unwrap();
+    assert!(owner.register_generation(generation("vm-a", 1)).is_err());
+    let mut replacement = owner.register_generation(generation("vm-a", 2)).unwrap();
+    replacement.finish().unwrap();
+    owner.finish().unwrap();
+
+    assert_eq!(counters.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn abandoned_generation_lease_permanently_quarantines_aggregate_guard() {
     let resources = resources(1);
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
+    let storage = test_generation_storage(&["vm-a"]);
     let guard = factory
         .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
-    let mut owner =
-        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("bounded generation owner");
+    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
 
     let lease = owner
         .register_generation(generation("vm-a", 1))
@@ -828,11 +872,11 @@ fn no_process_abort_preserves_the_exact_generation_for_retry() {
     let resources = resources(1);
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
+    let storage = test_generation_storage(&["vm-a"]);
     let guard = factory
         .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
-    let mut owner =
-        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("bounded generation owner");
+    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
 
     let pending = owner
         .register_generation(generation("vm-a", 1))
@@ -856,11 +900,11 @@ fn aborting_a_replacement_restores_the_previous_generation_fence() {
     let resources = resources(1);
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
+    let storage = test_generation_storage(&["vm-a"]);
     let guard = factory
         .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
-    let mut owner =
-        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("bounded generation owner");
+    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
 
     let mut first = owner
         .register_generation(generation("vm-a", 1))
@@ -888,11 +932,11 @@ fn active_generation_prevents_aggregate_release_without_losing_lease_authority()
     let resources = resources(1);
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
+    let storage = test_generation_storage(&["vm-a"]);
     let guard = factory
         .begin(resources, ExecutionCancellation::default(), None)
         .expect("composed resource guard");
-    let mut owner =
-        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("bounded generation owner");
+    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
     let mut lease = owner
         .register_generation(generation("vm-a", 1))
         .expect("first vm-a generation");
@@ -1001,10 +1045,11 @@ fn process_stage_contract_refuses_foreign_cancellation_before_callback() {
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
     let cancellation = ExecutionCancellation::default();
+    let storage = test_generation_storage(&["vm-a"]);
     let guard = factory
         .begin(resources, cancellation.clone(), None)
         .expect("resource guard");
-    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, 1).expect("generation owner");
+    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
     let mut called = false;
     let checks = counters.checks.load(Ordering::SeqCst);
 
@@ -1027,10 +1072,11 @@ fn process_stage_contract_borrows_same_owner_and_refuses_later_cancellation() {
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
     let cancellation = ExecutionCancellation::default();
+    let storage = test_generation_storage(&["vm-a"]);
     let guard = factory
         .begin(resources, cancellation.clone(), None)
         .expect("resource guard");
-    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, 1).expect("generation owner");
+    let mut owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
     let checks = counters.checks.load(Ordering::SeqCst);
 
     let observed = owner
@@ -1087,11 +1133,11 @@ fn erased_launcher_observes_the_actual_generic_guard_target_loan() {
     let resources = resources(2);
     let counters = Arc::new(HostCounters::default());
     let mut factory = factory(resources, Arc::clone(&counters));
+    let storage = test_generation_storage(&["vm-a"]);
     let guard = factory
         .begin(resources, ExecutionCancellation::default(), None)
         .expect("actual generic guard fixture");
-    let owner =
-        QemuAttemptGenerationResourceOwner::new(guard, 1).expect("actual generic guard fixture");
+    let owner = QemuAttemptGenerationResourceOwner::new(guard, storage);
     let mut launcher: Box<dyn ProductionVmNodeLauncher> =
         Box::new(crate::QemuAttemptProductionVmNodeLauncher::new(owner));
 

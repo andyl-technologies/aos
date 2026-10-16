@@ -2367,7 +2367,6 @@ where
     }
     let mut control_stream = ControlLifecycleStream::connected_unix_stream(control_stream)
         .map_err(|source| PluginRuntimeInstallError::ControlLifecycle { source })?;
-    reservation.mark_irreversible();
     #[cfg(test)]
     let handshake_result = sequence.perform_control_handshake_lifecycle(&mut control_stream, &args);
     #[cfg(not(test))]

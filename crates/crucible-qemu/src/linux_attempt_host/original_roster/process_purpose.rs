@@ -28,7 +28,7 @@ pub(crate) use setup_mapping::SetupMappingRequest;
 mod incarnation;
 use incarnation::IncarnationJournal;
 
-mod source_admission;
+pub(in crate::linux_attempt_host) mod source_admission;
 pub(crate) use source_admission::{InstalledSourceAdmission, InstalledSourceSubject};
 
 mod record;
@@ -89,6 +89,18 @@ impl InstalledProcessState {
         }
         self.pending_cleanup_bytes = 0;
         true
+    }
+
+    /// Computes the next unissued Target generation from this real journal.
+    pub(super) fn next_target_generation(
+        &self,
+        reserved: u64,
+    ) -> Result<u64, OriginalActorAccountError> {
+        self.journal
+            .last_process_generation
+            .max(reserved)
+            .checked_add(1)
+            .ok_or(OriginalActorAccountError::Unavailable)
     }
 
     pub(super) fn contains_incarnation(&self, process_generation: u64) -> bool {

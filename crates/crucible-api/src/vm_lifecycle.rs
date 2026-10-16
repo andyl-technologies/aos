@@ -345,6 +345,30 @@ pub trait ProductionHostRamRegistrationFactory: Send + Sync {
         &self,
     ) -> Result<ProductionHostRamNativeWorldLimits, HostRamAdmissionError>;
 
+    /// Returns the retained operational owner and world allocation epoch.
+    ///
+    /// # Errors
+    /// Refuses a missing or unconfigured original world assignment.
+    fn native_world_identity(
+        &self,
+    ) -> Result<ProductionHostRamNativeWorldIdentity, HostRamAdmissionError>;
+
+    /// Visits the exact configured node names and disjoint native requests.
+    ///
+    /// The callback borrows existing names; the allocator prepays any storage
+    /// needed to retain these requests before a process can be created.
+    ///
+    /// # Errors
+    /// Refuses missing launch geometry, incomplete partitions, arithmetic
+    /// overflow, or the callback's original admission failure.
+    fn visit_native_nodes(
+        &self,
+        visitor: &mut dyn FnMut(
+            &str,
+            ProductionHostRamNativeNodeLimits,
+        ) -> Result<(), HostRamAdmissionError>,
+    ) -> Result<(), HostRamAdmissionError>;
+
     /// Reserves the pinned controller descriptor before the native authority is created.
     ///
     /// # Errors
@@ -352,6 +376,7 @@ pub trait ProductionHostRamRegistrationFactory: Send + Sync {
     /// service descriptor capacity. Non-native fixtures may return no lease.
     fn reserve_native_controller_resources(
         &self,
+        node: &str,
     ) -> Result<
         Option<crucible_linux_resource::host_services::HostServiceLease>,
         HostRamAdmissionError,
@@ -364,6 +389,7 @@ pub trait ProductionHostRamRegistrationFactory: Send + Sync {
     /// or kernel ceilings inconsistent with the retained complete partition.
     fn bind_native_resource_controller(
         &self,
+        node: &str,
         controller: Option<crucible_qemu::LinuxQemuNativeResourceController>,
     ) -> Result<(), HostRamAdmissionError>;
 
@@ -390,6 +416,7 @@ pub use ram_resources::{
     HostRamAdmissionError, HostRamBootstrapLimits, HostRamProcessFamilyNativeAllowances,
     HostRamProcessFamilyPartition, HostRamProcessNativeAllowance,
     ProductionHostRamLaunchRequirements, ProductionHostRamLaunchShape,
+    ProductionHostRamNativeNodeLimits, ProductionHostRamNativeWorldIdentity,
     ProductionHostRamNativeWorldLimits, ProductionHostRamPartition,
     partition_host_ram_launch_resources,
 };
@@ -1194,6 +1221,10 @@ pub struct ProductionVmLifecycleLoop {
     debug_attach: Option<GdbAttachInfo>,
     debug_gateway_teardown_required: bool,
     indeterminate_debug_candidate: Option<Box<ProductionVmLifecycleLoop>>,
+    // A failed replay stays reachable before its diagnostic is rendered.
+    retained_debug_construction: std::sync::Mutex<Option<ProductionVmConstructionFailure>>,
+    // The same before-effects Box follows success until whole-owner retirement.
+    construction_custody: Option<Box<ProductionVmConstructionCustody>>,
     debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,
     node_launcher: Box<dyn ProductionVmNodeLauncher>,
     _run_directory: ProductionRunDirectory,
@@ -1788,50 +1819,30 @@ pub struct ProductionVmHotForkNodeAdoption {
 }
 
 impl ProductionVmHotForkNodeAdoption {
-    /// Binds one assembled child to its exact generation and storage owner.
+    /// Retains a child, its lease and the producer's expected process identity.
     ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError::LoopFactory`] when the lease names another
-    /// generation, the run directory is empty, or the QEMU process incarnation
-    /// cannot be authenticated.
+    /// This is an ownership transfer, not lifecycle admission. The constructor
+    /// performs no fallible operation after accepting the live node. Lifecycle
+    /// assembly verifies its generation, directory and actual process identity
+    /// while retaining the complete joint owner on refusal.
+    #[must_use]
     pub fn new<L>(
         identity: ProductionVmNodeGeneration,
+        process: QemuProcessIdentity,
         node: QemuNode,
         lease: L,
-        run_directory: impl Into<PathBuf>,
-    ) -> Result<Self, LifecycleApiError>
+        run_directory: PathBuf,
+    ) -> Self
     where
         L: ProductionVmNodeLease + 'static,
     {
-        if lease.identity() != &identity {
-            return Err(loop_factory_error(
-                "hot-fork QEMU node lease does not match its adopted generation",
-            ));
-        }
-        let run_directory = run_directory.into();
-        if run_directory.as_os_str().is_empty() {
-            return Err(loop_factory_error(
-                "hot-fork QEMU node adoption has an empty run directory",
-            ));
-        }
-        #[cfg(not(target_os = "linux"))]
-        return Err(loop_factory_error(
-            "hot-fork QEMU node adoption requires a Linux host",
-        ));
-        #[cfg(target_os = "linux")]
-        let process = node.process_identity().map_err(|error| {
-            loop_factory_error(format!(
-                "authenticate adopted hot-fork QEMU process: {error}"
-            ))
-        })?;
-        Ok(Self {
+        Self {
             identity,
             process,
             node,
             lease: Box::new(lease),
             run_directory,
-        })
+        }
     }
 
     /// Returns the exact node-generation identity.
@@ -1914,56 +1925,65 @@ impl ProductionVmNodeLaunch {
     /// # Errors
     ///
     /// Returns [`LifecycleApiError::LoopFactory`] when the lease names a
-    /// different node or generation. The rejected node and lease are dropped
-    /// through their fail-closed ownership paths.
+    /// different node or generation. Refusal returns the same node and lease
+    /// for retention by their existing owner.
     pub fn new<L>(
         request: ProductionVmNodeLaunchRequest<'_>,
         node: QemuNode,
         lease: L,
-    ) -> Result<Self, LifecycleApiError>
+    ) -> Result<Self, (LifecycleApiError, Self)>
     where
         L: ProductionVmNodeLease + 'static,
     {
         Self::new_in_run_directory(request, request.run_directory(), node, lease)
     }
 
-    /// Pairs a launched node with its exact launcher-owned run directory.
-    ///
-    /// An attempt-owned launcher uses this constructor when its sealed storage
-    /// allocator chooses a descriptor-pinned directory rather than trusting the
-    /// lifecycle's diagnostic path hint.
+    /// Pairs a node and its existing lease without discarding refused inputs.
     ///
     /// # Errors
-    ///
-    /// Returns [`LifecycleApiError::LoopFactory`] when the lease names a
-    /// different node or generation, or the chosen path is empty.
+    /// Returns the original typed validation error and the same jointly owned
+    /// node, lease and directory on a mismatched generation or empty path.
+    /// The caller must retain that joint owner before returning the error.
     pub fn new_in_run_directory<L>(
         request: ProductionVmNodeLaunchRequest<'_>,
         run_directory: impl Into<PathBuf>,
         node: QemuNode,
         lease: L,
-    ) -> Result<Self, LifecycleApiError>
+    ) -> Result<Self, (LifecycleApiError, Self)>
     where
         L: ProductionVmNodeLease + 'static,
     {
-        let expected =
-            ProductionVmNodeGeneration::new(request.node().clone(), request.generation())?;
-        if lease.identity() != &expected {
-            return Err(loop_factory_error(
-                "production QEMU node lease does not match its launch request",
-            ));
-        }
-        let run_directory = run_directory.into();
-        if run_directory.as_os_str().is_empty() {
-            return Err(loop_factory_error(
-                "production QEMU node launch returned an empty run directory",
-            ));
-        }
-        Ok(Self {
+        // This is the successful pairing's existing lease allocation. The
+        // refusal path moves this same body; it allocates no error carrier.
+        let launch = Self {
             node,
             lease: Box::new(lease),
-            run_directory,
-        })
+            run_directory: run_directory.into(),
+        };
+        let expected =
+            match ProductionVmNodeGeneration::new(request.node().clone(), request.generation()) {
+                Ok(expected) => expected,
+                Err(first) => return Err((first, launch)),
+            };
+        if launch.lease.identity() != &expected {
+            return Err((
+                loop_factory_error("production QEMU node lease does not match its launch request"),
+                launch,
+            ));
+        }
+        if launch.run_directory.as_os_str().is_empty() {
+            return Err((
+                loop_factory_error("production QEMU node launch returned an empty run directory"),
+                launch,
+            ));
+        }
+        Ok(launch)
+    }
+
+    /// Moves a refused pairing's complete body to its retained launcher.
+    #[must_use]
+    pub fn into_retained_parts(self) -> (QemuNode, Box<dyn ProductionVmNodeLease>, PathBuf) {
+        (self.node, self.lease, self.run_directory)
     }
 
     /// Returns the exact directory retained for this launched generation.
@@ -2008,6 +2028,21 @@ impl ProductionVmNodeLaunch {
 /// containment authority from their `Drop` path when lifecycle construction,
 /// unwinding, or caller abandonment prevents an explicit [`Self::finish`].
 pub trait ProductionVmNodeLauncher: Send {
+    /// Moves the exact cleanup reservation without claiming physical return.
+    #[cfg(target_os = "linux")]
+    fn take_cleanup_reservation(&mut self) -> Option<Box<dyn ProductionVmCleanupReservation>> {
+        None
+    }
+
+    /// Moves the storage admitted before this launcher's first Source effects.
+    ///
+    /// The empty carrier supplies custody only. It issues no operation,
+    /// original, process or cleanup authority. Missing storage refuses
+    /// construction while preserving every incoming owner in the error.
+    fn take_construction_custody(&mut self) -> Option<Box<ProductionVmConstructionCustody>> {
+        None
+    }
+
     /// Reports retained physical target custody before source cleanup.
     #[cfg(target_os = "linux")]
     fn fork_target_is_owned(&self) -> bool {
@@ -2333,8 +2368,19 @@ pub use admitted_assets::{ProductionVmGuestAssetAdmissionError, ProductionVmGues
 mod admitted_clone;
 mod config;
 pub use admitted_clone::ProductionVmLifecycleConfigCloneError;
+#[cfg(target_os = "linux")]
+mod cleanup_owner;
+#[cfg(target_os = "linux")]
+pub use cleanup_owner::{
+    ProductionVmCleanupHandoff, ProductionVmCleanupOwner, ProductionVmCleanupReservation,
+    ProductionVmCleanupStage,
+};
 mod construction;
 use construction::build_production_vm_lifecycle_loop_with_restore;
+pub use construction::{
+    ProductionVmConstructionCleanupError, ProductionVmConstructionCustody,
+    ProductionVmConstructionFailure,
+};
 mod helpers;
 mod network_faults;
 mod process_owners;
@@ -2586,30 +2632,28 @@ use storage_faults::{ProductionBlockFaultCoordinator, block_binding_for_vm, nine
 ///
 /// # Errors
 ///
-/// Returns [`LifecycleApiError`] when launcher construction or restored
-/// lifecycle validation fails.
-pub fn build_production_vm_exact_resume_lifecycle<L>(
+/// Returns [`ProductionVmConstructionFailure`] retaining the exact inputs when
+/// launcher construction or restored lifecycle validation fails.
+pub fn build_production_vm_exact_resume_lifecycle(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
     decoded: DecodedProductionExactCheckpoint,
-    launcher: L,
-) -> Result<ProductionVmLifecycleLoop, LifecycleApiError>
-where
-    L: ProductionVmNodeLauncher + 'static,
-{
-    if source.scenario_def() != *scenario {
-        return Err(loop_factory_error(
-            "repository checkpoint source does not reconstruct the requested scenario",
-        ));
-    }
-    build_production_vm_lifecycle_loop_with_restore(
+    launcher: Box<dyn ProductionVmNodeLauncher>,
+) -> Result<ProductionVmLifecycleLoop, ProductionVmConstructionFailure> {
+    let custody = construction::retain_construction_inputs(
+        launcher,
+        Some(decoded.into_checkpoint()),
+        None,
+        None,
+        Vec::new(),
+    )?;
+    construction::build_from_custody(
         scenario,
         source,
         config,
-        Some(decoded.into_checkpoint()),
-        Box::new(launcher),
-        None,
+        custody,
+        construction::ExactRestoreExposure::Released,
     )
 }
 
@@ -2666,30 +2710,27 @@ impl Drop for ProductionVmStoppedLifecycle {
 ///
 /// # Errors
 ///
-/// Returns [`LifecycleApiError`] for a different scenario, incomplete or
-/// incompatible continuation, failed admission, or unsuccessful native restore.
-pub fn build_production_vm_exact_stopped_lifecycle<L>(
+/// Returns [`ProductionVmConstructionFailure`] retaining the exact inputs for a
+/// different scenario, incomplete continuation, or unsuccessful native restore.
+pub fn build_production_vm_exact_stopped_lifecycle(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
     decoded: DecodedProductionExactCheckpoint,
-    launcher: L,
-) -> Result<ProductionVmStoppedLifecycle, LifecycleApiError>
-where
-    L: ProductionVmNodeLauncher + 'static,
-{
-    if source.scenario_def() != *scenario {
-        return Err(loop_factory_error(
-            "repository checkpoint source does not reconstruct the requested scenario",
-        ));
-    }
-    construction::build_production_vm_lifecycle_loop_with_restore_exposure(
+    launcher: Box<dyn ProductionVmNodeLauncher>,
+) -> Result<ProductionVmStoppedLifecycle, ProductionVmConstructionFailure> {
+    let custody = construction::retain_construction_inputs(
+        launcher,
+        Some(decoded.into_checkpoint()),
+        None,
+        None,
+        Vec::new(),
+    )?;
+    construction::build_from_custody(
         scenario,
         source,
         config,
-        Some(decoded.into_checkpoint()),
-        Box::new(launcher),
-        None,
+        custody,
         construction::ExactRestoreExposure::AwaitingOwnershipCommit,
     )
     .map(|lifecycle| ProductionVmStoppedLifecycle {
@@ -2746,100 +2787,151 @@ pub fn authenticate_production_vm_exact_hot_fork_source_boundary(
 ///
 /// # Errors
 ///
-/// Returns [`LifecycleApiError::LoopFactory`] when the scenario, continuation,
-/// node set, service-state policy, physical boundary, process incarnation,
-/// lease, durable run-state root, or lifecycle construction differs from the
-/// assembled World.
+/// Returns [`ProductionVmConstructionFailure`] retaining the continuation,
+/// children and launcher when validation or lifecycle construction refuses.
 #[cfg(target_os = "linux")]
-pub fn build_production_vm_lifecycle_loop_from_hot_fork_with_launcher<L>(
+pub fn build_production_vm_lifecycle_loop_from_hot_fork_with_launcher(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     continuation: ProductionVmHotForkWorldContinuation,
     adoptions: Vec<ProductionVmHotForkNodeAdoption>,
     run_state_root: impl Into<PathBuf>,
-    launcher: L,
-) -> Result<ProductionVmLifecycleLoop, LifecycleApiError>
-where
-    L: ProductionVmNodeLauncher + 'static,
-{
-    if source.scenario_def() != *scenario || continuation.configuration().def.id() != scenario.id()
-    {
-        return Err(loop_factory_error(
-            "hot-fork continuation does not reconstruct the requested scenario",
-        ));
-    }
-    continuation
-        .validate_complete_internal_state()
-        .map_err(|error| loop_factory_error(format!("validate hot-fork continuation: {error}")))?;
-    continuation
-        .validate_world_io(source.world())
-        .map_err(|error| loop_factory_error(format!("validate hot-fork World I/O: {error}")))?;
-
-    let source_nodes = source
-        .world()
-        .vm_nodes()
-        .iter()
-        .map(|node| node.id.clone())
-        .collect::<BTreeSet<_>>();
-    let continuation_nodes = continuation
-        .nodes()
-        .iter()
-        .map(|boundary| boundary.node().clone())
-        .collect::<BTreeSet<_>>();
-    if source_nodes != continuation_nodes {
-        return Err(loop_factory_error(
-            "hot-fork continuation node set differs from the scenario World",
-        ));
-    }
-
-    if adoptions.len() > source_nodes.len() {
-        return Err(loop_factory_error(
-            "hot-fork adopted child count exceeds the scenario World",
-        ));
-    }
-    let mut adoptions_by_node = BTreeMap::new();
-    for adoption in adoptions {
-        let node = adoption.identity().node().clone();
-        if adoptions_by_node.insert(node.clone(), adoption).is_some() {
-            return Err(loop_factory_error(format!(
-                "hot-fork World contains duplicate child `{}`",
-                node.name
-            )));
+    launcher: Box<dyn ProductionVmNodeLauncher>,
+) -> Result<ProductionVmLifecycleLoop, ProductionVmConstructionFailure> {
+    let mut custody = construction::retain_construction_inputs(
+        launcher,
+        None,
+        None,
+        Some(continuation),
+        adoptions,
+    )?;
+    let prepared = (|| -> Result<Arc<ProductionVmLifecycleConfig>, LifecycleApiError> {
+        let phase = custody.partial_mut()?;
+        let continuation = phase.hot_fork_continuation.as_ref().ok_or_else(|| {
+            loop_factory_error("hot-fork continuation is absent from construction custody")
+        })?;
+        if source.scenario_def() != *scenario
+            || continuation.configuration().def.id() != scenario.id()
+        {
+            return Err(loop_factory_error(
+                "hot-fork continuation does not reconstruct the requested scenario",
+            ));
         }
-    }
-    let adoption_generations = adoptions_by_node
-        .iter()
-        .map(|(node, adoption)| (node.clone(), adoption.identity().generation()))
-        .collect::<BTreeMap<_, _>>();
-    let HotForkAdoptionInventory {
-        expected_times,
-        node_generations,
-    } = validate_hot_fork_adoption_inventory(&continuation, &adoption_generations)?;
+        continuation
+            .validate_complete_internal_state()
+            .map_err(|error| {
+                loop_factory_error(format!("validate hot-fork continuation: {error}"))
+            })?;
+        continuation
+            .validate_world_io(source.world())
+            .map_err(|error| loop_factory_error(format!("validate hot-fork World I/O: {error}")))?;
 
-    let ProductionVmHotForkRestoreParts {
-        config,
-        checkpoint,
-        immutable_root_images,
-        disk_bases,
-        block_bindings,
-        ninep_bindings,
-        active_host_io,
-    } = continuation.into_restore_parts(node_generations, run_state_root)?;
-    build_production_vm_lifecycle_loop_with_restore(
-        scenario,
-        source,
-        &config,
-        Some(checkpoint),
-        Box::new(launcher),
-        Some(ProductionVmHotForkRestore {
+        let source_nodes = source
+            .world()
+            .vm_nodes()
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<BTreeSet<_>>();
+        let continuation_nodes = continuation
+            .nodes()
+            .iter()
+            .map(|boundary| boundary.node().clone())
+            .collect::<BTreeSet<_>>();
+        if source_nodes != continuation_nodes {
+            return Err(loop_factory_error(
+                "hot-fork continuation node set differs from the scenario World",
+            ));
+        }
+        if phase.hot_fork_adoptions.len() > source_nodes.len() {
+            return Err(loop_factory_error(
+                "hot-fork adopted child count exceeds the scenario World",
+            ));
+        }
+        // Validate identities while every actual child remains in its input slot.
+        let mut adoption_generations = BTreeMap::new();
+        for adoption in &phase.hot_fork_adoptions {
+            let node = adoption.identity().node().clone();
+            if adoption_generations
+                .insert(node.clone(), adoption.identity().generation())
+                .is_some()
+            {
+                return Err(loop_factory_error(format!(
+                    "hot-fork World contains duplicate child `{}`",
+                    node.name,
+                )));
+            }
+        }
+        let HotForkAdoptionInventory {
             expected_times,
-            adoptions: adoptions_by_node,
+            node_generations,
+        } = validate_hot_fork_adoption_inventory(continuation, &adoption_generations)?;
+        // The admitted copy can refuse while the original continuation is retained.
+        let config = continuation.prepare_restore_config(run_state_root)?;
+        let continuation = phase.hot_fork_continuation.take().ok_or_else(|| {
+            loop_factory_error("hot-fork continuation disappeared from construction custody")
+        })?;
+        let ProductionVmHotForkRestoreParts {
+            config,
+            checkpoint,
             immutable_root_images,
             disk_bases,
             block_bindings,
             ninep_bindings,
             active_host_io,
-        }),
+        } = continuation.into_restore_parts(node_generations, config);
+        phase.restore_checkpoint = Some(checkpoint);
+        phase.retained_config = Some(Arc::new(config));
+        phase.hot_fork_restore = Some(ProductionVmHotForkRestore {
+            expected_times,
+            adoptions: BTreeMap::new(),
+            immutable_root_images,
+            disk_bases,
+            block_bindings,
+            ninep_bindings,
+            active_host_io,
+        });
+
+        while let Some(adoption) = phase.hot_fork_adoptions.pop() {
+            phase.pending_adoption = Some(adoption);
+            let node = phase
+                .pending_adoption
+                .as_ref()
+                .ok_or_else(|| loop_factory_error("hot-fork pending adoption is absent"))?
+                .identity()
+                .node()
+                .clone();
+            let restore = phase
+                .hot_fork_restore
+                .as_mut()
+                .ok_or_else(|| loop_factory_error("hot-fork restore custody is absent"))?;
+            match restore.adoptions.entry(node) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    if let Some(adoption) = phase.pending_adoption.take() {
+                        entry.insert(adoption);
+                    }
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    // Both the existing child and the incoming child stay retained.
+                    return Err(loop_factory_error("hot-fork adoption slot is occupied"));
+                }
+            }
+        }
+        phase
+            .retained_config
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| loop_factory_error("hot-fork admitted configuration is absent"))
+    })();
+    let config = match prepared {
+        Ok(config) => config,
+        Err(first) => return Err(custody.into_failure(first)),
+    };
+    construction::build_from_custody(
+        scenario,
+        source,
+        &config,
+        custody,
+        construction::ExactRestoreExposure::Released,
     )
 }
 
@@ -2917,26 +3009,16 @@ fn validate_hot_fork_adoption_inventory(
 ///
 /// # Errors
 ///
-/// Returns [`LifecycleApiError::LoopFactory`] when scenario validation,
-/// run-directory preparation, launch admission, QEMU startup, or scheduler
+/// Returns [`ProductionVmConstructionFailure`] with the actual inputs and
+/// partial lifecycle retained when validation, admission, launch, or scheduler
 /// construction fails.
-pub fn build_production_vm_lifecycle_loop_with_launcher<L>(
+pub fn build_production_vm_lifecycle_loop_with_launcher(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
-    launcher: L,
-) -> Result<ProductionVmLifecycleLoop, LifecycleApiError>
-where
-    L: ProductionVmNodeLauncher + 'static,
-{
-    build_production_vm_lifecycle_loop_with_restore(
-        scenario,
-        source,
-        config,
-        None,
-        Box::new(launcher),
-        None,
-    )
+    launcher: Box<dyn ProductionVmNodeLauncher>,
+) -> Result<ProductionVmLifecycleLoop, ProductionVmConstructionFailure> {
+    build_production_vm_lifecycle_loop_with_restore(scenario, source, config, None, launcher, None)
 }
 
 fn validate_app_random_branch_replay_config(

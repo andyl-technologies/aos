@@ -749,6 +749,28 @@ where
             );
         }
         let run_directory = run_directory.path().to_path_buf();
+        if run_directory.as_os_str().is_empty() {
+            return retain_failed_world_adoption(self, "hot-fork child directory is empty");
+        }
+        // Authentication can refuse while self still owns the installed node
+        // and its exact Target. The subsequent joint transfer is infallible.
+        let process = match backend.installed_node.as_ref() {
+            Some(node) => match node.process_identity() {
+                Ok(process) => process,
+                Err(error) => {
+                    return retain_failed_world_adoption(
+                        self,
+                        format!("authenticate adopted hot-fork QEMU process: {error}"),
+                    );
+                }
+            },
+            None => {
+                return retain_failed_world_adoption(
+                    self,
+                    "hot-fork child lost its installed scheduler node",
+                );
+            }
+        };
         let Some(node) = backend.installed_node.take() else {
             return retain_failed_world_adoption(
                 self,
@@ -762,7 +784,13 @@ where
             diagnostics_reported: false,
             live_diagnostics_enabled: diagnostics::live_diagnostics_enabled(),
         };
-        ProductionVmHotForkNodeAdoption::new(identity, node, lease, run_directory)
+        Ok(ProductionVmHotForkNodeAdoption::new(
+            identity,
+            process,
+            node,
+            lease,
+            run_directory,
+        ))
     }
 }
 

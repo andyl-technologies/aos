@@ -30,7 +30,10 @@
     inherit pkgs lib service campaign attemptFile;
     inherit clientAuthorityFile clientCertificateFile clientKeyFile idempotencyKey;
   };
-  clientScript = builtins.toFile "normal-service-ram-client" client;
+  clientScript = pkgs.writeTextFile {
+    name = "normal-service-ram-client";
+    text = client;
+  };
 in
   assert service.enable && service.executor != null;
   assert builtins.elem campaign service.executor.campaigns;

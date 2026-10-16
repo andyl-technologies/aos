@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod fork_target;
-pub use fork_target::LinuxQemuForkTargetPermit;
+pub use fork_target::{
+    LinuxQemuForkTargetPermit, QemuForkTargetLogicalReservation, QemuForkTargetRamAdmission,
+};
 
 mod configuration;
 pub use configuration::{AdmittedHostConfigurationError, LinuxQemuAttemptHostConfig};
@@ -24,9 +26,11 @@ mod native_resources;
 pub(crate) mod parent_setup;
 #[cfg(feature = "private-measurement-domain")]
 pub(crate) use parent_setup::OriginalParentSetup;
+mod normal_pool;
 #[cfg(feature = "private-measurement-domain")]
 mod original_actor;
 mod original_host;
+pub use normal_pool::LinuxQemuNativeNodeHost;
 mod original_node;
 mod original_roster;
 pub use native_account::OriginalActorAccountError;
@@ -96,7 +100,7 @@ pub struct LinuxQemuAttemptHostFactory {
     storage: LinuxQemuAttemptStorageFactory,
     poisoned: bool,
     original_accounts: Option<OriginalNativeAccountFactoryBinding>,
-    normal_roster: Option<OriginalNativeAccountRoster>,
+    normal_pool: Option<normal_pool::NormalNativePool>,
 }
 
 impl LinuxQemuAttemptHostFactory {
@@ -115,7 +119,7 @@ impl LinuxQemuAttemptHostFactory {
             storage,
             poisoned: false,
             original_accounts: None,
-            normal_roster: None,
+            normal_pool: None,
         })
     }
 
@@ -182,6 +186,12 @@ impl LinuxQemuAttemptHostFactory {
                 operation: "create QEMU attempt host owner",
                 message: String::from("combined host-resource allocator is poisoned"),
             });
+        }
+
+        if self.normal_pool.is_some() {
+            return Err(missing_authority(
+                "normal Source birth requires its selected per-node World",
+            ));
         }
 
         if self.original_accounts.is_some() {
@@ -1101,5 +1111,39 @@ mod tests {
             *events.lock().expect("event log"),
             ["process", "process", "storage", "storage"]
         );
+    }
+}
+
+impl LinuxQemuAttemptHostOwner {
+    /// Reserves actual cloned-contract controls in this node's retained Source.
+    ///
+    /// The returned lease must be held beside the duplicated contract and
+    /// dropped after its actual FDs. This funds no Source or Target execution.
+    ///
+    /// # Errors
+    /// Refuses a terminal host, foreign contract/family, unavailable genuine
+    /// Source payer or exhausted originally reserved control peak.
+    pub fn reserve_contract_controls(
+        &self,
+        contract: &crate::QemuChildProcessContract,
+        descriptors: u64,
+        bytes: u64,
+    ) -> Result<
+        crucible_linux_resource::host_services::process_birth::SourceHostControlLease,
+        QemuVmRealizationError,
+    > {
+        if self.terminal {
+            return Err(missing_authority("reserve retired contract controls"));
+        }
+        let attempt = match self.fork_target.as_ref() {
+            Some(target) => &target.reservation.attempt,
+            None => self
+                .original_account
+                .as_ref()
+                .ok_or_else(|| missing_authority("reserve contract controls without original"))?,
+        };
+        attempt
+            .reserve_contract_controls(contract, descriptors, bytes)
+            .map_err(original_roster::original_error)
     }
 }
