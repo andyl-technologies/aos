@@ -282,7 +282,11 @@ impl<L: HostReadLocation> Client<L> {
         Ok(())
     }
 
-    fn observation(
+    /// Captures a lifecycle name directly from the currently locked peer response.
+    ///
+    /// # Errors
+    /// Rejects a token whose width differs from the registered 32 bytes.
+    pub(super) fn observation(
         &self,
         state: &State,
         key: BodyKey,
@@ -298,6 +302,38 @@ impl<L: HostReadLocation> Client<L> {
             epoch: state.recovery_epoch,
             layout: self.layout.clone(),
         })
+    }
+
+    /// Correlates the same-response lifecycle name with its verified sealed body.
+    ///
+    /// This checks current canonical response custody, not a prior scanned inode.
+    ///
+    /// # Errors
+    /// Rejects a stale original barrier or a different key, token, root or session.
+    pub(super) fn correlate_sealed_response(
+        &self,
+        state: &State,
+        context: &super::PublisherRecoveryContext<L>,
+        observation: &BodyIncarnationObservation<L>,
+        body: &super::PeerPublishedObject<L>,
+    ) -> Result<(), Error> {
+        self.require_recovery_context(state, context)?;
+        if observation.client != self.cache_incarnation
+            || observation.epoch != state.recovery_epoch
+            || !Arc::ptr_eq(&observation.layout, &self.layout)
+            || !Arc::ptr_eq(body.layout(), &self.layout)
+            || observation.key
+                != (BodyKey {
+                    kind: BodyKind::Sealed as i32,
+                    descriptor: body.claim().descriptor().encode(),
+                    ..Default::default()
+                })
+            || &observation.token != body.incarnation()
+            || body.claim().domain() != self.layout.layout().domain()
+        {
+            return Err(Error::Invalid("sealed response lifecycle correlation"));
+        }
+        Ok(())
     }
 
     fn unverified_body(

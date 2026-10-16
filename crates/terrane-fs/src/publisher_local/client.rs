@@ -12,11 +12,11 @@ mod manifest;
 mod receipt;
 mod recovery;
 #[cfg(feature = "tokio")]
+pub(crate) mod recovery_manifest;
+#[cfg(feature = "tokio")]
 mod running;
 
-pub(crate) use recovery::{
-    BodyIncarnationObservation, InventoryCursor, InventoryPage, RecoveryBody, UnverifiedBody,
-};
+pub(crate) use recovery::{BodyIncarnationObservation, RecoveryBody};
 
 pub(crate) use context::PublisherRecoveryContext;
 #[cfg(feature = "tokio")]
