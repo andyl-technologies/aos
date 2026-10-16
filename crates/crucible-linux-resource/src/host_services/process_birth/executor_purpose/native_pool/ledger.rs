@@ -95,6 +95,12 @@ impl PoolLedger {
         })
     }
 
+    /// Observes component debt without issuing an account or changing a row.
+    #[cfg(test)]
+    pub(super) fn charged_resources(&self) -> HostResourceVector {
+        self.used
+    }
+
     pub(super) fn reserve_worker_controls(&mut self, bytes: u64) -> Result<(), ServiceBirthError> {
         if bytes == 0 || self.worker_controls.is_some() {
             return Err(ServiceBirthError::policy(
@@ -483,10 +489,14 @@ impl PoolLedger {
     // pool's identity check. Only commit_world_return removes a published row;
     // assignment epochs never reset or wrap, and replacement needs an empty row.
     pub(super) fn observe_world_returned(&self, epoch: u64) -> Result<bool, ServiceBirthError> {
+        self.world_return_fact(epoch)
+            .map_err(ServiceBirthError::policy)
+    }
+
+    /// Shares the same physical fact with allocation-free claim Drop observation.
+    pub(super) fn world_return_fact(&self, epoch: u64) -> Result<bool, &'static str> {
         if epoch == 0 || epoch > self.next_world {
-            return Err(ServiceBirthError::policy(
-                "native World was never published",
-            ));
+            return Err("native World was never published");
         }
         let absent = !self
             .worlds
@@ -500,11 +510,22 @@ impl PoolLedger {
                 .flatten()
                 .any(|node| node.world_epoch == epoch)
         {
-            return Err(ServiceBirthError::policy(
-                "native returned World retains a member",
-            ));
+            return Err("native returned World retains a member");
         }
         Ok(absent)
+    }
+
+    /// Borrows the retained original of this exact already-issued World.
+    pub(super) fn world_original(
+        &self,
+        epoch: u64,
+    ) -> Result<&Arc<HostOperationGuard>, ServiceBirthError> {
+        self.worlds
+            .iter()
+            .flatten()
+            .find(|world| world.epoch == epoch)
+            .map(|world| &world._original)
+            .ok_or_else(|| ServiceBirthError::policy("native World original is stale"))
     }
 
     pub(super) fn verify_world_original(

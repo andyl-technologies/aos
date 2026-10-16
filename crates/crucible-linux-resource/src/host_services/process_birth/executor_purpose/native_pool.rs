@@ -22,6 +22,9 @@ use ledger::{NodeSlot, PoolLedger, WorldSlot};
 
 pub use world_return::NativePoolReturnError;
 
+#[cfg(test)]
+pub(super) use world_return::tests::check_real_kernel_world_return;
+
 impl PoolState {
     fn verify_return_custody(
         &self,
@@ -662,7 +665,8 @@ impl AuthenticatedNativeWorldClaim {
     /// Borrows cleanup-only identity for this exact occupied World.
     ///
     /// # Errors
-    /// Refuses a consumed World facade; this method enters no Cleanup or work.
+    /// Refuses a physically returned World, including return through another
+    /// loan, or uncertain ledger custody. This enters no Cleanup or work.
     pub fn cleanup_loan(&self) -> Result<AuthenticatedNativeWorldCleanupLoan, ServiceBirthError> {
         if self.returned {
             return Err(ServiceBirthError::policy("native World already returned"));
@@ -671,10 +675,14 @@ impl AuthenticatedNativeWorldClaim {
             .held
             .as_ref()
             .ok_or_else(|| ServiceBirthError::policy("native World custody is absent"))?;
-        Ok(AuthenticatedNativeWorldCleanupLoan {
+        let ledger = world_return::borrow_unreturned_world(&held.ledger, self.epoch)?;
+        let loan = AuthenticatedNativeWorldCleanupLoan {
             held: Arc::clone(held),
             epoch: self.epoch,
-        })
+        };
+        // Issuance linearizes before return can remove this same World row.
+        drop(ledger);
+        Ok(loan)
     }
 
     /// Matches an existing cleanup loan to this exact retained assignment.
@@ -799,19 +807,6 @@ fn postcut(
     match held {
         Some(held) => held.root.verify_native_preparation(original).err(),
         None => original.wait_slice().map_err(ServiceBirthError::from).err(),
-    }
-}
-
-impl Drop for AuthenticatedNativeWorldClaim {
-    fn drop(&mut self) {
-        if let Some(held) = self.held.take() {
-            if self.returned {
-                drop(held);
-            } else {
-                // Losing an unreturned facade still proves no physical return.
-                std::mem::forget(held);
-            }
-        }
     }
 }
 

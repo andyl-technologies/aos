@@ -383,8 +383,21 @@ not final World/window return. The same Service must survive outside that native
 body until exact loan-backed World return, then watchdog join and discharge.
 Replay still lacks Source's fixed retained-owner continuation. The existing World
 queue role can support that design without a fourth cell, but these ownership
-and return-observation seams remain unimplemented; an empty node ledger is
+and caller-integration seams remain unimplemented; an empty node ledger is
 insufficient evidence.
+
+The genuine World cleanup loan now shares the canonical claim's physical-return
+core. It authenticates the retained original and cached Cleanup, preserves
+pending containing-body debt, and records descriptor/ledger consumption before
+reporting either work or post-refusal. The original claim observes loan-driven
+return and latches its existing boolean; its Drop uses the same nonblocking,
+allocation-free fact. New loan issuance holds the ledger through the existing
+pool alias clone and refuses an already returned epoch. Default and private
+workspace/all-target checks pass. All 242 resource-library tests pass with one
+ignored probe, including three new component controls and three additional real
+kernel-limit cases. Independent source review found no concrete defect. These
+controls exercise internal ledger/kernel cuts; authentic Main-to-public-loan
+execution and the Source/Service handoff remain unqualified.
 
 Ordinary prepared-Source retirement also has an unresolved ownership defect:
 it empties the Source and leaks a newly boxed lifecycle/observer pair after

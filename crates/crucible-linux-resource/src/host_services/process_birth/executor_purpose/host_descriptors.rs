@@ -493,6 +493,77 @@ mod tests {
         } else {
             let _pool_controls = result.unwrap();
             partition.check().unwrap();
+            if matches!(
+                case.as_str(),
+                "world-return-post" | "world-return-readback-post" | "world-return-refused"
+            ) {
+                let readback_failure = case == "world-return-readback-post";
+                let refused = case == "world-return-refused";
+                super::super::native_pool::check_real_kernel_world_return(
+                    std::sync::Arc::new(original),
+                    _pool_controls,
+                    |cleanup| {
+                        if refused {
+                            let changed = libc::rlimit {
+                                rlim_cur: 16,
+                                rlim_max: 63,
+                            };
+                            // SAFETY: only this isolated child lowers its hard
+                            // limit. The real pre-write check must refuse it.
+                            assert_eq!(
+                                unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &changed) },
+                                0
+                            );
+                            let result = partition.close_pool_assignment(8, 48);
+                            cleanup.complete().unwrap();
+                            return result;
+                        }
+                        partition.close_pool_assignment_after_write(8, 48, || {
+                            assert_eq!(limits().unwrap().rlim_cur, 64);
+                            // Complete the actual same guard after the real
+                            // write, so its independent post must refuse.
+                            cleanup.complete().unwrap();
+                            if readback_failure {
+                                let changed = libc::rlimit {
+                                    rlim_cur: 63,
+                                    rlim_max: 64,
+                                };
+                                // SAFETY: only this isolated helper's actual
+                                // soft limit changes within its original hard.
+                                assert_eq!(
+                                    unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &changed) },
+                                    0
+                                );
+                            }
+                        })
+                    },
+                    readback_failure || refused,
+                    !refused,
+                );
+                if refused {
+                    assert_eq!(
+                        (partition.pool_window_peak, partition.native_tables),
+                        (8, 48)
+                    );
+                    assert_eq!(
+                        (limits().unwrap().rlim_cur, limits().unwrap().rlim_max),
+                        (16, 63)
+                    );
+                    return;
+                }
+                assert_eq!(
+                    (partition.pool_window_peak, partition.native_tables),
+                    (0, 0)
+                );
+                assert_eq!(
+                    limits().unwrap().rlim_cur,
+                    if readback_failure { 63 } else { 64 }
+                );
+                let (repeated, consumed) = partition.close_pool_assignment(8, 48);
+                assert!(repeated.is_err());
+                assert!(!consumed);
+                return;
+            }
             if case == "return-readback" {
                 let (returned, consumed) =
                     partition.close_pool_assignment_after_write(8, 48, || {
@@ -590,6 +661,9 @@ mod tests {
             "dispatcher-terminal",
             "paired-return",
             "return-readback",
+            "world-return-post",
+            "world-return-readback-post",
+            "world-return-refused",
         ] {
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", HELPER, "--test-threads=1"])
