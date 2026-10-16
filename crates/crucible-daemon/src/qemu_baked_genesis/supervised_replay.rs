@@ -5,7 +5,10 @@
 //! a newly admitted full-resource Service on the same executor actor.
 
 use super::*;
-use crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure as ReplayBeginFailure;
+use crate::crucible_qemu_session::{
+    QemuAttemptResourceGuardBeginFailure as ReplayBeginFailure,
+    QemuAttemptResourceGuardCleanupFailure as ReplayCleanupFailure,
+};
 use crate::vm_lifecycle::ProductionHostRamRegistrationFactory;
 use crate::{QemuAttemptOperationalBoundary, QemuAttemptResourceGuard};
 use crucible_api::host_operational::ProductionHostRamLaunchShape;
@@ -416,15 +419,14 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
             Ok(())
         })();
         if let Err(error) = bind {
-            let cleanup = native.finish();
-            if cleanup.is_err() {
-                native.quarantine();
-                service.retain_after_unknown_cleanup();
-            }
-            return Err(ReplayBeginFailure::before_checkpoint_claim(
-                cleanup.err().unwrap_or(error),
-                None,
-            ));
+            return Err(match native.finish() {
+                Ok(()) => ReplayBeginFailure::before_checkpoint_claim(error, None),
+                Err(cleanup) => {
+                    native.quarantine();
+                    service.retain_after_unknown_cleanup();
+                    ReplayBeginFailure::rollback(error, ReplayCleanupFailure::quarantined(cleanup))
+                }
+            });
         }
         Ok(ProductionCheckpointReplayGuard {
             native,

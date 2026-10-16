@@ -729,8 +729,10 @@ pub(crate) trait QemuAttemptResourceGuardFactory {
     ///
     /// # Errors
     ///
-    /// Returns [`QemuVmRealizationError`] when the host cannot install every
-    /// requested ceiling. Failure must leave no reservation or process behind.
+    /// Returns [`QemuAttemptResourceGuardBeginFailure`] when the host cannot
+    /// install every requested ceiling. Clean rollback returns any unspent
+    /// selected-root claim. Failed rollback retains both causes and its actual
+    /// quarantine observation; it does not attest physical process return.
     fn begin(
         &mut self,
         resources: AttemptResourceLimits,
