@@ -191,7 +191,20 @@ impl<F: LocalFs + Sync> FsPublicationState<F> {
                         && record.inode == incarnation.inode
                         && record.changed_seconds == incarnation.changed_seconds
                         && record.changed_nanoseconds == incarnation.changed_nanoseconds
+                        && record.deadline_unix_ms != 0
+                        && record.deadline_unix_ms
+                            <= now_ms(clock)?
+                                .checked_add(
+                                    interval
+                                        .as_millis()
+                                        .max(1)
+                                        .try_into()
+                                        .map_err(io::Error::other)?,
+                                )
+                                .ok_or_else(|| io::Error::other("retirement deadline overflow"))?
                     {
+                        // A clock rollback beyond the configured interval falls
+                        // through to a fresh bounded durable lease instead.
                         // Re-acknowledgment requires the actual existing file and
                         // parent durability, not merely a successful parse.
                         self.fs.sync_file(&path).await?;

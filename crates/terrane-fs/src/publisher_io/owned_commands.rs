@@ -4,11 +4,13 @@ use std::fs::File;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 
-use terrane::host::publication::{PublicationClaim, VerityBinding};
+use terrane::host::publication::PublicationClaim;
 use terrane::store::{LocalFs, TokioClock, TokioLocalFs};
 use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 
-use super::{NativePublishedObject, NativePublisher, NativeRetirementPolicy, WorkerState};
+use super::{
+    NativePublishedObject, NativePublisher, NativeRetirementPolicy, NativeSealProbe, WorkerState,
+};
 use std::path::PathBuf;
 use terrane::host::publication::Publisher;
 use terrane::host::publication::{FsPublicationState, RetirementInode, RetirementLeaseRequest};
@@ -163,10 +165,8 @@ impl NativeBodyHandle {
 pub enum NativeCommandResult {
     /// An unnamed private capability probe, never a canonical backing object.
     Probe {
-        /// Its read-only probe descriptor.
-        file: File,
-        /// The actual kernel measurement, independently checked by the cache.
-        binding: VerityBinding,
+        /// Actual fresh probe evidence, independently checked by the cache.
+        probe: NativeSealProbe,
     },
     /// A canonical backing object and its retained native incarnation.
     Published {
@@ -367,7 +367,9 @@ impl CommandOwner {
             NativeOperation::Probe => self.kernel(|native| {
                 let file = native.probe_seal()?;
                 let binding = crate::verity::measure(&file)?;
-                Ok(NativeCommandResult::Probe { file, binding })
+                Ok(NativeCommandResult::Probe {
+                    probe: NativeSealProbe { file, binding },
+                })
             }),
             NativeOperation::Publish { claim, source } => {
                 if claim.domain() != self.domain {

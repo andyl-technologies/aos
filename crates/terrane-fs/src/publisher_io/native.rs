@@ -65,7 +65,9 @@ fn check_directory(file: &File) -> io::Result<()> {
 }
 
 #[cfg(feature = "tokio")]
-pub(super) fn inspect_layout(config: &super::NativePublisherConfig) -> io::Result<Vec<File>> {
+pub(super) fn inspect_layout(
+    config: &super::NativePublisherConfig,
+) -> io::Result<(Vec<File>, crate::host_quota::DomainProvisioningGuard)> {
     if !config.layout_root.is_absolute()
         || config
             .layout_root
@@ -79,6 +81,7 @@ pub(super) fn inspect_layout(config: &super::NativePublisherConfig) -> io::Resul
     let mut retained = Vec::new();
     let mut device = None;
     let mut inodes = Vec::new();
+    let mut provisioning = None;
     for (relative, content, private) in [
         ("", false, false),
         ("state", false, false),
@@ -118,11 +121,19 @@ pub(super) fn inspect_layout(config: &super::NativePublisherConfig) -> io::Resul
                 "publisher layout has unsafe ownership, mode, device or alias",
             ));
         }
+        if relative.is_empty() {
+            // The host provisioner takes the exclusive lock on this same inode.
+            // Keep shared custody before any staging cleanup or other mutation.
+            provisioning = Some(crate::host_quota::DomainProvisioningGuard::shared(&file)?);
+        }
         device = Some(metadata.dev());
         inodes.push(metadata.ino());
         retained.push(file);
     }
-    Ok(retained)
+    Ok((
+        retained,
+        provisioning.ok_or_else(|| io::Error::other("publisher root guard missing"))?,
+    ))
 }
 
 fn child_directory(parent: &File, name: &str) -> io::Result<File> {
@@ -398,6 +409,23 @@ impl NativePublisher {
         {
             return Err(invalid("unsafe pending sealed inode custody"));
         }
+        // Reinforce a prior rename whose reply or parent sync may have failed.
+        // This makes subsequent lifecycle acknowledgment durable in both names.
+        let shard_name: String = descriptor.digest()[..1]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        match fs::openat(
+            &self.sealed,
+            shard_name.as_str(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(shard) => File::from(shard).sync_all()?,
+            Err(error) if error == rustix::io::Errno::NOENT => {}
+            Err(error) => return Err(error.into()),
+        }
+        self.pending.sync_all()?;
         Ok(file)
     }
 

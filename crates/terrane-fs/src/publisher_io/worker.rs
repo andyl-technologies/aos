@@ -23,6 +23,33 @@ pub use owned_commands::{
 
 type Response = oneshot::Sender<io::Result<NativePublishedObject>>;
 
+/// Retains a fresh unnamed seal probe created only by the native command owner.
+///
+/// This is internal filesystem capability evidence, never a published object
+/// or permission to serve bytes. Cache factories independently measure the
+/// actual descriptor and match its device to their retained layout root.
+pub struct NativeSealProbe {
+    file: File,
+    binding: VerityBinding,
+}
+
+impl NativeSealProbe {
+    /// Borrows the actual read-only unnamed probe inode.
+    pub fn handle(&self) -> &File {
+        &self.file
+    }
+
+    /// Borrows the measurement obtained from the actual kernel probe.
+    pub fn binding(&self) -> &VerityBinding {
+        &self.binding
+    }
+
+    /// Transfers the read-only probe without granting serving authority.
+    pub fn into_handle(self) -> File {
+        self.file
+    }
+}
+
 /// Carries a native backing descriptor minted only by the concrete worker.
 ///
 /// Portable engine results and arbitrary adapter callbacks cannot construct this
