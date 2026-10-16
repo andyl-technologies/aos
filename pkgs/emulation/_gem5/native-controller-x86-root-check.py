@@ -100,6 +100,39 @@ def grant(operation, start, limit):
                 "start": start, "limit": limit, "maximum_microsteps": "1000000"}}
 
 
+def bounded_diagnostic_json(value):
+    """Renders at most 16 KiB of ASCII JSON plus an explicit truncation marker."""
+    remaining = 16 * 1024
+    parts = []
+    encoder = json.JSONEncoder(sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    for chunk in encoder.iterencode(value):
+        if len(chunk) > remaining:
+            parts.append(chunk[:remaining])
+            return "".join(parts) + " [truncated]"
+        parts.append(chunk)
+        remaining -= len(chunk)
+    return "".join(parts)
+
+
+def native_log_diagnostic_tail(path):
+    """Reads at most the final 4 KiB without changing the original log owner."""
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            end = stream.tell()
+            stream.seek(max(0, end - 4 * 1024))
+            tail = stream.read(4 * 1024)
+    except OSError as error:
+        return f"unavailable (errno={error.errno})"
+    return bounded_diagnostic_json(tail.decode("utf-8", errors="backslashreplace"))
+
+
+def first_receipt_diagnostic(receipt):
+    """Keeps bounded failure context without classifying or replacing the refusal."""
+    return ("first native Linux UART receipt: " + bounded_diagnostic_json(receipt)
+            + "\nnative.log tail: " + native_log_diagnostic_tail(resource / "native.log"))
+
+
 command = [native, "--listener-mode=off", f"--outdir={resource / 'output'}",
            str(resource / "native-controller-x86-root.py")]
 environment = os.environ.copy()
@@ -148,7 +181,11 @@ try:
     first = grant("first-original-linux-uart-birth", excluded["after"]["logical_position"], position(100000000000, 0, 3))
     first["maximum_events"] = "262144"
     receipt = exchange(control, first)
-    assert receipt["reason"] == "output" and int(receipt["processed_events"]) > 0
+    try:
+        assert receipt["reason"] == "output" and int(receipt["processed_events"]) > 0
+    except (AssertionError, KeyError, TypeError, ValueError, OverflowError) as error:
+        error.add_note(first_receipt_diagnostic(receipt))
+        raise
     assert len(receipt["output"]) == 1 and len(receipt["publications"]) == 1
     assert type(receipt["output"][0]) is int and 0 <= receipt["output"][0] <= 255
     publication = receipt["publications"][0]
