@@ -8,6 +8,9 @@
 //!  maximum_operations:n, maximum_retained_outputs:n, write_watchdog_ms:n}
 //! ```
 
+mod mechanism;
+pub(super) use mechanism::CompleteMechanism;
+
 use super::*;
 use crucible::node_adapters::cnp::CnpSemanticInstallation;
 use crucible::node_admission::ScenarioRequirements;
@@ -35,6 +38,8 @@ const MAXIMUM_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
 #[serde(deny_unknown_fields)]
 pub(super) struct Manifest {
     pub(super) schema: String,
+    #[serde(default)]
+    pub(super) mechanism: Option<CompleteMechanism>,
     pub(super) measurements: [Measurement; 3],
     pub(super) participants: [Participant; 3],
     pub(super) host: HostSchedulingSelection,
@@ -191,6 +196,7 @@ pub(super) fn load(pin: &InstalledCompleteSceneManifest) -> Result<Manifest, Qua
     if canonical::canonical_json(&value)? != bytes {
         return Err(refused());
     }
+    mechanism::authenticate_edition_data(&value)?;
     let selected: Manifest =
         serde_json::from_value(value).map_err(crucible_node_contract::ContractError::from)?;
     validate_declaration(&selected)?;
@@ -199,8 +205,8 @@ pub(super) fn load(pin: &InstalledCompleteSceneManifest) -> Result<Manifest, Qua
 
 fn validate_declaration(selected: &Manifest) -> Result<(), QualificationError> {
     selected.resources.validate()?;
-    if selected.schema != "crucible.complete-scene.installation/1"
-        || selected.content.len() > 128
+    mechanism::authenticate_selection_data(&selected.schema, selected.mechanism)?;
+    if selected.content.len() > 128
         || selected.maximum_initial_bytes == 0
         || selected.maximum_initial_bytes > 64 * 1024 * 1024
         || selected.maximum_native_rows == 0

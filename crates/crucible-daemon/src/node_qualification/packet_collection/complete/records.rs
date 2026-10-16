@@ -757,6 +757,21 @@ fn selected_native_definition_bodies(
         );
     }
     if source
+        .selected_restore_input_emitter_selection()
+        .map_err(|error| QualificationError::Evidence(error.reason))?
+        .is_some()
+    {
+        use crucible_node_provider::reference_packet::service::complete_restore::{
+            canonical_restore_inputs_contract, canonical_restore_inputs_schema,
+        };
+        definitions.push((
+            canonical_restore_inputs_schema()
+                .map_err(|error| QualificationError::Evidence(error.to_string()))?,
+            canonical_restore_inputs_contract()
+                .map_err(|error| QualificationError::Evidence(error.to_string()))?,
+        ));
+    }
+    if source
         .selected_capture_allocation_selection()
         .map_err(|error| QualificationError::Evidence(error.reason))?
         .is_some()

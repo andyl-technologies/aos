@@ -94,6 +94,7 @@ pub(super) fn install(
         &selected.coordinator,
         selected.maximum_native_rows,
         selected.maximum_initial_bytes,
+        selected.mechanism,
     )?;
     let mut namespace = Namespace::create(directory)?;
     let directories = namespace.peer_directories()?;
@@ -223,6 +224,7 @@ struct LaunchDeclaration {
     storage: PacketNative5StorageSelection,
     capture_profile: PacketNative5CaptureProfile,
     protocol_metadata: PacketNative5ProtocolMetadataLimits,
+    mechanism: Option<CompleteMechanism>,
 }
 
 fn prepare_sources(
@@ -230,6 +232,7 @@ fn prepare_sources(
     coordinator: &PacketNative5CoordinatorInstallation,
     maximum_native_rows: usize,
     maximum_initial_bytes: usize,
+    mechanism: Option<CompleteMechanism>,
 ) -> Result<([PacketCompleteSemanticSource; 3], [LaunchDeclaration; 3]), QualificationError> {
     let mut sources = Vec::with_capacity(3);
     let mut declarations = Vec::with_capacity(3);
@@ -285,6 +288,9 @@ fn prepare_sources(
                 PacketNative5CaptureAllocationSelection::OriginalObserve12,
             ))
             .map_err(|_| refused())?;
+        if let Some(mechanism) = mechanism {
+            mechanism.bind_source(&mut source)?;
+        }
         let host_protocol_bytes = match &participant.capture_profile {
             PacketNative5CaptureProfile::OwnedProtocol11 {
                 host_protocol_bytes,
@@ -311,6 +317,7 @@ fn prepare_sources(
             storage: participant.storage,
             capture_profile: participant.capture_profile,
             protocol_metadata: participant.protocol_metadata,
+            mechanism,
         });
     }
     let sources: [PacketCompleteSemanticSource; 3] = sources.try_into().map_err(|_| refused())?;
@@ -334,6 +341,7 @@ fn launch_declarations(
             storage,
             capture_profile,
             protocol_metadata,
+            mechanism,
         },
     ) in declarations.into_iter().enumerate()
     {
@@ -362,9 +370,9 @@ fn launch_declarations(
             capture_allocation_selection: Some(
                 PacketNative5CaptureAllocationSelection::OriginalObserve12,
             ),
-            fresh_restore_allocation_selection: None,
-            complete_restore_selection: None,
-            restore_input_emitter_selection: None,
+            fresh_restore_allocation_selection: mechanism.map(|selected| selected.fresh_restore_allocation),
+            complete_restore_selection: mechanism.map(|selected| selected.complete_restore),
+            restore_input_emitter_selection: mechanism.map(|selected| selected.restore_input_emitter),
             effects: paths[member].clone(),
         });
     }
@@ -394,7 +402,24 @@ fn ready_sources(
             "source-owned.packet-input/4".into(),
             crucible_node_provider::reference_packet::service::confirmation::PACKET_NATIVE_AFTER_CONFIRMATION_EXTENSION.into(),
         ];
+        if let Some(selection) = launches[member].complete_restore_selection {
+            envelope_extensions.extend(
+                crucible_node_provider::reference_packet::service::complete_restore::complete_restore_selected_envelope_extensions(selection)
+                    .into_iter().map(str::to_owned),
+            );
+        }
+        if launches[member].fresh_restore_allocation_selection.is_some() {
+            use crucible_node_provider::reference_packet::service::fresh_restore_allocation::{
+                PACKET_FRESH_RESTORE_ALLOCATION_QUERY,
+                PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING,
+            };
+            envelope_extensions.extend([
+                PACKET_FRESH_RESTORE_ALLOCATION_QUERY.into(),
+                PACKET_FRESH_RESTORE_ALLOCATION_PREPARE_BINDING.into(),
+            ]);
+        }
         envelope_extensions.sort();
+        envelope_extensions.dedup();
         source
             .reserve_original_canonical_ack_peer_birth(
                 &launches[member],
