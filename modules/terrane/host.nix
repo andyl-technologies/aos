@@ -130,6 +130,18 @@
   groupsFor = role:
     lib.optional (role == "serve" || role == "gc") "terrane-cache"
     ++ lib.optional (role == "serve" || role == "gc" || role == "publish") "terrane-content";
+  reservedGroupIds =
+    identities
+    // {
+      cache = 844;
+      content = 845;
+    };
+  expectedGroupName = name:
+    if name == "cache"
+    then "terrane-cache"
+    else if name == "content"
+    then "terrane-content"
+    else userFor name;
   publicRoot = (cfg.hostTier.domains.public or {path = cfg.hostTier.path;}).path;
   roots = [publicRoot] ++ lib.mapAttrsToList (_: domain: domain.path) (builtins.removeAttrs cfg.hostTier.domains ["public"]);
   declaredRoots = lib.unique ([cfg.hostTier.path] ++ roots);
@@ -228,6 +240,7 @@
       ProtectHome = true;
       PrivateTmp = true;
       PrivateDevices = true;
+      PrivateUsers = false;
       PrivateNetwork = role == "publish" || role == "realize";
       RestrictAddressFamilies =
         if role == "publish" || role == "realize"
@@ -237,6 +250,8 @@
       ProtectKernelTunables = true;
       ProtectKernelModules = true;
       ProtectControlGroups = true;
+      ProtectProc = "invisible";
+      ProcSubset = "pid";
       RestrictSUIDSGID = true;
       LockPersonality = true;
       ReadWritePaths = writable role;
@@ -284,45 +299,49 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = cfg.hostTier.publisher == null || (cfg.hostTier.publisher.socketPath == "/run/terrane-publish/publisher.sock" && cfg.hostTier.publisher.serveUid == identities.serve && cfg.hostTier.publisher.publishUid == identities.publish && cfg.hostTier.publisher.contentUid == identities.serve && cfg.hostTier.publisher.contentGid == 845);
-        message = "Terrane publisher configuration must match the deployed socket and service/content identities.";
-      }
-      {
-        assertion = cfg.hostTier.quota == null || cleanPath cfg.hostTier.quota.socketPath;
-        message = "Terrane quota socket must use a canonical absolute path.";
-      }
-      {
-        assertion = !cfg.hostHelper.enable || cfg.hostTier.quota == null || (cfg.hostTier.quota.socketPath == "/run/aos-terrane-host/quota.sock" && cfg.hostTier.quota.configurationEpoch == cfg.hostHelper.epoch);
-        message = "Terrane local quota socket and epoch must match the configured host helper.";
-      }
-      {
-        assertion = !cfg.hostHelper.enable || builtins.all (name: let domain = cfg.hostTier.domains.${name}; in domain.quotaOwnerId == null || builtins.any (owner: owner.domain == name && owner.ownerId == domain.quotaOwnerId) cfg.hostHelper.owners) (builtins.attrNames cfg.hostTier.domains);
-        message = "Terrane per-domain quota owner IDs must match the local helper's explicit assignments.";
-      }
+    assertions =
+      (import ./_identity-checks.nix {
+        inherit config roleNames identities userFor groupsFor reservedGroupIds expectedGroupName;
+      })
+      ++ [
+        {
+          assertion = cfg.hostTier.publisher == null || (cfg.hostTier.publisher.socketPath == "/run/terrane-publish/publisher.sock" && cfg.hostTier.publisher.serveUid == identities.serve && cfg.hostTier.publisher.publishUid == identities.publish && cfg.hostTier.publisher.contentUid == identities.serve && cfg.hostTier.publisher.contentUid != cfg.hostTier.publisher.publishUid && cfg.hostTier.publisher.contentGid == 845);
+          message = "Terrane publisher configuration must match the deployed socket and service/content identities.";
+        }
+        {
+          assertion = cfg.hostTier.quota == null || cleanPath cfg.hostTier.quota.socketPath;
+          message = "Terrane quota socket must use a canonical absolute path.";
+        }
+        {
+          assertion = !cfg.hostHelper.enable || cfg.hostTier.quota == null || (cfg.hostTier.quota.socketPath == "/run/aos-terrane-host/quota.sock" && cfg.hostTier.quota.configurationEpoch == cfg.hostHelper.epoch);
+          message = "Terrane local quota socket and epoch must match the configured host helper.";
+        }
+        {
+          assertion = !cfg.hostHelper.enable || builtins.all (name: let domain = cfg.hostTier.domains.${name}; in domain.quotaOwnerId == null || builtins.any (owner: owner.domain == name && owner.ownerId == domain.quotaOwnerId) cfg.hostHelper.owners) (builtins.attrNames cfg.hostTier.domains);
+          message = "Terrane per-domain quota owner IDs must match the local helper's explicit assignments.";
+        }
 
-      {
-        assertion = builtins.all cleanPath declaredRoots;
-        message = "Terrane host roots must be canonical absolute paths without traversal or trailing separators.";
-      }
-      {
-        assertion = uniqueRoots && builtins.all (root: cfg.hostTier.path == root || !overlaps cfg.hostTier.path root) roots;
-        message = "Terrane host and domain roots must not overlap.";
-      }
-      {
-        assertion = builtins.all (domain: builtins.match "(public|tenant:.+|group:.+|private:.+)" domain != null) (builtins.attrNames cfg.hostTier.domains);
-        message = "Terrane disclosure domains must use canonical domain names.";
-      }
-      {
-        assertion = builtins.length (lib.unique (map (exposure: exposure.id) cfg.exposures)) == builtins.length cfg.exposures;
-        message = "Terrane exposure IDs must be unique.";
-      }
-      {
-        assertion = builtins.all (ref: !(lib.hasPrefix "file:/nix/store/" ref)) (lib.optional (cfg.tokens.hostToken != null) cfg.tokens.hostToken ++ map (exposure: exposure.token) cfg.exposures);
-        message = "Terrane credential references must not point into the Nix store.";
-      }
-    ];
+        {
+          assertion = builtins.all cleanPath declaredRoots;
+          message = "Terrane host roots must be canonical absolute paths without traversal or trailing separators.";
+        }
+        {
+          assertion = uniqueRoots && builtins.all (root: cfg.hostTier.path == root || !overlaps cfg.hostTier.path root) roots;
+          message = "Terrane host and domain roots must not overlap.";
+        }
+        {
+          assertion = builtins.all (domain: builtins.match "(public|tenant:.+|group:.+|private:.+)" domain != null) (builtins.attrNames cfg.hostTier.domains);
+          message = "Terrane disclosure domains must use canonical domain names.";
+        }
+        {
+          assertion = builtins.length (lib.unique (map (exposure: exposure.id) cfg.exposures)) == builtins.length cfg.exposures;
+          message = "Terrane exposure IDs must be unique.";
+        }
+        {
+          assertion = builtins.all (ref: !(lib.hasPrefix "file:/nix/store/" ref)) (lib.optional (cfg.tokens.hostToken != null) cfg.tokens.hostToken ++ map (exposure: exposure.token) cfg.exposures);
+          message = "Terrane credential references must not point into the Nix store.";
+        }
+      ];
     environment.etc."terrane/terrane.toml".text = toml.toTOML configuration;
     environment.systemPackages = [cfg.package];
     aos.users.users = builtins.listToAttrs (map (role: {
@@ -330,6 +349,7 @@ in {
         value = {
           uid = identities.${role};
           group = userFor role;
+          shell = "/sbin/nologin";
           description = "Terrane ${role} role";
           extraGroups = groupsFor role;
         };

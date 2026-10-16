@@ -222,6 +222,63 @@
     !attempt.success || !attempt.value;
   extraAssertions = [
     {
+      name = "publisher-content-identity-separation-refused";
+      pass = rejectedNative {aos.terrane.hostTier.publisher.contentUid = 841;};
+    }
+
+    {
+      name = "role-user-override-refused";
+      pass = rejected {systemd.services.terrane-publish.serviceConfig.User = lib.mkForce "unrelated";};
+    }
+    {
+      name = "role-capability-override-refused";
+      pass = rejected {systemd.services.terrane-publish.serviceConfig.CapabilityBoundingSet = lib.mkForce "CAP_SYS_ADMIN";};
+    }
+    {
+      name = "role-private-user-namespace-refused";
+      pass = rejected {systemd.services.terrane-publish.serviceConfig.PrivateUsers = true;};
+    }
+
+    {
+      name = "dedicated-role-accounts-nonlogin";
+      pass = builtins.all (name: enabled.aos.users.users.${name}.shell == "/sbin/nologin") ["terrane" "terrane-publish" "terrane-realize" "terrane-gc"];
+    }
+    {
+      name = "reserved-uid-reuse-refused";
+      pass = rejected {aos.users.users.unrelated.uid = 841;};
+    }
+    {
+      name = "reserved-group-alias-refused";
+      pass = rejected {aos.users.groups.unrelated.gid = 845;};
+    }
+    {
+      name = "foreign-content-membership-refused";
+      pass = rejected {
+        aos.users.users.unrelated = {
+          uid = 900;
+          extraGroups = ["terrane-content"];
+        };
+      };
+    }
+    {
+      name = "foreign-publisher-unit-refused";
+      pass = rejected {
+        systemd.services.unrelated.serviceConfig = {
+          User = "terrane-publish";
+          ExecStart = "${pkgs.terrane}/bin/terrane";
+        };
+      };
+    }
+    {
+      name = "role-proc-view-declared";
+      pass = builtins.all (role: (service role).ProtectProc == "invisible" && (service role).ProcSubset == "pid") roles;
+    }
+    {
+      name = "host-helper-bounded-descriptor-limit";
+      pass = helper.systemd.services.aos-terrane-host-quota.serviceConfig.LimitNOFILE == 8192 && helper.systemd.services.aos-terrane-host-provision.serviceConfig.LimitNOFILE == 8192;
+    }
+
+    {
       name = "host-helper-summed-domain-budget-refused";
       pass = rejectedHelper {
         aos.terrane.hostTier.domains."tenant:example".path = "/var/lib/terrane-tenant";

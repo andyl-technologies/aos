@@ -64,11 +64,15 @@
     Group = "root";
     Slice = "aos-control.slice";
     UMask = "0077";
+    # Each bounded allocation-scaffold directory retains native descriptors
+    # and its parent binding throughout the inspector's lifetime.
+    LimitNOFILE = 8192;
     NoNewPrivileges = true;
     AmbientCapabilities = "";
     PrivateNetwork = true;
     RestrictAddressFamilies = "AF_UNIX";
     PrivateDevices = true;
+    PrivateUsers = false;
     ProtectSystem = "strict";
     ProtectHome = true;
     ProtectKernelTunables = true;
