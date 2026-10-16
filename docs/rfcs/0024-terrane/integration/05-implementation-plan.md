@@ -8771,10 +8771,11 @@ publisher fixture helper reference and quota fixture synchronization races.
 The quota claim implementation now permanently binds each filesystem/project
 pair before ledger publication or native mutation; full process-crash and
 broker scenarios await execution. Configured SDK runtime composition and its
-separate unit/native proof harness pass source review. Its source-bound image
-and eleven unit cases pass; the guest stopped before any actor because its
-fixture parent was absent. The corrected fixture is undergoing fresh image,
-unit and guest qualification. The actual durable metadata-pin producer passes
+separate unit/native proof harness pass source review. After correcting a
+missing guest fixture parent, its current source-bound image, eleven unit
+cases and actual guest example/CLI success and denial cases pass with unchanged
+source guards and complete artifact verification. This qualifies the configured
+local SDK component on x86_64 Linux. The actual durable metadata-pin producer passes
 source review for consumer integration, without native qualification. Recovery
 inspection review found plaintext-allocation and retained-custody defects;
 their corrections precede integration. Publisher review likewise found a
@@ -8790,9 +8791,10 @@ and image/guest selectors are declared but fail until implemented. Remaining
 surface gates and complete trunk qualification remain pending. These source
 reviews and component results do not establish configured role operation,
 completed recovery or task acceptance. The CLI now has reviewed thin dispatch
-to the configured publisher bootstrap. Serialized empty-case cache recovery is
-under source review; nonempty reconstruction, actual admission and native cache
-execution remain incomplete.
+to the configured publisher bootstrap. Serialized empty-case cache recovery
+passes source review after fixing unknown state-parent sibling coverage;
+compilation, nonempty reconstruction, actual admission and native cache execution
+remain incomplete.
 
 Deployable as: one machine that holds a local cache of any commit, seals
 objects, and exposes them to the `sdk` surface, with the `serve`,
@@ -8829,13 +8831,37 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
 - [ ] **T-SURF-1** Surface interface, exposure records, schema validation,
   TOML configuration, status reporting, in-process registry, ownership and
   timestamp presentation, and privileged xattr filtering. — satisfies
-  TREE-9, TREE-10, TREE-15, SURF-1 to SURF-32, CRATE-17, CRATE-28;
+  TREE-9, TREE-10, TREE-15, SURF-1 to SURF-32, CRATE-17, and the SDK
+  component of CRATE-28, jointly with the surface tasks below;
   `checks.terrane.gates.surface-interface`,
   `checks.terrane.gates.surface-schema`,
   `checks.terrane.gates.surface-status`.
 - [ ] **T-PKG-3** `modules/terrane/` options, unit rendering for the
   `serve`, `realize`, `publish`, and `gc` roles, and the module evaluation
   check. — satisfies PKG-8, PKG-10; `checks.terrane.module-eval`.
+
+CRATE-28 is a shared full-specification obligation, not a claim that T2
+implements every registered surface. Under AD-13, each task below supplies its
+actual surface feature, compiled registry entry and feature-matrix coverage.
+T-SURF-1 owns the SDK component and the common closed registry; accepting it
+does not mark global CRATE-28 conformance complete. Unimplemented surfaces
+remain unavailable. Empty feature declarations and placeholder registrations
+do not complete these tasks. Every listed task must also pass
+`checks.terrane.gates.feature-matrix` when its real implementation lands.
+
+| Registered surface | Feature owner completing CRATE-28 |
+| --- | --- |
+| `sdk` | T-SURF-1 |
+| `nix-cache` | T-NIX-1 |
+| `reapi` | T-REAPI-1 |
+| `gha-cache` | T-GHA-1 |
+| `fuse` | T-FUSE-2 |
+| `erofs` | T-EROFS-1 |
+| `block` | T-VBLK-1 |
+| `virtiofs`, `virtio-pmem` | T-VM-1 |
+| `browse`, `api` | T-WEB-1 |
+| `git` | T-GIT-1 |
+| `oci` | T-OCI-1 |
 
 ### T3 — Wire protocol and buckets
 
