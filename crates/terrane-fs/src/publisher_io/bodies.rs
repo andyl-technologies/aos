@@ -125,6 +125,22 @@ impl BodyIo {
         Ok(())
     }
 
+    pub(super) fn check_manifest_pack(&self, file: &File) -> io::Result<()> {
+        self.check(file, false)?;
+        let expected = crate::host_quota::NativeProject::inspect(&self.chunks)?;
+        let actual = crate::host_quota::NativeProject::inspect(file)?;
+        if actual.device != expected.device
+            || actual.project_id != expected.project_id
+            || crate::host_quota::filesystem_uuid(file)?
+                != crate::host_quota::filesystem_uuid(&self.chunks)?
+        {
+            return Err(invalid(
+                "manifest metadata pack belongs to another configured quota domain",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn inspect_chunk(
         &self,
         descriptor: &Descriptor,

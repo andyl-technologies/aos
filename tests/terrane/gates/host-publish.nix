@@ -16,6 +16,8 @@
     "manifest_identity_remains_distinct_from_all_verified_plaintext_hashes"
     "one_chunk_above_inline_threshold_retains_manifest_identity"
     "manifest_and_claim_domain_are_checked_before_plaintext"
+    "retained_descriptor_failure_precedes_canonical_publication"
+    "retained_descriptor_failure_precedes_adoption_state_effects"
   ];
   nativeNames = [
     "disk_ext4_seal_noreplace_recovery_and_domain_isolation"
@@ -31,7 +33,8 @@
   ];
   sourceGate = sourceGateWithInputs {
     runtimeDeps = [pkgs.rust pkgs.rust.dev] ++ (pkgs.rust.runtimeDeps or []);
-    extraBuildDeps = [pkgs.coreutils];
+    extraBuildDeps = [pkgs.coreutils pkgs.binutils];
+    nukeRefsKeep = [pkgs.terrane.src];
   };
   portable = sourceGate "host-publication-ordering" ''
     cd crates
@@ -45,67 +48,54 @@
       "$out/ordering.log" '${builtins.toJSON portableNames}'
     cat "$out/ordering.log"
   '';
-  image = sourceGate "host-publication-kernel-image" ''
-    cd crates
-    cargo build --frozen --offline -p terrane-fs --features native-test-fixtures \
-      --example publication_fixture --message-format=json > "$TMPDIR/publication-build.jsonl"
-    rustc --print target-libdir > "$TMPDIR/publication-rust-libdir"
-    python3 - "$TMPDIR/publication-build.jsonl" "$TMPDIR/publication-rust-libdir" "$out" <<'PYBUILD'
-    import json
-    import pathlib
-    import shutil
-    import sys
+  image =
+    sourceGateWithInputs {
+      runtimeDeps = [pkgs.rust pkgs.rust.dev] ++ (pkgs.rust.runtimeDeps or []);
+      extraBuildDeps = [pkgs.coreutils pkgs.binutils];
+      nukeRefsKeep = [pkgs.terrane.src];
+      # The owning gate compares the guest ELF with the exact bound Cargo SHA.
+      preserveArtifactBytes = true;
+    } "host-publication-kernel-image" ''
+      cd crates
+      cargo build --frozen --offline -p terrane-fs --features native-test-fixtures \
+        --example publication_fixture --message-format=json > "$TMPDIR/publication-build.jsonl"
+      rustc --print target-libdir > "$TMPDIR/publication-rust-libdir"
+      cargo metadata --frozen --offline --no-deps --format-version=1 > "$TMPDIR/publication-packages.json"
+      python3 ${../host_publish_image.py} ${../.}
+      "$out/bin/terrane-publication-fixture" --list > "$out/all-selectors.txt"
+      "$out/bin/terrane-publication-fixture" --fixture-inputs > "$TMPDIR/publication-inputs.txt"
+      python3 - "$out" "$TMPDIR/publication-inputs.txt" '${builtins.toJSON nativeNames}' <<'PYASSETS'
+      import json
+      import pathlib
+      import sys
 
-    artifacts = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
-    output = pathlib.Path(sys.argv[3])
-    (output / "bin").mkdir()
-    (output / "lib").mkdir()
-    binaries = {item["executable"] for item in artifacts
-                if item.get("reason") == "compiler-artifact"
-                and item.get("target", {}).get("name") == "publication_fixture"
-                and "example" in item.get("target", {}).get("kind", [])
-                and item.get("executable")}
-    if len(binaries) != 1:
-        raise SystemExit("expected exactly one fresh-process publication example")
-    binary = pathlib.Path(next(iter(binaries)))
-    shutil.copy2(binary, output / "bin" / "terrane-publication-fixture")
-    directories = {binary.parent, binary.parent.parent / "deps",
-                   pathlib.Path(pathlib.Path(sys.argv[2]).read_text().strip())}
-    for directory in directories:
-        for library in directory.glob("*.so*"):
-            if library.is_file():
-                shutil.copy2(library, output / "lib" / library.name)
-    PYBUILD
-    export LD_LIBRARY_PATH="$out/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    "$out/bin/terrane-publication-fixture" --list > "$out/selectors.txt"
-    "$out/bin/terrane-publication-fixture" --fixture-inputs > "$TMPDIR/publication-inputs.txt"
-    python3 - "$out" "$TMPDIR/publication-inputs.txt" '${builtins.toJSON nativeNames}' <<'PYASSETS'
-    import json
-    import pathlib
-    import sys
-
-    output = pathlib.Path(sys.argv[1])
-    if (output / "selectors.txt").read_text().splitlines() != json.loads(sys.argv[3]):
-        raise SystemExit("native publication selector inventory changed")
-    expected = {f"{root}/objects/pack/{byte}/{byte * 16}.{extension}"
-                for root, byte in [("worker-pack-partial-rename", "31"),
-                                   ("worker-pack-partial-unlink", "42")]
-                for extension in ["pack", "idx"]}
-    seen = set()
-    for record in pathlib.Path(sys.argv[2]).read_text().splitlines():
-        relative, encoded = record.split("\t")
-        if relative not in expected or relative in seen:
-            raise SystemExit("unexpected or duplicate fixture asset")
-        if len(encoded) > 2097152 or len(encoded) % 2 or any(c not in "0123456789abcdef" for c in encoded):
-            raise SystemExit("invalid bounded canonical fixture hex")
-        destination = output / "fixtures" / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(bytes.fromhex(encoded))
-        seen.add(relative)
-    if seen != expected:
-        raise SystemExit("missing native fixture asset")
-    PYASSETS
-  '';
+      output = pathlib.Path(sys.argv[1])
+      publication = json.loads(sys.argv[3])
+      transport = ["transport:native-publisher", "transport:native-client"]
+      if (output / "all-selectors.txt").read_text().splitlines() != publication + transport:
+          raise SystemExit("complete native example selector inventory changed")
+      # Transport has its own guest provisioning and gate. This image runs every
+      # publication selector and retains the full inventory for composition review.
+      (output / "selectors.txt").write_text("\n".join(publication) + "\n")
+      expected = {f"{root}/objects/pack/{byte}/{byte * 16}.{extension}"
+                  for root, byte in [("worker-pack-partial-rename", "31"),
+                                     ("worker-pack-partial-unlink", "42")]
+                  for extension in ["pack", "idx"]}
+      seen = set()
+      for record in pathlib.Path(sys.argv[2]).read_text().splitlines():
+          relative, encoded = record.split("\t")
+          if relative not in expected or relative in seen:
+              raise SystemExit("unexpected or duplicate fixture asset")
+          if len(encoded) > 2097152 or len(encoded) % 2 or any(c not in "0123456789abcdef" for c in encoded):
+              raise SystemExit("invalid bounded canonical fixture hex")
+          destination = output / "fixtures" / relative
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_bytes(bytes.fromhex(encoded))
+          seen.add(relative)
+      if seen != expected:
+          raise SystemExit("missing native fixture asset")
+      PYASSETS
+    '';
   testing = import ../../../lib/testing {inherit pkgs lib;};
   native = testing.mkVMTest {
     name = "terrane-host-publication-ext4";
@@ -115,7 +105,8 @@
       mkdir -p /var/lib/terrane-publication /mnt/terrane-publication
       # The loop image lives on the guest's persistent root disk, never /tmp.
       truncate -s 96M /var/lib/terrane-publication/verity.img
-      mkfs.ext4 -F -O verity /var/lib/terrane-publication/verity.img
+      # The production Merkle block is 4096 bytes and must fit one fs block.
+      mkfs.ext4 -F -b 4096 -O verity /var/lib/terrane-publication/verity.img
       trap 'umount /mnt/terrane-publication || true; rm -f /var/lib/terrane-publication/verity.img' EXIT
       umask 077
       mount -t ext4 -o loop /var/lib/terrane-publication/verity.img /mnt/terrane-publication
@@ -145,9 +136,9 @@
         esac
         root="/mnt/terrane-publication/$fixture_root"
         pack_id="$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte$byte"
-        chown 840:845 "$root/objects/pack" "$root/objects/pack/$byte" \
+        chown 840:845 "$root/objects" "$root/objects/pack" "$root/objects/pack/$byte" \
           "$root/objects/pack/$byte/$pack_id.pack" "$root/objects/pack/$byte/$pack_id.idx"
-        chmod 2770 "$root/objects/pack" "$root/objects/pack/$byte"
+        chmod 2770 "$root/objects" "$root/objects/pack" "$root/objects/pack/$byte"
         chmod 0640 "$root/objects/pack/$byte/$pack_id.pack" "$root/objects/pack/$byte/$pack_id.idx"
       done
       ln /mnt/terrane-publication/worker-pack-partial-unlink/objects/pack/42/42424242424242424242424242424242.idx \
@@ -158,7 +149,7 @@
         if ! setpriv --reuid=841 --regid=845 --clear-groups \
           --inh-caps=-all --ambient-caps=-all --bounding-set=-all \
           ${pkgs.coreutils}/bin/env TERRANE_PUBLISH_VM_ROOT=/mnt/terrane-publication \
-          LD_LIBRARY_PATH="${image}/lib" ${image}/bin/terrane-publication-fixture "$selector" \
+          ${image}/bin/terrane-publication-fixture "$selector" \
           > /var/lib/terrane-publication/result.log 2>&1; then
           cat /var/lib/terrane-publication/result.log
           exit 1
@@ -176,7 +167,7 @@
       pname = "terrane-gate-${name}";
       version = "0.1.0";
       src = null;
-      buildDeps = [pkgs.coreutils];
+      buildDeps = [pkgs.coreutils pkgs.python3];
       phases = [
         {
           name = "qualify";
@@ -184,6 +175,46 @@
             mkdir -p "$out"
             test -e ${portable}/ordering.log
             test -e ${native}
+            python3 - ${image} ${pkgs.terrane.src} <<'PYIDENTITY'
+            import hashlib
+            import json
+            import pathlib
+            import sys
+
+            image = pathlib.Path(sys.argv[1])
+            source = pathlib.Path(sys.argv[2])
+            identity = json.loads((image / "share/identity.json").read_text())
+            profile = identity.get("profile", {})
+            target = identity.get("target", {})
+            if (identity.get("schema_version") != 1 or identity.get("cargo_profile") != "dev"
+                    or identity.get("default_features") is not True
+                    or identity.get("requested_features") != ["native-test-fixtures"]
+                    or identity.get("features") != ["native-test-fixtures", "tokio"]
+                    or identity.get("source") != str(source)
+                    or target.get("name") != "publication_fixture" or target.get("kind") != ["example"]
+                    or target.get("crate_types") != ["bin"]
+                    or profile.get("test") is not False or profile.get("opt_level") != "0"
+                    or profile.get("debuginfo") != 2 or profile.get("debug_assertions") is not True
+                    or profile.get("overflow_checks") is not True):
+                raise SystemExit("native publication image source/profile/features mismatch")
+            actual_inputs = {}
+            for path in sorted((source / "crates").rglob("*")):
+                if path.is_file():
+                    relative = path.relative_to(source / "crates").as_posix()
+                    if relative != ".cargo/config.toml":
+                        actual_inputs[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+            if actual_inputs != identity.get("input_sha256"):
+                raise SystemExit("native publication image input hashes mismatch")
+            binary = image / "libexec/terrane-publication-fixture"
+            if hashlib.sha256(binary.read_bytes()).hexdigest() != identity.get("executable_sha256"):
+                raise SystemExit("native publication guest ELF differs from bound Cargo bytes")
+            libraries = identity.get("copied_runtime_sha256", {})
+            if set(path.name for path in (image / "lib").iterdir()) != set(libraries):
+                raise SystemExit("native publication runtime library inventory mismatch")
+            for name, digest in libraries.items():
+                if hashlib.sha256((image / "lib" / name).read_bytes()).hexdigest() != digest:
+                    raise SystemExit("native publication runtime library hash mismatch")
+            PYIDENTITY
             printf '%s\n' '${name}: portable ordering and disk-backed kernel proof passed' > "$out/result"
           '';
         }
